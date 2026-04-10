@@ -1,0 +1,12 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.log
+*.zip
+!extracted-tiles.zip
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+extracted-tiles.zip
