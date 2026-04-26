@@ -53,11 +53,6 @@ public final class ReplaceWaySegmentCommand extends Command {
                 getAffectedDataSet().addPrimitive(node);
             }
         }
-        for (Node node : removedExistingNodes) {
-            if (node.getDataSet() != null && canRemoveDroppedNode(node)) {
-                getAffectedDataSet().removePrimitive(node);
-            }
-        }
         way.setNodes(replacementNodes);
         for (Node node : removedExistingNodes) {
             if (node.getDataSet() != null && canRemoveDroppedNode(node)) {
@@ -95,7 +90,7 @@ public final class ReplaceWaySegmentCommand extends Command {
         List<Node> orderedFixedNodes = orderedFixedNodes();
 
         List<Node> mutableExisting = new ArrayList<>();
-        for (int i = 1; i < selection.segmentNodes().size() - 1; i++) {
+        for (int i = 0; i < selection.segmentNodes().size(); i++) {
             Node node = selection.segmentNodes().get(i);
             if (!selection.fixedNodes().contains(node)) {
                 mutableExisting.add(node);
@@ -104,16 +99,23 @@ public final class ReplaceWaySegmentCommand extends Command {
 
         int reuseCursor = 0;
         int fixedCursor = 0;
+        Node movableEndNode = selection.fixedNodes().contains(selection.segmentNodes().get(selection.segmentNodes().size() - 1))
+            ? null
+            : selection.segmentNodes().get(selection.segmentNodes().size() - 1);
         for (int i = 0; i < previewPolyline.size(); i++) {
             EastNorth target = previewPolyline.get(i);
             Node node;
-            if (fixedCursor < orderedFixedNodes.size() && matchesFixedAnchor(target, orderedFixedNodes.get(fixedCursor))) {
+            if (i == 0 && !selection.fixedNodes().contains(selection.segmentNodes().get(0))) {
+                node = takeMutableNode(mutableExisting, selection.segmentNodes().get(0));
+            } else if (i == previewPolyline.size() - 1
+                && !selection.fixedNodes().contains(selection.segmentNodes().get(selection.segmentNodes().size() - 1))) {
+                node = takeMutableNode(mutableExisting, selection.segmentNodes().get(selection.segmentNodes().size() - 1));
+            } else if (fixedCursor < orderedFixedNodes.size() && matchesFixedAnchor(target, orderedFixedNodes.get(fixedCursor))) {
                 node = orderedFixedNodes.get(fixedCursor++);
-            } else if (reuseCursor < mutableExisting.size()) {
-                node = mutableExisting.get(reuseCursor++);
+            } else if ((node = nextMutableNode(mutableExisting, reuseCursor, movableEndNode)) != null) {
+                reuseCursor = mutableExisting.indexOf(node) + 1;
             } else {
                 node = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(target));
-                getAffectedDataSet().addPrimitive(node);
                 createdNodes.add(node);
             }
 
@@ -127,9 +129,8 @@ public final class ReplaceWaySegmentCommand extends Command {
             segmentReplacement.add(node);
         }
 
-        for (int i = reuseCursor; i < mutableExisting.size(); i++) {
-            Node dropped = mutableExisting.get(i);
-            if (!removedExistingNodes.contains(dropped)) {
+        for (Node dropped : mutableExisting) {
+            if (dropped != null && !removedExistingNodes.contains(dropped)) {
                 removedExistingNodes.add(dropped);
             }
         }
@@ -139,6 +140,25 @@ public final class ReplaceWaySegmentCommand extends Command {
         nodes.addAll(segmentReplacement);
         nodes.addAll(after);
         return nodes;
+    }
+
+    private Node takeMutableNode(List<Node> mutableExisting, Node node) {
+        int index = mutableExisting.indexOf(node);
+        if (index >= 0) {
+            mutableExisting.set(index, null);
+        }
+        return node;
+    }
+
+    private Node nextMutableNode(List<Node> mutableExisting, int startIndex, Node reservedEndNode) {
+        for (int i = Math.max(0, startIndex); i < mutableExisting.size(); i++) {
+            Node node = mutableExisting.get(i);
+            if (node != null && node != reservedEndNode) {
+                mutableExisting.set(i, null);
+                return node;
+            }
+        }
+        return null;
     }
 
     private boolean canRemoveDroppedNode(Node node) {

@@ -17,6 +17,10 @@ public final class SelectionResolver {
     }
 
     public static SelectionContext resolve(DataSet dataSet) {
+        return resolve(dataSet, false);
+    }
+
+    public static SelectionContext resolve(DataSet dataSet, boolean adjustJunctionNodes) {
         Collection<Way> ways = dataSet.getSelectedWays();
         Collection<Node> nodes = dataSet.getSelectedNodes();
 
@@ -50,15 +54,19 @@ public final class SelectionResolver {
 
         List<Node> segmentNodes = new ArrayList<>(way.getNodes().subList(start, end + 1));
         Set<Node> fixedNodes = new LinkedHashSet<>();
-        fixedNodes.add(segmentNodes.get(0));
-        fixedNodes.add(segmentNodes.get(segmentNodes.size() - 1));
-        PluginLog.debug("Fixed node %d because it is the segment start anchor.", segmentNodes.get(0).getUniqueId());
-        PluginLog.debug("Fixed node %d because it is the segment end anchor.", segmentNodes.get(segmentNodes.size() - 1).getUniqueId());
+        if (!adjustJunctionNodes) {
+            fixedNodes.add(segmentNodes.get(0));
+            fixedNodes.add(segmentNodes.get(segmentNodes.size() - 1));
+            PluginLog.debug("Fixed node %d because it is the segment start anchor.", segmentNodes.get(0).getUniqueId());
+            PluginLog.debug("Fixed node %d because it is the segment end anchor.", segmentNodes.get(segmentNodes.size() - 1).getUniqueId());
+        } else {
+            PluginLog.verbose("Junction/end node adjustment is enabled; segment anchors may move.");
+        }
 
         for (int i = 1; i < segmentNodes.size() - 1; i++) {
             Node node = segmentNodes.get(i);
             long referringWays = node.referrers(Way.class).count();
-            if (referringWays > 1) {
+            if (!adjustJunctionNodes && referringWays > 1) {
                 fixedNodes.add(node);
                 PluginLog.debug("Fixed node %d because it is shared by %d ways.", node.getUniqueId(), referringWays);
             }

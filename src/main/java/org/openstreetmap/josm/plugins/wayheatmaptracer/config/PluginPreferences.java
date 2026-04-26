@@ -20,6 +20,9 @@ public final class PluginPreferences {
     private static final String ALIGNMENT_MODE = PREFIX + "alignmentMode";
     private static final String VERBOSE = PREFIX + "verbose";
     private static final String DEBUG = PREFIX + "debug";
+    private static final String MULTI_COLOR_DETECTION = PREFIX + "multiColorDetection";
+    private static final String ALLOW_UNDOWNLOADED_ALIGNMENT = PREFIX + "allowUndownloadedAlignment";
+    private static final String ADJUST_JUNCTION_NODES = PREFIX + "adjustJunctionNodes";
     private static final String SIMPLIFY_ENABLED = PREFIX + "simplifyEnabled";
     private static final String CROSS_SECTION_HALF_WIDTH = PREFIX + "crossSectionHalfWidthPx";
     private static final String CROSS_SECTION_STEP = PREFIX + "crossSectionStepPx";
@@ -45,6 +48,9 @@ public final class PluginPreferences {
             AlignmentMode.fromPreference(pref.get(ALIGNMENT_MODE, AlignmentMode.MOVE_EXISTING_NODES.name())),
             pref.getBoolean(VERBOSE, false),
             pref.getBoolean(DEBUG, false),
+            pref.getBoolean(MULTI_COLOR_DETECTION, false),
+            pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
+            pref.getBoolean(ADJUST_JUNCTION_NODES, false),
             pref.getBoolean(SIMPLIFY_ENABLED, false),
             pref.getInt(CROSS_SECTION_HALF_WIDTH, 18),
             pref.getInt(CROSS_SECTION_STEP, 4),
@@ -65,6 +71,9 @@ public final class PluginPreferences {
         Config.getPref().put(ALIGNMENT_MODE, config.alignmentMode().name());
         Config.getPref().putBoolean(VERBOSE, config.verbose());
         Config.getPref().putBoolean(DEBUG, config.debug());
+        Config.getPref().putBoolean(MULTI_COLOR_DETECTION, config.multiColorDetection());
+        Config.getPref().putBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, config.allowUndownloadedAlignment());
+        Config.getPref().putBoolean(ADJUST_JUNCTION_NODES, config.adjustJunctionNodes());
         Config.getPref().putBoolean(SIMPLIFY_ENABLED, config.simplifyEnabled());
         Config.getPref().putInt(CROSS_SECTION_HALF_WIDTH, config.crossSectionHalfWidthPx());
         Config.getPref().putInt(CROSS_SECTION_STEP, config.crossSectionStepPx());
@@ -95,6 +104,9 @@ public final class PluginPreferences {
             "",
             ".*(Heatmap|Strava).*",
             AlignmentMode.MOVE_EXISTING_NODES,
+            false,
+            false,
+            false,
             false,
             false,
             false,

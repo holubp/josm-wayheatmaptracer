@@ -73,8 +73,13 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
 
-            SelectionContext selection = SelectionResolver.resolve(dataSet);
-            requireDownloadedAreaCoverage(selection, dataSet);
+            ManagedHeatmapConfig config = PluginPreferences.load();
+            SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
+            if (!config.allowUndownloadedAlignment()) {
+                requireDownloadedAreaCoverage(selection, dataSet);
+            } else {
+                PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
+            }
             ImageryLayer imageryLayer = HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
@@ -87,8 +92,10 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
             AlignmentResult chosenResult = alignmentService.applyCandidate(result, chosen);
-            ManagedHeatmapConfig config = PluginPreferences.load();
-            requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
+            config = PluginPreferences.load();
+            if (!config.allowUndownloadedAlignment()) {
+                requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
+            }
 
             overlay.show(selection, chosenResult, chosen, PluginPreferences.isDebugEnabled());
             try {
@@ -169,6 +176,7 @@ public class AlignWayAction extends JosmAction {
         panel.add(new JLabel(tr("Mode: {0}", config.alignmentMode().displayName())), GBC.eol());
         panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
         panel.add(new JLabel(tr("Preview points: {0}", Integer.toString(result.previewPolyline().size()))), GBC.eol());
+        panel.add(new JLabel(tr("Junction/end nodes: {0}", config.adjustJunctionNodes() ? "adjustable" : "fixed")), GBC.eol());
         panel.add(new JLabel(tr("Simplification: {0}", config.simplifyEnabled() ? "enabled" : "disabled")), GBC.eol());
         if (config.alignmentMode() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES) {
             panel.add(new JLabel(tr("Movable nodes: {0}", Integer.toString(result.nodeMoves().size()))), GBC.eol());
@@ -186,16 +194,17 @@ public class AlignWayAction extends JosmAction {
     }
 
     private SegmentChangeEstimate estimateSegmentChanges(AlignmentResult result) {
-        int previewInterior = Math.max(0, result.previewPolyline().size() - 2);
+        int fixedAnchors = result.selection().fixedNodes().size();
+        int previewMutable = Math.max(0, result.previewPolyline().size() - fixedAnchors);
         int mutableExisting = 0;
-        for (int i = 1; i < result.selection().segmentNodes().size() - 1; i++) {
-            if (!result.selection().fixedNodes().contains(result.selection().segmentNodes().get(i))) {
+        for (org.openstreetmap.josm.data.osm.Node node : result.selection().segmentNodes()) {
+            if (!result.selection().fixedNodes().contains(node)) {
                 mutableExisting++;
             }
         }
-        int reused = Math.min(previewInterior, mutableExisting);
-        int added = Math.max(0, previewInterior - mutableExisting);
-        int removed = Math.max(0, mutableExisting - previewInterior);
+        int reused = Math.min(previewMutable, mutableExisting);
+        int added = Math.max(0, previewMutable - mutableExisting);
+        int removed = Math.max(0, mutableExisting - previewMutable);
         return new SegmentChangeEstimate(reused, added, removed);
     }
 

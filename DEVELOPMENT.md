@@ -44,20 +44,24 @@ Current scope:
 
 ## Core Runtime Flow
 
-1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage, and resolves the heatmap imagery layer.
+1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and resolves the heatmap imagery layer.
 2. `RenderedHeatmapSampler` renders the visible imagery layer into an oversampled raster and samples cross-sections perpendicular to the selected way.
-3. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by continuity and local intensity.
+3. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by continuity, curvature, and local intensity. When multi-color detection is enabled, the selected rendered layer is interpreted through all supported classifiers plus the internal `dual` classifier.
 4. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
-5. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced interior nodes.
+5. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
+
+`Select Longest Heatmap Segment` is a helper action for the alignment workflow. It selects the longest stretch of the selected way bounded by endpoints or nodes shared with another way, producing the way-plus-two-node selection expected by alignment.
 
 ## Guardrails
 
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.
 - Raster candidate points are tracked in oversampled screen space and must be divided by `RenderedHeatmapSampler.RASTER_SCALE` before converting back through `MapView`.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.
-- If simplification removes interior points in precise mode, dropped untagged/unreferenced nodes must be removed from the dataset to avoid leaving stray unconnected nodes behind.
+- Downloaded-area bypass and junction/endpoint movement are both opt-in settings. Keep defaults protective.
+- When junction/endpoint movement is enabled in precise mode, simplification is ignored so selected or shared nodes are not simplified out of the way.
+- If simplification or junction movement removes existing points in precise mode, dropped untagged/unreferenced nodes must be removed from the dataset to avoid leaving stray unconnected nodes behind.
 
 ## Palette Notes
 
@@ -65,5 +69,6 @@ Current scope:
 - `bluered` and `gray` favor the warm or violet center over cooler or pale shoulders.
 - `blue` should prefer the bright cyan/light-blue core rather than the darker blue edges.
 - `purple` should prefer brighter pixels over darker ones.
+- `dual` is an internal detection-only classifier used by multi-color detection; it should combine warm/cool dual-color evidence with bright high-frequency center evidence.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.

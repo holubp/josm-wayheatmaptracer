@@ -20,6 +20,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 public final class AlignmentService {
+    private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray", "dual");
+    private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
+
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
     private final PathOptimizer optimizer = new PathOptimizer();
@@ -42,10 +45,7 @@ public final class AlignmentService {
         long t1 = System.nanoTime();
 
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
-        List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-            sampler.sampleProfiles(raster, mapView, sourcePolyline, config.crossSectionHalfWidthPx(), config.crossSectionStepPx(), config.color());
-
-        List<CenterlineCandidate> candidates = ridgeTracker.track(profiles);
+        List<CenterlineCandidate> candidates = detectCandidates(raster, mapView, sourcePolyline, config);
         if (candidates.isEmpty()) {
             throw new IllegalStateException("No stable ridge candidate was detected in the sampled heatmap.");
         }
@@ -78,6 +78,46 @@ public final class AlignmentService {
         }
 
         return new AlignmentResult(selection, raster, candidates, sourcePolyline, preview, nodeMoves, diagnostics);
+    }
+
+    private List<CenterlineCandidate> detectCandidates(
+        BufferedImage raster,
+        MapView mapView,
+        List<EastNorth> sourcePolyline,
+        ManagedHeatmapConfig config
+    ) {
+        List<String> colorModes = detectionColorModes(config);
+        List<CenterlineCandidate> candidates = new ArrayList<>();
+        for (String colorMode : colorModes) {
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
+                sampler.sampleProfiles(raster, mapView, sourcePolyline, config.crossSectionHalfWidthPx(), config.crossSectionStepPx(), colorMode);
+            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            for (CenterlineCandidate candidate : colorCandidates) {
+                candidates.add(candidate.withId(colorMode + "/" + candidate.id()));
+            }
+            PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
+        }
+        return candidates.stream()
+            .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+            .toList();
+    }
+
+    private List<String> detectionColorModes(ManagedHeatmapConfig config) {
+        String selected = config.color() == null || config.color().isBlank()
+            ? "hot"
+            : config.color().trim().toLowerCase(java.util.Locale.ROOT);
+        if (!config.multiColorDetection()) {
+            return List.of(selected);
+        }
+
+        List<String> modes = new ArrayList<>();
+        modes.add(selected);
+        for (String mode : ALL_COLOR_MODES) {
+            if (!modes.contains(mode)) {
+                modes.add(mode);
+            }
+        }
+        return modes;
     }
 
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate) {
@@ -135,7 +175,7 @@ public final class AlignmentService {
         }
         List<Node> segmentNodes = selection.segmentNodes();
 
-        for (int i = 1; i < segmentNodes.size() - 1; i++) {
+        for (int i = 0; i < segmentNodes.size(); i++) {
             Node node = segmentNodes.get(i);
             if (selection.fixedNodes().contains(node)) {
                 continue;
@@ -165,7 +205,9 @@ public final class AlignmentService {
         } else {
             working = candidateCenterline;
             PluginLog.verbose("Precise-shape mode rebuilds the segment from the traced centerline.");
-            if (config.simplifyEnabled()) {
+            if (config.simplifyEnabled() && config.adjustJunctionNodes()) {
+                PluginLog.verbose("Simplification is ignored while junction/end node adjustment is enabled.");
+            } else if (config.simplifyEnabled()) {
                 List<EastNorth> simplified = postProcessor.simplify(working, config.simplifyTolerancePx());
                 PluginLog.verbose("Simplification enabled: %d -> %d points with tolerance %.2f.",
                     working.size(), simplified.size(), config.simplifyTolerancePx());
@@ -174,10 +216,11 @@ public final class AlignmentService {
                 PluginLog.verbose("Simplification disabled; using raw traced centerline.");
             }
         }
-        return switch (config.alignmentMode()) {
+        List<EastNorth> preview = switch (config.alignmentMode()) {
             case MOVE_EXISTING_NODES -> moveExistingNodesPreview(selection, sourcePolyline, working);
             case PRECISE_SHAPE -> preciseShapePreview(selection, sourcePolyline, working);
         };
+        return guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
     }
 
     private List<EastNorth> moveExistingNodesPreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {
@@ -209,6 +252,10 @@ public final class AlignmentService {
         List<Integer> fixedIndices = fixedIndices(selection);
         List<Double> sourceFractions = fractionsForSegment(sourcePolyline);
         List<Double> workingFractions = fractionsForSegment(working);
+        if (selection.fixedNodes().isEmpty()) {
+            PluginLog.verbose("Precise-shape preview has no fixed anchors; using traced centerline endpoints.");
+            return new ArrayList<>(working);
+        }
         List<EastNorth> result = new ArrayList<>();
 
         int intervalCount = fixedIndices.size() - 1;
@@ -236,12 +283,96 @@ public final class AlignmentService {
         return result;
     }
 
-    private void applyFixedNodeAnchors(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {
-        for (int i = 0; i < selection.segmentNodes().size(); i++) {
-            if (selection.fixedNodes().contains(selection.segmentNodes().get(i))) {
-                preview.set(i, sourcePolyline.get(i));
+    private List<EastNorth> guardFixedAnchorTurns(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> preview,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode mode
+    ) {
+        if (preview.size() < 3 || selection.fixedNodes().isEmpty()) {
+            return preview;
+        }
+        return switch (mode) {
+            case MOVE_EXISTING_NODES -> guardMoveModeFixedTurns(selection, sourcePolyline, preview);
+            case PRECISE_SHAPE -> guardPreciseModeFixedTurns(selection, sourcePolyline, preview);
+        };
+    }
+
+    private List<EastNorth> guardMoveModeFixedTurns(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {
+        List<EastNorth> guarded = new ArrayList<>(preview);
+        List<Node> nodes = selection.segmentNodes();
+        for (int i = 1; i < nodes.size() - 1; i++) {
+            if (!selection.fixedNodes().contains(nodes.get(i))) {
+                continue;
+            }
+            double turn = turningAngleDegrees(guarded.get(i - 1), guarded.get(i), guarded.get(i + 1));
+            if (turn < MAX_UNSUPPORTED_FIXED_TURN_DEGREES) {
+                continue;
+            }
+            if (!selection.fixedNodes().contains(nodes.get(i - 1))) {
+                guarded.set(i - 1, sourcePolyline.get(i - 1));
+            }
+            if (!selection.fixedNodes().contains(nodes.get(i + 1))) {
+                guarded.set(i + 1, sourcePolyline.get(i + 1));
+            }
+            PluginLog.debug("Guarded fixed-node turn at segment index %d from %.1f degrees by keeping adjacent movable nodes closer to source.",
+                i, turn);
+        }
+        return guarded;
+    }
+
+    private List<EastNorth> guardPreciseModeFixedTurns(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {
+        List<EastNorth> guarded = new ArrayList<>(preview);
+        for (int fixedIndex : fixedIndices(selection)) {
+            EastNorth anchor = sourcePolyline.get(fixedIndex);
+            int previewIndex = findMatchingPoint(guarded, anchor);
+            if (previewIndex <= 0 || previewIndex >= guarded.size() - 1) {
+                continue;
+            }
+            while (guarded.size() >= 3 && previewIndex > 0 && previewIndex < guarded.size() - 1) {
+                double turn = turningAngleDegrees(guarded.get(previewIndex - 1), guarded.get(previewIndex), guarded.get(previewIndex + 1));
+                if (turn < MAX_UNSUPPORTED_FIXED_TURN_DEGREES) {
+                    break;
+                }
+                double leftDistance = guarded.get(previewIndex - 1).distance(anchor);
+                double rightDistance = guarded.get(previewIndex + 1).distance(anchor);
+                boolean canRemoveLeft = previewIndex - 1 > 0
+                    && !isFixedAnchorPoint(selection, sourcePolyline, guarded.get(previewIndex - 1));
+                boolean canRemoveRight = previewIndex + 1 < guarded.size() - 1
+                    && !isFixedAnchorPoint(selection, sourcePolyline, guarded.get(previewIndex + 1));
+                if (leftDistance <= rightDistance && canRemoveLeft) {
+                    guarded.remove(previewIndex - 1);
+                    previewIndex--;
+                } else if (canRemoveRight) {
+                    guarded.remove(previewIndex + 1);
+                } else if (canRemoveLeft) {
+                    guarded.remove(previewIndex - 1);
+                    previewIndex--;
+                } else {
+                    break;
+                }
+                PluginLog.debug("Removed a near-anchor precise preview point to avoid an unsupported %.1f degree fixed-node turn.", turn);
             }
         }
+        return guarded;
+    }
+
+    private boolean isFixedAnchorPoint(SelectionContext selection, List<EastNorth> sourcePolyline, EastNorth point) {
+        for (int fixedIndex : fixedIndices(selection)) {
+            if (sourcePolyline.get(fixedIndex).distance(point) < 0.01) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int findMatchingPoint(List<EastNorth> points, EastNorth target) {
+        for (int i = 0; i < points.size(); i++) {
+            if (points.get(i).distance(target) < 0.01) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private List<Integer> fixedIndices(SelectionContext selection) {
@@ -283,17 +414,6 @@ public final class AlignmentService {
         return fractions;
     }
 
-    private List<EastNorth> sampleBetweenFractions(List<EastNorth> polyline, double startFraction, double endFraction, int count) {
-        List<Double> fractions = fractionsForSegment(polyline);
-        List<EastNorth> samples = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            double local = count == 1 ? 0.0 : i / (double) (count - 1);
-            double targetFraction = startFraction + (endFraction - startFraction) * local;
-            samples.add(interpolateAtFraction(polyline, fractions, targetFraction));
-        }
-        return samples;
-    }
-
     private EastNorth interpolateAtFraction(List<EastNorth> polyline, List<Double> fractions, double targetFraction) {
         if (targetFraction <= 0.0) {
             return polyline.get(0);
@@ -316,6 +436,21 @@ public final class AlignmentService {
             }
         }
         return polyline.get(polyline.size() - 1);
+    }
+
+    private double turningAngleDegrees(EastNorth previous, EastNorth current, EastNorth next) {
+        double ax = current.east() - previous.east();
+        double ay = current.north() - previous.north();
+        double bx = next.east() - current.east();
+        double by = next.north() - current.north();
+        double aNorm = Math.hypot(ax, ay);
+        double bNorm = Math.hypot(bx, by);
+        if (aNorm == 0.0 || bNorm == 0.0) {
+            return 0.0;
+        }
+        double cosine = (ax * bx + ay * by) / (aNorm * bNorm);
+        cosine = Math.max(-1.0, Math.min(1.0, cosine));
+        return Math.toDegrees(Math.acos(cosine));
     }
 
     private long millisBetween(long startNs, long endNs) {

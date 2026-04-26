@@ -63,6 +63,24 @@ class RidgeTrackerTest {
             "Tracker should not stay biased to the zero-offset seed after initial no-signal profiles");
     }
 
+    @Test
+    void rejectsAlternatingHighIntensityNoise() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profile(0, 0, 0.78),
+            profile(10, 0, 0.35, 12, 1.00),
+            profile(20, 0, 0.35, -12, 1.00),
+            profile(30, 0, 0.35, 12, 1.00),
+            profile(40, 0, 0.78)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        assertTrue(candidates.get(0).offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0) <= 4.0,
+            "Tracker should require sustained support before accepting a zig-zagging ridge");
+    }
+
     private RenderedHeatmapSampler.CrossSectionProfile profile(double x, double leftOffset, double leftIntensity, double rightOffset, double rightIntensity) {
         return new RenderedHeatmapSampler.CrossSectionProfile(
             new EastNorth(x, 0),

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -90,6 +91,34 @@ class HeatmapFixtureArchiveTest {
         double purpleDark = RenderedHeatmapSampler.colorIntensity(85, 40, 110, "purple");
         double purpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple");
         assertTrue(purpleBright > purpleDark, "purple should prioritize brighter pixels");
+
+        double dualWarm = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "dual");
+        double dualBright = RenderedHeatmapSampler.colorIntensity(245, 245, 245, "dual");
+        assertTrue(dualWarm > 0.4, "dual classifier should preserve warm dual-color center evidence");
+        assertTrue(dualBright > 0.6, "dual classifier should preserve bright high-frequency center evidence");
+    }
+
+    @Test
+    void pairedShouldersExposeCenterPeak() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            image.setRGB(x, 14, 0xFFFFFFFF);
+            image.setRGB(x, 26, 0xFFFFFFFF);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "hot",
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 1.0)),
+            "Balanced heatmap shoulders should produce a center candidate for road middle detection");
     }
 
     private static BufferedImage readImage(ZipFile zip, String entryName) throws Exception {

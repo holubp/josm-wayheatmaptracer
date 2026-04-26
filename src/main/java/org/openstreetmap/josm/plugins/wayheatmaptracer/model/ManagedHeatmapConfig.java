@@ -12,6 +12,9 @@ public record ManagedHeatmapConfig(
     AlignmentMode alignmentMode,
     boolean verbose,
     boolean debug,
+    boolean multiColorDetection,
+    boolean allowUndownloadedAlignment,
+    boolean adjustJunctionNodes,
     boolean simplifyEnabled,
     int crossSectionHalfWidthPx,
     int crossSectionStepPx,
@@ -38,6 +41,9 @@ public record ManagedHeatmapConfig(
             + "\"alignmentMode\":\"" + alignmentMode.name() + "\","
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
+            + "\"multiColorDetection\":" + multiColorDetection + ','
+            + "\"allowUndownloadedAlignment\":" + allowUndownloadedAlignment + ','
+            + "\"adjustJunctionNodes\":" + adjustJunctionNodes + ','
             + "\"simplifyEnabled\":" + simplifyEnabled + ','
             + "\"crossSectionHalfWidthPx\":" + crossSectionHalfWidthPx + ','
             + "\"crossSectionStepPx\":" + crossSectionStepPx + ','

@@ -12,6 +12,9 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
+- Optionally interpret the selected heatmap through all supported color classifiers during detection while keeping only the selected color visible
+- Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
+- Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
 - Resolve the heatmap layer by managed layer, exact selected layer title, or regex
 - Align one selected way, or one way plus two selected nodes on that way
 - Offer two alignment modes:
@@ -19,6 +22,7 @@ The current implementation is designed for private development:
   `Precise Shape` rebuilds the selected segment from the traced heatmap centerline, reusing existing nodes where possible and adding or removing interior nodes as needed
 - Keep segment endpoints fixed
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
+- Select the longest segment of a selected way bounded by endpoints or junction nodes
 - Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
 - Detect multiple nearby ridge candidates and allow the user to pick one
@@ -57,13 +61,14 @@ build/libs/wayheatmaptracer-<version>.jar
 2. Copy the jar to the JOSM machine.
 3. Install it into the local JOSM plugins directory.
 4. Start JOSM, then open `More tools` and configure the heatmap layer access values.
-5. In the settings dialog, enter the exact cookie values named `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`.
+5. In the settings dialog, enter the exact cookie values named `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`, or use `Paste cookie header...` to split a copied cookie header into those fields.
 6. Select the desired Strava activity and color for the managed layer.
 7. Choose either `Move Existing Nodes` or `Precise Shape`. Enable simplification only when testing `Precise Shape`.
-8. Test `Align Way to Heatmap`.
-9. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.
-10. Export diagnostics from the plugin menu.
-11. Run the debug-bundle helper script on the JOSM machine and transfer the resulting archive back.
+8. Use `Select Longest Heatmap Segment` after selecting a way when you want the plugin to choose the longest endpoint/junction-bounded segment before aligning.
+9. Test `Align Way to Heatmap`.
+10. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.
+11. Export diagnostics from the plugin menu.
+12. Run the debug-bundle helper script on the JOSM machine and transfer the resulting archive back.
 
 Helper scripts:
 - `scripts/install-private-plugin.sh`

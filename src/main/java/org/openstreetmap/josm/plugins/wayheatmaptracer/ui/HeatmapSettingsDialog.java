@@ -5,11 +5,14 @@ import static org.openstreetmap.josm.tools.I18n.tr;
 import java.awt.GridBagLayout;
 import java.awt.Window;
 
+import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.JTextField;
 
 import org.openstreetmap.josm.gui.MainApplication;
@@ -17,6 +20,8 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieParser;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieValues;
 import org.openstreetmap.josm.tools.GBC;
 
 public final class HeatmapSettingsDialog {
@@ -34,6 +39,9 @@ public final class HeatmapSettingsDialog {
     private final JTextField regex = new JTextField(36);
     private final JCheckBox verbose = new JCheckBox(tr("Verbose logging"));
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
+    private final JCheckBox multiColorDetection = new JCheckBox(tr("Use all color schemes for detection"));
+    private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
+    private final JCheckBox adjustJunctionNodes = new JCheckBox(tr("Adjust junction and endpoint nodes"));
     private final JCheckBox simplify = new JCheckBox(tr("Enable simplification"));
     private final JTextField halfWidth = new JTextField(8);
     private final JTextField step = new JTextField(8);
@@ -53,6 +61,9 @@ public final class HeatmapSettingsDialog {
         alignmentMode.setSelectedItem(config.alignmentMode());
         verbose.setSelected(config.verbose());
         debug.setSelected(config.debug());
+        multiColorDetection.setSelected(config.multiColorDetection());
+        allowUndownloadedAlignment.setSelected(config.allowUndownloadedAlignment());
+        adjustJunctionNodes.setSelected(config.adjustJunctionNodes());
         simplify.setSelected(config.simplifyEnabled());
         halfWidth.setText(Integer.toString(config.crossSectionHalfWidthPx()));
         step.setText(Integer.toString(config.crossSectionStepPx()));
@@ -69,6 +80,9 @@ public final class HeatmapSettingsDialog {
 
     public boolean showDialog() {
         JPanel panel = new JPanel(new GridBagLayout());
+        JButton pasteCookies = new JButton(tr("Paste cookie header..."));
+        pasteCookies.addActionListener(event -> showCookiePasteDialog());
+        panel.add(pasteCookies, GBC.eol().anchor(GBC.WEST));
         panel.add(new JLabel(tr("CloudFront-Key-Pair-Id")), GBC.std());
         panel.add(keyPairId, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("CloudFront-Policy")), GBC.std());
@@ -95,6 +109,9 @@ public final class HeatmapSettingsDialog {
         panel.add(tolerance, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(verbose, GBC.eol());
         panel.add(debug, GBC.eol());
+        panel.add(multiColorDetection, GBC.eol());
+        panel.add(allowUndownloadedAlignment, GBC.eol());
+        panel.add(adjustJunctionNodes, GBC.eol());
         panel.add(simplify, GBC.eol());
 
         int answer = JOptionPane.showConfirmDialog(
@@ -120,12 +137,41 @@ public final class HeatmapSettingsDialog {
             (AlignmentMode) alignmentMode.getSelectedItem(),
             verbose.isSelected(),
             debug.isSelected(),
+            multiColorDetection.isSelected(),
+            allowUndownloadedAlignment.isSelected(),
+            adjustJunctionNodes.isSelected(),
             simplify.isSelected(),
             parseInt(halfWidth.getText(), 18),
             parseInt(step.getText(), 4),
             parseDouble(tolerance.getText(), 3.0)
         ));
         return true;
+    }
+
+    private void showCookiePasteDialog() {
+        JTextArea pasted = new JTextArea(6, 54);
+        pasted.setLineWrap(true);
+        pasted.setWrapStyleWord(true);
+        int answer = JOptionPane.showConfirmDialog(
+            parent,
+            new JScrollPane(pasted),
+            tr("Paste Strava Cookie Header"),
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.PLAIN_MESSAGE
+        );
+        if (answer != JOptionPane.OK_OPTION) {
+            return;
+        }
+
+        try {
+            StravaCookieValues values = StravaCookieParser.parse(pasted.getText());
+            keyPairId.setText(values.keyPairId());
+            policy.setText(values.policy());
+            signature.setText(values.signature());
+            session.setText(values.sessionToken());
+        } catch (IllegalArgumentException ex) {
+            JOptionPane.showMessageDialog(parent, ex.getMessage(), tr("WayHeatmapTracer"), JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private int parseInt(String value, int fallback) {

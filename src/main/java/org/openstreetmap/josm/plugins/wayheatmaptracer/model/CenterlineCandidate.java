@@ -9,6 +9,10 @@ public record CenterlineCandidate(
     List<Point2D.Double> screenPoints,
     List<Double> offsetsPx
 ) {
+    public CenterlineCandidate withId(String newId) {
+        return new CenterlineCandidate(newId, score, screenPoints, offsetsPx);
+    }
+
     @Override
     public String toString() {
         return id + " (" + String.format("%.2f", score) + ")";

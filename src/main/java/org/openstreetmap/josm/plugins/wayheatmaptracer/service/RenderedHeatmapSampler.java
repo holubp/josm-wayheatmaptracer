@@ -152,7 +152,37 @@ public final class RenderedHeatmapSampler {
             }
             peaks.add(buildBandPeak(offsets, smoothed, strongest, strongest, strongest));
         }
-        return mergeClosePeaks(peaks, estimateSampleStep(offsets));
+        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
+        return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
+    }
+
+    private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks, double sampleStep) {
+        if (peaks.size() < 2) {
+            return peaks;
+        }
+        List<CrossSectionPeak> augmented = new ArrayList<>(peaks);
+        for (int i = 0; i < peaks.size(); i++) {
+            CrossSectionPeak left = peaks.get(i);
+            if (left.offsetPx() >= 0.0) {
+                continue;
+            }
+            for (int j = i + 1; j < peaks.size(); j++) {
+                CrossSectionPeak right = peaks.get(j);
+                if (right.offsetPx() <= 0.0) {
+                    continue;
+                }
+                double gap = right.offsetPx() - left.offsetPx();
+                double weaker = Math.min(left.intensity(), right.intensity());
+                double stronger = Math.max(left.intensity(), right.intensity());
+                boolean balanced = stronger == 0.0 || weaker / stronger >= 0.55;
+                if (balanced && weaker >= 0.32 && gap >= sampleStep * 1.5 && gap <= sampleStep * 6.0) {
+                    double center = (left.offsetPx() * right.intensity() + right.offsetPx() * left.intensity())
+                        / (left.intensity() + right.intensity());
+                    augmented.add(new CrossSectionPeak(center, weaker * 0.93));
+                }
+            }
+        }
+        return mergeClosePeaks(augmented, sampleStep);
     }
 
     private CrossSectionPeak buildBandPeak(List<OffsetSample> offsets, List<OffsetSample> smoothed, int peakIndex, int start, int end) {
@@ -253,6 +283,7 @@ public final class RenderedHeatmapSampler {
             case "gray" -> grayIntensity(hue, saturation, luminance, value);
             case "purple" -> purpleIntensity(hue, saturation, luminance, value);
             case "blue" -> blueIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "dual" -> dualColorIntensity(red, green, blue, hue, saturation, luminance, value);
             case "hot" -> 0.85 * luminance + 0.15 * value;
             default -> 0.85 * luminance + 0.15 * value;
         };
@@ -287,6 +318,16 @@ public final class RenderedHeatmapSampler {
     private static double purpleIntensity(double hue, double saturation, double luminance, double value) {
         double affinity = Math.max(hueAffinity(hue, 285.0, 35.0), hueAffinity(hue, 315.0, 35.0));
         return affinity * (0.55 + 0.45 * saturation) * value * (0.60 + 0.40 * luminance);
+    }
+
+    private static double dualColorIntensity(int red, int green, int blue, double hue, double saturation, double luminance, double value) {
+        double warmCool = Math.max(
+            blueRedIntensity(red, blue, hue, saturation, luminance, value),
+            purpleIntensity(hue, saturation, luminance, value)
+        );
+        double brightCenter = (0.85 * luminance + 0.15 * value) * (0.65 + 0.35 * (1.0 - saturation));
+        double blueCenter = blueIntensity(red, green, blue, hue, saturation, luminance, value) * 0.92;
+        return Math.max(warmCool, Math.max(brightCenter, blueCenter));
     }
 
     private static double hueAffinity(double hue, double target, double width) {

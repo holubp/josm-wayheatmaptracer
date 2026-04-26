@@ -19,42 +19,21 @@ public final class RidgeTracker {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         int candidateIndex = 1;
         for (double seed : seeds) {
-            double previous = seed;
-            double previousDelta = 0.0;
-            double score = 0.0;
-            List<RenderedHeatmapSampler.CrossSectionProfile> chosenProfiles = new ArrayList<>();
-            List<Double> offsets = new ArrayList<>();
-            List<Double> intensities = new ArrayList<>();
-
-            for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-                final double referenceOffset = previous;
-                final double referenceDelta = previousDelta;
-                RenderedHeatmapSampler.CrossSectionPeak bestPeak = profile.peaks().stream()
-                    .max(Comparator.comparingDouble(peak -> peakScore(peak, referenceOffset, referenceDelta)))
-                    .orElse(null);
-
-                double offset = bestPeak != null ? bestPeak.offsetPx() : previous;
-                double intensity = bestPeak != null ? bestPeak.intensity() : 0.0;
-                double delta = offset - previous;
-                chosenProfiles.add(profile);
-                offsets.add(offset);
-                intensities.add(intensity);
-                score += intensity - Math.abs(delta) * 0.020 - Math.abs(delta - previousDelta) * 0.010;
-                previous = offset;
-                previousDelta = delta;
-            }
+            State state = bestPathForSeed(profiles, seed);
+            List<Double> offsets = state.offsets();
+            List<Double> intensities = state.intensities();
 
             List<Double> smoothedOffsets = smoothOffsets(offsets, intensities);
             List<Point2D.Double> points = new ArrayList<>();
-            for (int i = 0; i < chosenProfiles.size(); i++) {
-                RenderedHeatmapSampler.CrossSectionProfile profile = chosenProfiles.get(i);
+            for (int i = 0; i < profiles.size(); i++) {
+                RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
                 double offset = smoothedOffsets.get(i);
                 points.add(new Point2D.Double(
                     profile.anchorScreen().x + profile.normalScreen().x * offset,
                     profile.anchorScreen().y + profile.normalScreen().y * offset
                 ));
             }
-            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, score, points, offsets));
+            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, state.score(), points, smoothedOffsets));
         }
 
         return deduplicate(candidates).stream()
@@ -62,11 +41,53 @@ public final class RidgeTracker {
             .toList();
     }
 
-    private double peakScore(RenderedHeatmapSampler.CrossSectionPeak peak, double referenceOffset, double referenceDelta) {
-        double delta = peak.offsetPx() - referenceOffset;
-        return peak.intensity() * 2.5
-            - Math.abs(delta) * 0.16
-            - Math.abs(delta - referenceDelta) * 0.08;
+    private State bestPathForSeed(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double seed) {
+        List<State> states = List.of(new State(seed, 0.0, 0.0, List.of(), List.of()));
+        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
+            if (profile.peaks().isEmpty()) {
+                List<State> nextStates = new ArrayList<>();
+                for (State previous : states) {
+                    nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0)));
+                }
+                states = nextStates;
+                continue;
+            }
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profile.peaks();
+            List<State> nextStates = new ArrayList<>();
+            for (RenderedHeatmapSampler.CrossSectionPeak peak : peaks) {
+                State best = null;
+                for (State previous : states) {
+                    State candidate = append(previous, peak);
+                    if (best == null || candidate.score() > best.score()) {
+                        best = candidate;
+                    }
+                }
+                nextStates.add(best);
+            }
+            states = nextStates;
+        }
+        return states.stream()
+            .max(Comparator.comparingDouble(State::score))
+            .orElseThrow(() -> new IllegalStateException("No ridge path state was produced."));
+    }
+
+    private State append(State previous, RenderedHeatmapSampler.CrossSectionPeak peak) {
+        double delta = peak.offsetPx() - previous.offset();
+        double acceleration = delta - previous.delta();
+        double evidence = peak.intensity() * 2.5;
+        double continuityPenalty = Math.abs(delta) * 0.16;
+        double curvaturePenalty = Math.abs(acceleration) * 0.12;
+        List<Double> offsets = new ArrayList<>(previous.offsets());
+        List<Double> intensities = new ArrayList<>(previous.intensities());
+        offsets.add(peak.offsetPx());
+        intensities.add(peak.intensity());
+        return new State(
+            peak.offsetPx(),
+            delta,
+            previous.score() + evidence - continuityPenalty - curvaturePenalty,
+            offsets,
+            intensities
+        );
     }
 
     private List<Double> collectSeedOffsets(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
@@ -138,5 +159,14 @@ public final class RidgeTracker {
             current = next;
         }
         return current;
+    }
+
+    private record State(
+        double offset,
+        double delta,
+        double score,
+        List<Double> offsets,
+        List<Double> intensities
+    ) {
     }
 }
