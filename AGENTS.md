@@ -11,3 +11,4 @@ Repository-specific guardrails for future changes:
 - Palette changes must come with regression coverage in `HeatmapFixtureArchiveTest` or `RidgeTrackerTest`, especially for `blue`, `gray`, and internal multi-color/dual-color detection, which are easy modes to mis-rank.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.
 - `acceptable-limits.osm` is a regression/visualization artifact only. Do not reuse its envelope logic inside the live alignment workflow.
+- Release versioning must match the scope of change. Stay on `0.x.x` until the maintainer declares the plugin suitable for broader use. After `1.0.0`, use `1.x.x` for major functionality or architecture changes, `1.1.x`-style minor releases for smaller features and improvements, and `1.1.1`-style patch releases only for bug fixes.

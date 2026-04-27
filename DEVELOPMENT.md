@@ -10,6 +10,16 @@ sh gradlew test build
 
 The built plugin jar is written to `build/libs/wayheatmaptracer-<version>.jar`.
 
+## Release Versioning
+
+Keep releases on `0.x.x` until the maintainer explicitly says the plugin is suitable for broader use by others. Do not use a patch release for changes that add user-visible features, settings, workflow changes, or architecture changes.
+
+After the first broader-use release:
+
+- `1.x.x` releases are for major functionality or architecture changes.
+- `1.1.x`-style minor releases are for smaller new features and improvements.
+- `1.1.1`-style patch releases are only for bug fixes.
+
 ## Fixture-Based Regression Testing
 
 The repository now supports an offline regression harness driven by a fixture archive named `wayheatmaptracer-testing.zip` in repo root.
