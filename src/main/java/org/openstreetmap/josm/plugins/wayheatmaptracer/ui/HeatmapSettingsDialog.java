@@ -40,6 +40,7 @@ public final class HeatmapSettingsDialog {
     private final JCheckBox verbose = new JCheckBox(tr("Verbose logging"));
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
     private final JCheckBox multiColorDetection = new JCheckBox(tr("Use all color schemes for detection"));
+    private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
     private final JCheckBox adjustJunctionNodes = new JCheckBox(tr("Adjust junction and endpoint nodes"));
     private final JCheckBox simplify = new JCheckBox(tr("Enable simplification"));
@@ -62,6 +63,7 @@ public final class HeatmapSettingsDialog {
         verbose.setSelected(config.verbose());
         debug.setSelected(config.debug());
         multiColorDetection.setSelected(config.multiColorDetection());
+        parallelWayAwareness.setSelected(config.parallelWayAwareness());
         allowUndownloadedAlignment.setSelected(config.allowUndownloadedAlignment());
         adjustJunctionNodes.setSelected(config.adjustJunctionNodes());
         simplify.setSelected(config.simplifyEnabled());
@@ -110,6 +112,7 @@ public final class HeatmapSettingsDialog {
         panel.add(verbose, GBC.eol());
         panel.add(debug, GBC.eol());
         panel.add(multiColorDetection, GBC.eol());
+        panel.add(parallelWayAwareness, GBC.eol());
         panel.add(allowUndownloadedAlignment, GBC.eol());
         panel.add(adjustJunctionNodes, GBC.eol());
         panel.add(simplify, GBC.eol());
@@ -138,6 +141,7 @@ public final class HeatmapSettingsDialog {
             verbose.isSelected(),
             debug.isSelected(),
             multiColorDetection.isSelected(),
+            parallelWayAwareness.isSelected(),
             allowUndownloadedAlignment.isSelected(),
             adjustJunctionNodes.isSelected(),
             simplify.isSelected(),

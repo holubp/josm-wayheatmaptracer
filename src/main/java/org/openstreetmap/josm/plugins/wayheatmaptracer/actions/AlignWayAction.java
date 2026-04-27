@@ -26,6 +26,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -111,13 +112,14 @@ public class AlignWayAction extends JosmAction {
                     return;
                 }
 
-                if (config.alignmentMode() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES
+                AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(selection, config);
+                if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES
                     && chosenResult.nodeMoves().isEmpty()) {
                     showError(tr("No movable interior nodes were found in the selected segment."));
                     return;
                 }
 
-                if (config.alignmentMode() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES) {
+                if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
                     PluginLog.verbose("Applying move-existing-nodes alignment for candidate %s with %d node moves.", chosen.id(), chosenResult.nodeMoves().size());
                     UndoRedoHandler.getInstance().add(new MoveNodesCommand(
                         dataSet,
@@ -173,12 +175,16 @@ public class AlignWayAction extends JosmAction {
 
     private JPanel buildSummaryPanel(AlignmentResult result, CenterlineCandidate chosen, ManagedHeatmapConfig config) {
         JPanel panel = new JPanel(new java.awt.GridBagLayout());
-        panel.add(new JLabel(tr("Mode: {0}", config.alignmentMode().displayName())), GBC.eol());
+        AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(result.selection(), config);
+        String modeLabel = effectiveMode == config.alignmentMode()
+            ? config.alignmentMode().displayName()
+            : tr("{0} (automatic for rough sketch)", effectiveMode.displayName());
+        panel.add(new JLabel(tr("Mode: {0}", modeLabel)), GBC.eol());
         panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
         panel.add(new JLabel(tr("Preview points: {0}", Integer.toString(result.previewPolyline().size()))), GBC.eol());
         panel.add(new JLabel(tr("Junction/end nodes: {0}", config.adjustJunctionNodes() ? "adjustable" : "fixed")), GBC.eol());
         panel.add(new JLabel(tr("Simplification: {0}", config.simplifyEnabled() ? "enabled" : "disabled")), GBC.eol());
-        if (config.alignmentMode() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES) {
+        if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
             panel.add(new JLabel(tr("Movable nodes: {0}", Integer.toString(result.nodeMoves().size()))), GBC.eol());
         } else {
             SegmentChangeEstimate estimate = estimateSegmentChanges(result);

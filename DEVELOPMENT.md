@@ -55,12 +55,16 @@ Current scope:
 ## Core Runtime Flow
 
 1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and resolves the heatmap imagery layer.
-2. `RenderedHeatmapSampler` renders the visible imagery layer into an oversampled raster and samples cross-sections perpendicular to the selected way.
-3. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by continuity, curvature, and local intensity. When multi-color detection is enabled, the selected rendered layer is interpreted through all supported classifiers plus the internal `dual` classifier.
-4. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
+2. `RenderedHeatmapSampler` renders the visible imagery layer into an oversampled raster and samples cross-sections perpendicular to the selected way or rough sketch. No-signal profiles stay empty so the tracker can bridge gaps using later coherent ridge evidence instead of snapping to the source axis.
+3. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles.
+4. `AlignmentService` can run a small number of internal refinement passes using the traced ridge as the next sampling axis. A refinement is accepted only when the objective score improves and high-frequency oscillation does not increase.
+5. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Alternatives remain visible in the candidate chooser.
+6. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
-5. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
+7. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
+
+Full-way selections with 2-5 nodes are treated as sketch-like input and use precise-shape output automatically, even if the saved alignment mode is `Move Existing Nodes`. Short selected segments of longer existing ways keep the configured alignment mode.
 
 `Select Longest Heatmap Segment` is a helper action for the alignment workflow. It selects the longest stretch of the selected way bounded by endpoints or nodes shared with another way, producing the way-plus-two-node selection expected by alignment.
 
@@ -75,10 +79,11 @@ Current scope:
 
 ## Palette Notes
 
-- `hot` favors the bright center of the band over saturated shoulders.
-- `bluered` and `gray` favor the warm or violet center over cooler or pale shoulders.
-- `blue` should prefer the bright cyan/light-blue core rather than the darker blue edges.
-- `purple` should prefer brighter pixels over darker ones.
-- `dual` is an internal detection-only classifier used by multi-color detection; it should combine warm/cool dual-color evidence with bright high-frequency center evidence.
+- `hot` is a single-ramp brightness scheme: white/yellow center > orange > red/dark red.
+- `blue` is a single-ramp blue/cyan scheme: white or light cyan/blue core > medium cyan/blue > dark saturated blue shoulder.
+- `purple` is a single-ramp purple/magenta scheme: bright purple/magenta core > medium purple > dark purple.
+- `bluered` is a dual-color semantic scheme: red/magenta high-activity center > purple transition > blue/cyan lower-activity shoulder. Hue and saturation must dominate raw blue/cyan vividness.
+- `gray` is treated as a mixed hue scheme in practice: saturated violet/pink heatmap evidence > pale pink/gray fringe > neutral gray brightness.
+- `dual` is an internal detection-only classifier used by multi-color detection; it combines warm dual-color centers, purple/violet centers, bright single-ramp centers, and blue/cyan cores.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.

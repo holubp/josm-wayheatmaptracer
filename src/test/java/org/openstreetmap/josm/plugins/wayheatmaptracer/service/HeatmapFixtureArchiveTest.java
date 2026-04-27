@@ -76,17 +76,34 @@ class HeatmapFixtureArchiveTest {
 
     @Test
     void paletteSpecificIntensityOrderingMatchesExpectedCenters() {
+        double hotWhite = RenderedHeatmapSampler.colorIntensity(255, 255, 255, "hot");
+        double hotYellow = RenderedHeatmapSampler.colorIntensity(255, 255, 0, "hot");
+        double hotOrange = RenderedHeatmapSampler.colorIntensity(255, 128, 0, "hot");
+        double hotRed = RenderedHeatmapSampler.colorIntensity(180, 0, 0, "hot");
+        assertTrue(hotWhite > hotYellow, "hot should rank white above yellow");
+        assertTrue(hotYellow > hotOrange, "hot should rank yellow above orange");
+        assertTrue(hotOrange > hotRed, "hot should rank orange above dark red");
+
         double blueredBlue = RenderedHeatmapSampler.colorIntensity(50, 110, 255, "bluered");
+        double blueredCyan = RenderedHeatmapSampler.colorIntensity(70, 220, 255, "bluered");
+        double blueredPurple = RenderedHeatmapSampler.colorIntensity(190, 70, 230, "bluered");
         double blueredRed = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "bluered");
         assertTrue(blueredRed > blueredBlue, "bluered should prioritize the warm center over strong blue shoulders");
+        assertTrue(blueredRed > blueredCyan, "bluered should treat cyan as lower activity than red/magenta");
+        assertTrue(blueredPurple > blueredBlue, "bluered should keep magenta/purple transition above blue shoulders");
 
         double blueShoulder = RenderedHeatmapSampler.colorIntensity(40, 95, 220, "blue");
+        double blueMedium = RenderedHeatmapSampler.colorIntensity(80, 170, 245, "blue");
         double blueCenter = RenderedHeatmapSampler.colorIntensity(170, 225, 255, "blue");
         assertTrue(blueCenter > blueShoulder, "blue should prioritize the bright cyan/light-blue center over dark blue shoulders");
+        assertTrue(blueCenter > blueMedium, "blue should rank the bright core above medium blue");
+        assertTrue(blueMedium > blueShoulder, "blue should still rank coherent medium blue above dark shoulders");
 
         double grayLightPink = RenderedHeatmapSampler.colorIntensity(235, 190, 205, "gray");
         double grayViolet = RenderedHeatmapSampler.colorIntensity(120, 70, 180, "gray");
+        double grayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray");
         assertTrue(grayViolet > grayLightPink, "gray should prioritize saturated violet center over pale pink");
+        assertTrue(grayLightPink > grayNeutral, "gray should not treat neutral gray brightness as strong heatmap evidence");
 
         double purpleDark = RenderedHeatmapSampler.colorIntensity(85, 40, 110, "purple");
         double purpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple");
@@ -96,6 +113,26 @@ class HeatmapFixtureArchiveTest {
         double dualBright = RenderedHeatmapSampler.colorIntensity(245, 245, 245, "dual");
         assertTrue(dualWarm > 0.4, "dual classifier should preserve warm dual-color center evidence");
         assertTrue(dualBright > 0.6, "dual classifier should preserve bright high-frequency center evidence");
+        assertTrue(dualWarm > RenderedHeatmapSampler.colorIntensity(50, 110, 255, "dual"),
+            "dual classifier should still favor warm high-activity evidence over blue shoulders");
+    }
+
+    @Test
+    void noSignalProfilesExposeNoPeaksForGapBridging() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "hot",
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().isEmpty()),
+            "No-signal cross-sections should stay empty so the tracker can bridge gaps from coherent later seeds");
     }
 
     @Test

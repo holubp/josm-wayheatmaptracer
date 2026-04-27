@@ -13,6 +13,10 @@ public record CenterlineCandidate(
         return new CenterlineCandidate(newId, score, screenPoints, offsetsPx);
     }
 
+    public CenterlineCandidate withScore(double newScore) {
+        return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx);
+    }
+
     @Override
     public String toString() {
         return id + " (" + String.format("%.2f", score) + ")";

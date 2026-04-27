@@ -1,15 +1,19 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import java.awt.image.BufferedImage;
+import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
@@ -22,6 +26,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray", "dual");
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
+    private static final int MAX_INTERNAL_REFINEMENT_PASSES = 2;
+    private static final double MIN_REFINEMENT_SCORE_GAIN = 0.75;
+    private static final double PARALLEL_MATCH_THRESHOLD_RASTER_PX = 42.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
@@ -45,10 +52,11 @@ public final class AlignmentService {
         long t1 = System.nanoTime();
 
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
-        List<CenterlineCandidate> candidates = detectCandidates(raster, mapView, sourcePolyline, config);
+        List<CenterlineCandidate> candidates = detectCandidates(selection, raster, mapView, sourcePolyline, config);
         if (candidates.isEmpty()) {
             throw new IllegalStateException("No stable ridge candidate was detected in the sampled heatmap.");
         }
+        candidates = refineCandidates(selection, raster, mapView, sourcePolyline, candidates, config);
         long t2 = System.nanoTime();
 
         CenterlineCandidate primary = candidates.get(0);
@@ -81,6 +89,7 @@ public final class AlignmentService {
     }
 
     private List<CenterlineCandidate> detectCandidates(
+        SelectionContext selection,
         BufferedImage raster,
         MapView mapView,
         List<EastNorth> sourcePolyline,
@@ -88,18 +97,74 @@ public final class AlignmentService {
     ) {
         List<String> colorModes = detectionColorModes(config);
         List<CenterlineCandidate> candidates = new ArrayList<>();
+        int halfWidthPx = effectiveHalfWidthPx(selection, config);
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                sampler.sampleProfiles(raster, mapView, sourcePolyline, config.crossSectionHalfWidthPx(), config.crossSectionStepPx(), colorMode);
+                sampler.sampleProfiles(raster, mapView, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
             for (CenterlineCandidate candidate : colorCandidates) {
                 candidates.add(candidate.withId(colorMode + "/" + candidate.id()));
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
+        if (config.parallelWayAwareness()) {
+            candidates = applyParallelWayContext(selection, mapView, candidates);
+        }
         return candidates.stream()
             .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+    }
+
+    private List<CenterlineCandidate> refineCandidates(
+        SelectionContext selection,
+        BufferedImage raster,
+        MapView mapView,
+        List<EastNorth> sourcePolyline,
+        List<CenterlineCandidate> initial,
+        ManagedHeatmapConfig config
+    ) {
+        List<CenterlineCandidate> bestCandidates = initial;
+        CenterlineCandidate best = bestCandidates.get(0);
+        List<EastNorth> currentAxis = optimizer.projectCandidate(best, mapView);
+        for (int pass = 1; pass <= MAX_INTERNAL_REFINEMENT_PASSES; pass++) {
+            List<CenterlineCandidate> refined = detectCandidates(selection, raster, mapView, currentAxis, config);
+            if (refined.isEmpty()) {
+                break;
+            }
+            CenterlineCandidate refinedBest = refined.get(0);
+            double movement = meanScreenDistance(best.screenPoints(), refinedBest.screenPoints());
+            double gain = refinedBest.score() - best.score();
+            if (gain < MIN_REFINEMENT_SCORE_GAIN) {
+                PluginLog.verbose("Internal refinement stopped after pass %d: score gain %.2f, mean movement %.1f raster px.",
+                    pass, gain, movement);
+                break;
+            }
+            if (addsUnsupportedOscillation(best.offsetsPx(), refinedBest.offsetsPx())) {
+                PluginLog.verbose("Internal refinement pass %d rejected because it increased high-frequency lateral oscillation.", pass);
+                break;
+            }
+            PluginLog.verbose("Internal refinement pass %d accepted: score %.2f -> %.2f, mean movement %.1f raster px.",
+                pass, best.score(), refinedBest.score(), movement);
+            best = refinedBest.withId("refined-" + pass + "/" + refinedBest.id());
+            List<CenterlineCandidate> merged = new ArrayList<>();
+            merged.add(best);
+            merged.addAll(bestCandidates);
+            bestCandidates = merged.stream()
+                .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+                .toList();
+            currentAxis = optimizer.projectCandidate(best, mapView);
+        }
+        return bestCandidates.stream()
+            .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+            .toList();
+    }
+
+    private int effectiveHalfWidthPx(SelectionContext selection, ManagedHeatmapConfig config) {
+        int configured = Math.max(1, config.crossSectionHalfWidthPx());
+        if (isSketchLikeSelection(selection)) {
+            return Math.max(configured, 64);
+        }
+        return configured;
     }
 
     private List<String> detectionColorModes(ManagedHeatmapConfig config) {
@@ -118,6 +183,86 @@ public final class AlignmentService {
             }
         }
         return modes;
+    }
+
+    private List<CenterlineCandidate> applyParallelWayContext(
+        SelectionContext selection,
+        MapView mapView,
+        List<CenterlineCandidate> candidates
+    ) {
+        DataSet dataSet = selection.way().getDataSet();
+        if (dataSet == null || candidates.isEmpty()) {
+            return candidates;
+        }
+        List<List<Point2D.Double>> parallelWayScreens = new ArrayList<>();
+        for (Way way : dataSet.getWays()) {
+            if (way == selection.way() || way.isDeleted() || way.getNodesCount() < 2 || !isRelevantLinearWay(way)) {
+                continue;
+            }
+            List<Point2D.Double> screen = wayToRasterScreen(way, mapView);
+            if (screen.size() >= 2 && isCloseToAnyCandidate(screen, candidates)) {
+                parallelWayScreens.add(screen);
+            }
+        }
+        if (parallelWayScreens.isEmpty()) {
+            return candidates;
+        }
+
+        boolean sketch = isSketchLikeSelection(selection);
+        List<CenterlineCandidate> scored = new ArrayList<>(candidates.size());
+        for (CenterlineCandidate candidate : candidates) {
+            double nearest = parallelWayScreens.stream()
+                .mapToDouble(screen -> meanNearestDistance(candidate.screenPoints(), screen))
+                .min()
+                .orElse(Double.POSITIVE_INFINITY);
+            if (nearest > PARALLEL_MATCH_THRESHOLD_RASTER_PX) {
+                scored.add(candidate);
+                continue;
+            }
+            double penalty = sketch ? 2.0 : 3.5;
+            double adjusted = candidate.score() - penalty * (1.0 - nearest / PARALLEL_MATCH_THRESHOLD_RASTER_PX);
+            scored.add(candidate.withId(candidate.id() + "/near-mapped-parallel").withScore(adjusted));
+        }
+        PluginLog.verbose("Parallel-way awareness evaluated %d nearby mapped linear ways.", parallelWayScreens.size());
+        return scored;
+    }
+
+    private boolean isRelevantLinearWay(Way way) {
+        String highway = way.get("highway");
+        if (highway == null || highway.isBlank()) {
+            return false;
+        }
+        return switch (highway) {
+            case "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
+                 "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
+                 "residential", "service", "track", "path", "footway", "cycleway", "bridleway",
+                 "steps", "pedestrian", "living_street", "road" -> true;
+            default -> false;
+        };
+    }
+
+    private List<Point2D.Double> wayToRasterScreen(Way way, MapView mapView) {
+        List<Point2D.Double> points = new ArrayList<>();
+        for (Node node : way.getNodes()) {
+            if (!node.isUsable() || node.getEastNorth(ProjectionRegistry.getProjection()) == null) {
+                continue;
+            }
+            Point2D point = mapView.getPoint2D(node.getEastNorth(ProjectionRegistry.getProjection()));
+            points.add(new Point2D.Double(
+                point.getX() * RenderedHeatmapSampler.RASTER_SCALE,
+                point.getY() * RenderedHeatmapSampler.RASTER_SCALE
+            ));
+        }
+        return points;
+    }
+
+    private boolean isCloseToAnyCandidate(List<Point2D.Double> wayScreen, List<CenterlineCandidate> candidates) {
+        for (CenterlineCandidate candidate : candidates) {
+            if (meanNearestDistance(candidate.screenPoints(), wayScreen) <= PARALLEL_MATCH_THRESHOLD_RASTER_PX * 1.6) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate) {
@@ -158,6 +303,70 @@ public final class AlignmentService {
         return result;
     }
 
+    private double meanScreenDistance(List<Point2D.Double> left, List<Point2D.Double> right) {
+        int count = Math.min(left.size(), right.size());
+        if (count == 0) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double sum = 0.0;
+        for (int i = 0; i < count; i++) {
+            sum += left.get(i).distance(right.get(i));
+        }
+        return sum / count;
+    }
+
+    private double meanNearestDistance(List<Point2D.Double> source, List<Point2D.Double> targetPolyline) {
+        if (source.isEmpty() || targetPolyline.size() < 2) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double sum = 0.0;
+        for (Point2D.Double point : source) {
+            sum += nearestDistanceToPolyline(point, targetPolyline);
+        }
+        return sum / source.size();
+    }
+
+    private double nearestDistanceToPolyline(Point2D.Double point, List<Point2D.Double> polyline) {
+        double best = Double.POSITIVE_INFINITY;
+        for (int i = 1; i < polyline.size(); i++) {
+            best = Math.min(best, distanceToSegment(point, polyline.get(i - 1), polyline.get(i)));
+        }
+        return best;
+    }
+
+    private double distanceToSegment(Point2D.Double point, Point2D.Double start, Point2D.Double end) {
+        double dx = end.x - start.x;
+        double dy = end.y - start.y;
+        double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared < 1e-9) {
+            return point.distance(start);
+        }
+        double t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+        t = Math.max(0.0, Math.min(1.0, t));
+        return point.distance(start.x + dx * t, start.y + dy * t);
+    }
+
+    private boolean addsUnsupportedOscillation(List<Double> previous, List<Double> next) {
+        double previousOscillation = lateralOscillation(previous);
+        double nextOscillation = lateralOscillation(next);
+        return nextOscillation > previousOscillation + 18.0;
+    }
+
+    private double lateralOscillation(List<Double> offsets) {
+        if (offsets.size() < 3) {
+            return 0.0;
+        }
+        double oscillation = 0.0;
+        for (int i = 1; i < offsets.size() - 1; i++) {
+            double left = offsets.get(i) - offsets.get(i - 1);
+            double right = offsets.get(i + 1) - offsets.get(i);
+            if (Math.signum(left) != Math.signum(right)) {
+                oscillation += Math.min(24.0, Math.abs(left) + Math.abs(right));
+            }
+        }
+        return oscillation;
+    }
+
     private List<NodeMove> interpolateMoves(SelectionContext selection, List<EastNorth> preview) {
         List<NodeMove> moves = new ArrayList<>();
         if (preview.size() < 2) {
@@ -196,7 +405,8 @@ public final class AlignmentService {
         List<EastNorth> candidateCenterline = optimizer.projectCandidate(candidate, effectiveMapView);
         PluginLog.debug("Candidate %s projected centerline point count=%d.", candidate.id(), candidateCenterline.size());
         List<EastNorth> working;
-        if (config.alignmentMode() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.MOVE_EXISTING_NODES) {
+        AlignmentMode effectiveMode = effectiveAlignmentMode(selection, config);
+        if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
             working = candidateCenterline;
             PluginLog.verbose("Move-existing-nodes mode uses direct centerline projection without dense path optimization.");
             if (config.simplifyEnabled()) {
@@ -204,7 +414,8 @@ public final class AlignmentService {
             }
         } else {
             working = candidateCenterline;
-            PluginLog.verbose("Precise-shape mode rebuilds the segment from the traced centerline.");
+            PluginLog.verbose("%s mode rebuilds the segment from the traced centerline.",
+                isSketchLikeSelection(selection) ? "Sketch-like precise-shape" : "Precise-shape");
             if (config.simplifyEnabled() && config.adjustJunctionNodes()) {
                 PluginLog.verbose("Simplification is ignored while junction/end node adjustment is enabled.");
             } else if (config.simplifyEnabled()) {
@@ -216,11 +427,24 @@ public final class AlignmentService {
                 PluginLog.verbose("Simplification disabled; using raw traced centerline.");
             }
         }
-        List<EastNorth> preview = switch (config.alignmentMode()) {
+        List<EastNorth> preview = switch (effectiveMode) {
             case MOVE_EXISTING_NODES -> moveExistingNodesPreview(selection, sourcePolyline, working);
             case PRECISE_SHAPE -> preciseShapePreview(selection, sourcePolyline, working);
         };
-        return guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
+        return guardFixedAnchorTurns(selection, sourcePolyline, preview, effectiveMode);
+    }
+
+    public static boolean isSketchLikeSelection(SelectionContext selection) {
+        return selection.isFullWaySelection()
+            && selection.segmentNodes().size() >= 2
+            && selection.segmentNodes().size() <= 5;
+    }
+
+    public static AlignmentMode effectiveAlignmentMode(SelectionContext selection, ManagedHeatmapConfig config) {
+        if (isSketchLikeSelection(selection)) {
+            return AlignmentMode.PRECISE_SHAPE;
+        }
+        return config.alignmentMode();
     }
 
     private List<EastNorth> moveExistingNodesPreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {

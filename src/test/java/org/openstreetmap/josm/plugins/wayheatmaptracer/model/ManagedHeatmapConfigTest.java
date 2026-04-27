@@ -9,9 +9,9 @@ class ManagedHeatmapConfigTest {
     @Test
     void hasManagedAccessValuesRequiresAllFields() {
         ManagedHeatmapConfig missing = new ManagedHeatmapConfig("", "p", "s", "t", "all", "hot", "", ".*",
-            AlignmentMode.MOVE_EXISTING_NODES, false, false, false, false, false, false, 18, 4, 3.0);
+            AlignmentMode.MOVE_EXISTING_NODES, false, false, false, true, false, false, false, 18, 4, 3.0);
         ManagedHeatmapConfig present = new ManagedHeatmapConfig("k", "p", "s", "t", "all", "hot", "", ".*",
-            AlignmentMode.MOVE_EXISTING_NODES, false, false, false, false, false, false, 18, 4, 3.0);
+            AlignmentMode.MOVE_EXISTING_NODES, false, false, false, true, false, false, false, 18, 4, 3.0);
 
         assertFalse(missing.hasManagedAccessValues());
         assertTrue(present.hasManagedAccessValues());

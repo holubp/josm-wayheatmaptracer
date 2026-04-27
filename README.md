@@ -56,6 +56,11 @@ The current implementation is designed for private development:
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
 - Optionally interpret the selected heatmap through all supported color classifiers during detection while keeping only the selected color visible
+- Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual/mixed schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
+- Track heatmap corridors longitudinally, including short no-signal gaps, so the result is less likely to jump to a nearby parallel trace because of one locally strong sample
+- Internally refine ridge detection during one run, reducing the need to run alignment repeatedly to converge
+- Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
+- Optionally use nearby mapped parallel `highway=*` ways as context when ranking candidates
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
 - Resolve the heatmap layer by managed layer, exact selected layer title, or regex
@@ -78,6 +83,7 @@ The current implementation is designed for private development:
 - Survey mode is not implemented yet.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
+- Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
 - The tracing pipeline still works from the rendered JOSM imagery layer. If future zoom invariance problems remain, the next step would be direct tile sampling at a fixed effective zoom.
 
 ## Build

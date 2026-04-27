@@ -13,6 +13,7 @@ public record ManagedHeatmapConfig(
     boolean verbose,
     boolean debug,
     boolean multiColorDetection,
+    boolean parallelWayAwareness,
     boolean allowUndownloadedAlignment,
     boolean adjustJunctionNodes,
     boolean simplifyEnabled,
@@ -42,6 +43,7 @@ public record ManagedHeatmapConfig(
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','
+            + "\"parallelWayAwareness\":" + parallelWayAwareness + ','
             + "\"allowUndownloadedAlignment\":" + allowUndownloadedAlignment + ','
             + "\"adjustJunctionNodes\":" + adjustJunctionNodes + ','
             + "\"simplifyEnabled\":" + simplifyEnabled + ','

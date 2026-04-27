@@ -10,6 +10,9 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 
 public final class RidgeTracker {
+    private static final int MAX_SEEDS = 6;
+    private static final int MAX_STATES_PER_PROFILE = 18;
+
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         if (profiles.isEmpty()) {
             return List.of();
@@ -33,7 +36,8 @@ public final class RidgeTracker {
                     profile.anchorScreen().y + profile.normalScreen().y * offset
                 ));
             }
-            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, state.score(), points, smoothedOffsets));
+            double stableScore = state.score() + stabilityBonus(smoothedOffsets, intensities);
+            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, stableScore, points, smoothedOffsets));
         }
 
         return deduplicate(candidates).stream()
@@ -49,22 +53,17 @@ public final class RidgeTracker {
                 for (State previous : states) {
                     nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0)));
                 }
-                states = nextStates;
+                states = prune(nextStates);
                 continue;
             }
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profile.peaks();
             List<State> nextStates = new ArrayList<>();
             for (RenderedHeatmapSampler.CrossSectionPeak peak : peaks) {
-                State best = null;
                 for (State previous : states) {
-                    State candidate = append(previous, peak);
-                    if (best == null || candidate.score() > best.score()) {
-                        best = candidate;
-                    }
+                    nextStates.add(append(previous, peak));
                 }
-                nextStates.add(best);
             }
-            states = nextStates;
+            states = prune(nextStates);
         }
         return states.stream()
             .max(Comparator.comparingDouble(State::score))
@@ -74,9 +73,13 @@ public final class RidgeTracker {
     private State append(State previous, RenderedHeatmapSampler.CrossSectionPeak peak) {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
-        double evidence = peak.intensity() * 2.5;
-        double continuityPenalty = Math.abs(delta) * 0.16;
-        double curvaturePenalty = Math.abs(acceleration) * 0.12;
+        double supportBonus = Math.min(0.22, peak.supportWidthPx() / 80.0);
+        double centerBonus = peak.syntheticCenter() ? 0.10 : 0.0;
+        double evidence = peak.intensity() * (2.6 + supportBonus + centerBonus);
+        double jump = Math.abs(delta);
+        double continuityPenalty = jump * (peak.intensity() >= 0.30 ? 0.17 : 0.10);
+        double curvaturePenalty = Math.abs(acceleration) * 0.16;
+        double modeJumpPenalty = jump > 10.0 && peak.intensity() < 0.70 ? (jump - 10.0) * 0.20 : 0.0;
         List<Double> offsets = new ArrayList<>(previous.offsets());
         List<Double> intensities = new ArrayList<>(previous.intensities());
         offsets.add(peak.offsetPx());
@@ -84,7 +87,7 @@ public final class RidgeTracker {
         return new State(
             peak.offsetPx(),
             delta,
-            previous.score() + evidence - continuityPenalty - curvaturePenalty,
+            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty,
             offsets,
             intensities
         );
@@ -92,19 +95,13 @@ public final class RidgeTracker {
 
     private List<Double> collectSeedOffsets(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         Map<Integer, Double> clusters = new LinkedHashMap<>();
-        int informativeProfiles = 0;
         for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-            boolean informative = false;
             for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
                 if (peak.intensity() < 0.20) {
                     continue;
                 }
-                informative = true;
                 int bucket = (int) Math.round(peak.offsetPx() / 4.0);
-                clusters.merge(bucket, peak.intensity(), Double::sum);
-            }
-            if (informative && ++informativeProfiles >= 12) {
-                break;
+                clusters.merge(bucket, peak.intensity() * (1.0 + Math.min(0.35, peak.supportWidthPx() / 60.0)), Double::sum);
             }
         }
         if (clusters.isEmpty()) {
@@ -112,15 +109,22 @@ public final class RidgeTracker {
         }
         return clusters.entrySet().stream()
             .sorted(Map.Entry.<Integer, Double>comparingByValue().reversed())
-            .limit(3)
+            .limit(MAX_SEEDS)
             .map(entry -> entry.getKey() * 4.0)
+            .toList();
+    }
+
+    private List<State> prune(List<State> states) {
+        return states.stream()
+            .sorted(Comparator.comparingDouble(State::score).reversed())
+            .limit(MAX_STATES_PER_PROFILE)
             .toList();
     }
 
     private List<CenterlineCandidate> deduplicate(List<CenterlineCandidate> candidates) {
         List<CenterlineCandidate> distinct = new ArrayList<>();
         for (CenterlineCandidate candidate : candidates) {
-            boolean duplicate = distinct.stream().anyMatch(existing -> averageOffsetDistance(existing, candidate) < 3.0);
+            boolean duplicate = distinct.stream().anyMatch(existing -> averageOffsetDistance(existing, candidate) < 4.0);
             if (!duplicate) {
                 distinct.add(candidate);
             }
@@ -149,16 +153,45 @@ public final class RidgeTracker {
             List<Double> next = new ArrayList<>(current);
             for (int i = 1; i < current.size() - 1; i++) {
                 double intensity = intensities.get(i);
-                double smoothing = Math.max(0.0, Math.min(0.75, 0.75 - intensity * 0.70));
+                double previous = current.get(i - 1);
+                double center = current.get(i);
+                double following = current.get(i + 1);
+                double secondDifference = center - (previous + following) / 2.0;
+                double previousDelta = center - previous;
+                double nextDelta = following - center;
+                boolean alternating = Math.signum(previousDelta) != Math.signum(nextDelta)
+                    && Math.abs(previousDelta) + Math.abs(nextDelta) >= 3.0;
+                double smoothing = Math.max(0.0, Math.min(0.70, 0.58 - intensity * 0.48));
+                if (!alternating && Math.abs(secondDifference) < 5.0) {
+                    smoothing *= 0.25;
+                }
                 if (smoothing <= 0.01) {
                     continue;
                 }
-                double neighborAverage = (current.get(i - 1) + current.get(i + 1)) / 2.0;
-                next.set(i, current.get(i) * (1.0 - smoothing) + neighborAverage * smoothing);
+                double neighborAverage = (previous + following) / 2.0;
+                next.set(i, center * (1.0 - smoothing) + neighborAverage * smoothing);
             }
             current = next;
         }
         return current;
+    }
+
+    private double stabilityBonus(List<Double> offsets, List<Double> intensities) {
+        if (offsets.size() < 3) {
+            return 0.0;
+        }
+        double support = intensities.stream().mapToDouble(Double::doubleValue).sum();
+        double oscillation = 0.0;
+        double longJump = 0.0;
+        for (int i = 1; i < offsets.size() - 1; i++) {
+            double previousDelta = offsets.get(i) - offsets.get(i - 1);
+            double nextDelta = offsets.get(i + 1) - offsets.get(i);
+            if (Math.signum(previousDelta) != Math.signum(nextDelta)) {
+                oscillation += Math.min(12.0, Math.abs(previousDelta) + Math.abs(nextDelta));
+            }
+            longJump += Math.max(0.0, Math.abs(previousDelta) - 9.0);
+        }
+        return support * 0.18 - oscillation * 0.08 - longJump * 0.12;
     }
 
     private record State(

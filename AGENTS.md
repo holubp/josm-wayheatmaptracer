@@ -9,6 +9,9 @@ Repository-specific guardrails for future changes:
 - When precise mode drops interior nodes, clean up only nodes that are both untagged and unreferenced. Shared or tagged nodes must survive.
 - Keep verbose/debug logging useful for remote diagnosis. For alignment bugs, log selected segment ids, sampled bands, chosen candidate offsets, and applied node moves.
 - Palette changes must come with regression coverage in `HeatmapFixtureArchiveTest` or `RidgeTrackerTest`, especially for `blue`, `gray`, and internal multi-color/dual-color detection, which are easy modes to mis-rank.
+- Palette evidence is semantic, not always raw brightness. Keep `hot`/`blue`/`purple` single-ramp ordering separate from `bluered` and `gray`, where hue/saturation identify high-activity centers.
+- Ridge tracking should optimize longitudinally coherent corridors across the whole segment, including short no-signal gaps. Do not reintroduce first-profiles-only seeding or zero-offset fallback peaks for empty profiles.
+- Rough full-way 2-5 node selections are sketch-like input and should keep using precise-shape output automatically; short selected segments of longer ways should keep the configured mode.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.
 - `acceptable-limits.osm` is a regression/visualization artifact only. Do not reuse its envelope logic inside the live alignment workflow.
 - Release versioning must match the scope of change. Stay on `0.x.x` until the maintainer declares the plugin suitable for broader use. After `1.0.0`, use `1.x.x` for major functionality or architecture changes, `1.1.x`-style minor releases for smaller features and improvements, and `1.1.1`-style patch releases only for bug fixes.
