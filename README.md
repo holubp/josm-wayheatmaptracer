@@ -1,6 +1,49 @@
 # WayHeatmapTracer
 
-`WayHeatmapTracer` is a private JOSM plugin for aligning selected OSM ways to a heatmap imagery layer, with the main action exposed as `Align Way to Heatmap`.
+`WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
+
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. It samples the rendered heatmap around a selected way, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
+
+## Why This Exists
+
+Heatmaps are useful in places where normal imagery is ambiguous, outdated, obscured by vegetation, or unavailable. They can reveal:
+
+- the real worn line of a footpath through woods or fields
+- the commonly used side of a broad track or service road
+- the center of a trail that has drifted away from older GPS traces
+- missing paths visible from repeated activity but not from aerial imagery
+- places where two paths merge, split, or run close together
+
+Doing this entirely by hand in JOSM is slow: the mapper repeatedly compares the way, the heatmap band, junction constraints, and downloaded-area safety. `WayHeatmapTracer` exists to make that workflow faster while keeping the mapper in control. It does not upload data, does not decide tagging, and does not remove the need to check the result against local knowledge, imagery, GPS traces, and OSM mapping rules.
+
+## When To Use It
+
+Use this plugin when:
+
+- an existing way is close to a clear heatmap corridor and needs geometric alignment
+- a path or track is visible in heatmap data but hard to draw accurately by hand
+- a long way should be aligned one junction-bounded segment at a time
+- a high-traffic road or path has a broad heatmap band and the likely center needs to be inferred
+- you want to compare multiple plausible heatmap ridges before applying a move
+
+Prefer ordinary manual editing when:
+
+- the heatmap is weak, sparse, or clearly offset from other trusted sources
+- the heatmap may represent private, temporary, forbidden, or non-mappable activity
+- the edit would change complex junction topology that you cannot verify
+- the surrounding area is not downloaded, unless you intentionally enable the local/no-download drawing option for scratch work
+
+## How It Works
+
+The normal workflow is:
+
+1. Select one OSM way, or select one way plus two nodes to limit the operation to a segment.
+2. Choose a heatmap imagery layer, or configure the plugin-managed heatmap layer.
+3. Run `Align Way to Heatmap`.
+4. Inspect the preview and candidate list.
+5. Apply the result only if the proposed geometry is justified by the heatmap and other evidence.
+
+For longer ways, `Select Longest Heatmap Segment` can select the longest section between endpoints or junction nodes, making it easier to work segment by segment without accidentally moving unrelated branches.
 
 The current implementation is designed for private development:
 - build a local plugin jar
