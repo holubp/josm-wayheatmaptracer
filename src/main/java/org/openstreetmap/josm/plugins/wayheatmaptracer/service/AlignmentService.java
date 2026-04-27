@@ -24,39 +24,44 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 public final class AlignmentService {
-    private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray", "dual");
+    private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray");
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
     private static final int MAX_INTERNAL_REFINEMENT_PASSES = 2;
     private static final double MIN_REFINEMENT_SCORE_GAIN = 0.75;
     private static final double PARALLEL_MATCH_THRESHOLD_RASTER_PX = 42.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+    private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
     private final PathOptimizer optimizer = new PathOptimizer();
     private final GeometryPostProcessor postProcessor = new GeometryPostProcessor();
 
     public AlignmentResult align(SelectionContext selection, ImageryLayer imageryLayer, MapView mapView) {
         ManagedHeatmapConfig config = PluginPreferences.load();
+        String layerName = imageryLayer == null ? "Managed Strava heatmap source tiles" : imageryLayer.getName();
         PluginLog.verbose("Starting alignment for way %d segment [%d..%d], nodes=%d, fixed=%d, layer='%s'.",
             selection.way().getUniqueId(),
             selection.startIndex(),
             selection.endIndex(),
             selection.segmentNodes().size(),
             selection.fixedNodes().size(),
-            imageryLayer.getName());
-        PluginLog.verbose("Alignment mode=%s simplify=%s tolerance=%.2f.",
-            config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx());
+            layerName);
+        PluginLog.verbose("Alignment settings: mode=%s simplify=%s tolerance=%.2f multiColor=%s activity=%s displayColor=%s fixedZoom=%d.",
+            config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
+            config.multiColorDetection(), config.activity(), config.color(), TileHeatmapSampler.SAMPLING_ZOOM);
 
         long t0 = System.nanoTime();
-        BufferedImage raster = sampler.captureLayer(imageryLayer, mapView);
+        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
+        List<String> colorModes = detectionColorModes(config);
+        int halfWidthPx = effectiveHalfWidthPx(selection, config);
+        SamplingRun sampling = prepareSamplingRun(selection, imageryLayer, mapView, sourcePolyline, config, colorModes, halfWidthPx);
         long t1 = System.nanoTime();
 
-        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
-        List<CenterlineCandidate> candidates = detectCandidates(selection, raster, mapView, sourcePolyline, config);
+        List<CenterlineCandidate> candidates = detectCandidates(selection, sampling, mapView, sourcePolyline, config, colorModes, halfWidthPx);
         if (candidates.isEmpty()) {
             throw new IllegalStateException("No stable ridge candidate was detected in the sampled heatmap.");
         }
-        candidates = refineCandidates(selection, raster, mapView, sourcePolyline, candidates, config);
+        candidates = refineCandidates(selection, sampling, mapView, sourcePolyline, candidates, config, colorModes, halfWidthPx);
         long t2 = System.nanoTime();
 
         CenterlineCandidate primary = candidates.get(0);
@@ -65,14 +70,17 @@ public final class AlignmentService {
         long t3 = System.nanoTime();
 
         AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
-            imageryLayer.getName(),
+            layerName,
             candidates.size(),
             nodeMoves.size(),
             millisBetween(t0, t1),
             millisBetween(t1, t2),
             millisBetween(t2, t3),
             config.toRedactedJson(),
-            selectionToJson(selection)
+            selectionToJson(selection),
+            sampling.sourceJson(),
+            stringArray(colorModes),
+            candidatesToJson(candidates)
         );
 
         PluginLog.verbose("Alignment finished: raster=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
@@ -85,25 +93,68 @@ public final class AlignmentService {
             }
         }
 
-        return new AlignmentResult(selection, raster, candidates, sourcePolyline, preview, nodeMoves, diagnostics);
+        return new AlignmentResult(selection, sampling.previewRaster(), candidates, sourcePolyline, preview, nodeMoves, diagnostics, sampling.fixedTiles());
+    }
+
+    private SamplingRun prepareSamplingRun(
+        SelectionContext selection,
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        List<EastNorth> sourcePolyline,
+        ManagedHeatmapConfig config,
+        List<String> colorModes,
+        int halfWidthPx
+    ) {
+        if (config.hasManagedAccessValues()) {
+            PluginLog.verbose("Using managed fixed-tile source sampling; visible layer, opacity, and HSL settings are ignored.");
+            TileHeatmapSampler.TileMosaicSet fixedTiles = tileSampler.prepare(config, sourcePolyline, colorModes, halfWidthPx);
+            String sourceJson = "{\"type\":\"managed-fixed-tiles\",\"samplingZoom\":"
+                + TileHeatmapSampler.SAMPLING_ZOOM
+                + ",\"tileSize\":"
+                + TileHeatmapSampler.TILE_SIZE
+                + ",\"activity\":\""
+                + jsonEscape(config.activity())
+                + "\",\"displayColor\":\""
+                + jsonEscape(config.color())
+                + "\"}";
+            return new SamplingRun(null, fixedTiles, sourceJson);
+        }
+        if (imageryLayer == null) {
+            throw new IllegalStateException("No heatmap layer is available and managed heatmap access values are incomplete.");
+        }
+        PluginLog.verbose("Using rendered-layer fallback sampling; result may depend on current map zoom and layer styling.");
+        BufferedImage raster = sampler.captureLayer(imageryLayer, mapView);
+        return new SamplingRun(raster, null, "{\"type\":\"rendered-layer-fallback\",\"zoomInvariant\":false}");
     }
 
     private List<CenterlineCandidate> detectCandidates(
         SelectionContext selection,
-        BufferedImage raster,
+        SamplingRun sampling,
         MapView mapView,
         List<EastNorth> sourcePolyline,
-        ManagedHeatmapConfig config
+        ManagedHeatmapConfig config,
+        List<String> colorModes,
+        int halfWidthPx
     ) {
-        List<String> colorModes = detectionColorModes(config);
         List<CenterlineCandidate> candidates = new ArrayList<>();
-        int halfWidthPx = effectiveHalfWidthPx(selection, config);
         for (String colorMode : colorModes) {
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                sampler.sampleProfiles(raster, mapView, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles;
+            TileHeatmapSampler.TileMosaic mosaic = null;
+            if (sampling.fixedTiles() != null) {
+                mosaic = sampling.fixedTiles().require(colorMode);
+                profiles = tileSampler.sampleProfiles(mosaic, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
+            } else {
+                profiles = sampler.sampleProfiles(sampling.previewRaster(), mapView, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
+            }
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
             for (CenterlineCandidate candidate : colorCandidates) {
-                candidates.add(candidate.withId(colorMode + "/" + candidate.id()));
+                CenterlineCandidate withMode = candidate
+                    .withId(colorMode + "/" + candidate.id())
+                    .withEvidence(candidate.evidence().withDetectorMode(colorMode));
+                if (mosaic != null) {
+                    withMode = withMode.withEastNorthPoints(tileSampler.projectCandidate(mosaic, withMode.screenPoints()));
+                }
+                candidates.add(withMode);
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
@@ -113,24 +164,37 @@ public final class AlignmentService {
         if (config.parallelWayAwareness()) {
             candidates = applyParallelWayContext(selection, mapView, candidates);
         }
+        candidates = discardNoSignalPlaceholders(candidates);
         return candidates.stream()
             .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
     }
 
+    private List<CenterlineCandidate> discardNoSignalPlaceholders(List<CenterlineCandidate> candidates) {
+        boolean hasSignal = candidates.stream().anyMatch(candidate -> candidate.evidence().hasSignal());
+        if (!hasSignal) {
+            return List.of();
+        }
+        return candidates.stream()
+            .filter(candidate -> candidate.evidence().hasSignal())
+            .toList();
+    }
+
     private List<CenterlineCandidate> refineCandidates(
         SelectionContext selection,
-        BufferedImage raster,
+        SamplingRun sampling,
         MapView mapView,
         List<EastNorth> sourcePolyline,
         List<CenterlineCandidate> initial,
-        ManagedHeatmapConfig config
+        ManagedHeatmapConfig config,
+        List<String> colorModes,
+        int halfWidthPx
     ) {
         List<CenterlineCandidate> bestCandidates = initial;
         CenterlineCandidate best = bestCandidates.get(0);
         List<EastNorth> currentAxis = optimizer.projectCandidate(best, mapView);
         for (int pass = 1; pass <= MAX_INTERNAL_REFINEMENT_PASSES; pass++) {
-            List<CenterlineCandidate> refined = detectCandidates(selection, raster, mapView, currentAxis, config);
+            List<CenterlineCandidate> refined = detectCandidates(selection, sampling, mapView, currentAxis, config, colorModes, halfWidthPx);
             if (refined.isEmpty()) {
                 break;
             }
@@ -174,6 +238,9 @@ public final class AlignmentService {
         String selected = config.color() == null || config.color().isBlank()
             ? "hot"
             : config.color().trim().toLowerCase(java.util.Locale.ROOT);
+        if (!ALL_COLOR_MODES.contains(selected)) {
+            selected = "hot";
+        }
         if (!config.multiColorDetection()) {
             return List.of(selected);
         }
@@ -194,24 +261,34 @@ public final class AlignmentService {
         }
         List<CenterlineCandidate> scored = new ArrayList<>(candidates.size());
         for (CenterlineCandidate candidate : candidates) {
+            if (!candidate.evidence().hasSignal()) {
+                scored.add(candidate);
+                continue;
+            }
             java.util.Set<String> supportingModes = new java.util.LinkedHashSet<>();
             double supportWeight = 0.0;
             for (CenterlineCandidate other : candidates) {
+                if (!other.evidence().hasSignal()) {
+                    continue;
+                }
                 if (averageOffsetDistance(candidate, other) > 7.0) {
                     continue;
                 }
                 String mode = detectorMode(other);
                 if (supportingModes.add(mode)) {
-                    supportWeight += detectorConsensusWeight(mode);
+                    supportWeight += detectorConsensusWeight(mode) * Math.max(0.05, other.evidence().signalToNoise());
                 }
             }
             if (supportingModes.size() <= 1) {
                 scored.add(candidate);
                 continue;
             }
-            double consensusBonus = supportWeight * 2.4 + supportingModes.size() * 0.8;
+            double consensusBonus = supportWeight * 8.0 + supportingModes.size() * 0.6;
             String consensusId = "consensus-" + supportingModes.size() + "/" + candidate.id();
-            scored.add(candidate.withId(consensusId).withScore(candidate.score() + consensusBonus));
+            scored.add(candidate
+                .withId(consensusId)
+                .withScore(candidate.score() + consensusBonus)
+                .withEvidence(candidate.evidence().withConsensusModes(List.copyOf(supportingModes))));
         }
         PluginLog.verbose("Multi-color consensus scoring compared %d ridge candidates.", candidates.size());
         return scored;
@@ -347,7 +424,8 @@ public final class AlignmentService {
             base.sourcePolyline(),
             preview,
             nodeMoves,
-            base.diagnostics()
+            base.diagnostics(),
+            base.tileMosaics()
         );
     }
 
@@ -757,5 +835,57 @@ public final class AlignmentService {
             + "\"segmentNodeCount\":" + selection.segmentNodes().size() + ','
             + "\"fixedNodeCount\":" + selection.fixedNodes().size()
             + "}";
+    }
+
+    private String candidatesToJson(List<CenterlineCandidate> candidates) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < candidates.size(); i++) {
+            CenterlineCandidate candidate = candidates.get(i);
+            if (i > 0) {
+                builder.append(',');
+            }
+            builder.append('{')
+                .append("\"id\":\"").append(jsonEscape(candidate.id())).append("\",")
+                .append("\"score\":").append(candidate.score()).append(',')
+                .append("\"points\":").append(candidate.screenPoints().size()).append(',')
+                .append("\"offsetsPx\":").append(doubleArray(candidate.offsetsPx())).append(',')
+                .append("\"evidence\":").append(candidate.evidence().toJson())
+                .append('}');
+        }
+        return builder.append(']').toString();
+    }
+
+    private String stringArray(List<String> values) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            builder.append('"').append(jsonEscape(values.get(i))).append('"');
+        }
+        return builder.append(']').toString();
+    }
+
+    private String doubleArray(List<Double> values) {
+        StringBuilder builder = new StringBuilder("[");
+        int limit = Math.min(values.size(), 40);
+        for (int i = 0; i < limit; i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            builder.append(String.format(java.util.Locale.ROOT, "%.3f", values.get(i)));
+        }
+        return builder.append(']').toString();
+    }
+
+    private String jsonEscape(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private record SamplingRun(
+        BufferedImage previewRaster,
+        TileHeatmapSampler.TileMosaicSet fixedTiles,
+        String sourceJson
+    ) {
     }
 }

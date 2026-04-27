@@ -8,7 +8,10 @@ public record AlignmentDiagnostics(
     long ridgeTrackingMillis,
     long optimizationMillis,
     String configJson,
-    String selectionJson
+    String selectionJson,
+    String samplingJson,
+    String colorSchemesJson,
+    String candidatesJson
 ) {
     public String toJson() {
         return "{"
@@ -19,7 +22,10 @@ public record AlignmentDiagnostics(
             + "\"ridgeTrackingMillis\":" + ridgeTrackingMillis + ','
             + "\"optimizationMillis\":" + optimizationMillis + ','
             + "\"config\":" + configJson + ','
-            + "\"selection\":" + selectionJson
+            + "\"selection\":" + selectionJson + ','
+            + "\"sampling\":" + samplingJson + ','
+            + "\"colorSchemes\":" + colorSchemesJson + ','
+            + "\"candidates\":" + candidatesJson
             + "}";
     }
 
@@ -27,4 +33,3 @@ public record AlignmentDiagnostics(
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }
-

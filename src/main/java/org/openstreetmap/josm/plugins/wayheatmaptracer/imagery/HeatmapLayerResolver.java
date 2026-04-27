@@ -15,30 +15,37 @@ public final class HeatmapLayerResolver {
     }
 
     public static ImageryLayer resolve() {
+        return resolveOptional().orElseThrow(() -> {
+            ManagedHeatmapConfig config = PluginPreferences.load();
+            PluginLog.verbose("Failed to resolve heatmap layer. manual='%s' regex='%s'.",
+                config.manualLayerName(), config.layerRegex());
+            return new IllegalStateException(
+                "No visible heatmap imagery layer was resolved. Refresh the managed layer, choose a layer manually, or update the regex."
+            );
+        });
+    }
+
+    public static Optional<ImageryLayer> resolveOptional() {
         ManagedHeatmapConfig config = PluginPreferences.load();
         Optional<ImageryLayer> managed = resolveManaged();
         if (managed.isPresent()) {
             PluginLog.verbose("Resolved heatmap layer via managed layer: '%s'.", managed.get().getName());
-            return managed.get();
+            return managed;
         }
 
         Optional<ImageryLayer> manual = resolveManualExact(config);
         if (manual.isPresent()) {
             PluginLog.verbose("Resolved heatmap layer via manual selection: '%s'.", manual.get().getName());
-            return manual.get();
+            return manual;
         }
 
         Optional<ImageryLayer> regex = resolveRegex(config);
         if (regex.isPresent()) {
             PluginLog.verbose("Resolved heatmap layer via regex '%s': '%s'.", config.layerRegex(), regex.get().getName());
-            return regex.get();
+            return regex;
         }
 
-        PluginLog.verbose("Failed to resolve heatmap layer. manual='%s' regex='%s'.",
-            config.manualLayerName(), config.layerRegex());
-        throw new IllegalStateException(
-            "No visible heatmap imagery layer was resolved. Refresh the managed layer, choose a layer manually, or update the regex."
-        );
+        return Optional.empty();
     }
 
     private static Optional<ImageryLayer> resolveManaged() {

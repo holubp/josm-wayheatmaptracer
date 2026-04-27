@@ -33,6 +33,10 @@ public final class PathOptimizer {
     }
 
     public List<EastNorth> projectCandidate(CenterlineCandidate candidate, MapView mapView) {
+        if (!candidate.eastNorthPoints().isEmpty()) {
+            PluginLog.debug("Candidate %s already carries %d projected EastNorth points.", candidate.id(), candidate.eastNorthPoints().size());
+            return candidate.eastNorthPoints();
+        }
         List<EastNorth> target = new ArrayList<>(candidate.screenPoints().size());
         AffineTransform inverse = inverseTransform(mapView);
         double[] matrix = new double[6];

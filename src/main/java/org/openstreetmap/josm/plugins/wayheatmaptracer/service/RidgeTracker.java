@@ -7,6 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 
 public final class RidgeTracker {
@@ -19,6 +20,9 @@ public final class RidgeTracker {
         }
 
         List<Double> seeds = collectSeedOffsets(profiles);
+        if (seeds.isEmpty()) {
+            return List.of(noSignalCandidate(profiles));
+        }
         List<CenterlineCandidate> candidates = new ArrayList<>();
         int candidateIndex = 1;
         for (double seed : seeds) {
@@ -37,7 +41,8 @@ public final class RidgeTracker {
                 ));
             }
             double stableScore = state.score() + stabilityBonus(smoothedOffsets, intensities);
-            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, stableScore, points, smoothedOffsets));
+            CandidateEvidence evidence = evidenceFor(profiles, intensities);
+            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, stableScore, points, smoothedOffsets).withEvidence(evidence));
         }
 
         return deduplicate(candidates).stream()
@@ -105,13 +110,24 @@ public final class RidgeTracker {
             }
         }
         if (clusters.isEmpty()) {
-            return List.of(0.0);
+            return List.of();
         }
         return clusters.entrySet().stream()
             .sorted(Map.Entry.<Integer, Double>comparingByValue().reversed())
             .limit(MAX_SEEDS)
             .map(entry -> entry.getKey() * 4.0)
             .toList();
+    }
+
+    private CenterlineCandidate noSignalCandidate(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
+        List<Point2D.Double> points = new ArrayList<>();
+        List<Double> offsets = new ArrayList<>();
+        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
+            points.add(new Point2D.Double(profile.anchorScreen().x, profile.anchorScreen().y));
+            offsets.add(0.0);
+        }
+        return new CenterlineCandidate("ridge-no-signal", -10_000.0, points, offsets)
+            .withEvidence(new CandidateEvidence("", 0, profiles.size(), 0.0, 0.0, 0.0, 0.0, List.of()));
     }
 
     private List<State> prune(List<State> states) {
@@ -192,6 +208,31 @@ public final class RidgeTracker {
             longJump += Math.max(0.0, Math.abs(previousDelta) - 9.0);
         }
         return support * 0.18 - oscillation * 0.08 - longJump * 0.12;
+    }
+
+    private CandidateEvidence evidenceFor(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, List<Double> intensities) {
+        int supported = 0;
+        int empty = 0;
+        double total = 0.0;
+        double ambiguity = 0.0;
+        for (int i = 0; i < profiles.size(); i++) {
+            RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+            double intensity = i < intensities.size() ? intensities.get(i) : 0.0;
+            if (intensity > 0.0) {
+                supported++;
+                total += intensity;
+            }
+            if (profile.peaks().isEmpty()) {
+                empty++;
+            } else {
+                ambiguity += Math.max(0, profile.peaks().size() - 1);
+            }
+        }
+        double mean = supported == 0 ? 0.0 : total / supported;
+        double supportedRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
+        double ambiguityPenalty = profiles.isEmpty() ? 0.0 : ambiguity / profiles.size();
+        double snr = mean * supportedRatio / (1.0 + ambiguityPenalty);
+        return new CandidateEvidence("", supported, empty, total, mean, snr, ambiguityPenalty, List.of());
     }
 
     private record State(

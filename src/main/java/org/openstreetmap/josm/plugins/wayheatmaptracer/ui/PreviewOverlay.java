@@ -60,12 +60,12 @@ public final class PreviewOverlay implements MapViewPaintable {
         }
 
         drawPolyline(g, mv, result.sourcePolyline(), new Color(255, 153, 0, 190), new float[] {6f, 6f}, 2f);
-        drawCandidateAlternatives(g);
+        drawCandidateAlternatives(g, mv);
         drawPolyline(g, mv, result.previewPolyline(), new Color(0, 90, 255, 230), null, 3.5f);
         drawLegend(g);
     }
 
-    private void drawCandidateAlternatives(Graphics2D g) {
+    private void drawCandidateAlternatives(Graphics2D g, MapView mapView) {
         if (result.candidates().size() <= 1) {
             return;
         }
@@ -75,9 +75,9 @@ public final class PreviewOverlay implements MapViewPaintable {
                 continue;
             }
             Color color = candidateColor(index++);
-            drawCandidateScreenPolyline(g, candidate, color, new float[] {3f, 5f}, 1.6f);
+            drawCandidateScreenPolyline(g, mapView, candidate, color, new float[] {3f, 5f}, 1.6f);
             if (index <= 9 || debugEnabled) {
-                drawCandidateLabel(g, candidate, color);
+                drawCandidateLabel(g, mapView, candidate, color);
             }
         }
     }
@@ -98,7 +98,11 @@ public final class PreviewOverlay implements MapViewPaintable {
         g.draw(path);
     }
 
-    private void drawCandidateScreenPolyline(Graphics2D g, CenterlineCandidate candidate, Color color, float[] dash, float width) {
+    private void drawCandidateScreenPolyline(Graphics2D g, MapView mapView, CenterlineCandidate candidate, Color color, float[] dash, float width) {
+        if (!candidate.eastNorthPoints().isEmpty()) {
+            drawPolyline(g, mapView, candidate.eastNorthPoints(), color, dash, width);
+            return;
+        }
         if (candidate.screenPoints().size() < 2) {
             return;
         }
@@ -115,15 +119,21 @@ public final class PreviewOverlay implements MapViewPaintable {
         g.draw(path);
     }
 
-    private void drawCandidateLabel(Graphics2D g, CenterlineCandidate candidate, Color color) {
-        if (candidate.screenPoints().isEmpty()) {
+    private void drawCandidateLabel(Graphics2D g, MapView mapView, CenterlineCandidate candidate, Color color) {
+        if (candidate.screenPoints().isEmpty() && candidate.eastNorthPoints().isEmpty()) {
             return;
         }
-        double scale = org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE;
-        Point2D.Double point = candidate.screenPoints().get(candidate.screenPoints().size() / 2);
+        Point2D point;
+        if (!candidate.eastNorthPoints().isEmpty()) {
+            point = mapView.getPoint2D(candidate.eastNorthPoints().get(candidate.eastNorthPoints().size() / 2));
+        } else {
+            double scale = org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE;
+            Point2D.Double screen = candidate.screenPoints().get(candidate.screenPoints().size() / 2);
+            point = new Point2D.Double(screen.x / scale, screen.y / scale);
+        }
         String text = compactLabel(candidate);
-        int x = (int) Math.round(point.x / scale) + 6;
-        int y = (int) Math.round(point.y / scale) - 6;
+        int x = (int) Math.round(point.getX()) + 6;
+        int y = (int) Math.round(point.getY()) - 6;
         g.setFont(g.getFont().deriveFont(Font.BOLD, 11f));
         int width = g.getFontMetrics().stringWidth(text) + 8;
         int height = g.getFontMetrics().getHeight() + 4;

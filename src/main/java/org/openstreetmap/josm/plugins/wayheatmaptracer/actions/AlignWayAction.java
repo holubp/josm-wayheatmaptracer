@@ -4,10 +4,14 @@ import static org.openstreetmap.josm.tools.I18n.tr;
 
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.util.List;
 
+import javax.swing.JButton;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
+import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
@@ -24,6 +28,7 @@ import org.openstreetmap.josm.gui.help.HelpUtil;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -43,6 +48,7 @@ import org.openstreetmap.josm.tools.Shortcut;
 public class AlignWayAction extends JosmAction {
     private final AlignmentService alignmentService = new AlignmentService();
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
+    private JDialog activePreviewDialog;
 
     public AlignWayAction() {
         super(
@@ -62,6 +68,11 @@ public class AlignWayAction extends JosmAction {
 
     @Override
     public void actionPerformed(ActionEvent e) {
+        if (activePreviewDialog != null && activePreviewDialog.isDisplayable()) {
+            activePreviewDialog.toFront();
+            return;
+        }
+        PluginLog.beginSlideSession();
         try {
             PluginLog.verbose("Align Way to Heatmap invoked.");
             DataSet dataSet = MainApplication.getLayerManager().getEditDataSet();
@@ -81,57 +92,21 @@ public class AlignWayAction extends JosmAction {
             } else {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
-            ImageryLayer imageryLayer = HeatmapLayerResolver.resolve();
+            ImageryLayer imageryLayer = config.hasManagedAccessValues()
+                ? HeatmapLayerResolver.resolveOptional().orElse(null)
+                : HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView);
-            DiagnosticsRegistry.setLastBundle(result.diagnostics().toJson());
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(result, result.candidates().get(0), "preview-open", PluginLog.currentSlideLog()));
 
             config = PluginPreferences.load();
-            try {
-                PreviewSelection preview = chooseCandidateWithPreview(selection, result, config);
-                if (preview == null) {
-                    PluginLog.verbose("Alignment cancelled at preview dialog.");
-                    return;
-                }
-                CenterlineCandidate chosen = preview.candidate();
-                AlignmentResult chosenResult = preview.result();
-
-                if (!config.allowUndownloadedAlignment()) {
-                    requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
-                }
-
-                AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(selection, config);
-                if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES
-                    && chosenResult.nodeMoves().isEmpty()) {
-                    showError(tr("No movable interior nodes were found in the selected segment."));
-                    return;
-                }
-
-                if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
-                    PluginLog.verbose("Applying move-existing-nodes alignment for candidate %s with %d node moves.", chosen.id(), chosenResult.nodeMoves().size());
-                    UndoRedoHandler.getInstance().add(new MoveNodesCommand(
-                        dataSet,
-                        chosenResult.nodeMoves(),
-                        tr("Align way to heatmap")
-                    ));
-                } else {
-                    PluginLog.verbose("Applying precise-shape alignment for candidate %s with %d preview points.", chosen.id(), chosenResult.previewPolyline().size());
-                    UndoRedoHandler.getInstance().add(new ReplaceWaySegmentCommand(
-                        dataSet,
-                        selection.way(),
-                        selection,
-                        chosenResult.previewPolyline(),
-                        tr("Align way to heatmap precisely")
-                    ));
-                }
-            } finally {
-                overlay.hide();
-            }
+            showCandidatePreview(dataSet, selection, result, config);
         } catch (Exception ex) {
             overlay.hide();
             Logging.error(ex);
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
+            PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         }
     }
@@ -141,7 +116,8 @@ public class AlignWayAction extends JosmAction {
         setEnabled(MainApplication.getLayerManager().getEditDataSet() != null);
     }
 
-    private PreviewSelection chooseCandidateWithPreview(
+    private void showCandidatePreview(
+        DataSet dataSet,
         SelectionContext selection,
         AlignmentResult result,
         ManagedHeatmapConfig config
@@ -166,14 +142,90 @@ public class AlignWayAction extends JosmAction {
             overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
         });
 
-        int answer = JOptionPane.showConfirmDialog(
-            MainApplication.getMainFrame(),
-            panel,
-            tr("Preview Heatmap Alignment"),
-            JOptionPane.OK_CANCEL_OPTION,
-            JOptionPane.PLAIN_MESSAGE
-        );
-        return answer == JOptionPane.OK_OPTION ? current[0] : null;
+        JButton apply = new JButton(tr("Apply"));
+        JButton cancel = new JButton(tr("Cancel"));
+        JPanel buttons = new JPanel();
+        buttons.add(apply);
+        buttons.add(cancel);
+        panel.add(buttons, GBC.eol());
+
+        JDialog dialog = new JDialog(MainApplication.getMainFrame(), tr("Preview Heatmap Alignment"), false);
+        activePreviewDialog = dialog;
+        dialog.setContentPane(panel);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.pack();
+        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosed(WindowEvent e) {
+                activePreviewDialog = null;
+            }
+
+            @Override
+            public void windowClosing(WindowEvent e) {
+                cancelPreview(current[0]);
+            }
+        });
+        apply.addActionListener(event -> {
+            try {
+                applyPreview(dataSet, selection, current[0], config);
+                dialog.dispose();
+            } catch (Exception ex) {
+                Logging.error(ex);
+                PluginLog.verbose("Alignment apply failed with exception: %s", ex.toString());
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(current[0].result(), current[0].candidate(), "apply-failed", PluginLog.currentSlideLog()));
+                showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+            } finally {
+                overlay.hide();
+                PluginLog.endSlideSession();
+            }
+        });
+        cancel.addActionListener(event -> {
+            cancelPreview(current[0]);
+            dialog.dispose();
+        });
+        dialog.setVisible(true);
+    }
+
+    private void cancelPreview(PreviewSelection preview) {
+        PluginLog.verbose("Alignment cancelled at preview dialog.");
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(preview.result(), preview.candidate(), "cancelled", PluginLog.currentSlideLog()));
+        overlay.hide();
+        PluginLog.endSlideSession();
+    }
+
+    private void applyPreview(DataSet dataSet, SelectionContext selection, PreviewSelection preview, ManagedHeatmapConfig config) {
+        CenterlineCandidate chosen = preview.candidate();
+        AlignmentResult chosenResult = preview.result();
+
+        if (!config.allowUndownloadedAlignment()) {
+            requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
+        }
+
+        AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(selection, config);
+        if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES
+            && chosenResult.nodeMoves().isEmpty()) {
+            throw new IllegalStateException(tr("No movable interior nodes were found in the selected segment."));
+        }
+
+        if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
+            PluginLog.verbose("Applying move-existing-nodes alignment for candidate %s with %d node moves.", chosen.id(), chosenResult.nodeMoves().size());
+            UndoRedoHandler.getInstance().add(new MoveNodesCommand(
+                dataSet,
+                chosenResult.nodeMoves(),
+                tr("Align way to heatmap")
+            ));
+        } else {
+            PluginLog.verbose("Applying precise-shape alignment for candidate %s with %d preview points.", chosen.id(), chosenResult.previewPolyline().size());
+            UndoRedoHandler.getInstance().add(new ReplaceWaySegmentCommand(
+                dataSet,
+                selection.way(),
+                selection,
+                chosenResult.previewPolyline(),
+                tr("Align way to heatmap precisely")
+            ));
+        }
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(chosenResult, chosen, "applied", PluginLog.currentSlideLog()));
     }
 
     private JPanel buildSummaryPanel(AlignmentResult result, CenterlineCandidate chosen, ManagedHeatmapConfig config, JComboBox<CenterlineCandidate> candidates) {

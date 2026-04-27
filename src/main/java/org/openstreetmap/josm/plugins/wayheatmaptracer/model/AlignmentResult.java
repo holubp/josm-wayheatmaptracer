@@ -4,6 +4,7 @@ import java.awt.image.BufferedImage;
 import java.util.List;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
 public record AlignmentResult(
     SelectionContext selection,
@@ -12,7 +13,7 @@ public record AlignmentResult(
     List<EastNorth> sourcePolyline,
     List<EastNorth> previewPolyline,
     List<NodeMove> nodeMoves,
-    AlignmentDiagnostics diagnostics
+    AlignmentDiagnostics diagnostics,
+    TileHeatmapSampler.TileMosaicSet tileMosaics
 ) {
 }
-

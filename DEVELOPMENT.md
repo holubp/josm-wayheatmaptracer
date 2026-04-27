@@ -54,27 +54,33 @@ Current scope:
 
 ## Core Runtime Flow
 
-1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and resolves the heatmap imagery layer.
-2. `RenderedHeatmapSampler` renders the visible imagery layer into an oversampled raster and samples cross-sections perpendicular to the selected way or rough sketch. No-signal profiles stay empty so the tracker can bridge gaps using later coherent ridge evidence instead of snapping to the source axis.
-3. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles.
-4. `AlignmentService` can run a small number of internal refinement passes using the traced ridge as the next sampling axis. A refinement is accepted only when the objective score improves and high-frequency oscillation does not increase.
-5. When multi-color detection is enabled, candidates from all palette classifiers are compared for geometric agreement. Candidates supported by multiple classifiers receive a consensus score boost, with semantic dual-color classifiers weighted slightly higher because they often expose clearer centers.
-6. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Alternatives remain visible in the preview ridge selector.
-7. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
+1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and opens a per-slide diagnostic session.
+2. For configured managed Strava access, `TileHeatmapSampler` samples fixed zoom-15 source tiles for each detection color. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
+3. `RenderedHeatmapSampler` remains the fallback for unresolved manual imagery layers. It renders the visible imagery layer into an oversampled raster and is therefore view/style dependent by design.
+4. No-signal profiles stay empty so the tracker can bridge gaps using later coherent ridge evidence instead of snapping to the source axis.
+5. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles.
+6. Candidates carry evidence metadata such as supported profile count, empty profile count, total/mean intensity, SNR, ambiguity, and consensus modes. All-empty profiles may produce a diagnostic no-signal placeholder, but live alignment must discard no-signal placeholders when any real evidence exists.
+7. `AlignmentService` can run a small number of internal refinement passes using the traced ridge as the next sampling axis. A refinement is accepted only when the objective score improves and high-frequency oscillation does not increase.
+8. When multi-color detection is enabled, candidates from all palette classifiers are compared for geometric agreement. Consensus is weighted by detector signal quality; weak/no-signal modes must not boost a candidate.
+9. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Alternatives remain visible in the preview ridge selector.
+10. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
-8. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
+11. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
 
 Full-way selections with 2-5 nodes are treated as sketch-like input and use precise-shape output automatically, even if the saved alignment mode is `Move Existing Nodes`. Short selected segments of longer existing ways keep the configured alignment mode.
 
 `Select Longest Heatmap Segment` is a helper action for the alignment workflow. It selects the longest stretch of the selected way bounded by endpoints or nodes shared with another way, producing the way-plus-two-node selection expected by alignment.
 
-The preview overlay uses solid blue for the selected result, orange dashes for the original segment, and labeled dashed lines for alternative ridge candidates. The preview dialog ridge selector recalculates the preview immediately when the selected candidate changes.
+The preview overlay uses solid blue for the selected result, orange dashes for the original segment, and labeled dashed lines for alternative ridge candidates. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates the preview immediately when the selected candidate changes.
+
+The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, candidate evidence/scoring, original/preview geometry, per-slide verbose/debug logs, and fixed-tile source imagery. Never include cookies, signed headers, or full signed URLs in diagnostics.
 
 ## Guardrails
 
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.
 - Raster candidate points are tracked in oversampled screen space and must be divided by `RenderedHeatmapSampler.RASTER_SCALE` before converting back through `MapView`.
+- Managed heatmap candidates may carry projected `EastNorth` points from fixed tile-space sampling. Prefer those points over `MapView` projection so preview/apply remains independent of the current viewport.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.
 - Downloaded-area bypass and junction/endpoint movement are both opt-in settings. Keep defaults protective.
 - When junction/endpoint movement is enabled in precise mode, simplification is ignored so selected or shared nodes are not simplified out of the way.
@@ -87,6 +93,6 @@ The preview overlay uses solid blue for the selected result, orange dashes for t
 - `purple` is a single-ramp purple/magenta scheme: bright purple/magenta core > medium purple > dark purple.
 - `bluered` is a dual-color semantic scheme: red/magenta high-activity center > purple transition > blue/cyan lower-activity shoulder. Hue and saturation must dominate raw blue/cyan vividness.
 - `gray` is a dual-color semantic scheme in practice: saturated violet/pink heatmap evidence > pale pink/gray fringe > neutral gray brightness. Treat it like `bluered` for consensus priority, not like a plain grayscale brightness ramp.
-- `dual` is an internal detection-only classifier used by multi-color detection; it combines warm dual-color centers, purple/violet centers, bright single-ramp centers, and blue/cyan cores.
+- `dual` is an internal classifier retained for palette regression tests and future experimentation. Managed multi-color detection samples the real source color schemes (`hot`, `blue`, `bluered`, `purple`, and `gray`) rather than fetching a non-existent `dual` source tile.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.

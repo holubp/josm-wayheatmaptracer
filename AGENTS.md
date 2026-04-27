@@ -2,17 +2,20 @@
 
 Repository-specific guardrails for future changes:
 
-- Treat JOSM coordinate spaces explicitly. Downloaded-area checks use `Bounds` with geographic coordinates, while heatmap sampling and ridge tracking operate in oversampled screen space before projecting back to `EastNorth`.
+- Treat JOSM coordinate spaces explicitly. Downloaded-area checks use `Bounds` with geographic coordinates. Managed heatmap sampling operates in fixed Web Mercator tile pixels and carries projected `EastNorth` points; rendered fallback sampling operates in oversampled screen space before projecting back through `MapView`.
 - The downloaded-area bypass is a heatmap-only drawing escape hatch and must remain opt-in. Do not make live alignment skip `Bounds` checks by default.
 - Junction and endpoint movement must remain opt-in. When it is enabled in precise mode, do not simplify away selected/shared anchor nodes.
 - Do not reintroduce uniform point redistribution after simplification in precise mode. Straight sections should be allowed to collapse more aggressively than curves.
 - When precise mode drops interior nodes, clean up only nodes that are both untagged and unreferenced. Shared or tagged nodes must survive.
-- Keep verbose/debug logging useful for remote diagnosis. For alignment bugs, log selected segment ids, sampled bands, chosen candidate offsets, and applied node moves.
+- Keep verbose/debug logging useful for remote diagnosis. For alignment bugs, log selected segment ids, exact redacted settings, sampled color schemes, sampled bands, chosen candidate offsets, candidate evidence/SNR, and applied node moves.
 - Palette changes must come with regression coverage in `HeatmapFixtureArchiveTest` or `RidgeTrackerTest`, especially for `blue`, `gray`, and internal multi-color/dual-color detection, which are easy modes to mis-rank.
 - Palette evidence is semantic, not always raw brightness. Keep `hot`/`blue`/`purple` single-ramp ordering separate from `bluered` and `gray`, where hue/saturation identify high-activity centers.
 - Ridge tracking should optimize longitudinally coherent corridors across the whole segment, including short no-signal gaps. Do not reintroduce first-profiles-only seeding or zero-offset fallback peaks for empty profiles.
-- Multi-color detection should compare classifiers for consensus rather than simply listing independent per-color candidates. Keep semantic dual-color classifiers useful when they agree with other modes; `gray` is dual-color too, not a plain grayscale brightness ramp.
-- The preview dialog is the place for ridge selection. Keep candidate labels user-readable and avoid exposing raw internal scores as the primary UI.
+- All-empty/no-signal profiles may create diagnostic placeholders for tests and exports, but live alignment must not treat those placeholders as heatmap evidence or consensus support when any real signal exists.
+- Multi-color detection should compare classifiers for consensus rather than simply listing independent per-color candidates. Weight consensus by signal quality/SNR. Keep semantic dual-color classifiers useful when they agree with other modes; `gray` is dual-color too, not a plain grayscale brightness ramp.
+- Managed Strava alignment must sample source tiles directly and must not depend on layer visibility, viewport, opacity, transparency, or HSL adjustments. Rendered sampling is fallback only for manual/unresolved imagery layers.
+- The preview dialog is the place for ridge selection. Keep it modeless so users can pan/zoom and toggle layers while previewing. Keep candidate labels user-readable and avoid exposing raw internal scores as the primary UI.
+- Last-slide debug export should prioritize the most recent slide attempt and include source tiles, redacted settings, sampled colors, geometry, candidate evidence, and per-slide logs. Never export cookies, signed headers, or full signed URLs.
 - Rough full-way 2-5 node selections are sketch-like input and should keep using precise-shape output automatically; short selected segments of longer ways should keep the configured mode.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.
 - `acceptable-limits.osm` is a regression/visualization artifact only. Do not reuse its envelope logic inside the live alignment workflow.

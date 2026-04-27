@@ -1,17 +1,16 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics;
 
 public final class DiagnosticsRegistry {
-    private static volatile String lastBundle;
+    private static volatile LastSlideDebugBundle lastBundle;
 
     private DiagnosticsRegistry() {
     }
 
-    public static void setLastBundle(String json) {
-        lastBundle = json;
+    public static void setLastBundle(LastSlideDebugBundle bundle) {
+        lastBundle = bundle;
     }
 
-    public static String getLastBundle() {
+    public static LastSlideDebugBundle getLastBundle() {
         return lastBundle;
     }
 }
-

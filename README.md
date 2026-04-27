@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. It samples the rendered heatmap around a selected way, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. For the plugin-managed Strava heatmap source it samples fixed source tiles directly, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
 
 ## Why This Exists
 
@@ -37,11 +37,12 @@ Prefer ordinary manual editing when:
 
 The normal workflow is:
 
-1. Select one OSM way, or select one way plus two nodes to limit the operation to a segment.
-2. Choose a heatmap imagery layer, or configure the plugin-managed heatmap layer.
-3. Run `Align Way to Heatmap`.
-4. Inspect the preview and candidate list.
-5. Apply the result only if the proposed geometry is justified by the heatmap and other evidence.
+1. Configure the plugin-managed heatmap source once in `More tools -> Heatmap Layer Settings`.
+2. Select one OSM way, or select one way plus two nodes to limit the operation to a segment.
+3. For long ways, optionally run `More tools -> Select Longest Heatmap Segment` to select the longest endpoint/junction-bounded section.
+4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
+5. Inspect the modeless preview, switch ridge candidates if needed, pan/zoom the map, and toggle layers on/off while the preview stays visible.
+6. Apply the result only if the proposed geometry is justified by the heatmap and other evidence.
 
 For longer ways, `Select Longest Heatmap Segment` can select the longest section between endpoints or junction nodes, making it easier to work segment by segment without accidentally moving unrelated branches.
 
@@ -55,7 +56,8 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
-- Optionally interpret the selected heatmap through all supported color classifiers during detection while keeping only the selected color visible; candidates supported by multiple classifiers receive a consensus score boost
+- For the managed heatmap source, sample fixed zoom-15 source tiles directly so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
+- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus is weighted by signal quality so color schemes with clearer heatmap evidence contribute more
 - Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
 - Track heatmap corridors longitudinally, including short no-signal gaps, so the result is less likely to jump to a nearby parallel trace because of one locally strong sample
 - Internally refine ridge detection during one run, reducing the need to run alignment repeatedly to converge
@@ -63,7 +65,7 @@ The current implementation is designed for private development:
 - Optionally use nearby mapped parallel `highway=*` ways as context when ranking candidates
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
-- Resolve the heatmap layer by managed layer, exact selected layer title, or regex
+- Resolve the heatmap source from managed settings first; manual visible imagery layers are still supported as a rendered fallback by exact selected layer title or regex
 - Align one selected way, or one way plus two selected nodes on that way
 - Offer two alignment modes:
   `Move Existing Nodes` keeps the node count and only moves non-fixed interior nodes
@@ -74,8 +76,8 @@ The current implementation is designed for private development:
 - Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
 - Detect multiple nearby ridge candidates and allow the user to pick one
-- Show a preview overlay before applying, including a legend, labeled alternative ridge candidates, and a ridge selector that updates the preview before confirmation
-- Export a redacted diagnostics bundle for remote debugging
+- Show a modeless preview overlay before applying, including a legend, labeled alternative ridge candidates, and a ridge selector that updates the preview before confirmation
+- Export a redacted last-slide debug bundle for remote debugging, including exact settings, sampled color schemes, logs, original/preview geometry, scoring details, and heatmap tile images
 - Package logs on the JOSM machine with a small bash helper
 
 ## Current Limits
@@ -84,7 +86,7 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- The tracing pipeline still works from the rendered JOSM imagery layer. If future zoom invariance problems remain, the next step would be direct tile sampling at a fixed effective zoom.
+- Manual non-managed imagery layers use rendered-layer fallback sampling. That fallback can still depend on current view and layer styling because the plugin cannot reconstruct arbitrary external tile sources safely.
 
 ## Build
 
@@ -104,6 +106,75 @@ The plugin jar is produced at:
 build/libs/wayheatmaptracer-<version>.jar
 ```
 
+## Optimum JOSM Workflow
+
+### 1. Configure Heatmap Access
+
+1. Install and use the JOSM Strava Heatmap workflow in Firefox so the Strava heatmap is available there.
+2. Copy the cookie header from the Firefox/JOSM heatmap helper. The copied text should contain the cookie names `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`.
+3. In JOSM, open `More tools -> Heatmap Layer Settings` or press `Ctrl+Shift+U`.
+4. Click `Paste cookie header...`, paste the copied cookie header into the small window, and press `OK`.
+5. Check that the four cookie fields were split into the visible fields in the settings dialog.
+6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
+7. Keep `Use all color schemes for detection` enabled for the best default behavior. The visible layer uses only the selected color, but detection uses all supported source color tiles and prefers schemes with stronger signal.
+8. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer.
+
+Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
+
+### 2. Recommended Settings
+
+- `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
+- `Use all color schemes for detection`: recommended on. Consensus works best when high-SNR color schemes agree.
+- `Use nearby parallel ways as alignment context`: recommended on. It helps avoid snapping to a nearby mapped road, track, path, or footway.
+- `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
+- `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
+- `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
+- `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
+
+### 3. Align Existing Ways
+
+1. Download the OSM area around the way unless you intentionally enabled the no-download option.
+2. Select exactly one way. To align only part of it, select the way and the two endpoint nodes of the segment.
+3. For long ways, select the way and run `More tools -> Select Longest Heatmap Segment`; the plugin selects the longest section bounded by endpoints or junctions.
+4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
+5. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
+6. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
+7. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
+8. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+
+For rough new paths, draw a simple 2-5 node full-way sketch approximately along the heatmap trace, select it, and run alignment. The plugin automatically treats that as sketch-like input and uses precise-shape tracing.
+
+### Menus And Shortcuts
+
+All actions are under JOSM `More tools`:
+
+- `Align Way to Heatmap`: `Ctrl+Shift+Y`
+- `Heatmap Layer Settings`: `Ctrl+Shift+U`
+- `Select Longest Heatmap Segment`: no default shortcut
+- `Export Last Slide Debug Bundle`: `Alt+Ctrl+Shift+D`
+
+## Debugging And Reporting Bad Slides
+
+When a slide is wrong:
+
+1. Open `More tools -> Heatmap Layer Settings`.
+2. Enable `Verbose logging` and `Debug overlay`.
+3. Re-run the slide and choose/apply/cancel the preview in the same way that produced the problem.
+4. Run `More tools -> Export Last Slide Debug Bundle`.
+5. Use `Copy file path` or `Copy folder path` from the export dialog.
+6. Share the generated zip, not raw cookies or tokenized URLs.
+
+The debug bundle is focused on the latest slide attempt. It includes:
+
+- exact redacted settings used for that slide
+- selected activity, visible color, and sampled color schemes
+- original selected way/segment and preview geometry as OSM
+- selected candidate, candidate scores, SNR/evidence details, and sampled offsets
+- verbose/debug log lines captured for that slide
+- source heatmap tiles and per-color mosaics used by fixed-tile sampling
+
+The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
+
 ## Private Install Workflow
 
 1. Build the jar on the development machine.
@@ -116,12 +187,11 @@ build/libs/wayheatmaptracer-<version>.jar
 8. Use `Select Longest Heatmap Segment` after selecting a way when you want the plugin to choose the longest endpoint/junction-bounded segment before aligning.
 9. Test `Align Way to Heatmap`.
 10. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.
-11. Export diagnostics from the plugin menu.
-12. Run the debug-bundle helper script on the JOSM machine and transfer the resulting archive back.
+11. Export the last-slide debug bundle from the plugin menu.
 
 Helper scripts:
 - `scripts/install-private-plugin.sh`
-- `scripts/package-debug-bundle.sh`
+- `scripts/package-debug-bundle.sh` for older manual log/tile collection workflows
 
 ## Extract Tiles From JOSM Cache
 

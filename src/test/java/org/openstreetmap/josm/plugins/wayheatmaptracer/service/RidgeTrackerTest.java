@@ -64,6 +64,23 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void allEmptyProfilesProduceOnlyNoSignalPlaceholder() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            emptyProfile(0),
+            emptyProfile(10),
+            emptyProfile(20)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertEquals(1, candidates.size());
+        assertTrue(candidates.get(0).id().contains("no-signal"));
+        assertTrue(!candidates.get(0).evidence().hasSignal());
+        assertTrue(candidates.get(0).score() < -1000.0);
+    }
+
+    @Test
     void bridgesNoSignalGapsWithoutSnappingBackToSourceAxis() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
