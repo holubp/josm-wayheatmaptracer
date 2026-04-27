@@ -11,6 +11,8 @@ Repository-specific guardrails for future changes:
 - Palette changes must come with regression coverage in `HeatmapFixtureArchiveTest` or `RidgeTrackerTest`, especially for `blue`, `gray`, and internal multi-color/dual-color detection, which are easy modes to mis-rank.
 - Palette evidence is semantic, not always raw brightness. Keep `hot`/`blue`/`purple` single-ramp ordering separate from `bluered` and `gray`, where hue/saturation identify high-activity centers.
 - Ridge tracking should optimize longitudinally coherent corridors across the whole segment, including short no-signal gaps. Do not reintroduce first-profiles-only seeding or zero-offset fallback peaks for empty profiles.
+- Multi-color detection should compare classifiers for consensus rather than simply listing independent per-color candidates. Keep semantic dual-color classifiers useful when they agree with other modes; `gray` is dual-color too, not a plain grayscale brightness ramp.
+- The preview dialog is the place for ridge selection. Keep candidate labels user-readable and avoid exposing raw internal scores as the primary UI.
 - Rough full-way 2-5 node selections are sketch-like input and should keep using precise-shape output automatically; short selected segments of longer ways should keep the configured mode.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.
 - `acceptable-limits.osm` is a regression/visualization artifact only. Do not reuse its envelope logic inside the live alignment workflow.

@@ -101,8 +101,10 @@ class HeatmapFixtureArchiveTest {
 
         double grayLightPink = RenderedHeatmapSampler.colorIntensity(235, 190, 205, "gray");
         double grayViolet = RenderedHeatmapSampler.colorIntensity(120, 70, 180, "gray");
+        double grayWarmPink = RenderedHeatmapSampler.colorIntensity(215, 65, 160, "gray");
         double grayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray");
         assertTrue(grayViolet > grayLightPink, "gray should prioritize saturated violet center over pale pink");
+        assertTrue(grayWarmPink > grayLightPink, "gray should treat saturated warm-pink evidence as dual-color signal");
         assertTrue(grayLightPink > grayNeutral, "gray should not treat neutral gray brightness as strong heatmap evidence");
 
         double purpleDark = RenderedHeatmapSampler.colorIntensity(85, 40, 110, "purple");

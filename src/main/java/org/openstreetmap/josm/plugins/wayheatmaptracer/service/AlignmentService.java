@@ -107,6 +107,9 @@ public final class AlignmentService {
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
+        if (config.multiColorDetection()) {
+            candidates = applyColorConsensus(candidates);
+        }
         if (config.parallelWayAwareness()) {
             candidates = applyParallelWayContext(selection, mapView, candidates);
         }
@@ -183,6 +186,59 @@ public final class AlignmentService {
             }
         }
         return modes;
+    }
+
+    private List<CenterlineCandidate> applyColorConsensus(List<CenterlineCandidate> candidates) {
+        if (candidates.size() < 2) {
+            return candidates;
+        }
+        List<CenterlineCandidate> scored = new ArrayList<>(candidates.size());
+        for (CenterlineCandidate candidate : candidates) {
+            java.util.Set<String> supportingModes = new java.util.LinkedHashSet<>();
+            double supportWeight = 0.0;
+            for (CenterlineCandidate other : candidates) {
+                if (averageOffsetDistance(candidate, other) > 7.0) {
+                    continue;
+                }
+                String mode = detectorMode(other);
+                if (supportingModes.add(mode)) {
+                    supportWeight += detectorConsensusWeight(mode);
+                }
+            }
+            if (supportingModes.size() <= 1) {
+                scored.add(candidate);
+                continue;
+            }
+            double consensusBonus = supportWeight * 2.4 + supportingModes.size() * 0.8;
+            String consensusId = "consensus-" + supportingModes.size() + "/" + candidate.id();
+            scored.add(candidate.withId(consensusId).withScore(candidate.score() + consensusBonus));
+        }
+        PluginLog.verbose("Multi-color consensus scoring compared %d ridge candidates.", candidates.size());
+        return scored;
+    }
+
+    private String detectorMode(CenterlineCandidate candidate) {
+        String id = candidate.id();
+        int slash = id.indexOf('/');
+        if (slash <= 0) {
+            return id;
+        }
+        String first = id.substring(0, slash);
+        if (first.startsWith("refined-") || first.startsWith("consensus-")) {
+            String rest = id.substring(slash + 1);
+            int nextSlash = rest.indexOf('/');
+            return nextSlash <= 0 ? rest : rest.substring(0, nextSlash);
+        }
+        return first;
+    }
+
+    private double detectorConsensusWeight(String mode) {
+        return switch (mode) {
+            case "dual" -> 1.55;
+            case "bluered", "gray" -> 1.35;
+            case "hot", "blue", "purple" -> 1.0;
+            default -> 0.85;
+        };
     }
 
     private List<CenterlineCandidate> applyParallelWayContext(
@@ -311,6 +367,18 @@ public final class AlignmentService {
         double sum = 0.0;
         for (int i = 0; i < count; i++) {
             sum += left.get(i).distance(right.get(i));
+        }
+        return sum / count;
+    }
+
+    private double averageOffsetDistance(CenterlineCandidate left, CenterlineCandidate right) {
+        int count = Math.min(left.offsetsPx().size(), right.offsetsPx().size());
+        if (count == 0) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double sum = 0.0;
+        for (int i = 0; i < count; i++) {
+            sum += Math.abs(left.offsetsPx().get(i) - right.offsetsPx().get(i));
         }
         return sum / count;
     }

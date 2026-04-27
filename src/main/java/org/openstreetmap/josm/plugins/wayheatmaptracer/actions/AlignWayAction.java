@@ -87,29 +87,18 @@ public class AlignWayAction extends JosmAction {
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView);
             DiagnosticsRegistry.setLastBundle(result.diagnostics().toJson());
 
-            CenterlineCandidate chosen = chooseCandidate(result.candidates());
-            if (chosen == null) {
-                PluginLog.verbose("Alignment cancelled before candidate selection was applied.");
-                return;
-            }
-            AlignmentResult chosenResult = alignmentService.applyCandidate(result, chosen);
             config = PluginPreferences.load();
-            if (!config.allowUndownloadedAlignment()) {
-                requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
-            }
-
-            overlay.show(selection, chosenResult, chosen, PluginPreferences.isDebugEnabled());
             try {
-                int answer = JOptionPane.showConfirmDialog(
-                    MainApplication.getMainFrame(),
-                    buildSummaryPanel(chosenResult, chosen, config),
-                    tr("Apply Heatmap Alignment"),
-                    JOptionPane.OK_CANCEL_OPTION,
-                    JOptionPane.PLAIN_MESSAGE
-                );
-                if (answer != JOptionPane.OK_OPTION) {
+                PreviewSelection preview = chooseCandidateWithPreview(selection, result, config);
+                if (preview == null) {
                     PluginLog.verbose("Alignment cancelled at preview dialog.");
                     return;
+                }
+                CenterlineCandidate chosen = preview.candidate();
+                AlignmentResult chosenResult = preview.result();
+
+                if (!config.allowUndownloadedAlignment()) {
+                    requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
                 }
 
                 AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(selection, config);
@@ -152,69 +141,66 @@ public class AlignWayAction extends JosmAction {
         setEnabled(MainApplication.getLayerManager().getEditDataSet() != null);
     }
 
-    private CenterlineCandidate chooseCandidate(List<CenterlineCandidate> candidates) {
-        if (candidates.isEmpty()) {
+    private PreviewSelection chooseCandidateWithPreview(
+        SelectionContext selection,
+        AlignmentResult result,
+        ManagedHeatmapConfig config
+    ) {
+        if (result.candidates().isEmpty()) {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
         }
-        if (candidates.size() == 1) {
-            return candidates.get(0);
-        }
-
+        CenterlineCandidate initial = result.candidates().get(0);
+        PreviewSelection[] current = {new PreviewSelection(initial, alignmentService.applyCandidate(result, initial))};
+        overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
-        comboBox.setModel(new DefaultComboBoxModel<>(candidates.toArray(CenterlineCandidate[]::new)));
+        comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
+        comboBox.setSelectedItem(initial);
+
+        JPanel panel = buildSummaryPanel(current[0].result(), initial, config, result.candidates().size() > 1 ? comboBox : null);
+        comboBox.addActionListener(event -> {
+            CenterlineCandidate selected = (CenterlineCandidate) comboBox.getSelectedItem();
+            if (selected == null) {
+                return;
+            }
+            current[0] = new PreviewSelection(selected, alignmentService.applyCandidate(result, selected));
+            overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+        });
 
         int answer = JOptionPane.showConfirmDialog(
             MainApplication.getMainFrame(),
-            comboBox,
-            tr("Choose Heatmap Ridge"),
+            panel,
+            tr("Preview Heatmap Alignment"),
             JOptionPane.OK_CANCEL_OPTION,
             JOptionPane.PLAIN_MESSAGE
         );
-        return answer == JOptionPane.OK_OPTION ? (CenterlineCandidate) comboBox.getSelectedItem() : null;
+        return answer == JOptionPane.OK_OPTION ? current[0] : null;
     }
 
-    private JPanel buildSummaryPanel(AlignmentResult result, CenterlineCandidate chosen, ManagedHeatmapConfig config) {
+    private JPanel buildSummaryPanel(AlignmentResult result, CenterlineCandidate chosen, ManagedHeatmapConfig config, JComboBox<CenterlineCandidate> candidates) {
         JPanel panel = new JPanel(new java.awt.GridBagLayout());
+        if (candidates != null) {
+            panel.add(new JLabel(tr("Detected ridge")), GBC.std());
+            panel.add(candidates, GBC.eol().fill(GBC.HORIZONTAL));
+            panel.add(new JLabel(tr("Changing the ridge updates the map preview immediately.")), GBC.eol());
+        } else {
+            panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
+        }
         AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(result.selection(), config);
         String modeLabel = effectiveMode == config.alignmentMode()
             ? config.alignmentMode().displayName()
             : tr("{0} (automatic for rough sketch)", effectiveMode.displayName());
         panel.add(new JLabel(tr("Mode: {0}", modeLabel)), GBC.eol());
-        panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
-        panel.add(new JLabel(tr("Preview points: {0}", Integer.toString(result.previewPolyline().size()))), GBC.eol());
         panel.add(new JLabel(tr("Junction/end nodes: {0}", config.adjustJunctionNodes() ? "adjustable" : "fixed")), GBC.eol());
         panel.add(new JLabel(tr("Simplification: {0}", config.simplifyEnabled() ? "enabled" : "disabled")), GBC.eol());
-        if (effectiveMode == AlignmentMode.MOVE_EXISTING_NODES) {
-            panel.add(new JLabel(tr("Movable nodes: {0}", Integer.toString(result.nodeMoves().size()))), GBC.eol());
-        } else {
-            SegmentChangeEstimate estimate = estimateSegmentChanges(result);
-            panel.add(new JLabel(tr("Existing interior nodes reused: {0}", Integer.toString(estimate.reused()))), GBC.eol());
-            panel.add(new JLabel(tr("Nodes added: {0}", Integer.toString(estimate.added()))), GBC.eol());
-            panel.add(new JLabel(tr("Interior nodes removed: {0}", Integer.toString(estimate.removed()))), GBC.eol());
-        }
         panel.add(new JLabel(tr("Diagnostics file can be exported from More tools.")), GBC.eol());
         if (PluginPreferences.isDebugEnabled()) {
             panel.add(new JLabel(tr("Debug overlay is enabled.")), GBC.eol());
         }
+        panel.add(new JLabel(tr("Preview legend: solid blue = selected result; orange dashed = original; dashed labeled lines = other detected ridges.")), GBC.eol());
         return panel;
     }
 
-    private SegmentChangeEstimate estimateSegmentChanges(AlignmentResult result) {
-        int fixedAnchors = result.selection().fixedNodes().size();
-        int previewMutable = Math.max(0, result.previewPolyline().size() - fixedAnchors);
-        int mutableExisting = 0;
-        for (org.openstreetmap.josm.data.osm.Node node : result.selection().segmentNodes()) {
-            if (!result.selection().fixedNodes().contains(node)) {
-                mutableExisting++;
-            }
-        }
-        int reused = Math.min(previewMutable, mutableExisting);
-        int added = Math.max(0, previewMutable - mutableExisting);
-        int removed = Math.max(0, mutableExisting - previewMutable);
-        return new SegmentChangeEstimate(reused, added, removed);
-    }
-
-    private record SegmentChangeEstimate(int reused, int added, int removed) {
+    private record PreviewSelection(CenterlineCandidate candidate, AlignmentResult result) {
     }
 
     private void showError(String message) {

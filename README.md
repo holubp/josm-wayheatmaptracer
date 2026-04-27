@@ -55,8 +55,8 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
-- Optionally interpret the selected heatmap through all supported color classifiers during detection while keeping only the selected color visible
-- Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual/mixed schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
+- Optionally interpret the selected heatmap through all supported color classifiers during detection while keeping only the selected color visible; candidates supported by multiple classifiers receive a consensus score boost
+- Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
 - Track heatmap corridors longitudinally, including short no-signal gaps, so the result is less likely to jump to a nearby parallel trace because of one locally strong sample
 - Internally refine ridge detection during one run, reducing the need to run alignment repeatedly to converge
 - Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
@@ -74,7 +74,7 @@ The current implementation is designed for private development:
 - Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
 - Detect multiple nearby ridge candidates and allow the user to pick one
-- Show a preview overlay before applying
+- Show a preview overlay before applying, including a legend, labeled alternative ridge candidates, and a ridge selector that updates the preview before confirmation
 - Export a redacted diagnostics bundle for remote debugging
 - Package logs on the JOSM machine with a small bash helper
 

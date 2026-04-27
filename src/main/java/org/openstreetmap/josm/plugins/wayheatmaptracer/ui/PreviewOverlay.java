@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.ui;
 
 import java.awt.BasicStroke;
 import java.awt.Color;
+import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
@@ -59,18 +60,24 @@ public final class PreviewOverlay implements MapViewPaintable {
         }
 
         drawPolyline(g, mv, result.sourcePolyline(), new Color(255, 153, 0, 190), new float[] {6f, 6f}, 2f);
-        drawPolyline(g, mv, result.previewPolyline(), new Color(0, 220, 140, 220), null, 3f);
+        drawCandidateAlternatives(g);
+        drawPolyline(g, mv, result.previewPolyline(), new Color(0, 90, 255, 230), null, 3.5f);
+        drawLegend(g);
+    }
 
-        if (debugEnabled) {
-            for (CenterlineCandidate candidate : result.candidates()) {
-                List<EastNorth> candidatePolyline = new java.util.ArrayList<>();
-                for (Point2D.Double point : candidate.screenPoints()) {
-                    candidatePolyline.add(mv.getEastNorth(
-                        (int) Math.round(point.x / org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE),
-                        (int) Math.round(point.y / org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE)
-                    ));
-                }
-                drawPolyline(g, mv, candidatePolyline, new Color(90, 140, 255, 120), new float[] {2f, 5f}, 1.5f);
+    private void drawCandidateAlternatives(Graphics2D g) {
+        if (result.candidates().size() <= 1) {
+            return;
+        }
+        int index = 1;
+        for (CenterlineCandidate candidate : result.candidates()) {
+            if (candidate.id().equals(chosenCandidate.id())) {
+                continue;
+            }
+            Color color = candidateColor(index++);
+            drawCandidateScreenPolyline(g, candidate, color, new float[] {3f, 5f}, 1.6f);
+            if (index <= 9 || debugEnabled) {
+                drawCandidateLabel(g, candidate, color);
             }
         }
     }
@@ -89,5 +96,80 @@ public final class PreviewOverlay implements MapViewPaintable {
         g.setColor(color);
         g.setStroke(dash == null ? new BasicStroke(width) : new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, dash, 0f));
         g.draw(path);
+    }
+
+    private void drawCandidateScreenPolyline(Graphics2D g, CenterlineCandidate candidate, Color color, float[] dash, float width) {
+        if (candidate.screenPoints().size() < 2) {
+            return;
+        }
+        double scale = org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE;
+        Path2D path = new Path2D.Double();
+        Point2D.Double first = candidate.screenPoints().get(0);
+        path.moveTo(first.x / scale, first.y / scale);
+        for (int i = 1; i < candidate.screenPoints().size(); i++) {
+            Point2D.Double point = candidate.screenPoints().get(i);
+            path.lineTo(point.x / scale, point.y / scale);
+        }
+        g.setColor(color);
+        g.setStroke(new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, dash, 0f));
+        g.draw(path);
+    }
+
+    private void drawCandidateLabel(Graphics2D g, CenterlineCandidate candidate, Color color) {
+        if (candidate.screenPoints().isEmpty()) {
+            return;
+        }
+        double scale = org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.RASTER_SCALE;
+        Point2D.Double point = candidate.screenPoints().get(candidate.screenPoints().size() / 2);
+        String text = compactLabel(candidate);
+        int x = (int) Math.round(point.x / scale) + 6;
+        int y = (int) Math.round(point.y / scale) - 6;
+        g.setFont(g.getFont().deriveFont(Font.BOLD, 11f));
+        int width = g.getFontMetrics().stringWidth(text) + 8;
+        int height = g.getFontMetrics().getHeight() + 4;
+        g.setColor(new Color(255, 255, 255, 215));
+        g.fillRoundRect(x - 4, y - height + 4, width, height, 6, 6);
+        g.setColor(color.darker());
+        g.drawString(text, x, y);
+    }
+
+    private void drawLegend(Graphics2D g) {
+        int x = 14;
+        int y = 24;
+        g.setFont(g.getFont().deriveFont(Font.PLAIN, 12f));
+        drawLegendItem(g, x, y, new Color(0, 90, 255, 230), null, "selected preview");
+        drawLegendItem(g, x, y + 18, new Color(255, 153, 0, 190), new float[] {6f, 6f}, "original segment");
+        if (result.candidates().size() > 1) {
+            drawLegendItem(g, x, y + 36, new Color(130, 80, 230, 150), new float[] {3f, 5f}, "other detected ridges");
+        }
+    }
+
+    private void drawLegendItem(Graphics2D g, int x, int y, Color color, float[] dash, String text) {
+        g.setColor(new Color(255, 255, 255, 210));
+        g.fillRoundRect(x - 6, y - 13, 180, 17, 6, 6);
+        g.setColor(color);
+        g.setStroke(dash == null ? new BasicStroke(3f) : new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, dash, 0f));
+        g.drawLine(x, y - 5, x + 28, y - 5);
+        g.setColor(Color.DARK_GRAY);
+        g.drawString(text, x + 36, y);
+    }
+
+    private Color candidateColor(int index) {
+        Color[] colors = {
+            new Color(130, 80, 230, 150),
+            new Color(0, 160, 180, 150),
+            new Color(230, 90, 70, 150),
+            new Color(90, 140, 255, 150),
+            new Color(180, 110, 0, 150)
+        };
+        return colors[Math.floorMod(index - 1, colors.length)];
+    }
+
+    private String compactLabel(CenterlineCandidate candidate) {
+        String label = candidate.displayName();
+        if (label.length() <= 34) {
+            return label;
+        }
+        return label.substring(0, 31) + "...";
     }
 }
