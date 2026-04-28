@@ -38,6 +38,31 @@ class CenterlineCandidateTest {
     }
 
     @Test
+    void formatsFusedConsensusWithoutFakeDetectorMode() {
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "consensus-3/consensus/ridge-1",
+            42.0,
+            List.of(new Point2D.Double(0, 0), new Point2D.Double(1, 1)),
+            List.of(0.0, 1.0)
+        ).withEvidence(new CandidateEvidence(
+            "consensus",
+            2,
+            2,
+            0,
+            0,
+            1.0,
+            0.5,
+            0.5,
+            0.0,
+            List.of("blue", "hot", "gray")
+        ));
+
+        assertEquals("Consensus: blue + hot + gray - ridge 1 - strong", candidate.displayName());
+        assertFalse(candidate.displayName().contains("Blue detector"));
+        assertFalse(candidate.displayName().contains("Consensus detector"));
+    }
+
+    @Test
     void formatsLowConfidenceWarningsForUsers() {
         CenterlineCandidate candidate = new CenterlineCandidate(
             "blue/ridge-1",

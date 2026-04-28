@@ -148,8 +148,10 @@ public final class RenderedHeatmapSampler {
             }
             peaks.add(buildBandPeak(offsets, smoothed, strongest, strongest, strongest));
         }
-        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
-        return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
+        double sampleStep = estimateSampleStep(offsets);
+        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, sampleStep);
+        List<CrossSectionPeak> withCorridorCenters = addBroadCorridorCenters(merged, sampleStep);
+        return addPairedShoulderCenters(withCorridorCenters, sampleStep);
     }
 
     private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks, double sampleStep) {
@@ -174,9 +176,36 @@ public final class RenderedHeatmapSampler {
                 if (balanced && weaker >= 0.32 && gap >= sampleStep * 1.5 && gap <= sampleStep * 6.0) {
                     double center = (left.offsetPx() * right.intensity() + right.offsetPx() * left.intensity())
                         / (left.intensity() + right.intensity());
-                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true));
+                    augmented.add(new CrossSectionPeak(center, Math.min(1.0, weaker * 1.04), gap, true));
                 }
             }
+        }
+        return mergeClosePeaks(augmented, sampleStep);
+    }
+
+    private List<CrossSectionPeak> addBroadCorridorCenters(List<CrossSectionPeak> peaks, double sampleStep) {
+        if (peaks.size() < 2) {
+            return peaks;
+        }
+        List<CrossSectionPeak> sorted = new ArrayList<>(peaks);
+        sorted.sort(java.util.Comparator.comparingDouble(CrossSectionPeak::offsetPx));
+        List<CrossSectionPeak> augmented = new ArrayList<>(sorted);
+        for (int i = 0; i < sorted.size() - 1; i++) {
+            CrossSectionPeak left = sorted.get(i);
+            CrossSectionPeak right = sorted.get(i + 1);
+            double gap = right.offsetPx() - left.offsetPx();
+            double weaker = Math.min(left.intensity(), right.intensity());
+            double stronger = Math.max(left.intensity(), right.intensity());
+            boolean balanced = stronger == 0.0 || weaker / stronger >= 0.70;
+            boolean broadEnough = gap >= sampleStep * 2.0 && gap <= sampleStep * 5.0;
+            boolean notBothNeedleStrands = Math.max(left.supportWidthPx(), right.supportWidthPx()) >= sampleStep
+                || gap <= sampleStep * 4.0;
+            if (!balanced || !broadEnough || !notBothNeedleStrands || weaker < 0.30) {
+                continue;
+            }
+            double center = (left.offsetPx() * right.intensity() + right.offsetPx() * left.intensity())
+                / (left.intensity() + right.intensity());
+            augmented.add(new CrossSectionPeak(center, Math.min(1.0, weaker * 1.08), gap, true));
         }
         return mergeClosePeaks(augmented, sampleStep);
     }

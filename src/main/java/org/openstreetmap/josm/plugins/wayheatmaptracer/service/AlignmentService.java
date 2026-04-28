@@ -27,6 +27,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray");
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
+    private static final double MAX_ENDPOINT_APPROACH_TURN_DEGREES = 55.0;
+    private static final double JUNCTION_APPROACH_GUARD_METERS = 20.0;
     private static final int MAX_INTERNAL_REFINEMENT_PASSES = 0;
     private static final double MIN_REFINEMENT_SCORE_GAIN = 0.75;
     private static final double PARALLEL_MATCH_THRESHOLD_METERS = 18.0;
@@ -309,7 +311,7 @@ public final class AlignmentService {
             return CandidateSafety.hardReject("self-intersection");
         }
 
-        TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(detectorMode(candidate));
+        TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(primarySamplingMode(candidate));
         double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
         if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
             return CandidateSafety.hardReject("most samples are pinned to the search edge", boundaryHitRatio);
@@ -370,25 +372,45 @@ public final class AlignmentService {
     }
 
     private double validationSupportRatio(CenterlineCandidate candidate, TileHeatmapSampler.TileMosaicSet fixedTiles) {
-        TileHeatmapSampler.TileMosaic validationMosaic = fixedTiles.validation(detectorMode(candidate));
-        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = tileSampler.sampleProfiles(
-            validationMosaic,
-            candidate.eastNorthPoints(),
-            detectorMode(candidate)
-        );
-        if (profiles.isEmpty()) {
+        List<String> modes = samplingModes(candidate);
+        if (modes.isEmpty()) {
             return 0.0;
         }
-        double centerWindow = Math.max(2.0, validationMosaic.parameters().stepPx() * 1.5);
+        int profileCount = 0;
+        boolean[] supportedByAny = new boolean[0];
+        for (String mode : modes) {
+            TileHeatmapSampler.TileMosaic validationMosaic = fixedTiles.validation(mode);
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = tileSampler.sampleProfiles(
+                validationMosaic,
+                candidate.eastNorthPoints(),
+                mode
+            );
+            if (profiles.isEmpty()) {
+                continue;
+            }
+            if (supportedByAny.length == 0) {
+                profileCount = profiles.size();
+                supportedByAny = new boolean[profileCount];
+            }
+            double centerWindow = Math.max(2.0, validationMosaic.parameters().stepPx() * 1.5);
+            for (int i = 0; i < Math.min(profileCount, profiles.size()); i++) {
+                RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+                if (profile.peaks().stream()
+                    .anyMatch(peak -> Math.abs(peak.offsetPx()) <= centerWindow && peak.intensity() >= 0.12)) {
+                    supportedByAny[i] = true;
+                }
+            }
+        }
+        if (profileCount == 0) {
+            return 0.0;
+        }
         int supported = 0;
-        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-            boolean centered = profile.peaks().stream()
-                .anyMatch(peak -> Math.abs(peak.offsetPx()) <= centerWindow && peak.intensity() >= 0.12);
-            if (centered) {
+        for (boolean value : supportedByAny) {
+            if (value) {
                 supported++;
             }
         }
-        return (double) supported / profiles.size();
+        return (double) supported / profileCount;
     }
 
     private String rejectionSummary(List<String> reasons) {
@@ -485,11 +507,37 @@ public final class AlignmentService {
         return modes;
     }
 
-    private List<CenterlineCandidate> applyColorConsensus(List<CenterlineCandidate> candidates) {
+    List<CenterlineCandidate> applyColorConsensus(List<CenterlineCandidate> candidates) {
         if (candidates.size() < 2) {
             return candidates;
         }
         List<CenterlineCandidate> scored = new ArrayList<>(candidates.size());
+        List<CenterlineCandidate> fused = new ArrayList<>();
+        java.util.Set<CenterlineCandidate> clustered = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        List<CenterlineCandidate> signalCandidates = candidates.stream()
+            .filter(candidate -> candidate.evidence().hasSignal())
+            .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+            .toList();
+        int consensusIndex = 1;
+        for (CenterlineCandidate seed : signalCandidates) {
+            if (clustered.contains(seed)) {
+                continue;
+            }
+            List<CenterlineCandidate> cluster = compatibleConsensusCluster(seed, signalCandidates);
+            java.util.Set<String> modes = new java.util.LinkedHashSet<>();
+            for (CenterlineCandidate member : cluster) {
+                modes.add(detectorMode(member));
+            }
+            if (modes.size() <= 1) {
+                continue;
+            }
+            clustered.addAll(cluster);
+            CenterlineCandidate consensus = fuseConsensusCandidate(consensusIndex++, cluster, List.copyOf(modes));
+            if (consensus != null) {
+                fused.add(consensus);
+            }
+        }
+
         for (CenterlineCandidate candidate : candidates) {
             if (!candidate.evidence().hasSignal()) {
                 scored.add(candidate);
@@ -513,15 +561,151 @@ public final class AlignmentService {
                 scored.add(candidate);
                 continue;
             }
-            double consensusBonus = supportWeight * 8.0 + supportingModes.size() * 0.6;
-            String consensusId = "consensus-" + supportingModes.size() + "/" + candidate.id();
+            double consensusBonus = supportWeight * 2.5 + supportingModes.size() * 0.25;
             scored.add(candidate
-                .withId(consensusId)
                 .withScore(candidate.score() + consensusBonus)
                 .withEvidence(candidate.evidence().withConsensusModes(List.copyOf(supportingModes))));
         }
-        PluginLog.verbose("Multi-color consensus scoring compared %d ridge candidates.", candidates.size());
+        scored.addAll(fused);
+        PluginLog.verbose("Multi-color consensus scoring compared %d ridge candidates and produced %d fused consensus candidates.",
+            candidates.size(), fused.size());
         return scored;
+    }
+
+    private List<CenterlineCandidate> compatibleConsensusCluster(
+        CenterlineCandidate seed,
+        List<CenterlineCandidate> candidates
+    ) {
+        List<CenterlineCandidate> cluster = new ArrayList<>();
+        java.util.Set<String> usedModes = new java.util.LinkedHashSet<>();
+        for (CenterlineCandidate candidate : candidates) {
+            if (!candidate.evidence().hasSignal()) {
+                continue;
+            }
+            String mode = detectorMode(candidate);
+            if (usedModes.contains(mode)) {
+                continue;
+            }
+            if (averageOffsetDistance(seed, candidate) > 7.0) {
+                continue;
+            }
+            cluster.add(candidate);
+            usedModes.add(mode);
+        }
+        return cluster;
+    }
+
+    private CenterlineCandidate fuseConsensusCandidate(
+        int index,
+        List<CenterlineCandidate> cluster,
+        List<String> modes
+    ) {
+        int count = cluster.stream()
+            .mapToInt(candidate -> candidate.offsetsPx().size())
+            .min()
+            .orElse(0);
+        if (count < 2 || modes.size() < 2) {
+            return null;
+        }
+
+        List<Double> weights = cluster.stream().map(this::consensusCandidateWeight).toList();
+        List<Double> offsets = new ArrayList<>(count);
+        List<Point2D.Double> screenPoints = new ArrayList<>(count);
+        List<EastNorth> eastNorthPoints = new ArrayList<>();
+        boolean hasEastNorth = cluster.stream().allMatch(candidate -> candidate.eastNorthPoints().size() >= count);
+        for (int i = 0; i < count; i++) {
+            offsets.add(weightedMedianOffset(cluster, weights, i));
+            double totalWeight = 0.0;
+            double x = 0.0;
+            double y = 0.0;
+            double east = 0.0;
+            double north = 0.0;
+            for (int j = 0; j < cluster.size(); j++) {
+                CenterlineCandidate candidate = cluster.get(j);
+                double weight = weights.get(j);
+                Point2D.Double point = candidate.screenPoints().get(i);
+                x += point.x * weight;
+                y += point.y * weight;
+                if (hasEastNorth) {
+                    EastNorth projected = candidate.eastNorthPoints().get(i);
+                    east += projected.east() * weight;
+                    north += projected.north() * weight;
+                }
+                totalWeight += weight;
+            }
+            double denominator = totalWeight == 0.0 ? 1.0 : totalWeight;
+            screenPoints.add(new Point2D.Double(x / denominator, y / denominator));
+            if (hasEastNorth) {
+                eastNorthPoints.add(new EastNorth(east / denominator, north / denominator));
+            }
+        }
+
+        double score = cluster.stream().mapToDouble(CenterlineCandidate::score).max().orElse(0.0)
+            + cluster.stream().mapToDouble(candidate -> consensusCandidateWeight(candidate) * 12.0).sum()
+            + modes.size() * 2.5
+            - fusedOffsetRoughness(offsets) * 0.35;
+        CandidateEvidence evidence = fusedEvidence(cluster, modes);
+        return new CenterlineCandidate(
+            "consensus-" + modes.size() + "/consensus/ridge-" + index,
+            score,
+            screenPoints,
+            offsets,
+            eastNorthPoints,
+            evidence,
+            List.of()
+        );
+    }
+
+    private double consensusCandidateWeight(CenterlineCandidate candidate) {
+        CandidateEvidence evidence = candidate.evidence();
+        double signal = Math.max(0.04, evidence.signalToNoise());
+        double support = Math.max(0.10, evidence.supportRatio());
+        double ambiguity = 1.0 / (1.0 + Math.max(0.0, evidence.ambiguity()));
+        return detectorConsensusWeight(detectorMode(candidate)) * signal * (0.35 + support) * ambiguity;
+    }
+
+    private double weightedMedianOffset(List<CenterlineCandidate> cluster, List<Double> weights, int offsetIndex) {
+        List<double[]> values = new ArrayList<>();
+        double total = 0.0;
+        for (int i = 0; i < cluster.size(); i++) {
+            double weight = weights.get(i);
+            values.add(new double[] {cluster.get(i).offsetsPx().get(offsetIndex), weight});
+            total += weight;
+        }
+        values.sort(java.util.Comparator.comparingDouble(value -> value[0]));
+        double running = 0.0;
+        double midpoint = total / 2.0;
+        for (double[] value : values) {
+            running += value[1];
+            if (running >= midpoint) {
+                return value[0];
+            }
+        }
+        return values.get(values.size() - 1)[0];
+    }
+
+    private CandidateEvidence fusedEvidence(List<CenterlineCandidate> cluster, List<String> modes) {
+        int totalProfiles = cluster.stream().mapToInt(candidate -> candidate.evidence().totalProfiles()).max().orElse(0);
+        int supported = cluster.stream().mapToInt(candidate -> candidate.evidence().supportedProfiles()).max().orElse(0);
+        int empty = cluster.stream().mapToInt(candidate -> candidate.evidence().emptyProfiles()).min().orElse(0);
+        int maxEmpty = cluster.stream().mapToInt(candidate -> candidate.evidence().maxConsecutiveEmptyProfiles()).min().orElse(0);
+        double totalIntensity = cluster.stream().mapToDouble(candidate -> candidate.evidence().totalIntensity()).average().orElse(0.0);
+        double meanIntensity = cluster.stream().mapToDouble(candidate -> candidate.evidence().meanIntensity()).average().orElse(0.0);
+        double snr = cluster.stream().mapToDouble(candidate -> candidate.evidence().signalToNoise()).average().orElse(0.0);
+        double ambiguity = cluster.stream().mapToDouble(candidate -> candidate.evidence().ambiguity()).min().orElse(0.0);
+        return new CandidateEvidence("consensus", totalProfiles, supported, empty, maxEmpty,
+            totalIntensity, meanIntensity, snr, ambiguity, modes);
+    }
+
+    private double fusedOffsetRoughness(List<Double> offsets) {
+        if (offsets.size() < 3) {
+            return 0.0;
+        }
+        double roughness = 0.0;
+        for (int i = 1; i < offsets.size() - 1; i++) {
+            roughness += Math.abs(offsets.get(i + 1) - 2 * offsets.get(i) + offsets.get(i - 1));
+        }
+        return roughness / (offsets.size() - 2);
     }
 
     private String detectorMode(CenterlineCandidate candidate) {
@@ -537,6 +721,18 @@ public final class AlignmentService {
             return nextSlash <= 0 ? rest : rest.substring(0, nextSlash);
         }
         return first;
+    }
+
+    private String primarySamplingMode(CenterlineCandidate candidate) {
+        List<String> modes = samplingModes(candidate);
+        return modes.isEmpty() ? detectorMode(candidate) : modes.get(0);
+    }
+
+    private List<String> samplingModes(CenterlineCandidate candidate) {
+        if ("consensus".equals(candidate.evidence().detectorMode()) && !candidate.evidence().consensusModes().isEmpty()) {
+            return candidate.evidence().consensusModes();
+        }
+        return List.of(detectorMode(candidate));
     }
 
     private double detectorConsensusWeight(String mode) {
@@ -1071,7 +1267,114 @@ public final class AlignmentService {
                 PluginLog.debug("Removed a near-anchor precise preview point to avoid an unsupported %.1f degree fixed-node turn.", turn);
             }
         }
+        return guardPreciseEndpointApproaches(selection, sourcePolyline, guarded);
+    }
+
+    List<EastNorth> guardPreciseEndpointApproaches(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> preview
+    ) {
+        if (preview.size() < 3 || sourcePolyline.size() < 2) {
+            return preview;
+        }
+        List<EastNorth> guarded = new ArrayList<>(preview);
+        if (selection.fixedNodes().contains(selection.segmentNodes().get(0))) {
+            guardEndpointApproach(guarded, sourcePolyline, true);
+        }
+        if (selection.fixedNodes().contains(selection.segmentNodes().get(selection.segmentNodes().size() - 1))) {
+            guardEndpointApproach(guarded, sourcePolyline, false);
+        }
         return guarded;
+    }
+
+    private void guardEndpointApproach(List<EastNorth> guarded, List<EastNorth> sourcePolyline, boolean start) {
+        while (guarded.size() >= 3 && endpointApproachTurnDegrees(guarded, sourcePolyline, start) > MAX_ENDPOINT_APPROACH_TURN_DEGREES) {
+            int removeIndex = start ? 1 : guarded.size() - 2;
+            EastNorth anchor = start ? guarded.get(0) : guarded.get(guarded.size() - 1);
+            EastNorth removable = guarded.get(removeIndex);
+            if (anchor.distance(removable) > JUNCTION_APPROACH_GUARD_METERS) {
+                break;
+            }
+            double turn = endpointApproachTurnDegrees(guarded, sourcePolyline, start);
+            guarded.remove(removeIndex);
+            PluginLog.debug("Removed a near-%s endpoint point %.1fm from the fixed junction to preserve the selected way approach direction (turn %.1f degrees).",
+                start ? "start" : "end", anchor.distance(removable), turn);
+        }
+        if (guarded.size() < 3 || endpointApproachTurnDegrees(guarded, sourcePolyline, start) <= MAX_ENDPOINT_APPROACH_TURN_DEGREES) {
+            return;
+        }
+        EastNorth anchor = start ? guarded.get(0) : guarded.get(guarded.size() - 1);
+        EastNorth next = start ? guarded.get(1) : guarded.get(guarded.size() - 2);
+        if (anchor.distance(next) <= 6.0) {
+            return;
+        }
+        EastNorth tangentPoint = sourceApproachPoint(sourcePolyline, start, Math.min(12.0, anchor.distance(next) * 0.40));
+        if (start) {
+            guarded.add(1, tangentPoint);
+        } else {
+            guarded.add(guarded.size() - 1, tangentPoint);
+        }
+        PluginLog.debug("Inserted a tangent-preserving %s endpoint approach point %.1fm from the fixed junction.",
+            start ? "start" : "end", anchor.distance(tangentPoint));
+    }
+
+    private double endpointApproachTurnDegrees(List<EastNorth> preview, List<EastNorth> sourcePolyline, boolean start) {
+        EastNorth anchor = start ? preview.get(0) : preview.get(preview.size() - 1);
+        EastNorth sourceApproach = sourceApproachPoint(sourcePolyline, start, JUNCTION_APPROACH_GUARD_METERS);
+        EastNorth previewApproach = start ? preview.get(1) : preview.get(preview.size() - 2);
+        return angleBetweenVectors(anchor, sourceApproach, previewApproach);
+    }
+
+    private double angleBetweenVectors(EastNorth origin, EastNorth left, EastNorth right) {
+        double ax = left.east() - origin.east();
+        double ay = left.north() - origin.north();
+        double bx = right.east() - origin.east();
+        double by = right.north() - origin.north();
+        double aNorm = Math.hypot(ax, ay);
+        double bNorm = Math.hypot(bx, by);
+        if (aNorm == 0.0 || bNorm == 0.0) {
+            return 0.0;
+        }
+        double cosine = (ax * bx + ay * by) / (aNorm * bNorm);
+        cosine = Math.max(-1.0, Math.min(1.0, cosine));
+        return Math.toDegrees(Math.acos(cosine));
+    }
+
+    private EastNorth sourceApproachPoint(List<EastNorth> sourcePolyline, boolean start, double distanceMeters) {
+        double remaining = Math.max(0.1, distanceMeters);
+        if (start) {
+            EastNorth previous = sourcePolyline.get(0);
+            for (int i = 1; i < sourcePolyline.size(); i++) {
+                EastNorth current = sourcePolyline.get(i);
+                double segment = previous.distance(current);
+                if (segment >= remaining) {
+                    double t = remaining / segment;
+                    return new EastNorth(
+                        previous.east() + (current.east() - previous.east()) * t,
+                        previous.north() + (current.north() - previous.north()) * t
+                    );
+                }
+                remaining -= segment;
+                previous = current;
+            }
+            return sourcePolyline.get(sourcePolyline.size() - 1);
+        }
+        EastNorth previous = sourcePolyline.get(sourcePolyline.size() - 1);
+        for (int i = sourcePolyline.size() - 2; i >= 0; i--) {
+            EastNorth current = sourcePolyline.get(i);
+            double segment = previous.distance(current);
+            if (segment >= remaining) {
+                double t = remaining / segment;
+                return new EastNorth(
+                    previous.east() + (current.east() - previous.east()) * t,
+                    previous.north() + (current.north() - previous.north()) * t
+                );
+            }
+            remaining -= segment;
+            previous = current;
+        }
+        return sourcePolyline.get(0);
     }
 
     private boolean isFixedAnchorPoint(SelectionContext selection, List<EastNorth> sourcePolyline, EastNorth point) {
@@ -1245,8 +1548,7 @@ public final class AlignmentService {
 
     private String doubleArray(List<Double> values) {
         StringBuilder builder = new StringBuilder("[");
-        int limit = Math.min(values.size(), 40);
-        for (int i = 0; i < limit; i++) {
+        for (int i = 0; i < values.size(); i++) {
             if (i > 0) {
                 builder.append(',');
             }

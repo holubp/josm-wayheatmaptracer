@@ -57,9 +57,9 @@ The current implementation is designed for private development:
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
 - For the managed heatmap source, sample fixed source tiles directly at the configured inference zoom and validate against a lower/equal zoom, so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
-- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus is weighted by signal quality so color schemes with clearer heatmap evidence contribute more
+- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus creates a fused multi-color candidate weighted by signal quality so color schemes with clearer heatmap evidence contribute more
 - Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
-- Track heatmap corridors longitudinally, including short no-signal gaps, so the result is less likely to jump to a nearby parallel trace because of one locally strong sample
+- Track heatmap corridors longitudinally, including short no-signal gaps and broad/high-traffic conduit centers, so the result is less likely to zig-zag between shoulders or jump to a nearby parallel trace because of one locally strong sample
 - Downweight narrow wandering outlier strands when a stronger coherent center is present, while still allowing low-intensity paths whose whole heatmap evidence consists of sparse strands
 - Reject unsafe managed-tile candidates with sparse support, long no-signal gaps, edge-of-band hits, lower-zoom validation failure, self-intersection, or large low-support displacement on normal existing ways
 - Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
@@ -71,7 +71,7 @@ The current implementation is designed for private development:
 - Offer two alignment modes:
   `Move Existing Nodes` keeps the node count and only moves non-fixed interior nodes
   `Precise Shape` rebuilds the selected segment from the traced heatmap centerline, reusing existing nodes where possible and adding or removing interior nodes as needed
-- Keep segment endpoints fixed
+- Keep segment endpoints fixed and guard the approach direction near fixed junctions so brighter crossing/main-road heatmap blobs do not create unsupported endpoint kinks
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
 - Select the longest segment of a selected way bounded by endpoints or junction nodes
 - Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`

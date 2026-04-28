@@ -86,13 +86,14 @@ public final class RidgeTracker {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
         double supportBonus = Math.min(0.22, peak.supportWidthPx() / 80.0);
-        double centerBonus = peak.syntheticCenter() ? 0.10 : 0.0;
+        double centerBonus = peak.syntheticCenter() ? 0.42 : 0.0;
         double evidence = peak.intensity() * (2.6 + supportBonus + centerBonus);
         double jump = Math.abs(delta);
         double continuityPenalty = jump * (peak.intensity() >= 0.30 ? 0.17 : 0.10);
         double curvaturePenalty = Math.abs(acceleration) * 0.16;
         double modeJumpPenalty = jump > 10.0 && peak.intensity() < 0.70 ? (jump - 10.0) * 0.20 : 0.0;
         double dominatedStrandPenalty = dominatedStrandPenalty(profile, peak);
+        double corridorShoulderPenalty = corridorShoulderPenalty(profile, peak);
         List<Double> offsets = new ArrayList<>(previous.offsets());
         List<Double> intensities = new ArrayList<>(previous.intensities());
         offsets.add(peak.offsetPx());
@@ -100,10 +101,36 @@ public final class RidgeTracker {
         return new State(
             peak.offsetPx(),
             delta,
-            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty - dominatedStrandPenalty,
+            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty
+                - dominatedStrandPenalty - corridorShoulderPenalty,
             offsets,
             intensities
         );
+    }
+
+    private double corridorShoulderPenalty(
+        RenderedHeatmapSampler.CrossSectionProfile profile,
+        RenderedHeatmapSampler.CrossSectionPeak peak
+    ) {
+        if (peak.syntheticCenter() || profile.peaks().size() < 2) {
+            return 0.0;
+        }
+        RenderedHeatmapSampler.CrossSectionPeak center = profile.peaks().stream()
+            .filter(RenderedHeatmapSampler.CrossSectionPeak::syntheticCenter)
+            .min(Comparator.comparingDouble(candidate -> Math.abs(candidate.offsetPx() - peak.offsetPx())))
+            .orElse(null);
+        if (center == null) {
+            return 0.0;
+        }
+        double distance = Math.abs(center.offsetPx() - peak.offsetPx());
+        if (distance < 4.0 || distance > Math.max(18.0, center.supportWidthPx())) {
+            return 0.0;
+        }
+        double intensityRatio = center.intensity() <= 0.0 ? 0.0 : peak.intensity() / center.intensity();
+        if (intensityRatio > 1.18) {
+            return 0.0;
+        }
+        return 0.45 + Math.min(0.90, distance / 18.0) + Math.max(0.0, center.intensity() - peak.intensity()) * 0.65;
     }
 
     private double dominatedStrandPenalty(

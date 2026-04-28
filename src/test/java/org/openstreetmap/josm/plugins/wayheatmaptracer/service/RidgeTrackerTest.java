@@ -195,6 +195,23 @@ class RidgeTrackerTest {
             "Sparse low-intensity paths may legitimately consist only of individual strands");
     }
 
+    @Test
+    void prefersSyntheticCorridorCenterOverAlternatingShoulders() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidths(0, -14, 0.54, 4, -2, 0.50, 4, -8, 0.56, 12),
+            profileWithWidths(10, -16, 0.57, 4, -2, 0.52, 4, -9, 0.58, 14),
+            profileWithWidths(20, -14, 0.53, 4, -2, 0.54, 4, -8, 0.56, 12),
+            profileWithWidths(30, -16, 0.56, 4, -2, 0.51, 4, -9, 0.58, 14),
+            profileWithWidths(40, -14, 0.52, 4, -2, 0.53, 4, -8, 0.56, 12)
+        );
+
+        var best = tracker.track(profiles).get(0);
+
+        assertTrue(best.offsetsPx().stream().allMatch(offset -> offset < -5.0 && offset > -11.0),
+            "Broad heatmap conduits should trace their center instead of alternating between shoulders");
+    }
+
     private RenderedHeatmapSampler.CrossSectionProfile profile(double x, double leftOffset, double leftIntensity, double rightOffset, double rightIntensity) {
         return new RenderedHeatmapSampler.CrossSectionProfile(
             new EastNorth(x, 0),
@@ -241,6 +258,30 @@ class RidgeTrackerTest {
             List.of(
                 new RenderedHeatmapSampler.CrossSectionPeak(leftOffset, leftIntensity, leftWidth, false),
                 new RenderedHeatmapSampler.CrossSectionPeak(rightOffset, rightIntensity, rightWidth, false)
+            )
+        );
+    }
+
+    private RenderedHeatmapSampler.CrossSectionProfile profileWithWidths(
+        double x,
+        double leftOffset,
+        double leftIntensity,
+        double leftWidth,
+        double rightOffset,
+        double rightIntensity,
+        double rightWidth,
+        double centerOffset,
+        double centerIntensity,
+        double centerWidth
+    ) {
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(x, 0),
+            new Point2D.Double(x, 0),
+            new Point2D.Double(0, 1),
+            List.of(
+                new RenderedHeatmapSampler.CrossSectionPeak(leftOffset, leftIntensity, leftWidth, false),
+                new RenderedHeatmapSampler.CrossSectionPeak(rightOffset, rightIntensity, rightWidth, false),
+                new RenderedHeatmapSampler.CrossSectionPeak(centerOffset, centerIntensity, centerWidth, true)
             )
         );
     }

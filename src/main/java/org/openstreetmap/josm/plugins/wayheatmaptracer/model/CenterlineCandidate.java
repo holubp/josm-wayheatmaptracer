@@ -55,16 +55,31 @@ public record CenterlineCandidate(
             index++;
         }
         while (index < parts.length && parts[index].startsWith("consensus-")) {
-            String count = parts[index].substring("consensus-".length());
-            label.append("Consensus ").append(count).append(" detectors - ");
+            String modes = consensusModesLabel();
+            if (modes.isBlank()) {
+                String count = parts[index].substring("consensus-".length());
+                label.append("Consensus ").append(count).append(" detectors");
+            } else {
+                label.append("Consensus: ").append(modes);
+            }
+            label.append(" - ");
             index++;
         }
-        if (index < parts.length) {
+        if (index < parts.length && "consensus".equals(parts[index])) {
+            index++;
+        }
+        if (index < parts.length && parts[index].startsWith("ridge-") && label.toString().startsWith("Consensus")) {
+            label.append(parts[index].replace('-', ' '));
+            index++;
+        } else if (index < parts.length) {
             label.append(capitalize(parts[index])).append(" detector");
             index++;
         }
         if (index < parts.length) {
-            label.append(" - ").append(parts[index].replace('-', ' '));
+            if (!label.isEmpty() && !label.toString().endsWith(" - ")) {
+                label.append(" - ");
+            }
+            label.append(parts[index].replace('-', ' '));
             index++;
         }
         while (index < parts.length) {
@@ -106,5 +121,12 @@ public record CenterlineCandidate(
             return "";
         }
         return value.substring(0, 1).toUpperCase(java.util.Locale.ROOT) + value.substring(1);
+    }
+
+    private String consensusModesLabel() {
+        if (evidence.consensusModes().isEmpty()) {
+            return "";
+        }
+        return String.join(" + ", evidence.consensusModes());
     }
 }
