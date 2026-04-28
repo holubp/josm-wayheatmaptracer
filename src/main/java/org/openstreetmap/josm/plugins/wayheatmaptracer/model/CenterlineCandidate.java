@@ -11,26 +11,39 @@ public record CenterlineCandidate(
     List<Point2D.Double> screenPoints,
     List<Double> offsetsPx,
     List<EastNorth> eastNorthPoints,
-    CandidateEvidence evidence
+    CandidateEvidence evidence,
+    List<String> safetyWarnings
 ) {
+    public CenterlineCandidate {
+        screenPoints = screenPoints == null ? List.of() : List.copyOf(screenPoints);
+        offsetsPx = offsetsPx == null ? List.of() : List.copyOf(offsetsPx);
+        eastNorthPoints = eastNorthPoints == null ? List.of() : List.copyOf(eastNorthPoints);
+        evidence = evidence == null ? CandidateEvidence.empty() : evidence;
+        safetyWarnings = safetyWarnings == null ? List.of() : List.copyOf(safetyWarnings);
+    }
+
     public CenterlineCandidate(String id, double score, List<Point2D.Double> screenPoints, List<Double> offsetsPx) {
-        this(id, score, screenPoints, offsetsPx, List.of(), CandidateEvidence.empty());
+        this(id, score, screenPoints, offsetsPx, List.of(), CandidateEvidence.empty(), List.of());
     }
 
     public CenterlineCandidate withId(String newId) {
-        return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints, evidence);
+        return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
     }
 
     public CenterlineCandidate withScore(double newScore) {
-        return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints, evidence);
+        return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
     }
 
     public CenterlineCandidate withEastNorthPoints(List<EastNorth> points) {
-        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points == null ? List.of() : List.copyOf(points), evidence);
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points, evidence, safetyWarnings);
     }
 
     public CenterlineCandidate withEvidence(CandidateEvidence newEvidence) {
-        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, newEvidence == null ? CandidateEvidence.empty() : newEvidence);
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, newEvidence, safetyWarnings);
+    }
+
+    public CenterlineCandidate withSafetyWarnings(List<String> warnings) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, evidence, warnings);
     }
 
     public String displayName() {
@@ -59,6 +72,9 @@ public record CenterlineCandidate(
             index++;
         }
         label.append(" - ").append(confidenceLabel());
+        if (!safetyWarnings.isEmpty()) {
+            label.append(" - ").append(String.join(", ", safetyWarnings));
+        }
         return label.toString();
     }
 

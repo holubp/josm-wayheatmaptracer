@@ -106,6 +106,14 @@ public class AlignWayAction extends JosmAction {
             overlay.hide();
             Logging.error(ex);
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
+            if (ex instanceof AlignmentService.AlignmentFailureException failure) {
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                    failure.partialResult(),
+                    failure.partialResult().candidates().isEmpty() ? null : failure.partialResult().candidates().get(0),
+                    "failed",
+                    PluginLog.currentSlideLog()
+                ));
+            }
             PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         }

@@ -36,4 +36,17 @@ class CenterlineCandidateTest {
         assertTrue(candidate.displayName().contains("Dual detector"));
         assertTrue(candidate.displayName().contains("mapped parallel"));
     }
+
+    @Test
+    void formatsLowConfidenceWarningsForUsers() {
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "blue/ridge-1",
+            3.0,
+            List.of(new Point2D.Double(0, 0), new Point2D.Double(1, 1)),
+            List.of(0.0, 1.0)
+        ).withSafetyWarnings(List.of("low support", "weak z13 validation"));
+
+        assertTrue(candidate.displayName().contains("low support"));
+        assertTrue(candidate.displayName().contains("weak z13 validation"));
+    }
 }

@@ -87,7 +87,7 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Managed-tile alignment refuses to preview when required source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Refresh the Strava cookies and use the cache-bypass button if old bad tiles were cached.
+- Managed-tile alignment refuses to preview when required selected-area source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Weak but real candidates are shown with low-confidence warnings so the mapper can inspect them.
 - Manual non-managed imagery layers use rendered-layer fallback sampling. That fallback can still depend on current view and layer styling because the plugin cannot reconstruct arbitrary external tile sources safely.
 
 ## Build
@@ -136,7 +136,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
 - `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
 - `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
-- `Bypass managed tile cache...`: use after expired cookies or failed authentication may have caused JOSM to cache low-resolution or placeholder tiles. It changes the managed layer URL so JOSM fetches fresh tiles after you press `OK`.
+- `Bypass managed tile cache...`: use after expired cookies or failed authentication may have caused JOSM to cache placeholder tiles. It changes the managed layer URL so JOSM fetches fresh visible-layer tiles after you press `OK`.
 
 ### 3. Align Existing Ways
 

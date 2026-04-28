@@ -33,7 +33,8 @@ public final class AlignmentService {
     private static final double MIN_FIXED_TILE_SUPPORT_RATIO = 0.34;
     private static final double MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO = 0.12;
     private static final int MAX_FIXED_TILE_CONSECUTIVE_EMPTY = 24;
-    private static final double MAX_FIXED_TILE_BOUNDARY_HIT_RATIO = 0.30;
+    private static final double WARN_FIXED_TILE_BOUNDARY_HIT_RATIO = 0.30;
+    private static final double HARD_FIXED_TILE_BOUNDARY_HIT_RATIO = 0.85;
     private static final double MAX_LOW_SUPPORT_MEAN_DISPLACEMENT_METERS = 45.0;
     private static final double MAX_LOW_SUPPORT_MAX_DISPLACEMENT_METERS = 110.0;
 
@@ -65,9 +66,64 @@ public final class AlignmentService {
         SamplingRun sampling = prepareSamplingRun(selection, imageryLayer, mapView, sourcePolyline, config, colorModes, halfWidthPx);
         long t1 = System.nanoTime();
 
-        List<CenterlineCandidate> candidates = detectCandidates(selection, sampling, mapView, sourcePolyline, config, colorModes, halfWidthPx);
+        List<CenterlineCandidate> candidates;
+        try {
+            candidates = detectCandidates(selection, sampling, mapView, sourcePolyline, config, colorModes, halfWidthPx);
+        } catch (CandidateRejectedException ex) {
+            long failedAt = System.nanoTime();
+            AlignmentDiagnostics diagnostics = diagnostics(
+                layerName,
+                ex.candidates().size(),
+                0,
+                t0,
+                t1,
+                failedAt,
+                failedAt,
+                config,
+                selection,
+                sampling,
+                colorModes,
+                ex.candidates()
+            );
+            AlignmentResult partial = new AlignmentResult(
+                selection,
+                sampling.previewRaster(),
+                ex.candidates(),
+                sourcePolyline,
+                sourcePolyline,
+                List.of(),
+                diagnostics,
+                sampling.fixedTiles()
+            );
+            throw new AlignmentFailureException(ex.getMessage(), partial, ex);
+        }
         if (candidates.isEmpty()) {
-            throw new IllegalStateException("No stable ridge candidate was detected in the sampled heatmap.");
+            long failedAt = System.nanoTime();
+            AlignmentDiagnostics diagnostics = diagnostics(
+                layerName,
+                0,
+                0,
+                t0,
+                t1,
+                failedAt,
+                failedAt,
+                config,
+                selection,
+                sampling,
+                colorModes,
+                candidates
+            );
+            AlignmentResult partial = new AlignmentResult(
+                selection,
+                sampling.previewRaster(),
+                candidates,
+                sourcePolyline,
+                sourcePolyline,
+                List.of(),
+                diagnostics,
+                sampling.fixedTiles()
+            );
+            throw new AlignmentFailureException("No heatmap signal was detected in the sampled corridor.", partial);
         }
         candidates = refineCandidates(selection, sampling, mapView, sourcePolyline, candidates, config, colorModes, halfWidthPx);
         long t2 = System.nanoTime();
@@ -77,18 +133,19 @@ public final class AlignmentService {
         List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
         long t3 = System.nanoTime();
 
-        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
+        AlignmentDiagnostics diagnostics = diagnostics(
             layerName,
             candidates.size(),
             nodeMoves.size(),
-            millisBetween(t0, t1),
-            millisBetween(t1, t2),
-            millisBetween(t2, t3),
-            config.toRedactedJson(),
-            selectionToJson(selection),
-            sampling.sourceJson(),
-            stringArray(colorModes),
-            candidatesToJson(candidates)
+            t0,
+            t1,
+            t2,
+            t3,
+            config,
+            selection,
+            sampling,
+            colorModes,
+            candidates
         );
 
         PluginLog.verbose("Alignment finished: raster=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
@@ -200,14 +257,17 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates,
         TileHeatmapSampler.TileMosaicSet fixedTiles
     ) {
-        List<CenterlineCandidate> safe = new ArrayList<>();
+        List<CenterlineCandidate> previewable = new ArrayList<>();
+        List<CenterlineCandidate> classifiedCandidates = new ArrayList<>();
+        List<String> hardReasons = new ArrayList<>();
         boolean sketch = sourcePolyline.size() <= 5;
         for (CenterlineCandidate candidate : candidates) {
             CandidateSafety safety = fixedTileCandidateSafety(sourcePolyline, candidate, fixedTiles, sketch);
-            PluginLog.verbose("Candidate %s safety: accepted=%s reason=%s support=%.3f maxEmpty=%d validationSupport=%.3f boundaryHits=%.3f meanMove=%.1fm maxMove=%.1fm selfIntersect=%s.",
+            PluginLog.verbose("Candidate %s safety: hardRejected=%s reason=%s warnings=%s support=%.3f maxEmpty=%d validationSupport=%.3f boundaryHits=%.3f meanMove=%.1fm maxMove=%.1fm selfIntersect=%s.",
                 candidate.id(),
-                safety.accepted(),
-                safety.reason(),
+                safety.hardRejected(),
+                safety.hardReason(),
+                safety.warnings(),
                 candidate.evidence().supportRatio(),
                 candidate.evidence().maxConsecutiveEmptyProfiles(),
                 safety.validationSupportRatio(),
@@ -215,14 +275,25 @@ public final class AlignmentService {
                 safety.meanDisplacementMeters(),
                 safety.maxDisplacementMeters(),
                 safety.selfIntersecting());
-            if (safety.accepted()) {
-                safe.add(candidate.withScore(candidate.score() + safety.scoreAdjustment()));
+            List<String> warnings = safety.hardRejected()
+                ? List.of("rejected: " + safety.hardReason())
+                : safety.warnings();
+            CenterlineCandidate classified = candidate
+                .withScore(candidate.score() + safety.scoreAdjustment())
+                .withSafetyWarnings(warnings);
+            classifiedCandidates.add(classified);
+            if (safety.hardRejected()) {
+                hardReasons.add(safety.hardReason());
+            } else {
+                previewable.add(classified);
             }
         }
-        if (safe.isEmpty() && !candidates.isEmpty()) {
-            PluginLog.verbose("All fixed-tile ridge candidates were rejected by safety gates; refusing to slide rather than applying an unsupported geometry.");
+        if (previewable.isEmpty() && !candidates.isEmpty()) {
+            String summary = rejectionSummary(hardReasons);
+            PluginLog.verbose("All fixed-tile ridge candidates were hard-rejected: %s.", summary);
+            throw new CandidateRejectedException("Detected ridge candidates were structurally unsafe: " + summary, classifiedCandidates);
         }
-        return safe;
+        return previewable;
     }
 
     private CandidateSafety fixedTileCandidateSafety(
@@ -232,29 +303,38 @@ public final class AlignmentService {
         boolean sketch
     ) {
         if (candidate.eastNorthPoints().size() < 2) {
-            return CandidateSafety.reject("missing-projected-centerline");
+            return CandidateSafety.hardReject("missing projected centerline");
         }
         if (isSelfIntersecting(candidate.eastNorthPoints())) {
-            return CandidateSafety.reject("self-intersection");
+            return CandidateSafety.hardReject("self-intersection");
         }
 
         TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(detectorMode(candidate));
         double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
-        if (boundaryHitRatio > MAX_FIXED_TILE_BOUNDARY_HIT_RATIO) {
-            return CandidateSafety.reject("too-many-edge-of-band-samples", boundaryHitRatio);
+        if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
+            return CandidateSafety.hardReject("most samples are pinned to the search edge", boundaryHitRatio);
         }
 
+        List<String> warnings = new ArrayList<>();
+        double scoreAdjustment = 0.0;
+        if (boundaryHitRatio > WARN_FIXED_TILE_BOUNDARY_HIT_RATIO) {
+            warnings.add("near search edge");
+            scoreAdjustment -= boundaryHitRatio * 4.0;
+        }
         double supportRatio = candidate.evidence().supportRatio();
         if (supportRatio < MIN_FIXED_TILE_SUPPORT_RATIO) {
-            return CandidateSafety.reject("too-sparse-inference-support", boundaryHitRatio);
+            warnings.add("low support");
+            scoreAdjustment -= (MIN_FIXED_TILE_SUPPORT_RATIO - supportRatio) * 10.0;
         }
         if (candidate.evidence().maxConsecutiveEmptyProfiles() > MAX_FIXED_TILE_CONSECUTIVE_EMPTY) {
-            return CandidateSafety.reject("long-no-signal-gap", boundaryHitRatio);
+            warnings.add("long no-signal gap");
+            scoreAdjustment -= Math.min(8.0, (candidate.evidence().maxConsecutiveEmptyProfiles() - MAX_FIXED_TILE_CONSECUTIVE_EMPTY) * 0.20);
         }
 
         double validationSupportRatio = validationSupportRatio(candidate, fixedTiles);
         if (validationSupportRatio < MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO && supportRatio < 0.55) {
-            return CandidateSafety.reject("failed-lower-zoom-validation", boundaryHitRatio, validationSupportRatio);
+            warnings.add("weak z" + fixedTiles.validationZoom() + " validation");
+            scoreAdjustment -= (MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO - validationSupportRatio) * 12.0;
         }
 
         double meanMove = meanNearestDistanceEastNorth(candidate.eastNorthPoints(), sourcePolyline);
@@ -262,15 +342,20 @@ public final class AlignmentService {
         if (!sketch && supportRatio < 0.55
                 && (meanMove > MAX_LOW_SUPPORT_MEAN_DISPLACEMENT_METERS
                     || maxMove > MAX_LOW_SUPPORT_MAX_DISPLACEMENT_METERS)) {
-            return CandidateSafety.reject("large-displacement-with-limited-support",
-                boundaryHitRatio, validationSupportRatio, meanMove, maxMove, false);
+            warnings.add("large low-support move");
+            scoreAdjustment -= Math.min(10.0, Math.max(0.0, meanMove - MAX_LOW_SUPPORT_MEAN_DISPLACEMENT_METERS) / 10.0);
         }
 
         double supportBonus = Math.max(0.0, supportRatio - MIN_FIXED_TILE_SUPPORT_RATIO) * 6.0;
         double validationBonus = Math.max(0.0, validationSupportRatio - MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO) * 4.0;
-        double edgePenalty = boundaryHitRatio * 4.0;
-        return CandidateSafety.accept(boundaryHitRatio, validationSupportRatio, meanMove, maxMove,
-            supportBonus + validationBonus - edgePenalty);
+        return CandidateSafety.previewable(
+            warnings,
+            boundaryHitRatio,
+            validationSupportRatio,
+            meanMove,
+            maxMove,
+            scoreAdjustment + supportBonus + validationBonus
+        );
     }
 
     private double boundaryHitRatio(CenterlineCandidate candidate, TileHeatmapSampler.SamplingParameters parameters) {
@@ -304,6 +389,21 @@ public final class AlignmentService {
             }
         }
         return (double) supported / profiles.size();
+    }
+
+    private String rejectionSummary(List<String> reasons) {
+        if (reasons.isEmpty()) {
+            return "no previewable candidates";
+        }
+        java.util.Map<String, Long> counts = reasons.stream()
+            .collect(java.util.stream.Collectors.groupingBy(
+                reason -> reason,
+                java.util.LinkedHashMap::new,
+                java.util.stream.Collectors.counting()
+            ));
+        return counts.entrySet().stream()
+            .map(entry -> entry.getKey() + " (" + entry.getValue() + ")")
+            .collect(java.util.stream.Collectors.joining(", "));
     }
 
     private List<CenterlineCandidate> refineCandidates(
@@ -1096,10 +1196,40 @@ public final class AlignmentService {
                 .append("\"score\":").append(candidate.score()).append(',')
                 .append("\"points\":").append(candidate.screenPoints().size()).append(',')
                 .append("\"offsetsPx\":").append(doubleArray(candidate.offsetsPx())).append(',')
+                .append("\"safetyWarnings\":").append(stringArray(candidate.safetyWarnings())).append(',')
                 .append("\"evidence\":").append(candidate.evidence().toJson())
                 .append('}');
         }
         return builder.append(']').toString();
+    }
+
+    private AlignmentDiagnostics diagnostics(
+        String layerName,
+        int candidateCount,
+        int nodeMoveCount,
+        long t0,
+        long t1,
+        long t2,
+        long t3,
+        ManagedHeatmapConfig config,
+        SelectionContext selection,
+        SamplingRun sampling,
+        List<String> colorModes,
+        List<CenterlineCandidate> candidates
+    ) {
+        return new AlignmentDiagnostics(
+            layerName,
+            candidateCount,
+            nodeMoveCount,
+            millisBetween(t0, t1),
+            millisBetween(t1, t2),
+            millisBetween(t2, t3),
+            config.toRedactedJson(),
+            selectionToJson(selection),
+            sampling.sourceJson(),
+            stringArray(colorModes),
+            candidatesToJson(candidates)
+        );
     }
 
     private String stringArray(List<String> values) {
@@ -1137,8 +1267,9 @@ public final class AlignmentService {
     }
 
     private record CandidateSafety(
-        boolean accepted,
-        String reason,
+        boolean hardRejected,
+        String hardReason,
+        List<String> warnings,
         double boundaryHitRatio,
         double validationSupportRatio,
         double meanDisplacementMeters,
@@ -1146,42 +1277,57 @@ public final class AlignmentService {
         boolean selfIntersecting,
         double scoreAdjustment
     ) {
-        static CandidateSafety accept(
+        static CandidateSafety previewable(
+            List<String> warnings,
             double boundaryHitRatio,
             double validationSupportRatio,
             double meanDisplacementMeters,
             double maxDisplacementMeters,
             double scoreAdjustment
         ) {
-            return new CandidateSafety(true, "accepted", boundaryHitRatio, validationSupportRatio,
+            return new CandidateSafety(false, "", warnings == null ? List.of() : List.copyOf(warnings),
+                boundaryHitRatio, validationSupportRatio,
                 meanDisplacementMeters, maxDisplacementMeters, false, scoreAdjustment);
         }
 
-        static CandidateSafety reject(String reason) {
-            return new CandidateSafety(false, reason, 0.0, 0.0,
-                Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
+        static CandidateSafety hardReject(String reason) {
+            return hardReject(reason, 0.0);
         }
 
-        static CandidateSafety reject(String reason, double boundaryHitRatio) {
-            return new CandidateSafety(false, reason, boundaryHitRatio, 0.0,
+        static CandidateSafety hardReject(String reason, double boundaryHitRatio) {
+            return new CandidateSafety(true, reason, List.of(), boundaryHitRatio, 0.0,
                 Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
         }
+    }
 
-        static CandidateSafety reject(String reason, double boundaryHitRatio, double validationSupportRatio) {
-            return new CandidateSafety(false, reason, boundaryHitRatio, validationSupportRatio,
-                Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
+    private static final class CandidateRejectedException extends RuntimeException {
+        private final List<CenterlineCandidate> candidates;
+
+        CandidateRejectedException(String message, List<CenterlineCandidate> candidates) {
+            super(message);
+            this.candidates = List.copyOf(candidates);
         }
 
-        static CandidateSafety reject(
-            String reason,
-            double boundaryHitRatio,
-            double validationSupportRatio,
-            double meanDisplacementMeters,
-            double maxDisplacementMeters,
-            boolean selfIntersecting
-        ) {
-            return new CandidateSafety(false, reason, boundaryHitRatio, validationSupportRatio,
-                meanDisplacementMeters, maxDisplacementMeters, selfIntersecting, 0.0);
+        List<CenterlineCandidate> candidates() {
+            return candidates;
+        }
+    }
+
+    public static final class AlignmentFailureException extends IllegalStateException {
+        private final AlignmentResult partialResult;
+
+        AlignmentFailureException(String message, AlignmentResult partialResult) {
+            super(message);
+            this.partialResult = partialResult;
+        }
+
+        AlignmentFailureException(String message, AlignmentResult partialResult, Throwable cause) {
+            super(message, cause);
+            this.partialResult = partialResult;
+        }
+
+        public AlignmentResult partialResult() {
+            return partialResult;
         }
     }
 }

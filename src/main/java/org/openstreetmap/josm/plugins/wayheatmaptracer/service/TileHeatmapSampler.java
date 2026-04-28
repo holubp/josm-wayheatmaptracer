@@ -59,15 +59,6 @@ public final class TileHeatmapSampler {
         return new TileMosaicSet(inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
     }
 
-    public AccessCheckResult verifyAccess(ManagedHeatmapConfig config) {
-        try {
-            FetchedTile tile = fetchTile(config, safe(config.color(), "hot"), clampZoom(config.inferenceZoom(), 10, 16), 0, 0);
-            return new AccessCheckResult(tile.record().usable(), tile.record().quality(), tile.record().httpStatus(), tile.record().error());
-        } catch (RuntimeException ex) {
-            return new AccessCheckResult(false, "failed", -1, ex.getMessage());
-        }
-    }
-
     public List<RenderedHeatmapSampler.CrossSectionProfile> sampleProfiles(
         TileMosaic mosaic,
         List<EastNorth> sourcePolyline,
@@ -422,9 +413,6 @@ public final class TileHeatmapSampler {
             return color + " z" + zoom + " x=" + x + " y=" + y + " quality=" + quality + " status=" + httpStatus
                 + (error == null || error.isBlank() ? "" : " error=" + error);
         }
-    }
-
-    public record AccessCheckResult(boolean usable, String quality, int httpStatus, String message) {
     }
 
     private record FetchedTile(BufferedImage image, TileRecord record) {
