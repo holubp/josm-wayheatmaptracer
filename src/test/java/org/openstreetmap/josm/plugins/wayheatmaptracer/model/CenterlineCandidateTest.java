@@ -19,7 +19,7 @@ class CenterlineCandidateTest {
             List.of(0.0, 1.0)
         );
 
-        assertEquals("Purple detector - ridge 4 - very weak", candidate.displayName());
+        assertEquals("Purple detector - ridge 4 - no signal", candidate.displayName());
         assertFalse(candidate.toString().contains("-399.4"));
     }
 

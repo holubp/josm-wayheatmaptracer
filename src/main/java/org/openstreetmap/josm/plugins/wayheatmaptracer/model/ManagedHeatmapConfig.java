@@ -19,7 +19,12 @@ public record ManagedHeatmapConfig(
     boolean simplifyEnabled,
     int crossSectionHalfWidthPx,
     int crossSectionStepPx,
-    double simplifyTolerancePx
+    double simplifyTolerancePx,
+    int inferenceZoom,
+    int validationZoom,
+    double searchHalfWidthMeters,
+    double sampleStepMeters,
+    long cacheBuster
 ) {
     public boolean hasManagedAccessValues() {
         return notBlank(keyPairId) && notBlank(policy) && notBlank(signature) && notBlank(sessionToken);
@@ -49,7 +54,12 @@ public record ManagedHeatmapConfig(
             + "\"simplifyEnabled\":" + simplifyEnabled + ','
             + "\"crossSectionHalfWidthPx\":" + crossSectionHalfWidthPx + ','
             + "\"crossSectionStepPx\":" + crossSectionStepPx + ','
-            + "\"simplifyTolerancePx\":" + simplifyTolerancePx
+            + "\"simplifyTolerancePx\":" + simplifyTolerancePx + ','
+            + "\"inferenceZoom\":" + inferenceZoom + ','
+            + "\"validationZoom\":" + validationZoom + ','
+            + "\"searchHalfWidthMeters\":" + searchHalfWidthMeters + ','
+            + "\"sampleStepMeters\":" + sampleStepMeters + ','
+            + "\"cacheBuster\":" + cacheBuster
             + "}";
     }
 

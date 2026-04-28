@@ -68,13 +68,18 @@ public record CenterlineCandidate(
     }
 
     private String confidenceLabel() {
-        if (score >= 20.0) {
+        if (!evidence.hasSignal()) {
+            return "no signal";
+        }
+        double support = evidence.supportRatio();
+        if (score >= 20.0 && support >= 0.60 && evidence.maxConsecutiveEmptyProfiles() <= 8
+                && evidence.signalToNoise() >= 0.16) {
             return "strong";
         }
-        if (score >= 5.0) {
+        if (score >= 5.0 && support >= 0.40 && evidence.maxConsecutiveEmptyProfiles() <= 16) {
             return "usable";
         }
-        if (score >= -25.0) {
+        if (score >= -25.0 || support >= 0.15) {
             return "weak";
         }
         return "very weak";

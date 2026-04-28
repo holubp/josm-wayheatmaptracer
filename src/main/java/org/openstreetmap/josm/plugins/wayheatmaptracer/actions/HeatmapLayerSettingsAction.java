@@ -11,6 +11,8 @@ import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.HeatmapSettingsDialog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.tools.Shortcut;
@@ -38,7 +40,8 @@ public class HeatmapLayerSettingsAction extends JosmAction {
             return;
         }
 
-        if (!PluginPreferences.load().hasManagedAccessValues()) {
+        ManagedHeatmapConfig config = PluginPreferences.load();
+        if (!config.hasManagedAccessValues()) {
             PluginLog.verbose("Saved settings without managed access values; using manual layer selection and regex fallback only.");
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),
@@ -52,6 +55,17 @@ public class HeatmapLayerSettingsAction extends JosmAction {
         try {
             ManagedImageryService.applyOrUpdateManagedLayer();
             PluginLog.verbose("Managed heatmap layer refreshed.");
+            TileHeatmapSampler.AccessCheckResult access = new TileHeatmapSampler().verifyAccess(config);
+            if (!access.usable()) {
+                JOptionPane.showMessageDialog(
+                    MainApplication.getMainFrame(),
+                    tr("The managed layer was refreshed, but a test heatmap tile was not usable ({0}, HTTP {1}). Refresh the Strava cookies or bypass the managed tile cache before sliding.",
+                        access.quality(), access.httpStatus()),
+                    tr("WayHeatmapTracer"),
+                    JOptionPane.WARNING_MESSAGE
+                );
+                return;
+            }
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),
                 tr("Heatmap layer settings saved and the managed layer has been refreshed."),

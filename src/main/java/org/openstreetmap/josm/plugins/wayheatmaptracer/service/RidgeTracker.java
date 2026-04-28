@@ -13,6 +13,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 public final class RidgeTracker {
     private static final int MAX_SEEDS = 6;
     private static final int MAX_STATES_PER_PROFILE = 18;
+    private static final double DOMINANT_CENTER_INTENSITY = 0.55;
+    private static final double DOMINATED_STRAND_RATIO = 0.76;
+    private static final double DOMINATED_STRAND_DISTANCE_PX = 9.0;
 
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         if (profiles.isEmpty()) {
@@ -56,7 +59,7 @@ public final class RidgeTracker {
             if (profile.peaks().isEmpty()) {
                 List<State> nextStates = new ArrayList<>();
                 for (State previous : states) {
-                    nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0)));
+                    nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0), profile));
                 }
                 states = prune(nextStates);
                 continue;
@@ -65,7 +68,7 @@ public final class RidgeTracker {
             List<State> nextStates = new ArrayList<>();
             for (RenderedHeatmapSampler.CrossSectionPeak peak : peaks) {
                 for (State previous : states) {
-                    nextStates.add(append(previous, peak));
+                    nextStates.add(append(previous, peak, profile));
                 }
             }
             states = prune(nextStates);
@@ -75,7 +78,11 @@ public final class RidgeTracker {
             .orElseThrow(() -> new IllegalStateException("No ridge path state was produced."));
     }
 
-    private State append(State previous, RenderedHeatmapSampler.CrossSectionPeak peak) {
+    private State append(
+        State previous,
+        RenderedHeatmapSampler.CrossSectionPeak peak,
+        RenderedHeatmapSampler.CrossSectionProfile profile
+    ) {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
         double supportBonus = Math.min(0.22, peak.supportWidthPx() / 80.0);
@@ -85,6 +92,7 @@ public final class RidgeTracker {
         double continuityPenalty = jump * (peak.intensity() >= 0.30 ? 0.17 : 0.10);
         double curvaturePenalty = Math.abs(acceleration) * 0.16;
         double modeJumpPenalty = jump > 10.0 && peak.intensity() < 0.70 ? (jump - 10.0) * 0.20 : 0.0;
+        double dominatedStrandPenalty = dominatedStrandPenalty(profile, peak);
         List<Double> offsets = new ArrayList<>(previous.offsets());
         List<Double> intensities = new ArrayList<>(previous.intensities());
         offsets.add(peak.offsetPx());
@@ -92,10 +100,35 @@ public final class RidgeTracker {
         return new State(
             peak.offsetPx(),
             delta,
-            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty,
+            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty - dominatedStrandPenalty,
             offsets,
             intensities
         );
+    }
+
+    private double dominatedStrandPenalty(
+        RenderedHeatmapSampler.CrossSectionProfile profile,
+        RenderedHeatmapSampler.CrossSectionPeak peak
+    ) {
+        if (profile.peaks().size() < 2 || peak.syntheticCenter()) {
+            return 0.0;
+        }
+        RenderedHeatmapSampler.CrossSectionPeak dominant = profile.peaks().stream()
+            .max(Comparator.comparingDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity))
+            .orElse(peak);
+        if (dominant == peak || dominant.intensity() < DOMINANT_CENTER_INTENSITY) {
+            return 0.0;
+        }
+        double distance = Math.abs(peak.offsetPx() - dominant.offsetPx());
+        if (distance < DOMINATED_STRAND_DISTANCE_PX || peak.intensity() >= dominant.intensity() * DOMINATED_STRAND_RATIO) {
+            return 0.0;
+        }
+
+        double widthFactor = peak.supportWidthPx() <= 0.0
+            ? 1.0
+            : Math.max(0.15, 1.0 - Math.min(0.85, peak.supportWidthPx() / 34.0));
+        double dominanceGap = dominant.intensity() - peak.intensity();
+        return (0.55 + distance / 24.0) * dominanceGap * widthFactor;
     }
 
     private List<Double> collectSeedOffsets(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
@@ -127,7 +160,8 @@ public final class RidgeTracker {
             offsets.add(0.0);
         }
         return new CenterlineCandidate("ridge-no-signal", -10_000.0, points, offsets)
-            .withEvidence(new CandidateEvidence("", 0, profiles.size(), 0.0, 0.0, 0.0, 0.0, List.of()));
+            .withEvidence(new CandidateEvidence("", profiles.size(), 0, profiles.size(), profiles.size(),
+                0.0, 0.0, 0.0, 0.0, List.of()));
     }
 
     private List<State> prune(List<State> states) {
@@ -213,6 +247,8 @@ public final class RidgeTracker {
     private CandidateEvidence evidenceFor(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, List<Double> intensities) {
         int supported = 0;
         int empty = 0;
+        int maxConsecutiveEmpty = 0;
+        int currentConsecutiveEmpty = 0;
         double total = 0.0;
         double ambiguity = 0.0;
         for (int i = 0; i < profiles.size(); i++) {
@@ -221,6 +257,10 @@ public final class RidgeTracker {
             if (intensity > 0.0) {
                 supported++;
                 total += intensity;
+                currentConsecutiveEmpty = 0;
+            } else {
+                currentConsecutiveEmpty++;
+                maxConsecutiveEmpty = Math.max(maxConsecutiveEmpty, currentConsecutiveEmpty);
             }
             if (profile.peaks().isEmpty()) {
                 empty++;
@@ -232,7 +272,8 @@ public final class RidgeTracker {
         double supportedRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
         double ambiguityPenalty = profiles.isEmpty() ? 0.0 : ambiguity / profiles.size();
         double snr = mean * supportedRatio / (1.0 + ambiguityPenalty);
-        return new CandidateEvidence("", supported, empty, total, mean, snr, ambiguityPenalty, List.of());
+        return new CandidateEvidence("", profiles.size(), supported, empty, maxConsecutiveEmpty,
+            total, mean, snr, ambiguityPenalty, List.of());
     }
 
     private record State(

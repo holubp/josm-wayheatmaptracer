@@ -56,11 +56,12 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
-- For the managed heatmap source, sample fixed zoom-15 source tiles directly so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
+- For the managed heatmap source, sample fixed source tiles directly at the configured inference zoom and validate against a lower/equal zoom, so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
 - Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus is weighted by signal quality so color schemes with clearer heatmap evidence contribute more
 - Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
 - Track heatmap corridors longitudinally, including short no-signal gaps, so the result is less likely to jump to a nearby parallel trace because of one locally strong sample
-- Internally refine ridge detection during one run, reducing the need to run alignment repeatedly to converge
+- Downweight narrow wandering outlier strands when a stronger coherent center is present, while still allowing low-intensity paths whose whole heatmap evidence consists of sparse strands
+- Reject unsafe managed-tile candidates with sparse support, long no-signal gaps, edge-of-band hits, lower-zoom validation failure, self-intersection, or large low-support displacement on normal existing ways
 - Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
 - Optionally use nearby mapped parallel `highway=*` ways as context when ranking candidates
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
@@ -86,6 +87,7 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
+- Managed-tile alignment refuses to preview when required source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Refresh the Strava cookies and use the cache-bypass button if old bad tiles were cached.
 - Manual non-managed imagery layers use rendered-layer fallback sampling. That fallback can still depend on current view and layer styling because the plugin cannot reconstruct arbitrary external tile sources safely.
 
 ## Build
@@ -117,7 +119,8 @@ build/libs/wayheatmaptracer-<version>.jar
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
 7. Keep `Use all color schemes for detection` enabled for the best default behavior. The visible layer uses only the selected color, but detection uses all supported source color tiles and prefers schemes with stronger signal.
-8. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer.
+8. Keep `Inference zoom` at `15` and `Validation zoom` at `13` unless you are deliberately testing another source resolution. The defaults use high-resolution tiles for candidate extraction and lower-resolution tiles as a continuity sanity check.
+9. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
 
@@ -126,10 +129,14 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Use all color schemes for detection`: recommended on. Consensus works best when high-SNR color schemes agree.
 - `Use nearby parallel ways as alignment context`: recommended on. It helps avoid snapping to a nearby mapped road, track, path, or footway.
+- `Inference zoom` / `Validation zoom`: recommended defaults are `15` and `13`. Change these only when debugging tile-resolution behavior.
+- `Search half-width meters`: controls how far from the current way/sketch the managed sampler searches for a heatmap corridor. Increase it for rough sketches or badly offset source geometry.
+- `Sample step meters`: controls longitudinal spacing between cross-sections. Smaller values preserve more detail but cost more tile sampling.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
 - `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
 - `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
+- `Bypass managed tile cache...`: use after expired cookies or failed authentication may have caused JOSM to cache low-resolution or placeholder tiles. It changes the managed layer URL so JOSM fetches fresh tiles after you press `OK`.
 
 ### 3. Align Existing Ways
 

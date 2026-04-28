@@ -17,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
@@ -26,9 +27,15 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray");
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
-    private static final int MAX_INTERNAL_REFINEMENT_PASSES = 2;
+    private static final int MAX_INTERNAL_REFINEMENT_PASSES = 0;
     private static final double MIN_REFINEMENT_SCORE_GAIN = 0.75;
-    private static final double PARALLEL_MATCH_THRESHOLD_RASTER_PX = 42.0;
+    private static final double PARALLEL_MATCH_THRESHOLD_METERS = 18.0;
+    private static final double MIN_FIXED_TILE_SUPPORT_RATIO = 0.34;
+    private static final double MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO = 0.12;
+    private static final int MAX_FIXED_TILE_CONSECUTIVE_EMPTY = 24;
+    private static final double MAX_FIXED_TILE_BOUNDARY_HIT_RATIO = 0.30;
+    private static final double MAX_LOW_SUPPORT_MEAN_DISPLACEMENT_METERS = 45.0;
+    private static final double MAX_LOW_SUPPORT_MAX_DISPLACEMENT_METERS = 110.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
@@ -46,9 +53,10 @@ public final class AlignmentService {
             selection.segmentNodes().size(),
             selection.fixedNodes().size(),
             layerName);
-        PluginLog.verbose("Alignment settings: mode=%s simplify=%s tolerance=%.2f multiColor=%s activity=%s displayColor=%s fixedZoom=%d.",
+        PluginLog.verbose("Alignment settings: mode=%s simplify=%s tolerance=%.2f multiColor=%s activity=%s displayColor=%s inferenceZoom=%d validationZoom=%d searchHalfWidth=%.1fm sampleStep=%.1fm.",
             config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
-            config.multiColorDetection(), config.activity(), config.color(), TileHeatmapSampler.SAMPLING_ZOOM);
+            config.multiColorDetection(), config.activity(), config.color(), config.inferenceZoom(), config.validationZoom(),
+            config.searchHalfWidthMeters(), config.sampleStepMeters());
 
         long t0 = System.nanoTime();
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
@@ -107,11 +115,15 @@ public final class AlignmentService {
     ) {
         if (config.hasManagedAccessValues()) {
             PluginLog.verbose("Using managed fixed-tile source sampling; visible layer, opacity, and HSL settings are ignored.");
-            TileHeatmapSampler.TileMosaicSet fixedTiles = tileSampler.prepare(config, sourcePolyline, colorModes, halfWidthPx);
+            TileHeatmapSampler.TileMosaicSet fixedTiles = tileSampler.prepare(config, sourcePolyline, colorModes);
             String sourceJson = "{\"type\":\"managed-fixed-tiles\",\"samplingZoom\":"
-                + TileHeatmapSampler.SAMPLING_ZOOM
+                + fixedTiles.inferenceZoom()
+                + ",\"validationZoom\":"
+                + fixedTiles.validationZoom()
                 + ",\"tileSize\":"
                 + TileHeatmapSampler.TILE_SIZE
+                + ",\"parameters\":"
+                + fixedTiles.inferenceParameters().toJson()
                 + ",\"activity\":\""
                 + jsonEscape(config.activity())
                 + "\",\"displayColor\":\""
@@ -142,7 +154,7 @@ public final class AlignmentService {
             TileHeatmapSampler.TileMosaic mosaic = null;
             if (sampling.fixedTiles() != null) {
                 mosaic = sampling.fixedTiles().require(colorMode);
-                profiles = tileSampler.sampleProfiles(mosaic, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
+                profiles = tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode);
             } else {
                 profiles = sampler.sampleProfiles(sampling.previewRaster(), mapView, sourcePolyline, halfWidthPx, config.crossSectionStepPx(), colorMode);
             }
@@ -165,6 +177,9 @@ public final class AlignmentService {
             candidates = applyParallelWayContext(selection, mapView, candidates);
         }
         candidates = discardNoSignalPlaceholders(candidates);
+        if (sampling.fixedTiles() != null) {
+            candidates = discardUnsafeFixedTileCandidates(sourcePolyline, candidates, sampling.fixedTiles());
+        }
         return candidates.stream()
             .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
@@ -180,6 +195,117 @@ public final class AlignmentService {
             .toList();
     }
 
+    private List<CenterlineCandidate> discardUnsafeFixedTileCandidates(
+        List<EastNorth> sourcePolyline,
+        List<CenterlineCandidate> candidates,
+        TileHeatmapSampler.TileMosaicSet fixedTiles
+    ) {
+        List<CenterlineCandidate> safe = new ArrayList<>();
+        boolean sketch = sourcePolyline.size() <= 5;
+        for (CenterlineCandidate candidate : candidates) {
+            CandidateSafety safety = fixedTileCandidateSafety(sourcePolyline, candidate, fixedTiles, sketch);
+            PluginLog.verbose("Candidate %s safety: accepted=%s reason=%s support=%.3f maxEmpty=%d validationSupport=%.3f boundaryHits=%.3f meanMove=%.1fm maxMove=%.1fm selfIntersect=%s.",
+                candidate.id(),
+                safety.accepted(),
+                safety.reason(),
+                candidate.evidence().supportRatio(),
+                candidate.evidence().maxConsecutiveEmptyProfiles(),
+                safety.validationSupportRatio(),
+                safety.boundaryHitRatio(),
+                safety.meanDisplacementMeters(),
+                safety.maxDisplacementMeters(),
+                safety.selfIntersecting());
+            if (safety.accepted()) {
+                safe.add(candidate.withScore(candidate.score() + safety.scoreAdjustment()));
+            }
+        }
+        if (safe.isEmpty() && !candidates.isEmpty()) {
+            PluginLog.verbose("All fixed-tile ridge candidates were rejected by safety gates; refusing to slide rather than applying an unsupported geometry.");
+        }
+        return safe;
+    }
+
+    private CandidateSafety fixedTileCandidateSafety(
+        List<EastNorth> sourcePolyline,
+        CenterlineCandidate candidate,
+        TileHeatmapSampler.TileMosaicSet fixedTiles,
+        boolean sketch
+    ) {
+        if (candidate.eastNorthPoints().size() < 2) {
+            return CandidateSafety.reject("missing-projected-centerline");
+        }
+        if (isSelfIntersecting(candidate.eastNorthPoints())) {
+            return CandidateSafety.reject("self-intersection");
+        }
+
+        TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(detectorMode(candidate));
+        double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
+        if (boundaryHitRatio > MAX_FIXED_TILE_BOUNDARY_HIT_RATIO) {
+            return CandidateSafety.reject("too-many-edge-of-band-samples", boundaryHitRatio);
+        }
+
+        double supportRatio = candidate.evidence().supportRatio();
+        if (supportRatio < MIN_FIXED_TILE_SUPPORT_RATIO) {
+            return CandidateSafety.reject("too-sparse-inference-support", boundaryHitRatio);
+        }
+        if (candidate.evidence().maxConsecutiveEmptyProfiles() > MAX_FIXED_TILE_CONSECUTIVE_EMPTY) {
+            return CandidateSafety.reject("long-no-signal-gap", boundaryHitRatio);
+        }
+
+        double validationSupportRatio = validationSupportRatio(candidate, fixedTiles);
+        if (validationSupportRatio < MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO && supportRatio < 0.55) {
+            return CandidateSafety.reject("failed-lower-zoom-validation", boundaryHitRatio, validationSupportRatio);
+        }
+
+        double meanMove = meanNearestDistanceEastNorth(candidate.eastNorthPoints(), sourcePolyline);
+        double maxMove = maxNearestDistanceEastNorth(candidate.eastNorthPoints(), sourcePolyline);
+        if (!sketch && supportRatio < 0.55
+                && (meanMove > MAX_LOW_SUPPORT_MEAN_DISPLACEMENT_METERS
+                    || maxMove > MAX_LOW_SUPPORT_MAX_DISPLACEMENT_METERS)) {
+            return CandidateSafety.reject("large-displacement-with-limited-support",
+                boundaryHitRatio, validationSupportRatio, meanMove, maxMove, false);
+        }
+
+        double supportBonus = Math.max(0.0, supportRatio - MIN_FIXED_TILE_SUPPORT_RATIO) * 6.0;
+        double validationBonus = Math.max(0.0, validationSupportRatio - MIN_FIXED_TILE_VALIDATION_SUPPORT_RATIO) * 4.0;
+        double edgePenalty = boundaryHitRatio * 4.0;
+        return CandidateSafety.accept(boundaryHitRatio, validationSupportRatio, meanMove, maxMove,
+            supportBonus + validationBonus - edgePenalty);
+    }
+
+    private double boundaryHitRatio(CenterlineCandidate candidate, TileHeatmapSampler.SamplingParameters parameters) {
+        if (candidate.offsetsPx().isEmpty()) {
+            return 1.0;
+        }
+        double edge = parameters.halfWidthPx() - Math.max(1.0, parameters.stepPx() * 0.75);
+        long hits = candidate.offsetsPx().stream()
+            .filter(offset -> Math.abs(offset) >= edge)
+            .count();
+        return (double) hits / candidate.offsetsPx().size();
+    }
+
+    private double validationSupportRatio(CenterlineCandidate candidate, TileHeatmapSampler.TileMosaicSet fixedTiles) {
+        TileHeatmapSampler.TileMosaic validationMosaic = fixedTiles.validation(detectorMode(candidate));
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = tileSampler.sampleProfiles(
+            validationMosaic,
+            candidate.eastNorthPoints(),
+            detectorMode(candidate)
+        );
+        if (profiles.isEmpty()) {
+            return 0.0;
+        }
+        double centerWindow = Math.max(2.0, validationMosaic.parameters().stepPx() * 1.5);
+        int supported = 0;
+        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
+            boolean centered = profile.peaks().stream()
+                .anyMatch(peak -> Math.abs(peak.offsetPx()) <= centerWindow && peak.intensity() >= 0.12);
+            if (centered) {
+                supported++;
+            }
+        }
+        return (double) supported / profiles.size();
+    }
+
     private List<CenterlineCandidate> refineCandidates(
         SelectionContext selection,
         SamplingRun sampling,
@@ -190,6 +316,10 @@ public final class AlignmentService {
         List<String> colorModes,
         int halfWidthPx
     ) {
+        if (sampling.fixedTiles() != null || MAX_INTERNAL_REFINEMENT_PASSES <= 0) {
+            PluginLog.verbose("Internal ridge refinement is disabled for managed fixed-tile sampling; one user run uses the full candidate extraction and validation pass.");
+            return initial;
+        }
         List<CenterlineCandidate> bestCandidates = initial;
         CenterlineCandidate best = bestCandidates.get(0);
         List<EastNorth> currentAxis = optimizer.projectCandidate(best, mapView);
@@ -327,36 +457,54 @@ public final class AlignmentService {
         if (dataSet == null || candidates.isEmpty()) {
             return candidates;
         }
+        boolean projectedCandidates = candidates.stream().anyMatch(candidate -> !candidate.eastNorthPoints().isEmpty());
+        List<List<EastNorth>> parallelWayEastNorth = new ArrayList<>();
         List<List<Point2D.Double>> parallelWayScreens = new ArrayList<>();
         for (Way way : dataSet.getWays()) {
             if (way == selection.way() || way.isDeleted() || way.getNodesCount() < 2 || !isRelevantLinearWay(way)) {
                 continue;
             }
-            List<Point2D.Double> screen = wayToRasterScreen(way, mapView);
-            if (screen.size() >= 2 && isCloseToAnyCandidate(screen, candidates)) {
-                parallelWayScreens.add(screen);
+            if (projectedCandidates) {
+                List<EastNorth> points = wayToEastNorth(way);
+                if (points.size() >= 2 && isCloseToAnyCandidateEastNorth(points, candidates)) {
+                    parallelWayEastNorth.add(points);
+                }
+            } else {
+                List<Point2D.Double> screen = wayToRasterScreen(way, mapView);
+                if (screen.size() >= 2 && isCloseToAnyCandidateScreen(screen, candidates)) {
+                    parallelWayScreens.add(screen);
+                }
             }
         }
-        if (parallelWayScreens.isEmpty()) {
+        if (parallelWayEastNorth.isEmpty() && parallelWayScreens.isEmpty()) {
             return candidates;
         }
 
         boolean sketch = isSketchLikeSelection(selection);
         List<CenterlineCandidate> scored = new ArrayList<>(candidates.size());
         for (CenterlineCandidate candidate : candidates) {
-            double nearest = parallelWayScreens.stream()
-                .mapToDouble(screen -> meanNearestDistance(candidate.screenPoints(), screen))
-                .min()
-                .orElse(Double.POSITIVE_INFINITY);
-            if (nearest > PARALLEL_MATCH_THRESHOLD_RASTER_PX) {
+            double nearest = !candidate.eastNorthPoints().isEmpty()
+                ? parallelWayEastNorth.stream()
+                    .mapToDouble(points -> meanNearestDistanceEastNorth(candidate.eastNorthPoints(), points))
+                    .min()
+                    .orElse(Double.POSITIVE_INFINITY)
+                : parallelWayScreens.stream()
+                    .mapToDouble(screen -> meanNearestDistance(candidate.screenPoints(), screen))
+                    .min()
+                    .orElse(Double.POSITIVE_INFINITY);
+            double threshold = !candidate.eastNorthPoints().isEmpty()
+                ? PARALLEL_MATCH_THRESHOLD_METERS
+                : PARALLEL_MATCH_THRESHOLD_METERS * RenderedHeatmapSampler.RASTER_SCALE;
+            if (nearest > threshold) {
                 scored.add(candidate);
                 continue;
             }
             double penalty = sketch ? 2.0 : 3.5;
-            double adjusted = candidate.score() - penalty * (1.0 - nearest / PARALLEL_MATCH_THRESHOLD_RASTER_PX);
+            double adjusted = candidate.score() - penalty * (1.0 - nearest / threshold);
             scored.add(candidate.withId(candidate.id() + "/near-mapped-parallel").withScore(adjusted));
         }
-        PluginLog.verbose("Parallel-way awareness evaluated %d nearby mapped linear ways.", parallelWayScreens.size());
+        PluginLog.verbose("Parallel-way awareness evaluated %d nearby mapped linear ways.",
+            projectedCandidates ? parallelWayEastNorth.size() : parallelWayScreens.size());
         return scored;
     }
 
@@ -389,9 +537,34 @@ public final class AlignmentService {
         return points;
     }
 
-    private boolean isCloseToAnyCandidate(List<Point2D.Double> wayScreen, List<CenterlineCandidate> candidates) {
+    private List<EastNorth> wayToEastNorth(Way way) {
+        List<EastNorth> points = new ArrayList<>();
+        for (Node node : way.getNodes()) {
+            if (!node.isUsable()) {
+                continue;
+            }
+            EastNorth point = node.getEastNorth(ProjectionRegistry.getProjection());
+            if (point != null) {
+                points.add(point);
+            }
+        }
+        return points;
+    }
+
+    private boolean isCloseToAnyCandidateScreen(List<Point2D.Double> wayScreen, List<CenterlineCandidate> candidates) {
         for (CenterlineCandidate candidate : candidates) {
-            if (meanNearestDistance(candidate.screenPoints(), wayScreen) <= PARALLEL_MATCH_THRESHOLD_RASTER_PX * 1.6) {
+            if (meanNearestDistance(candidate.screenPoints(), wayScreen)
+                    <= PARALLEL_MATCH_THRESHOLD_METERS * RenderedHeatmapSampler.RASTER_SCALE * 1.6) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isCloseToAnyCandidateEastNorth(List<EastNorth> wayPoints, List<CenterlineCandidate> candidates) {
+        for (CenterlineCandidate candidate : candidates) {
+            if (!candidate.eastNorthPoints().isEmpty()
+                    && meanNearestDistanceEastNorth(candidate.eastNorthPoints(), wayPoints) <= PARALLEL_MATCH_THRESHOLD_METERS * 1.6) {
                 return true;
             }
         }
@@ -480,6 +653,36 @@ public final class AlignmentService {
         return best;
     }
 
+    private double meanNearestDistanceEastNorth(List<EastNorth> source, List<EastNorth> targetPolyline) {
+        if (source.isEmpty() || targetPolyline.size() < 2) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double sum = 0.0;
+        for (EastNorth point : source) {
+            sum += nearestDistanceToPolylineEastNorth(point, targetPolyline);
+        }
+        return sum / source.size();
+    }
+
+    private double maxNearestDistanceEastNorth(List<EastNorth> source, List<EastNorth> targetPolyline) {
+        if (source.isEmpty() || targetPolyline.size() < 2) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double max = 0.0;
+        for (EastNorth point : source) {
+            max = Math.max(max, nearestDistanceToPolylineEastNorth(point, targetPolyline));
+        }
+        return max;
+    }
+
+    private double nearestDistanceToPolylineEastNorth(EastNorth point, List<EastNorth> polyline) {
+        double best = Double.POSITIVE_INFINITY;
+        for (int i = 1; i < polyline.size(); i++) {
+            best = Math.min(best, distanceToSegment(point, polyline.get(i - 1), polyline.get(i)));
+        }
+        return best;
+    }
+
     private double distanceToSegment(Point2D.Double point, Point2D.Double start, Point2D.Double end) {
         double dx = end.x - start.x;
         double dy = end.y - start.y;
@@ -490,6 +693,50 @@ public final class AlignmentService {
         double t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
         t = Math.max(0.0, Math.min(1.0, t));
         return point.distance(start.x + dx * t, start.y + dy * t);
+    }
+
+    private double distanceToSegment(EastNorth point, EastNorth start, EastNorth end) {
+        double dx = end.east() - start.east();
+        double dy = end.north() - start.north();
+        double lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared < 1e-9) {
+            return point.distance(start);
+        }
+        double t = ((point.east() - start.east()) * dx + (point.north() - start.north()) * dy) / lengthSquared;
+        t = Math.max(0.0, Math.min(1.0, t));
+        return point.distance(new EastNorth(start.east() + dx * t, start.north() + dy * t));
+    }
+
+    private boolean isSelfIntersecting(List<EastNorth> points) {
+        if (points.size() < 4) {
+            return false;
+        }
+        for (int i = 1; i < points.size(); i++) {
+            EastNorth a1 = points.get(i - 1);
+            EastNorth a2 = points.get(i);
+            for (int j = i + 2; j < points.size(); j++) {
+                EastNorth b1 = points.get(j - 1);
+                EastNorth b2 = points.get(j);
+                if (segmentsIntersect(a1, a2, b1, b2)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean segmentsIntersect(EastNorth a1, EastNorth a2, EastNorth b1, EastNorth b2) {
+        double d1 = direction(a1, a2, b1);
+        double d2 = direction(a1, a2, b2);
+        double d3 = direction(b1, b2, a1);
+        double d4 = direction(b1, b2, a2);
+        return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+            && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    }
+
+    private double direction(EastNorth a, EastNorth b, EastNorth c) {
+        return (c.east() - a.east()) * (b.north() - a.north())
+            - (c.north() - a.north()) * (b.east() - a.east());
     }
 
     private boolean addsUnsupportedOscillation(List<Double> previous, List<Double> next) {
@@ -887,5 +1134,54 @@ public final class AlignmentService {
         TileHeatmapSampler.TileMosaicSet fixedTiles,
         String sourceJson
     ) {
+    }
+
+    private record CandidateSafety(
+        boolean accepted,
+        String reason,
+        double boundaryHitRatio,
+        double validationSupportRatio,
+        double meanDisplacementMeters,
+        double maxDisplacementMeters,
+        boolean selfIntersecting,
+        double scoreAdjustment
+    ) {
+        static CandidateSafety accept(
+            double boundaryHitRatio,
+            double validationSupportRatio,
+            double meanDisplacementMeters,
+            double maxDisplacementMeters,
+            double scoreAdjustment
+        ) {
+            return new CandidateSafety(true, "accepted", boundaryHitRatio, validationSupportRatio,
+                meanDisplacementMeters, maxDisplacementMeters, false, scoreAdjustment);
+        }
+
+        static CandidateSafety reject(String reason) {
+            return new CandidateSafety(false, reason, 0.0, 0.0,
+                Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
+        }
+
+        static CandidateSafety reject(String reason, double boundaryHitRatio) {
+            return new CandidateSafety(false, reason, boundaryHitRatio, 0.0,
+                Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
+        }
+
+        static CandidateSafety reject(String reason, double boundaryHitRatio, double validationSupportRatio) {
+            return new CandidateSafety(false, reason, boundaryHitRatio, validationSupportRatio,
+                Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, "self-intersection".equals(reason), 0.0);
+        }
+
+        static CandidateSafety reject(
+            String reason,
+            double boundaryHitRatio,
+            double validationSupportRatio,
+            double meanDisplacementMeters,
+            double maxDisplacementMeters,
+            boolean selfIntersecting
+        ) {
+            return new CandidateSafety(false, reason, boundaryHitRatio, validationSupportRatio,
+                meanDisplacementMeters, maxDisplacementMeters, selfIntersecting, 0.0);
+        }
     }
 }

@@ -4,8 +4,10 @@ import java.util.List;
 
 public record CandidateEvidence(
     String detectorMode,
+    int totalProfiles,
     int supportedProfiles,
     int emptyProfiles,
+    int maxConsecutiveEmptyProfiles,
     double totalIntensity,
     double meanIntensity,
     double signalToNoise,
@@ -13,18 +15,24 @@ public record CandidateEvidence(
     List<String> consensusModes
 ) {
     public static CandidateEvidence empty() {
-        return new CandidateEvidence("", 0, 0, 0.0, 0.0, 0.0, 0.0, List.of());
+        return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, List.of());
     }
 
     public boolean hasSignal() {
         return supportedProfiles > 0 && totalIntensity > 0.0 && signalToNoise > 0.0;
     }
 
+    public double supportRatio() {
+        return totalProfiles <= 0 ? 0.0 : (double) supportedProfiles / totalProfiles;
+    }
+
     public CandidateEvidence withDetectorMode(String mode) {
         return new CandidateEvidence(
             mode == null ? "" : mode,
+            totalProfiles,
             supportedProfiles,
             emptyProfiles,
+            maxConsecutiveEmptyProfiles,
             totalIntensity,
             meanIntensity,
             signalToNoise,
@@ -36,8 +44,10 @@ public record CandidateEvidence(
     public CandidateEvidence withConsensusModes(List<String> modes) {
         return new CandidateEvidence(
             detectorMode,
+            totalProfiles,
             supportedProfiles,
             emptyProfiles,
+            maxConsecutiveEmptyProfiles,
             totalIntensity,
             meanIntensity,
             signalToNoise,
@@ -49,8 +59,11 @@ public record CandidateEvidence(
     public String toJson() {
         return "{"
             + "\"detectorMode\":\"" + escape(detectorMode) + "\","
+            + "\"totalProfiles\":" + totalProfiles + ','
             + "\"supportedProfiles\":" + supportedProfiles + ','
             + "\"emptyProfiles\":" + emptyProfiles + ','
+            + "\"maxConsecutiveEmptyProfiles\":" + maxConsecutiveEmptyProfiles + ','
+            + "\"supportRatio\":" + supportRatio() + ','
             + "\"totalIntensity\":" + totalIntensity + ','
             + "\"meanIntensity\":" + meanIntensity + ','
             + "\"signalToNoise\":" + signalToNoise + ','

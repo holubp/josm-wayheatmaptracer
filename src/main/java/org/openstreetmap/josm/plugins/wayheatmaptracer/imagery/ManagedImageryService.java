@@ -11,7 +11,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 public final class ManagedImageryService {
     public static final String MANAGED_LAYER_ID = "wayheatmaptracer.managed.heatmap";
     public static final String MANAGED_LAYER_NAME = "WayHeatmapTracer Heatmap";
-    private static final String HEATMAP_URL_TEMPLATE = "tms[15]:https://content-a.strava.com/identified/globalheat/%s/%s/{zoom}/{x}/{y}.png";
+    private static final String HEATMAP_URL_TEMPLATE = "tms[15]:https://content-a.strava.com/identified/globalheat/%s/%s/{zoom}/{x}/{y}.png%s";
 
     private ManagedImageryService() {
     }
@@ -26,9 +26,10 @@ public final class ManagedImageryService {
 
         String activity = sanitizeOption(config.activity(), "all");
         String color = sanitizeOption(config.color(), "hot");
+        String cacheQuery = config.cacheBuster() > 0 ? "?whtr-cache=" + config.cacheBuster() : "";
         ImageryInfo info = new ImageryInfo(
             MANAGED_LAYER_NAME + " (" + activity + "/" + color + ")",
-            HEATMAP_URL_TEMPLATE.formatted(activity, color),
+            HEATMAP_URL_TEMPLATE.formatted(activity, color, cacheQuery),
             "tms",
             null,
             config.toCookieHeader(),

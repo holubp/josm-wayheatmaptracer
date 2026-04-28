@@ -28,6 +28,11 @@ public final class PluginPreferences {
     private static final String CROSS_SECTION_HALF_WIDTH = PREFIX + "crossSectionHalfWidthPx";
     private static final String CROSS_SECTION_STEP = PREFIX + "crossSectionStepPx";
     private static final String SIMPLIFY_TOLERANCE = PREFIX + "simplifyTolerancePx";
+    private static final String INFERENCE_ZOOM = PREFIX + "inferenceZoom";
+    private static final String VALIDATION_ZOOM = PREFIX + "validationZoom";
+    private static final String SEARCH_HALF_WIDTH_METERS = PREFIX + "searchHalfWidthMeters";
+    private static final String SAMPLE_STEP_METERS = PREFIX + "sampleStepMeters";
+    private static final String CACHE_BUSTER = PREFIX + "cacheBuster";
 
     private PluginPreferences() {
     }
@@ -56,7 +61,12 @@ public final class PluginPreferences {
             pref.getBoolean(SIMPLIFY_ENABLED, false),
             pref.getInt(CROSS_SECTION_HALF_WIDTH, 18),
             pref.getInt(CROSS_SECTION_STEP, 4),
-            pref.getDouble(SIMPLIFY_TOLERANCE, 3.0)
+            pref.getDouble(SIMPLIFY_TOLERANCE, 3.0),
+            clampZoom(pref.getInt(INFERENCE_ZOOM, 15), 10, 16),
+            clampZoom(pref.getInt(VALIDATION_ZOOM, 13), 10, 16),
+            Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 28.0)),
+            Math.max(0.5, pref.getDouble(SAMPLE_STEP_METERS, 6.0)),
+            Math.max(0L, pref.getLong(CACHE_BUSTER, 0L))
         );
     }
 
@@ -81,6 +91,15 @@ public final class PluginPreferences {
         Config.getPref().putInt(CROSS_SECTION_HALF_WIDTH, config.crossSectionHalfWidthPx());
         Config.getPref().putInt(CROSS_SECTION_STEP, config.crossSectionStepPx());
         Config.getPref().putDouble(SIMPLIFY_TOLERANCE, config.simplifyTolerancePx());
+        Config.getPref().putInt(INFERENCE_ZOOM, clampZoom(config.inferenceZoom(), 10, 16));
+        Config.getPref().putInt(VALIDATION_ZOOM, clampZoom(config.validationZoom(), 10, 16));
+        Config.getPref().putDouble(SEARCH_HALF_WIDTH_METERS, Math.max(2.0, config.searchHalfWidthMeters()));
+        Config.getPref().putDouble(SAMPLE_STEP_METERS, Math.max(0.5, config.sampleStepMeters()));
+        Config.getPref().putLong(CACHE_BUSTER, Math.max(0L, config.cacheBuster()));
+    }
+
+    public static void bumpManagedTileCacheBuster() {
+        Config.getPref().putLong(CACHE_BUSTER, System.currentTimeMillis());
     }
 
     public static boolean isVerboseEnabled() {
@@ -97,6 +116,10 @@ public final class PluginPreferences {
 
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private static int clampZoom(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private static ManagedHeatmapConfig defaultConfig() {
@@ -116,7 +139,12 @@ public final class PluginPreferences {
             false,
             18,
             4,
-            3.0
+            3.0,
+            15,
+            13,
+            28.0,
+            6.0,
+            0L
         );
     }
 }

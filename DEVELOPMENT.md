@@ -55,18 +55,19 @@ Current scope:
 ## Core Runtime Flow
 
 1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and opens a per-slide diagnostic session.
-2. For configured managed Strava access, `TileHeatmapSampler` samples fixed zoom-15 source tiles for each detection color. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
+2. For configured managed Strava access, `TileHeatmapSampler` samples fixed source tiles for each detection color using the configured inference zoom, then validates candidates against the configured lower/equal validation zoom. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
 3. `RenderedHeatmapSampler` remains the fallback for unresolved manual imagery layers. It renders the visible imagery layer into an oversampled raster and is therefore view/style dependent by design.
 4. No-signal profiles stay empty so the tracker can bridge gaps using later coherent ridge evidence instead of snapping to the source axis.
 5. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles.
-6. Candidates carry evidence metadata such as supported profile count, empty profile count, total/mean intensity, SNR, ambiguity, and consensus modes. All-empty profiles may produce a diagnostic no-signal placeholder, but live alignment must discard no-signal placeholders when any real evidence exists.
-7. `AlignmentService` can run a small number of internal refinement passes using the traced ridge as the next sampling axis. A refinement is accepted only when the objective score improves and high-frequency oscillation does not increase.
-8. When multi-color detection is enabled, candidates from all palette classifiers are compared for geometric agreement. Consensus is weighted by detector signal quality; weak/no-signal modes must not boost a candidate.
-9. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Alternatives remain visible in the preview ridge selector.
-10. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
+6. Narrow outlier strands are penalized only when the same profile has a stronger dominant center. Do not globally remove low-intensity narrow peaks, because lightly used ways may be represented only by sparse wandering strands.
+7. Candidates carry evidence metadata such as total profile count, supported profile count, empty profile count, longest no-signal gap, total/mean intensity, SNR, ambiguity, and consensus modes. All-empty profiles may produce a diagnostic no-signal placeholder, but live alignment must discard no-signal placeholders when any real evidence exists.
+8. Managed fixed-tile alignment intentionally does not run iterative internal refinement. One user run samples the full configured search corridor, ranks candidates, validates them at the lower/equal zoom, and rejects unsafe candidates. This avoids accepting a later refinement pass that drifted onto a sparse or parallel trace.
+9. When multi-color detection is enabled, candidates from all palette classifiers are compared for geometric agreement. Consensus is weighted by detector signal quality; weak/no-signal modes must not boost a candidate.
+10. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Managed candidates must be compared in projected `EastNorth` space, not against rendered-layer screen pixels. Alternatives remain visible in the preview ridge selector.
+11. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
-11. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
+12. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
 
 Full-way selections with 2-5 nodes are treated as sketch-like input and use precise-shape output automatically, even if the saved alignment mode is `Move Existing Nodes`. Short selected segments of longer existing ways keep the configured alignment mode.
 
@@ -81,6 +82,8 @@ The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlide
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.
 - Raster candidate points are tracked in oversampled screen space and must be divided by `RenderedHeatmapSampler.RASTER_SCALE` before converting back through `MapView`.
 - Managed heatmap candidates may carry projected `EastNorth` points from fixed tile-space sampling. Prefer those points over `MapView` projection so preview/apply remains independent of the current viewport.
+- Managed heatmap candidate safety gates should reject sparse support, long no-signal gaps, excessive edge-of-search-band hits, lower-zoom validation failures, self-intersections, and large low-support displacement on normal existing ways. Rough 2-5 node sketches may legitimately be farther from the final trace and need wider displacement tolerance.
+- If managed heatmap tiles cannot be fetched or decoded, or look like authentication/error placeholders, fail before preview and tell the user to refresh Strava cookies or bypass the managed tile cache.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.
 - Downloaded-area bypass and junction/endpoint movement are both opt-in settings. Keep defaults protective.
 - When junction/endpoint movement is enabled in precise mode, simplification is ignored so selected or shared nodes are not simplified out of the way.

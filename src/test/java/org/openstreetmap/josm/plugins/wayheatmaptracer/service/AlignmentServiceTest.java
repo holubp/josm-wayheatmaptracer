@@ -84,7 +84,12 @@ class AlignmentServiceTest {
             false,
             18,
             4,
-            3.0
+            3.0,
+            15,
+            13,
+            28.0,
+            6.0,
+            0L
         );
     }
 }

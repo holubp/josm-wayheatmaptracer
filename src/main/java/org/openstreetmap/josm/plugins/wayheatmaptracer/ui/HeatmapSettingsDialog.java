@@ -47,7 +47,12 @@ public final class HeatmapSettingsDialog {
     private final JTextField halfWidth = new JTextField(8);
     private final JTextField step = new JTextField(8);
     private final JTextField tolerance = new JTextField(8);
+    private final JTextField inferenceZoom = new JTextField(8);
+    private final JTextField validationZoom = new JTextField(8);
+    private final JTextField searchHalfWidthMeters = new JTextField(8);
+    private final JTextField sampleStepMeters = new JTextField(8);
     private final Window parent;
+    private long cacheBuster;
 
     public HeatmapSettingsDialog(Window parent) {
         this.parent = parent;
@@ -70,6 +75,11 @@ public final class HeatmapSettingsDialog {
         halfWidth.setText(Integer.toString(config.crossSectionHalfWidthPx()));
         step.setText(Integer.toString(config.crossSectionStepPx()));
         tolerance.setText(Double.toString(config.simplifyTolerancePx()));
+        inferenceZoom.setText(Integer.toString(config.inferenceZoom()));
+        validationZoom.setText(Integer.toString(config.validationZoom()));
+        searchHalfWidthMeters.setText(Double.toString(config.searchHalfWidthMeters()));
+        sampleStepMeters.setText(Double.toString(config.sampleStepMeters()));
+        cacheBuster = config.cacheBuster();
 
         manualLayer.addItem("");
         for (org.openstreetmap.josm.gui.layer.Layer layer : MainApplication.getLayerManager().getLayers()) {
@@ -85,6 +95,9 @@ public final class HeatmapSettingsDialog {
         JButton pasteCookies = new JButton(tr("Paste cookie header..."));
         pasteCookies.addActionListener(event -> showCookiePasteDialog());
         panel.add(pasteCookies, GBC.eol().anchor(GBC.WEST));
+        JButton clearManagedTileCache = new JButton(tr("Bypass managed tile cache..."));
+        clearManagedTileCache.addActionListener(event -> bypassManagedTileCache());
+        panel.add(clearManagedTileCache, GBC.eol().anchor(GBC.WEST));
         panel.add(new JLabel(tr("CloudFront-Key-Pair-Id")), GBC.std());
         panel.add(keyPairId, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("CloudFront-Policy")), GBC.std());
@@ -109,6 +122,14 @@ public final class HeatmapSettingsDialog {
         panel.add(step, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Simplify tolerance")), GBC.std());
         panel.add(tolerance, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Inference zoom")), GBC.std());
+        panel.add(inferenceZoom, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Validation zoom")), GBC.std());
+        panel.add(validationZoom, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Search half-width meters")), GBC.std());
+        panel.add(searchHalfWidthMeters, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Sample step meters")), GBC.std());
+        panel.add(sampleStepMeters, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(verbose, GBC.eol());
         panel.add(debug, GBC.eol());
         panel.add(multiColorDetection, GBC.eol());
@@ -147,9 +168,28 @@ public final class HeatmapSettingsDialog {
             simplify.isSelected(),
             parseInt(halfWidth.getText(), 18),
             parseInt(step.getText(), 4),
-            parseDouble(tolerance.getText(), 3.0)
+            parseDouble(tolerance.getText(), 3.0),
+            parseInt(inferenceZoom.getText(), 15),
+            parseInt(validationZoom.getText(), 13),
+            parseDouble(searchHalfWidthMeters.getText(), 28.0),
+            parseDouble(sampleStepMeters.getText(), 6.0),
+            cacheBuster
         ));
         return true;
+    }
+
+    private void bypassManagedTileCache() {
+        int answer = JOptionPane.showConfirmDialog(
+            parent,
+            tr("The managed Strava layer URL will be refreshed so JOSM does not reuse cached heatmap tiles. Use this after expired cookies caused low-resolution or placeholder tiles to be cached."),
+            tr("WayHeatmapTracer"),
+            JOptionPane.OK_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE
+        );
+        if (answer == JOptionPane.OK_OPTION) {
+            cacheBuster = System.currentTimeMillis();
+            JOptionPane.showMessageDialog(parent, tr("Tile cache bypass will be applied when you press OK."), tr("WayHeatmapTracer"), JOptionPane.INFORMATION_MESSAGE);
+        }
     }
 
     private void showCookiePasteDialog() {

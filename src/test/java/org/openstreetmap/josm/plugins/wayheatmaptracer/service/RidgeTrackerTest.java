@@ -159,6 +159,42 @@ class RidgeTrackerTest {
             "Tracker should require sustained support before accepting a zig-zagging ridge");
     }
 
+    @Test
+    void suppressesWanderingOutlierStrandsBesideStrongCenter() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidths(0, 0, 0.86, 24, 16, 0.40, 2),
+            profileWithWidths(10, 0, 0.84, 24, -18, 0.42, 2),
+            profileWithWidths(20, 0, 0.85, 24, 20, 0.41, 2),
+            profileWithWidths(30, 0, 0.86, 24, -16, 0.39, 2),
+            profileWithWidths(40, 0, 0.84, 24, 18, 0.43, 2)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        assertTrue(candidates.get(0).offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0) <= 4.0,
+            "Narrow side strands should not pull the result away from a coherent high-intensity center");
+    }
+
+    @Test
+    void preservesLowIntensityStrandWhenNoStrongerCenterExists() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidth(0, 13, 0.30, 2),
+            profileWithWidth(10, 15, 0.31, 2),
+            profileWithWidth(20, 14, 0.29, 2),
+            profileWithWidth(30, 16, 0.30, 2),
+            profileWithWidth(40, 15, 0.32, 2)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        assertTrue(candidates.get(0).offsetsPx().stream().allMatch(offset -> offset > 10.0),
+            "Sparse low-intensity paths may legitimately consist only of individual strands");
+    }
+
     private RenderedHeatmapSampler.CrossSectionProfile profile(double x, double leftOffset, double leftIntensity, double rightOffset, double rightIntensity) {
         return new RenderedHeatmapSampler.CrossSectionProfile(
             new EastNorth(x, 0),
@@ -177,6 +213,35 @@ class RidgeTrackerTest {
             new Point2D.Double(x, 0),
             new Point2D.Double(0, 1),
             List.of(new RenderedHeatmapSampler.CrossSectionPeak(offset, intensity))
+        );
+    }
+
+    private RenderedHeatmapSampler.CrossSectionProfile profileWithWidth(double x, double offset, double intensity, double width) {
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(x, 0),
+            new Point2D.Double(x, 0),
+            new Point2D.Double(0, 1),
+            List.of(new RenderedHeatmapSampler.CrossSectionPeak(offset, intensity, width, false))
+        );
+    }
+
+    private RenderedHeatmapSampler.CrossSectionProfile profileWithWidths(
+        double x,
+        double leftOffset,
+        double leftIntensity,
+        double leftWidth,
+        double rightOffset,
+        double rightIntensity,
+        double rightWidth
+    ) {
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(x, 0),
+            new Point2D.Double(x, 0),
+            new Point2D.Double(0, 1),
+            List.of(
+                new RenderedHeatmapSampler.CrossSectionPeak(leftOffset, leftIntensity, leftWidth, false),
+                new RenderedHeatmapSampler.CrossSectionPeak(rightOffset, rightIntensity, rightWidth, false)
+            )
         );
     }
 
