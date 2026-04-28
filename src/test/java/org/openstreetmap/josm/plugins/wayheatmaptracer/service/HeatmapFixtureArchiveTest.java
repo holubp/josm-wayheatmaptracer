@@ -160,6 +160,30 @@ class HeatmapFixtureArchiveTest {
             "Balanced heatmap shoulders should produce a center candidate for road middle detection");
     }
 
+    @Test
+    void broadCorridorExposesCenterPeak() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            for (int y = 12; y <= 28; y++) {
+                image.setRGB(x, y, 0xFFFFFFFF);
+            }
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "hot",
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> peak.syntheticCenter() && Math.abs(peak.offsetPx()) <= 1.0)),
+            "A broad heatmap conduit should expose a synthetic center peak instead of only shoulder/local maxima");
+    }
+
     private static BufferedImage readImage(ZipFile zip, String entryName) throws Exception {
         ZipEntry entry = zip.getEntry(entryName);
         assertNotNull(entry, "Missing fixture entry " + entryName);

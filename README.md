@@ -57,7 +57,7 @@ The current implementation is designed for private development:
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
 - For the managed heatmap source, sample fixed source tiles directly at the configured inference zoom and validate against a lower/equal zoom, so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
-- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus creates a fused multi-color candidate weighted by signal quality so color schemes with clearer heatmap evidence contribute more
+- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus mostly boosts stable per-color ridges by signal agreement, and only creates fused geometry when the agreeing ridges are already close and smooth
 - Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
 - Track heatmap corridors longitudinally, including short no-signal gaps and broad/high-traffic conduit centers, so the result is less likely to zig-zag between shoulders or jump to a nearby parallel trace because of one locally strong sample
 - Downweight narrow wandering outlier strands when a stronger coherent center is present, while still allowing low-intensity paths whose whole heatmap evidence consists of sparse strands

@@ -56,9 +56,9 @@ class AlignmentServiceTest {
     void multiColorConsensusProducesFusedCandidate() {
         AlignmentService service = new AlignmentService();
         List<CenterlineCandidate> candidates = List.of(
-            candidate("blue/ridge-1", 20.0, "blue", List.of(-2.0, -8.0, -2.0)),
-            candidate("hot/ridge-1", 12.0, "hot", List.of(-4.0, -6.0, -4.0)),
-            candidate("gray/ridge-1", 10.0, "gray", List.of(-3.0, -7.0, -3.0)),
+            candidate("blue/ridge-1", 20.0, "blue", List.of(-2.0, -3.0, -4.0, -5.0)),
+            candidate("hot/ridge-1", 12.0, "hot", List.of(-3.0, -4.0, -5.0, -6.0)),
+            candidate("gray/ridge-1", 10.0, "gray", List.of(-2.5, -3.5, -4.5, -5.5)),
             candidate("purple/ridge-1", 5.0, "purple", List.of(16.0, 16.0, 16.0))
         );
 
@@ -71,7 +71,22 @@ class AlignmentServiceTest {
         assertEquals(List.of("blue", "hot", "gray"), consensus.evidence().consensusModes());
         assertEquals("consensus-3/consensus/ridge-1", consensus.id());
         assertTrue(consensus.score() > 20.0, "Fused consensus should outrank a single high-support detector in its cluster");
-        assertTrue(consensus.offsetsPx().stream().allMatch(offset -> offset < -1.0 && offset > -9.0));
+        assertTrue(consensus.offsetsPx().stream().allMatch(offset -> offset < -1.0 && offset > -7.0));
+    }
+
+    @Test
+    void multiColorConsensusDoesNotFuseDivergentOrRoughRidges() {
+        AlignmentService service = new AlignmentService();
+        List<CenterlineCandidate> candidates = List.of(
+            candidate("blue/ridge-1", 20.0, "blue", List.of(-2.0, -8.0, -2.0, -8.0)),
+            candidate("hot/ridge-1", 12.0, "hot", List.of(-12.0, -6.0, -12.0, -6.0)),
+            candidate("gray/ridge-1", 10.0, "gray", List.of(-3.0, -7.0, -3.0, -7.0))
+        );
+
+        List<CenterlineCandidate> scored = service.applyColorConsensus(candidates);
+
+        assertTrue(scored.stream().noneMatch(candidate -> "consensus".equals(candidate.evidence().detectorMode())),
+            "Consensus should not synthesize geometry from ridges that diverge or oscillate");
     }
 
     @Test

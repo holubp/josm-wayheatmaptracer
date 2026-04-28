@@ -149,9 +149,53 @@ public final class RenderedHeatmapSampler {
             peaks.add(buildBandPeak(offsets, smoothed, strongest, strongest, strongest));
         }
         double sampleStep = estimateSampleStep(offsets);
+        peaks.addAll(extractWideCorridorCenters(offsets, smoothed, maxIntensity, sampleStep));
         List<CrossSectionPeak> merged = mergeClosePeaks(peaks, sampleStep);
         List<CrossSectionPeak> withCorridorCenters = addBroadCorridorCenters(merged, sampleStep);
         return addPairedShoulderCenters(withCorridorCenters, sampleStep);
+    }
+
+    private List<CrossSectionPeak> extractWideCorridorCenters(
+        List<OffsetSample> offsets,
+        List<OffsetSample> smoothed,
+        double maxIntensity,
+        double sampleStep
+    ) {
+        if (offsets.size() < 3 || maxIntensity < 0.28) {
+            return List.of();
+        }
+        double corridorThreshold = Math.max(0.14, maxIntensity * 0.36);
+        List<CrossSectionPeak> centers = new ArrayList<>();
+        int index = 0;
+        while (index < smoothed.size()) {
+            while (index < smoothed.size() && smoothed.get(index).intensity < corridorThreshold) {
+                index++;
+            }
+            if (index >= smoothed.size()) {
+                break;
+            }
+            int start = index;
+            double peak = 0.0;
+            double weightedOffset = 0.0;
+            double weightSum = 0.0;
+            while (index < smoothed.size() && smoothed.get(index).intensity >= corridorThreshold) {
+                double weight = smoothed.get(index).intensity;
+                peak = Math.max(peak, offsets.get(index).intensity);
+                weightedOffset += offsets.get(index).offsetPx * weight;
+                weightSum += weight;
+                index++;
+            }
+            int end = index - 1;
+            double width = Math.abs(offsets.get(end).offsetPx - offsets.get(start).offsetPx);
+            if (width < sampleStep * 2.0 || peak < 0.30) {
+                continue;
+            }
+            double midpoint = (offsets.get(start).offsetPx + offsets.get(end).offsetPx) / 2.0;
+            double weightedCenter = weightSum == 0.0 ? midpoint : weightedOffset / weightSum;
+            double center = midpoint * 0.72 + weightedCenter * 0.28;
+            centers.add(new CrossSectionPeak(center, Math.min(1.0, peak * 0.99), width, true));
+        }
+        return centers;
     }
 
     private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks, double sampleStep) {

@@ -27,8 +27,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray");
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
-    private static final double MAX_ENDPOINT_APPROACH_TURN_DEGREES = 55.0;
-    private static final double JUNCTION_APPROACH_GUARD_METERS = 20.0;
+    private static final double MAX_ENDPOINT_APPROACH_TURN_DEGREES = 42.0;
+    private static final double JUNCTION_APPROACH_GUARD_METERS = 28.0;
     private static final int MAX_INTERNAL_REFINEMENT_PASSES = 0;
     private static final double MIN_REFINEMENT_SCORE_GAIN = 0.75;
     private static final double PARALLEL_MATCH_THRESHOLD_METERS = 18.0;
@@ -307,14 +307,19 @@ public final class AlignmentService {
         if (candidate.eastNorthPoints().size() < 2) {
             return CandidateSafety.hardReject("missing projected centerline");
         }
-        if (isSelfIntersecting(candidate.eastNorthPoints())) {
-            return CandidateSafety.hardReject("self-intersection");
-        }
 
         TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(primarySamplingMode(candidate));
         double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
+        double supportRatio = candidate.evidence().supportRatio();
+        if (supportRatio < 0.20
+                && candidate.evidence().maxConsecutiveEmptyProfiles() > Math.max(32, candidate.evidence().totalProfiles() / 2)) {
+            return CandidateSafety.hardReject("no stable corridor", boundaryHitRatio);
+        }
         if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
             return CandidateSafety.hardReject("most samples are pinned to the search edge", boundaryHitRatio);
+        }
+        if (isSelfIntersecting(candidate.eastNorthPoints())) {
+            return CandidateSafety.hardReject("self-intersection", boundaryHitRatio);
         }
 
         List<String> warnings = new ArrayList<>();
@@ -323,7 +328,6 @@ public final class AlignmentService {
             warnings.add("near search edge");
             scoreAdjustment -= boundaryHitRatio * 4.0;
         }
-        double supportRatio = candidate.evidence().supportRatio();
         if (supportRatio < MIN_FIXED_TILE_SUPPORT_RATIO) {
             warnings.add("low support");
             scoreAdjustment -= (MIN_FIXED_TILE_SUPPORT_RATIO - supportRatio) * 10.0;
@@ -523,7 +527,7 @@ public final class AlignmentService {
             if (clustered.contains(seed)) {
                 continue;
             }
-            List<CenterlineCandidate> cluster = compatibleConsensusCluster(seed, signalCandidates);
+            List<CenterlineCandidate> cluster = compatibleConsensusCluster(seed, signalCandidates, 7.0);
             java.util.Set<String> modes = new java.util.LinkedHashSet<>();
             for (CenterlineCandidate member : cluster) {
                 modes.add(detectorMode(member));
@@ -532,7 +536,9 @@ public final class AlignmentService {
                 continue;
             }
             clustered.addAll(cluster);
-            CenterlineCandidate consensus = fuseConsensusCandidate(consensusIndex++, cluster, List.copyOf(modes));
+            CenterlineCandidate consensus = consensusFusionSafe(cluster)
+                ? fuseConsensusCandidate(consensusIndex++, cluster, List.copyOf(modes))
+                : null;
             if (consensus != null) {
                 fused.add(consensus);
             }
@@ -574,7 +580,8 @@ public final class AlignmentService {
 
     private List<CenterlineCandidate> compatibleConsensusCluster(
         CenterlineCandidate seed,
-        List<CenterlineCandidate> candidates
+        List<CenterlineCandidate> candidates,
+        double averageDistanceLimit
     ) {
         List<CenterlineCandidate> cluster = new ArrayList<>();
         java.util.Set<String> usedModes = new java.util.LinkedHashSet<>();
@@ -586,13 +593,43 @@ public final class AlignmentService {
             if (usedModes.contains(mode)) {
                 continue;
             }
-            if (averageOffsetDistance(seed, candidate) > 7.0) {
+            if (averageOffsetDistance(seed, candidate) > averageDistanceLimit) {
                 continue;
             }
             cluster.add(candidate);
             usedModes.add(mode);
         }
         return cluster;
+    }
+
+    private boolean consensusFusionSafe(List<CenterlineCandidate> cluster) {
+        if (cluster.size() < 2) {
+            return false;
+        }
+        int count = cluster.stream().mapToInt(candidate -> candidate.offsetsPx().size()).min().orElse(0);
+        if (count < 3) {
+            return false;
+        }
+        double maxSpread = 0.0;
+        double totalSpread = 0.0;
+        for (int i = 0; i < count; i++) {
+            double min = Double.POSITIVE_INFINITY;
+            double max = Double.NEGATIVE_INFINITY;
+            for (CenterlineCandidate candidate : cluster) {
+                double offset = candidate.offsetsPx().get(i);
+                min = Math.min(min, offset);
+                max = Math.max(max, offset);
+            }
+            double spread = max - min;
+            maxSpread = Math.max(maxSpread, spread);
+            totalSpread += spread;
+        }
+        double meanSpread = totalSpread / count;
+        double worstRoughness = cluster.stream()
+            .mapToDouble(candidate -> fusedOffsetRoughness(candidate.offsetsPx()))
+            .max()
+            .orElse(Double.POSITIVE_INFINITY);
+        return meanSpread <= 2.8 && maxSpread <= 5.5 && worstRoughness <= 1.35;
     }
 
     private CenterlineCandidate fuseConsensusCandidate(
@@ -1301,22 +1338,6 @@ public final class AlignmentService {
             PluginLog.debug("Removed a near-%s endpoint point %.1fm from the fixed junction to preserve the selected way approach direction (turn %.1f degrees).",
                 start ? "start" : "end", anchor.distance(removable), turn);
         }
-        if (guarded.size() < 3 || endpointApproachTurnDegrees(guarded, sourcePolyline, start) <= MAX_ENDPOINT_APPROACH_TURN_DEGREES) {
-            return;
-        }
-        EastNorth anchor = start ? guarded.get(0) : guarded.get(guarded.size() - 1);
-        EastNorth next = start ? guarded.get(1) : guarded.get(guarded.size() - 2);
-        if (anchor.distance(next) <= 6.0) {
-            return;
-        }
-        EastNorth tangentPoint = sourceApproachPoint(sourcePolyline, start, Math.min(12.0, anchor.distance(next) * 0.40));
-        if (start) {
-            guarded.add(1, tangentPoint);
-        } else {
-            guarded.add(guarded.size() - 1, tangentPoint);
-        }
-        PluginLog.debug("Inserted a tangent-preserving %s endpoint approach point %.1fm from the fixed junction.",
-            start ? "start" : "end", anchor.distance(tangentPoint));
     }
 
     private double endpointApproachTurnDegrees(List<EastNorth> preview, List<EastNorth> sourcePolyline, boolean start) {

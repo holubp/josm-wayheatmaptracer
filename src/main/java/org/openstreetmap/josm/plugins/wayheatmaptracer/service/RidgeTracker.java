@@ -85,15 +85,14 @@ public final class RidgeTracker {
     ) {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
-        double supportBonus = Math.min(0.22, peak.supportWidthPx() / 80.0);
-        double centerBonus = peak.syntheticCenter() ? 0.42 : 0.0;
-        double evidence = peak.intensity() * (2.6 + supportBonus + centerBonus);
+        double supportBonus = Math.min(0.14, peak.supportWidthPx() / 120.0);
+        double centerBonus = peak.syntheticCenter() ? 0.30 : 0.0;
+        double evidence = peak.intensity() * (2.50 + supportBonus + centerBonus);
         double jump = Math.abs(delta);
-        double continuityPenalty = jump * (peak.intensity() >= 0.30 ? 0.17 : 0.10);
-        double curvaturePenalty = Math.abs(acceleration) * 0.16;
-        double modeJumpPenalty = jump > 10.0 && peak.intensity() < 0.70 ? (jump - 10.0) * 0.20 : 0.0;
-        double dominatedStrandPenalty = dominatedStrandPenalty(profile, peak);
-        double corridorShoulderPenalty = corridorShoulderPenalty(profile, peak);
+        double continuityPenalty = jump * 0.16;
+        double curvaturePenalty = Math.abs(acceleration) * 0.12;
+        double dominatedStrandPenalty = dominatedStrandPenalty(profile, peak) * 0.65;
+        double corridorShoulderPenalty = corridorShoulderPenalty(profile, peak) * 0.75;
         List<Double> offsets = new ArrayList<>(previous.offsets());
         List<Double> intensities = new ArrayList<>(previous.intensities());
         offsets.add(peak.offsetPx());
@@ -101,7 +100,7 @@ public final class RidgeTracker {
         return new State(
             peak.offsetPx(),
             delta,
-            previous.score() + evidence - continuityPenalty - curvaturePenalty - modeJumpPenalty
+            previous.score() + evidence - continuityPenalty - curvaturePenalty
                 - dominatedStrandPenalty - corridorShoulderPenalty,
             offsets,
             intensities
