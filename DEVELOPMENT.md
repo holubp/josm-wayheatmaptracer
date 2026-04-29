@@ -55,43 +55,35 @@ Current scope:
 ## Core Runtime Flow
 
 1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and opens a per-slide diagnostic session.
-2. For configured managed Strava access, `TileHeatmapSampler` samples fixed source tiles for each detection color. The default `Stable fixed scale` mode keeps the configured source zoom but applies stable-scale smoothing before ridge extraction, then validates against the configured validation zoom. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
-3. `RenderedHeatmapSampler` remains the fallback for unresolved manual imagery layers. It renders the visible imagery layer into an oversampled raster and is therefore view/style dependent by design.
-4. No-signal profiles stay empty so the tracker can bridge short gaps using later coherent ridge evidence instead of inventing local peaks.
-5. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles. Long unsupported runs must decay back toward the source geometry instead of carrying the last detected offset indefinitely.
-6. Narrow outlier strands are penalized only when the same profile has a stronger dominant center. Do not globally remove low-intensity narrow peaks, because lightly used ways may be represented only by sparse wandering strands.
-7. Candidates carry evidence metadata such as total profile count, supported profile count, empty profile count, longest no-signal gap, total/mean intensity, SNR, ambiguity, and consensus modes. All-empty profiles may produce a diagnostic no-signal placeholder, but live alignment must discard no-signal placeholders when any real evidence exists.
-8. Managed fixed-tile alignment intentionally does not run iterative internal refinement. One user run samples the full configured search corridor at the stable inference scale, ranks candidates, validates them against source tiles, hard-rejects only structurally unsafe candidates, and keeps weak-but-real candidates previewable with warnings. This avoids accepting a later refinement pass that drifted onto a sparse or parallel trace while still leaving mapper judgment in the preview loop; unsupported extrapolated offsets are not counted as real heatmap support.
-9. When multi-color detection is enabled, candidates from all palette classifiers are compared for geometric agreement. Consensus primarily boosts stable per-color ridges by detector agreement; fused consensus geometry is produced only when agreeing ridges are close, smooth, and non-oscillating. Weak/no-signal modes must not boost a candidate. Individual per-color candidates remain available as preview alternatives for diagnostics and mapper judgment.
-10. When enabled, parallel-way awareness scans nearby mapped `highway=*` ways and de-prioritizes candidates that appear to match another mapped parallel way. Managed candidates must be compared in projected `EastNorth` space, not against rendered-layer screen pixels. Alternatives remain visible in the preview ridge selector.
-11. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
+2. `AlignmentService` resolves a visible heatmap imagery layer. Managed Strava access is used to create/refresh that visible layer, but the 0.8.x sliding core does not sample fixed source tiles directly.
+3. `RenderedHeatmapSampler` renders the visible imagery layer into an oversampled raster and records the rendered tile zoom when JOSM exposes it. This is intentionally view/zoom/style dependent to match the 0.2.0 behavior.
+4. No-signal profiles get the 0.2.0 zero-offset fallback peak.
+5. `RidgeTracker` uses the 0.2.0 dynamic-programming behavior: seeds come from the first informative profiles, no consensus fusion or fixed-tile validation is applied, and long unsupported runs keep the previous state.
+6. Candidates carry diagnostic evidence metadata and projected `EastNorth` geometry for preview/export only; those additions must not change 0.2-style scoring or ordering.
+7. When multi-color detection is enabled, each palette classifier is run independently against the same rendered layer. The preview can show those alternatives, but 0.8.x does not synthesize fused consensus geometry.
+8. `AlignmentService` projects the chosen candidate back into map coordinates and prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
 12. `ReplaceWaySegmentCommand` applies the precise-shape result by reusing existing nodes where possible, creating additional nodes when needed, and deleting dropped untagged/unreferenced nodes.
 
-Full-way selections with 2-5 nodes are treated as sketch-like input and use precise-shape output automatically, even if the saved alignment mode is `Move Existing Nodes`. Short selected segments of longer existing ways keep the configured alignment mode.
+Full-way selections with 2-5 nodes may be recognized as sketch-like for UI/debug context, but 0.8.x keeps the configured alignment mode to preserve the 0.2-compatible runtime behavior.
 
 `Select Longest Heatmap Segment` is a helper action for the alignment workflow. It selects the longest stretch of the selected way bounded by endpoints or nodes shared with another way, producing the way-plus-two-node selection expected by alignment.
 
 The preview overlay uses solid blue for the selected result, orange dashes for the original segment, and labeled dashed lines for alternative ridge candidates. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates the preview immediately when the selected candidate changes.
 
-The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, candidate evidence/scoring, original/preview geometry, candidate ridge geometry, per-slide verbose/debug logs, and fixed-tile source imagery. Never include cookies, signed headers, or full signed URLs in diagnostics.
+The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, candidate evidence/scoring, original/preview geometry, candidate ridge geometry, visible-layer zoom metadata, the rendered heatmap capture, and per-slide verbose/debug logs. Never include cookies, signed headers, or full signed URLs in diagnostics.
 
 ## Guardrails
 
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.
 - Raster candidate points are tracked in oversampled screen space and must be divided by `RenderedHeatmapSampler.RASTER_SCALE` before converting back through `MapView`.
-- Managed heatmap candidates may carry projected `EastNorth` points from fixed tile-space sampling. Prefer those points over `MapView` projection so preview/apply remains independent of the current viewport.
-- Stable fixed-scale inference is the default for managed tiles. Do not make unsmoothed raw high-resolution source tiles the primary ridge input again unless fixture coverage proves it is as stable as the smoothed inference path.
-- Managed heatmap candidate safety gates should hard-reject self-intersections, missing projected geometry, no signal, and unusable selected-area tiles. Sparse support, long no-signal gaps, weak lower-zoom validation, edge-of-search-band candidates, and large low-support displacement should remain previewable with clear warnings and score penalties.
-- If managed heatmap tiles for the selected area cannot be fetched or decoded, or look like authentication/error placeholders, fail before preview and tell the user to refresh Strava cookies or bypass the managed tile cache. Do not use unrelated global probe tiles for access validation.
+- In 0.8.x, do not route live alignment through `TileHeatmapSampler`, fixed source-tile validation, consensus fusion, parallel-way scoring, or internal refinement unless the maintainer explicitly asks to leave the 0.2-compatible line.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.
 - Downloaded-area bypass and junction/endpoint movement are both opt-in settings. Keep defaults protective.
 - When junction/endpoint movement is enabled in precise mode, simplification is ignored so selected or shared nodes are not simplified out of the way.
 - If simplification or junction movement removes existing points in precise mode, dropped untagged/unreferenced nodes must be removed from the dataset to avoid leaving stray unconnected nodes behind.
-- Broad/high-traffic heatmap bands may have brighter shoulders than centers in some palettes. Sampling and ridge ranking should prefer the longitudinal center of a coherent conduit over alternating side peaks unless persistent evidence indicates a real separate trace.
-- Fixed endpoints in precise mode should use the selected segment's approach direction as a junction guard. Near a junction, a brighter crossing/main-road trace must not pull the preview into a kink unless the heatmap evidence is longitudinally aligned with the selected branch.
-- Weak curved traces should fail conservatively. Long no-signal gaps, search-edge riding, or self-intersection are evidence that no stable corridor was found, not a reason to force a preview. A supported offset may bridge a short gap, but a long no-signal run must not keep riding the search edge.
+- 0.8.x tests should protect the 0.2-compatible behavior even when that behavior is known to be simpler than the later experimental fixed-tile line.
 
 ## Palette Notes
 
@@ -99,7 +91,7 @@ The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlide
 - `blue` is a single-ramp blue/cyan scheme: white or light cyan/blue core > medium cyan/blue > dark saturated blue shoulder.
 - `purple` is a single-ramp purple/magenta scheme: bright purple/magenta core > medium purple > dark purple.
 - `bluered` is a dual-color semantic scheme: red/magenta high-activity center > purple transition > blue/cyan lower-activity shoulder. Hue and saturation must dominate raw blue/cyan vividness.
-- `gray` is a dual-color semantic scheme in practice: saturated violet/pink heatmap evidence > pale pink/gray fringe > neutral gray brightness. Treat it like `bluered` for consensus priority, not like a plain grayscale brightness ramp.
-- `dual` is an internal classifier retained for palette regression tests and future experimentation. Managed multi-color detection samples the real source color schemes (`hot`, `blue`, `bluered`, `purple`, and `gray`) rather than fetching a non-existent `dual` source tile.
+- `gray` is still available as a rendered-layer classifier, but 0.8.x preserves the 0.2-compatible palette behavior instead of the later consensus-priority rules.
+- `dual` is an internal rendered-layer classifier retained for palette regression tests and preview alternatives. In 0.8.x it classifies the same visible rendered layer rather than fetching a separate source tile.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.

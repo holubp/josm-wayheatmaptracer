@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. For the plugin-managed Strava heatmap source it samples fixed source tiles directly, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. In `0.8.0` the sliding core is intentionally reset to the `0.2.0` visible-layer algorithm: it renders the visible heatmap layer at the current JOSM view, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
 
 ## Why This Exists
 
@@ -56,23 +56,17 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
-- For the managed heatmap source, sample fixed source tiles directly with stable-scale smoothing and validation against configured source tiles, so alignment does not depend on map zoom, viewport, layer visibility, opacity, transparency, or HSL adjustments
-- Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus mostly boosts stable per-color ridges by signal agreement, and only creates fused geometry when the agreeing ridges are already close and smooth
-- Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
-- Track heatmap corridors longitudinally, including short no-signal gaps and broad/high-traffic conduit centers, so the result is less likely to zig-zag between shoulders or jump to a nearby parallel trace because of one locally strong sample
-- Relax long unsupported/no-signal runs back toward the source geometry instead of extending one edge hit through the rest of the way as if it were real heatmap evidence
-- Downweight narrow wandering outlier strands when a stronger coherent center is present, while still allowing low-intensity paths whose whole heatmap evidence consists of sparse strands
-- Reject unsafe managed-tile candidates with sparse support, long no-signal gaps, edge-of-band hits, lower-zoom validation failure, self-intersection, or large low-support displacement on normal existing ways
-- Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
-- Optionally use nearby mapped parallel `highway=*` ways as context when ranking candidates
+- Align from the currently visible heatmap imagery layer using the `0.2.0` rendered-layer sampler and ridge tracker
+- Optionally run the same visible-layer detector with multiple color classifiers (`hot`, `blue`, `bluered`, `purple`, `gray`, and internal `dual`) and show the resulting candidates in the preview
+- Show the rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
-- Resolve the heatmap source from managed settings first; manual visible imagery layers are still supported as a rendered fallback by exact selected layer title or regex
+- Resolve the heatmap source as a visible imagery layer by managed layer, exact selected layer title, or regex
 - Align one selected way, or one way plus two selected nodes on that way
 - Offer two alignment modes:
   `Move Existing Nodes` keeps the node count and only moves non-fixed interior nodes
   `Precise Shape` rebuilds the selected segment from the traced heatmap centerline, reusing existing nodes where possible and adding or removing interior nodes as needed
-- Keep segment endpoints fixed and guard the approach direction near fixed junctions so brighter crossing/main-road heatmap blobs do not create unsupported endpoint kinks
+- Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
 - Select the longest segment of a selected way bounded by endpoints or junction nodes
 - Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`
@@ -88,8 +82,8 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Managed-tile alignment refuses to preview when required selected-area source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Weak but real candidates, including edge-of-search candidates, are shown with low-confidence warnings so the mapper can inspect them.
-- Manual non-managed imagery layers use rendered-layer fallback sampling. That fallback can still depend on current view and layer styling because the plugin cannot reconstruct arbitrary external tile sources safely.
+- Because `0.8.0` intentionally uses the visible rendered heatmap layer, sliding is again view/zoom/style dependent like `0.2.0`. The preview dialog reports the visible tile zoom when JOSM exposes it.
+- Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the `0.8.0` sliding core.
 
 ## Build
 
@@ -119,8 +113,8 @@ build/libs/wayheatmaptracer-<version>.jar
 4. Click `Paste cookie header...`, paste the copied cookie header into the small window, and press `OK`.
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
-7. Keep `Use all color schemes for detection` enabled for the best default behavior. The visible layer uses only the selected color, but detection uses all supported source color tiles and prefers schemes with stronger signal.
-8. Keep `Inference mode` set to `Stable fixed scale`, with `Inference zoom` at `15` and `Validation zoom` at `13`, unless you are deliberately debugging source-resolution behavior. Stable mode samples the configured source zoom with additional smoothing so sparse raw tiles do not dominate ridge extraction.
+7. Enable `Use all color schemes for detection` if you want the detector to classify the same visible rendered layer through all supported palette modes and show those alternatives in the preview.
+8. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the `0.8.0` sliding core uses the visible rendered layer and the classic pixel half-width/step settings.
 9. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
@@ -128,12 +122,9 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- `Inference mode`: keep `Stable fixed scale` for normal use. It avoids the old zoom-dependent behavior by sampling managed tiles at a normalized effective scale. Use `Raw high-resolution` only for diagnostics and regression testing.
-- `Use all color schemes for detection`: recommended on and enabled by default for new installations. Consensus works best when high-SNR color schemes agree.
-- `Use nearby parallel ways as alignment context`: recommended on. It helps avoid snapping to a nearby mapped road, track, path, or footway.
-- `Inference zoom` / `Validation zoom`: recommended defaults are `15` and `13`. In stable mode the primary inference source stays at the configured inference zoom but is smoothed to reduce raw-tile sparsity. Change these only when debugging tile-resolution behavior.
-- `Search half-width meters`: controls how far from the current way/sketch the managed sampler searches for a heatmap corridor. Increase it for rough sketches or badly offset source geometry.
-- `Sample step meters`: controls longitudinal spacing between cross-sections. Smaller values preserve more detail but cost more tile sampling.
+- `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.0` visible-layer sliding core.
+- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview.
+- `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.0` sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
 - `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
@@ -151,7 +142,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 7. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
 8. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
-For rough new paths, draw a simple 2-5 node full-way sketch approximately along the heatmap trace, select it, and run alignment. The plugin automatically treats that as sketch-like input and uses precise-shape tracing.
+For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. In `0.8.0`, rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with `0.2.0`.
 
 ### Menus And Shortcuts
 
@@ -181,7 +172,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - candidate ridge geometries as OSM, including failed pre-preview candidates
 - selected candidate, candidate scores, SNR/evidence details, and sampled offsets
 - verbose/debug log lines captured for that slide
-- source heatmap tiles and per-color mosaics used by fixed-tile sampling
+- rendered heatmap layer capture used by visible-layer sampling
 
 The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
 

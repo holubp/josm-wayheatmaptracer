@@ -64,7 +64,7 @@ class RidgeTrackerTest {
     }
 
     @Test
-    void allEmptyProfilesProduceOnlyNoSignalPlaceholder() {
+    void allEmptyProfilesProduceZeroOffsetFallbackCandidate() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
             emptyProfile(0),
@@ -75,9 +75,9 @@ class RidgeTrackerTest {
         var candidates = tracker.track(profiles);
 
         assertEquals(1, candidates.size());
-        assertTrue(candidates.get(0).id().contains("no-signal"));
         assertTrue(!candidates.get(0).evidence().hasSignal());
-        assertTrue(candidates.get(0).score() < -1000.0);
+        assertTrue(candidates.get(0).offsetsPx().stream().allMatch(offset -> offset == 0.0),
+            "The v0.2-compatible tracker falls back to the source axis when no heatmap evidence is present");
     }
 
     @Test
@@ -101,7 +101,7 @@ class RidgeTrackerTest {
     }
 
     @Test
-    void decaysLongUnsupportedRunsInsteadOfRidingSearchEdge() {
+    void longUnsupportedRunsKeepLastOffsetLikeV02() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new java.util.ArrayList<>();
         profiles.add(profile(0, 18, 0.82));
@@ -114,8 +114,8 @@ class RidgeTrackerTest {
 
         assertTrue(candidates.size() >= 1);
         var best = candidates.get(0);
-        assertTrue(Math.abs(best.offsetsPx().get(best.offsetsPx().size() - 1)) < 2.0,
-            "Long unsupported runs should relax toward the source axis instead of riding the last edge offset");
+        assertTrue(best.offsetsPx().get(best.offsetsPx().size() - 1) > 16.0,
+            "The v0.2-compatible tracker carries the last supported offset through no-signal profiles");
     }
 
     @Test
@@ -214,7 +214,7 @@ class RidgeTrackerTest {
     }
 
     @Test
-    void prefersSyntheticCorridorCenterOverAlternatingShoulders() {
+    void syntheticCorridorCenterDoesNotReceiveSpecialScoringInV02Mode() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
             profileWithWidths(0, -14, 0.54, 4, -2, 0.50, 4, -8, 0.56, 12),
@@ -226,8 +226,8 @@ class RidgeTrackerTest {
 
         var best = tracker.track(profiles).get(0);
 
-        assertTrue(best.offsetsPx().stream().allMatch(offset -> offset < -5.0 && offset > -11.0),
-            "Broad heatmap conduits should trace their center instead of alternating between shoulders");
+        assertTrue(best.offsetsPx().stream().allMatch(offset -> offset <= -2.0 && offset >= -16.0),
+            "Synthetic center metadata is retained for display/debugging but does not change v0.2 ridge scoring");
     }
 
     private RenderedHeatmapSampler.CrossSectionProfile profile(double x, double leftOffset, double leftIntensity, double rightOffset, double rightIntensity) {

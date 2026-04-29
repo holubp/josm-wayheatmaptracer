@@ -92,9 +92,7 @@ public class AlignWayAction extends JosmAction {
             } else {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
-            ImageryLayer imageryLayer = config.hasManagedAccessValues()
-                ? HeatmapLayerResolver.resolveOptional().orElse(null)
-                : HeatmapLayerResolver.resolve();
+            ImageryLayer imageryLayer = HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView);
@@ -256,6 +254,7 @@ public class AlignWayAction extends JosmAction {
         panel.add(new JLabel(tr("Mode: {0}", modeLabel)), GBC.eol());
         panel.add(new JLabel(tr("Junction/end nodes: {0}", config.adjustJunctionNodes() ? "adjustable" : "fixed")), GBC.eol());
         panel.add(new JLabel(tr("Simplification: {0}", config.simplifyEnabled() ? "enabled" : "disabled")), GBC.eol());
+        panel.add(new JLabel(tr("Sampling: {0}", result.diagnostics().samplingSummary())), GBC.eol());
         panel.add(new JLabel(tr("Diagnostics file can be exported from More tools.")), GBC.eol());
         if (PluginPreferences.isDebugEnabled()) {
             panel.add(new JLabel(tr("Debug overlay is enabled.")), GBC.eol());

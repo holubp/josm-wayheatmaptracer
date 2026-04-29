@@ -11,27 +11,17 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 
 public final class RidgeTracker {
-    private static final int MAX_SEEDS = 6;
-    private static final int MAX_STATES_PER_PROFILE = 18;
-    private static final int MAX_BRIDGED_EMPTY_RUN = 6;
-    private static final double DOMINANT_CENTER_INTENSITY = 0.55;
-    private static final double DOMINATED_STRAND_RATIO = 0.76;
-    private static final double DOMINATED_STRAND_DISTANCE_PX = 9.0;
-
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         if (profiles.isEmpty()) {
             return List.of();
         }
 
         List<Double> seeds = collectSeedOffsets(profiles);
-        if (seeds.isEmpty()) {
-            return List.of(noSignalCandidate(profiles));
-        }
         List<CenterlineCandidate> candidates = new ArrayList<>();
         int candidateIndex = 1;
         for (double seed : seeds) {
             State state = bestPathForSeed(profiles, seed);
-            List<Double> offsets = stabilizeUnsupportedOffsets(state.offsets(), state.intensities());
+            List<Double> offsets = state.offsets();
             List<Double> intensities = state.intensities();
 
             List<Double> smoothedOffsets = smoothOffsets(offsets, intensities);
@@ -44,9 +34,8 @@ public final class RidgeTracker {
                     profile.anchorScreen().y + profile.normalScreen().y * offset
                 ));
             }
-            double stableScore = state.score() + stabilityBonus(smoothedOffsets, intensities);
-            CandidateEvidence evidence = evidenceFor(profiles, intensities);
-            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, stableScore, points, smoothedOffsets).withEvidence(evidence));
+            candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, state.score(), points, smoothedOffsets)
+                .withEvidence(evidenceFor(profiles, intensities)));
         }
 
         return deduplicate(candidates).stream()
@@ -60,40 +49,36 @@ public final class RidgeTracker {
             if (profile.peaks().isEmpty()) {
                 List<State> nextStates = new ArrayList<>();
                 for (State previous : states) {
-                    nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0), profile));
+                    nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0)));
                 }
-                states = prune(nextStates);
+                states = nextStates;
                 continue;
             }
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profile.peaks();
             List<State> nextStates = new ArrayList<>();
             for (RenderedHeatmapSampler.CrossSectionPeak peak : peaks) {
+                State best = null;
                 for (State previous : states) {
-                    nextStates.add(append(previous, peak, profile));
+                    State candidate = append(previous, peak);
+                    if (best == null || candidate.score() > best.score()) {
+                        best = candidate;
+                    }
                 }
+                nextStates.add(best);
             }
-            states = prune(nextStates);
+            states = nextStates;
         }
         return states.stream()
             .max(Comparator.comparingDouble(State::score))
             .orElseThrow(() -> new IllegalStateException("No ridge path state was produced."));
     }
 
-    private State append(
-        State previous,
-        RenderedHeatmapSampler.CrossSectionPeak peak,
-        RenderedHeatmapSampler.CrossSectionProfile profile
-    ) {
+    private State append(State previous, RenderedHeatmapSampler.CrossSectionPeak peak) {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
-        double supportBonus = Math.min(0.14, peak.supportWidthPx() / 120.0);
-        double centerBonus = peak.syntheticCenter() ? 0.30 : 0.0;
-        double evidence = peak.intensity() * (2.50 + supportBonus + centerBonus);
-        double jump = Math.abs(delta);
-        double continuityPenalty = jump * 0.16;
+        double evidence = peak.intensity() * 2.5;
+        double continuityPenalty = Math.abs(delta) * 0.16;
         double curvaturePenalty = Math.abs(acceleration) * 0.12;
-        double dominatedStrandPenalty = dominatedStrandPenalty(profile, peak) * 0.65;
-        double corridorShoulderPenalty = corridorShoulderPenalty(profile, peak) * 0.75;
         List<Double> offsets = new ArrayList<>(previous.offsets());
         List<Double> intensities = new ArrayList<>(previous.intensities());
         offsets.add(peak.offsetPx());
@@ -101,107 +86,43 @@ public final class RidgeTracker {
         return new State(
             peak.offsetPx(),
             delta,
-            previous.score() + evidence - continuityPenalty - curvaturePenalty
-                - dominatedStrandPenalty - corridorShoulderPenalty,
+            previous.score() + evidence - continuityPenalty - curvaturePenalty,
             offsets,
             intensities
         );
     }
 
-    private double corridorShoulderPenalty(
-        RenderedHeatmapSampler.CrossSectionProfile profile,
-        RenderedHeatmapSampler.CrossSectionPeak peak
-    ) {
-        if (peak.syntheticCenter() || profile.peaks().size() < 2) {
-            return 0.0;
-        }
-        RenderedHeatmapSampler.CrossSectionPeak center = profile.peaks().stream()
-            .filter(RenderedHeatmapSampler.CrossSectionPeak::syntheticCenter)
-            .min(Comparator.comparingDouble(candidate -> Math.abs(candidate.offsetPx() - peak.offsetPx())))
-            .orElse(null);
-        if (center == null) {
-            return 0.0;
-        }
-        double distance = Math.abs(center.offsetPx() - peak.offsetPx());
-        if (distance < 4.0 || distance > Math.max(18.0, center.supportWidthPx())) {
-            return 0.0;
-        }
-        double intensityRatio = center.intensity() <= 0.0 ? 0.0 : peak.intensity() / center.intensity();
-        if (intensityRatio > 1.18) {
-            return 0.0;
-        }
-        return 0.45 + Math.min(0.90, distance / 18.0) + Math.max(0.0, center.intensity() - peak.intensity()) * 0.65;
-    }
-
-    private double dominatedStrandPenalty(
-        RenderedHeatmapSampler.CrossSectionProfile profile,
-        RenderedHeatmapSampler.CrossSectionPeak peak
-    ) {
-        if (profile.peaks().size() < 2 || peak.syntheticCenter()) {
-            return 0.0;
-        }
-        RenderedHeatmapSampler.CrossSectionPeak dominant = profile.peaks().stream()
-            .max(Comparator.comparingDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity))
-            .orElse(peak);
-        if (dominant == peak || dominant.intensity() < DOMINANT_CENTER_INTENSITY) {
-            return 0.0;
-        }
-        double distance = Math.abs(peak.offsetPx() - dominant.offsetPx());
-        if (distance < DOMINATED_STRAND_DISTANCE_PX || peak.intensity() >= dominant.intensity() * DOMINATED_STRAND_RATIO) {
-            return 0.0;
-        }
-
-        double widthFactor = peak.supportWidthPx() <= 0.0
-            ? 1.0
-            : Math.max(0.15, 1.0 - Math.min(0.85, peak.supportWidthPx() / 34.0));
-        double dominanceGap = dominant.intensity() - peak.intensity();
-        return (0.55 + distance / 24.0) * dominanceGap * widthFactor;
-    }
-
     private List<Double> collectSeedOffsets(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         Map<Integer, Double> clusters = new LinkedHashMap<>();
+        int informativeProfiles = 0;
         for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
+            boolean informative = false;
             for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
                 if (peak.intensity() < 0.20) {
                     continue;
                 }
+                informative = true;
                 int bucket = (int) Math.round(peak.offsetPx() / 4.0);
-                clusters.merge(bucket, peak.intensity() * (1.0 + Math.min(0.35, peak.supportWidthPx() / 60.0)), Double::sum);
+                clusters.merge(bucket, peak.intensity(), Double::sum);
+            }
+            if (informative && ++informativeProfiles >= 12) {
+                break;
             }
         }
         if (clusters.isEmpty()) {
-            return List.of();
+            return List.of(0.0);
         }
         return clusters.entrySet().stream()
             .sorted(Map.Entry.<Integer, Double>comparingByValue().reversed())
-            .limit(MAX_SEEDS)
+            .limit(3)
             .map(entry -> entry.getKey() * 4.0)
-            .toList();
-    }
-
-    private CenterlineCandidate noSignalCandidate(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
-        List<Point2D.Double> points = new ArrayList<>();
-        List<Double> offsets = new ArrayList<>();
-        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-            points.add(new Point2D.Double(profile.anchorScreen().x, profile.anchorScreen().y));
-            offsets.add(0.0);
-        }
-        return new CenterlineCandidate("ridge-no-signal", -10_000.0, points, offsets)
-            .withEvidence(new CandidateEvidence("", profiles.size(), 0, profiles.size(), profiles.size(),
-                0.0, 0.0, 0.0, 0.0, List.of()));
-    }
-
-    private List<State> prune(List<State> states) {
-        return states.stream()
-            .sorted(Comparator.comparingDouble(State::score).reversed())
-            .limit(MAX_STATES_PER_PROFILE)
             .toList();
     }
 
     private List<CenterlineCandidate> deduplicate(List<CenterlineCandidate> candidates) {
         List<CenterlineCandidate> distinct = new ArrayList<>();
         for (CenterlineCandidate candidate : candidates) {
-            boolean duplicate = distinct.stream().anyMatch(existing -> averageOffsetDistance(existing, candidate) < 4.0);
+            boolean duplicate = distinct.stream().anyMatch(existing -> averageOffsetDistance(existing, candidate) < 3.0);
             if (!duplicate) {
                 distinct.add(candidate);
             }
@@ -230,96 +151,23 @@ public final class RidgeTracker {
             List<Double> next = new ArrayList<>(current);
             for (int i = 1; i < current.size() - 1; i++) {
                 double intensity = intensities.get(i);
-                double previous = current.get(i - 1);
-                double center = current.get(i);
-                double following = current.get(i + 1);
-                double secondDifference = center - (previous + following) / 2.0;
-                double previousDelta = center - previous;
-                double nextDelta = following - center;
-                boolean alternating = Math.signum(previousDelta) != Math.signum(nextDelta)
-                    && Math.abs(previousDelta) + Math.abs(nextDelta) >= 3.0;
-                double smoothing = Math.max(0.0, Math.min(0.70, 0.58 - intensity * 0.48));
-                if (!alternating && Math.abs(secondDifference) < 5.0) {
-                    smoothing *= 0.25;
-                }
+                double smoothing = Math.max(0.0, Math.min(0.75, 0.75 - intensity * 0.70));
                 if (smoothing <= 0.01) {
                     continue;
                 }
-                double neighborAverage = (previous + following) / 2.0;
-                next.set(i, center * (1.0 - smoothing) + neighborAverage * smoothing);
+                double neighborAverage = (current.get(i - 1) + current.get(i + 1)) / 2.0;
+                next.set(i, current.get(i) * (1.0 - smoothing) + neighborAverage * smoothing);
             }
             current = next;
         }
         return current;
     }
 
-    private List<Double> stabilizeUnsupportedOffsets(List<Double> offsets, List<Double> intensities) {
-        if (offsets.size() < 3 || intensities.size() != offsets.size()) {
-            return offsets;
-        }
-        List<Double> stabilized = new ArrayList<>(offsets);
-        int index = 0;
-        while (index < intensities.size()) {
-            if (intensities.get(index) > 0.0) {
-                index++;
-                continue;
-            }
-            int start = index;
-            while (index < intensities.size() && intensities.get(index) <= 0.0) {
-                index++;
-            }
-            int end = index - 1;
-            int length = end - start + 1;
-            if (length <= MAX_BRIDGED_EMPTY_RUN) {
-                continue;
-            }
-
-            boolean hasPrevious = start > 0;
-            boolean hasNext = end + 1 < offsets.size();
-            double previous = hasPrevious ? stabilized.get(start - 1) : 0.0;
-            double next = hasNext ? offsets.get(end + 1) : 0.0;
-            double supportFactor = MAX_BRIDGED_EMPTY_RUN / (double) length;
-            for (int i = start; i <= end; i++) {
-                double t = (i - start + 1.0) / (length + 1.0);
-                double interpolated;
-                if (hasPrevious && hasNext) {
-                    interpolated = previous + (next - previous) * t;
-                } else if (hasPrevious) {
-                    interpolated = previous * (1.0 - t);
-                } else if (hasNext) {
-                    interpolated = next * t;
-                } else {
-                    interpolated = 0.0;
-                }
-                stabilized.set(i, interpolated * supportFactor);
-            }
-        }
-        return stabilized;
-    }
-
-    private double stabilityBonus(List<Double> offsets, List<Double> intensities) {
-        if (offsets.size() < 3) {
-            return 0.0;
-        }
-        double support = intensities.stream().mapToDouble(Double::doubleValue).sum();
-        double oscillation = 0.0;
-        double longJump = 0.0;
-        for (int i = 1; i < offsets.size() - 1; i++) {
-            double previousDelta = offsets.get(i) - offsets.get(i - 1);
-            double nextDelta = offsets.get(i + 1) - offsets.get(i);
-            if (Math.signum(previousDelta) != Math.signum(nextDelta)) {
-                oscillation += Math.min(12.0, Math.abs(previousDelta) + Math.abs(nextDelta));
-            }
-            longJump += Math.max(0.0, Math.abs(previousDelta) - 9.0);
-        }
-        return support * 0.18 - oscillation * 0.08 - longJump * 0.12;
-    }
-
     private CandidateEvidence evidenceFor(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, List<Double> intensities) {
         int supported = 0;
         int empty = 0;
-        int maxConsecutiveEmpty = 0;
-        int currentConsecutiveEmpty = 0;
+        int maxEmpty = 0;
+        int currentEmpty = 0;
         double total = 0.0;
         double ambiguity = 0.0;
         for (int i = 0; i < profiles.size(); i++) {
@@ -328,10 +176,10 @@ public final class RidgeTracker {
             if (intensity > 0.0) {
                 supported++;
                 total += intensity;
-                currentConsecutiveEmpty = 0;
+                currentEmpty = 0;
             } else {
-                currentConsecutiveEmpty++;
-                maxConsecutiveEmpty = Math.max(maxConsecutiveEmpty, currentConsecutiveEmpty);
+                currentEmpty++;
+                maxEmpty = Math.max(maxEmpty, currentEmpty);
             }
             if (profile.peaks().isEmpty()) {
                 empty++;
@@ -340,10 +188,10 @@ public final class RidgeTracker {
             }
         }
         double mean = supported == 0 ? 0.0 : total / supported;
-        double supportedRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
+        double supportRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
         double ambiguityPenalty = profiles.isEmpty() ? 0.0 : ambiguity / profiles.size();
-        double snr = mean * supportedRatio / (1.0 + ambiguityPenalty);
-        return new CandidateEvidence("", profiles.size(), supported, empty, maxConsecutiveEmpty,
+        double snr = mean * supportRatio / (1.0 + ambiguityPenalty);
+        return new CandidateEvidence("", profiles.size(), supported, empty, maxEmpty,
             total, mean, snr, ambiguityPenalty, List.of());
     }
 
