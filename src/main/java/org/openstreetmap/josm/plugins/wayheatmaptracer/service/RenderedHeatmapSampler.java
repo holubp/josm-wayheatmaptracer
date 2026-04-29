@@ -368,11 +368,12 @@ public final class RenderedHeatmapSampler {
             * (0.82 + 0.18 * value);
         double blueScore = Math.max(hueAffinity(hue, 205.0, 42.0), hueAffinity(hue, 235.0, 52.0))
             * (0.24 + 0.30 * value);
-        double bridgeScore = hueAffinity(hue, 315.0, 46.0) * (0.74 + 0.26 * value);
+        double bridgeScore = Math.max(hueAffinity(hue, 315.0, 46.0), hueAffinity(hue, 285.0, 42.0))
+            * (0.74 + 0.26 * value);
         double coolToWarm = Math.max(0.0, Math.min(1.0, (red - blue + 255.0) / 510.0));
         return saturation * Math.max(
             redScore * (0.95 + 0.65 * coolToWarm),
-            Math.max(blueScore * 0.34, bridgeScore * (0.82 + 0.42 * coolToWarm))
+            Math.max(blueScore * 0.75, bridgeScore * (0.82 + 0.42 * coolToWarm))
         );
     }
 

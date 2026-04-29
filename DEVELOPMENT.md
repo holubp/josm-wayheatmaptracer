@@ -75,7 +75,7 @@ Full-way selections with 2-5 nodes are treated as sketch-like input and use prec
 
 The preview overlay uses solid blue for the selected result, orange dashes for the original segment, and labeled dashed lines for alternative ridge candidates. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates the preview immediately when the selected candidate changes.
 
-The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, candidate evidence/scoring, original/preview geometry, per-slide verbose/debug logs, and fixed-tile source imagery. Never include cookies, signed headers, or full signed URLs in diagnostics.
+The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, candidate evidence/scoring, original/preview geometry, candidate ridge geometry, per-slide verbose/debug logs, and fixed-tile source imagery. Never include cookies, signed headers, or full signed URLs in diagnostics.
 
 ## Guardrails
 

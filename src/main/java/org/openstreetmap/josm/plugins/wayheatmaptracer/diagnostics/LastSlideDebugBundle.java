@@ -24,6 +24,7 @@ public final class LastSlideDebugBundle {
     private final String verboseLog;
     private final String originalOsm;
     private final String previewOsm;
+    private final String candidateOsm;
     private final String statusJson;
     private final String tileManifestJson;
     private final Map<String, BufferedImage> tileImages;
@@ -33,6 +34,7 @@ public final class LastSlideDebugBundle {
         String verboseLog,
         String originalOsm,
         String previewOsm,
+        String candidateOsm,
         String statusJson,
         String tileManifestJson,
         Map<String, BufferedImage> tileImages
@@ -41,6 +43,7 @@ public final class LastSlideDebugBundle {
         this.verboseLog = verboseLog;
         this.originalOsm = originalOsm;
         this.previewOsm = previewOsm;
+        this.candidateOsm = candidateOsm;
         this.statusJson = statusJson;
         this.tileManifestJson = tileManifestJson;
         this.tileImages = tileImages;
@@ -69,6 +72,7 @@ public final class LastSlideDebugBundle {
             verboseLog == null ? "" : verboseLog,
             originalOsm(result),
             previewOsm(result),
+            candidateOsm(result),
             statusJson,
             tileManifest,
             images
@@ -83,6 +87,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "verbose-log.txt", verboseLog);
             writeText(zip, "original-segment.osm", originalOsm);
             writeText(zip, "preview-segment.osm", previewOsm);
+            writeText(zip, "candidate-ridges.osm", candidateOsm);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
@@ -98,7 +103,7 @@ public final class LastSlideDebugBundle {
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
             + "\"formatVersion\":1,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"tile-manifest.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"tile-manifest.json\"]"
             + "}";
     }
 
@@ -138,6 +143,35 @@ public final class LastSlideDebugBundle {
         return builder.toString();
     }
 
+    private static String candidateOsm(AlignmentResult result) {
+        StringBuilder builder = new StringBuilder(osmHeader());
+        long nodeId = -10_000_000;
+        long wayId = -20_000_000;
+        for (CenterlineCandidate candidate : result.candidates()) {
+            if (candidate.eastNorthPoints().isEmpty()) {
+                continue;
+            }
+            long firstNodeId = nodeId;
+            for (EastNorth point : candidate.eastNorthPoints()) {
+                builder.append(nodeXml(nodeId--, ProjectionRegistry.getProjection().eastNorth2latlon(point)));
+            }
+            builder.append("  <way id=\"").append(wayId--).append("\">\n");
+            for (long ref = firstNodeId; ref > nodeId; ref--) {
+                builder.append("    <nd ref=\"").append(ref).append("\" />\n");
+            }
+            builder.append("    <tag k=\"wayheatmaptracer:candidate\" v=\"").append(xmlEscape(candidate.id())).append("\" />\n");
+            builder.append("    <tag k=\"wayheatmaptracer:score\" v=\"").append(candidate.score()).append("\" />\n");
+            if (!candidate.safetyWarnings().isEmpty()) {
+                builder.append("    <tag k=\"wayheatmaptracer:warnings\" v=\"")
+                    .append(xmlEscape(String.join("; ", candidate.safetyWarnings())))
+                    .append("\" />\n");
+            }
+            builder.append("  </way>\n");
+        }
+        builder.append("</osm>\n");
+        return builder.toString();
+    }
+
     private static String osmHeader() {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<osm version=\"0.6\" generator=\"WayHeatmapTracer\">\n";
     }
@@ -152,5 +186,13 @@ public final class LastSlideDebugBundle {
 
     private static String escape(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String xmlEscape(String value) {
+        return value == null ? "" : value
+            .replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;");
     }
 }

@@ -91,6 +91,8 @@ class HeatmapFixtureArchiveTest {
         assertTrue(blueredRed > blueredBlue, "bluered should prioritize the warm center over strong blue shoulders");
         assertTrue(blueredRed > blueredCyan, "bluered should treat cyan as lower activity than red/magenta");
         assertTrue(blueredPurple > blueredBlue, "bluered should keep magenta/purple transition above blue shoulders");
+        assertTrue(blueredBlue > 0.18, "bluered should still preserve blue/cyan low-activity evidence");
+        assertTrue(blueredCyan > 0.18, "bluered should not make pale cyan trails disappear");
 
         double blueShoulder = RenderedHeatmapSampler.colorIntensity(40, 95, 220, "blue");
         double blueMedium = RenderedHeatmapSampler.colorIntensity(80, 170, 245, "blue");

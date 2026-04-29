@@ -177,6 +177,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - exact redacted settings used for that slide
 - selected activity, visible color, and sampled color schemes
 - original selected way/segment and preview geometry as OSM
+- candidate ridge geometries as OSM, including failed pre-preview candidates
 - selected candidate, candidate scores, SNR/evidence details, and sampled offsets
 - verbose/debug log lines captured for that slide
 - source heatmap tiles and per-color mosaics used by fixed-tile sampling
