@@ -102,18 +102,22 @@ public class AlignWayAction extends JosmAction {
 
             config = PluginPreferences.load();
             showCandidatePreview(dataSet, selection, result, config);
+        } catch (AlignmentService.AlignmentFailureException ex) {
+            overlay.hide();
+            Logging.warn("WayHeatmapTracer alignment failed without applying geometry: " + ex.getMessage());
+            PluginLog.verbose("Alignment failed without applying geometry: %s", ex.toString());
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                ex.partialResult(),
+                ex.partialResult().candidates().isEmpty() ? null : ex.partialResult().candidates().get(0),
+                "failed",
+                PluginLog.currentSlideLog()
+            ));
+            PluginLog.endSlideSession();
+            showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         } catch (Exception ex) {
             overlay.hide();
             Logging.error(ex);
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
-            if (ex instanceof AlignmentService.AlignmentFailureException failure) {
-                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                    failure.partialResult(),
-                    failure.partialResult().candidates().isEmpty() ? null : failure.partialResult().candidates().get(0),
-                    "failed",
-                    PluginLog.currentSlideLog()
-                ));
-            }
             PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         }

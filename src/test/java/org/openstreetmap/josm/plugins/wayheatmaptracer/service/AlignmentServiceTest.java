@@ -16,6 +16,7 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -147,6 +148,7 @@ class AlignmentServiceTest {
             18,
             4,
             3.0,
+            InferenceMode.STABLE_FIXED_SCALE,
             15,
             13,
             28.0,

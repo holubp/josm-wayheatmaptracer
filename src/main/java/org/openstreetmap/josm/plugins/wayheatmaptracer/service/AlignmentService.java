@@ -56,9 +56,9 @@ public final class AlignmentService {
             selection.segmentNodes().size(),
             selection.fixedNodes().size(),
             layerName);
-        PluginLog.verbose("Alignment settings: mode=%s simplify=%s tolerance=%.2f multiColor=%s activity=%s displayColor=%s inferenceZoom=%d validationZoom=%d searchHalfWidth=%.1fm sampleStep=%.1fm.",
+        PluginLog.verbose("Alignment settings: mode=%s simplify=%s tolerance=%.2f multiColor=%s activity=%s displayColor=%s inferenceMode=%s inferenceZoom=%d validationZoom=%d searchHalfWidth=%.1fm sampleStep=%.1fm.",
             config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
-            config.multiColorDetection(), config.activity(), config.color(), config.inferenceZoom(), config.validationZoom(),
+            config.multiColorDetection(), config.activity(), config.color(), config.inferenceMode(), config.inferenceZoom(), config.validationZoom(),
             config.searchHalfWidthMeters(), config.sampleStepMeters());
 
         long t0 = System.nanoTime();
@@ -130,8 +130,38 @@ public final class AlignmentService {
         candidates = refineCandidates(selection, sampling, mapView, sourcePolyline, candidates, config, colorModes, halfWidthPx);
         long t2 = System.nanoTime();
 
-        CenterlineCandidate primary = candidates.get(0);
-        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, mapView);
+        PreviewChoice previewChoice = firstSafePreview(selection, sourcePolyline, candidates, config, mapView);
+        candidates = previewChoice.candidates();
+        CenterlineCandidate primary = previewChoice.candidate();
+        List<EastNorth> preview = previewChoice.preview();
+        if (preview.isEmpty()) {
+            long failedAt = System.nanoTime();
+            AlignmentDiagnostics diagnostics = diagnostics(
+                layerName,
+                candidates.size(),
+                0,
+                t0,
+                t1,
+                t2,
+                failedAt,
+                config,
+                selection,
+                sampling,
+                colorModes,
+                candidates
+            );
+            AlignmentResult partial = new AlignmentResult(
+                selection,
+                sampling.previewRaster(),
+                candidates,
+                sourcePolyline,
+                sourcePolyline,
+                List.of(),
+                diagnostics,
+                sampling.fixedTiles()
+            );
+            throw new AlignmentFailureException("Detected ridge candidates could not produce a non-self-intersecting preview.", partial);
+        }
         List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
         long t3 = System.nanoTime();
 
@@ -163,6 +193,34 @@ public final class AlignmentService {
         return new AlignmentResult(selection, sampling.previewRaster(), candidates, sourcePolyline, preview, nodeMoves, diagnostics, sampling.fixedTiles());
     }
 
+    private PreviewChoice firstSafePreview(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<CenterlineCandidate> candidates,
+        ManagedHeatmapConfig config,
+        MapView mapView
+    ) {
+        List<CenterlineCandidate> safeCandidates = new ArrayList<>();
+        CenterlineCandidate firstSafe = null;
+        List<EastNorth> firstPreview = List.of();
+        for (CenterlineCandidate candidate : candidates) {
+            List<EastNorth> preview = optimize(selection, sourcePolyline, candidate, config, mapView);
+            if (!isSelfIntersecting(preview)) {
+                safeCandidates.add(candidate);
+                if (firstSafe == null) {
+                    firstSafe = candidate;
+                    firstPreview = preview;
+                }
+                continue;
+            }
+            PluginLog.verbose("Rejected candidate %s after optimization because the preview self-intersects.", candidate.id());
+        }
+        if (firstSafe != null) {
+            return new PreviewChoice(firstSafe, firstPreview, safeCandidates);
+        }
+        return new PreviewChoice(candidates.get(0), List.of(), candidates);
+    }
+
     private SamplingRun prepareSamplingRun(
         SelectionContext selection,
         ImageryLayer imageryLayer,
@@ -174,8 +232,19 @@ public final class AlignmentService {
     ) {
         if (config.hasManagedAccessValues()) {
             PluginLog.verbose("Using managed fixed-tile source sampling; visible layer, opacity, and HSL settings are ignored.");
-            TileHeatmapSampler.TileMosaicSet fixedTiles = tileSampler.prepare(config, sourcePolyline, colorModes);
-            String sourceJson = "{\"type\":\"managed-fixed-tiles\",\"samplingZoom\":"
+            TileHeatmapSampler.TileMosaicSet fixedTiles = tileSampler.prepare(
+                config,
+                sourcePolyline,
+                colorModes,
+                isSketchLikeSelection(selection)
+            );
+            String sourceJson = "{\"type\":\"managed-fixed-tiles\",\"inferenceMode\":\""
+                + fixedTiles.inferenceMode().name()
+                + "\",\"requestedInferenceZoom\":"
+                + fixedTiles.requestedInferenceZoom()
+                + ",\"requestedValidationZoom\":"
+                + fixedTiles.requestedValidationZoom()
+                + ",\"samplingZoom\":"
                 + fixedTiles.inferenceZoom()
                 + ",\"validationZoom\":"
                 + fixedTiles.validationZoom()
@@ -327,6 +396,16 @@ public final class AlignmentService {
         if (boundaryHitRatio > WARN_FIXED_TILE_BOUNDARY_HIT_RATIO) {
             warnings.add("near search edge");
             scoreAdjustment -= boundaryHitRatio * 4.0;
+        }
+        double roughness = fusedOffsetRoughness(candidate.offsetsPx());
+        double oscillation = lateralOscillation(candidate.offsetsPx());
+        if (roughness > 3.0) {
+            warnings.add("rough lateral trace");
+            scoreAdjustment -= Math.min(8.0, (roughness - 3.0) * 1.6);
+        }
+        if (oscillation > 24.0) {
+            warnings.add("side-to-side oscillation");
+            scoreAdjustment -= Math.min(8.0, (oscillation - 24.0) * 0.12);
         }
         if (supportRatio < MIN_FIXED_TILE_SUPPORT_RATIO) {
             warnings.add("low support");
@@ -1586,6 +1665,13 @@ public final class AlignmentService {
         BufferedImage previewRaster,
         TileHeatmapSampler.TileMosaicSet fixedTiles,
         String sourceJson
+    ) {
+    }
+
+    private record PreviewChoice(
+        CenterlineCandidate candidate,
+        List<EastNorth> preview,
+        List<CenterlineCandidate> candidates
     ) {
     }
 

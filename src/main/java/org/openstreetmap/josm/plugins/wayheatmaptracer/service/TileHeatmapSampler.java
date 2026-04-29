@@ -20,6 +20,7 @@ import javax.imageio.ImageIO;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
@@ -34,29 +35,43 @@ public final class TileHeatmapSampler {
         List<EastNorth> sourcePolyline,
         List<String> tileColors
     ) {
+        return prepare(config, sourcePolyline, tileColors, false);
+    }
+
+    public TileMosaicSet prepare(
+        ManagedHeatmapConfig config,
+        List<EastNorth> sourcePolyline,
+        List<String> tileColors,
+        boolean sketchLikeSelection
+    ) {
         if (sourcePolyline.size() < 2) {
             throw new IllegalStateException("Selected segment is too short for tile sampling.");
         }
-        int inferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
-        int validationZoom = Math.min(inferenceZoom, clampZoom(config.validationZoom(), 10, 16));
+        InferenceMode inferenceMode = inferenceMode(config);
+        int requestedInferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
+        int requestedValidationZoom = clampZoom(config.validationZoom(), 10, 16);
+        int inferenceZoom = effectiveInferenceZoom(config);
+        int validationZoom = effectiveValidationZoom(config);
         double latitude = representativeLatitude(sourcePolyline);
-        SamplingParameters inference = parametersFor(config, inferenceZoom, latitude);
-        SamplingParameters validation = parametersFor(config, validationZoom, latitude);
+        SamplingParameters inference = parametersFor(config, inferenceZoom, latitude, sketchLikeSelection);
+        SamplingParameters validation = parametersFor(config, validationZoom, latitude, sketchLikeSelection);
 
         Map<String, TileMosaic> mosaics = new LinkedHashMap<>();
         for (String color : tileColors) {
-            TileMosaic inferenceMosaic = loadMosaic(config, color, sourcePolyline, inference);
+            TileMosaic inferenceMosaic = loadMosaic(config, color, sourcePolyline, inference, inferenceMode.stableFixedScale());
             mosaics.put(key(color, inferenceZoom), inferenceMosaic);
             if (validationZoom != inferenceZoom) {
-                TileMosaic validationMosaic = loadMosaic(config, color, sourcePolyline, validation);
+                TileMosaic validationMosaic = loadMosaic(config, color, sourcePolyline, validation, false);
                 mosaics.put(key(color, validationZoom), validationMosaic);
             }
         }
         PluginLog.verbose(
-            "Prepared managed heatmap tile sampling, inferenceZoom=%d validationZoom=%d colors=%s halfWidth=%.1fm step=%.1fm.",
-            inferenceZoom, validationZoom, tileColors, config.searchHalfWidthMeters(), config.sampleStepMeters()
+            "Prepared managed heatmap tile sampling, mode=%s requestedInferenceZoom=%d inferenceZoom=%d validationZoom=%d colors=%s halfWidth=%.1fm step=%.1fm sketch=%s.",
+            inferenceMode.name(), requestedInferenceZoom, inferenceZoom, validationZoom, tileColors,
+            inference.halfWidthMeters(), inference.sampleStepMeters(), sketchLikeSelection
         );
-        return new TileMosaicSet(inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
+        return new TileMosaicSet(inferenceMode, requestedInferenceZoom, requestedValidationZoom,
+            inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
     }
 
     public List<RenderedHeatmapSampler.CrossSectionProfile> sampleProfiles(
@@ -97,7 +112,13 @@ public final class TileHeatmapSampler {
             .toList();
     }
 
-    private TileMosaic loadMosaic(ManagedHeatmapConfig config, String color, List<EastNorth> sourcePolyline, SamplingParameters parameters) {
+    private TileMosaic loadMosaic(
+        ManagedHeatmapConfig config,
+        String color,
+        List<EastNorth> sourcePolyline,
+        SamplingParameters parameters,
+        boolean stableInference
+    ) {
         List<Point2D.Double> worldPixels = sourcePolyline.stream()
             .map(point -> toWorldPixel(point, parameters.zoom()))
             .toList();
@@ -111,8 +132,8 @@ public final class TileHeatmapSampler {
         int width = (maxTileX - minTileX + 1) * TILE_SIZE;
         int height = (maxTileY - minTileY + 1) * TILE_SIZE;
 
-        BufferedImage mosaic = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        Graphics2D graphics = mosaic.createGraphics();
+        BufferedImage rawMosaic = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = rawMosaic.createGraphics();
         List<TileRecord> records = new ArrayList<>();
         Map<String, BufferedImage> tileImages = new LinkedHashMap<>();
         try {
@@ -131,7 +152,44 @@ public final class TileHeatmapSampler {
         } finally {
             graphics.dispose();
         }
-        return new TileMosaic(color, parameters.zoom(), originX, originY, mosaic, records, tileImages, parameters);
+        BufferedImage samplingImage = stableInference ? stableInferenceImage(rawMosaic, color, parameters.zoom()) : rawMosaic;
+        return new TileMosaic(color, parameters.zoom(), originX, originY, samplingImage, records, tileImages, parameters, stableInference);
+    }
+
+    private BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
+        int radius = clamp(16 - zoom, 1, 3);
+        BufferedImage expanded = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                int bestArgb = source.getRGB(x, y);
+                double bestIntensity = detectorIntensity(bestArgb, color);
+                for (int yy = Math.max(0, y - radius); yy <= Math.min(source.getHeight() - 1, y + radius); yy++) {
+                    for (int xx = Math.max(0, x - radius); xx <= Math.min(source.getWidth() - 1, x + radius); xx++) {
+                        int argb = source.getRGB(xx, yy);
+                        double intensity = detectorIntensity(argb, color);
+                        if (intensity > bestIntensity) {
+                            bestIntensity = intensity;
+                            bestArgb = argb;
+                        }
+                    }
+                }
+                expanded.setRGB(x, y, bestArgb);
+            }
+        }
+        PluginLog.verbose("Built stable fixed-scale inference raster for color '%s' z%d using %d px heat dilation.",
+            color, zoom, radius);
+        return expanded;
+    }
+
+    private double detectorIntensity(int argb, String color) {
+        int alpha = (argb >>> 24) & 0xFF;
+        if (alpha == 0) {
+            return 0.0;
+        }
+        int red = (argb >>> 16) & 0xFF;
+        int green = (argb >>> 8) & 0xFF;
+        int blue = argb & 0xFF;
+        return RenderedHeatmapSampler.colorIntensity(red, green, blue, color);
     }
 
     private FetchedTile fetchTile(ManagedHeatmapConfig config, String color, int zoom, int x, int y) {
@@ -204,9 +262,11 @@ public final class TileHeatmapSampler {
             quality, opaqueRatio, heatCoverage, sampledColors.size(), error);
     }
 
-    private SamplingParameters parametersFor(ManagedHeatmapConfig config, int zoom, double latitude) {
+    private SamplingParameters parametersFor(ManagedHeatmapConfig config, int zoom, double latitude, boolean sketchLikeSelection) {
         double metersPerPixel = metersPerPixel(zoom, latitude);
-        double halfMeters = Math.max(2.0, config.searchHalfWidthMeters());
+        double halfMeters = Math.max(2.0, sketchLikeSelection
+            ? Math.max(config.searchHalfWidthMeters(), 64.0)
+            : config.searchHalfWidthMeters());
         double stepMeters = Math.max(0.5, config.sampleStepMeters());
         int halfWidthPx = clamp((int) Math.round(halfMeters / metersPerPixel), 6, 96);
         int stepPx = clamp((int) Math.round(stepMeters / metersPerPixel), 1, Math.max(1, halfWidthPx / 3));
@@ -264,7 +324,27 @@ public final class TileHeatmapSampler {
         return (int) Math.floor(worldPx / TILE_SIZE);
     }
 
-    private int clampZoom(int zoom, int min, int max) {
+    static int effectiveInferenceZoom(ManagedHeatmapConfig config) {
+        int requestedInferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
+        return inferenceMode(config).stableFixedScale()
+            ? Math.min(requestedInferenceZoom, 14)
+            : requestedInferenceZoom;
+    }
+
+    static int effectiveValidationZoom(ManagedHeatmapConfig config) {
+        int requestedInferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
+        int requestedValidationZoom = clampZoom(config.validationZoom(), 10, 16);
+        int inferenceZoom = effectiveInferenceZoom(config);
+        return inferenceMode(config).stableFixedScale()
+            ? clampZoom(Math.max(requestedInferenceZoom, requestedValidationZoom), 10, 16)
+            : clampZoom(Math.min(inferenceZoom, requestedValidationZoom), 10, 16);
+    }
+
+    private static InferenceMode inferenceMode(ManagedHeatmapConfig config) {
+        return config.inferenceMode() == null ? InferenceMode.STABLE_FIXED_SCALE : config.inferenceMode();
+    }
+
+    private static int clampZoom(int zoom, int min, int max) {
         return Math.max(min, Math.min(max, zoom));
     }
 
@@ -289,6 +369,9 @@ public final class TileHeatmapSampler {
     }
 
     public record TileMosaicSet(
+        InferenceMode inferenceMode,
+        int requestedInferenceZoom,
+        int requestedValidationZoom,
         int inferenceZoom,
         int validationZoom,
         int tileSize,
@@ -313,7 +396,13 @@ public final class TileHeatmapSampler {
         }
 
         public String manifestJson() {
-            StringBuilder builder = new StringBuilder("{\"inferenceZoom\":")
+            StringBuilder builder = new StringBuilder("{\"inferenceMode\":\"")
+                .append(inferenceMode.name())
+                .append("\",\"requestedInferenceZoom\":")
+                .append(requestedInferenceZoom)
+                .append(",\"requestedValidationZoom\":")
+                .append(requestedValidationZoom)
+                .append(",\"inferenceZoom\":")
                 .append(inferenceZoom)
                 .append(",\"validationZoom\":")
                 .append(validationZoom)
@@ -343,13 +432,16 @@ public final class TileHeatmapSampler {
         BufferedImage image,
         List<TileRecord> tiles,
         Map<String, BufferedImage> tileImages,
-        SamplingParameters parameters
+        SamplingParameters parameters,
+        boolean stableInferenceRaster
     ) {
         String toJson() {
             StringBuilder builder = new StringBuilder("{\"color\":\"")
                 .append(color)
                 .append("\",\"zoom\":")
                 .append(zoom)
+                .append(",\"stableInferenceRaster\":")
+                .append(stableInferenceRaster)
                 .append(",\"originWorldPxX\":")
                 .append(originWorldPxX)
                 .append(",\"originWorldPxY\":")

@@ -20,6 +20,7 @@ public record ManagedHeatmapConfig(
     int crossSectionHalfWidthPx,
     int crossSectionStepPx,
     double simplifyTolerancePx,
+    InferenceMode inferenceMode,
     int inferenceZoom,
     int validationZoom,
     double searchHalfWidthMeters,
@@ -55,6 +56,7 @@ public record ManagedHeatmapConfig(
             + "\"crossSectionHalfWidthPx\":" + crossSectionHalfWidthPx + ','
             + "\"crossSectionStepPx\":" + crossSectionStepPx + ','
             + "\"simplifyTolerancePx\":" + simplifyTolerancePx + ','
+            + "\"inferenceMode\":\"" + (inferenceMode == null ? InferenceMode.STABLE_FIXED_SCALE : inferenceMode).name() + "\","
             + "\"inferenceZoom\":" + inferenceZoom + ','
             + "\"validationZoom\":" + validationZoom + ','
             + "\"searchHalfWidthMeters\":" + searchHalfWidthMeters + ','

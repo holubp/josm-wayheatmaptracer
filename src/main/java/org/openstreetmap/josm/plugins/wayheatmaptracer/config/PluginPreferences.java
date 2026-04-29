@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.config;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.IPreferences;
@@ -28,6 +29,7 @@ public final class PluginPreferences {
     private static final String CROSS_SECTION_HALF_WIDTH = PREFIX + "crossSectionHalfWidthPx";
     private static final String CROSS_SECTION_STEP = PREFIX + "crossSectionStepPx";
     private static final String SIMPLIFY_TOLERANCE = PREFIX + "simplifyTolerancePx";
+    private static final String INFERENCE_MODE = PREFIX + "inferenceMode";
     private static final String INFERENCE_ZOOM = PREFIX + "inferenceZoom";
     private static final String VALIDATION_ZOOM = PREFIX + "validationZoom";
     private static final String SEARCH_HALF_WIDTH_METERS = PREFIX + "searchHalfWidthMeters";
@@ -62,6 +64,7 @@ public final class PluginPreferences {
             pref.getInt(CROSS_SECTION_HALF_WIDTH, 18),
             pref.getInt(CROSS_SECTION_STEP, 4),
             pref.getDouble(SIMPLIFY_TOLERANCE, 3.0),
+            InferenceMode.fromPreference(pref.get(INFERENCE_MODE, InferenceMode.STABLE_FIXED_SCALE.name())),
             clampZoom(pref.getInt(INFERENCE_ZOOM, 15), 10, 16),
             clampZoom(pref.getInt(VALIDATION_ZOOM, 13), 10, 16),
             Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 28.0)),
@@ -91,6 +94,9 @@ public final class PluginPreferences {
         Config.getPref().putInt(CROSS_SECTION_HALF_WIDTH, config.crossSectionHalfWidthPx());
         Config.getPref().putInt(CROSS_SECTION_STEP, config.crossSectionStepPx());
         Config.getPref().putDouble(SIMPLIFY_TOLERANCE, config.simplifyTolerancePx());
+        Config.getPref().put(INFERENCE_MODE, (config.inferenceMode() == null
+            ? InferenceMode.STABLE_FIXED_SCALE
+            : config.inferenceMode()).name());
         Config.getPref().putInt(INFERENCE_ZOOM, clampZoom(config.inferenceZoom(), 10, 16));
         Config.getPref().putInt(VALIDATION_ZOOM, clampZoom(config.validationZoom(), 10, 16));
         Config.getPref().putDouble(SEARCH_HALF_WIDTH_METERS, Math.max(2.0, config.searchHalfWidthMeters()));
@@ -140,6 +146,7 @@ public final class PluginPreferences {
             18,
             4,
             3.0,
+            InferenceMode.STABLE_FIXED_SCALE,
             15,
             13,
             28.0,
