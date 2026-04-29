@@ -56,7 +56,7 @@ public final class PluginPreferences {
             AlignmentMode.fromPreference(pref.get(ALIGNMENT_MODE, AlignmentMode.MOVE_EXISTING_NODES.name())),
             pref.getBoolean(VERBOSE, false),
             pref.getBoolean(DEBUG, false),
-            pref.getBoolean(MULTI_COLOR_DETECTION, false),
+            pref.getBoolean(MULTI_COLOR_DETECTION, true),
             pref.getBoolean(PARALLEL_WAY_AWARENESS, true),
             pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
             pref.getBoolean(ADJUST_JUNCTION_NODES, false),

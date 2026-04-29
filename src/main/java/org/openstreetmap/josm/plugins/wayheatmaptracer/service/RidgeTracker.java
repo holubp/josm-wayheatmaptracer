@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 public final class RidgeTracker {
     private static final int MAX_SEEDS = 6;
     private static final int MAX_STATES_PER_PROFILE = 18;
+    private static final int MAX_BRIDGED_EMPTY_RUN = 6;
     private static final double DOMINANT_CENTER_INTENSITY = 0.55;
     private static final double DOMINATED_STRAND_RATIO = 0.76;
     private static final double DOMINATED_STRAND_DISTANCE_PX = 9.0;
@@ -30,7 +31,7 @@ public final class RidgeTracker {
         int candidateIndex = 1;
         for (double seed : seeds) {
             State state = bestPathForSeed(profiles, seed);
-            List<Double> offsets = state.offsets();
+            List<Double> offsets = stabilizeUnsupportedOffsets(state.offsets(), state.intensities());
             List<Double> intensities = state.intensities();
 
             List<Double> smoothedOffsets = smoothOffsets(offsets, intensities);
@@ -250,6 +251,50 @@ public final class RidgeTracker {
             current = next;
         }
         return current;
+    }
+
+    private List<Double> stabilizeUnsupportedOffsets(List<Double> offsets, List<Double> intensities) {
+        if (offsets.size() < 3 || intensities.size() != offsets.size()) {
+            return offsets;
+        }
+        List<Double> stabilized = new ArrayList<>(offsets);
+        int index = 0;
+        while (index < intensities.size()) {
+            if (intensities.get(index) > 0.0) {
+                index++;
+                continue;
+            }
+            int start = index;
+            while (index < intensities.size() && intensities.get(index) <= 0.0) {
+                index++;
+            }
+            int end = index - 1;
+            int length = end - start + 1;
+            if (length <= MAX_BRIDGED_EMPTY_RUN) {
+                continue;
+            }
+
+            boolean hasPrevious = start > 0;
+            boolean hasNext = end + 1 < offsets.size();
+            double previous = hasPrevious ? stabilized.get(start - 1) : 0.0;
+            double next = hasNext ? offsets.get(end + 1) : 0.0;
+            double supportFactor = MAX_BRIDGED_EMPTY_RUN / (double) length;
+            for (int i = start; i <= end; i++) {
+                double t = (i - start + 1.0) / (length + 1.0);
+                double interpolated;
+                if (hasPrevious && hasNext) {
+                    interpolated = previous + (next - previous) * t;
+                } else if (hasPrevious) {
+                    interpolated = previous * (1.0 - t);
+                } else if (hasNext) {
+                    interpolated = next * t;
+                } else {
+                    interpolated = 0.0;
+                }
+                stabilized.set(i, interpolated * supportFactor);
+            }
+        }
+        return stabilized;
     }
 
     private double stabilityBonus(List<Double> offsets, List<Double> intensities) {

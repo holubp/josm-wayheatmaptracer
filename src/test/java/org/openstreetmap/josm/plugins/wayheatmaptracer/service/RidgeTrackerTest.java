@@ -101,6 +101,24 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void decaysLongUnsupportedRunsInsteadOfRidingSearchEdge() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new java.util.ArrayList<>();
+        profiles.add(profile(0, 18, 0.82));
+        profiles.add(profile(10, 18, 0.80));
+        for (int i = 2; i < 32; i++) {
+            profiles.add(emptyProfile(i * 10.0));
+        }
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        var best = candidates.get(0);
+        assertTrue(Math.abs(best.offsetsPx().get(best.offsetsPx().size() - 1)) < 2.0,
+            "Long unsupported runs should relax toward the source axis instead of riding the last edge offset");
+    }
+
+    @Test
     void prefersContinuousRidgeOverLocallyStrongerParallelDistractor() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(

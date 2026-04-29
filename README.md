@@ -60,6 +60,7 @@ The current implementation is designed for private development:
 - Optionally use all supported color schemes during detection while keeping only the selected color visible; consensus mostly boosts stable per-color ridges by signal agreement, and only creates fused geometry when the agreeing ridges are already close and smooth
 - Use palette-specific heatmap evidence: single-color schemes prioritize the brightest coherent core, while dual-color schemes such as `bluered` and `gray` use hue and saturation so high-activity colors outrank lower-activity shoulders
 - Track heatmap corridors longitudinally, including short no-signal gaps and broad/high-traffic conduit centers, so the result is less likely to zig-zag between shoulders or jump to a nearby parallel trace because of one locally strong sample
+- Relax long unsupported/no-signal runs back toward the source geometry instead of extending one edge hit through the rest of the way as if it were real heatmap evidence
 - Downweight narrow wandering outlier strands when a stronger coherent center is present, while still allowing low-intensity paths whose whole heatmap evidence consists of sparse strands
 - Reject unsafe managed-tile candidates with sparse support, long no-signal gaps, edge-of-band hits, lower-zoom validation failure, self-intersection, or large low-support displacement on normal existing ways
 - Treat rough full-way 2-5 node selections as sketch-like input and automatically use precise-shape tracing for them
@@ -128,7 +129,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Inference mode`: keep `Stable fixed scale` for normal use. It avoids the old zoom-dependent behavior by sampling managed tiles at a normalized effective scale. Use `Raw high-resolution` only for diagnostics and regression testing.
-- `Use all color schemes for detection`: recommended on. Consensus works best when high-SNR color schemes agree.
+- `Use all color schemes for detection`: recommended on and enabled by default for new installations. Consensus works best when high-SNR color schemes agree.
 - `Use nearby parallel ways as alignment context`: recommended on. It helps avoid snapping to a nearby mapped road, track, path, or footway.
 - `Inference zoom` / `Validation zoom`: recommended defaults are `15` and `13`. In stable mode the primary inference source stays at the configured inference zoom but is smoothed to reduce raw-tile sparsity. Change these only when debugging tile-resolution behavior.
 - `Search half-width meters`: controls how far from the current way/sketch the managed sampler searches for a heatmap corridor. Increase it for rough sketches or badly offset source geometry.
