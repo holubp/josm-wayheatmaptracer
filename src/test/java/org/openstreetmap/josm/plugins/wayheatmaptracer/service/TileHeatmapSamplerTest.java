@@ -9,11 +9,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 
 class TileHeatmapSamplerTest {
     @Test
-    void stableFixedScaleCapsPrimaryInferenceAndKeepsHighZoomForValidation() {
+    void stableFixedScalePreservesConfiguredInferenceAndLowerValidationZoom() {
         ManagedHeatmapConfig config = config(InferenceMode.STABLE_FIXED_SCALE, 15, 13);
 
-        assertEquals(14, TileHeatmapSampler.effectiveInferenceZoom(config));
-        assertEquals(15, TileHeatmapSampler.effectiveValidationZoom(config));
+        assertEquals(15, TileHeatmapSampler.effectiveInferenceZoom(config));
+        assertEquals(13, TileHeatmapSampler.effectiveValidationZoom(config));
     }
 
     @Test

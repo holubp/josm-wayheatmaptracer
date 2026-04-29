@@ -380,10 +380,6 @@ public final class AlignmentService {
         TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(primarySamplingMode(candidate));
         double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
         double supportRatio = candidate.evidence().supportRatio();
-        if (supportRatio < 0.20
-                && candidate.evidence().maxConsecutiveEmptyProfiles() > Math.max(32, candidate.evidence().totalProfiles() / 2)) {
-            return CandidateSafety.hardReject("no stable corridor", boundaryHitRatio);
-        }
         if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
             return CandidateSafety.hardReject("most samples are pinned to the search edge", boundaryHitRatio);
         }
@@ -410,6 +406,11 @@ public final class AlignmentService {
         if (supportRatio < MIN_FIXED_TILE_SUPPORT_RATIO) {
             warnings.add("low support");
             scoreAdjustment -= (MIN_FIXED_TILE_SUPPORT_RATIO - supportRatio) * 10.0;
+        }
+        if (supportRatio < 0.20
+                && candidate.evidence().maxConsecutiveEmptyProfiles() > Math.max(32, candidate.evidence().totalProfiles() / 2)) {
+            warnings.add("weak discontinuous corridor");
+            scoreAdjustment -= 8.0;
         }
         if (candidate.evidence().maxConsecutiveEmptyProfiles() > MAX_FIXED_TILE_CONSECUTIVE_EMPTY) {
             warnings.add("long no-signal gap");

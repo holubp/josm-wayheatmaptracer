@@ -55,7 +55,7 @@ Current scope:
 ## Core Runtime Flow
 
 1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and opens a per-slide diagnostic session.
-2. For configured managed Strava access, `TileHeatmapSampler` samples fixed source tiles for each detection color. The default `Stable fixed scale` mode normalizes primary inference to a known-good effective scale, then keeps higher-resolution source tiles for validation. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
+2. For configured managed Strava access, `TileHeatmapSampler` samples fixed source tiles for each detection color. The default `Stable fixed scale` mode keeps the configured source zoom but applies stable-scale smoothing before ridge extraction, then validates against the configured validation zoom. This path must not depend on map viewport, layer visibility, opacity, transparency, or HSL adjustments.
 3. `RenderedHeatmapSampler` remains the fallback for unresolved manual imagery layers. It renders the visible imagery layer into an oversampled raster and is therefore view/style dependent by design.
 4. No-signal profiles stay empty so the tracker can bridge gaps using later coherent ridge evidence instead of snapping to the source axis.
 5. `RidgeTracker` builds one or more ridge candidates from the sampled cross-sections and ranks them by full-segment continuity, curvature, local palette evidence, support width, and oscillation penalties. Seeds are collected across the whole segment so off-axis or sketch inputs are not limited by the first few profiles.
@@ -82,7 +82,7 @@ The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlide
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.
 - Raster candidate points are tracked in oversampled screen space and must be divided by `RenderedHeatmapSampler.RASTER_SCALE` before converting back through `MapView`.
 - Managed heatmap candidates may carry projected `EastNorth` points from fixed tile-space sampling. Prefer those points over `MapView` projection so preview/apply remains independent of the current viewport.
-- Stable fixed-scale inference is the default for managed tiles. Do not make raw high-resolution source tiles the primary ridge input again unless fixture coverage proves it is as stable as the normalized inference path.
+- Stable fixed-scale inference is the default for managed tiles. Do not make unsmoothed raw high-resolution source tiles the primary ridge input again unless fixture coverage proves it is as stable as the smoothed inference path.
 - Managed heatmap candidate safety gates should hard-reject self-intersections, missing projected geometry, no signal, unusable selected-area tiles, and extreme edge-of-search-band candidates. Sparse support, long no-signal gaps, weak lower-zoom validation, moderate edge hits, and large low-support displacement should remain previewable with clear warnings and score penalties.
 - If managed heatmap tiles for the selected area cannot be fetched or decoded, or look like authentication/error placeholders, fail before preview and tell the user to refresh Strava cookies or bypass the managed tile cache. Do not use unrelated global probe tiles for access validation.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.

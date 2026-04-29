@@ -157,20 +157,39 @@ public final class TileHeatmapSampler {
     }
 
     private BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
-        int radius = clamp(16 - zoom, 1, 3);
-        BufferedImage expanded = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_ARGB);
-        for (int y = 0; y < source.getHeight(); y++) {
-            for (int x = 0; x < source.getWidth(); x++) {
-                int bestArgb = source.getRGB(x, y);
-                double bestIntensity = detectorIntensity(bestArgb, color);
-                for (int yy = Math.max(0, y - radius); yy <= Math.min(source.getHeight() - 1, y + radius); yy++) {
-                    for (int xx = Math.max(0, x - radius); xx <= Math.min(source.getWidth() - 1, x + radius); xx++) {
-                        int argb = source.getRGB(xx, yy);
-                        double intensity = detectorIntensity(argb, color);
-                        if (intensity > bestIntensity) {
-                            bestIntensity = intensity;
-                            bestArgb = argb;
-                        }
+        int radius = clamp(20 - zoom, 3, 6);
+        int width = source.getWidth();
+        int height = source.getHeight();
+        int[] horizontalArgb = new int[width * height];
+        double[] horizontalIntensity = new double[width * height];
+        for (int y = 0; y < height; y++) {
+            int row = y * width;
+            for (int x = 0; x < width; x++) {
+                int bestArgb = 0;
+                double bestIntensity = 0.0;
+                for (int xx = Math.max(0, x - radius); xx <= Math.min(width - 1, x + radius); xx++) {
+                    int argb = source.getRGB(xx, y);
+                    double intensity = detectorIntensity(argb, color);
+                    if (intensity > bestIntensity) {
+                        bestIntensity = intensity;
+                        bestArgb = argb;
+                    }
+                }
+                horizontalArgb[row + x] = bestArgb;
+                horizontalIntensity[row + x] = bestIntensity;
+            }
+        }
+
+        BufferedImage expanded = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int bestArgb = 0;
+                double bestIntensity = 0.0;
+                for (int yy = Math.max(0, y - radius); yy <= Math.min(height - 1, y + radius); yy++) {
+                    int index = yy * width + x;
+                    if (horizontalIntensity[index] > bestIntensity) {
+                        bestIntensity = horizontalIntensity[index];
+                        bestArgb = horizontalArgb[index];
                     }
                 }
                 expanded.setRGB(x, y, bestArgb);
@@ -325,19 +344,13 @@ public final class TileHeatmapSampler {
     }
 
     static int effectiveInferenceZoom(ManagedHeatmapConfig config) {
-        int requestedInferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
-        return inferenceMode(config).stableFixedScale()
-            ? Math.min(requestedInferenceZoom, 14)
-            : requestedInferenceZoom;
+        return clampZoom(config.inferenceZoom(), 10, 16);
     }
 
     static int effectiveValidationZoom(ManagedHeatmapConfig config) {
-        int requestedInferenceZoom = clampZoom(config.inferenceZoom(), 10, 16);
         int requestedValidationZoom = clampZoom(config.validationZoom(), 10, 16);
         int inferenceZoom = effectiveInferenceZoom(config);
-        return inferenceMode(config).stableFixedScale()
-            ? clampZoom(Math.max(requestedInferenceZoom, requestedValidationZoom), 10, 16)
-            : clampZoom(Math.min(inferenceZoom, requestedValidationZoom), 10, 16);
+        return clampZoom(Math.min(inferenceZoom, requestedValidationZoom), 10, 16);
     }
 
     private static InferenceMode inferenceMode(ManagedHeatmapConfig config) {
