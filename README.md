@@ -87,7 +87,7 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Managed-tile alignment refuses to preview when required selected-area source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Weak but real candidates are shown with low-confidence warnings so the mapper can inspect them.
+- Managed-tile alignment refuses to preview when required selected-area source tiles cannot be fetched, decoded, or look like authentication/error placeholders. Weak but real candidates, including edge-of-search candidates, are shown with low-confidence warnings so the mapper can inspect them.
 - Manual non-managed imagery layers use rendered-layer fallback sampling. That fallback can still depend on current view and layer styling because the plugin cannot reconstruct arbitrary external tile sources safely.
 
 ## Build

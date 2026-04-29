@@ -380,15 +380,16 @@ public final class AlignmentService {
         TileHeatmapSampler.TileMosaic inferenceMosaic = fixedTiles.require(primarySamplingMode(candidate));
         double boundaryHitRatio = boundaryHitRatio(candidate, inferenceMosaic.parameters());
         double supportRatio = candidate.evidence().supportRatio();
-        if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
-            return CandidateSafety.hardReject("most samples are pinned to the search edge", boundaryHitRatio);
-        }
         if (isSelfIntersecting(candidate.eastNorthPoints())) {
             return CandidateSafety.hardReject("self-intersection", boundaryHitRatio);
         }
 
         List<String> warnings = new ArrayList<>();
         double scoreAdjustment = 0.0;
+        if (boundaryHitRatio > HARD_FIXED_TILE_BOUNDARY_HIT_RATIO) {
+            warnings.add("most samples are pinned to the search edge");
+            scoreAdjustment -= 10.0;
+        }
         if (boundaryHitRatio > WARN_FIXED_TILE_BOUNDARY_HIT_RATIO) {
             warnings.add("near search edge");
             scoreAdjustment -= boundaryHitRatio * 4.0;
