@@ -120,6 +120,40 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void experimentalDetectorVariantsExposeCalibrationAlternatives() {
+        double blueredBlue = RenderedHeatmapSampler.colorIntensity(50, 110, 255, "bluered");
+        double blueredCoolBlue = RenderedHeatmapSampler.colorIntensity(50, 110, 255, "bluered-cool");
+        double blueredCoolCyan = RenderedHeatmapSampler.colorIntensity(70, 220, 255, "bluered-cool");
+        double blueredCorridorRed = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "bluered-corridor");
+        double blueredCoolRed = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "bluered-cool");
+        assertTrue(blueredCoolBlue > blueredBlue, "cool bluered variant should expose weak blue/cyan traces for rating");
+        assertTrue(blueredCoolCyan > 0.20, "cool bluered variant should keep cyan as usable low-activity evidence");
+        assertTrue(blueredCorridorRed <= 1.0, "corridor variant should stay normalized");
+        assertTrue(blueredCorridorRed / blueredCoolRed < RenderedHeatmapSampler.colorIntensity(50, 110, 255, "bluered-corridor") / blueredCoolBlue,
+            "corridor variant should compress dynamic range by lifting shoulders more than saturated peaks");
+
+        double dualWarm = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "dual");
+        double dualCorridorWarm = RenderedHeatmapSampler.colorIntensity(255, 70, 110, "dual-corridor");
+        double dualBlue = RenderedHeatmapSampler.colorIntensity(50, 110, 255, "dual");
+        double dualCorridorBlue = RenderedHeatmapSampler.colorIntensity(50, 110, 255, "dual-corridor");
+        assertTrue(dualCorridorWarm <= 1.0, "corridor variant remains normalized");
+        assertTrue(dualCorridorBlue > dualBlue, "corridor variant should make lower-intensity shoulders visible as bands");
+        assertTrue(dualCorridorWarm >= dualWarm * 0.85, "corridor variant should not discard strong warm evidence");
+
+        double grayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray");
+        double strictGrayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray-strict");
+        double strictGrayViolet = RenderedHeatmapSampler.colorIntensity(120, 70, 180, "gray-strict");
+        assertTrue(strictGrayNeutral < grayNeutral, "strict gray should suppress neutral no-op evidence");
+        assertTrue(strictGrayViolet > strictGrayNeutral, "strict gray should still retain violet center evidence");
+
+        double purpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple");
+        double strictPurpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple-strict");
+        double strictPurpleNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "purple-strict");
+        assertTrue(strictPurpleBright > strictPurpleNeutral, "strict purple should require actual purple evidence");
+        assertTrue(strictPurpleBright <= purpleBright, "strict purple should only gate the baseline purple detector");
+    }
+
+    @Test
     void noSignalProfilesExposeZeroOffsetFallbackPeaks() {
         BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
 

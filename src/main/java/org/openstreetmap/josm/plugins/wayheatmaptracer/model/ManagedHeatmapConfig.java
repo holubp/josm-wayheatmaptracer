@@ -13,6 +13,7 @@ public record ManagedHeatmapConfig(
     boolean verbose,
     boolean debug,
     boolean multiColorDetection,
+    boolean candidateRatingEnabled,
     boolean parallelWayAwareness,
     boolean allowUndownloadedAlignment,
     boolean adjustJunctionNodes,
@@ -49,6 +50,7 @@ public record ManagedHeatmapConfig(
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','
+            + "\"candidateRatingEnabled\":" + candidateRatingEnabled + ','
             + "\"parallelWayAwareness\":" + parallelWayAwareness + ','
             + "\"allowUndownloadedAlignment\":" + allowUndownloadedAlignment + ','
             + "\"adjustJunctionNodes\":" + adjustJunctionNodes + ','

@@ -6,9 +6,12 @@ import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
 import javax.swing.JDialog;
@@ -32,6 +35,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebu
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -46,6 +50,12 @@ import org.openstreetmap.josm.tools.Logging;
 import org.openstreetmap.josm.tools.Shortcut;
 
 public class AlignWayAction extends JosmAction {
+    private static final String[] RATING_VALUES = {"", "++", "+", "0", "-", "--"};
+    private static final String FEATURE_OFF_THE_LINE = "off-the-line";
+    private static final String FEATURE_JUMPING = "jumping";
+    private static final String FEATURE_UNNECESSARY_KINKS = "unnecessary-kinks";
+    private static final String FEATURE_BAD_JUNCTION_SHAPES = "bad-junction-shapes";
+
     private final AlignmentService alignmentService = new AlignmentService();
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
     private JDialog activePreviewDialog;
@@ -136,13 +146,31 @@ public class AlignWayAction extends JosmAction {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
         }
         CenterlineCandidate initial = result.candidates().get(0);
+        Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
+        boolean ratingMode = config.candidateRatingEnabled();
+        boolean[] loadingRating = {false};
         PreviewSelection[] current = {new PreviewSelection(initial, alignmentService.applyCandidate(result, initial))};
         overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
         comboBox.setSelectedItem(initial);
+        JComboBox<String> ratingBox = new JComboBox<>(RATING_VALUES);
+        JCheckBox offTheLine = new JCheckBox(tr("off-the-line"));
+        JCheckBox jumping = new JCheckBox(tr("jumping"));
+        JCheckBox unnecessaryKinks = new JCheckBox(tr("unnecessary kinks"));
+        JCheckBox badJunctionShapes = new JCheckBox(tr("bad junction shapes"));
 
-        JPanel panel = buildSummaryPanel(current[0].result(), initial, config, result.candidates().size() > 1 ? comboBox : null);
+        JPanel panel = buildSummaryPanel(
+            current[0].result(),
+            initial,
+            config,
+            result.candidates().size() > 1 ? comboBox : null,
+            ratingMode ? ratingBox : null,
+            offTheLine,
+            jumping,
+            unnecessaryKinks,
+            badJunctionShapes
+        );
         comboBox.addActionListener(event -> {
             CenterlineCandidate selected = (CenterlineCandidate) comboBox.getSelectedItem();
             if (selected == null) {
@@ -150,7 +178,20 @@ public class AlignWayAction extends JosmAction {
             }
             current[0] = new PreviewSelection(selected, alignmentService.applyCandidate(result, selected));
             overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+            loadingRating[0] = true;
+            loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+            loadingRating[0] = false;
+            updatePreviewBundle(current[0], candidateRatings, "preview-open");
         });
+        ratingBox.addActionListener(event -> {
+            if (!loadingRating[0]) {
+                saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+            }
+        });
+        offTheLine.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
+        jumping.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
+        unnecessaryKinks.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
+        badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
 
         JButton apply = new JButton(tr("Apply"));
         JButton cancel = new JButton(tr("Cancel"));
@@ -173,17 +214,23 @@ public class AlignWayAction extends JosmAction {
 
             @Override
             public void windowClosing(WindowEvent e) {
-                cancelPreview(current[0]);
+                cancelPreview(current[0], candidateRatings);
             }
         });
         apply.addActionListener(event -> {
             try {
-                applyPreview(dataSet, selection, current[0], config);
+                applyPreview(dataSet, selection, current[0], config, candidateRatings);
                 dialog.dispose();
             } catch (Exception ex) {
                 Logging.error(ex);
                 PluginLog.verbose("Alignment apply failed with exception: %s", ex.toString());
-                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(current[0].result(), current[0].candidate(), "apply-failed", PluginLog.currentSlideLog()));
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                    current[0].result(),
+                    current[0].candidate(),
+                    "apply-failed",
+                    PluginLog.currentSlideLog(),
+                    candidateRatings
+                ));
                 showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
             } finally {
                 overlay.hide();
@@ -191,20 +238,97 @@ public class AlignWayAction extends JosmAction {
             }
         });
         cancel.addActionListener(event -> {
-            cancelPreview(current[0]);
+            cancelPreview(current[0], candidateRatings);
             dialog.dispose();
         });
         dialog.setVisible(true);
     }
 
-    private void cancelPreview(PreviewSelection preview) {
+    private void loadCandidateRating(
+        CandidateRating rating,
+        JComboBox<String> ratingBox,
+        JCheckBox offTheLine,
+        JCheckBox jumping,
+        JCheckBox unnecessaryKinks,
+        JCheckBox badJunctionShapes
+    ) {
+        ratingBox.setSelectedItem(rating == null ? "" : rating.rating());
+        List<String> features = rating == null ? List.of() : rating.negativeFeatures();
+        offTheLine.setSelected(features.contains(FEATURE_OFF_THE_LINE));
+        jumping.setSelected(features.contains(FEATURE_JUMPING));
+        unnecessaryKinks.setSelected(features.contains(FEATURE_UNNECESSARY_KINKS));
+        badJunctionShapes.setSelected(features.contains(FEATURE_BAD_JUNCTION_SHAPES));
+    }
+
+    private void saveCandidateRating(
+        PreviewSelection preview,
+        Map<String, CandidateRating> candidateRatings,
+        JComboBox<String> ratingBox,
+        JCheckBox offTheLine,
+        JCheckBox jumping,
+        JCheckBox unnecessaryKinks,
+        JCheckBox badJunctionShapes
+    ) {
+        String rating = (String) ratingBox.getSelectedItem();
+        List<String> features = negativeFeatures(offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+        CandidateRating candidateRating = new CandidateRating(rating, features);
+        if (candidateRating.isEmpty()) {
+            candidateRatings.remove(preview.candidate().id());
+        } else {
+            candidateRatings.put(preview.candidate().id(), candidateRating);
+        }
+        PluginLog.verbose("CandidateRating candidate=%s rating='%s' negativeFeatures=%s.",
+            preview.candidate().id(), rating == null ? "" : rating, features);
+        updatePreviewBundle(preview, candidateRatings, "preview-open");
+    }
+
+    private List<String> negativeFeatures(JCheckBox offTheLine, JCheckBox jumping, JCheckBox unnecessaryKinks, JCheckBox badJunctionShapes) {
+        List<String> features = new java.util.ArrayList<>();
+        if (offTheLine.isSelected()) {
+            features.add(FEATURE_OFF_THE_LINE);
+        }
+        if (jumping.isSelected()) {
+            features.add(FEATURE_JUMPING);
+        }
+        if (unnecessaryKinks.isSelected()) {
+            features.add(FEATURE_UNNECESSARY_KINKS);
+        }
+        if (badJunctionShapes.isSelected()) {
+            features.add(FEATURE_BAD_JUNCTION_SHAPES);
+        }
+        return features;
+    }
+
+    private void updatePreviewBundle(PreviewSelection preview, Map<String, CandidateRating> candidateRatings, String status) {
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+            preview.result(),
+            preview.candidate(),
+            status,
+            PluginLog.currentSlideLog(),
+            candidateRatings
+        ));
+    }
+
+    private void cancelPreview(PreviewSelection preview, Map<String, CandidateRating> candidateRatings) {
         PluginLog.verbose("Alignment cancelled at preview dialog.");
-        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(preview.result(), preview.candidate(), "cancelled", PluginLog.currentSlideLog()));
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+            preview.result(),
+            preview.candidate(),
+            "cancelled",
+            PluginLog.currentSlideLog(),
+            candidateRatings
+        ));
         overlay.hide();
         PluginLog.endSlideSession();
     }
 
-    private void applyPreview(DataSet dataSet, SelectionContext selection, PreviewSelection preview, ManagedHeatmapConfig config) {
+    private void applyPreview(
+        DataSet dataSet,
+        SelectionContext selection,
+        PreviewSelection preview,
+        ManagedHeatmapConfig config,
+        Map<String, CandidateRating> candidateRatings
+    ) {
         CenterlineCandidate chosen = preview.candidate();
         AlignmentResult chosenResult = preview.result();
 
@@ -235,10 +359,20 @@ public class AlignWayAction extends JosmAction {
                 tr("Align way to heatmap precisely")
             ));
         }
-        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(chosenResult, chosen, "applied", PluginLog.currentSlideLog()));
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(chosenResult, chosen, "applied", PluginLog.currentSlideLog(), candidateRatings));
     }
 
-    private JPanel buildSummaryPanel(AlignmentResult result, CenterlineCandidate chosen, ManagedHeatmapConfig config, JComboBox<CenterlineCandidate> candidates) {
+    private JPanel buildSummaryPanel(
+        AlignmentResult result,
+        CenterlineCandidate chosen,
+        ManagedHeatmapConfig config,
+        JComboBox<CenterlineCandidate> candidates,
+        JComboBox<String> ratingBox,
+        JCheckBox offTheLine,
+        JCheckBox jumping,
+        JCheckBox unnecessaryKinks,
+        JCheckBox badJunctionShapes
+    ) {
         JPanel panel = new JPanel(new java.awt.GridBagLayout());
         if (candidates != null) {
             panel.add(new JLabel(tr("Detected ridge")), GBC.std());
@@ -246,6 +380,15 @@ public class AlignWayAction extends JosmAction {
             panel.add(new JLabel(tr("Changing the ridge updates the map preview immediately.")), GBC.eol());
         } else {
             panel.add(new JLabel(tr("Candidate: {0}", chosen.toString())), GBC.eol());
+        }
+        if (ratingBox != null) {
+            panel.add(new JLabel(tr("Visual rating")), GBC.std());
+            panel.add(ratingBox, GBC.eol());
+            panel.add(offTheLine, GBC.std());
+            panel.add(jumping, GBC.eol());
+            panel.add(unnecessaryKinks, GBC.std());
+            panel.add(badJunctionShapes, GBC.eol());
+            panel.add(new JLabel(tr("Ratings and negative feature tags are saved in the debug export.")), GBC.eol());
         }
         AlignmentMode effectiveMode = AlignmentService.effectiveAlignmentMode(result.selection(), config);
         String modeLabel = effectiveMode == config.alignmentMode()

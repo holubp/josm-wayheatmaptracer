@@ -123,7 +123,8 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.x` visible-layer sliding core.
-- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview.
+- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. In `0.8.2`, this also includes experimental calibration variants such as `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-strict`, and `purple-strict` so visually best candidates can be rated from one export.
+- `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.x` sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
@@ -139,8 +140,9 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 5. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
 6. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
-7. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
-8. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+7. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
+8. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
+9. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
 For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. In `0.8.x`, rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with `0.2.0`.
 
@@ -171,6 +173,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - original selected way/segment and preview geometry as OSM
 - candidate ridge geometries as OSM, including failed pre-preview candidates
 - selected candidate, candidate scores, SNR/evidence details, sampled offsets, screen-space ridge points, and projected East/North ridge points
+- optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
 - visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, capture size, and estimated visible tile range
 - per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, synthetic center flags, and per-detector support statistics
 - verbose/debug log lines captured for that slide

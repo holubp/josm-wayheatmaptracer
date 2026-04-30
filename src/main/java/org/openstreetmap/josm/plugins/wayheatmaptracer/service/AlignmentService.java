@@ -27,7 +27,21 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 public final class AlignmentService {
-    private static final List<String> ALL_COLOR_MODES = List.of("hot", "blue", "bluered", "purple", "gray", "dual");
+    private static final List<String> ALL_COLOR_MODES = List.of(
+        "hot",
+        "blue",
+        "bluered",
+        "purple",
+        "gray",
+        "dual",
+        "hot-corridor",
+        "hot-strict",
+        "bluered-cool",
+        "bluered-corridor",
+        "dual-corridor",
+        "gray-strict",
+        "purple-strict"
+    );
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();

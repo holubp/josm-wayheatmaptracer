@@ -35,6 +35,7 @@ class TileHeatmapSamplerTest {
             false,
             false,
             false,
+            false,
             true,
             false,
             false,

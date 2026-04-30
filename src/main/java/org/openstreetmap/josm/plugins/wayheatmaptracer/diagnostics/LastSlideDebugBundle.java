@@ -16,6 +16,7 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
@@ -26,6 +27,7 @@ public final class LastSlideDebugBundle {
     private final String previewOsm;
     private final String candidateOsm;
     private final String statusJson;
+    private final String candidateRatingsJson;
     private final String tileManifestJson;
     private final Map<String, BufferedImage> tileImages;
 
@@ -36,6 +38,7 @@ public final class LastSlideDebugBundle {
         String previewOsm,
         String candidateOsm,
         String statusJson,
+        String candidateRatingsJson,
         String tileManifestJson,
         Map<String, BufferedImage> tileImages
     ) {
@@ -45,11 +48,22 @@ public final class LastSlideDebugBundle {
         this.previewOsm = previewOsm;
         this.candidateOsm = candidateOsm;
         this.statusJson = statusJson;
+        this.candidateRatingsJson = candidateRatingsJson;
         this.tileManifestJson = tileManifestJson;
         this.tileImages = tileImages;
     }
 
     public static LastSlideDebugBundle fromResult(AlignmentResult result, CenterlineCandidate selected, String status, String verboseLog) {
+        return fromResult(result, selected, status, verboseLog, Map.of());
+    }
+
+    public static LastSlideDebugBundle fromResult(
+        AlignmentResult result,
+        CenterlineCandidate selected,
+        String status,
+        String verboseLog,
+        Map<String, CandidateRating> candidateRatings
+    ) {
         Map<String, BufferedImage> images = new LinkedHashMap<>();
         String tileManifest = "{\"sampling\":\"rendered-visible-layer\",\"images\":[\"rendered-layer-capture.png\"],"
             + "\"details\":\"see diagnostics.json sampling and profiles\"}";
@@ -64,9 +78,11 @@ public final class LastSlideDebugBundle {
         } else if (result.capturedHeatmap() != null) {
             images.put("rendered-layer-capture.png", result.capturedHeatmap());
         }
+        String ratingsJson = ratingsJson(candidateRatings);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
-            + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\""
+            + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
+            + "\"candidateRatings\":" + ratingsJson
             + "}";
         return new LastSlideDebugBundle(
             result.diagnostics().toJson(),
@@ -75,6 +91,7 @@ public final class LastSlideDebugBundle {
             previewOsm(result),
             candidateOsm(result),
             statusJson,
+            ratingsJson,
             tileManifest,
             images
         );
@@ -89,6 +106,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "original-segment.osm", originalOsm);
             writeText(zip, "preview-segment.osm", previewOsm);
             writeText(zip, "candidate-ridges.osm", candidateOsm);
+            writeText(zip, "candidate-ratings.json", candidateRatingsJson);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
@@ -104,8 +122,23 @@ public final class LastSlideDebugBundle {
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
             + "\"formatVersion\":1,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"tile-manifest.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"tile-manifest.json\"]"
             + "}";
+    }
+
+    private static String ratingsJson(Map<String, CandidateRating> candidateRatings) {
+        StringBuilder builder = new StringBuilder("{");
+        int index = 0;
+        for (Map.Entry<String, CandidateRating> entry : candidateRatings.entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null || entry.getValue().isEmpty()) {
+                continue;
+            }
+            if (index++ > 0) {
+                builder.append(',');
+            }
+            builder.append('"').append(escape(entry.getKey())).append("\":").append(entry.getValue().toJson());
+        }
+        return builder.append('}').toString();
     }
 
     private static void writeText(ZipOutputStream zip, String name, String text) throws Exception {

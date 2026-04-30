@@ -280,10 +280,17 @@ public final class RenderedHeatmapSampler {
         String mode = colorMode == null ? "hot" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
         return switch (mode) {
             case "bluered" -> blueRedIntensity(red, blue, hue, saturation, luminance, value);
+            case "bluered-cool" -> blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "bluered-corridor" -> corridorPresence(blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value));
             case "gray" -> grayIntensity(hue, saturation, luminance, value);
+            case "gray-strict" -> strictGrayIntensity(hue, saturation, luminance, value);
             case "purple" -> purpleIntensity(hue, saturation, luminance, value);
+            case "purple-strict" -> strictPurpleIntensity(hue, saturation, luminance, value);
             case "blue" -> blueIntensity(red, green, blue, hue, saturation, luminance, value);
             case "dual" -> dualColorIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "dual-corridor" -> corridorPresence(dualColorIntensity(red, green, blue, hue, saturation, luminance, value));
+            case "hot-corridor" -> corridorPresence(0.85 * luminance + 0.15 * value);
+            case "hot-strict" -> Math.pow(0.85 * luminance + 0.15 * value, 1.35);
             case "hot" -> 0.85 * luminance + 0.15 * value;
             default -> 0.85 * luminance + 0.15 * value;
         };
@@ -298,6 +305,27 @@ public final class RenderedHeatmapSampler {
             redScore * (0.92 + 0.55 * coolToWarm),
             Math.max(blueScore * 0.40, bridgeScore * (0.85 + 0.35 * coolToWarm))
         );
+    }
+
+    private static double blueRedCoolIntensity(
+        int red,
+        int green,
+        int blue,
+        double hue,
+        double saturation,
+        double luminance,
+        double value
+    ) {
+        double redScore = hueAffinity(hue, 350.0, 38.0) * (0.85 + 0.15 * value);
+        double magentaScore = hueAffinity(hue, 315.0, 45.0) * (0.72 + 0.28 * value);
+        double blueScore = Math.max(hueAffinity(hue, 225.0, 56.0), hueAffinity(hue, 240.0, 48.0))
+            * (0.42 + 0.34 * (1.0 - luminance) + 0.24 * value);
+        double cyanScore = hueAffinity(hue, 198.0, 38.0) * (0.30 + 0.38 * value + 0.20 * saturation);
+        double coolness = Math.max(0.0, blue - red * 0.45 - green * 0.05) / 255.0;
+        double redWarmth = Math.max(0.0, red - blue * 0.55) / 255.0;
+        double warm = Math.max(redScore * (0.95 + 0.35 * redWarmth), magentaScore);
+        double cool = Math.max(blueScore * (0.70 + 0.30 * coolness), cyanScore * 0.82);
+        return saturation * Math.max(warm, cool);
     }
 
     private static double blueIntensity(int red, int green, int blue, double hue, double saturation, double luminance, double value) {
@@ -315,9 +343,23 @@ public final class RenderedHeatmapSampler {
         return Math.max(grayBase, Math.max(pinkScore, violetScore));
     }
 
+    private static double strictGrayIntensity(double hue, double saturation, double luminance, double value) {
+        double chroma = grayIntensity(hue, saturation, luminance, value);
+        double contrastGate = Math.max(0.0, (chroma - 0.16) / 0.84);
+        double saturationGate = Math.max(0.0, Math.min(1.0, (saturation - 0.22) / 0.38));
+        return chroma * contrastGate * (0.35 + 0.65 * saturationGate);
+    }
+
     private static double purpleIntensity(double hue, double saturation, double luminance, double value) {
         double affinity = Math.max(hueAffinity(hue, 285.0, 35.0), hueAffinity(hue, 315.0, 35.0));
         return affinity * (0.55 + 0.45 * saturation) * value * (0.60 + 0.40 * luminance);
+    }
+
+    private static double strictPurpleIntensity(double hue, double saturation, double luminance, double value) {
+        double purple = purpleIntensity(hue, saturation, luminance, value);
+        double saturationGate = Math.max(0.0, Math.min(1.0, (saturation - 0.35) / 0.45));
+        double brightnessGate = Math.max(0.0, Math.min(1.0, (value - 0.24) / 0.50));
+        return purple * saturationGate * brightnessGate;
     }
 
     private static double dualColorIntensity(int red, int green, int blue, double hue, double saturation, double luminance, double value) {
@@ -328,6 +370,13 @@ public final class RenderedHeatmapSampler {
         double brightCenter = (0.85 * luminance + 0.15 * value) * (0.65 + 0.35 * (1.0 - saturation));
         double blueCenter = blueIntensity(red, green, blue, hue, saturation, luminance, value) * 0.92;
         return Math.max(warmCool, Math.max(brightCenter, blueCenter));
+    }
+
+    private static double corridorPresence(double intensity) {
+        if (intensity <= 0.0) {
+            return 0.0;
+        }
+        return Math.pow(Math.min(1.0, intensity), 0.55);
     }
 
     private static double hueAffinity(double hue, double target, double width) {
