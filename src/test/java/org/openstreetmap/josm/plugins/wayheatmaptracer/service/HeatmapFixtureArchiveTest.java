@@ -106,6 +106,7 @@ class HeatmapFixtureArchiveTest {
         double grayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray");
         assertTrue(grayViolet > grayLightPink, "gray should prioritize saturated violet center over pale pink");
         assertTrue(grayLightPink > grayNeutral, "gray should not treat neutral gray brightness as strong heatmap evidence");
+        assertTrue(grayWarmPink > grayNeutral, "gray should treat pink/magenta high-activity pixels as center evidence");
 
         double purpleDark = RenderedHeatmapSampler.colorIntensity(85, 40, 110, "purple");
         double purpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple");
@@ -141,8 +142,15 @@ class HeatmapFixtureArchiveTest {
         assertTrue(dualCorridorWarm >= dualWarm * 0.85, "corridor variant should not discard strong warm evidence");
 
         double grayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray");
+        double grayMagenta = RenderedHeatmapSampler.colorIntensity(215, 65, 160, "gray-magenta");
+        double grayMagentaNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray-magenta");
+        double grayCorridorNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray-corridor");
+        double grayCorridorMagenta = RenderedHeatmapSampler.colorIntensity(215, 65, 160, "gray-corridor");
         double strictGrayNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "gray-strict");
         double strictGrayViolet = RenderedHeatmapSampler.colorIntensity(120, 70, 180, "gray-strict");
+        assertTrue(grayMagenta > grayMagentaNeutral, "magenta gray variant should ignore neutral grayscale evidence");
+        assertTrue(grayCorridorNeutral > grayNeutral, "corridor gray variant should lift weak neutral corridors");
+        assertTrue(grayCorridorMagenta <= 1.0, "corridor gray variant remains normalized");
         assertTrue(strictGrayNeutral < grayNeutral, "strict gray should suppress neutral no-op evidence");
         assertTrue(strictGrayViolet > strictGrayNeutral, "strict gray should still retain violet center evidence");
 

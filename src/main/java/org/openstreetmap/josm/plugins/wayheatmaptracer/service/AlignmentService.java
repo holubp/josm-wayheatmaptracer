@@ -33,6 +33,8 @@ public final class AlignmentService {
         "bluered",
         "purple",
         "gray",
+        "gray-magenta",
+        "gray-corridor",
         "dual",
         "hot-corridor",
         "hot-strict",
@@ -168,10 +170,181 @@ public final class AlignmentService {
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
-        List<CenterlineCandidate> sorted = candidates.stream()
-            .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
-            .toList();
+        java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
+            ? java.util.Comparator
+                .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config))
+                .reversed()
+                .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+            : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
+        List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
         return new DetectionResult(sorted, profileDiagnostics.append(']').toString());
+    }
+
+    private double calibratedRankingScore(CenterlineCandidate candidate, ManagedHeatmapConfig config) {
+        String detector = detectorMode(candidate);
+        String visibleColor = normalizedVisibleColor(config);
+        CandidateMetrics metrics = candidateMetrics(candidate, config);
+        double signalReward =
+            0.85 * clamp01(candidate.evidence().signalToNoise() / 0.55)
+            + 0.25 * clamp01(candidate.evidence().meanIntensity() / 0.75)
+            + 0.25 * clamp01(candidate.evidence().supportRatio());
+        double roughnessPenalty =
+            0.22 * clamp01(candidate.evidence().ambiguity() / 0.60)
+            + 0.20 * clamp01(metrics.p95DeltaPx() / 35.0)
+            + 0.20 * clamp01(metrics.p95AccelerationPx() / 35.0)
+            + 0.10 * clamp01(metrics.signFlips() / 5.0)
+            + 0.65 * clamp01(metrics.edgeRatio() / 0.08);
+        double noOpPenalty = metrics.absMeanOffsetPx() < 6.0 && candidate.evidence().meanIntensity() < 0.35 ? 0.80 : 0.0;
+        double largeOffsetPenalty = metrics.absMeanOffsetPx() > 70.0 ? 0.20 : 0.0;
+        return detectorPrior(visibleColor, detector)
+            + globalDetectorAdjustment(detector)
+            + signalReward
+            - roughnessPenalty
+            - noOpPenalty
+            - largeOffsetPenalty;
+    }
+
+    private String detectorMode(CenterlineCandidate candidate) {
+        String detector = candidate.evidence().detectorMode();
+        if (detector == null || detector.isBlank()) {
+            detector = candidate.id();
+        }
+        int slash = detector.indexOf('/');
+        if (slash >= 0) {
+            detector = detector.substring(0, slash);
+        }
+        return detector.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String normalizedVisibleColor(ManagedHeatmapConfig config) {
+        if (config.color() == null || config.color().isBlank()) {
+            return "hot";
+        }
+        return config.color().trim().toLowerCase(Locale.ROOT);
+    }
+
+    private double detectorPrior(String visibleColor, String detector) {
+        return switch (visibleColor) {
+            case "hot" -> switch (detector) {
+                case "hot-corridor" -> 1.00;
+                case "hot" -> 0.65;
+                case "dual-corridor" -> 0.55;
+                case "dual", "bluered", "gray", "gray-corridor", "gray-magenta" -> 0.25;
+                case "blue", "purple", "purple-strict" -> -0.35;
+                case "hot-strict" -> 0.0;
+                default -> 0.0;
+            };
+            case "bluered" -> switch (detector) {
+                case "bluered-corridor" -> 1.00;
+                case "bluered-cool" -> 0.90;
+                case "hot-corridor" -> 0.85;
+                case "dual-corridor" -> 0.55;
+                case "blue" -> 0.05;
+                case "bluered", "hot" -> 0.0;
+                case "dual", "gray", "gray-strict", "purple", "hot-strict" -> -0.30;
+                default -> -0.05;
+            };
+            case "blue" -> switch (detector) {
+                case "dual-corridor" -> 1.00;
+                case "hot", "hot-corridor" -> 0.75;
+                case "bluered-cool", "bluered-corridor" -> 0.55;
+                case "gray", "gray-corridor", "gray-magenta" -> 0.25;
+                case "blue" -> 0.20;
+                case "purple", "purple-strict" -> -0.35;
+                default -> 0.0;
+            };
+            case "gray" -> switch (detector) {
+                case "blue" -> 1.00;
+                case "dual-corridor" -> 0.75;
+                case "gray-corridor" -> 0.65;
+                case "gray-magenta" -> 0.55;
+                case "hot", "hot-corridor", "hot-strict", "dual" -> 0.50;
+                case "gray" -> 0.25;
+                case "gray-strict", "purple-strict" -> -0.25;
+                default -> 0.0;
+            };
+            case "purple" -> switch (detector) {
+                case "hot", "dual-corridor" -> 1.00;
+                case "hot-corridor" -> 0.75;
+                case "bluered-cool", "bluered-corridor", "gray-strict" -> 0.65;
+                case "gray", "gray-corridor", "gray-magenta" -> 0.45;
+                case "purple", "purple-strict" -> -0.30;
+                default -> 0.0;
+            };
+            default -> switch (detector) {
+                case "hot-corridor", "dual-corridor" -> 0.60;
+                case "bluered-corridor", "bluered-cool", "gray-corridor" -> 0.50;
+                case "gray-magenta" -> 0.35;
+                default -> 0.0;
+            };
+        };
+    }
+
+    private double globalDetectorAdjustment(String detector) {
+        return switch (detector) {
+            case "hot-corridor" -> 0.25;
+            case "dual-corridor" -> 0.20;
+            case "bluered-corridor" -> 0.15;
+            case "bluered-cool", "gray-corridor" -> 0.10;
+            case "gray-magenta" -> 0.05;
+            case "hot-strict" -> -0.35;
+            case "gray-strict" -> -0.30;
+            case "purple", "purple-strict" -> -0.35;
+            default -> 0.0;
+        };
+    }
+
+    private CandidateMetrics candidateMetrics(CenterlineCandidate candidate, ManagedHeatmapConfig config) {
+        List<Double> offsets = candidate.offsetsPx();
+        if (offsets.isEmpty()) {
+            return new CandidateMetrics(0.0, 0.0, 0.0, 0, 0.0);
+        }
+        double absMean = offsets.stream().mapToDouble(Math::abs).average().orElse(0.0);
+        List<Double> deltas = new ArrayList<>();
+        for (int i = 1; i < offsets.size(); i++) {
+            deltas.add(offsets.get(i) - offsets.get(i - 1));
+        }
+        List<Double> accelerations = new ArrayList<>();
+        for (int i = 1; i < deltas.size(); i++) {
+            accelerations.add(deltas.get(i) - deltas.get(i - 1));
+        }
+        double edgeLimit = config.crossSectionHalfWidthPx() * RenderedHeatmapSampler.RASTER_SCALE * 0.90;
+        long edgeCount = offsets.stream().filter(offset -> Math.abs(offset) >= edgeLimit).count();
+        return new CandidateMetrics(
+            absMean,
+            percentileAbs(deltas, 0.95),
+            percentileAbs(accelerations, 0.95),
+            signFlips(deltas),
+            offsets.isEmpty() ? 0.0 : (double) edgeCount / offsets.size()
+        );
+    }
+
+    private double percentileAbs(List<Double> values, double percentile) {
+        if (values.isEmpty()) {
+            return 0.0;
+        }
+        List<Double> absolute = values.stream()
+            .map(Math::abs)
+            .sorted()
+            .toList();
+        int index = Math.max(0, Math.min(absolute.size() - 1, (int) Math.ceil(percentile * absolute.size()) - 1));
+        return absolute.get(index);
+    }
+
+    private int signFlips(List<Double> deltas) {
+        int flips = 0;
+        for (int i = 1; i < deltas.size(); i++) {
+            double left = deltas.get(i - 1);
+            double right = deltas.get(i);
+            if (Math.abs(left) > 8.0 && Math.abs(right) > 8.0 && Math.signum(left) != Math.signum(right)) {
+                flips++;
+            }
+        }
+        return flips;
+    }
+
+    private double clamp01(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
     }
 
     private List<String> detectionColorModes(ManagedHeatmapConfig config) {
@@ -563,7 +736,7 @@ public final class AlignmentService {
             selectionToJson(selection),
             samplingJson(imageryLayer, raster, mapView),
             stringArray(colorModes),
-            candidatesToJson(candidates),
+            candidatesToJson(candidates, config),
             profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson
         );
     }
@@ -827,18 +1000,25 @@ public final class AlignmentService {
             + "}";
     }
 
-    private String candidatesToJson(List<CenterlineCandidate> candidates) {
+    private String candidatesToJson(List<CenterlineCandidate> candidates, ManagedHeatmapConfig config) {
         StringBuilder builder = new StringBuilder("[");
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
+            CandidateMetrics metrics = candidateMetrics(candidate, config);
             if (i > 0) {
                 builder.append(',');
             }
             builder.append('{')
                 .append("\"id\":\"").append(jsonEscape(candidate.id())).append("\",")
                 .append("\"score\":").append(candidate.score()).append(',')
+                .append("\"calibratedRankingScore\":").append(jsonDouble(calibratedRankingScore(candidate, config))).append(',')
                 .append("\"points\":").append(candidate.screenPoints().size()).append(',')
                 .append("\"offsetsPx\":").append(doubleArray(candidate.offsetsPx())).append(',')
+                .append("\"offsetAbsMeanPx\":").append(jsonDouble(metrics.absMeanOffsetPx())).append(',')
+                .append("\"offsetP95DeltaPx\":").append(jsonDouble(metrics.p95DeltaPx())).append(',')
+                .append("\"offsetP95AccelerationPx\":").append(jsonDouble(metrics.p95AccelerationPx())).append(',')
+                .append("\"offsetSignFlips\":").append(metrics.signFlips()).append(',')
+                .append("\"offsetEdgeRatio\":").append(jsonDouble(metrics.edgeRatio())).append(',')
                 .append("\"screenPoints\":").append(screenPointArray(candidate.screenPoints())).append(',')
                 .append("\"eastNorthPoints\":").append(eastNorthArray(candidate.eastNorthPoints())).append(',')
                 .append("\"safetyWarnings\":").append(stringArray(candidate.safetyWarnings())).append(',')
@@ -909,6 +1089,15 @@ public final class AlignmentService {
         public AlignmentResult partialResult() {
             return partialResult;
         }
+    }
+
+    private record CandidateMetrics(
+        double absMeanOffsetPx,
+        double p95DeltaPx,
+        double p95AccelerationPx,
+        int signFlips,
+        double edgeRatio
+    ) {
     }
 
     private record DetectionResult(List<CenterlineCandidate> candidates, String profilesJson) {
