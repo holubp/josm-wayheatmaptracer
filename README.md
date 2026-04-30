@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. In `0.8.0` the sliding core is intentionally reset to the `0.2.0` visible-layer algorithm: it renders the visible heatmap layer at the current JOSM view, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. In `0.8.x` the sliding core is intentionally reset to the `0.2.0` visible-layer algorithm: it renders the visible heatmap layer at the current JOSM view, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
 
 ## Why This Exists
 
@@ -82,8 +82,8 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Because `0.8.0` intentionally uses the visible rendered heatmap layer, sliding is again view/zoom/style dependent like `0.2.0`. The preview dialog reports the visible tile zoom when JOSM exposes it.
-- Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the `0.8.0` sliding core.
+- Because `0.8.x` intentionally uses the visible rendered heatmap layer, sliding is again view/zoom/style dependent like `0.2.0`. The preview dialog reports the visible tile zoom when JOSM exposes it.
+- Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the `0.8.x` sliding core.
 
 ## Build
 
@@ -114,7 +114,7 @@ build/libs/wayheatmaptracer-<version>.jar
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
 7. Enable `Use all color schemes for detection` if you want the detector to classify the same visible rendered layer through all supported palette modes and show those alternatives in the preview.
-8. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the `0.8.0` sliding core uses the visible rendered layer and the classic pixel half-width/step settings.
+8. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the `0.8.x` sliding core uses the visible rendered layer and the classic pixel half-width/step settings.
 9. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
@@ -122,9 +122,9 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.0` visible-layer sliding core.
+- `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.x` visible-layer sliding core.
 - `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview.
-- `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.0` sliding core.
+- `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.x` sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
 - `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
@@ -142,7 +142,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 7. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
 8. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
-For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. In `0.8.0`, rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with `0.2.0`.
+For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. In `0.8.x`, rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with `0.2.0`.
 
 ### Menus And Shortcuts
 
@@ -170,7 +170,9 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - selected activity, visible color, and sampled color schemes
 - original selected way/segment and preview geometry as OSM
 - candidate ridge geometries as OSM, including failed pre-preview candidates
-- selected candidate, candidate scores, SNR/evidence details, and sampled offsets
+- selected candidate, candidate scores, SNR/evidence details, sampled offsets, screen-space ridge points, and projected East/North ridge points
+- visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, capture size, and estimated visible tile range
+- per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, synthetic center flags, and per-detector support statistics
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling
 

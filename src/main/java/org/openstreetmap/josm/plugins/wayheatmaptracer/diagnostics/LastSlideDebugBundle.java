@@ -51,7 +51,8 @@ public final class LastSlideDebugBundle {
 
     public static LastSlideDebugBundle fromResult(AlignmentResult result, CenterlineCandidate selected, String status, String verboseLog) {
         Map<String, BufferedImage> images = new LinkedHashMap<>();
-        String tileManifest = "{\"sampling\":\"rendered-fallback\"}";
+        String tileManifest = "{\"sampling\":\"rendered-visible-layer\",\"images\":[\"rendered-layer-capture.png\"],"
+            + "\"details\":\"see diagnostics.json sampling and profiles\"}";
         if (result.tileMosaics() != null) {
             tileManifest = result.tileMosaics().manifestJson();
             for (TileHeatmapSampler.TileMosaic mosaic : result.tileMosaics().mosaics().values()) {

@@ -178,7 +178,7 @@ public final class RenderedHeatmapSampler {
                 if (balanced && weaker >= 0.32 && gap >= sampleStep * 1.5 && gap <= sampleStep * 6.0) {
                     double center = (left.offsetPx() * right.intensity() + right.offsetPx() * left.intensity())
                         / (left.intensity() + right.intensity());
-                    augmented.add(new CrossSectionPeak(center, weaker * 0.93));
+                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true));
                 }
             }
         }
@@ -203,7 +203,7 @@ public final class RenderedHeatmapSampler {
         if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + estimateSampleStep(offsets)) {
             center = offsets.get(peakIndex).offsetPx;
         }
-        return new CrossSectionPeak(center, confidence);
+        return new CrossSectionPeak(center, confidence, supportWidth, false);
     }
 
     private List<OffsetSample> smoothProfile(List<OffsetSample> offsets) {

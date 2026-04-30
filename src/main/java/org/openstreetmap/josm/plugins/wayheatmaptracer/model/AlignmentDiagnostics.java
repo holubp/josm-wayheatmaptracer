@@ -11,7 +11,8 @@ public record AlignmentDiagnostics(
     String selectionJson,
     String samplingJson,
     String colorSchemesJson,
-    String candidatesJson
+    String candidatesJson,
+    String profileDiagnosticsJson
 ) {
     public String toJson() {
         return "{"
@@ -25,7 +26,8 @@ public record AlignmentDiagnostics(
             + "\"selection\":" + selectionJson + ','
             + "\"sampling\":" + samplingJson + ','
             + "\"colorSchemes\":" + colorSchemesJson + ','
-            + "\"candidates\":" + candidatesJson
+            + "\"candidates\":" + candidatesJson + ','
+            + "\"profiles\":" + profileDiagnosticsJson
             + "}";
     }
 
@@ -34,7 +36,11 @@ public record AlignmentDiagnostics(
         String algorithm = jsonString(samplingJson, "algorithm");
         String tileZoom = jsonValue(samplingJson, "tileZoom");
         String bestTileZoom = jsonValue(samplingJson, "bestTileZoom");
+        String viewMetersPerPixel = jsonValue(samplingJson, "viewMetersPerPixel");
+        String rasterMetersPerPixel = jsonValue(samplingJson, "rasterMetersPerPixel");
         String rasterScale = jsonValue(samplingJson, "rasterScale");
+        String rasterWidth = jsonValue(samplingJson, "rasterWidth");
+        String rasterHeight = jsonValue(samplingJson, "rasterHeight");
         StringBuilder summary = new StringBuilder();
         if ("rendered-visible-layer".equals(type)) {
             summary.append("visible rendered layer");
@@ -47,7 +53,7 @@ public record AlignmentDiagnostics(
             summary.append(", ").append(algorithm);
         }
         if (!tileZoom.isBlank() && !"null".equals(tileZoom)) {
-            summary.append(", tile z").append(tileZoom);
+            summary.append(", source tile z").append(tileZoom);
             if (!bestTileZoom.isBlank() && !"null".equals(bestTileZoom)) {
                 summary.append(" (best z").append(bestTileZoom).append(')');
             }
@@ -57,7 +63,24 @@ public record AlignmentDiagnostics(
         if (!rasterScale.isBlank()) {
             summary.append(", raster ").append(rasterScale).append("x");
         }
+        if (!viewMetersPerPixel.isBlank() && !"null".equals(viewMetersPerPixel)) {
+            summary.append(", view ").append(formatDouble(viewMetersPerPixel, 3)).append(" m/px");
+        }
+        if (!rasterMetersPerPixel.isBlank() && !"null".equals(rasterMetersPerPixel)) {
+            summary.append(", sampled ").append(formatDouble(rasterMetersPerPixel, 4)).append(" m/raster-px");
+        }
+        if (!rasterWidth.isBlank() && !rasterHeight.isBlank()) {
+            summary.append(", capture ").append(rasterWidth).append('x').append(rasterHeight);
+        }
         return summary.toString();
+    }
+
+    private static String formatDouble(String value, int decimals) {
+        try {
+            return String.format(java.util.Locale.ROOT, "%." + decimals + "f", Double.parseDouble(value));
+        } catch (NumberFormatException ex) {
+            return value;
+        }
     }
 
     private static String escape(String value) {

@@ -3,9 +3,13 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
+import org.openstreetmap.josm.data.Bounds;
+import org.openstreetmap.josm.data.ProjectionBounds;
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.gui.MainApplication;
@@ -53,10 +57,12 @@ public final class AlignmentService {
 
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<String> colorModes = detectionColorModes(config);
-        List<CenterlineCandidate> candidates = detectCandidates(raster, mapView, sourcePolyline, config, colorModes);
+        DetectionResult detection = detectCandidates(raster, mapView, sourcePolyline, config, colorModes);
+        List<CenterlineCandidate> candidates = detection.candidates();
         long t2 = System.nanoTime();
         if (candidates.isEmpty()) {
-            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, config, colorModes, t0, t1, t2, t2);
+            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
+                config, colorModes, detection.profilesJson(), t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
 
@@ -74,10 +80,12 @@ public final class AlignmentService {
             t2,
             t3,
             raster,
+            mapView,
             config,
             selection,
             colorModes,
-            candidates
+            candidates,
+            detection.profilesJson()
         );
 
         PluginLog.verbose("Alignment finished: raster=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
@@ -98,8 +106,10 @@ public final class AlignmentService {
         BufferedImage raster,
         List<EastNorth> sourcePolyline,
         ImageryLayer imageryLayer,
+        MapView mapView,
         ManagedHeatmapConfig config,
         List<String> colorModes,
+        String profilesJson,
         long t0,
         long t1,
         long t2,
@@ -112,12 +122,12 @@ public final class AlignmentService {
             sourcePolyline,
             sourcePolyline,
             List.of(),
-            diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, config, selection, colorModes, List.of()),
+            diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes, List.of(), profilesJson),
             null
         );
     }
 
-    private List<CenterlineCandidate> detectCandidates(
+    private DetectionResult detectCandidates(
         BufferedImage raster,
         MapView mapView,
         List<EastNorth> sourcePolyline,
@@ -125,10 +135,16 @@ public final class AlignmentService {
         List<String> colorModes
     ) {
         List<CenterlineCandidate> candidates = new ArrayList<>();
+        StringBuilder profileDiagnostics = new StringBuilder("[");
+        int modeIndex = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
                 sampler.sampleProfiles(raster, mapView, sourcePolyline, config.crossSectionHalfWidthPx(), config.crossSectionStepPx(), colorMode);
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            if (modeIndex++ > 0) {
+                profileDiagnostics.append(',');
+            }
+            profileDiagnostics.append(profilesToJson(colorMode, profiles, colorCandidates));
             for (CenterlineCandidate candidate : colorCandidates) {
                 CenterlineCandidate withMode = candidate
                     .withId(colorMode + "/" + candidate.id())
@@ -138,9 +154,10 @@ public final class AlignmentService {
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
-        return candidates.stream()
+        List<CenterlineCandidate> sorted = candidates.stream()
             .sorted(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+        return new DetectionResult(sorted, profileDiagnostics.append(']').toString());
     }
 
     private List<String> detectionColorModes(ManagedHeatmapConfig config) {
@@ -514,10 +531,12 @@ public final class AlignmentService {
         long t2,
         long t3,
         BufferedImage raster,
+        MapView mapView,
         ManagedHeatmapConfig config,
         SelectionContext selection,
         List<String> colorModes,
-        List<CenterlineCandidate> candidates
+        List<CenterlineCandidate> candidates,
+        String profilesJson
     ) {
         return new AlignmentDiagnostics(
             imageryLayer.getName(),
@@ -528,30 +547,144 @@ public final class AlignmentService {
             millisBetween(t2, t3),
             config.toRedactedJson(),
             selectionToJson(selection),
-            samplingJson(imageryLayer, raster),
+            samplingJson(imageryLayer, raster, mapView),
             stringArray(colorModes),
-            candidatesToJson(candidates)
+            candidatesToJson(candidates),
+            profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson
         );
     }
 
-    private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster) {
+    private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster, MapView mapView) {
         int zoom = -1;
         int bestZoom = -1;
         if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
             zoom = tileLayer.getZoomLevel();
             bestZoom = tileLayer.getBestZoom();
         }
+        int viewWidth = mapView == null ? 0 : mapView.getWidth();
+        int viewHeight = mapView == null ? 0 : mapView.getHeight();
+        double dist100Pixel = safeDouble(mapView == null ? Double.NaN : mapView.getDist100Pixel());
+        double viewMetersPerPixel = dist100Pixel > 0.0 ? dist100Pixel / 100.0 : Double.NaN;
+        double rasterMetersPerPixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE : Double.NaN;
+        double mapScale = safeDouble(mapView == null ? Double.NaN : mapView.getScale());
+        EastNorth center = mapView == null ? null : mapView.getCenter();
+        LatLon centerLatLon = center == null ? null : ProjectionRegistry.getProjection().eastNorth2latlon(center);
+        ProjectionBounds projectionBounds = mapView == null ? null : mapView.getProjectionBounds();
+        Bounds realBounds = mapView == null ? null : mapView.getRealBounds();
         return "{"
             + "\"type\":\"rendered-visible-layer\","
             + "\"algorithm\":\"v0.2-compatible\","
             + "\"layerClass\":\"" + jsonEscape(imageryLayer.getClass().getName()) + "\","
             + "\"tileZoom\":" + nullableInt(zoom) + ','
             + "\"bestTileZoom\":" + nullableInt(bestZoom) + ','
+            + "\"sourceTileZoom\":" + nullableInt(zoom) + ','
+            + "\"bestSourceTileZoom\":" + nullableInt(bestZoom) + ','
             + "\"rasterScale\":" + RenderedHeatmapSampler.RASTER_SCALE + ','
             + "\"rasterWidth\":" + (raster == null ? 0 : raster.getWidth()) + ','
             + "\"rasterHeight\":" + (raster == null ? 0 : raster.getHeight()) + ','
-            + "\"layerPPD\":" + imageryLayer.getPPD()
+            + "\"viewWidthPx\":" + viewWidth + ','
+            + "\"viewHeightPx\":" + viewHeight + ','
+            + "\"dist100PixelMeters\":" + jsonDouble(dist100Pixel) + ','
+            + "\"viewMetersPerPixel\":" + jsonDouble(viewMetersPerPixel) + ','
+            + "\"rasterMetersPerPixel\":" + jsonDouble(rasterMetersPerPixel) + ','
+            + "\"mapScale\":" + jsonDouble(mapScale) + ','
+            + "\"layerPPD\":" + jsonDouble(safeDouble(imageryLayer.getPPD())) + ','
+            + "\"viewportCenter\":" + eastNorthLatLonJson(center, centerLatLon) + ','
+            + "\"projectionBounds\":" + projectionBoundsJson(projectionBounds) + ','
+            + "\"realBounds\":" + realBoundsJson(realBounds) + ','
+            + "\"estimatedVisibleTiles\":" + estimatedVisibleTilesJson(realBounds, zoom)
             + "}";
+    }
+
+    private String profilesToJson(
+        String colorMode,
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<CenterlineCandidate> colorCandidates
+    ) {
+        int supportedProfiles = 0;
+        int emptyProfiles = 0;
+        int maxPeaks = 0;
+        double strongestTotal = 0.0;
+        double maxIntensity = 0.0;
+        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
+            maxPeaks = Math.max(maxPeaks, profile.peaks().size());
+            double strongest = profile.peaks().stream()
+                .mapToDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity)
+                .max()
+                .orElse(0.0);
+            if (strongest > 0.0) {
+                supportedProfiles++;
+                strongestTotal += strongest;
+            } else {
+                emptyProfiles++;
+            }
+            maxIntensity = Math.max(maxIntensity, strongest);
+        }
+        double meanStrongest = supportedProfiles == 0 ? 0.0 : strongestTotal / supportedProfiles;
+        StringBuilder builder = new StringBuilder("{")
+            .append("\"detectorMode\":\"").append(jsonEscape(colorMode)).append("\",")
+            .append("\"profileCount\":").append(profiles.size()).append(',')
+            .append("\"candidateCount\":").append(colorCandidates.size()).append(',')
+            .append("\"supportedProfiles\":").append(supportedProfiles).append(',')
+            .append("\"emptyProfiles\":").append(emptyProfiles).append(',')
+            .append("\"supportRatio\":").append(profiles.isEmpty() ? 0.0 : (double) supportedProfiles / profiles.size()).append(',')
+            .append("\"maxPeaksPerProfile\":").append(maxPeaks).append(',')
+            .append("\"maxIntensity\":").append(maxIntensity).append(',')
+            .append("\"meanStrongestIntensity\":").append(meanStrongest).append(',')
+            .append("\"candidateSummaries\":").append(colorCandidateSummariesJson(colorCandidates)).append(',')
+            .append("\"profiles\":[");
+        for (int i = 0; i < profiles.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+            builder.append('{')
+                .append("\"index\":").append(i).append(',')
+                .append("\"anchorRasterX\":").append(format(profile.anchorScreen().x)).append(',')
+                .append("\"anchorRasterY\":").append(format(profile.anchorScreen().y)).append(',')
+                .append("\"normalX\":").append(format(profile.normalScreen().x)).append(',')
+                .append("\"normalY\":").append(format(profile.normalScreen().y)).append(',')
+                .append("\"peaks\":").append(peaksToJson(profile.peaks()))
+                .append('}');
+        }
+        return builder.append("]}").toString();
+    }
+
+    private String colorCandidateSummariesJson(List<CenterlineCandidate> candidates) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < candidates.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            CenterlineCandidate candidate = candidates.get(i);
+            builder.append('{')
+                .append("\"id\":\"").append(jsonEscape(candidate.id())).append("\",")
+                .append("\"score\":").append(candidate.score()).append(',')
+                .append("\"pointCount\":").append(candidate.screenPoints().size()).append(',')
+                .append("\"offsetMinPx\":").append(jsonDouble(min(candidate.offsetsPx()))).append(',')
+                .append("\"offsetMaxPx\":").append(jsonDouble(max(candidate.offsetsPx()))).append(',')
+                .append("\"offsetMeanPx\":").append(jsonDouble(mean(candidate.offsetsPx()))).append(',')
+                .append("\"evidence\":").append(candidate.evidence().toJson())
+                .append('}');
+        }
+        return builder.append(']').toString();
+    }
+
+    private String peaksToJson(List<RenderedHeatmapSampler.CrossSectionPeak> peaks) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < peaks.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            RenderedHeatmapSampler.CrossSectionPeak peak = peaks.get(i);
+            builder.append('{')
+                .append("\"offsetPx\":").append(format(peak.offsetPx())).append(',')
+                .append("\"intensity\":").append(format(peak.intensity())).append(',')
+                .append("\"supportWidthPx\":").append(format(peak.supportWidthPx())).append(',')
+                .append("\"syntheticCenter\":").append(peak.syntheticCenter())
+                .append('}');
+        }
+        return builder.append(']').toString();
     }
 
     private String renderedZoomSummary(ImageryLayer imageryLayer) {
@@ -561,8 +694,109 @@ public final class AlignmentService {
         return "not a tiled imagery layer";
     }
 
+    private String eastNorthLatLonJson(EastNorth eastNorth, LatLon latLon) {
+        if (eastNorth == null || latLon == null) {
+            return "null";
+        }
+        return "{"
+            + "\"east\":" + jsonDouble(safeDouble(eastNorth.east())) + ','
+            + "\"north\":" + jsonDouble(safeDouble(eastNorth.north())) + ','
+            + "\"lat\":" + jsonDouble(safeDouble(latLon.lat())) + ','
+            + "\"lon\":" + jsonDouble(safeDouble(latLon.lon()))
+            + "}";
+    }
+
+    private String projectionBoundsJson(ProjectionBounds bounds) {
+        if (bounds == null) {
+            return "null";
+        }
+        return "{"
+            + "\"minEast\":" + jsonDouble(safeDouble(bounds.minEast)) + ','
+            + "\"minNorth\":" + jsonDouble(safeDouble(bounds.minNorth)) + ','
+            + "\"maxEast\":" + jsonDouble(safeDouble(bounds.maxEast)) + ','
+            + "\"maxNorth\":" + jsonDouble(safeDouble(bounds.maxNorth))
+            + "}";
+    }
+
+    private String realBoundsJson(Bounds bounds) {
+        if (bounds == null) {
+            return "null";
+        }
+        return "{"
+            + "\"minLat\":" + jsonDouble(safeDouble(bounds.getMinLat())) + ','
+            + "\"minLon\":" + jsonDouble(safeDouble(bounds.getMinLon())) + ','
+            + "\"maxLat\":" + jsonDouble(safeDouble(bounds.getMaxLat())) + ','
+            + "\"maxLon\":" + jsonDouble(safeDouble(bounds.getMaxLon()))
+            + "}";
+    }
+
+    private String estimatedVisibleTilesJson(Bounds bounds, int zoom) {
+        if (bounds == null || zoom < 0) {
+            return "null";
+        }
+        int maxTile = (int) Math.pow(2.0, zoom) - 1;
+        int x1 = lonToTileX(bounds.getMinLon(), zoom);
+        int x2 = lonToTileX(bounds.getMaxLon(), zoom);
+        int y1 = latToTileY(bounds.getMinLat(), zoom);
+        int y2 = latToTileY(bounds.getMaxLat(), zoom);
+        int minX = clamp(Math.min(x1, x2), 0, maxTile);
+        int maxX = clamp(Math.max(x1, x2), 0, maxTile);
+        int minY = clamp(Math.min(y1, y2), 0, maxTile);
+        int maxY = clamp(Math.max(y1, y2), 0, maxTile);
+        int count = Math.max(0, maxX - minX + 1) * Math.max(0, maxY - minY + 1);
+        return "{"
+            + "\"zoom\":" + zoom + ','
+            + "\"tileSize\":512,"
+            + "\"minX\":" + minX + ','
+            + "\"maxX\":" + maxX + ','
+            + "\"minY\":" + minY + ','
+            + "\"maxY\":" + maxY + ','
+            + "\"count\":" + count
+            + "}";
+    }
+
+    private int lonToTileX(double lon, int zoom) {
+        double n = Math.pow(2.0, zoom);
+        return (int) Math.floor((lon + 180.0) / 360.0 * n);
+    }
+
+    private int latToTileY(double lat, int zoom) {
+        double clampedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+        double n = Math.pow(2.0, zoom);
+        double latRad = Math.toRadians(clampedLat);
+        return (int) Math.floor((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0 * n);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
     private String nullableInt(int value) {
         return value < 0 ? "null" : Integer.toString(value);
+    }
+
+    private double safeDouble(double value) {
+        return Double.isFinite(value) ? value : Double.NaN;
+    }
+
+    private String jsonDouble(double value) {
+        return Double.isFinite(value) ? format(value) : "null";
+    }
+
+    private String format(double value) {
+        return String.format(Locale.ROOT, "%.6f", value);
+    }
+
+    private double min(List<Double> values) {
+        return values.stream().mapToDouble(Double::doubleValue).min().orElse(Double.NaN);
+    }
+
+    private double max(List<Double> values) {
+        return values.stream().mapToDouble(Double::doubleValue).max().orElse(Double.NaN);
+    }
+
+    private double mean(List<Double> values) {
+        return values.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN);
     }
 
     private long millisBetween(long startNs, long endNs) {
@@ -591,6 +825,8 @@ public final class AlignmentService {
                 .append("\"score\":").append(candidate.score()).append(',')
                 .append("\"points\":").append(candidate.screenPoints().size()).append(',')
                 .append("\"offsetsPx\":").append(doubleArray(candidate.offsetsPx())).append(',')
+                .append("\"screenPoints\":").append(screenPointArray(candidate.screenPoints())).append(',')
+                .append("\"eastNorthPoints\":").append(eastNorthArray(candidate.eastNorthPoints())).append(',')
                 .append("\"safetyWarnings\":").append(stringArray(candidate.safetyWarnings())).append(',')
                 .append("\"evidence\":").append(candidate.evidence().toJson())
                 .append('}');
@@ -609,13 +845,37 @@ public final class AlignmentService {
         return builder.append(']').toString();
     }
 
+    private String screenPointArray(List<java.awt.geom.Point2D.Double> values) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            java.awt.geom.Point2D.Double point = values.get(i);
+            builder.append("{\"x\":").append(format(point.x)).append(",\"y\":").append(format(point.y)).append('}');
+        }
+        return builder.append(']').toString();
+    }
+
+    private String eastNorthArray(List<EastNorth> values) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            EastNorth point = values.get(i);
+            builder.append("{\"east\":").append(format(point.east())).append(",\"north\":").append(format(point.north())).append('}');
+        }
+        return builder.append(']').toString();
+    }
+
     private String doubleArray(List<Double> values) {
         StringBuilder builder = new StringBuilder("[");
         for (int i = 0; i < values.size(); i++) {
             if (i > 0) {
                 builder.append(',');
             }
-            builder.append(String.format(java.util.Locale.ROOT, "%.3f", values.get(i)));
+            builder.append(String.format(Locale.ROOT, "%.3f", values.get(i)));
         }
         return builder.append(']').toString();
     }
@@ -635,5 +895,8 @@ public final class AlignmentService {
         public AlignmentResult partialResult() {
             return partialResult;
         }
+    }
+
+    private record DetectionResult(List<CenterlineCandidate> candidates, String profilesJson) {
     }
 }

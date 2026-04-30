@@ -61,12 +61,16 @@ class AlignmentServiceTest {
             30,
             "{}",
             "{}",
-            "{\"type\":\"rendered-visible-layer\",\"algorithm\":\"v0.2-compatible\",\"tileZoom\":15,\"bestTileZoom\":15,\"rasterScale\":6.0}",
+            "{\"type\":\"rendered-visible-layer\",\"algorithm\":\"v0.2-compatible\",\"tileZoom\":15,\"bestTileZoom\":15,"
+                + "\"rasterScale\":6.0,\"rasterWidth\":6000,\"rasterHeight\":3600,"
+                + "\"viewMetersPerPixel\":0.75,\"rasterMetersPerPixel\":0.125}",
             "[\"hot\",\"blue\"]",
+            "[]",
             "[]"
         );
 
-        assertEquals("visible rendered layer, v0.2-compatible, tile z15 (best z15), raster 6.0x",
+        assertEquals("visible rendered layer, v0.2-compatible, source tile z15 (best z15), raster 6.0x, "
+                + "view 0.750 m/px, sampled 0.1250 m/raster-px, capture 6000x3600",
             diagnostics.samplingSummary());
     }
 
