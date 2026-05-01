@@ -438,8 +438,7 @@ public final class AlignmentService {
         ManagedHeatmapConfig config,
         MapView mapView
     ) {
-        MapView effectiveMapView = mapView != null ? mapView : MainApplication.getMap().mapView;
-        List<EastNorth> candidateCenterline = optimizer.projectCandidate(candidate, effectiveMapView);
+        List<EastNorth> candidateCenterline = candidateCenterline(candidate, mapView);
         PluginLog.debug("Candidate %s projected centerline point count=%d.", candidate.id(), candidateCenterline.size());
         List<EastNorth> working;
         if (config.alignmentMode() == AlignmentMode.MOVE_EXISTING_NODES) {
@@ -467,6 +466,22 @@ public final class AlignmentService {
             case PRECISE_SHAPE -> preciseShapePreview(selection, sourcePolyline, working);
         };
         return guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
+    }
+
+    private List<EastNorth> candidateCenterline(CenterlineCandidate candidate, MapView mapView) {
+        if (!candidate.eastNorthPoints().isEmpty()) {
+            PluginLog.debug("Using slide-time EastNorth geometry for candidate %s.", candidate.id());
+            return candidate.eastNorthPoints();
+        }
+        MapView effectiveMapView = mapView;
+        if (effectiveMapView == null && MainApplication.getMap() != null) {
+            effectiveMapView = MainApplication.getMap().mapView;
+        }
+        if (effectiveMapView == null) {
+            throw new IllegalStateException("No slide-time candidate geometry or map view is available for candidate projection.");
+        }
+        PluginLog.debug("Candidate %s has no stored EastNorth geometry; projecting from the current map view.", candidate.id());
+        return optimizer.projectCandidate(candidate, effectiveMapView);
     }
 
     public static boolean isSketchLikeSelection(SelectionContext selection) {

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import java.util.Set;
 
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.LatLon;
@@ -13,6 +14,8 @@ import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -72,6 +75,43 @@ class AlignmentServiceTest {
         assertEquals("visible rendered layer, v0.2-compatible, source tile z15 (best z15), raster 6.0x, "
                 + "view 0.750 m/px, sampled 0.1250 m/raster-px, capture 6000x3600",
             diagnostics.samplingSummary());
+    }
+
+    @Test
+    void candidateSwitchUsesStoredSlideTimeGeometryWithoutCurrentMapView() {
+        AlignmentService service = new AlignmentService();
+        SelectionContext selection = selection(3);
+        List<EastNorth> source = List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(10.0, 0.0),
+            new EastNorth(20.0, 0.0)
+        );
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "hot/ridge-1",
+            1.0,
+            List.of(new java.awt.geom.Point2D.Double(9999.0, 9999.0)),
+            List.of(0.0)
+        ).withEastNorthPoints(List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(10.0, 10.0),
+            new EastNorth(20.0, 0.0)
+        ));
+        AlignmentResult base = new AlignmentResult(
+            selection,
+            null,
+            List.of(candidate),
+            source,
+            source,
+            List.of(),
+            new AlignmentDiagnostics("Strava", 1, 0, 0, 0, 0, "{}", "{}", "{}", "[\"hot\"]", "[]", "[]"),
+            null
+        );
+
+        AlignmentResult result = service.applyCandidate(base, candidate);
+
+        assertEquals(1, result.nodeMoves().size());
+        assertEquals(10.0, result.nodeMoves().get(0).target().east(), 1e-9);
+        assertEquals(10.0, result.nodeMoves().get(0).target().north(), 1e-9);
     }
 
     private SelectionContext selection(int nodeCount) {

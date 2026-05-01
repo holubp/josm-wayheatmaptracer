@@ -141,7 +141,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 5. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
 6. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
 7. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
-8. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless.
+8. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless, and candidate switching/rating uses the geometry captured at slide time rather than reprojecting through the later viewport.
 9. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
 For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. In `0.8.x`, rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with `0.2.0`.
