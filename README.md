@@ -82,7 +82,7 @@ The current implementation is designed for private development:
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Because `0.8.x` intentionally uses the visible rendered heatmap layer, sliding is again view/zoom/style dependent like `0.2.0`. The preview dialog reports the visible tile zoom when JOSM exposes it.
+- Because `0.8.x` intentionally uses the visible rendered heatmap layer, color and tile rendering still come from the current view like `0.2.0`. The detector now keeps the search corridor roughly ground-scale stable across zoom levels and reports the effective view scale, search half-width, and step in the preview/debug output.
 - Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the `0.8.x` sliding core.
 
 ## Build
@@ -114,7 +114,7 @@ build/libs/wayheatmaptracer-<version>.jar
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
 7. Enable `Use all color schemes for detection` if you want the detector to classify the same visible rendered layer through all supported palette modes and show those alternatives in the preview.
-8. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the `0.8.x` sliding core uses the visible rendered layer and the classic pixel half-width/step settings.
+8. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the `0.8.x` sliding core uses the visible rendered layer. The classic pixel half-width/step settings are interpreted at a normal reference view scale and converted to effective pixels at the current zoom.
 9. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
@@ -123,7 +123,8 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.x` visible-layer sliding core.
-- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. In `0.8.3`, multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`.
+- `Cross-section half-width px` and `Cross-section step px`: interpreted at the normal reference view scale, then converted to effective screen pixels for the current zoom so the physical search corridor stays more consistent when zooming in or out.
+- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. In `0.8.x`, multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`.
 - `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.x` sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
@@ -174,7 +175,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - candidate ridge geometries as OSM, including failed pre-preview candidates
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
-- visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, capture size, and estimated visible tile range
+- visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, capture size, and estimated visible tile range
 - per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, synthetic center flags, and per-detector support statistics
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling

@@ -45,6 +45,11 @@ public final class AlignmentService {
         "purple-strict"
     );
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
+    private static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
+    private static final int MIN_EFFECTIVE_HALF_WIDTH_PX = 6;
+    private static final int MAX_EFFECTIVE_HALF_WIDTH_PX = 120;
+    private static final int MIN_EFFECTIVE_STEP_PX = 1;
+    private static final int MAX_EFFECTIVE_STEP_PX = 32;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
@@ -73,12 +78,23 @@ public final class AlignmentService {
 
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<String> colorModes = detectionColorModes(config);
-        DetectionResult detection = detectCandidates(raster, mapView, sourcePolyline, config, colorModes);
+        EffectiveSampling effectiveSampling = effectiveSampling(config, mapView);
+        PluginLog.verbose(
+            "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; target halfWidth=%.2f m step=%.2f m; effective halfWidth=%d px step=%d px at view %.3f m/px.",
+            config.crossSectionHalfWidthPx(),
+            config.crossSectionStepPx(),
+            effectiveSampling.targetHalfWidthMeters(),
+            effectiveSampling.targetStepMeters(),
+            effectiveSampling.effectiveHalfWidthPx(),
+            effectiveSampling.effectiveStepPx(),
+            effectiveSampling.viewMetersPerPixel()
+        );
+        DetectionResult detection = detectCandidates(raster, mapView, sourcePolyline, config, colorModes, effectiveSampling);
         List<CenterlineCandidate> candidates = detection.candidates();
         long t2 = System.nanoTime();
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
-                config, colorModes, detection.profilesJson(), t0, t1, t2, t2);
+                config, colorModes, detection.profilesJson(), effectiveSampling, t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
 
@@ -101,7 +117,8 @@ public final class AlignmentService {
             selection,
             colorModes,
             candidates,
-            detection.profilesJson()
+            detection.profilesJson(),
+            effectiveSampling
         );
 
         PluginLog.verbose("Alignment finished: raster=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
@@ -126,6 +143,7 @@ public final class AlignmentService {
         ManagedHeatmapConfig config,
         List<String> colorModes,
         String profilesJson,
+        EffectiveSampling effectiveSampling,
         long t0,
         long t1,
         long t2,
@@ -138,7 +156,8 @@ public final class AlignmentService {
             sourcePolyline,
             sourcePolyline,
             List.of(),
-            diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes, List.of(), profilesJson),
+            diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
+                List.of(), profilesJson, effectiveSampling),
             null
         );
     }
@@ -148,14 +167,16 @@ public final class AlignmentService {
         MapView mapView,
         List<EastNorth> sourcePolyline,
         ManagedHeatmapConfig config,
-        List<String> colorModes
+        List<String> colorModes,
+        EffectiveSampling effectiveSampling
     ) {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         int modeIndex = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                sampler.sampleProfiles(raster, mapView, sourcePolyline, config.crossSectionHalfWidthPx(), config.crossSectionStepPx(), colorMode);
+                sampler.sampleProfiles(raster, mapView, sourcePolyline,
+                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode);
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
             if (modeIndex++ > 0) {
                 profileDiagnostics.append(',');
@@ -172,7 +193,7 @@ public final class AlignmentService {
         }
         java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
             ? java.util.Comparator
-                .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config))
+                .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config, effectiveSampling))
                 .reversed()
                 .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
@@ -180,22 +201,22 @@ public final class AlignmentService {
         return new DetectionResult(sorted, profileDiagnostics.append(']').toString());
     }
 
-    private double calibratedRankingScore(CenterlineCandidate candidate, ManagedHeatmapConfig config) {
+    private double calibratedRankingScore(CenterlineCandidate candidate, ManagedHeatmapConfig config, EffectiveSampling effectiveSampling) {
         String detector = detectorMode(candidate);
         String visibleColor = normalizedVisibleColor(config);
-        CandidateMetrics metrics = candidateMetrics(candidate, config);
+        CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
         double signalReward =
             0.85 * clamp01(candidate.evidence().signalToNoise() / 0.55)
             + 0.25 * clamp01(candidate.evidence().meanIntensity() / 0.75)
             + 0.25 * clamp01(candidate.evidence().supportRatio());
         double roughnessPenalty =
             0.22 * clamp01(candidate.evidence().ambiguity() / 0.60)
-            + 0.20 * clamp01(metrics.p95DeltaPx() / 35.0)
-            + 0.20 * clamp01(metrics.p95AccelerationPx() / 35.0)
+            + 0.20 * clamp01(metrics.p95DeltaReferencePx() / 35.0)
+            + 0.20 * clamp01(metrics.p95AccelerationReferencePx() / 35.0)
             + 0.10 * clamp01(metrics.signFlips() / 5.0)
             + 0.65 * clamp01(metrics.edgeRatio() / 0.08);
-        double noOpPenalty = metrics.absMeanOffsetPx() < 6.0 && candidate.evidence().meanIntensity() < 0.35 ? 0.80 : 0.0;
-        double largeOffsetPenalty = metrics.absMeanOffsetPx() > 70.0 ? 0.20 : 0.0;
+        double noOpPenalty = metrics.absMeanOffsetMeters() < 0.39 && candidate.evidence().meanIntensity() < 0.35 ? 0.80 : 0.0;
+        double largeOffsetPenalty = metrics.absMeanOffsetMeters() > 4.54 ? 0.20 : 0.0;
         return detectorPrior(visibleColor, detector)
             + globalDetectorAdjustment(detector)
             + signalReward
@@ -294,10 +315,10 @@ public final class AlignmentService {
         };
     }
 
-    private CandidateMetrics candidateMetrics(CenterlineCandidate candidate, ManagedHeatmapConfig config) {
+    private CandidateMetrics candidateMetrics(CenterlineCandidate candidate, EffectiveSampling effectiveSampling) {
         List<Double> offsets = candidate.offsetsPx();
         if (offsets.isEmpty()) {
-            return new CandidateMetrics(0.0, 0.0, 0.0, 0, 0.0);
+            return new CandidateMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0);
         }
         double absMean = offsets.stream().mapToDouble(Math::abs).average().orElse(0.0);
         List<Double> deltas = new ArrayList<>();
@@ -308,14 +329,22 @@ public final class AlignmentService {
         for (int i = 1; i < deltas.size(); i++) {
             accelerations.add(deltas.get(i) - deltas.get(i - 1));
         }
-        double edgeLimit = config.crossSectionHalfWidthPx() * RenderedHeatmapSampler.RASTER_SCALE * 0.90;
+        double p95Delta = percentileAbs(deltas, 0.95);
+        double p95Acceleration = percentileAbs(accelerations, 0.95);
+        double normalization = effectiveSampling.rasterMetersPerPixel() / effectiveSampling.referenceRasterMetersPerPixel();
+        double edgeLimit = effectiveSampling.effectiveHalfWidthPx() * RenderedHeatmapSampler.RASTER_SCALE * 0.90;
         long edgeCount = offsets.stream().filter(offset -> Math.abs(offset) >= edgeLimit).count();
         return new CandidateMetrics(
             absMean,
-            percentileAbs(deltas, 0.95),
-            percentileAbs(accelerations, 0.95),
-            signFlips(deltas),
-            offsets.isEmpty() ? 0.0 : (double) edgeCount / offsets.size()
+            p95Delta,
+            p95Acceleration,
+            p95Delta * normalization,
+            p95Acceleration * normalization,
+            signFlips(deltas, effectiveSampling),
+            offsets.isEmpty() ? 0.0 : (double) edgeCount / offsets.size(),
+            absMean * effectiveSampling.rasterMetersPerPixel(),
+            p95Delta * effectiveSampling.rasterMetersPerPixel(),
+            p95Acceleration * effectiveSampling.rasterMetersPerPixel()
         );
     }
 
@@ -331,12 +360,13 @@ public final class AlignmentService {
         return absolute.get(index);
     }
 
-    private int signFlips(List<Double> deltas) {
+    private int signFlips(List<Double> deltas, EffectiveSampling effectiveSampling) {
         int flips = 0;
+        double flipThresholdPx = 0.52 / effectiveSampling.rasterMetersPerPixel();
         for (int i = 1; i < deltas.size(); i++) {
             double left = deltas.get(i - 1);
             double right = deltas.get(i);
-            if (Math.abs(left) > 8.0 && Math.abs(right) > 8.0 && Math.signum(left) != Math.signum(right)) {
+            if (Math.abs(left) > flipThresholdPx && Math.abs(right) > flipThresholdPx && Math.signum(left) != Math.signum(right)) {
                 flips++;
             }
         }
@@ -724,6 +754,53 @@ public final class AlignmentService {
         return Math.toDegrees(Math.acos(cosine));
     }
 
+    private EffectiveSampling effectiveSampling(ManagedHeatmapConfig config, MapView mapView) {
+        double viewMetersPerPixel = currentViewMetersPerPixel(mapView);
+        double targetHalfWidthMeters = config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
+        double targetStepMeters = config.crossSectionStepPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
+        int effectiveHalfWidthPx = scaleMetersToViewPixels(
+            targetHalfWidthMeters,
+            viewMetersPerPixel,
+            config.crossSectionHalfWidthPx(),
+            MIN_EFFECTIVE_HALF_WIDTH_PX,
+            MAX_EFFECTIVE_HALF_WIDTH_PX
+        );
+        int effectiveStepPx = scaleMetersToViewPixels(
+            targetStepMeters,
+            viewMetersPerPixel,
+            config.crossSectionStepPx(),
+            MIN_EFFECTIVE_STEP_PX,
+            MAX_EFFECTIVE_STEP_PX
+        );
+        effectiveStepPx = Math.max(1, Math.min(effectiveStepPx, Math.max(1, effectiveHalfWidthPx)));
+        double effectiveViewMetersPerPixel = Double.isFinite(viewMetersPerPixel) && viewMetersPerPixel > 0.0
+            ? viewMetersPerPixel
+            : REFERENCE_VIEW_METERS_PER_PIXEL;
+        return new EffectiveSampling(
+            config.crossSectionHalfWidthPx(),
+            config.crossSectionStepPx(),
+            effectiveHalfWidthPx,
+            effectiveStepPx,
+            REFERENCE_VIEW_METERS_PER_PIXEL,
+            effectiveViewMetersPerPixel,
+            targetHalfWidthMeters,
+            targetStepMeters
+        );
+    }
+
+    private int scaleMetersToViewPixels(double meters, double viewMetersPerPixel, int fallbackPx, int minPx, int maxPx) {
+        if (!Double.isFinite(viewMetersPerPixel) || viewMetersPerPixel <= 0.0) {
+            return Math.max(minPx, Math.min(maxPx, fallbackPx));
+        }
+        int pixels = (int) Math.round(meters / viewMetersPerPixel);
+        return Math.max(minPx, Math.min(maxPx, pixels));
+    }
+
+    private double currentViewMetersPerPixel(MapView mapView) {
+        double dist100Pixel = mapView == null ? Double.NaN : safeDouble(mapView.getDist100Pixel());
+        return dist100Pixel > 0.0 ? dist100Pixel / 100.0 : Double.NaN;
+    }
+
     private AlignmentDiagnostics diagnostics(
         ImageryLayer imageryLayer,
         int candidateCount,
@@ -738,7 +815,8 @@ public final class AlignmentService {
         SelectionContext selection,
         List<String> colorModes,
         List<CenterlineCandidate> candidates,
-        String profilesJson
+        String profilesJson,
+        EffectiveSampling effectiveSampling
     ) {
         return new AlignmentDiagnostics(
             imageryLayer.getName(),
@@ -749,14 +827,14 @@ public final class AlignmentService {
             millisBetween(t2, t3),
             config.toRedactedJson(),
             selectionToJson(selection),
-            samplingJson(imageryLayer, raster, mapView),
+            samplingJson(imageryLayer, raster, mapView, effectiveSampling),
             stringArray(colorModes),
-            candidatesToJson(candidates, config),
+            candidatesToJson(candidates, config, effectiveSampling),
             profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson
         );
     }
 
-    private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster, MapView mapView) {
+    private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster, MapView mapView, EffectiveSampling effectiveSampling) {
         int zoom = -1;
         int bestZoom = -1;
         if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
@@ -789,6 +867,15 @@ public final class AlignmentService {
             + "\"dist100PixelMeters\":" + jsonDouble(dist100Pixel) + ','
             + "\"viewMetersPerPixel\":" + jsonDouble(viewMetersPerPixel) + ','
             + "\"rasterMetersPerPixel\":" + jsonDouble(rasterMetersPerPixel) + ','
+            + "\"referenceViewMetersPerPixel\":" + jsonDouble(effectiveSampling.referenceViewMetersPerPixel()) + ','
+            + "\"configuredHalfWidthPx\":" + effectiveSampling.configuredHalfWidthPx() + ','
+            + "\"configuredStepPx\":" + effectiveSampling.configuredStepPx() + ','
+            + "\"effectiveHalfWidthPx\":" + effectiveSampling.effectiveHalfWidthPx() + ','
+            + "\"effectiveStepPx\":" + effectiveSampling.effectiveStepPx() + ','
+            + "\"targetHalfWidthMeters\":" + jsonDouble(effectiveSampling.targetHalfWidthMeters()) + ','
+            + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.targetStepMeters()) + ','
+            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthMeters()) + ','
+            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepMeters()) + ','
             + "\"mapScale\":" + jsonDouble(mapScale) + ','
             + "\"layerPPD\":" + jsonDouble(safeDouble(imageryLayer.getPPD())) + ','
             + "\"viewportCenter\":" + eastNorthLatLonJson(center, centerLatLon) + ','
@@ -1015,23 +1102,28 @@ public final class AlignmentService {
             + "}";
     }
 
-    private String candidatesToJson(List<CenterlineCandidate> candidates, ManagedHeatmapConfig config) {
+    private String candidatesToJson(List<CenterlineCandidate> candidates, ManagedHeatmapConfig config, EffectiveSampling effectiveSampling) {
         StringBuilder builder = new StringBuilder("[");
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
-            CandidateMetrics metrics = candidateMetrics(candidate, config);
+            CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
             if (i > 0) {
                 builder.append(',');
             }
             builder.append('{')
                 .append("\"id\":\"").append(jsonEscape(candidate.id())).append("\",")
                 .append("\"score\":").append(candidate.score()).append(',')
-                .append("\"calibratedRankingScore\":").append(jsonDouble(calibratedRankingScore(candidate, config))).append(',')
+                .append("\"calibratedRankingScore\":").append(jsonDouble(calibratedRankingScore(candidate, config, effectiveSampling))).append(',')
                 .append("\"points\":").append(candidate.screenPoints().size()).append(',')
                 .append("\"offsetsPx\":").append(doubleArray(candidate.offsetsPx())).append(',')
                 .append("\"offsetAbsMeanPx\":").append(jsonDouble(metrics.absMeanOffsetPx())).append(',')
                 .append("\"offsetP95DeltaPx\":").append(jsonDouble(metrics.p95DeltaPx())).append(',')
                 .append("\"offsetP95AccelerationPx\":").append(jsonDouble(metrics.p95AccelerationPx())).append(',')
+                .append("\"offsetP95DeltaReferencePx\":").append(jsonDouble(metrics.p95DeltaReferencePx())).append(',')
+                .append("\"offsetP95AccelerationReferencePx\":").append(jsonDouble(metrics.p95AccelerationReferencePx())).append(',')
+                .append("\"offsetAbsMeanMeters\":").append(jsonDouble(metrics.absMeanOffsetMeters())).append(',')
+                .append("\"offsetP95DeltaMeters\":").append(jsonDouble(metrics.p95DeltaMeters())).append(',')
+                .append("\"offsetP95AccelerationMeters\":").append(jsonDouble(metrics.p95AccelerationMeters())).append(',')
                 .append("\"offsetSignFlips\":").append(metrics.signFlips()).append(',')
                 .append("\"offsetEdgeRatio\":").append(jsonDouble(metrics.edgeRatio())).append(',')
                 .append("\"screenPoints\":").append(screenPointArray(candidate.screenPoints())).append(',')
@@ -1110,9 +1202,41 @@ public final class AlignmentService {
         double absMeanOffsetPx,
         double p95DeltaPx,
         double p95AccelerationPx,
+        double p95DeltaReferencePx,
+        double p95AccelerationReferencePx,
         int signFlips,
-        double edgeRatio
+        double edgeRatio,
+        double absMeanOffsetMeters,
+        double p95DeltaMeters,
+        double p95AccelerationMeters
     ) {
+    }
+
+    private record EffectiveSampling(
+        int configuredHalfWidthPx,
+        int configuredStepPx,
+        int effectiveHalfWidthPx,
+        int effectiveStepPx,
+        double referenceViewMetersPerPixel,
+        double viewMetersPerPixel,
+        double targetHalfWidthMeters,
+        double targetStepMeters
+    ) {
+        double referenceRasterMetersPerPixel() {
+            return referenceViewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE;
+        }
+
+        double rasterMetersPerPixel() {
+            return viewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE;
+        }
+
+        double effectiveHalfWidthMeters() {
+            return effectiveHalfWidthPx * viewMetersPerPixel;
+        }
+
+        double effectiveStepMeters() {
+            return effectiveStepPx * viewMetersPerPixel;
+        }
     }
 
     private record DetectionResult(List<CenterlineCandidate> candidates, String profilesJson) {

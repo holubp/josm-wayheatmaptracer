@@ -41,6 +41,10 @@ public record AlignmentDiagnostics(
         String rasterScale = jsonValue(samplingJson, "rasterScale");
         String rasterWidth = jsonValue(samplingJson, "rasterWidth");
         String rasterHeight = jsonValue(samplingJson, "rasterHeight");
+        String effectiveHalfWidthMeters = jsonValue(samplingJson, "effectiveHalfWidthMeters");
+        String effectiveStepMeters = jsonValue(samplingJson, "effectiveStepMeters");
+        String effectiveHalfWidthPx = jsonValue(samplingJson, "effectiveHalfWidthPx");
+        String effectiveStepPx = jsonValue(samplingJson, "effectiveStepPx");
         StringBuilder summary = new StringBuilder();
         if ("rendered-visible-layer".equals(type)) {
             summary.append("visible rendered layer");
@@ -68,6 +72,17 @@ public record AlignmentDiagnostics(
         }
         if (!rasterMetersPerPixel.isBlank() && !"null".equals(rasterMetersPerPixel)) {
             summary.append(", sampled ").append(formatDouble(rasterMetersPerPixel, 4)).append(" m/raster-px");
+        }
+        if (!effectiveHalfWidthMeters.isBlank() && !"null".equals(effectiveHalfWidthMeters)
+                && !effectiveStepMeters.isBlank() && !"null".equals(effectiveStepMeters)) {
+            summary.append(", search half ").append(formatDouble(effectiveHalfWidthMeters, 2)).append(" m");
+            if (!effectiveHalfWidthPx.isBlank()) {
+                summary.append(" (").append(effectiveHalfWidthPx).append(" px)");
+            }
+            summary.append(", step ").append(formatDouble(effectiveStepMeters, 2)).append(" m");
+            if (!effectiveStepPx.isBlank()) {
+                summary.append(" (").append(effectiveStepPx).append(" px)");
+            }
         }
         if (!rasterWidth.isBlank() && !rasterHeight.isBlank()) {
             summary.append(", capture ").append(rasterWidth).append('x').append(rasterHeight);

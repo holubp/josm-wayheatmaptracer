@@ -78,6 +78,30 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void samplingSummaryReportsEffectiveGroundScaleSampling() {
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
+            "Strava",
+            2,
+            3,
+            10,
+            20,
+            30,
+            "{}",
+            "{}",
+            "{\"type\":\"rendered-visible-layer\",\"algorithm\":\"v0.2-compatible\",\"tileZoom\":15,\"bestTileZoom\":15,"
+                + "\"rasterScale\":6.0,\"rasterWidth\":6000,\"rasterHeight\":3600,"
+                + "\"viewMetersPerPixel\":0.097266,\"rasterMetersPerPixel\":0.016211,"
+                + "\"effectiveHalfWidthMeters\":7.003152,\"effectiveStepMeters\":1.556256,"
+                + "\"effectiveHalfWidthPx\":72,\"effectiveStepPx\":16}",
+            "[\"hot\",\"blue\"]",
+            "[]",
+            "[]"
+        );
+
+        assertTrue(diagnostics.samplingSummary().contains("search half 7.00 m (72 px), step 1.56 m (16 px)"));
+    }
+
+    @Test
     void candidateSwitchUsesStoredSlideTimeGeometryWithoutCurrentMapView() {
         AlignmentService service = new AlignmentService();
         SelectionContext selection = selection(3);
