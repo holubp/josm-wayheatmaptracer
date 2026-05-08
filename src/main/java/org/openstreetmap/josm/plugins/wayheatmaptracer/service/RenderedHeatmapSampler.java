@@ -108,6 +108,7 @@ public final class RenderedHeatmapSampler {
             List<OffsetSample> offsets = new ArrayList<>();
             int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
             int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
+            boolean anchorWithinRaster = isInsideRaster(raster, baseScreen.x, baseScreen.y);
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = baseScreen.x + normal.x * offset;
                 double y = baseScreen.y + normal.y * offset;
@@ -120,7 +121,7 @@ public final class RenderedHeatmapSampler {
                 samples.add(new CrossSectionPeak(0.0, strongest));
             }
 
-            profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal, samples));
+            profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal, samples, anchorWithinRaster));
         }
         if (!profiles.isEmpty()) {
             int maxPeaks = profiles.stream().mapToInt(profile -> profile.peaks().size()).max().orElse(0);
@@ -351,7 +352,7 @@ public final class RenderedHeatmapSampler {
     private double intensityAt(BufferedImage image, double x, double y, String colorMode, IntensitySamplingMode intensitySamplingMode) {
         int sx = (int) Math.round(x);
         int sy = (int) Math.round(y);
-        if (sx < 0 || sy < 0 || sx >= image.getWidth() || sy >= image.getHeight()) {
+        if (!isInsideRaster(image, sx, sy)) {
             return 0.0;
         }
         int argb = image.getRGB(sx, sy);
@@ -368,6 +369,12 @@ public final class RenderedHeatmapSampler {
             return directIntensity(red, green, blue, alpha, source);
         }
         return colorIntensity(red, green, blue, colorMode);
+    }
+
+    private boolean isInsideRaster(BufferedImage image, double x, double y) {
+        int sx = (int) Math.round(x);
+        int sy = (int) Math.round(y);
+        return sx >= 0 && sy >= 0 && sx < image.getWidth() && sy < image.getHeight();
     }
 
     static double directIntensity(int red, int green, int blue, int alpha, IntensitySamplingMode mode) {
@@ -586,8 +593,12 @@ public final class RenderedHeatmapSampler {
         EastNorth anchor,
         Point2D.Double anchorScreen,
         Point2D.Double normalScreen,
-        List<CrossSectionPeak> peaks
+        List<CrossSectionPeak> peaks,
+        boolean anchorWithinRaster
     ) {
+        public CrossSectionProfile(EastNorth anchor, Point2D.Double anchorScreen, Point2D.Double normalScreen, List<CrossSectionPeak> peaks) {
+            this(anchor, anchorScreen, normalScreen, peaks, true);
+        }
     }
 
     public record CrossSectionPeak(

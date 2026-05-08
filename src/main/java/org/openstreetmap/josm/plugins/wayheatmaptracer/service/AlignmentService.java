@@ -96,6 +96,16 @@ public final class AlignmentService {
         DetectionResult detection = detectCandidates(raster, mapView, sourcePolyline, config, colorModes, effectiveSampling);
         List<CenterlineCandidate> candidates = detection.candidates();
         long t2 = System.nanoTime();
+        if (detection.outsideRasterProfiles() > 0) {
+            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
+                config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
+                effectiveSampling, t0, t1, t2, t2);
+            throw new AlignmentFailureException(
+                "Selected segment is not fully inside the captured heatmap viewport ("
+                    + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
+                    + " sampled cross-sections outside). Zoom/pan so the whole selected segment is visible, or select a shorter segment.",
+                partial);
+        }
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
@@ -184,13 +194,19 @@ public final class AlignmentService {
         StringBuilder profilePeaksCsv = new StringBuilder(
             "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
+            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
         int modeIndex = 0;
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
+        int outsideRasterProfiles = 0;
+        int totalProfiles = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
                 sampler.sampleProfiles(raster, mapView, sourcePolyline,
                     effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode, intensitySource);
+            if (modeIndex == 0) {
+                totalProfiles = profiles.size();
+                outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
+            }
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
@@ -215,7 +231,7 @@ public final class AlignmentService {
             : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
         List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
         return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
-            profilePeaksCsv.toString(), paletteSamplesCsv.toString());
+            profilePeaksCsv.toString(), paletteSamplesCsv.toString(), outsideRasterProfiles, totalProfiles);
     }
 
     private double calibratedRankingScore(CenterlineCandidate candidate, ManagedHeatmapConfig config, EffectiveSampling effectiveSampling) {
@@ -957,6 +973,7 @@ public final class AlignmentService {
             .append("\"detectorMode\":\"").append(jsonEscape(colorMode)).append("\",")
             .append("\"intensitySource\":\"").append(jsonEscape(intensitySource.name())).append("\",")
             .append("\"profileCount\":").append(profiles.size()).append(',')
+            .append("\"outsideRasterProfiles\":").append(profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count()).append(',')
             .append("\"candidateCount\":").append(colorCandidates.size()).append(',')
             .append("\"supportedProfiles\":").append(supportedProfiles).append(',')
             .append("\"emptyProfiles\":").append(emptyProfiles).append(',')
@@ -979,6 +996,7 @@ public final class AlignmentService {
                 .append("\"anchorRasterY\":").append(format(profile.anchorScreen().y)).append(',')
                 .append("\"normalX\":").append(format(profile.normalScreen().x)).append(',')
                 .append("\"normalY\":").append(format(profile.normalScreen().y)).append(',')
+                .append("\"anchorWithinRaster\":").append(profile.anchorWithinRaster()).append(',')
                 .append("\"peaks\":").append(peaksToJson(profile.peaks()))
                 .append('}');
         }
@@ -1092,6 +1110,7 @@ public final class AlignmentService {
                 .append(csv(intensitySource.name())).append(',')
                 .append(csv(components)).append(',')
                 .append(profileIndex).append(',')
+                .append(profiles.get(profileIndex).anchorWithinRaster()).append(',')
                 .append(format(strongest.intensity())).append(',')
                 .append(format(strongest.prominence())).append(',')
                 .append(format(strongest.noiseFloor())).append(',')
@@ -1422,7 +1441,9 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates,
         String profilesJson,
         String profilePeaksCsv,
-        String paletteSamplesCsv
+        String paletteSamplesCsv,
+        int outsideRasterProfiles,
+        int totalProfiles
     ) {
     }
 }

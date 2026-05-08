@@ -3,6 +3,7 @@
 Repository-specific guardrails for future changes:
 
 - Treat JOSM coordinate spaces explicitly. Downloaded-area checks use `Bounds` with geographic coordinates. The current sliding core intentionally uses the 0.2.0-style rendered visible layer: candidates are tracked in oversampled screen space, projected back through `MapView`, and then carried as `EastNorth` only for preview/debug export.
+- Visible-layer alignment must fail clearly when selected-segment profiles fall outside the captured raster. Off-screen fallback profiles must not silently pull endpoints toward zero offset or lower confidence as if the heatmap itself were weak.
 - The downloaded-area bypass is a heatmap-only drawing escape hatch and must remain opt-in. Do not make live alignment skip `Bounds` checks by default.
 - Junction and endpoint movement must remain opt-in. When it is enabled in precise mode, do not simplify away selected/shared anchor nodes.
 - Do not reintroduce uniform point redistribution after simplification in precise mode. Straight sections should be allowed to collapse more aggressively than curves.

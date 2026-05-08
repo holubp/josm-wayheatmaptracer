@@ -86,6 +86,7 @@ The current implementation is designed for private development:
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
 - Because the current alignment path intentionally uses the visible rendered heatmap layer, color and tile rendering still come from the current view like `0.2.0`. The detector keeps the search corridor roughly ground-scale stable across zoom levels and reports the effective view scale, search half-width, and step in the preview/debug output.
+- The whole selected segment must be inside the current map viewport when running alignment. If part of the segment is outside the captured visible heatmap raster, the plugin refuses to slide rather than inventing zero-signal geometry at the off-screen end.
 - Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the current sliding core.
 
 ## Build
@@ -143,12 +144,13 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 1. Download the OSM area around the way unless you intentionally enabled the no-download option.
 2. Select exactly one way. To align only part of it, select the way and the two endpoint nodes of the segment.
 3. For long ways, select the way and run `More tools -> Select Longest Heatmap Segment`; the plugin selects the longest section bounded by endpoints or junctions.
-4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
-5. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
-6. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
-7. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
-8. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless, and candidate switching/rating uses the geometry captured at slide time rather than reprojecting through the later viewport.
-9. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+4. Pan/zoom so the whole selected segment is visible in the map view.
+5. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
+6. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
+7. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
+8. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
+9. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless, and candidate switching/rating uses the geometry captured at slide time rather than reprojecting through the later viewport.
+10. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
 For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. Rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with the visible-layer algorithm.
 

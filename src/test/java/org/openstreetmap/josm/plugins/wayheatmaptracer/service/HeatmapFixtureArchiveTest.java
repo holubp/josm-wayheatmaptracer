@@ -256,6 +256,29 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void profilesOutsideCapturedRasterAreMarkedForViewportSafety() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            image.setRGB(x, 20, 0xFFFFFFFF);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, -20), new Point2D.Double(10, 20)),
+            12,
+            2,
+            "hot",
+            1.0
+        );
+
+        assertTrue(profiles.stream().anyMatch(profile -> !profile.anchorWithinRaster()),
+            "Visible-layer alignment must be able to detect selected segments extending outside the captured viewport");
+        assertTrue(profiles.stream().anyMatch(RenderedHeatmapSampler.CrossSectionProfile::anchorWithinRaster),
+            "Profiles inside the capture should remain marked as sampled");
+    }
+
+    @Test
     void pairedShouldersExposeCenterPeak() {
         BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
         for (int x = 0; x < image.getWidth(); x++) {

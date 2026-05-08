@@ -86,7 +86,8 @@ public final class RidgeTracker {
                 profile.anchor(),
                 profile.anchorScreen(),
                 profile.normalScreen(),
-                retained
+                retained,
+                profile.anchorWithinRaster()
             ));
         }
         return filtered;
