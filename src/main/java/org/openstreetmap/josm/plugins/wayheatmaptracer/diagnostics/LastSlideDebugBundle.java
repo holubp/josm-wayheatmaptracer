@@ -28,6 +28,9 @@ public final class LastSlideDebugBundle {
     private final String candidateOsm;
     private final String statusJson;
     private final String candidateRatingsJson;
+    private final String candidateMetricsCsv;
+    private final String profilePeaksCsv;
+    private final String paletteSamplesCsv;
     private final String tileManifestJson;
     private final Map<String, BufferedImage> tileImages;
 
@@ -39,6 +42,9 @@ public final class LastSlideDebugBundle {
         String candidateOsm,
         String statusJson,
         String candidateRatingsJson,
+        String candidateMetricsCsv,
+        String profilePeaksCsv,
+        String paletteSamplesCsv,
         String tileManifestJson,
         Map<String, BufferedImage> tileImages
     ) {
@@ -49,6 +55,9 @@ public final class LastSlideDebugBundle {
         this.candidateOsm = candidateOsm;
         this.statusJson = statusJson;
         this.candidateRatingsJson = candidateRatingsJson;
+        this.candidateMetricsCsv = candidateMetricsCsv;
+        this.profilePeaksCsv = profilePeaksCsv;
+        this.paletteSamplesCsv = paletteSamplesCsv;
         this.tileManifestJson = tileManifestJson;
         this.tileImages = tileImages;
     }
@@ -92,6 +101,9 @@ public final class LastSlideDebugBundle {
             candidateOsm(result),
             statusJson,
             ratingsJson,
+            result.diagnostics().candidateMetricsCsv(),
+            result.diagnostics().profilePeaksCsv(),
+            result.diagnostics().paletteSamplesCsv(),
             tileManifest,
             images
         );
@@ -107,6 +119,9 @@ public final class LastSlideDebugBundle {
             writeText(zip, "preview-segment.osm", previewOsm);
             writeText(zip, "candidate-ridges.osm", candidateOsm);
             writeText(zip, "candidate-ratings.json", candidateRatingsJson);
+            writeText(zip, "candidate-metrics.csv", candidateMetricsCsv);
+            writeText(zip, "profile-peaks.csv", profilePeaksCsv);
+            writeText(zip, "palette-samples.csv", paletteSamplesCsv);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
@@ -122,7 +137,7 @@ public final class LastSlideDebugBundle {
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
             + "\"formatVersion\":1,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"tile-manifest.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"tile-manifest.json\"]"
             + "}";
     }
 

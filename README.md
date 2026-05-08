@@ -73,14 +73,14 @@ The current implementation is designed for private development:
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
 - Detect multiple nearby ridge candidates and allow the user to pick one
 - Show a modeless preview overlay before applying, including a legend, labeled alternative ridge candidates, and a ridge selector that updates the preview before confirmation
-- Export a redacted last-slide debug bundle for remote debugging, including exact settings, sampled color schemes, logs, original/preview geometry, scoring details, and heatmap tile images
+- Export a redacted last-slide debug bundle for remote debugging, including exact settings, sampled color schemes, logs, original/preview geometry, scoring details, CSV calibration metrics, and heatmap tile images
 - Package logs on the JOSM machine with a small bash helper
 
 ## Current Limits
 
 - Survey mode is not implemented yet.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
-- Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`; `blue` and `gray` are supported but still may need additional tuning in difficult cases.
+- Heatmap interpretation is strongest for `hot`, `bluered`, and `gray`. `blue` and `purple` are supported, but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
 - Because `0.8.x` intentionally uses the visible rendered heatmap layer, color and tile rendering still come from the current view like `0.2.0`. The detector now keeps the search corridor roughly ground-scale stable across zoom levels and reports the effective view scale, search half-width, and step in the preview/debug output.
 - Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the `0.8.x` sliding core.
@@ -100,7 +100,7 @@ sh gradlew clean build
 The plugin jar is produced at:
 
 ```text
-build/libs/wayheatmaptracer-<version>.jar
+build/libs/wayheatmaptracer.jar
 ```
 
 ## Optimum JOSM Workflow
@@ -124,7 +124,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the `0.8.x` visible-layer sliding core.
 - `Cross-section half-width px` and `Cross-section step px`: interpreted at the normal reference view scale, then converted to effective screen pixels for the current zoom so the physical search corridor stays more consistent when zooming in or out.
-- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. In `0.8.x`, multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`.
+- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. In `0.8.x`, multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. No fused consensus geometry is created in the `0.8.x` sliding path.
 - `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: retained in settings, but not used by the `0.8.x` sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
@@ -173,6 +173,9 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - selected activity, visible color, and sampled color schemes
 - original selected way/segment and preview geometry as OSM
 - candidate ridge geometries as OSM, including failed pre-preview candidates
+- `candidate-metrics.csv`, with detector, visible color, raw score, calibrated score, support ratio, mean intensity, SNR, ambiguity, roughness, edge-pinning, and safety warnings for each candidate
+- `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, and synthetic-center flag
+- `palette-samples.csv`, with per-profile strongest evidence and peak counts for quick detector calibration
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
 - visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, capture size, and estimated visible tile range
@@ -199,6 +202,7 @@ The export intentionally avoids Strava cookies, signed headers, and full signed 
 Helper scripts:
 - `scripts/install-private-plugin.sh`
 - `scripts/package-debug-bundle.sh` for older manual log/tile collection workflows
+- `scripts/analyze-debug-bundles.py` to aggregate exported debug bundles by visible color, detector, subjective rating, SNR, and roughness
 
 ## Extract Tiles From JOSM Cache
 

@@ -54,6 +54,7 @@ tasks.register<JavaExec>("extractJosmTmsCache") {
 
 tasks.jar {
     archiveBaseName.set("wayheatmaptracer")
+    archiveVersion.set("")
     manifest {
         attributes(
             "Manifest-Version" to "1.0",

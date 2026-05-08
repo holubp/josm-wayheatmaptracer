@@ -103,17 +103,26 @@ public record CenterlineCandidate(
             return "no signal";
         }
         double support = evidence.supportRatio();
-        if (score >= 20.0 && support >= 0.60 && evidence.maxConsecutiveEmptyProfiles() <= 8
-                && evidence.signalToNoise() >= 0.16) {
+        double quality =
+            0.34 * clamp01(support)
+            + 0.34 * clamp01(evidence.signalToNoise() / 0.24)
+            + 0.22 * clamp01(evidence.meanIntensity() / 0.55)
+            + 0.10 * (1.0 - clamp01(evidence.ambiguity() / 1.60));
+        quality -= 0.16 * clamp01(evidence.maxConsecutiveEmptyProfiles() / 20.0);
+        if (quality >= 0.62 && support >= 0.45 && evidence.maxConsecutiveEmptyProfiles() <= 14) {
             return "strong";
         }
-        if (score >= 5.0 && support >= 0.40 && evidence.maxConsecutiveEmptyProfiles() <= 16) {
+        if (quality >= 0.42 && support >= 0.28 && evidence.maxConsecutiveEmptyProfiles() <= 24) {
             return "usable";
         }
-        if (score >= -25.0 || support >= 0.15) {
+        if (quality >= 0.22 || support >= 0.12 || evidence.signalToNoise() >= 0.03) {
             return "weak";
         }
         return "very weak";
+    }
+
+    private static double clamp01(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
     }
 
     private static String capitalize(String value) {

@@ -170,12 +170,14 @@ public final class RidgeTracker {
         int currentEmpty = 0;
         double total = 0.0;
         double ambiguity = 0.0;
+        double prominenceTotal = 0.0;
         for (int i = 0; i < profiles.size(); i++) {
             RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
             double intensity = i < intensities.size() ? intensities.get(i) : 0.0;
             if (intensity > 0.0) {
                 supported++;
                 total += intensity;
+                prominenceTotal += strongestProminence(profile);
                 currentEmpty = 0;
             } else {
                 currentEmpty++;
@@ -190,9 +192,17 @@ public final class RidgeTracker {
         double mean = supported == 0 ? 0.0 : total / supported;
         double supportRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
         double ambiguityPenalty = profiles.isEmpty() ? 0.0 : ambiguity / profiles.size();
-        double snr = mean * supportRatio / (1.0 + ambiguityPenalty);
+        double meanProminence = supported == 0 ? 0.0 : prominenceTotal / supported;
+        double snr = (mean * 0.65 + meanProminence * 0.90) * supportRatio / (1.0 + ambiguityPenalty);
         return new CandidateEvidence("", profiles.size(), supported, empty, maxEmpty,
             total, mean, snr, ambiguityPenalty, List.of());
+    }
+
+    private double strongestProminence(RenderedHeatmapSampler.CrossSectionProfile profile) {
+        return profile.peaks().stream()
+            .mapToDouble(RenderedHeatmapSampler.CrossSectionPeak::prominence)
+            .max()
+            .orElse(0.0);
     }
 
     private record State(

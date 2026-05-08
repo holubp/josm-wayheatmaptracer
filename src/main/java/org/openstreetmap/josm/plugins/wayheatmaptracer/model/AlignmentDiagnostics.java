@@ -12,8 +12,29 @@ public record AlignmentDiagnostics(
     String samplingJson,
     String colorSchemesJson,
     String candidatesJson,
-    String profileDiagnosticsJson
+    String profileDiagnosticsJson,
+    String candidateMetricsCsv,
+    String profilePeaksCsv,
+    String paletteSamplesCsv
 ) {
+    public AlignmentDiagnostics(
+        String layerName,
+        int candidateCount,
+        int movableNodeCount,
+        long rasterCaptureMillis,
+        long ridgeTrackingMillis,
+        long optimizationMillis,
+        String configJson,
+        String selectionJson,
+        String samplingJson,
+        String colorSchemesJson,
+        String candidatesJson,
+        String profileDiagnosticsJson
+    ) {
+        this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis, optimizationMillis,
+            configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson, "", "", "");
+    }
+
     public String toJson() {
         return "{"
             + "\"layerName\":\"" + escape(layerName) + "\","

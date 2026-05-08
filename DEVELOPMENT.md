@@ -8,11 +8,35 @@ Build and run the test suite from repo root:
 sh gradlew test build
 ```
 
-The built plugin jar is written to `build/libs/wayheatmaptracer-<version>.jar`.
+The built plugin jar is written to `build/libs/wayheatmaptracer.jar`.
+
+Debug calibration bundles can be summarized with:
+
+```bash
+python3 scripts/analyze-debug-bundles.py /path/to/debug-bundles --raw-csv build/debug-candidates.csv
+```
+
+The script expects exported last-slide debug bundles. It reads `candidate-metrics.csv` and `candidate-ratings.json`, then groups detector performance by visible color, subjective rating, SNR, roughness, and negative feature tags.
 
 ## Release Versioning
 
 Keep releases on `0.x.x` until the maintainer explicitly says the plugin is suitable for broader use by others. Do not use a patch release for changes that add user-visible features, settings, workflow changes, or architecture changes.
+
+Use the same release naming convention as the JOSM AudioWptMarker plugin:
+
+- Git tag: `v<version>`, for example `v0.8.5`
+- GitHub release title: exactly `v<version>`
+- Primary jar asset: `wayheatmaptracer.jar`
+- Versioning belongs in the Git tag, GitHub release name, and jar manifest `Plugin-Version`, not in the primary release asset filename.
+- Commit subject can describe the change, but the published release name should stay version-only.
+
+JOSM plugin sources expect a stable jar URL. Do not publish a versioned filename such as `wayheatmaptracer-0.8.5.jar` as the primary asset. The stable URL for plugin-list use is:
+
+```text
+https://github.com/holubp/josm-wayheatmaptracer/releases/latest/download/wayheatmaptracer.jar
+```
+
+When creating GitHub releases from the command line, use `--notes-file` or another newline-safe mechanism so release notes contain real newlines, not literal `\n` text.
 
 After the first broader-use release:
 
@@ -73,7 +97,7 @@ Full-way selections with 2-5 nodes may be recognized as sketch-like for UI/debug
 The preview overlay uses solid blue for the selected result, orange dashes for the original segment, and labeled dashed lines for alternative ridge candidates. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates the preview immediately when the selected candidate changes.
 Candidate changes during preview must use each candidate's slide-time `EastNorth` geometry. Do not reproject candidate screen/raster points through the current `MapView`, because the user may have panned or zoomed before rating or selecting alternatives.
 
-The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, optional human candidate ratings and negative feature tags from the opt-in preview rating mode, candidate evidence/scoring, raw and calibrated ranking scores, original/preview geometry, candidate ridge geometry, visible-layer sampling metadata, the rendered heatmap capture, and per-slide verbose/debug logs. For 0.8.x visible-layer alignment, sampling metadata must distinguish JOSM's reported source tile zoom from the effective viewport resolution: viewport bounds, view meters per pixel, raster meters per pixel, configured and effective cross-section width/step, capture size, and estimated visible tile ranges are diagnostic inputs, not algorithm inputs. Per-detector profile diagnostics should include cross-section anchors, normals, peak offsets/intensities, support widths, and synthetic-center flags so palette/ridge calibration can be done from exported data. Never include cookies, signed headers, or full signed URLs in diagnostics.
+The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlideDebugBundle`. It is intentionally focused on the most recent slide attempt and should include redacted settings, sampled colors, selected candidate, optional human candidate ratings and negative feature tags from the opt-in preview rating mode, candidate evidence/scoring, raw and calibrated ranking scores, original/preview geometry, candidate ridge geometry, visible-layer sampling metadata, the rendered heatmap capture, and per-slide verbose/debug logs. For 0.8.x visible-layer alignment, sampling metadata must distinguish JOSM's reported source tile zoom from the effective viewport resolution: viewport bounds, view meters per pixel, raster meters per pixel, configured and effective cross-section width/step, capture size, and estimated visible tile ranges are diagnostic inputs, not algorithm inputs. Per-detector profile diagnostics should include cross-section anchors, normals, peak offsets/intensities, prominence, estimated noise floor, support widths, and synthetic-center flags so palette/ridge calibration can be done from exported data. The bundle also exports `candidate-metrics.csv`, `profile-peaks.csv`, and `palette-samples.csv` for numerical analysis. Never include cookies, signed headers, or full signed URLs in diagnostics.
 
 ## Guardrails
 
@@ -92,7 +116,7 @@ The last-slide debug bundle is created from `DiagnosticsRegistry` and `LastSlide
 - `blue` is a single-ramp blue/cyan scheme: white or light cyan/blue core > medium cyan/blue > dark saturated blue shoulder.
 - `purple` is a single-ramp purple/magenta scheme: bright purple/magenta core > medium purple > dark purple.
 - `bluered` is a dual-color semantic scheme: red/magenta high-activity center > purple transition > blue/cyan lower-activity shoulder. Hue and saturation must dominate raw blue/cyan vividness.
-- `gray` is still available as a rendered-layer classifier, but 0.8.x preserves the 0.2-compatible palette behavior instead of the later consensus-priority rules.
+- `gray` is dual-color in practice: weak/medium traces may be gray/blue-gray, while high-activity traces can become pink/magenta. The classifier should score both the neutral ramp and the magenta/violet center while still exporting raw scores for calibration.
 - `dual` is an internal rendered-layer classifier retained for palette regression tests and preview alternatives. In 0.8.x it classifies the same visible rendered layer rather than fetching a separate source tile.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.

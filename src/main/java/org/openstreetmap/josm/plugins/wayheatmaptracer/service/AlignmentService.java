@@ -94,7 +94,8 @@ public final class AlignmentService {
         long t2 = System.nanoTime();
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
-                config, colorModes, detection.profilesJson(), effectiveSampling, t0, t1, t2, t2);
+                config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
+                effectiveSampling, t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
 
@@ -118,6 +119,8 @@ public final class AlignmentService {
             colorModes,
             candidates,
             detection.profilesJson(),
+            detection.profilePeaksCsv(),
+            detection.paletteSamplesCsv(),
             effectiveSampling
         );
 
@@ -143,6 +146,8 @@ public final class AlignmentService {
         ManagedHeatmapConfig config,
         List<String> colorModes,
         String profilesJson,
+        String profilePeaksCsv,
+        String paletteSamplesCsv,
         EffectiveSampling effectiveSampling,
         long t0,
         long t1,
@@ -157,7 +162,7 @@ public final class AlignmentService {
             sourcePolyline,
             List.of(),
             diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
-                List.of(), profilesJson, effectiveSampling),
+                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling),
             null
         );
     }
@@ -172,12 +177,18 @@ public final class AlignmentService {
     ) {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
+        StringBuilder profilePeaksCsv = new StringBuilder(
+            "detector,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,synthetic_center\n");
+        StringBuilder paletteSamplesCsv = new StringBuilder(
+            "detector,profile_index,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,peak_count,synthetic_center_count\n");
         int modeIndex = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
                 sampler.sampleProfiles(raster, mapView, sourcePolyline,
                     effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode);
             List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            appendProfilePeaksCsv(profilePeaksCsv, colorMode, profiles);
+            appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, profiles);
             if (modeIndex++ > 0) {
                 profileDiagnostics.append(',');
             }
@@ -198,7 +209,8 @@ public final class AlignmentService {
                 .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
         List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
-        return new DetectionResult(sorted, profileDiagnostics.append(']').toString());
+        return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
+            profilePeaksCsv.toString(), paletteSamplesCsv.toString());
     }
 
     private double calibratedRankingScore(CenterlineCandidate candidate, ManagedHeatmapConfig config, EffectiveSampling effectiveSampling) {
@@ -258,11 +270,13 @@ public final class AlignmentService {
             case "bluered" -> switch (detector) {
                 case "bluered-corridor" -> 1.00;
                 case "bluered-cool" -> 0.90;
-                case "hot-corridor" -> 0.85;
-                case "dual-corridor" -> 0.55;
+                case "dual-corridor" -> 0.68;
+                case "hot-corridor" -> 0.45;
                 case "blue" -> 0.05;
-                case "bluered", "hot" -> 0.0;
-                case "dual", "gray", "gray-strict", "purple", "hot-strict" -> -0.30;
+                case "bluered" -> 0.0;
+                case "dual" -> -0.05;
+                case "hot" -> -0.15;
+                case "gray", "gray-strict", "purple", "hot-strict" -> -0.30;
                 default -> -0.05;
             };
             case "blue" -> switch (detector) {
@@ -816,6 +830,8 @@ public final class AlignmentService {
         List<String> colorModes,
         List<CenterlineCandidate> candidates,
         String profilesJson,
+        String profilePeaksCsv,
+        String paletteSamplesCsv,
         EffectiveSampling effectiveSampling
     ) {
         return new AlignmentDiagnostics(
@@ -830,7 +846,10 @@ public final class AlignmentService {
             samplingJson(imageryLayer, raster, mapView, effectiveSampling),
             stringArray(colorModes),
             candidatesToJson(candidates, config, effectiveSampling),
-            profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson
+            profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson,
+            candidateMetricsCsv(candidates, config, effectiveSampling),
+            profilePeaksCsv == null ? "" : profilePeaksCsv,
+            paletteSamplesCsv == null ? "" : paletteSamplesCsv
         );
     }
 
@@ -971,9 +990,96 @@ public final class AlignmentService {
                 .append("\"intensity\":").append(format(peak.intensity())).append(',')
                 .append("\"supportWidthPx\":").append(format(peak.supportWidthPx())).append(',')
                 .append("\"syntheticCenter\":").append(peak.syntheticCenter())
+                .append(',')
+                .append("\"prominence\":").append(format(peak.prominence())).append(',')
+                .append("\"noiseFloor\":").append(format(peak.noiseFloor())).append(',')
+                .append("\"maxProfileIntensity\":").append(format(peak.maxProfileIntensity()))
                 .append('}');
         }
         return builder.append(']').toString();
+    }
+
+    private void appendProfilePeaksCsv(
+        StringBuilder builder,
+        String colorMode,
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles
+    ) {
+        for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profiles.get(profileIndex).peaks();
+            for (int peakIndex = 0; peakIndex < peaks.size(); peakIndex++) {
+                RenderedHeatmapSampler.CrossSectionPeak peak = peaks.get(peakIndex);
+                builder.append(csv(colorMode)).append(',')
+                    .append(profileIndex).append(',')
+                    .append(peakIndex).append(',')
+                    .append(format(peak.offsetPx())).append(',')
+                    .append(format(peak.intensity())).append(',')
+                    .append(format(peak.prominence())).append(',')
+                    .append(format(peak.noiseFloor())).append(',')
+                    .append(format(peak.maxProfileIntensity())).append(',')
+                    .append(format(peak.supportWidthPx())).append(',')
+                    .append(peak.syntheticCenter())
+                    .append('\n');
+            }
+        }
+    }
+
+    private void appendPaletteSamplesCsv(
+        StringBuilder builder,
+        String colorMode,
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles
+    ) {
+        for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profiles.get(profileIndex).peaks();
+            RenderedHeatmapSampler.CrossSectionPeak strongest = peaks.stream()
+                .max(java.util.Comparator.comparingDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity))
+                .orElse(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0));
+            long syntheticCount = peaks.stream().filter(RenderedHeatmapSampler.CrossSectionPeak::syntheticCenter).count();
+            builder.append(csv(colorMode)).append(',')
+                .append(profileIndex).append(',')
+                .append(format(strongest.intensity())).append(',')
+                .append(format(strongest.prominence())).append(',')
+                .append(format(strongest.noiseFloor())).append(',')
+                .append(format(strongest.maxProfileIntensity())).append(',')
+                .append(peaks.size()).append(',')
+                .append(syntheticCount)
+                .append('\n');
+        }
+    }
+
+    private String candidateMetricsCsv(
+        List<CenterlineCandidate> candidates,
+        ManagedHeatmapConfig config,
+        EffectiveSampling effectiveSampling
+    ) {
+        StringBuilder builder = new StringBuilder(
+            "rank,candidate_id,display_name,detector,visible_color,raw_score,calibrated_score,support_ratio,mean_intensity,signal_to_noise,ambiguity,max_consecutive_empty_profiles,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,safety_warnings\n");
+        for (int i = 0; i < candidates.size(); i++) {
+            CenterlineCandidate candidate = candidates.get(i);
+            CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
+            builder.append(i + 1).append(',')
+                .append(csv(candidate.id())).append(',')
+                .append(csv(candidate.displayName())).append(',')
+                .append(csv(detectorMode(candidate))).append(',')
+                .append(csv(normalizedVisibleColor(config))).append(',')
+                .append(format(candidate.score())).append(',')
+                .append(format(calibratedRankingScore(candidate, config, effectiveSampling))).append(',')
+                .append(format(candidate.evidence().supportRatio())).append(',')
+                .append(format(candidate.evidence().meanIntensity())).append(',')
+                .append(format(candidate.evidence().signalToNoise())).append(',')
+                .append(format(candidate.evidence().ambiguity())).append(',')
+                .append(candidate.evidence().maxConsecutiveEmptyProfiles()).append(',')
+                .append(format(metrics.absMeanOffsetPx())).append(',')
+                .append(format(metrics.p95DeltaPx())).append(',')
+                .append(format(metrics.p95AccelerationPx())).append(',')
+                .append(metrics.signFlips()).append(',')
+                .append(format(metrics.edgeRatio())).append(',')
+                .append(format(metrics.absMeanOffsetMeters())).append(',')
+                .append(format(metrics.p95DeltaMeters())).append(',')
+                .append(format(metrics.p95AccelerationMeters())).append(',')
+                .append(csv(String.join("; ", candidate.safetyWarnings())))
+                .append('\n');
+        }
+        return builder.toString();
     }
 
     private String renderedZoomSummary(ImageryLayer imageryLayer) {
@@ -1185,6 +1291,11 @@ public final class AlignmentService {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    private String csv(String value) {
+        String safe = value == null ? "" : value.replace("\"", "\"\"");
+        return "\"" + safe + "\"";
+    }
+
     public static final class AlignmentFailureException extends IllegalStateException {
         private final AlignmentResult partialResult;
 
@@ -1239,6 +1350,11 @@ public final class AlignmentService {
         }
     }
 
-    private record DetectionResult(List<CenterlineCandidate> candidates, String profilesJson) {
+    private record DetectionResult(
+        List<CenterlineCandidate> candidates,
+        String profilesJson,
+        String profilePeaksCsv,
+        String paletteSamplesCsv
+    ) {
     }
 }

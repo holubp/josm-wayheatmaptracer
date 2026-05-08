@@ -115,13 +115,19 @@ public final class RenderedHeatmapSampler {
     }
 
     private List<CrossSectionPeak> extractBrightBands(List<OffsetSample> offsets) {
-        double maxIntensity = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
-        if (maxIntensity <= 0.18) {
+        List<OffsetSample> smoothed = smoothProfile(offsets);
+        ProfileStats stats = profileStats(smoothed);
+        if (stats.maxIntensity() <= 0.14 || stats.maxProminence() <= 0.025) {
             return List.of();
         }
 
-        List<OffsetSample> smoothed = smoothProfile(offsets);
-        double localPeakThreshold = Math.max(0.22, maxIntensity * 0.52);
+        boolean strongProfile = stats.maxIntensity() >= 0.35 && stats.maxProminence() >= 0.16;
+        double localPeakThreshold = strongProfile
+            ? Math.max(0.22, stats.maxIntensity() * 0.52)
+            : Math.max(
+                stats.noiseFloor() + Math.max(0.035, stats.maxProminence() * 0.30),
+                stats.maxIntensity() * 0.30
+            );
         List<CrossSectionPeak> peaks = new ArrayList<>();
         for (int index = 0; index < smoothed.size(); index++) {
             double current = smoothed.get(index).intensity;
@@ -133,14 +139,17 @@ public final class RenderedHeatmapSampler {
 
             int start = index;
             int end = index;
-            double shoulderThreshold = Math.max(0.16, current * 0.60);
+            double prominence = Math.max(0.0, current - stats.noiseFloor());
+            double shoulderThreshold = strongProfile
+                ? Math.max(0.16, current * 0.60)
+                : Math.max(stats.noiseFloor() + prominence * 0.22, current * 0.45);
             while (start > 0 && smoothed.get(start - 1).intensity >= shoulderThreshold) {
                 start--;
             }
             while (end + 1 < smoothed.size() && smoothed.get(end + 1).intensity >= shoulderThreshold) {
                 end++;
             }
-            peaks.add(buildBandPeak(offsets, smoothed, index, start, end));
+            peaks.add(buildBandPeak(offsets, smoothed, stats, index, start, end));
         }
 
         if (peaks.isEmpty()) {
@@ -150,7 +159,7 @@ public final class RenderedHeatmapSampler {
                     strongest = i;
                 }
             }
-            peaks.add(buildBandPeak(offsets, smoothed, strongest, strongest, strongest));
+            peaks.add(buildBandPeak(offsets, smoothed, stats, strongest, strongest, strongest));
         }
         List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
         return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
@@ -178,14 +187,24 @@ public final class RenderedHeatmapSampler {
                 if (balanced && weaker >= 0.32 && gap >= sampleStep * 1.5 && gap <= sampleStep * 6.0) {
                     double center = (left.offsetPx() * right.intensity() + right.offsetPx() * left.intensity())
                         / (left.intensity() + right.intensity());
-                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true));
+                    double prominence = Math.min(left.prominence(), right.prominence()) * 0.92;
+                    double noiseFloor = Math.max(left.noiseFloor(), right.noiseFloor());
+                    double maxIntensity = Math.max(left.maxProfileIntensity(), right.maxProfileIntensity());
+                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true, prominence, noiseFloor, maxIntensity));
                 }
             }
         }
         return mergeClosePeaks(augmented, sampleStep);
     }
 
-    private CrossSectionPeak buildBandPeak(List<OffsetSample> offsets, List<OffsetSample> smoothed, int peakIndex, int start, int end) {
+    private CrossSectionPeak buildBandPeak(
+        List<OffsetSample> offsets,
+        List<OffsetSample> smoothed,
+        ProfileStats stats,
+        int peakIndex,
+        int start,
+        int end
+    ) {
         double weightedOffset = 0.0;
         double weightSum = 0.0;
         double peakIntensity = 0.0;
@@ -203,7 +222,11 @@ public final class RenderedHeatmapSampler {
         if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + estimateSampleStep(offsets)) {
             center = offsets.get(peakIndex).offsetPx;
         }
-        return new CrossSectionPeak(center, confidence, supportWidth, false);
+        double prominence = Math.max(0.0, peakIntensity - stats.noiseFloor());
+        double prominenceWeight = stats.maxProminence() <= 0.0 ? 0.0 : prominence / stats.maxProminence();
+        double calibratedConfidence = Math.min(1.0, confidence * 0.72 + prominenceWeight * 0.20 + Math.min(0.08, supportWidth / 120.0));
+        return new CrossSectionPeak(center, calibratedConfidence, supportWidth, false,
+            prominence, stats.noiseFloor(), stats.maxIntensity());
     }
 
     private List<OffsetSample> smoothProfile(List<OffsetSample> offsets) {
@@ -235,7 +258,13 @@ public final class RenderedHeatmapSampler {
                 double center = total == 0.0
                     ? (current.offsetPx() + next.offsetPx()) / 2.0
                     : (current.offsetPx() * current.intensity() + next.offsetPx() * next.intensity()) / total;
-                current = new CrossSectionPeak(center, Math.max(current.intensity(), next.intensity()));
+                current = new CrossSectionPeak(center,
+                    Math.max(current.intensity(), next.intensity()),
+                    Math.max(current.supportWidthPx(), next.supportWidthPx()),
+                    current.syntheticCenter() && next.syntheticCenter(),
+                    Math.max(current.prominence(), next.prominence()),
+                    Math.max(current.noiseFloor(), next.noiseFloor()),
+                    Math.max(current.maxProfileIntensity(), next.maxProfileIntensity()));
             } else {
                 merged.add(current);
                 current = next;
@@ -250,6 +279,22 @@ public final class RenderedHeatmapSampler {
             return 1.0;
         }
         return Math.abs(offsets.get(1).offsetPx - offsets.get(0).offsetPx);
+    }
+
+    private ProfileStats profileStats(List<OffsetSample> offsets) {
+        if (offsets.isEmpty()) {
+            return new ProfileStats(0.0, 0.0, 0.0);
+        }
+        List<Double> intensities = offsets.stream()
+            .map(OffsetSample::intensity)
+            .sorted()
+            .toList();
+        double maxIntensity = intensities.get(intensities.size() - 1);
+        int lowerQuartileIndex = Math.max(0, Math.min(intensities.size() - 1, (int) Math.floor((intensities.size() - 1) * 0.25)));
+        int medianIndex = Math.max(0, Math.min(intensities.size() - 1, (int) Math.floor((intensities.size() - 1) * 0.50)));
+        double noiseFloor = Math.min(intensities.get(medianIndex) * 0.80, intensities.get(lowerQuartileIndex) * 1.25);
+        noiseFloor = Math.max(0.0, Math.min(noiseFloor, maxIntensity));
+        return new ProfileStats(maxIntensity, noiseFloor, Math.max(0.0, maxIntensity - noiseFloor));
     }
 
     private double intensityAt(BufferedImage image, double x, double y, String colorMode) {
@@ -299,14 +344,18 @@ public final class RenderedHeatmapSampler {
     }
 
     private static double blueRedIntensity(int red, int blue, double hue, double saturation, double luminance, double value) {
-        double redScore = hueAffinity(hue, 350.0, 38.0) * (0.85 + 0.15 * value);
-        double blueScore = hueAffinity(hue, 235.0, 50.0) * (0.20 + 0.38 * (1.0 - luminance));
-        double bridgeScore = hueAffinity(hue, 315.0, 45.0) * (0.75 + 0.25 * value);
-        double coolToWarm = Math.max(0.0, Math.min(1.0, (red - blue + 255.0) / 510.0));
-        return saturation * Math.max(
-            redScore * (0.92 + 0.55 * coolToWarm),
-            Math.max(blueScore * 0.40, bridgeScore * (0.85 + 0.35 * coolToWarm))
-        );
+        double redDominance = Math.max(0.0, red - blue * 0.55) / 255.0;
+        double redScore = Math.max(hueAffinity(hue, 350.0, 40.0), hueAffinity(hue, 8.0, 32.0))
+            * saturation * (0.82 + 0.18 * value) * (1.00 + 0.32 * redDominance);
+        double magentaScore = Math.max(
+            Math.max(hueAffinity(hue, 318.0, 40.0), hueAffinity(hue, 334.0, 34.0)),
+            hueAffinity(hue, 285.0, 42.0) * 0.86)
+            * saturation * (0.72 + 0.28 * value) * (0.95 + 0.25 * redDominance);
+        double darkBlueScore = hueAffinity(hue, 235.0, 52.0)
+            * saturation * (0.34 + 0.26 * value + 0.40 * (1.0 - luminance));
+        double lightBlueScore = Math.max(hueAffinity(hue, 202.0, 42.0), hueAffinity(hue, 216.0, 50.0))
+            * (0.40 + 0.60 * saturation) * (0.20 + 0.34 * luminance + 0.16 * value);
+        return Math.max(redScore, Math.max(magentaScore, Math.max(darkBlueScore * 0.82, lightBlueScore * 0.55)));
     }
 
     private static double blueRedCoolIntensity(
@@ -318,15 +367,17 @@ public final class RenderedHeatmapSampler {
         double luminance,
         double value
     ) {
-        double redScore = hueAffinity(hue, 350.0, 38.0) * (0.85 + 0.15 * value);
-        double magentaScore = hueAffinity(hue, 315.0, 45.0) * (0.72 + 0.28 * value);
+        double redScore = Math.max(hueAffinity(hue, 350.0, 40.0), hueAffinity(hue, 8.0, 32.0))
+            * (0.84 + 0.16 * value);
+        double magentaScore = Math.max(hueAffinity(hue, 318.0, 42.0), hueAffinity(hue, 334.0, 34.0))
+            * (0.72 + 0.28 * value);
         double blueScore = Math.max(hueAffinity(hue, 225.0, 56.0), hueAffinity(hue, 240.0, 48.0))
-            * (0.42 + 0.34 * (1.0 - luminance) + 0.24 * value);
-        double cyanScore = hueAffinity(hue, 198.0, 38.0) * (0.30 + 0.38 * value + 0.20 * saturation);
+            * (0.42 + 0.28 * (1.0 - luminance) + 0.30 * value);
+        double cyanScore = hueAffinity(hue, 198.0, 42.0) * (0.28 + 0.38 * value + 0.24 * saturation);
         double coolness = Math.max(0.0, blue - red * 0.45 - green * 0.05) / 255.0;
         double redWarmth = Math.max(0.0, red - blue * 0.55) / 255.0;
         double warm = Math.max(redScore * (0.95 + 0.35 * redWarmth), magentaScore);
-        double cool = Math.max(blueScore * (0.70 + 0.30 * coolness), cyanScore * 0.82);
+        double cool = Math.max(blueScore * (0.76 + 0.24 * coolness), cyanScore * 0.76);
         return saturation * Math.max(warm, cool);
     }
 
@@ -402,12 +453,27 @@ public final class RenderedHeatmapSampler {
     ) {
     }
 
-    public record CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
+    public record CrossSectionPeak(
+        double offsetPx,
+        double intensity,
+        double supportWidthPx,
+        boolean syntheticCenter,
+        double prominence,
+        double noiseFloor,
+        double maxProfileIntensity
+    ) {
         public CrossSectionPeak(double offsetPx, double intensity) {
             this(offsetPx, intensity, 0.0, false);
+        }
+
+        public CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
+            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity);
         }
     }
 
     private record OffsetSample(double offsetPx, double intensity) {
+    }
+
+    private record ProfileStats(double maxIntensity, double noiseFloor, double maxProminence) {
     }
 }
