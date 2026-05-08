@@ -161,6 +161,7 @@ All actions are under JOSM `More tools`:
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Select Longest Heatmap Segment`: no default shortcut
+- `Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
 - `Export Last Slide Debug Bundle`: `Alt+Ctrl+Shift+D`
 
 ## Debugging And Reporting Bad Slides
@@ -192,6 +193,18 @@ The debug bundle is focused on the latest slide attempt. It includes:
 
 The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
 
+## Palette Calibration Workflow
+
+For color-scheme tuning, use `More tools -> Export Heatmap Calibration Tiles` after selecting the relevant way or way segment. The plugin downloads and exports redacted tile images for the same selected segment across the base Strava color schemes: `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle contains mosaics, source tiles, and tile metadata, but not cookies or signed URLs.
+
+Analyze a calibration bundle or an existing last-slide debug bundle offline:
+
+```bash
+python3 scripts/heatmap-palette-lab.py /path/to/heatmap-calibration.zip --output-dir build/palette-lab --copy-images
+```
+
+The script also accepts image directories and extracted JOSM cache tiles. It writes `images.csv`, `palette-clusters.csv`, and `scheme-summary.csv`; add `--write-pixels` when you need per-color samples for deeper fitting. This is intended to let palette parameters be tuned numerically from real rendered tiles instead of by visual guessing.
+
 ## Private Install Workflow
 
 1. Build the jar on the development machine.
@@ -210,6 +223,7 @@ Helper scripts:
 - `scripts/install-private-plugin.sh`
 - `scripts/package-debug-bundle.sh` for older manual log/tile collection workflows
 - `scripts/analyze-debug-bundles.py` to aggregate exported debug bundles by visible color, detector, subjective rating, SNR, and roughness
+- `scripts/heatmap-palette-lab.py` to extract rendered heatmap palette clusters and current color-to-intensity scores from debug bundles, calibration bundles, or image/cache tile dumps
 
 ## Extract Tiles From JOSM Cache
 

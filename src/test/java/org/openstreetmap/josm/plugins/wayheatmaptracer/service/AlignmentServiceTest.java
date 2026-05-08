@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
@@ -27,6 +29,7 @@ class AlignmentServiceTest {
     @BeforeAll
     static void setPreferences() {
         Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
     @Test
@@ -137,6 +140,16 @@ class AlignmentServiceTest {
         assertEquals(1, result.nodeMoves().size());
         assertEquals(10.0, result.nodeMoves().get(0).target().east(), 1e-9);
         assertEquals(10.0, result.nodeMoves().get(0).target().north(), 1e-9);
+    }
+
+    @Test
+    void blueredVisibleColorPrefersNativeBlueredDetectorsOverGenericCorridorDetectors() {
+        assertTrue(AlignmentService.detectorPrior("bluered", "bluered-combined")
+            > AlignmentService.detectorPrior("bluered", "multi-combined"));
+        assertTrue(AlignmentService.detectorPrior("bluered", "bluered-corridor")
+            > AlignmentService.detectorPrior("bluered", "dual-corridor"));
+        assertTrue(AlignmentService.detectorPrior("bluered", "bluered")
+            > AlignmentService.detectorPrior("bluered", "hot"));
     }
 
     private SelectionContext selection(int nodeCount) {

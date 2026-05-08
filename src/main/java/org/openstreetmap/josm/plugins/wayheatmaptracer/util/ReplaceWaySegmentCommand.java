@@ -2,9 +2,12 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.swing.Icon;
 
@@ -17,9 +20,15 @@ import org.openstreetmap.josm.data.osm.OsmPrimitive;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath.ProjectionOnPolyline;
 import org.openstreetmap.josm.tools.ImageProvider;
 
 public final class ReplaceWaySegmentCommand extends Command {
+    private static final double ANCHOR_MATCH_EPSILON_METERS = 0.01;
+    private static final double SOFT_ANCHOR_SEARCH_FRACTION = 0.08;
+    private static final double SOFT_ANCHOR_SEARCH_METERS = 35.0;
+
     private final Way way;
     private final SelectionContext selection;
     private final List<EastNorth> previewPolyline;
@@ -88,45 +97,68 @@ public final class ReplaceWaySegmentCommand extends Command {
         List<Node> after = new ArrayList<>(originalWayNodes.subList(selection.endIndex() + 1, originalWayNodes.size()));
         List<Node> segmentReplacement = new ArrayList<>();
         List<Node> orderedFixedNodes = orderedFixedNodes();
+        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
+        List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
+        List<Double> previewFractions = PolylineMath.fractionsForSegment(previewPolyline);
+        List<SoftAnchor> softAnchors = softAnchors(sourcePolyline, sourceFractions, previewFractions);
+        Set<Node> softAnchorNodes = new HashSet<>();
+        for (SoftAnchor anchor : softAnchors) {
+            softAnchorNodes.add(anchor.node());
+        }
 
         List<Node> mutableExisting = new ArrayList<>();
         for (int i = 0; i < selection.segmentNodes().size(); i++) {
             Node node = selection.segmentNodes().get(i);
-            if (!selection.fixedNodes().contains(node)) {
+            if (!selection.fixedNodes().contains(node) && !softAnchorNodes.contains(node)) {
                 mutableExisting.add(node);
             }
         }
 
-        int reuseCursor = 0;
         int fixedCursor = 0;
-        Node movableEndNode = selection.fixedNodes().contains(selection.segmentNodes().get(selection.segmentNodes().size() - 1))
-            ? null
-            : selection.segmentNodes().get(selection.segmentNodes().size() - 1);
+        int softCursor = 0;
+        double startBoundary = softAnchors.stream()
+            .filter(anchor -> anchor.node() == selection.segmentNodes().get(0))
+            .mapToDouble(SoftAnchor::fraction)
+            .findFirst()
+            .orElse(0.0);
+        double endBoundary = softAnchors.stream()
+            .filter(anchor -> anchor.node() == selection.segmentNodes().get(selection.segmentNodes().size() - 1))
+            .mapToDouble(SoftAnchor::fraction)
+            .findFirst()
+            .orElse(1.0);
         for (int i = 0; i < previewPolyline.size(); i++) {
             EastNorth target = previewPolyline.get(i);
+            double previewFraction = previewFractions.get(i);
+            if (previewFraction < startBoundary - 1e-9 || previewFraction > endBoundary + 1e-9) {
+                continue;
+            }
+            while (softCursor < softAnchors.size()
+                && softAnchors.get(softCursor).fraction() <= previewFraction + 1e-9) {
+                Node anchorNode = softAnchors.get(softCursor).node();
+                appendNode(segmentReplacement, anchorNode, softAnchors.get(softCursor).target());
+                softCursor++;
+            }
+            if (!segmentReplacement.isEmpty()
+                && segmentReplacement.get(segmentReplacement.size() - 1).getEastNorth(ProjectionRegistry.getProjection()).distance(target)
+                    < ANCHOR_MATCH_EPSILON_METERS) {
+                continue;
+            }
             Node node;
-            if (i == 0 && !selection.fixedNodes().contains(selection.segmentNodes().get(0))) {
-                node = takeMutableNode(mutableExisting, selection.segmentNodes().get(0));
-            } else if (i == previewPolyline.size() - 1
-                && !selection.fixedNodes().contains(selection.segmentNodes().get(selection.segmentNodes().size() - 1))) {
-                node = takeMutableNode(mutableExisting, selection.segmentNodes().get(selection.segmentNodes().size() - 1));
-            } else if (fixedCursor < orderedFixedNodes.size() && matchesFixedAnchor(target, orderedFixedNodes.get(fixedCursor))) {
+            if (fixedCursor < orderedFixedNodes.size() && matchesFixedAnchor(target, orderedFixedNodes.get(fixedCursor))) {
                 node = orderedFixedNodes.get(fixedCursor++);
-            } else if ((node = nextMutableNode(mutableExisting, reuseCursor, movableEndNode)) != null) {
-                reuseCursor = mutableExisting.indexOf(node) + 1;
             } else {
-                node = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(target));
-                createdNodes.add(node);
+                node = nextMutableNode(mutableExisting);
+                if (node == null) {
+                    node = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(target));
+                    createdNodes.add(node);
+                }
             }
 
-            if (!originalNodePositions.containsKey(node)) {
-                originalNodePositions.put(node, node.getCoor());
-            }
-            if (!selection.fixedNodes().contains(node)) {
-                node.setEastNorth(target);
-                node.setModified(true);
-            }
-            segmentReplacement.add(node);
+            appendNode(segmentReplacement, node, target);
+        }
+        while (softCursor < softAnchors.size()) {
+            appendNode(segmentReplacement, softAnchors.get(softCursor).node(), softAnchors.get(softCursor).target());
+            softCursor++;
         }
 
         for (Node dropped : mutableExisting) {
@@ -142,18 +174,10 @@ public final class ReplaceWaySegmentCommand extends Command {
         return nodes;
     }
 
-    private Node takeMutableNode(List<Node> mutableExisting, Node node) {
-        int index = mutableExisting.indexOf(node);
-        if (index >= 0) {
-            mutableExisting.set(index, null);
-        }
-        return node;
-    }
-
-    private Node nextMutableNode(List<Node> mutableExisting, int startIndex, Node reservedEndNode) {
-        for (int i = Math.max(0, startIndex); i < mutableExisting.size(); i++) {
+    private Node nextMutableNode(List<Node> mutableExisting) {
+        for (int i = 0; i < mutableExisting.size(); i++) {
             Node node = mutableExisting.get(i);
-            if (node != null && node != reservedEndNode) {
+            if (node != null) {
                 mutableExisting.set(i, null);
                 return node;
             }
@@ -163,6 +187,65 @@ public final class ReplaceWaySegmentCommand extends Command {
 
     private boolean canRemoveDroppedNode(Node node) {
         return !node.hasKeys() && node.getReferrers().isEmpty();
+    }
+
+    private void appendNode(List<Node> segmentReplacement, Node node, EastNorth target) {
+        if (!segmentReplacement.isEmpty() && segmentReplacement.get(segmentReplacement.size() - 1) == node) {
+            return;
+        }
+        if (!originalNodePositions.containsKey(node)) {
+            originalNodePositions.put(node, node.getCoor());
+        }
+        if (!selection.fixedNodes().contains(node)) {
+            node.setEastNorth(target);
+            node.setModified(true);
+        }
+        segmentReplacement.add(node);
+    }
+
+    private List<SoftAnchor> softAnchors(
+        List<EastNorth> sourcePolyline,
+        List<Double> sourceFractions,
+        List<Double> previewFractions
+    ) {
+        if (previewPolyline.size() < 2) {
+            return List.of();
+        }
+        List<SoftAnchor> anchors = new ArrayList<>();
+        int last = selection.segmentNodes().size() - 1;
+        double previewLength = PolylineMath.length(previewPolyline);
+        double window = Math.max(SOFT_ANCHOR_SEARCH_FRACTION, SOFT_ANCHOR_SEARCH_METERS / Math.max(1.0, previewLength));
+        for (int i = 0; i < selection.segmentNodes().size(); i++) {
+            Node node = selection.segmentNodes().get(i);
+            if (selection.fixedNodes().contains(node) || !isSoftAnchor(node, i, last)) {
+                continue;
+            }
+            ProjectionOnPolyline projection = PolylineMath.closestPointNearFraction(
+                previewPolyline,
+                previewFractions,
+                sourcePolyline.get(i),
+                sourceFractions.get(i),
+                window
+            );
+            anchors.add(new SoftAnchor(node, projection.point(), projection.fraction()));
+        }
+        anchors.sort(Comparator.comparingDouble(SoftAnchor::fraction));
+        return anchors;
+    }
+
+    private boolean isSoftAnchor(Node node, int index, int last) {
+        if (index == 0 || index == last || node.hasKeys()) {
+            return true;
+        }
+        return node.getReferrers().stream().anyMatch(referrer -> referrer != way);
+    }
+
+    private List<EastNorth> toEastNorth(List<Node> nodes) {
+        List<EastNorth> result = new ArrayList<>(nodes.size());
+        for (Node node : nodes) {
+            result.add(node.getEastNorth(ProjectionRegistry.getProjection()));
+        }
+        return result;
     }
 
     private List<Node> orderedFixedNodes() {
@@ -177,7 +260,7 @@ public final class ReplaceWaySegmentCommand extends Command {
 
     private boolean matchesFixedAnchor(EastNorth target, Node node) {
         EastNorth anchor = node.getEastNorth(ProjectionRegistry.getProjection());
-        return anchor != null && anchor.distance(target) < 0.01;
+        return anchor != null && anchor.distance(target) < ANCHOR_MATCH_EPSILON_METERS;
     }
 
     @Override
@@ -206,4 +289,8 @@ public final class ReplaceWaySegmentCommand extends Command {
         primitives.addAll(createdNodes);
         return primitives;
     }
+
+    private record SoftAnchor(Node node, EastNorth target, double fraction) {
+    }
+
 }

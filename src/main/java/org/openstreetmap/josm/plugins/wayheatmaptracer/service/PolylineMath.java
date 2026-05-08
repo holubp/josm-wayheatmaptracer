@@ -48,6 +48,104 @@ public final class PolylineMath {
         return new Point2D.Double(x / norm, y / norm);
     }
 
+    public static List<Double> fractionsForSegment(List<EastNorth> polyline) {
+        if (polyline.isEmpty()) {
+            return List.of();
+        }
+        List<Double> fractions = new ArrayList<>(polyline.size());
+        double total = 0.0;
+        double[] cumulative = new double[polyline.size()];
+        cumulative[0] = 0.0;
+        for (int i = 1; i < polyline.size(); i++) {
+            total += polyline.get(i - 1).distance(polyline.get(i));
+            cumulative[i] = total;
+        }
+        if (total == 0.0) {
+            for (int i = 0; i < polyline.size(); i++) {
+                fractions.add(i == polyline.size() - 1 ? 1.0 : 0.0);
+            }
+            return fractions;
+        }
+        for (double value : cumulative) {
+            fractions.add(value / total);
+        }
+        return fractions;
+    }
+
+    public static EastNorth interpolateAtFraction(List<EastNorth> polyline, List<Double> fractions, double targetFraction) {
+        if (targetFraction <= 0.0) {
+            return polyline.get(0);
+        }
+        if (targetFraction >= 1.0) {
+            return polyline.get(polyline.size() - 1);
+        }
+        for (int i = 1; i < polyline.size(); i++) {
+            double left = fractions.get(i - 1);
+            double right = fractions.get(i);
+            if (targetFraction <= right) {
+                double span = right - left;
+                double t = span == 0.0 ? 0.0 : (targetFraction - left) / span;
+                EastNorth start = polyline.get(i - 1);
+                EastNorth end = polyline.get(i);
+                return new EastNorth(
+                    start.east() + (end.east() - start.east()) * t,
+                    start.north() + (end.north() - start.north()) * t
+                );
+            }
+        }
+        return polyline.get(polyline.size() - 1);
+    }
+
+    public static ProjectionOnPolyline closestPointNearFraction(
+        List<EastNorth> polyline,
+        List<Double> fractions,
+        EastNorth source,
+        double sourceFraction,
+        double window
+    ) {
+        double minFraction = Math.max(0.0, sourceFraction - window);
+        double maxFraction = Math.min(1.0, sourceFraction + window);
+        ProjectionOnPolyline best = null;
+        for (int i = 1; i < polyline.size(); i++) {
+            double leftFraction = fractions.get(i - 1);
+            double rightFraction = fractions.get(i);
+            if (rightFraction < minFraction || leftFraction > maxFraction) {
+                continue;
+            }
+            ProjectionOnPolyline projected = projectToSegment(polyline.get(i - 1), polyline.get(i), leftFraction, rightFraction, source);
+            if (projected.fraction() < minFraction || projected.fraction() > maxFraction) {
+                continue;
+            }
+            if (best == null || projected.distance() < best.distance()) {
+                best = projected;
+            }
+        }
+        if (best != null) {
+            return best;
+        }
+        EastNorth fallback = interpolateAtFraction(polyline, fractions, sourceFraction);
+        return new ProjectionOnPolyline(fallback, sourceFraction, fallback.distance(source));
+    }
+
+    private static ProjectionOnPolyline projectToSegment(
+        EastNorth start,
+        EastNorth end,
+        double leftFraction,
+        double rightFraction,
+        EastNorth source
+    ) {
+        double dx = end.east() - start.east();
+        double dy = end.north() - start.north();
+        double lengthSquared = dx * dx + dy * dy;
+        double t = lengthSquared == 0.0
+            ? 0.0
+            : ((source.east() - start.east()) * dx + (source.north() - start.north()) * dy) / lengthSquared;
+        t = Math.max(0.0, Math.min(1.0, t));
+        EastNorth point = new EastNorth(start.east() + dx * t, start.north() + dy * t);
+        double fraction = leftFraction + (rightFraction - leftFraction) * t;
+        return new ProjectionOnPolyline(point, fraction, point.distance(source));
+    }
+
     private static EastNorth interpolate(List<EastNorth> polyline, double targetDistance) {
         double walked = 0.0;
         for (int i = 1; i < polyline.size(); i++) {
@@ -66,12 +164,14 @@ public final class PolylineMath {
         return polyline.get(polyline.size() - 1);
     }
 
-    private static double length(List<EastNorth> polyline) {
+    public static double length(List<EastNorth> polyline) {
         double total = 0.0;
         for (int i = 1; i < polyline.size(); i++) {
             total += polyline.get(i - 1).distance(polyline.get(i));
         }
         return total;
     }
-}
 
+    public record ProjectionOnPolyline(EastNorth point, double fraction, double distance) {
+    }
+}

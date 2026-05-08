@@ -18,6 +18,14 @@ python3 scripts/analyze-debug-bundles.py /path/to/debug-bundles --raw-csv build/
 
 The script expects exported last-slide debug bundles. It reads `candidate-metrics.csv` and `candidate-ratings.json`, then groups detector performance by visible color, intensity source, subjective rating, SNR, gradient evidence, longitudinal stability, roughness, and negative feature tags.
 
+Rendered palette samples can be collected from debug bundles, calibration tile bundles, extracted JOSM cache tiles, or plain image directories with:
+
+```bash
+python3 scripts/heatmap-palette-lab.py /path/to/images-or-bundles --output-dir build/palette-lab --copy-images
+```
+
+Use `More tools -> Export Heatmap Calibration Tiles` in JOSM to create a redacted tile bundle for the selected way/segment across `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle must not contain cookies, signed headers, or signed URLs. Use the palette lab outputs to tune color-to-intensity transformations numerically, then cover any palette behavior changes with fixture or ridge-tracker tests.
+
 ## Release Versioning
 
 Keep releases on `0.x.x` until the maintainer explicitly says the plugin is suitable for broader use by others. Do not use a patch release for changes that add user-visible features, settings, workflow changes, or architecture changes.

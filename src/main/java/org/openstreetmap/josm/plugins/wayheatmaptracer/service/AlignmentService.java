@@ -54,6 +54,8 @@ public final class AlignmentService {
     private static final int MAX_EFFECTIVE_HALF_WIDTH_PX = 120;
     private static final int MIN_EFFECTIVE_STEP_PX = 1;
     private static final int MAX_EFFECTIVE_STEP_PX = 32;
+    private static final double LOCAL_NODE_SEARCH_FRACTION = 0.08;
+    private static final double LOCAL_NODE_SEARCH_METERS = 35.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
@@ -75,6 +77,7 @@ public final class AlignmentService {
         PluginLog.verbose("Alignment mode=%s simplify=%s tolerance=%.2f multiColor=%s renderedLayerZoom=%s.",
             config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
             config.multiColorDetection(), renderedZoomSummary(imageryLayer));
+        PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
 
         long t0 = System.nanoTime();
         BufferedImage raster = sampler.captureLayer(imageryLayer, mapView);
@@ -279,7 +282,7 @@ public final class AlignmentService {
         return config.color().trim().toLowerCase(Locale.ROOT);
     }
 
-    private double detectorPrior(String visibleColor, String detector) {
+    static double detectorPrior(String visibleColor, String detector) {
         return switch (visibleColor) {
             case "hot" -> switch (detector) {
                 case "hot-corridor" -> 1.00;
@@ -291,18 +294,21 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "bluered" -> switch (detector) {
-                case "bluered-combined" -> 1.12;
-                case "bluered-corridor" -> 1.00;
-                case "bluered-cool" -> 0.90;
-                case "multi-combined" -> 0.74;
-                case "dual-corridor" -> 0.68;
-                case "hot-corridor" -> 0.45;
-                case "blue" -> 0.05;
-                case "bluered" -> 0.0;
-                case "dual" -> -0.05;
-                case "hot" -> -0.15;
-                case "gray", "gray-strict", "purple", "hot-strict" -> -0.30;
-                default -> -0.05;
+                case "bluered-combined" -> 1.18;
+                case "bluered-corridor" -> 1.08;
+                case "bluered-cool" -> 1.00;
+                case "bluered" -> 0.82;
+                case "gray-combined" -> -0.05;
+                case "gray-corridor" -> -0.12;
+                case "gray", "gray-magenta" -> -0.18;
+                case "blue" -> -0.25;
+                case "multi-combined" -> -0.55;
+                case "dual-corridor", "dual" -> -0.65;
+                case "hot-corridor" -> -0.75;
+                case "hot" -> -1.10;
+                case "hot-strict" -> -1.25;
+                case "gray-strict", "purple", "purple-strict" -> -0.70;
+                default -> -0.40;
             };
             case "blue" -> switch (detector) {
                 case "dual-corridor" -> 1.00;
@@ -493,14 +499,28 @@ public final class AlignmentService {
             return moves;
         }
 
+        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<EastNorth> samples;
         if (preview.size() == selection.segmentNodes().size()) {
             samples = preview;
             PluginLog.debug("Applying node moves directly from preview points without resampling.");
         } else {
-            samples = PolylineMath.resampleByCount(preview, selection.segmentNodes().size());
-            PluginLog.debug("Resampled preview from %d to %d points for node move interpolation.",
-                preview.size(), selection.segmentNodes().size());
+            List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
+            List<Double> previewFractions = PolylineMath.fractionsForSegment(preview);
+            double previewLength = PolylineMath.length(preview);
+            double window = Math.max(LOCAL_NODE_SEARCH_FRACTION, LOCAL_NODE_SEARCH_METERS / Math.max(1.0, previewLength));
+            samples = new ArrayList<>(selection.segmentNodes().size());
+            for (int i = 0; i < selection.segmentNodes().size(); i++) {
+                samples.add(PolylineMath.closestPointNearFraction(
+                    preview,
+                    previewFractions,
+                    sourcePolyline.get(i),
+                    sourceFractions.get(i),
+                    window
+                ).point());
+            }
+            PluginLog.debug("Mapped %d source nodes to local preview projections from %d preview points for node move diagnostics.",
+                selection.segmentNodes().size(), preview.size());
         }
         List<Node> segmentNodes = selection.segmentNodes();
 
@@ -578,8 +598,8 @@ public final class AlignmentService {
     }
 
     private List<EastNorth> moveExistingNodesPreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {
-        List<Double> sourceFractions = fractionsForSegment(sourcePolyline);
-        List<Double> centerlineFractions = fractionsForSegment(working);
+        List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
+        List<Double> centerlineFractions = PolylineMath.fractionsForSegment(working);
         List<EastNorth> result = new ArrayList<>(selection.segmentNodes().size());
         for (int i = 0; i < selection.segmentNodes().size(); i++) {
             EastNorth sourcePoint = sourcePolyline.get(i);
@@ -590,7 +610,7 @@ public final class AlignmentService {
                 continue;
             }
             double fraction = sourceFractions.get(i);
-            EastNorth projected = interpolateAtFraction(working, centerlineFractions, fraction);
+            EastNorth projected = PolylineMath.interpolateAtFraction(working, centerlineFractions, fraction);
             result.add(projected);
             PluginLog.debug("MoveMode[%d] node=%d fraction=%.5f source=(%.3f,%.3f) centerline=(%.3f,%.3f)",
                 i,
@@ -604,8 +624,8 @@ public final class AlignmentService {
 
     private List<EastNorth> preciseShapePreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {
         List<Integer> fixedIndices = fixedIndices(selection);
-        List<Double> sourceFractions = fractionsForSegment(sourcePolyline);
-        List<Double> workingFractions = fractionsForSegment(working);
+        List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
+        List<Double> workingFractions = PolylineMath.fractionsForSegment(working);
         if (selection.fixedNodes().isEmpty()) {
             PluginLog.verbose("Precise-shape preview has no fixed anchors; using traced centerline endpoints.");
             return new ArrayList<>(working);
@@ -745,51 +765,6 @@ public final class AlignmentService {
             indices.add(last);
         }
         return indices;
-    }
-
-    private List<Double> fractionsForSegment(List<EastNorth> polyline) {
-        List<Double> fractions = new ArrayList<>(polyline.size());
-        double total = 0.0;
-        double[] cumulative = new double[polyline.size()];
-        cumulative[0] = 0.0;
-        for (int i = 1; i < polyline.size(); i++) {
-            total += polyline.get(i - 1).distance(polyline.get(i));
-            cumulative[i] = total;
-        }
-        if (total == 0.0) {
-            for (int i = 0; i < polyline.size(); i++) {
-                fractions.add(i == polyline.size() - 1 ? 1.0 : 0.0);
-            }
-            return fractions;
-        }
-        for (double value : cumulative) {
-            fractions.add(value / total);
-        }
-        return fractions;
-    }
-
-    private EastNorth interpolateAtFraction(List<EastNorth> polyline, List<Double> fractions, double targetFraction) {
-        if (targetFraction <= 0.0) {
-            return polyline.get(0);
-        }
-        if (targetFraction >= 1.0) {
-            return polyline.get(polyline.size() - 1);
-        }
-        for (int i = 1; i < polyline.size(); i++) {
-            double left = fractions.get(i - 1);
-            double right = fractions.get(i);
-            if (targetFraction <= right) {
-                double span = right - left;
-                double t = span == 0.0 ? 0.0 : (targetFraction - left) / span;
-                EastNorth start = polyline.get(i - 1);
-                EastNorth end = polyline.get(i);
-                return new EastNorth(
-                    start.east() + (end.east() - start.east()) * t,
-                    start.north() + (end.north() - start.north()) * t
-                );
-            }
-        }
-        return polyline.get(polyline.size() - 1);
     }
 
     private double turningAngleDegrees(EastNorth previous, EastNorth current, EastNorth next) {
