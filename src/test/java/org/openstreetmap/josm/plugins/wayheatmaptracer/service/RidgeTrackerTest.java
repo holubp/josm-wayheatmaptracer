@@ -26,6 +26,25 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void keepsLongitudinallyPersistentParallelModesDistinct() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profile(0, -10, 0.62, 10, 0.58),
+            profile(10, -10, 0.61, 10, 0.59),
+            profile(20, -10, 0.63, 10, 0.57),
+            profile(30, -10, 0.62, 10, 0.58),
+            profile(40, -10, 0.61, 10, 0.59)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.stream().anyMatch(candidate -> meanOffset(candidate.offsetsPx()) < -6.0),
+            "A persistent left mode should remain available as a separate candidate");
+        assertTrue(candidates.stream().anyMatch(candidate -> meanOffset(candidate.offsetsPx()) > 6.0),
+            "A persistent right mode should remain available as a separate candidate");
+    }
+
+    @Test
     void resistsOneOffJumpToStrayPeak() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
@@ -178,6 +197,24 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void suppressesNonPersistentMultimodalNoiseBesideStableCenter() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profile(0, 0, 0.62),
+            profile(10, 0, 0.48, 14, 0.98),
+            profile(20, 0, 0.48, -16, 0.97),
+            profile(30, 0, 0.48, 18, 0.96),
+            profile(40, 0, 0.62)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        assertTrue(candidates.get(0).offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0) <= 5.0,
+            "Cross-section multimodality should be ignored when side modes are not longitudinally consistent");
+    }
+
+    @Test
     void suppressesWanderingOutlierStrandsBesideStrongCenter() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
@@ -311,5 +348,9 @@ class RidgeTrackerTest {
             new Point2D.Double(0, 1),
             List.of()
         );
+    }
+
+    private double meanOffset(List<Double> offsets) {
+        return offsets.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
     }
 }

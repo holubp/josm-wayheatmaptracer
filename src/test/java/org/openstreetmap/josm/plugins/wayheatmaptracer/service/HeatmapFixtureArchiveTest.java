@@ -162,6 +162,45 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void combinedDetectorIntensityIsWeightedBeforeRidgeExtraction() {
+        int red = 255;
+        int green = 70;
+        int blue = 110;
+
+        double combined = RenderedHeatmapSampler.colorIntensity(red, green, blue, "bluered-combined");
+        double expected = weightedComponentIntensity(red, green, blue, "bluered-combined");
+
+        assertTrue(RenderedHeatmapSampler.isCombinedColorMode("bluered-combined"));
+        assertEquals(expected, combined, 1e-12,
+            "Combined detectors must fuse color-to-intensity mappings before profile peak extraction");
+        assertTrue(RenderedHeatmapSampler.intensityComponents("bluered-combined").size() > 1,
+            "Combined detector diagnostics should expose component mappings");
+    }
+
+    @Test
+    void combinedDetectorProfilesAreSampledFromFusedIntensityField() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            image.setRGB(x, 20, 0xFFFF466E);
+            image.setRGB(x, 26, 0xFF326EFF);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "bluered-combined",
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 1.0 && peak.intensity() > 0.35)),
+            "The fused intensity field should preserve the warm center before ridge tracking");
+    }
+
+    @Test
     void noSignalProfilesExposeZeroOffsetFallbackPeaks() {
         BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
 
@@ -283,5 +322,15 @@ class HeatmapFixtureArchiveTest {
         double luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0;
         double value = Math.max(red, Math.max(green, blue)) / 255.0;
         return 0.85 * luminance + 0.15 * value;
+    }
+
+    private static double weightedComponentIntensity(int red, int green, int blue, String colorMode) {
+        double total = 0.0;
+        double weight = 0.0;
+        for (RenderedHeatmapSampler.IntensityComponent component : RenderedHeatmapSampler.intensityComponents(colorMode)) {
+            total += component.weight() * RenderedHeatmapSampler.colorIntensity(red, green, blue, component.mode());
+            weight += component.weight();
+        }
+        return total / weight;
     }
 }

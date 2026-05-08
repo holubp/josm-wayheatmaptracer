@@ -15,6 +15,7 @@ public final class RidgeTracker {
         if (profiles.isEmpty()) {
             return List.of();
         }
+        profiles = suppressLongitudinalNoise(profiles);
 
         List<Double> seeds = collectSeedOffsets(profiles);
         List<CenterlineCandidate> candidates = new ArrayList<>();
@@ -41,6 +42,93 @@ public final class RidgeTracker {
         return deduplicate(candidates).stream()
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+    }
+
+    private List<RenderedHeatmapSampler.CrossSectionProfile> suppressLongitudinalNoise(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles
+    ) {
+        if (profiles.size() < 4) {
+            return profiles;
+        }
+        List<RenderedHeatmapSampler.CrossSectionProfile> filtered = new ArrayList<>(profiles.size());
+        for (int i = 0; i < profiles.size(); i++) {
+            RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
+            List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profile.peaks();
+            if (peaks.size() <= 1) {
+                filtered.add(profile);
+                continue;
+            }
+            double strongest = peaks.stream()
+                .mapToDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity)
+                .max()
+                .orElse(0.0);
+            int profileIndex = i;
+            boolean hasPersistentCompetitor = peaks.stream()
+                .anyMatch(peak -> longitudinalSupport(profiles, profileIndex, peak)
+                    >= requiredLongitudinalSupport(profiles.size(), profileIndex));
+            List<RenderedHeatmapSampler.CrossSectionPeak> retained = new ArrayList<>();
+            for (RenderedHeatmapSampler.CrossSectionPeak peak : peaks) {
+                int support = longitudinalSupport(profiles, i, peak);
+                boolean persistent = support >= requiredLongitudinalSupport(profiles.size(), i);
+                boolean dominantWithoutAlternative = !hasPersistentCompetitor && peak.intensity() >= strongest * 0.98;
+                boolean broadSyntheticCenter = peak.syntheticCenter() && peak.supportWidthPx() >= 8.0 && support >= 1;
+                if (persistent || dominantWithoutAlternative || broadSyntheticCenter) {
+                    retained.add(peak);
+                }
+            }
+            if (retained.isEmpty()) {
+                retained.add(peaks.stream()
+                    .max(Comparator.comparingDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity))
+                    .orElse(peaks.get(0)));
+            }
+            filtered.add(new RenderedHeatmapSampler.CrossSectionProfile(
+                profile.anchor(),
+                profile.anchorScreen(),
+                profile.normalScreen(),
+                retained
+            ));
+        }
+        return filtered;
+    }
+
+    private int requiredLongitudinalSupport(int profileCount, int profileIndex) {
+        if (profileIndex == 0 || profileIndex == profileCount - 1) {
+            return 1;
+        }
+        return profileCount <= 4 ? 1 : 2;
+    }
+
+    private int longitudinalSupport(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        int profileIndex,
+        RenderedHeatmapSampler.CrossSectionPeak peak
+    ) {
+        int support = 0;
+        int start = Math.max(0, profileIndex - 2);
+        int end = Math.min(profiles.size() - 1, profileIndex + 2);
+        for (int i = start; i <= end; i++) {
+            if (i == profileIndex) {
+                continue;
+            }
+            if (hasNearbyPeak(profiles.get(i), peak)) {
+                support++;
+            }
+        }
+        return support;
+    }
+
+    private boolean hasNearbyPeak(
+        RenderedHeatmapSampler.CrossSectionProfile profile,
+        RenderedHeatmapSampler.CrossSectionPeak target
+    ) {
+        double tolerance = Math.max(6.0, Math.min(12.0, Math.max(2.0, target.supportWidthPx()) * 1.5));
+        double minimumIntensity = Math.max(0.10, target.intensity() * 0.35);
+        for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
+            if (Math.abs(peak.offsetPx() - target.offsetPx()) <= tolerance && peak.intensity() >= minimumIntensity) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private State bestPathForSeed(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double seed) {

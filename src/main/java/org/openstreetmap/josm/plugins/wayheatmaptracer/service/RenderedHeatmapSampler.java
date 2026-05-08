@@ -323,6 +323,22 @@ public final class RenderedHeatmapSampler {
         double hue = hsv[0] * 360.0;
 
         String mode = colorMode == null ? "hot" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
+        if (isCombinedColorMode(mode)) {
+            return combinedIntensity(red, green, blue, hue, saturation, luminance, value, mode);
+        }
+        return singleColorIntensity(red, green, blue, hue, saturation, luminance, value, mode);
+    }
+
+    private static double singleColorIntensity(
+        int red,
+        int green,
+        int blue,
+        double hue,
+        double saturation,
+        double luminance,
+        double value,
+        String mode
+    ) {
         return switch (mode) {
             case "bluered" -> blueRedIntensity(red, blue, hue, saturation, luminance, value);
             case "bluered-cool" -> blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value);
@@ -340,6 +356,63 @@ public final class RenderedHeatmapSampler {
             case "hot-strict" -> Math.pow(0.85 * luminance + 0.15 * value, 1.35);
             case "hot" -> 0.85 * luminance + 0.15 * value;
             default -> 0.85 * luminance + 0.15 * value;
+        };
+    }
+
+    private static double combinedIntensity(
+        int red,
+        int green,
+        int blue,
+        double hue,
+        double saturation,
+        double luminance,
+        double value,
+        String mode
+    ) {
+        List<IntensityComponent> components = intensityComponents(mode);
+        double weighted = 0.0;
+        double totalWeight = 0.0;
+        for (IntensityComponent component : components) {
+            weighted += component.weight()
+                * singleColorIntensity(red, green, blue, hue, saturation, luminance, value, component.mode());
+            totalWeight += component.weight();
+        }
+        if (totalWeight <= 0.0) {
+            return 0.0;
+        }
+        return Math.min(1.0, Math.max(0.0, weighted / totalWeight));
+    }
+
+    static boolean isCombinedColorMode(String colorMode) {
+        String mode = colorMode == null ? "" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
+        return "bluered-combined".equals(mode)
+            || "gray-combined".equals(mode)
+            || "multi-combined".equals(mode);
+    }
+
+    static List<IntensityComponent> intensityComponents(String colorMode) {
+        String mode = colorMode == null ? "" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case "bluered-combined" -> List.of(
+                new IntensityComponent("bluered", 0.42),
+                new IntensityComponent("bluered-cool", 0.24),
+                new IntensityComponent("bluered-corridor", 0.22),
+                new IntensityComponent("dual-corridor", 0.12)
+            );
+            case "gray-combined" -> List.of(
+                new IntensityComponent("gray", 0.40),
+                new IntensityComponent("gray-magenta", 0.25),
+                new IntensityComponent("gray-corridor", 0.23),
+                new IntensityComponent("dual-corridor", 0.12)
+            );
+            case "multi-combined" -> List.of(
+                new IntensityComponent("dual-corridor", 0.30),
+                new IntensityComponent("bluered-corridor", 0.25),
+                new IntensityComponent("gray-corridor", 0.20),
+                new IntensityComponent("hot-corridor", 0.15),
+                new IntensityComponent("blue", 0.10)
+            );
+            default -> List.of(new IntensityComponent(mode.isBlank() ? "hot" : mode, 1.0));
         };
     }
 
@@ -475,5 +548,8 @@ public final class RenderedHeatmapSampler {
     }
 
     private record ProfileStats(double maxIntensity, double noiseFloor, double maxProminence) {
+    }
+
+    public record IntensityComponent(String mode, double weight) {
     }
 }

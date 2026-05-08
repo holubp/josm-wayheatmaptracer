@@ -42,7 +42,10 @@ public final class AlignmentService {
         "bluered-corridor",
         "dual-corridor",
         "gray-strict",
-        "purple-strict"
+        "purple-strict",
+        "bluered-combined",
+        "gray-combined",
+        "multi-combined"
     );
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
     private static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
@@ -178,9 +181,9 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
-            "detector,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,synthetic_center\n");
+            "detector,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,profile_index,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,peak_count,synthetic_center_count\n");
+            "detector,components,profile_index,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,peak_count,synthetic_center_count\n");
         int modeIndex = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
@@ -268,8 +271,10 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "bluered" -> switch (detector) {
+                case "bluered-combined" -> 1.12;
                 case "bluered-corridor" -> 1.00;
                 case "bluered-cool" -> 0.90;
+                case "multi-combined" -> 0.74;
                 case "dual-corridor" -> 0.68;
                 case "hot-corridor" -> 0.45;
                 case "blue" -> 0.05;
@@ -289,6 +294,8 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "gray" -> switch (detector) {
+                case "gray-combined" -> 1.10;
+                case "multi-combined" -> 0.82;
                 case "blue" -> 1.00;
                 case "dual-corridor" -> 0.75;
                 case "gray-corridor" -> 0.65;
@@ -307,6 +314,8 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             default -> switch (detector) {
+                case "multi-combined" -> 0.72;
+                case "bluered-combined", "gray-combined" -> 0.62;
                 case "hot-corridor", "dual-corridor" -> 0.60;
                 case "bluered-corridor", "bluered-cool", "gray-corridor" -> 0.50;
                 case "gray-magenta" -> 0.35;
@@ -317,6 +326,8 @@ public final class AlignmentService {
 
     private double globalDetectorAdjustment(String detector) {
         return switch (detector) {
+            case "bluered-combined", "gray-combined" -> 0.22;
+            case "multi-combined" -> 0.18;
             case "hot-corridor" -> 0.25;
             case "dual-corridor" -> 0.20;
             case "bluered-corridor" -> 0.15;
@@ -939,6 +950,8 @@ public final class AlignmentService {
             .append("\"maxPeaksPerProfile\":").append(maxPeaks).append(',')
             .append("\"maxIntensity\":").append(maxIntensity).append(',')
             .append("\"meanStrongestIntensity\":").append(meanStrongest).append(',')
+            .append("\"combinedIntensity\":").append(RenderedHeatmapSampler.isCombinedColorMode(colorMode)).append(',')
+            .append("\"intensityComponents\":").append(intensityComponentsJson(colorMode)).append(',')
             .append("\"candidateSummaries\":").append(colorCandidateSummariesJson(colorCandidates)).append(',')
             .append("\"profiles\":[");
         for (int i = 0; i < profiles.size(); i++) {
@@ -956,6 +969,22 @@ public final class AlignmentService {
                 .append('}');
         }
         return builder.append("]}").toString();
+    }
+
+    private String intensityComponentsJson(String colorMode) {
+        StringBuilder builder = new StringBuilder("[");
+        List<RenderedHeatmapSampler.IntensityComponent> components = RenderedHeatmapSampler.intensityComponents(colorMode);
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            RenderedHeatmapSampler.IntensityComponent component = components.get(i);
+            builder.append('{')
+                .append("\"mode\":\"").append(jsonEscape(component.mode())).append("\",")
+                .append("\"weight\":").append(format(component.weight()))
+                .append('}');
+        }
+        return builder.append(']').toString();
     }
 
     private String colorCandidateSummariesJson(List<CenterlineCandidate> candidates) {
@@ -1004,11 +1033,13 @@ public final class AlignmentService {
         String colorMode,
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles
     ) {
+        String components = intensityComponentsCsv(colorMode);
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profiles.get(profileIndex).peaks();
             for (int peakIndex = 0; peakIndex < peaks.size(); peakIndex++) {
                 RenderedHeatmapSampler.CrossSectionPeak peak = peaks.get(peakIndex);
                 builder.append(csv(colorMode)).append(',')
+                    .append(csv(components)).append(',')
                     .append(profileIndex).append(',')
                     .append(peakIndex).append(',')
                     .append(format(peak.offsetPx())).append(',')
@@ -1028,6 +1059,7 @@ public final class AlignmentService {
         String colorMode,
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles
     ) {
+        String components = intensityComponentsCsv(colorMode);
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks = profiles.get(profileIndex).peaks();
             RenderedHeatmapSampler.CrossSectionPeak strongest = peaks.stream()
@@ -1035,6 +1067,7 @@ public final class AlignmentService {
                 .orElse(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0));
             long syntheticCount = peaks.stream().filter(RenderedHeatmapSampler.CrossSectionPeak::syntheticCenter).count();
             builder.append(csv(colorMode)).append(',')
+                .append(csv(components)).append(',')
                 .append(profileIndex).append(',')
                 .append(format(strongest.intensity())).append(',')
                 .append(format(strongest.prominence())).append(',')
@@ -1044,6 +1077,12 @@ public final class AlignmentService {
                 .append(syntheticCount)
                 .append('\n');
         }
+    }
+
+    private String intensityComponentsCsv(String colorMode) {
+        return RenderedHeatmapSampler.intensityComponents(colorMode).stream()
+            .map(component -> component.mode() + ":" + format(component.weight()))
+            .collect(java.util.stream.Collectors.joining(";"));
     }
 
     private String candidateMetricsCsv(
