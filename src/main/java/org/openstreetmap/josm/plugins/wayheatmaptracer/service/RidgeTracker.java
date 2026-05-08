@@ -36,7 +36,7 @@ public final class RidgeTracker {
                 ));
             }
             candidates.add(new CenterlineCandidate("ridge-" + candidateIndex++, state.score(), points, smoothedOffsets)
-                .withEvidence(evidenceFor(profiles, intensities)));
+                .withEvidence(evidenceFor(profiles, smoothedOffsets, intensities)));
         }
 
         return deduplicate(candidates).stream()
@@ -72,7 +72,8 @@ public final class RidgeTracker {
                 boolean persistent = support >= requiredLongitudinalSupport(profiles.size(), i);
                 boolean dominantWithoutAlternative = !hasPersistentCompetitor && peak.intensity() >= strongest * 0.98;
                 boolean broadSyntheticCenter = peak.syntheticCenter() && peak.supportWidthPx() >= 8.0 && support >= 1;
-                if (persistent || dominantWithoutAlternative || broadSyntheticCenter) {
+                boolean gradientBacked = peak.gradientStrength() >= 0.18 && peak.gradientBalance() >= 0.35 && support >= 1;
+                if (persistent || dominantWithoutAlternative || broadSyntheticCenter || gradientBacked) {
                     retained.add(peak);
                 }
             }
@@ -124,7 +125,10 @@ public final class RidgeTracker {
         double tolerance = Math.max(6.0, Math.min(12.0, Math.max(2.0, target.supportWidthPx()) * 1.5));
         double minimumIntensity = Math.max(0.10, target.intensity() * 0.35);
         for (RenderedHeatmapSampler.CrossSectionPeak peak : profile.peaks()) {
-            if (Math.abs(peak.offsetPx() - target.offsetPx()) <= tolerance && peak.intensity() >= minimumIntensity) {
+            boolean intensityBacked = peak.intensity() >= minimumIntensity;
+            boolean gradientBacked = Math.min(peak.gradientStrength(), target.gradientStrength()) >= 0.12
+                && Math.min(peak.gradientBalance(), target.gradientBalance()) >= 0.25;
+            if (Math.abs(peak.offsetPx() - target.offsetPx()) <= tolerance && (intensityBacked || gradientBacked)) {
                 return true;
             }
         }
@@ -164,7 +168,8 @@ public final class RidgeTracker {
     private State append(State previous, RenderedHeatmapSampler.CrossSectionPeak peak) {
         double delta = peak.offsetPx() - previous.offset();
         double acceleration = delta - previous.delta();
-        double evidence = peak.intensity() * 2.5;
+        double evidence = peak.intensity() * 2.25
+            + peak.gradientStrength() * (0.22 + 0.18 * peak.gradientBalance());
         double continuityPenalty = Math.abs(delta) * 0.16;
         double curvaturePenalty = Math.abs(acceleration) * 0.12;
         List<Double> offsets = new ArrayList<>(previous.offsets());
@@ -251,7 +256,11 @@ public final class RidgeTracker {
         return current;
     }
 
-    private CandidateEvidence evidenceFor(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, List<Double> intensities) {
+    private CandidateEvidence evidenceFor(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> offsets,
+        List<Double> intensities
+    ) {
         int supported = 0;
         int empty = 0;
         int maxEmpty = 0;
@@ -259,6 +268,8 @@ public final class RidgeTracker {
         double total = 0.0;
         double ambiguity = 0.0;
         double prominenceTotal = 0.0;
+        double gradientTotal = 0.0;
+        double stabilityTotal = 0.0;
         for (int i = 0; i < profiles.size(); i++) {
             RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
             double intensity = i < intensities.size() ? intensities.get(i) : 0.0;
@@ -266,6 +277,9 @@ public final class RidgeTracker {
                 supported++;
                 total += intensity;
                 prominenceTotal += strongestProminence(profile);
+                RenderedHeatmapSampler.CrossSectionPeak strongest = selectedPeak(profile, i < offsets.size() ? offsets.get(i) : 0.0);
+                gradientTotal += strongest.gradientStrength();
+                stabilityTotal += Math.min(1.0, longitudinalSupport(profiles, i, strongest) / 2.0);
                 currentEmpty = 0;
             } else {
                 currentEmpty++;
@@ -281,9 +295,12 @@ public final class RidgeTracker {
         double supportRatio = profiles.isEmpty() ? 0.0 : (double) supported / profiles.size();
         double ambiguityPenalty = profiles.isEmpty() ? 0.0 : ambiguity / profiles.size();
         double meanProminence = supported == 0 ? 0.0 : prominenceTotal / supported;
-        double snr = (mean * 0.65 + meanProminence * 0.90) * supportRatio / (1.0 + ambiguityPenalty);
+        double meanGradient = supported == 0 ? 0.0 : gradientTotal / supported;
+        double longitudinalStability = supported == 0 ? 0.0 : stabilityTotal / supported;
+        double snr = (mean * 0.58 + meanProminence * 0.82 + meanGradient * 0.28) * supportRatio
+            * (0.75 + 0.25 * longitudinalStability) / (1.0 + ambiguityPenalty);
         return new CandidateEvidence("", profiles.size(), supported, empty, maxEmpty,
-            total, mean, snr, ambiguityPenalty, List.of());
+            total, mean, meanGradient, longitudinalStability, snr, ambiguityPenalty, List.of());
     }
 
     private double strongestProminence(RenderedHeatmapSampler.CrossSectionProfile profile) {
@@ -291,6 +308,12 @@ public final class RidgeTracker {
             .mapToDouble(RenderedHeatmapSampler.CrossSectionPeak::prominence)
             .max()
             .orElse(0.0);
+    }
+
+    private RenderedHeatmapSampler.CrossSectionPeak selectedPeak(RenderedHeatmapSampler.CrossSectionProfile profile, double offset) {
+        return profile.peaks().stream()
+            .min(Comparator.comparingDouble(peak -> Math.abs(peak.offsetPx() - offset)))
+            .orElse(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0));
     }
 
     private record State(

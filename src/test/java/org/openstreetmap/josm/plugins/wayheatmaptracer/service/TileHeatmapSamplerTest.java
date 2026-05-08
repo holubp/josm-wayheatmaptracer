@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 
 class TileHeatmapSamplerTest {
@@ -48,6 +49,7 @@ class TileHeatmapSamplerTest {
             validationZoom,
             28.0,
             6.0,
+            IntensitySamplingMode.COLOR_MAPPING,
             0L
         );
     }

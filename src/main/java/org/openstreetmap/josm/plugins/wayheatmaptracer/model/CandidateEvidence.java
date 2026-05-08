@@ -10,12 +10,14 @@ public record CandidateEvidence(
     int maxConsecutiveEmptyProfiles,
     double totalIntensity,
     double meanIntensity,
+    double meanGradientStrength,
+    double longitudinalStability,
     double signalToNoise,
     double ambiguity,
     List<String> consensusModes
 ) {
     public static CandidateEvidence empty() {
-        return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, List.of());
+        return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
     }
 
     public boolean hasSignal() {
@@ -35,6 +37,8 @@ public record CandidateEvidence(
             maxConsecutiveEmptyProfiles,
             totalIntensity,
             meanIntensity,
+            meanGradientStrength,
+            longitudinalStability,
             signalToNoise,
             ambiguity,
             consensusModes
@@ -50,6 +54,8 @@ public record CandidateEvidence(
             maxConsecutiveEmptyProfiles,
             totalIntensity,
             meanIntensity,
+            meanGradientStrength,
+            longitudinalStability,
             signalToNoise,
             ambiguity,
             modes == null ? List.of() : List.copyOf(modes)
@@ -66,6 +72,8 @@ public record CandidateEvidence(
             + "\"supportRatio\":" + supportRatio() + ','
             + "\"totalIntensity\":" + totalIntensity + ','
             + "\"meanIntensity\":" + meanIntensity + ','
+            + "\"meanGradientStrength\":" + meanGradientStrength + ','
+            + "\"longitudinalStability\":" + longitudinalStability + ','
             + "\"signalToNoise\":" + signalToNoise + ','
             + "\"ambiguity\":" + ambiguity + ','
             + "\"consensusModes\":" + stringArray(consensusModes)

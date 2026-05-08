@@ -105,8 +105,10 @@ public record CenterlineCandidate(
         double support = evidence.supportRatio();
         double quality =
             0.34 * clamp01(support)
-            + 0.34 * clamp01(evidence.signalToNoise() / 0.24)
+            + 0.28 * clamp01(evidence.signalToNoise() / 0.24)
             + 0.22 * clamp01(evidence.meanIntensity() / 0.55)
+            + 0.10 * clamp01(evidence.meanGradientStrength() / 0.25)
+            + 0.06 * clamp01(evidence.longitudinalStability())
             + 0.10 * (1.0 - clamp01(evidence.ambiguity() / 1.60));
         quality -= 0.16 * clamp01(evidence.maxConsecutiveEmptyProfiles() / 20.0);
         if (quality >= 0.62 && support >= 0.45 && evidence.maxConsecutiveEmptyProfiles() <= 14) {

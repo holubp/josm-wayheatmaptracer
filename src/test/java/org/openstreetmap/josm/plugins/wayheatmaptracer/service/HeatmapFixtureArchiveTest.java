@@ -18,6 +18,7 @@ import java.util.zip.ZipFile;
 import javax.imageio.ImageIO;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 
 class HeatmapFixtureArchiveTest {
     private static final String ARCHIVE_NAME = "extracted-tiles.zip";
@@ -201,6 +202,40 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void directAlphaSamplingBypassesColorMappingForScalarImagery() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            image.setRGB(x, 20, 0xFF000000);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> colorProfiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "hot",
+            1.0
+        );
+        List<RenderedHeatmapSampler.CrossSectionProfile> directProfiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            "direct-alpha",
+            1.0,
+            IntensitySamplingMode.DIRECT_ALPHA
+        );
+
+        assertTrue(colorProfiles.stream().allMatch(profile -> profile.peaks().stream()
+                .allMatch(peak -> peak.intensity() == 0.0)),
+            "Black scalar imagery should not be interpreted as heat by palette color mapping");
+        assertTrue(directProfiles.stream().allMatch(profile -> profile.peaks().stream()
+                .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 1.0 && peak.intensity() > 0.8)),
+            "Direct alpha mode should use pixel opacity as scalar intensity without palette semantics");
+    }
+
+    @Test
     void noSignalProfilesExposeZeroOffsetFallbackPeaks() {
         BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
 
@@ -265,6 +300,9 @@ class HeatmapFixtureArchiveTest {
         assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
             .anyMatch(peak -> !peak.syntheticCenter() && Math.abs(peak.offsetPx()) <= 1.0)),
             "The v0.2-compatible sampler exposes the broad conduit center as a normal band peak");
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> peak.gradientStrength() > 0.0)),
+            "Cross-section peaks should carry gradient evidence for diagnostics and ridge confirmation");
     }
 
     private static BufferedImage readImage(ZipFile zip, String entryName) throws Exception {

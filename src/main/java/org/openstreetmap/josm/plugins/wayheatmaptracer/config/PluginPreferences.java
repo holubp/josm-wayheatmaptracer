@@ -4,6 +4,7 @@ import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.IPreferences;
@@ -35,6 +36,7 @@ public final class PluginPreferences {
     private static final String VALIDATION_ZOOM = PREFIX + "validationZoom";
     private static final String SEARCH_HALF_WIDTH_METERS = PREFIX + "searchHalfWidthMeters";
     private static final String SAMPLE_STEP_METERS = PREFIX + "sampleStepMeters";
+    private static final String INTENSITY_SAMPLING_MODE = PREFIX + "intensitySamplingMode";
     private static final String CACHE_BUSTER = PREFIX + "cacheBuster";
 
     private PluginPreferences() {
@@ -71,6 +73,7 @@ public final class PluginPreferences {
             clampZoom(pref.getInt(VALIDATION_ZOOM, 13), 10, 16),
             Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 28.0)),
             Math.max(0.5, pref.getDouble(SAMPLE_STEP_METERS, 6.0)),
+            IntensitySamplingMode.fromPreference(pref.get(INTENSITY_SAMPLING_MODE, IntensitySamplingMode.COLOR_MAPPING.name())),
             Math.max(0L, pref.getLong(CACHE_BUSTER, 0L))
         );
     }
@@ -104,6 +107,9 @@ public final class PluginPreferences {
         Config.getPref().putInt(VALIDATION_ZOOM, clampZoom(config.validationZoom(), 10, 16));
         Config.getPref().putDouble(SEARCH_HALF_WIDTH_METERS, Math.max(2.0, config.searchHalfWidthMeters()));
         Config.getPref().putDouble(SAMPLE_STEP_METERS, Math.max(0.5, config.sampleStepMeters()));
+        Config.getPref().put(INTENSITY_SAMPLING_MODE, (config.intensitySamplingMode() == null
+            ? IntensitySamplingMode.COLOR_MAPPING
+            : config.intensitySamplingMode()).name());
         Config.getPref().putLong(CACHE_BUSTER, Math.max(0L, config.cacheBuster()));
     }
 
@@ -155,6 +161,7 @@ public final class PluginPreferences {
             13,
             28.0,
             6.0,
+            IntensitySamplingMode.COLOR_MAPPING,
             0L
         );
     }

@@ -26,6 +26,7 @@ public record ManagedHeatmapConfig(
     int validationZoom,
     double searchHalfWidthMeters,
     double sampleStepMeters,
+    IntensitySamplingMode intensitySamplingMode,
     long cacheBuster
 ) {
     public boolean hasManagedAccessValues() {
@@ -63,6 +64,7 @@ public record ManagedHeatmapConfig(
             + "\"validationZoom\":" + validationZoom + ','
             + "\"searchHalfWidthMeters\":" + searchHalfWidthMeters + ','
             + "\"sampleStepMeters\":" + sampleStepMeters + ','
+            + "\"intensitySamplingMode\":\"" + (intensitySamplingMode == null ? IntensitySamplingMode.COLOR_MAPPING : intensitySamplingMode).name() + "\","
             + "\"cacheBuster\":" + cacheBuster
             + "}";
     }

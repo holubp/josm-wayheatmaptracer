@@ -20,6 +20,7 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieParser;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieValues;
@@ -38,6 +39,7 @@ public final class HeatmapSettingsDialog {
     private final JComboBox<String> manualLayer = new JComboBox<>();
     private final JComboBox<AlignmentMode> alignmentMode = new JComboBox<>(AlignmentMode.values());
     private final JComboBox<InferenceMode> inferenceMode = new JComboBox<>(InferenceMode.values());
+    private final JComboBox<IntensitySamplingMode> intensitySamplingMode = new JComboBox<>(IntensitySamplingMode.values());
     private final JTextField regex = new JTextField(36);
     private final JCheckBox verbose = new JCheckBox(tr("Verbose logging"));
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
@@ -69,6 +71,7 @@ public final class HeatmapSettingsDialog {
         regex.setText(config.layerRegex());
         alignmentMode.setSelectedItem(config.alignmentMode());
         inferenceMode.setSelectedItem(config.inferenceMode());
+        intensitySamplingMode.setSelectedItem(config.intensitySamplingMode());
         verbose.setSelected(config.verbose());
         debug.setSelected(config.debug());
         multiColorDetection.setSelected(config.multiColorDetection());
@@ -123,6 +126,8 @@ public final class HeatmapSettingsDialog {
         panel.add(alignmentMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Inference mode")), GBC.std());
         panel.add(inferenceMode, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Intensity source")), GBC.std());
+        panel.add(intensitySamplingMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Cross-section half-width px")), GBC.std());
         panel.add(halfWidth, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Cross-section step px")), GBC.std());
@@ -183,6 +188,7 @@ public final class HeatmapSettingsDialog {
             parseInt(validationZoom.getText(), 13),
             parseDouble(searchHalfWidthMeters.getText(), 28.0),
             parseDouble(sampleStepMeters.getText(), 6.0),
+            (IntensitySamplingMode) intensitySamplingMode.getSelectedItem(),
             cacheBuster
         ));
         return true;

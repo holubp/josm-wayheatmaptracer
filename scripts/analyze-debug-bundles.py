@@ -56,12 +56,15 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "candidate_id": candidate_id,
             "detector": row.get("detector", ""),
             "visible_color": row.get("visible_color", ""),
+            "intensity_source": row.get("intensity_source", ""),
             "rating": rating.get("rating", "") if isinstance(rating, dict) else "",
             "rating_score": numeric,
             "negative_features": negative,
             "calibrated_score": float_or_none(row.get("calibrated_score")),
             "support_ratio": float_or_none(row.get("support_ratio")),
             "mean_intensity": float_or_none(row.get("mean_intensity")),
+            "mean_gradient_strength": float_or_none(row.get("mean_gradient_strength")),
+            "longitudinal_stability": float_or_none(row.get("longitudinal_stability")),
             "signal_to_noise": float_or_none(row.get("signal_to_noise")),
             "ambiguity": float_or_none(row.get("ambiguity")),
             "p95_delta_px": float_or_none(row.get("p95_delta_px")),
@@ -80,22 +83,27 @@ def float_or_none(value: str | None) -> float | None:
 
 
 def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    grouped: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
     for row in rows:
-        grouped[(str(row["visible_color"]), str(row["detector"]))].append(row)
+        grouped[(str(row["visible_color"]), str(row["intensity_source"]), str(row["detector"]))].append(row)
     summary = []
-    for (visible_color, detector), group in sorted(grouped.items()):
+    for (visible_color, intensity_source, detector), group in sorted(grouped.items()):
         rated = [row for row in group if row["rating_score"] is not None]
         scores = [int(row["rating_score"]) for row in rated]
         snr = compact_numbers(row["signal_to_noise"] for row in group)
         rough = compact_numbers(row["p95_delta_px"] for row in group)
+        gradient = compact_numbers(row["mean_gradient_strength"] for row in group)
+        stability = compact_numbers(row["longitudinal_stability"] for row in group)
         summary.append({
             "visible_color": visible_color,
+            "intensity_source": intensity_source,
             "detector": detector,
             "count": len(group),
             "rated": len(rated),
             "mean_rating": statistics.mean(scores) if scores else None,
             "median_snr": statistics.median(snr) if snr else None,
+            "median_gradient": statistics.median(gradient) if gradient else None,
+            "median_longitudinal_stability": statistics.median(stability) if stability else None,
             "median_p95_delta_px": statistics.median(rough) if rough else None,
             "negative_features": negative_counts(group),
         })
@@ -119,11 +127,14 @@ def negative_counts(rows: list[dict[str, object]]) -> str:
 def print_table(rows: list[dict[str, object]]) -> None:
     fields = [
         "visible_color",
+        "intensity_source",
         "detector",
         "count",
         "rated",
         "mean_rating",
         "median_snr",
+        "median_gradient",
+        "median_longitudinal_stability",
         "median_p95_delta_px",
         "negative_features",
     ]

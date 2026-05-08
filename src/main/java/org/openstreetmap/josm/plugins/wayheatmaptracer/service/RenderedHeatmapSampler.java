@@ -11,6 +11,7 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 public final class RenderedHeatmapSampler {
@@ -45,6 +46,18 @@ public final class RenderedHeatmapSampler {
         int stepPx,
         String colorMode
     ) {
+        return sampleProfiles(raster, mapView, sourcePolyline, halfWidthPx, stepPx, colorMode, IntensitySamplingMode.COLOR_MAPPING);
+    }
+
+    public List<CrossSectionProfile> sampleProfiles(
+        BufferedImage raster,
+        MapView mapView,
+        List<EastNorth> sourcePolyline,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        IntensitySamplingMode intensitySamplingMode
+    ) {
         List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, 10.0);
         if (dense.size() < 2) {
             return Collections.emptyList();
@@ -55,7 +68,7 @@ public final class RenderedHeatmapSampler {
         }
         PluginLog.verbose("Sampling %d cross-sections from %d source vertices (halfWidth=%d px, step=%d px).",
             dense.size(), sourcePolyline.size(), halfWidthPx, stepPx);
-        return sampleProfilesOnRaster(raster, denseScreen, halfWidthPx, stepPx, colorMode, RASTER_SCALE);
+        return sampleProfilesOnRaster(raster, denseScreen, halfWidthPx, stepPx, colorMode, RASTER_SCALE, intensitySamplingMode);
     }
 
     List<CrossSectionProfile> sampleProfilesOnRaster(
@@ -65,6 +78,19 @@ public final class RenderedHeatmapSampler {
         int stepPx,
         String colorMode,
         double rasterScale
+    ) {
+        return sampleProfilesOnRaster(raster, denseScreenPolyline, halfWidthPx, stepPx, colorMode, rasterScale,
+            IntensitySamplingMode.COLOR_MAPPING);
+    }
+
+    List<CrossSectionProfile> sampleProfilesOnRaster(
+        BufferedImage raster,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        IntensitySamplingMode intensitySamplingMode
     ) {
         if (denseScreenPolyline.size() < 2) {
             return Collections.emptyList();
@@ -85,7 +111,7 @@ public final class RenderedHeatmapSampler {
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = baseScreen.x + normal.x * offset;
                 double y = baseScreen.y + normal.y * offset;
-                double intensity = intensityAt(raster, x, y, colorMode);
+                double intensity = intensityAt(raster, x, y, colorMode, intensitySamplingMode);
                 offsets.add(new OffsetSample(offset, intensity));
             }
             samples.addAll(extractBrightBands(offsets));
@@ -190,7 +216,10 @@ public final class RenderedHeatmapSampler {
                     double prominence = Math.min(left.prominence(), right.prominence()) * 0.92;
                     double noiseFloor = Math.max(left.noiseFloor(), right.noiseFloor());
                     double maxIntensity = Math.max(left.maxProfileIntensity(), right.maxProfileIntensity());
-                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true, prominence, noiseFloor, maxIntensity));
+                    double gradientStrength = Math.min(left.gradientStrength(), right.gradientStrength()) * 0.85;
+                    double gradientBalance = Math.min(left.gradientBalance(), right.gradientBalance());
+                    augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true, prominence, noiseFloor, maxIntensity,
+                        gradientStrength, gradientBalance));
                 }
             }
         }
@@ -224,9 +253,29 @@ public final class RenderedHeatmapSampler {
         }
         double prominence = Math.max(0.0, peakIntensity - stats.noiseFloor());
         double prominenceWeight = stats.maxProminence() <= 0.0 ? 0.0 : prominence / stats.maxProminence();
-        double calibratedConfidence = Math.min(1.0, confidence * 0.72 + prominenceWeight * 0.20 + Math.min(0.08, supportWidth / 120.0));
+        GradientEvidence gradient = gradientEvidence(smoothed, peakIndex, start, end);
+        double gradientReward = gradient.strength() * (0.06 + 0.08 * gradient.balance());
+        double calibratedConfidence = Math.min(1.0, confidence * 0.68
+            + prominenceWeight * 0.18
+            + gradientReward
+            + Math.min(0.08, supportWidth / 120.0));
         return new CrossSectionPeak(center, calibratedConfidence, supportWidth, false,
-            prominence, stats.noiseFloor(), stats.maxIntensity());
+            prominence, stats.noiseFloor(), stats.maxIntensity(), gradient.strength(), gradient.balance());
+    }
+
+    private GradientEvidence gradientEvidence(List<OffsetSample> smoothed, int peakIndex, int start, int end) {
+        if (smoothed.size() < 3) {
+            return new GradientEvidence(0.0, 0.0);
+        }
+        int leftIndex = Math.max(1, Math.min(peakIndex, start + 1));
+        int rightIndex = Math.min(smoothed.size() - 2, Math.max(peakIndex, end - 1));
+        double leftRise = Math.max(0.0, smoothed.get(leftIndex).intensity - smoothed.get(leftIndex - 1).intensity);
+        double rightFall = Math.max(0.0, smoothed.get(rightIndex).intensity - smoothed.get(rightIndex + 1).intensity);
+        double strength = Math.min(1.0, (leftRise + rightFall) * 4.0);
+        double balance = leftRise + rightFall <= 0.0
+            ? 0.0
+            : 1.0 - Math.abs(leftRise - rightFall) / (leftRise + rightFall);
+        return new GradientEvidence(strength, Math.max(0.0, Math.min(1.0, balance)));
     }
 
     private List<OffsetSample> smoothProfile(List<OffsetSample> offsets) {
@@ -264,7 +313,9 @@ public final class RenderedHeatmapSampler {
                     current.syntheticCenter() && next.syntheticCenter(),
                     Math.max(current.prominence(), next.prominence()),
                     Math.max(current.noiseFloor(), next.noiseFloor()),
-                    Math.max(current.maxProfileIntensity(), next.maxProfileIntensity()));
+                    Math.max(current.maxProfileIntensity(), next.maxProfileIntensity()),
+                    Math.max(current.gradientStrength(), next.gradientStrength()),
+                    Math.min(current.gradientBalance(), next.gradientBalance()));
             } else {
                 merged.add(current);
                 current = next;
@@ -297,7 +348,7 @@ public final class RenderedHeatmapSampler {
         return new ProfileStats(maxIntensity, noiseFloor, Math.max(0.0, maxIntensity - noiseFloor));
     }
 
-    private double intensityAt(BufferedImage image, double x, double y, String colorMode) {
+    private double intensityAt(BufferedImage image, double x, double y, String colorMode, IntensitySamplingMode intensitySamplingMode) {
         int sx = (int) Math.round(x);
         int sy = (int) Math.round(y);
         if (sx < 0 || sy < 0 || sx >= image.getWidth() || sy >= image.getHeight()) {
@@ -312,7 +363,20 @@ public final class RenderedHeatmapSampler {
         int green = (argb >>> 8) & 0xFF;
         int blue = argb & 0xFF;
 
+        IntensitySamplingMode source = intensitySamplingMode == null ? IntensitySamplingMode.COLOR_MAPPING : intensitySamplingMode;
+        if (!source.usesColorMapping()) {
+            return directIntensity(red, green, blue, alpha, source);
+        }
         return colorIntensity(red, green, blue, colorMode);
+    }
+
+    static double directIntensity(int red, int green, int blue, int alpha, IntensitySamplingMode mode) {
+        return switch (mode == null ? IntensitySamplingMode.COLOR_MAPPING : mode) {
+            case DIRECT_ALPHA -> alpha / 255.0;
+            case DIRECT_VALUE -> Math.max(red, Math.max(green, blue)) / 255.0;
+            case DIRECT_LUMINANCE -> (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0;
+            case COLOR_MAPPING -> 0.0;
+        };
     }
 
     static double colorIntensity(int red, int green, int blue, String colorMode) {
@@ -533,14 +597,16 @@ public final class RenderedHeatmapSampler {
         boolean syntheticCenter,
         double prominence,
         double noiseFloor,
-        double maxProfileIntensity
+        double maxProfileIntensity,
+        double gradientStrength,
+        double gradientBalance
     ) {
         public CrossSectionPeak(double offsetPx, double intensity) {
             this(offsetPx, intensity, 0.0, false);
         }
 
         public CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
-            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity);
+            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0);
         }
     }
 
@@ -548,6 +614,9 @@ public final class RenderedHeatmapSampler {
     }
 
     private record ProfileStats(double maxIntensity, double noiseFloor, double maxProminence) {
+    }
+
+    private record GradientEvidence(double strength, double balance) {
     }
 
     public record IntensityComponent(String mode, double weight) {

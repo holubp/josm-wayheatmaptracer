@@ -45,6 +45,25 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void gradientEvidenceImprovesRankingAmongEquivalentModes() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            gradientProfile(0, -8, 0.45, 0.0, 8, 0.45, 0.60),
+            gradientProfile(10, -8, 0.45, 0.0, 8, 0.45, 0.60),
+            gradientProfile(20, -8, 0.45, 0.0, 8, 0.45, 0.60),
+            gradientProfile(30, -8, 0.45, 0.0, 8, 0.45, 0.60)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 2);
+        assertTrue(meanOffset(candidates.get(0).offsetsPx()) > 4.0,
+            "When intensity is tied, a longitudinally stable ridge with stronger cross-section gradients should rank first");
+        assertTrue(candidates.get(0).evidence().meanGradientStrength() > 0.40,
+            "Candidate evidence should expose gradient support for diagnostics and ranking");
+    }
+
+    @Test
     void resistsOneOffJumpToStrayPeak() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
@@ -285,6 +304,28 @@ class RidgeTrackerTest {
             new Point2D.Double(x, 0),
             new Point2D.Double(0, 1),
             List.of(new RenderedHeatmapSampler.CrossSectionPeak(offset, intensity))
+        );
+    }
+
+    private RenderedHeatmapSampler.CrossSectionProfile gradientProfile(
+        double x,
+        double leftOffset,
+        double leftIntensity,
+        double leftGradient,
+        double rightOffset,
+        double rightIntensity,
+        double rightGradient
+    ) {
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(x, 0),
+            new Point2D.Double(x, 0),
+            new Point2D.Double(0, 1),
+            List.of(
+                new RenderedHeatmapSampler.CrossSectionPeak(leftOffset, leftIntensity, 4.0, false,
+                    leftIntensity, 0.0, leftIntensity, leftGradient, 0.75),
+                new RenderedHeatmapSampler.CrossSectionPeak(rightOffset, rightIntensity, 4.0, false,
+                    rightIntensity, 0.0, rightIntensity, rightGradient, 0.75)
+            )
         );
     }
 
