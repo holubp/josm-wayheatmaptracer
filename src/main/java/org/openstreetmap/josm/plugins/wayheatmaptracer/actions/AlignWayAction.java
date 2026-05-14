@@ -208,7 +208,7 @@ public class AlignWayAction extends JosmAction {
         Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
-        PreviewSelection[] current = {new PreviewSelection(initial, alignmentService.applyCandidate(result, initial, config))};
+        PreviewSelection[] current = {buildPreviewSelection(dataSet, result, initial, config)};
         overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
@@ -235,12 +235,18 @@ public class AlignWayAction extends JosmAction {
             if (selected == null) {
                 return;
             }
-            current[0] = new PreviewSelection(selected, alignmentService.applyCandidate(result, selected, config));
-            overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
-            loadingRating[0] = true;
-            loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
-            loadingRating[0] = false;
-            updatePreviewBundle(current[0], candidateRatings, "preview-open");
+            try {
+                current[0] = buildPreviewSelection(dataSet, result, selected, config);
+                overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+                loadingRating[0] = true;
+                loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
+                loadingRating[0] = false;
+                updatePreviewBundle(current[0], candidateRatings, "preview-open");
+            } catch (Exception ex) {
+                Logging.warn("WayHeatmapTracer rejected preview candidate: " + ex.getMessage());
+                showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+                comboBox.setSelectedItem(current[0].candidate());
+            }
         });
         ratingBox.addActionListener(event -> {
             if (!loadingRating[0]) {
@@ -301,6 +307,19 @@ public class AlignWayAction extends JosmAction {
             dialog.dispose();
         });
         dialog.setVisible(true);
+    }
+
+    private PreviewSelection buildPreviewSelection(
+        DataSet dataSet,
+        AlignmentResult base,
+        CenterlineCandidate candidate,
+        ManagedHeatmapConfig config
+    ) {
+        AlignmentResult candidateResult = alignmentService.applyCandidate(base, candidate, config);
+        if (!config.allowUndownloadedAlignment()) {
+            requirePreviewWithinDownloadedArea(candidateResult.previewPolyline(), dataSet);
+        }
+        return new PreviewSelection(candidate, candidateResult);
     }
 
     private void loadCandidateRating(

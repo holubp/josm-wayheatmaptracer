@@ -1,6 +1,9 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import java.awt.image.BufferedImage;
+import java.awt.Dimension;
+import java.awt.Graphics2D;
+import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -56,6 +59,8 @@ public final class AlignmentService {
     private static final int MAX_EFFECTIVE_STEP_PX = 32;
     private static final double LOCAL_NODE_SEARCH_FRACTION = 0.08;
     private static final double LOCAL_NODE_SEARCH_METERS = 35.0;
+    private static final int MAX_CAPTURE_VIEW_DIMENSION_PX = 5000;
+    private static final int MAX_CAPTURE_VIEW_AREA_PX = 3_300_000;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
@@ -79,6 +84,7 @@ public final class AlignmentService {
         if (imageryLayer == null) {
             throw new IllegalStateException("No visible heatmap imagery layer was resolved.");
         }
+        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         PluginLog.verbose("Starting v0.2-compatible visible-layer alignment for way %d segment [%d..%d], nodes=%d, fixed=%d, layer='%s'.",
             selection.way().getUniqueId(),
             selection.startIndex(),
@@ -92,12 +98,12 @@ public final class AlignmentService {
         PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
 
         long t0 = System.nanoTime();
-        BufferedImage raster = sampler.captureLayer(imageryLayer, mapView);
+        RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, sourcePolyline, config);
+        BufferedImage raster = capture.raster();
         long t1 = System.nanoTime();
 
-        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<String> colorModes = detectionColorModes(config);
-        EffectiveSampling effectiveSampling = effectiveSampling(config, mapView);
+        EffectiveSampling effectiveSampling = effectiveSampling(config, capture.viewMetersPerPixel());
         PluginLog.verbose(
             "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; target halfWidth=%.2f m step=%.2f m; effective halfWidth=%d px step=%d px at view %.3f m/px.",
             config.crossSectionHalfWidthPx(),
@@ -108,28 +114,28 @@ public final class AlignmentService {
             effectiveSampling.effectiveStepPx(),
             effectiveSampling.viewMetersPerPixel()
         );
-        DetectionResult detection = detectCandidates(raster, mapView, sourcePolyline, config, colorModes, effectiveSampling);
+        DetectionResult detection = detectCandidates(raster, capture.sourceRasterPolyline(), capture, config, colorModes, effectiveSampling);
         List<CenterlineCandidate> candidates = detection.candidates();
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
-                effectiveSampling, t0, t1, t2, t2);
+                effectiveSampling, t0, t1, t2, t2, capture);
             throw new AlignmentFailureException(
-                "Selected segment is not fully inside the captured heatmap viewport ("
+                "Selected segment is not fully inside the captured heatmap raster ("
                     + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
-                    + " sampled cross-sections outside). Zoom/pan so the whole selected segment is visible, or select a shorter segment.",
+                    + " sampled cross-sections outside). The plugin attempted to render the selected extent through JOSM; select a shorter segment if this keeps happening.",
                 partial);
         }
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
-                effectiveSampling, t0, t1, t2, t2);
+                effectiveSampling, t0, t1, t2, t2, capture);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
 
         CenterlineCandidate primary = candidates.get(0);
-        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, mapView);
+        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, null);
         List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
         long t3 = System.nanoTime();
 
@@ -150,7 +156,8 @@ public final class AlignmentService {
             detection.profilesJson(),
             detection.profilePeaksCsv(),
             detection.paletteSamplesCsv(),
-            effectiveSampling
+            effectiveSampling,
+            capture
         );
 
         PluginLog.verbose("Alignment finished: raster=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
@@ -248,7 +255,8 @@ public final class AlignmentService {
         long t0,
         long t1,
         long t2,
-        long t3
+        long t3,
+        RenderedCapture capture
     ) {
         return new AlignmentResult(
             selection,
@@ -258,7 +266,7 @@ public final class AlignmentService {
             sourcePolyline,
             List.of(),
             diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
-                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling),
+                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, capture),
             null
         );
     }
@@ -295,8 +303,8 @@ public final class AlignmentService {
 
     private DetectionResult detectCandidates(
         BufferedImage raster,
-        MapView mapView,
-        List<EastNorth> sourcePolyline,
+        List<Point2D.Double> sourceRasterPolyline,
+        RenderedCapture capture,
         ManagedHeatmapConfig config,
         List<String> colorModes,
         EffectiveSampling effectiveSampling
@@ -313,8 +321,9 @@ public final class AlignmentService {
         int totalProfiles = 0;
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                sampler.sampleProfiles(raster, mapView, sourcePolyline,
-                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode, intensitySource);
+                sampler.sampleProfilesOnRaster(raster, sourceRasterPolyline,
+                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(),
+                    colorMode, RenderedHeatmapSampler.RASTER_SCALE, intensitySource);
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
@@ -330,7 +339,7 @@ public final class AlignmentService {
                 CenterlineCandidate withMode = candidate
                     .withId(colorMode + "/" + candidate.id())
                     .withEvidence(candidate.evidence().withDetectorMode(colorMode));
-                withMode = withMode.withEastNorthPoints(optimizer.projectCandidate(withMode, mapView));
+                withMode = withMode.withEastNorthPoints(projectRenderedCandidate(capture, withMode.screenPoints()));
                 candidates.add(withMode);
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
@@ -945,8 +954,164 @@ public final class AlignmentService {
         return Math.toDegrees(Math.acos(cosine));
     }
 
-    private EffectiveSampling effectiveSampling(ManagedHeatmapConfig config, MapView mapView) {
-        double viewMetersPerPixel = currentViewMetersPerPixel(mapView);
+    private RenderedCapture captureVisibleHeatmap(
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        List<EastNorth> sourcePolyline,
+        ManagedHeatmapConfig config
+    ) {
+        ProjectionBounds originalBounds = mapView.getProjectionBounds();
+        EastNorth originalCenter = mapView.getCenter();
+        double originalScale = mapView.getScale();
+        Dimension originalSize = mapView.getSize();
+        ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginMeters(config));
+        double targetScale = REFERENCE_VIEW_METERS_PER_PIXEL;
+        Dimension captureSize = requiredCaptureSize(requestedBounds, targetScale);
+        ProjectionBounds captureBounds = captureBoundsForSize(requestedBounds.getCenter(), captureSize, targetScale);
+        VisibleCaptureState captureState = new VisibleCaptureState(originalCenter, originalScale, originalBounds,
+            originalSize, requestedBounds, captureBounds, captureSize, targetScale, false, 1);
+        try {
+            BufferedImage raster;
+            if (captureSize.width <= MAX_CAPTURE_VIEW_DIMENSION_PX && captureSize.height <= MAX_CAPTURE_VIEW_DIMENSION_PX) {
+                captureState = captureState.withCapturePlan(false, 1);
+                mapView.setSize(captureSize);
+                mapView.zoomTo(captureBounds.getCenter(), targetScale, false);
+                raster = sampler.captureLayer(imageryLayer, mapView);
+            } else {
+                raster = captureLayerInChunks(imageryLayer, mapView, captureBounds, captureSize, targetScale, originalSize);
+                int chunkCount = chunkCount(captureSize, chunkSize(originalSize));
+                captureState = captureState.withCapturePlan(true, chunkCount);
+            }
+            return new RenderedCapture(
+                raster,
+                captureBounds,
+                targetScale,
+                sourcePolyline.stream().map(point -> toCaptureRasterPoint(point, captureBounds, targetScale)).toList(),
+                captureState
+            );
+        } finally {
+            mapView.setSize(originalSize);
+            mapView.zoomTo(originalCenter, originalScale, false);
+            PluginLog.verbose("Restored JOSM map view after heatmap capture.");
+        }
+    }
+
+    private BufferedImage captureLayerInChunks(
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        ProjectionBounds captureBounds,
+        Dimension captureSize,
+        double targetScale,
+        Dimension originalSize
+    ) {
+        Dimension chunkSize = chunkSize(originalSize);
+        BufferedImage mosaic = new BufferedImage(
+            (int) Math.round(captureSize.width * RenderedHeatmapSampler.RASTER_SCALE),
+            (int) Math.round(captureSize.height * RenderedHeatmapSampler.RASTER_SCALE),
+            BufferedImage.TYPE_INT_ARGB
+        );
+        Graphics2D graphics = mosaic.createGraphics();
+        int chunks = 0;
+        try {
+            for (int y = 0; y < captureSize.height; y += chunkSize.height) {
+                int viewHeight = Math.min(chunkSize.height, captureSize.height - y);
+                for (int x = 0; x < captureSize.width; x += chunkSize.width) {
+                    int viewWidth = Math.min(chunkSize.width, captureSize.width - x);
+                    mapView.setSize(new Dimension(viewWidth, viewHeight));
+                    EastNorth center = new EastNorth(
+                        captureBounds.minEast + (x + viewWidth / 2.0) * targetScale,
+                        captureBounds.maxNorth - (y + viewHeight / 2.0) * targetScale
+                    );
+                    mapView.zoomTo(center, targetScale, false);
+                    BufferedImage chunk = sampler.captureLayer(imageryLayer, mapView);
+                    graphics.drawImage(chunk,
+                        (int) Math.round(x * RenderedHeatmapSampler.RASTER_SCALE),
+                        (int) Math.round(y * RenderedHeatmapSampler.RASTER_SCALE),
+                        null);
+                    chunks++;
+                }
+            }
+        } finally {
+            graphics.dispose();
+        }
+        PluginLog.verbose("Rendered heatmap extent in %d JOSM viewport chunks at %.3f m/px.", chunks, targetScale);
+        return mosaic;
+    }
+
+    private ProjectionBounds expandedBounds(List<EastNorth> points, double marginMeters) {
+        if (points.isEmpty()) {
+            return new ProjectionBounds();
+        }
+        double minEast = Double.POSITIVE_INFINITY;
+        double minNorth = Double.POSITIVE_INFINITY;
+        double maxEast = Double.NEGATIVE_INFINITY;
+        double maxNorth = Double.NEGATIVE_INFINITY;
+        for (EastNorth point : points) {
+            minEast = Math.min(minEast, point.east());
+            minNorth = Math.min(minNorth, point.north());
+            maxEast = Math.max(maxEast, point.east());
+            maxNorth = Math.max(maxNorth, point.north());
+        }
+        double margin = Math.max(5.0, marginMeters);
+        return new ProjectionBounds(minEast - margin, minNorth - margin, maxEast + margin, maxNorth + margin);
+    }
+
+    private double visibleCaptureMarginMeters(ManagedHeatmapConfig config) {
+        double halfWidthMeters = config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
+        return Math.max(halfWidthMeters * 2.0, halfWidthMeters + 20.0);
+    }
+
+    private Dimension requiredCaptureSize(ProjectionBounds bounds, double scale) {
+        int width = (int) Math.ceil(Math.max(1.0, bounds.maxEast - bounds.minEast) / scale);
+        int height = (int) Math.ceil(Math.max(1.0, bounds.maxNorth - bounds.minNorth) / scale);
+        if ((long) width * (long) height > MAX_CAPTURE_VIEW_AREA_PX) {
+            throw new IllegalStateException(
+                "Selected segment is too large to render at the required heatmap resolution in one slide. "
+                    + "Select a shorter segment or use managed source-tile alignment.");
+        }
+        return new Dimension(width, height);
+    }
+
+    private Dimension chunkSize(Dimension originalSize) {
+        int width = Math.max(320, Math.min(MAX_CAPTURE_VIEW_DIMENSION_PX, originalSize == null ? 1200 : originalSize.width));
+        int height = Math.max(240, Math.min(MAX_CAPTURE_VIEW_DIMENSION_PX, originalSize == null ? 800 : originalSize.height));
+        return new Dimension(width, height);
+    }
+
+    private int chunkCount(Dimension captureSize, Dimension chunkSize) {
+        int x = (int) Math.ceil((double) captureSize.width / chunkSize.width);
+        int y = (int) Math.ceil((double) captureSize.height / chunkSize.height);
+        return Math.max(1, x * y);
+    }
+
+    private ProjectionBounds captureBoundsForSize(EastNorth center, Dimension size, double scale) {
+        double halfWidth = size.width * scale / 2.0;
+        double halfHeight = size.height * scale / 2.0;
+        return new ProjectionBounds(
+            center.east() - halfWidth,
+            center.north() - halfHeight,
+            center.east() + halfWidth,
+            center.north() + halfHeight
+        );
+    }
+
+    private Point2D.Double toCaptureRasterPoint(EastNorth point, ProjectionBounds bounds, double viewMetersPerPixel) {
+        return new Point2D.Double(
+            (point.east() - bounds.minEast) / viewMetersPerPixel * RenderedHeatmapSampler.RASTER_SCALE,
+            (bounds.maxNorth - point.north()) / viewMetersPerPixel * RenderedHeatmapSampler.RASTER_SCALE
+        );
+    }
+
+    private List<EastNorth> projectRenderedCandidate(RenderedCapture capture, List<Point2D.Double> rasterPoints) {
+        return rasterPoints.stream()
+            .map(point -> new EastNorth(
+                capture.bounds().minEast + point.x / RenderedHeatmapSampler.RASTER_SCALE * capture.viewMetersPerPixel(),
+                capture.bounds().maxNorth - point.y / RenderedHeatmapSampler.RASTER_SCALE * capture.viewMetersPerPixel()
+            ))
+            .toList();
+    }
+
+    private EffectiveSampling effectiveSampling(ManagedHeatmapConfig config, double viewMetersPerPixel) {
         double targetHalfWidthMeters = config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
         double targetStepMeters = config.crossSectionStepPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
         int effectiveHalfWidthPx = scaleMetersToViewPixels(
@@ -1028,7 +1193,8 @@ public final class AlignmentService {
         String profilesJson,
         String profilePeaksCsv,
         String paletteSamplesCsv,
-        EffectiveSampling effectiveSampling
+        EffectiveSampling effectiveSampling,
+        RenderedCapture capture
     ) {
         return new AlignmentDiagnostics(
             imageryLayer.getName(),
@@ -1039,7 +1205,7 @@ public final class AlignmentService {
             millisBetween(t2, t3),
             config.toRedactedJson(),
             selectionToJson(selection),
-            samplingJson(imageryLayer, raster, mapView, effectiveSampling),
+            samplingJson(imageryLayer, raster, mapView, effectiveSampling, capture),
             stringArray(colorModes),
             candidatesToJson(candidates, config, effectiveSampling),
             profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson,
@@ -1120,23 +1286,30 @@ public final class AlignmentService {
             + "}";
     }
 
-    private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster, MapView mapView, EffectiveSampling effectiveSampling) {
+    private String samplingJson(
+        ImageryLayer imageryLayer,
+        BufferedImage raster,
+        MapView mapView,
+        EffectiveSampling effectiveSampling,
+        RenderedCapture capture
+    ) {
         int zoom = -1;
         int bestZoom = -1;
         if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
             zoom = tileLayer.getZoomLevel();
             bestZoom = tileLayer.getBestZoom();
         }
-        int viewWidth = mapView == null ? 0 : mapView.getWidth();
-        int viewHeight = mapView == null ? 0 : mapView.getHeight();
-        double dist100Pixel = safeDouble(mapView == null ? Double.NaN : mapView.getDist100Pixel());
-        double viewMetersPerPixel = dist100Pixel > 0.0 ? dist100Pixel / 100.0 : Double.NaN;
+        VisibleCaptureState captureState = capture == null ? null : capture.state();
+        int viewWidth = captureState == null ? (mapView == null ? 0 : mapView.getWidth()) : captureState.captureSize().width;
+        int viewHeight = captureState == null ? (mapView == null ? 0 : mapView.getHeight()) : captureState.captureSize().height;
+        double viewMetersPerPixel = capture == null ? currentViewMetersPerPixel(mapView) : capture.viewMetersPerPixel();
+        double dist100Pixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel * 100.0 : Double.NaN;
         double rasterMetersPerPixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel / effectiveSampling.rasterScale() : Double.NaN;
-        double mapScale = safeDouble(mapView == null ? Double.NaN : mapView.getScale());
-        EastNorth center = mapView == null ? null : mapView.getCenter();
+        double mapScale = capture == null ? safeDouble(mapView == null ? Double.NaN : mapView.getScale()) : capture.viewMetersPerPixel();
+        EastNorth center = capture == null ? (mapView == null ? null : mapView.getCenter()) : capture.bounds().getCenter();
         LatLon centerLatLon = center == null ? null : ProjectionRegistry.getProjection().eastNorth2latlon(center);
-        ProjectionBounds projectionBounds = mapView == null ? null : mapView.getProjectionBounds();
-        Bounds realBounds = mapView == null ? null : mapView.getRealBounds();
+        ProjectionBounds projectionBounds = capture == null ? (mapView == null ? null : mapView.getProjectionBounds()) : capture.bounds();
+        Bounds realBounds = projectionBoundsToRealBounds(projectionBounds);
         return "{"
             + "\"type\":\"rendered-visible-layer\","
             + "\"algorithm\":\"v0.2-compatible\","
@@ -1162,6 +1335,12 @@ public final class AlignmentService {
             + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.targetStepMeters()) + ','
             + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthMeters()) + ','
             + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepMeters()) + ','
+            + "\"viewportAdjustedForSelection\":" + (captureState != null && captureState.adjusted()) + ','
+            + "\"chunkedCapture\":" + (captureState != null && captureState.chunked()) + ','
+            + "\"captureChunkCount\":" + (captureState == null ? 1 : captureState.chunkCount()) + ','
+            + "\"requestedCaptureBounds\":" + projectionBoundsJson(captureState == null ? null : captureState.requestedBounds()) + ','
+            + "\"captureProjectionBounds\":" + projectionBoundsJson(capture == null ? null : capture.bounds()) + ','
+            + "\"originalProjectionBounds\":" + projectionBoundsJson(captureState == null ? null : captureState.originalBounds()) + ','
             + "\"mapScale\":" + jsonDouble(mapScale) + ','
             + "\"layerPPD\":" + jsonDouble(safeDouble(imageryLayer.getPPD())) + ','
             + "\"viewportCenter\":" + eastNorthLatLonJson(center, centerLatLon) + ','
@@ -1440,6 +1619,15 @@ public final class AlignmentService {
             + "}";
     }
 
+    private Bounds projectionBoundsToRealBounds(ProjectionBounds bounds) {
+        if (bounds == null || !bounds.hasExtend()) {
+            return null;
+        }
+        LatLon min = ProjectionRegistry.getProjection().eastNorth2latlon(bounds.getMin());
+        LatLon max = ProjectionRegistry.getProjection().eastNorth2latlon(bounds.getMax());
+        return new Bounds(min, max);
+    }
+
     private String estimatedVisibleTilesJson(Bounds bounds, int zoom) {
         if (bounds == null || zoom < 0) {
             return "null";
@@ -1663,6 +1851,37 @@ public final class AlignmentService {
 
         double effectiveStepMeters() {
             return effectiveStepPx * viewMetersPerPixel;
+        }
+    }
+
+    private record RenderedCapture(
+        BufferedImage raster,
+        ProjectionBounds bounds,
+        double viewMetersPerPixel,
+        List<Point2D.Double> sourceRasterPolyline,
+        VisibleCaptureState state
+    ) {
+    }
+
+    private record VisibleCaptureState(
+        EastNorth originalCenter,
+        double originalScale,
+        ProjectionBounds originalBounds,
+        Dimension originalSize,
+        ProjectionBounds requestedBounds,
+        ProjectionBounds captureBounds,
+        Dimension captureSize,
+        double targetViewMetersPerPixel,
+        boolean chunked,
+        int chunkCount
+    ) {
+        boolean adjusted() {
+            return true;
+        }
+
+        VisibleCaptureState withCapturePlan(boolean newChunked, int newChunkCount) {
+            return new VisibleCaptureState(originalCenter, originalScale, originalBounds, originalSize,
+                requestedBounds, captureBounds, captureSize, targetViewMetersPerPixel, newChunked, newChunkCount);
         }
     }
 

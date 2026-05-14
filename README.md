@@ -2,7 +2,7 @@
 
 `WayHeatmapTracer` is a JOSM plugin for tracing or realigning selected OSM paths, tracks, and roads against heatmap imagery when the visible activity pattern is clearer than the existing mapped geometry.
 
-The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. The current visible-layer sliding core is intentionally based on the `0.2.0` rendered-layer algorithm: it renders the visible heatmap layer at the current JOSM view, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
+The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, the current sliding core samples fixed-resolution source tiles. Without managed access, it falls back to the `0.2.0`-style rendered-layer algorithm: it asks JOSM to render the heatmap layer for the selected segment extent at the required working resolution, proposes one or more centerline candidates, previews the result, and applies the chosen alignment only after confirmation.
 
 ## Why This Exists
 
@@ -56,14 +56,14 @@ The current implementation is designed for private development:
 
 - Create or refresh a plugin-managed heatmap TMS layer from user-supplied access values
 - Choose Strava activity and color for the managed heatmap layer (`all`, `ride`, `run`, `water`, `winter` and `hot`, `blue`, `bluered`, `purple`, `gray`)
-- Align from the currently visible heatmap imagery layer using the `0.2.0` rendered-layer sampler and ridge tracker
+- Align from managed fixed-resolution Strava source tiles, or from the JOSM-rendered heatmap imagery layer using the `0.2.0` rendered-layer sampler and ridge tracker when managed access is unavailable
 - Optionally run the same visible-layer detector with multiple color classifiers (`hot`, `blue`, `bluered`, `purple`, `gray`, internal `dual`, and experimental combined-intensity detectors) and show the resulting candidates in the preview
 - Optionally bypass palette color mapping and sample scalar rendered-pixel intensity directly from luminance, max RGB channel, or alpha for non-Strava or diagnostic scalar imagery
 - Use cross-section gradient evidence together with intensity/prominence when ranking ridge candidates and confirming longitudinal stability
 - Show the rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
-- Resolve the heatmap source as a visible imagery layer by managed layer, exact selected layer title, or regex
+- Resolve the heatmap source as a managed source-tile configuration or as a visible imagery layer by managed layer, exact selected layer title, or regex
 - Align one selected way, or one way plus two selected nodes on that way
 - Offer two alignment modes:
   `Move Existing Nodes` keeps the node count and only moves non-fixed interior nodes
@@ -86,7 +86,7 @@ The current implementation is designed for private development:
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
-- Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the whole selected segment must be inside the current map viewport.
+- Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
 - Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The default fixed-scale search is calibrated to the good z15 setup: source tile z15, 6.0x reference raster, 0.389 m/px reference view, about 7.01 m search half-width, and about 1.56 m sampling step.
 
 ## Build
@@ -150,7 +150,7 @@ Shortcuts:
 1. Download the OSM area around the way unless you intentionally enabled the no-download option.
 2. Select exactly one way. To align only part of it, select the way and the two endpoint nodes of the segment.
 3. For long ways, select the way and run `More tools -> Select Longest Heatmap Segment`; the plugin selects the longest section bounded by endpoints or junctions.
-4. With managed Strava access configured, the selected segment does not need to be fully visible on screen. Without managed access, pan/zoom so the whole selected segment is visible in the map view.
+4. The selected segment does not need to be fully visible on screen. With managed Strava access the plugin samples source tiles; without managed access it temporarily renders the selected extent through one or more normal-resolution JOSM viewport captures and then restores the previous viewport.
 5. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 6. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
 7. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
@@ -192,7 +192,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - `palette-samples.csv`, with per-profile strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
-- visible-rendered-layer sampling details: source tile zoom reported by JOSM, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, capture size, and estimated visible tile range
+- visible-rendered-layer sampling details: source tile zoom reported by JOSM, whether a virtual viewport/chunked capture was used, requested and actual capture bounds, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, capture size, chunk count, and estimated visible tile range
 - per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, gradient strength/balance, synthetic center flags, combined detector component weights, and per-detector support statistics
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling
