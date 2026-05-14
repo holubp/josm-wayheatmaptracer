@@ -92,9 +92,26 @@ public final class RenderedHeatmapSampler {
         double rasterScale,
         IntensitySamplingMode intensitySamplingMode
     ) {
+        return sampleProfilesOnScaledRaster(raster, denseScreenPolyline, halfWidthPx, stepPx, colorMode,
+            rasterScale, 1.0, intensitySamplingMode);
+    }
+
+    List<CrossSectionProfile> sampleProfilesOnScaledRaster(
+        BufferedImage raster,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode
+    ) {
         if (denseScreenPolyline.size() < 2) {
             return Collections.emptyList();
         }
+        double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
+            ? sourceCoordinateScale
+            : 1.0;
         List<CrossSectionProfile> profiles = new ArrayList<>();
         for (int i = 0; i < denseScreenPolyline.size(); i++) {
             Point2D.Double current = denseScreenPolyline.get(i);
@@ -108,11 +125,11 @@ public final class RenderedHeatmapSampler {
             List<OffsetSample> offsets = new ArrayList<>();
             int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
             int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
-            boolean anchorWithinRaster = isInsideRaster(raster, baseScreen.x, baseScreen.y);
+            boolean anchorWithinRaster = isInsideRaster(raster, baseScreen.x / coordinateScale, baseScreen.y / coordinateScale);
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = baseScreen.x + normal.x * offset;
                 double y = baseScreen.y + normal.y * offset;
-                double intensity = intensityAt(raster, x, y, colorMode, intensitySamplingMode);
+                double intensity = intensityAt(raster, x / coordinateScale, y / coordinateScale, colorMode, intensitySamplingMode);
                 offsets.add(new OffsetSample(offset, intensity));
             }
             samples.addAll(extractBrightBands(offsets));

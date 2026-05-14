@@ -28,19 +28,33 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportCalibration
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.HeatmapLayerSettingsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegmentAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 
 public class WayHeatmapTracerPlugin extends Plugin {
-    private static final String ALIGN_SHORTCUT_ACTION_KEY = "wayheatmaptracer.align.global";
+    private static final List<ShortcutBinding> ALIGN_SHORTCUTS = List.of(
+        new ShortcutBinding("wayheatmaptracer.align.global", KeyEvent.VK_Y,
+            InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK),
+        new ShortcutBinding("wayheatmaptracer.align.precise.global", KeyEvent.VK_S,
+            InputEvent.ALT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK),
+        new ShortcutBinding("wayheatmaptracer.align.move-nodes.global", KeyEvent.VK_M,
+            InputEvent.ALT_DOWN_MASK | InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK)
+    );
 
     private final List<JosmAction> actions;
     private final AlignWayAction alignWayAction;
+    private final AlignWayAction alignPreciseAction;
+    private final AlignWayAction alignMoveNodesAction;
     private Timer shortcutInstallRetryTimer;
 
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
         this.alignWayAction = new AlignWayAction();
+        this.alignPreciseAction = new AlignWayAction(AlignmentMode.PRECISE_SHAPE);
+        this.alignMoveNodesAction = new AlignWayAction(AlignmentMode.MOVE_EXISTING_NODES);
         this.actions = List.of(
             alignWayAction,
+            alignPreciseAction,
+            alignMoveNodesAction,
             new SelectLongestSegmentAction(),
             new HeatmapLayerSettingsAction(),
             new ExportCalibrationTilesAction(),
@@ -89,43 +103,53 @@ public class WayHeatmapTracerPlugin extends Plugin {
     }
 
     private boolean installGlobalShortcut() {
-        KeyStroke stroke = KeyStroke.getKeyStroke(
-            KeyEvent.VK_Y,
-            InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK
-        );
         boolean installed = false;
 
         if (MainApplication.getMainFrame() != null) {
             JRootPane rootPane = MainApplication.getMainFrame().getRootPane();
             if (rootPane != null) {
-                rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(stroke, ALIGN_SHORTCUT_ACTION_KEY);
-                rootPane.getActionMap().put(ALIGN_SHORTCUT_ACTION_KEY, alignWayAction);
+                installShortcut(rootPane, ALIGN_SHORTCUTS.get(0), alignWayAction);
+                installShortcut(rootPane, ALIGN_SHORTCUTS.get(1), alignPreciseAction);
+                installShortcut(rootPane, ALIGN_SHORTCUTS.get(2), alignMoveNodesAction);
                 installed = true;
             }
         }
         if (MainApplication.getMap() != null && MainApplication.getMap().mapView != null) {
-            MainApplication.getMap().mapView.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(stroke, ALIGN_SHORTCUT_ACTION_KEY);
-            MainApplication.getMap().mapView.getActionMap().put(ALIGN_SHORTCUT_ACTION_KEY, alignWayAction);
+            installShortcut(MainApplication.getMap().mapView, ALIGN_SHORTCUTS.get(0), alignWayAction);
+            installShortcut(MainApplication.getMap().mapView, ALIGN_SHORTCUTS.get(1), alignPreciseAction);
+            installShortcut(MainApplication.getMap().mapView, ALIGN_SHORTCUTS.get(2), alignMoveNodesAction);
             installed = true;
         }
         return installed;
     }
 
     private void uninstallGlobalShortcut() {
-        KeyStroke stroke = KeyStroke.getKeyStroke(
-            KeyEvent.VK_Y,
-            InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK
-        );
         if (MainApplication.getMainFrame() != null) {
             JRootPane rootPane = MainApplication.getMainFrame().getRootPane();
             if (rootPane != null) {
-                rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).remove(stroke);
-                rootPane.getActionMap().remove(ALIGN_SHORTCUT_ACTION_KEY);
+                uninstallShortcuts(rootPane);
             }
         }
         if (MainApplication.getMap() != null && MainApplication.getMap().mapView != null) {
-            MainApplication.getMap().mapView.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).remove(stroke);
-            MainApplication.getMap().mapView.getActionMap().remove(ALIGN_SHORTCUT_ACTION_KEY);
+            uninstallShortcuts(MainApplication.getMap().mapView);
+        }
+    }
+
+    private void installShortcut(JComponent component, ShortcutBinding binding, Action action) {
+        component.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(binding.keyStroke(), binding.actionKey());
+        component.getActionMap().put(binding.actionKey(), action);
+    }
+
+    private void uninstallShortcuts(JComponent component) {
+        for (ShortcutBinding binding : ALIGN_SHORTCUTS) {
+            component.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).remove(binding.keyStroke());
+            component.getActionMap().remove(binding.actionKey());
+        }
+    }
+
+    private record ShortcutBinding(String actionKey, int keyCode, int modifiers) {
+        KeyStroke keyStroke() {
+            return KeyStroke.getKeyStroke(keyCode, modifiers);
         }
     }
 }

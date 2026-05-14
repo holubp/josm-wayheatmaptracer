@@ -58,22 +58,27 @@ public class AlignWayAction extends JosmAction {
 
     private final AlignmentService alignmentService = new AlignmentService();
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
+    private final AlignmentMode forcedAlignmentMode;
     private JDialog activePreviewDialog;
 
     public AlignWayAction() {
+        this(null);
+    }
+
+    public AlignWayAction(AlignmentMode forcedAlignmentMode) {
         super(
-            tr("Align Way to Heatmap"),
+            actionName(forcedAlignmentMode),
             null,
-            tr("Align the selected way geometry to a heatmap imagery layer"),
-            Shortcut.registerShortcut(
-                "wayheatmaptracer:align",
-                tr("WayHeatmapTracer: Align Way to Heatmap"),
-                KeyEvent.VK_Y,
-                Shortcut.CTRL_SHIFT
-            ),
+            actionTooltip(forcedAlignmentMode),
+            shortcut(forcedAlignmentMode),
             true
         );
+        this.forcedAlignmentMode = forcedAlignmentMode;
         putValue("help", HelpUtil.ht("/Plugin/WayHeatmapTracer"));
+    }
+
+    public AlignmentMode forcedAlignmentMode() {
+        return forcedAlignmentMode;
     }
 
     @Override
@@ -95,20 +100,21 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
 
-            ManagedHeatmapConfig config = PluginPreferences.load();
+            ManagedHeatmapConfig config = effectiveConfig(PluginPreferences.load());
             SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
             if (!config.allowUndownloadedAlignment()) {
                 requireDownloadedAreaCoverage(selection, dataSet);
             } else {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
-            ImageryLayer imageryLayer = HeatmapLayerResolver.resolve();
+            ImageryLayer imageryLayer = config.hasManagedAccessValues()
+                ? HeatmapLayerResolver.resolveOptional().orElse(null)
+                : HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
-            AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView);
+            AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, config);
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(result, result.candidates().get(0), "preview-open", PluginLog.currentSlideLog()));
 
-            config = PluginPreferences.load();
             showCandidatePreview(dataSet, selection, result, config);
         } catch (AlignmentService.AlignmentFailureException ex) {
             overlay.hide();
@@ -131,6 +137,59 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    private ManagedHeatmapConfig effectiveConfig(ManagedHeatmapConfig config) {
+        if (forcedAlignmentMode == null) {
+            return config;
+        }
+        PluginLog.verbose("Using one-shot alignment mode override: %s.", forcedAlignmentMode);
+        return config.withAlignmentMode(forcedAlignmentMode);
+    }
+
+    private static String actionName(AlignmentMode forcedAlignmentMode) {
+        if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
+            return tr("Align Way to Heatmap Precisely");
+        }
+        if (forcedAlignmentMode == AlignmentMode.MOVE_EXISTING_NODES) {
+            return tr("Align Way to Heatmap by Moving Nodes");
+        }
+        return tr("Align Way to Heatmap");
+    }
+
+    private static String actionTooltip(AlignmentMode forcedAlignmentMode) {
+        if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
+            return tr("Align the selected way to a heatmap and rebuild the selected segment precisely");
+        }
+        if (forcedAlignmentMode == AlignmentMode.MOVE_EXISTING_NODES) {
+            return tr("Align the selected way to a heatmap by moving the existing selected nodes");
+        }
+        return tr("Align the selected way geometry to a heatmap imagery layer");
+    }
+
+    private static Shortcut shortcut(AlignmentMode forcedAlignmentMode) {
+        if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
+            return Shortcut.registerShortcut(
+                "wayheatmaptracer:align-precise",
+                tr("WayHeatmapTracer: Align Way to Heatmap Precisely"),
+                KeyEvent.VK_S,
+                Shortcut.ALT_CTRL_SHIFT
+            );
+        }
+        if (forcedAlignmentMode == AlignmentMode.MOVE_EXISTING_NODES) {
+            return Shortcut.registerShortcut(
+                "wayheatmaptracer:align-move-nodes",
+                tr("WayHeatmapTracer: Align Way to Heatmap by Moving Nodes"),
+                KeyEvent.VK_M,
+                Shortcut.ALT_CTRL_SHIFT
+            );
+        }
+        return Shortcut.registerShortcut(
+            "wayheatmaptracer:align",
+            tr("WayHeatmapTracer: Align Way to Heatmap"),
+            KeyEvent.VK_Y,
+            Shortcut.CTRL_SHIFT
+        );
+    }
+
     @Override
     protected void updateEnabledState() {
         setEnabled(MainApplication.getLayerManager().getEditDataSet() != null);
@@ -149,7 +208,7 @@ public class AlignWayAction extends JosmAction {
         Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
-        PreviewSelection[] current = {new PreviewSelection(initial, alignmentService.applyCandidate(result, initial))};
+        PreviewSelection[] current = {new PreviewSelection(initial, alignmentService.applyCandidate(result, initial, config))};
         overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
@@ -176,7 +235,7 @@ public class AlignWayAction extends JosmAction {
             if (selected == null) {
                 return;
             }
-            current[0] = new PreviewSelection(selected, alignmentService.applyCandidate(result, selected));
+            current[0] = new PreviewSelection(selected, alignmentService.applyCandidate(result, selected, config));
             overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
             loadingRating[0] = true;
             loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);

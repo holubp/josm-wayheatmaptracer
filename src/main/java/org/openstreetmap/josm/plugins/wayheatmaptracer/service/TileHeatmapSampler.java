@@ -28,6 +28,8 @@ public final class TileHeatmapSampler {
     public static final int TILE_SIZE = 512;
     public static final int DEFAULT_INFERENCE_ZOOM = 15;
     public static final int DEFAULT_VALIDATION_ZOOM = 13;
+    public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
+    public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
     private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png%s";
 
     public TileMosaicSet prepare(
@@ -77,7 +79,8 @@ public final class TileHeatmapSampler {
     public List<RenderedHeatmapSampler.CrossSectionProfile> sampleProfiles(
         TileMosaic mosaic,
         List<EastNorth> sourcePolyline,
-        String detectorMode
+        String detectorMode,
+        ManagedHeatmapConfig config
     ) {
         List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, mosaic.parameters().sampleStepMeters()));
         if (dense.size() < 2) {
@@ -86,29 +89,40 @@ public final class TileHeatmapSampler {
         List<Point2D.Double> local = new ArrayList<>(dense.size());
         for (EastNorth point : dense) {
             Point2D.Double world = toWorldPixel(point, mosaic.zoom());
-            local.add(new Point2D.Double(world.x - mosaic.originWorldPxX(), world.y - mosaic.originWorldPxY()));
+            local.add(new Point2D.Double(
+                (world.x - mosaic.originWorldPxX()) * mosaic.virtualRasterScale(),
+                (world.y - mosaic.originWorldPxY()) * mosaic.virtualRasterScale()
+            ));
         }
-        PluginLog.verbose("Sampling %d fixed-tile cross-sections for color '%s' z%d (halfWidth=%d px/%.1fm, step=%d px/%.1fm).",
+        int referenceHalfWidthPx = Math.max(1, (int) Math.round(mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceStepPx = Math.max(1, (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        PluginLog.verbose("Sampling %d fixed-tile cross-sections for color '%s' z%d (halfWidth=%d ref px/%.1fm, step=%d ref px/%.1fm, virtualScale=%.2f).",
             dense.size(),
             mosaic.color(),
             mosaic.zoom(),
-            mosaic.parameters().halfWidthPx(),
+            referenceHalfWidthPx,
             mosaic.parameters().halfWidthMeters(),
-            mosaic.parameters().stepPx(),
-            mosaic.parameters().sampleStepMeters());
-        return new RenderedHeatmapSampler().sampleProfilesOnRaster(
+            referenceStepPx,
+            mosaic.parameters().sampleStepMeters(),
+            mosaic.virtualRasterScale());
+        return new RenderedHeatmapSampler().sampleProfilesOnScaledRaster(
             mosaic.image(),
             local,
-            mosaic.parameters().halfWidthPx(),
-            mosaic.parameters().stepPx(),
+            referenceHalfWidthPx,
+            referenceStepPx,
             detectorMode,
-            1.0
+            REFERENCE_RASTER_SCALE,
+            mosaic.virtualRasterScale(),
+            config.intensitySamplingMode()
         );
     }
 
     public List<EastNorth> projectCandidate(TileMosaic mosaic, List<Point2D.Double> localPoints) {
         return localPoints.stream()
-            .map(point -> toEastNorth(point.x + mosaic.originWorldPxX(), point.y + mosaic.originWorldPxY(), mosaic.zoom()))
+            .map(point -> toEastNorth(
+                point.x / mosaic.virtualRasterScale() + mosaic.originWorldPxX(),
+                point.y / mosaic.virtualRasterScale() + mosaic.originWorldPxY(),
+                mosaic.zoom()))
             .toList();
     }
 
@@ -153,7 +167,9 @@ public final class TileHeatmapSampler {
             graphics.dispose();
         }
         BufferedImage samplingImage = stableInference ? stableInferenceImage(rawMosaic, color, parameters.zoom()) : rawMosaic;
-        return new TileMosaic(color, parameters.zoom(), originX, originY, samplingImage, records, tileImages, parameters, stableInference);
+        double virtualRasterScale = parameters.metersPerPixel() / REFERENCE_VIEW_METERS_PER_PIXEL * REFERENCE_RASTER_SCALE;
+        return new TileMosaic(color, parameters.zoom(), originX, originY, samplingImage, records, tileImages,
+            parameters, stableInference, virtualRasterScale);
     }
 
     private BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
@@ -446,7 +462,8 @@ public final class TileHeatmapSampler {
         List<TileRecord> tiles,
         Map<String, BufferedImage> tileImages,
         SamplingParameters parameters,
-        boolean stableInferenceRaster
+        boolean stableInferenceRaster,
+        double virtualRasterScale
     ) {
         String toJson() {
             StringBuilder builder = new StringBuilder("{\"color\":\"")
@@ -459,6 +476,8 @@ public final class TileHeatmapSampler {
                 .append(originWorldPxX)
                 .append(",\"originWorldPxY\":")
                 .append(originWorldPxY)
+                .append(",\"virtualRasterScale\":")
+                .append(virtualRasterScale)
                 .append(",\"parameters\":")
                 .append(parameters.toJson())
                 .append(",\"tiles\":[");

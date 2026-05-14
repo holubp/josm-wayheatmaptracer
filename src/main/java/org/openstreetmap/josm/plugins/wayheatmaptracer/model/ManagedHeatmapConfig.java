@@ -33,6 +33,38 @@ public record ManagedHeatmapConfig(
         return notBlank(keyPairId) && notBlank(policy) && notBlank(signature) && notBlank(sessionToken);
     }
 
+    public ManagedHeatmapConfig withAlignmentMode(AlignmentMode mode) {
+        return new ManagedHeatmapConfig(
+            keyPairId,
+            policy,
+            signature,
+            sessionToken,
+            activity,
+            color,
+            manualLayerName,
+            layerRegex,
+            mode == null ? alignmentMode : mode,
+            verbose,
+            debug,
+            multiColorDetection,
+            candidateRatingEnabled,
+            parallelWayAwareness,
+            allowUndownloadedAlignment,
+            adjustJunctionNodes,
+            simplifyEnabled,
+            crossSectionHalfWidthPx,
+            crossSectionStepPx,
+            simplifyTolerancePx,
+            inferenceMode,
+            inferenceZoom,
+            validationZoom,
+            searchHalfWidthMeters,
+            sampleStepMeters,
+            intensitySamplingMode,
+            cacheBuster
+        );
+    }
+
     public String toCookieHeader() {
         return "CloudFront-Key-Pair-Id=" + keyPairId
             + ";CloudFront-Policy=" + policy

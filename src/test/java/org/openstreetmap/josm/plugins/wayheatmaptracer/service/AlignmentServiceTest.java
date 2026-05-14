@@ -106,6 +106,32 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void samplingSummaryReportsManagedSourceTiles() {
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
+            "Managed",
+            2,
+            3,
+            10,
+            20,
+            30,
+            "{}",
+            "{}",
+            "{\"type\":\"managed-source-tiles\",\"algorithm\":\"fixed-scale source tiles\",\"tileZoom\":15,\"bestTileZoom\":15,"
+                + "\"rasterScale\":6.0,\"rasterWidth\":1536,\"rasterHeight\":1024,"
+                + "\"viewMetersPerPixel\":0.389,\"rasterMetersPerPixel\":0.064833,"
+                + "\"effectiveHalfWidthMeters\":7.01,\"effectiveStepMeters\":1.56,"
+                + "\"effectiveHalfWidthPx\":18,\"effectiveStepPx\":4}",
+            "[\"bluered\",\"bluered-combined\"]",
+            "[]",
+            "[]"
+        );
+
+        assertTrue(diagnostics.samplingSummary().contains("managed fixed-resolution source tiles, fixed-scale source tiles"));
+        assertTrue(diagnostics.samplingSummary().contains("source tile z15 (best z15)"));
+        assertTrue(diagnostics.samplingSummary().contains("search half 7.01 m (18 px), step 1.56 m (4 px)"));
+    }
+
+    @Test
     void candidateSwitchUsesStoredSlideTimeGeometryWithoutCurrentMapView() {
         AlignmentService service = new AlignmentService();
         SelectionContext selection = selection(3);
@@ -193,8 +219,8 @@ class AlignmentServiceTest {
             InferenceMode.STABLE_FIXED_SCALE,
             15,
             13,
-            28.0,
-            6.0,
+            7.01,
+            1.56,
             IntensitySamplingMode.COLOR_MAPPING,
             0L
         );

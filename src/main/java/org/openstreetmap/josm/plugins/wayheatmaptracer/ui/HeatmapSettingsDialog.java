@@ -186,8 +186,8 @@ public final class HeatmapSettingsDialog {
             (InferenceMode) inferenceMode.getSelectedItem(),
             parseInt(inferenceZoom.getText(), 15),
             parseInt(validationZoom.getText(), 13),
-            parseDouble(searchHalfWidthMeters.getText(), 28.0),
-            parseDouble(sampleStepMeters.getText(), 6.0),
+            parseDouble(searchHalfWidthMeters.getText(), 7.01),
+            parseDouble(sampleStepMeters.getText(), 1.56),
             (IntensitySamplingMode) intensitySamplingMode.getSelectedItem(),
             cacheBuster
         ));

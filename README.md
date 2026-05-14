@@ -85,9 +85,9 @@ The current implementation is designed for private development:
 - Heatmap interpretation is strongest for `hot`, `bluered`, and `gray`. `blue` and `purple` are supported, but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray.
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
-- Because the current alignment path intentionally uses the visible rendered heatmap layer, color and tile rendering still come from the current view like `0.2.0`. The detector keeps the search corridor roughly ground-scale stable across zoom levels and reports the effective view scale, search half-width, and step in the preview/debug output.
-- The whole selected segment must be inside the current map viewport when running alignment. If part of the segment is outside the captured visible heatmap raster, the plugin refuses to slide rather than inventing zero-signal geometry at the off-screen end.
-- Managed Strava settings still create and refresh the visible heatmap layer, but fixed source-tile inference is not used by the current sliding core.
+- With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
+- Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the whole selected segment must be inside the current map viewport.
+- Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The default fixed-scale search is calibrated to the good z15 setup: source tile z15, 6.0x reference raster, 0.389 m/px reference view, about 7.01 m search half-width, and about 1.56 m sampling step.
 
 ## Build
 
@@ -117,9 +117,9 @@ build/libs/wayheatmaptracer.jar
 4. Click `Paste cookie header...`, paste the copied cookie header into the small window, and press `OK`.
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
-7. Enable `Use all color schemes for detection` if you want the detector to classify the same visible rendered layer through all supported palette modes and show those alternatives in the preview.
+7. Enable `Use all color schemes for detection` if you want the detector to classify the same source color through all supported palette modes and show those alternatives in the preview.
 8. Leave `Intensity source` at `Color mapping` for normal Strava heatmap work. Use `Direct luminance`, `Direct max channel`, or `Direct alpha` only for scalar rendered imagery or diagnostics where pixel brightness/opacity already is the intended intensity.
-9. The inference zoom, validation zoom, search-width-meters, and sample-step-meters fields are retained as advanced settings, but the current sliding core uses the visible rendered layer. The classic pixel half-width/step settings are interpreted at a normal reference view scale and converted to effective pixels at the current zoom.
+9. For fixed-resolution sliding, start with `Stable fixed scale`, inference zoom `15`, validation zoom `13`, search half-width `7.01`, and sample step `1.56`. These reproduce the z15/reference-raster setup that has been working well in recent tests.
 10. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
@@ -127,10 +127,10 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: retained for configuration/debug compatibility, but not used by the current visible-layer sliding core.
-- `Cross-section half-width px` and `Cross-section step px`: interpreted at the normal reference view scale, then converted to effective screen pixels for the current zoom so the physical search corridor stays more consistent when zooming in or out.
+- `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` applies the fixed-scale heatmap preparation before ridge detection; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
+- `Cross-section half-width px` and `Cross-section step px`: used by the legacy visible-layer fallback. Fixed source-tile alignment uses the meter-based fields above and converts them to the same 0.389 m/px reference view scale reported in the preview.
 - `Intensity source`: `Color mapping` is the default and should be used for normal Strava heatmap color schemes. Direct modes bypass palette semantics and use rendered pixel luminance, max channel, or alpha as scalar intensity; when a direct mode is selected, multi-color detection collapses to one direct detector because color-scheme alternatives no longer apply.
-- `Use all color schemes for detection`: runs multiple palette classifiers on the visible rendered layer and shows their separate ridge candidates in the preview. Multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. Experimental `bluered-combined`, `gray-combined`, and `multi-combined` modes first fuse named color-to-intensity mappings into one intensity field, then run the same ridge tracker on that fused field.
+- `Use all color schemes for detection`: runs multiple palette classifiers on the selected source color and shows their separate ridge candidates in the preview. Multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. Experimental `bluered-combined`, `gray-combined`, and `multi-combined` modes first fuse named color-to-intensity mappings into one intensity field, then run the same ridge tracker on that fused field.
 - `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: retained in settings, but not used by the current sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
@@ -139,12 +139,18 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
 - `Bypass managed tile cache...`: use after expired cookies or failed authentication may have caused JOSM to cache placeholder tiles. It changes the managed layer URL so JOSM fetches fresh visible-layer tiles after you press `OK`.
 
+Shortcuts:
+
+- `Ctrl+Shift+Y`: align using the mode saved in settings.
+- `Alt+Ctrl+Shift+S`: align once in `Precise Shape` mode without changing saved settings.
+- `Alt+Ctrl+Shift+M`: align once in `Move Existing Nodes` mode without changing saved settings.
+
 ### 3. Align Existing Ways
 
 1. Download the OSM area around the way unless you intentionally enabled the no-download option.
 2. Select exactly one way. To align only part of it, select the way and the two endpoint nodes of the segment.
 3. For long ways, select the way and run `More tools -> Select Longest Heatmap Segment`; the plugin selects the longest section bounded by endpoints or junctions.
-4. Pan/zoom so the whole selected segment is visible in the map view.
+4. With managed Strava access configured, the selected segment does not need to be fully visible on screen. Without managed access, pan/zoom so the whole selected segment is visible in the map view.
 5. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 6. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
 7. Use the ridge selector if another candidate better matches the heatmap and ground evidence.

@@ -69,6 +69,8 @@ public record AlignmentDiagnostics(
         StringBuilder summary = new StringBuilder();
         if ("rendered-visible-layer".equals(type)) {
             summary.append("visible rendered layer");
+        } else if ("managed-source-tiles".equals(type)) {
+            summary.append("managed fixed-resolution source tiles");
         } else if (!type.isBlank()) {
             summary.append(type);
         } else {

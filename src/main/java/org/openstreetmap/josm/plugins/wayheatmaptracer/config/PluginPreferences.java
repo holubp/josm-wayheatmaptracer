@@ -71,8 +71,8 @@ public final class PluginPreferences {
             InferenceMode.fromPreference(pref.get(INFERENCE_MODE, InferenceMode.STABLE_FIXED_SCALE.name())),
             clampZoom(pref.getInt(INFERENCE_ZOOM, 15), 10, 16),
             clampZoom(pref.getInt(VALIDATION_ZOOM, 13), 10, 16),
-            Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 28.0)),
-            Math.max(0.5, pref.getDouble(SAMPLE_STEP_METERS, 6.0)),
+            Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 7.01)),
+            Math.max(0.5, pref.getDouble(SAMPLE_STEP_METERS, 1.56)),
             IntensitySamplingMode.fromPreference(pref.get(INTENSITY_SAMPLING_MODE, IntensitySamplingMode.COLOR_MAPPING.name())),
             Math.max(0L, pref.getLong(CACHE_BUSTER, 0L))
         );
@@ -159,8 +159,8 @@ public final class PluginPreferences {
             InferenceMode.STABLE_FIXED_SCALE,
             15,
             13,
-            28.0,
-            6.0,
+            7.01,
+            1.56,
             IntensitySamplingMode.COLOR_MAPPING,
             0L
         );

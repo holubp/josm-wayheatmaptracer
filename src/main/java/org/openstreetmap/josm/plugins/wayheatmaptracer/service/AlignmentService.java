@@ -49,7 +49,7 @@ public final class AlignmentService {
         "multi-combined"
     );
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
-    private static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
+    private static final double REFERENCE_VIEW_METERS_PER_PIXEL = TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
     private static final int MIN_EFFECTIVE_HALF_WIDTH_PX = 6;
     private static final int MAX_EFFECTIVE_HALF_WIDTH_PX = 120;
     private static final int MIN_EFFECTIVE_STEP_PX = 1;
@@ -58,15 +58,27 @@ public final class AlignmentService {
     private static final double LOCAL_NODE_SEARCH_METERS = 35.0;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+    private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
     private final RidgeTracker ridgeTracker = new RidgeTracker();
     private final PathOptimizer optimizer = new PathOptimizer();
     private final GeometryPostProcessor postProcessor = new GeometryPostProcessor();
 
     public AlignmentResult align(SelectionContext selection, ImageryLayer imageryLayer, MapView mapView) {
+        return align(selection, imageryLayer, mapView, PluginPreferences.load());
+    }
+
+    public AlignmentResult align(
+        SelectionContext selection,
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        ManagedHeatmapConfig config
+    ) {
+        if (useManagedTileAlignment(config)) {
+            return alignFromManagedTiles(selection, imageryLayer, mapView, config);
+        }
         if (imageryLayer == null) {
             throw new IllegalStateException("No visible heatmap imagery layer was resolved.");
         }
-        ManagedHeatmapConfig config = PluginPreferences.load();
         PluginLog.verbose("Starting v0.2-compatible visible-layer alignment for way %d segment [%d..%d], nodes=%d, fixed=%d, layer='%s'.",
             selection.way().getUniqueId(),
             selection.startIndex(),
@@ -154,6 +166,73 @@ public final class AlignmentService {
         return new AlignmentResult(selection, raster, candidates, sourcePolyline, preview, nodeMoves, diagnostics, null);
     }
 
+    private AlignmentResult alignFromManagedTiles(
+        SelectionContext selection,
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        ManagedHeatmapConfig config
+    ) {
+        List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
+        List<String> colorModes = detectionColorModes(config);
+        String sourceColor = normalizedVisibleColor(config);
+        PluginLog.verbose("Starting fixed-source-tile alignment for way %d segment [%d..%d], nodes=%d, fixed=%d, sourceColor=%s, modes=%s.",
+            selection.way().getUniqueId(),
+            selection.startIndex(),
+            selection.endIndex(),
+            selection.segmentNodes().size(),
+            selection.fixedNodes().size(),
+            sourceColor,
+            colorModes);
+        PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
+
+        long t0 = System.nanoTime();
+        TileHeatmapSampler.TileMosaicSet mosaics = tileSampler.prepare(config, sourcePolyline, List.of(sourceColor), isSketchLikeSelection(selection));
+        TileHeatmapSampler.TileMosaic mosaic = mosaics.require(sourceColor);
+        long t1 = System.nanoTime();
+        EffectiveSampling effectiveSampling = fixedTileEffectiveSampling(mosaic);
+        DetectionResult detection = detectTileCandidates(mosaic, sourcePolyline, config, colorModes, effectiveSampling);
+        List<CenterlineCandidate> candidates = detection.candidates();
+        long t2 = System.nanoTime();
+        if (candidates.isEmpty()) {
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+                detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
+                mosaics, mosaic, t0, t1, t2, t2);
+            throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles.", partial);
+        }
+
+        CenterlineCandidate primary = candidates.get(0);
+        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, mapView);
+        List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
+        long t3 = System.nanoTime();
+
+        AlignmentDiagnostics diagnostics = tileDiagnostics(
+            imageryLayer,
+            candidates.size(),
+            nodeMoves.size(),
+            t0,
+            t1,
+            t2,
+            t3,
+            config,
+            selection,
+            colorModes,
+            candidates,
+            detection.profilesJson(),
+            detection.profilePeaksCsv(),
+            detection.paletteSamplesCsv(),
+            effectiveSampling,
+            mosaics,
+            mosaic
+        );
+        PluginLog.verbose("Fixed-source-tile alignment finished: tiles=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
+            millisBetween(t0, t1), millisBetween(t1, t2), millisBetween(t2, t3), candidates.size(), nodeMoves.size());
+        return new AlignmentResult(selection, null, candidates, sourcePolyline, preview, nodeMoves, diagnostics, mosaics);
+    }
+
+    private boolean useManagedTileAlignment(ManagedHeatmapConfig config) {
+        return config != null && config.hasManagedAccessValues();
+    }
+
     private AlignmentResult partialResult(
         SelectionContext selection,
         BufferedImage raster,
@@ -181,6 +260,36 @@ public final class AlignmentService {
             diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
                 List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling),
             null
+        );
+    }
+
+    private AlignmentResult partialTileResult(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        ImageryLayer imageryLayer,
+        ManagedHeatmapConfig config,
+        List<String> colorModes,
+        String profilesJson,
+        String profilePeaksCsv,
+        String paletteSamplesCsv,
+        EffectiveSampling effectiveSampling,
+        TileHeatmapSampler.TileMosaicSet mosaics,
+        TileHeatmapSampler.TileMosaic mosaic,
+        long t0,
+        long t1,
+        long t2,
+        long t3
+    ) {
+        return new AlignmentResult(
+            selection,
+            null,
+            List.of(),
+            sourcePolyline,
+            sourcePolyline,
+            List.of(),
+            tileDiagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, config, selection, colorModes,
+                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, mosaics, mosaic),
+            mosaics
         );
     }
 
@@ -225,6 +334,57 @@ public final class AlignmentService {
                 candidates.add(withMode);
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
+        }
+        java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
+            ? java.util.Comparator
+                .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config, effectiveSampling))
+                .reversed()
+                .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+            : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
+        List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
+        return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
+            profilePeaksCsv.toString(), paletteSamplesCsv.toString(), outsideRasterProfiles, totalProfiles);
+    }
+
+    private DetectionResult detectTileCandidates(
+        TileHeatmapSampler.TileMosaic mosaic,
+        List<EastNorth> sourcePolyline,
+        ManagedHeatmapConfig config,
+        List<String> colorModes,
+        EffectiveSampling effectiveSampling
+    ) {
+        List<CenterlineCandidate> candidates = new ArrayList<>();
+        StringBuilder profileDiagnostics = new StringBuilder("[");
+        StringBuilder profilePeaksCsv = new StringBuilder(
+            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,synthetic_center\n");
+        StringBuilder paletteSamplesCsv = new StringBuilder(
+            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
+        IntensitySamplingMode intensitySource = intensitySamplingMode(config);
+        int modeIndex = 0;
+        int outsideRasterProfiles = 0;
+        int totalProfiles = 0;
+        for (String colorMode : colorModes) {
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
+                tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+            if (modeIndex == 0) {
+                totalProfiles = profiles.size();
+                outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
+            }
+            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
+            appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
+            if (modeIndex++ > 0) {
+                profileDiagnostics.append(',');
+            }
+            profileDiagnostics.append(profilesToJson(colorMode, intensitySource, profiles, colorCandidates));
+            for (CenterlineCandidate candidate : colorCandidates) {
+                CenterlineCandidate withMode = candidate
+                    .withId(colorMode + "/" + candidate.id())
+                    .withEvidence(candidate.evidence().withDetectorMode(colorMode));
+                withMode = withMode.withEastNorthPoints(tileSampler.projectCandidate(mosaic, withMode.screenPoints()));
+                candidates.add(withMode);
+            }
+            PluginLog.verbose("Fixed tile color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
         java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
             ? java.util.Comparator
@@ -383,7 +543,7 @@ public final class AlignmentService {
         double p95Delta = percentileAbs(deltas, 0.95);
         double p95Acceleration = percentileAbs(accelerations, 0.95);
         double normalization = effectiveSampling.rasterMetersPerPixel() / effectiveSampling.referenceRasterMetersPerPixel();
-        double edgeLimit = effectiveSampling.effectiveHalfWidthPx() * RenderedHeatmapSampler.RASTER_SCALE * 0.90;
+        double edgeLimit = effectiveSampling.effectiveHalfWidthPx() * effectiveSampling.rasterScale() * 0.90;
         long edgeCount = offsets.stream().filter(offset -> Math.abs(offset) >= edgeLimit).count();
         return new CandidateMetrics(
             absMean,
@@ -455,7 +615,10 @@ public final class AlignmentService {
     }
 
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate) {
-        ManagedHeatmapConfig config = PluginPreferences.load();
+        return applyCandidate(base, candidate, PluginPreferences.load());
+    }
+
+    public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate, ManagedHeatmapConfig config) {
         List<EastNorth> preview = optimize(base.selection(), base.sourcePolyline(), candidate, config, null);
         List<NodeMove> nodeMoves = interpolateMoves(base.selection(), preview);
         PluginLog.verbose("Using candidate %s for preview/apply: previewPoints=%d movableNodes=%d.",
@@ -812,7 +975,26 @@ public final class AlignmentService {
             REFERENCE_VIEW_METERS_PER_PIXEL,
             effectiveViewMetersPerPixel,
             targetHalfWidthMeters,
-            targetStepMeters
+            targetStepMeters,
+            RenderedHeatmapSampler.RASTER_SCALE
+        );
+    }
+
+    private EffectiveSampling fixedTileEffectiveSampling(TileHeatmapSampler.TileMosaic mosaic) {
+        double targetHalfWidthMeters = mosaic.parameters().halfWidthMeters();
+        double targetStepMeters = mosaic.parameters().sampleStepMeters();
+        int referenceHalfWidthPx = Math.max(1, (int) Math.round(targetHalfWidthMeters / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceStepPx = Math.max(1, (int) Math.round(targetStepMeters / REFERENCE_VIEW_METERS_PER_PIXEL));
+        return new EffectiveSampling(
+            referenceHalfWidthPx,
+            referenceStepPx,
+            referenceHalfWidthPx,
+            Math.max(1, Math.min(referenceStepPx, Math.max(1, referenceHalfWidthPx))),
+            REFERENCE_VIEW_METERS_PER_PIXEL,
+            REFERENCE_VIEW_METERS_PER_PIXEL,
+            targetHalfWidthMeters,
+            targetStepMeters,
+            TileHeatmapSampler.REFERENCE_RASTER_SCALE
         );
     }
 
@@ -867,6 +1049,77 @@ public final class AlignmentService {
         );
     }
 
+    private AlignmentDiagnostics tileDiagnostics(
+        ImageryLayer imageryLayer,
+        int candidateCount,
+        int nodeMoveCount,
+        long t0,
+        long t1,
+        long t2,
+        long t3,
+        ManagedHeatmapConfig config,
+        SelectionContext selection,
+        List<String> colorModes,
+        List<CenterlineCandidate> candidates,
+        String profilesJson,
+        String profilePeaksCsv,
+        String paletteSamplesCsv,
+        EffectiveSampling effectiveSampling,
+        TileHeatmapSampler.TileMosaicSet mosaics,
+        TileHeatmapSampler.TileMosaic mosaic
+    ) {
+        String layerName = imageryLayer == null ? "Managed Strava source tiles" : imageryLayer.getName();
+        return new AlignmentDiagnostics(
+            layerName,
+            candidateCount,
+            nodeMoveCount,
+            millisBetween(t0, t1),
+            millisBetween(t1, t2),
+            millisBetween(t2, t3),
+            config.toRedactedJson(),
+            selectionToJson(selection),
+            tileSamplingJson(mosaics, mosaic, effectiveSampling),
+            stringArray(colorModes),
+            candidatesToJson(candidates, config, effectiveSampling),
+            profilesJson == null || profilesJson.isBlank() ? "[]" : profilesJson,
+            candidateMetricsCsv(candidates, config, effectiveSampling),
+            profilePeaksCsv == null ? "" : profilePeaksCsv,
+            paletteSamplesCsv == null ? "" : paletteSamplesCsv
+        );
+    }
+
+    private String tileSamplingJson(
+        TileHeatmapSampler.TileMosaicSet mosaics,
+        TileHeatmapSampler.TileMosaic mosaic,
+        EffectiveSampling effectiveSampling
+    ) {
+        return "{"
+            + "\"type\":\"managed-source-tiles\","
+            + "\"algorithm\":\"fixed-scale source tiles\","
+            + "\"tileZoom\":" + mosaic.zoom() + ','
+            + "\"bestTileZoom\":" + mosaics.inferenceZoom() + ','
+            + "\"sourceTileZoom\":" + mosaic.zoom() + ','
+            + "\"bestSourceTileZoom\":" + mosaics.inferenceZoom() + ','
+            + "\"rasterScale\":" + effectiveSampling.rasterScale() + ','
+            + "\"rasterWidth\":" + mosaic.image().getWidth() + ','
+            + "\"rasterHeight\":" + mosaic.image().getHeight() + ','
+            + "\"sourceMetersPerPixel\":" + jsonDouble(mosaic.parameters().metersPerPixel()) + ','
+            + "\"virtualRasterScale\":" + jsonDouble(mosaic.virtualRasterScale()) + ','
+            + "\"viewMetersPerPixel\":" + jsonDouble(effectiveSampling.viewMetersPerPixel()) + ','
+            + "\"rasterMetersPerPixel\":" + jsonDouble(effectiveSampling.rasterMetersPerPixel()) + ','
+            + "\"referenceViewMetersPerPixel\":" + jsonDouble(effectiveSampling.referenceViewMetersPerPixel()) + ','
+            + "\"configuredHalfWidthPx\":" + effectiveSampling.configuredHalfWidthPx() + ','
+            + "\"configuredStepPx\":" + effectiveSampling.configuredStepPx() + ','
+            + "\"effectiveHalfWidthPx\":" + effectiveSampling.effectiveHalfWidthPx() + ','
+            + "\"effectiveStepPx\":" + effectiveSampling.effectiveStepPx() + ','
+            + "\"targetHalfWidthMeters\":" + jsonDouble(effectiveSampling.targetHalfWidthMeters()) + ','
+            + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.targetStepMeters()) + ','
+            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthMeters()) + ','
+            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepMeters()) + ','
+            + "\"tileManifest\":" + mosaics.manifestJson()
+            + "}";
+    }
+
     private String samplingJson(ImageryLayer imageryLayer, BufferedImage raster, MapView mapView, EffectiveSampling effectiveSampling) {
         int zoom = -1;
         int bestZoom = -1;
@@ -878,7 +1131,7 @@ public final class AlignmentService {
         int viewHeight = mapView == null ? 0 : mapView.getHeight();
         double dist100Pixel = safeDouble(mapView == null ? Double.NaN : mapView.getDist100Pixel());
         double viewMetersPerPixel = dist100Pixel > 0.0 ? dist100Pixel / 100.0 : Double.NaN;
-        double rasterMetersPerPixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE : Double.NaN;
+        double rasterMetersPerPixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel / effectiveSampling.rasterScale() : Double.NaN;
         double mapScale = safeDouble(mapView == null ? Double.NaN : mapView.getScale());
         EastNorth center = mapView == null ? null : mapView.getCenter();
         LatLon centerLatLon = center == null ? null : ProjectionRegistry.getProjection().eastNorth2latlon(center);
@@ -892,7 +1145,7 @@ public final class AlignmentService {
             + "\"bestTileZoom\":" + nullableInt(bestZoom) + ','
             + "\"sourceTileZoom\":" + nullableInt(zoom) + ','
             + "\"bestSourceTileZoom\":" + nullableInt(bestZoom) + ','
-            + "\"rasterScale\":" + RenderedHeatmapSampler.RASTER_SCALE + ','
+            + "\"rasterScale\":" + effectiveSampling.rasterScale() + ','
             + "\"rasterWidth\":" + (raster == null ? 0 : raster.getWidth()) + ','
             + "\"rasterHeight\":" + (raster == null ? 0 : raster.getHeight()) + ','
             + "\"viewWidthPx\":" + viewWidth + ','
@@ -1393,14 +1646,15 @@ public final class AlignmentService {
         double referenceViewMetersPerPixel,
         double viewMetersPerPixel,
         double targetHalfWidthMeters,
-        double targetStepMeters
+        double targetStepMeters,
+        double rasterScale
     ) {
         double referenceRasterMetersPerPixel() {
-            return referenceViewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE;
+            return referenceViewMetersPerPixel / rasterScale;
         }
 
         double rasterMetersPerPixel() {
-            return viewMetersPerPixel / RenderedHeatmapSampler.RASTER_SCALE;
+            return viewMetersPerPixel / rasterScale;
         }
 
         double effectiveHalfWidthMeters() {
