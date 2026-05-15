@@ -263,10 +263,28 @@ public final class RenderedHeatmapSampler {
         }
         double midpoint = (offsets.get(start).offsetPx + offsets.get(end).offsetPx) / 2.0;
         double weightedCenter = weightSum == 0.0 ? midpoint : weightedOffset / weightSum;
-        double center = midpoint * 0.70 + weightedCenter * 0.30;
+        double shoulderCenter = midpoint * 0.70 + weightedCenter * 0.30;
         double supportWidth = Math.abs(offsets.get(end).offsetPx - offsets.get(start).offsetPx);
+        double center = shoulderCenter;
+        double sampleStep = estimateSampleStep(offsets);
+        if (supportWidth >= sampleStep * 3.0 && peakIntensity >= 0.45) {
+            double coreThreshold = Math.max(stats.noiseFloor() + Math.max(0.0, peakIntensity - stats.noiseFloor()) * 0.72,
+                peakIntensity * 0.86);
+            int coreStart = peakIndex;
+            int coreEnd = peakIndex;
+            while (coreStart > start && smoothed.get(coreStart - 1).intensity >= coreThreshold) {
+                coreStart--;
+            }
+            while (coreEnd < end && smoothed.get(coreEnd + 1).intensity >= coreThreshold) {
+                coreEnd++;
+            }
+            if (coreStart <= coreEnd) {
+                double coreCenter = bandCenter(offsets, smoothed, coreStart, coreEnd);
+                center = coreCenter * 0.85 + shoulderCenter * 0.15;
+            }
+        }
         double confidence = Math.min(1.0, peakIntensity * (0.88 + Math.min(0.12, supportWidth / 80.0)));
-        if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + estimateSampleStep(offsets)) {
+        if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + sampleStep) {
             center = offsets.get(peakIndex).offsetPx;
         }
         double prominence = Math.max(0.0, peakIntensity - stats.noiseFloor());
@@ -279,6 +297,19 @@ public final class RenderedHeatmapSampler {
             + Math.min(0.08, supportWidth / 120.0));
         return new CrossSectionPeak(center, calibratedConfidence, supportWidth, false,
             prominence, stats.noiseFloor(), stats.maxIntensity(), gradient.strength(), gradient.balance());
+    }
+
+    private double bandCenter(List<OffsetSample> offsets, List<OffsetSample> values, int start, int end) {
+        double weightedOffset = 0.0;
+        double weightSum = 0.0;
+        for (int i = start; i <= end; i++) {
+            double weight = values.get(i).intensity;
+            weightedOffset += offsets.get(i).offsetPx * weight;
+            weightSum += weight;
+        }
+        double midpoint = (offsets.get(start).offsetPx + offsets.get(end).offsetPx) / 2.0;
+        double weightedCenter = weightSum == 0.0 ? midpoint : weightedOffset / weightSum;
+        return midpoint * 0.70 + weightedCenter * 0.30;
     }
 
     private GradientEvidence gradientEvidence(List<OffsetSample> smoothed, int peakIndex, int start, int end) {

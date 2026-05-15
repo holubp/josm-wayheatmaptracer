@@ -173,7 +173,12 @@ public final class TileHeatmapSampler {
     }
 
     private BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
-        int radius = clamp(20 - zoom, 3, 6);
+        int radius = stableInferenceDilationRadius(zoom);
+        if (radius <= 0) {
+            PluginLog.verbose("Using raw stable fixed-scale inference raster for color '%s' z%d without heat dilation.",
+                color, zoom);
+            return source;
+        }
         int width = source.getWidth();
         int height = source.getHeight();
         int[] horizontalArgb = new int[width * height];
@@ -214,6 +219,13 @@ public final class TileHeatmapSampler {
         PluginLog.verbose("Built stable fixed-scale inference raster for color '%s' z%d using %d px heat dilation.",
             color, zoom, radius);
         return expanded;
+    }
+
+    static int stableInferenceDilationRadius(int zoom) {
+        if (zoom >= 15) {
+            return 0;
+        }
+        return clamp(15 - zoom, 1, 2);
     }
 
     private double detectorIntensity(int argb, String color) {
@@ -377,7 +389,7 @@ public final class TileHeatmapSampler {
         return Math.max(min, Math.min(max, zoom));
     }
 
-    private int clamp(int value, int min, int max) {
+    private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
 

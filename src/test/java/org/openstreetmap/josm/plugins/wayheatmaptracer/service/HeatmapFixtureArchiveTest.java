@@ -328,6 +328,33 @@ class HeatmapFixtureArchiveTest {
             "Cross-section peaks should carry gradient evidence for diagnostics and ridge confirmation");
     }
 
+    @Test
+    void saturatedBlueredCorridorUsesHighIntensityCoreCenter() {
+        BufferedImage image = new BufferedImage(80, 80, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            for (int y = 8; y <= 70; y++) {
+                image.setRGB(x, y, 0xFF326EFF);
+            }
+            for (int y = 28; y <= 32; y++) {
+                image.setRGB(x, y, 0xFFFF466E);
+            }
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 30), new Point2D.Double(70, 30)),
+            34,
+            2,
+            "bluered",
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 3.0 && peak.intensity() > 0.65)),
+            "A broad cooler shoulder must not pull the detected bluered ridge away from the saturated warm center");
+    }
+
     private static BufferedImage readImage(ZipFile zip, String entryName) throws Exception {
         ZipEntry entry = zip.getEntry(entryName);
         assertNotNull(entry, "Missing fixture entry " + entryName);

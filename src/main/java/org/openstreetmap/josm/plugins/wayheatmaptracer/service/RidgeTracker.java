@@ -241,20 +241,39 @@ public final class RidgeTracker {
             return offsets;
         }
         List<Double> current = new ArrayList<>(offsets);
-        for (int pass = 0; pass < 2; pass++) {
+        for (int pass = 0; pass < 4; pass++) {
             List<Double> next = new ArrayList<>(current);
             for (int i = 1; i < current.size() - 1; i++) {
                 double intensity = intensities.get(i);
-                double smoothing = Math.max(0.0, Math.min(0.75, 0.75 - intensity * 0.70));
+                double leftDelta = current.get(i) - current.get(i - 1);
+                double rightDelta = current.get(i + 1) - current.get(i);
+                double neighborAverage = (current.get(i - 1) + current.get(i + 1)) / 2.0;
+                double residual = Math.abs(current.get(i) - neighborAverage);
+                boolean alternating = Math.abs(leftDelta) >= 4.0
+                    && Math.abs(rightDelta) >= 4.0
+                    && Math.signum(leftDelta) != Math.signum(rightDelta)
+                    && residual >= 6.0;
+                double lowConfidenceSmoothing = 0.45 * clamp01((0.55 - intensity) / 0.55);
+                double aliasingSmoothing = alternating ? (intensity >= 0.80 ? 0.70 : 0.55) : 0.0;
+                double smoothing = Math.max(lowConfidenceSmoothing, aliasingSmoothing);
                 if (smoothing <= 0.01) {
                     continue;
                 }
-                double neighborAverage = (current.get(i - 1) + current.get(i + 1)) / 2.0;
                 next.set(i, current.get(i) * (1.0 - smoothing) + neighborAverage * smoothing);
             }
             current = next;
         }
         return current;
+    }
+
+    private double clamp01(double value) {
+        if (value <= 0.0) {
+            return 0.0;
+        }
+        if (value >= 1.0) {
+            return 1.0;
+        }
+        return value;
     }
 
     private CandidateEvidence evidenceFor(

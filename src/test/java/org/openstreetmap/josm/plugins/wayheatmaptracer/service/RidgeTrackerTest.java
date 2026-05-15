@@ -218,6 +218,25 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void smoothsSaturatedAlternatingShoulderAliasing() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profile(0, 0, 1.00),
+            profile(10, 12, 1.00),
+            profile(20, -12, 1.00),
+            profile(30, 12, 1.00),
+            profile(40, -12, 1.00),
+            profile(50, 0, 1.00)
+        );
+
+        var best = tracker.track(profiles).get(0);
+
+        double maxAbs = best.offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0);
+        assertTrue(maxAbs <= 6.0,
+            "Saturated one-profile shoulder flips are aliasing noise and should be smoothed toward the corridor center");
+    }
+
+    @Test
     void rejectsAlternatingHighIntensityNoise() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(

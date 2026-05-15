@@ -25,6 +25,13 @@ class TileHeatmapSamplerTest {
         assertEquals(13, TileHeatmapSampler.effectiveValidationZoom(config));
     }
 
+    @Test
+    void stableFixedScaleDoesNotDilateDefaultZ15InferenceRaster() {
+        assertEquals(0, TileHeatmapSampler.stableInferenceDilationRadius(15));
+        assertEquals(1, TileHeatmapSampler.stableInferenceDilationRadius(14));
+        assertEquals(2, TileHeatmapSampler.stableInferenceDilationRadius(13));
+    }
+
     private ManagedHeatmapConfig config(InferenceMode inferenceMode, int inferenceZoom, int validationZoom) {
         return new ManagedHeatmapConfig(
             "k", "p", "s", "t",
