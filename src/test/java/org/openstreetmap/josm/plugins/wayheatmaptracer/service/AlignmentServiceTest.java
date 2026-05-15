@@ -17,6 +17,7 @@ import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -149,7 +150,7 @@ class AlignmentServiceTest {
             new EastNorth(0.0, 0.0),
             new EastNorth(10.0, 10.0),
             new EastNorth(20.0, 0.0)
-        ));
+        )).withEvidence(signalEvidence());
         AlignmentResult base = new AlignmentResult(
             selection,
             null,
@@ -176,6 +177,36 @@ class AlignmentServiceTest {
             > AlignmentService.detectorPrior("bluered", "dual-corridor"));
         assertTrue(AlignmentService.detectorPrior("bluered", "bluered")
             > AlignmentService.detectorPrior("bluered", "hot"));
+    }
+
+    @Test
+    void candidateSwitchRejectsNoSignalCandidate() {
+        AlignmentService service = new AlignmentService();
+        SelectionContext selection = selection(3);
+        List<EastNorth> source = List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(10.0, 0.0),
+            new EastNorth(20.0, 0.0)
+        );
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "hot/ridge-1",
+            1.0,
+            List.of(),
+            List.of()
+        ).withEastNorthPoints(source);
+        AlignmentResult base = new AlignmentResult(
+            selection,
+            null,
+            List.of(candidate),
+            source,
+            source,
+            List.of(),
+            new AlignmentDiagnostics("Strava", 1, 0, 0, 0, 0, "{}", "{}", "{}", "[\"hot\"]", "[]", "[]"),
+            null
+        );
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> service.applyCandidate(base, candidate));
     }
 
     private SelectionContext selection(int nodeCount) {
@@ -224,6 +255,10 @@ class AlignmentServiceTest {
             IntensitySamplingMode.COLOR_MAPPING,
             0L
         );
+    }
+
+    private CandidateEvidence signalEvidence() {
+        return new CandidateEvidence("hot", 3, 3, 0, 0, 2.4, 0.8, 0.2, 1.0, 0.4, 0.0, List.of());
     }
 
 }

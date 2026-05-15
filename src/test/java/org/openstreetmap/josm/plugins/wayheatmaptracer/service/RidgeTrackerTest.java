@@ -139,6 +139,26 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void bridgesSamplerFallbackGapsWithoutSnappingBackToSourceAxis() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profile(0, 14, 0.82),
+            profile(10, 14, 0.80),
+            fallbackProfile(20),
+            fallbackProfile(30),
+            profile(40, 15, 0.81),
+            profile(50, 15, 0.83)
+        );
+
+        var candidates = tracker.track(profiles);
+
+        assertTrue(candidates.size() >= 1);
+        var best = candidates.get(0);
+        assertTrue(best.offsetsPx().stream().allMatch(offset -> offset > 9.0),
+            "Sampler zero-fallback profiles should be bridged like empty no-signal profiles");
+    }
+
+    @Test
     void longUnsupportedRunsKeepLastOffsetLikeV02() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new java.util.ArrayList<>();
@@ -388,6 +408,16 @@ class RidgeTrackerTest {
             new Point2D.Double(x, 0),
             new Point2D.Double(0, 1),
             List.of()
+        );
+    }
+
+    private RenderedHeatmapSampler.CrossSectionProfile fallbackProfile(double x) {
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(x, 0),
+            new Point2D.Double(x, 0),
+            new Point2D.Double(0, 1),
+            List.of(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0, 0.0, true,
+                0.0, 0.0, 0.0, 0.0, 0.0))
         );
     }
 

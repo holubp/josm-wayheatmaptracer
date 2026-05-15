@@ -36,6 +36,7 @@ public final class ReplaceWaySegmentCommand extends Command {
 
     private List<Node> originalWayNodes;
     private final Map<Node, LatLon> originalNodePositions = new IdentityHashMap<>();
+    private final Map<Node, EastNorth> targetNodePositions = new IdentityHashMap<>();
     private final List<Node> createdNodes = new ArrayList<>();
     private final List<Node> removedExistingNodes = new ArrayList<>();
     private List<Node> replacementNodes;
@@ -62,6 +63,7 @@ public final class ReplaceWaySegmentCommand extends Command {
                 getAffectedDataSet().addPrimitive(node);
             }
         }
+        applyTargetNodePositions();
         way.setNodes(replacementNodes);
         for (Node node : removedExistingNodes) {
             if (node.getDataSet() != null && canRemoveDroppedNode(node)) {
@@ -189,6 +191,13 @@ public final class ReplaceWaySegmentCommand extends Command {
         return !node.hasKeys() && node.getReferrers().isEmpty();
     }
 
+    private void applyTargetNodePositions() {
+        for (Map.Entry<Node, EastNorth> entry : targetNodePositions.entrySet()) {
+            entry.getKey().setEastNorth(entry.getValue());
+            entry.getKey().setModified(true);
+        }
+    }
+
     private void appendNode(List<Node> segmentReplacement, Node node, EastNorth target) {
         if (!segmentReplacement.isEmpty() && segmentReplacement.get(segmentReplacement.size() - 1) == node) {
             return;
@@ -197,6 +206,7 @@ public final class ReplaceWaySegmentCommand extends Command {
             originalNodePositions.put(node, node.getCoor());
         }
         if (!selection.fixedNodes().contains(node)) {
+            targetNodePositions.put(node, target);
             node.setEastNorth(target);
             node.setModified(true);
         }

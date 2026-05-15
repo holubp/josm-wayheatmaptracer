@@ -53,6 +53,7 @@ public final class SelectionResolver {
         }
 
         List<Node> segmentNodes = new ArrayList<>(way.getNodes().subList(start, end + 1));
+        SelectionIntegrity.requireNoRepeatedNodeOccurrences(way, start, end);
         Set<Node> fixedNodes = new LinkedHashSet<>();
         if (!adjustJunctionNodes) {
             fixedNodes.add(segmentNodes.get(0));

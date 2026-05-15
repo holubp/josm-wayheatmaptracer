@@ -139,7 +139,7 @@ public final class RidgeTracker {
     private State bestPathForSeed(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double seed) {
         List<State> states = List.of(new State(seed, 0.0, 0.0, List.of(), List.of()));
         for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-            if (profile.peaks().isEmpty()) {
+            if (isUnsupportedProfile(profile)) {
                 List<State> nextStates = new ArrayList<>();
                 for (State previous : states) {
                     nextStates.add(append(previous, new RenderedHeatmapSampler.CrossSectionPeak(previous.offset(), 0.0)));
@@ -288,6 +288,8 @@ public final class RidgeTracker {
             }
             if (profile.peaks().isEmpty()) {
                 empty++;
+            } else if (isUnsupportedProfile(profile)) {
+                empty++;
             } else {
                 ambiguity += Math.max(0, profile.peaks().size() - 1);
             }
@@ -315,6 +317,18 @@ public final class RidgeTracker {
         return profile.peaks().stream()
             .min(Comparator.comparingDouble(peak -> Math.abs(peak.offsetPx() - offset)))
             .orElse(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0));
+    }
+
+    private boolean isUnsupportedProfile(RenderedHeatmapSampler.CrossSectionProfile profile) {
+        return profile.peaks().isEmpty()
+            || profile.peaks().stream().allMatch(this::isUnsupportedFallbackPeak);
+    }
+
+    private boolean isUnsupportedFallbackPeak(RenderedHeatmapSampler.CrossSectionPeak peak) {
+        return peak.syntheticCenter()
+            && peak.supportWidthPx() <= 0.0
+            && peak.prominence() <= 0.0
+            && peak.maxProfileIntensity() <= 0.0;
     }
 
     private record State(

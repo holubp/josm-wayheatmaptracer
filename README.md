@@ -71,8 +71,11 @@ The current implementation is designed for private development:
 - Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
 - Select the longest segment of a selected way bounded by endpoints or junction nodes
-- Optionally simplify the traced centerline before precise-shape apply; practical tolerances are currently around `0.3` to `1.0`
+- Optionally simplify the traced centerline in `Precise Shape`; simplification is applied per fixed-anchor interval after anchors are restored so one part of a multi-leg segment is not collapsed by another part
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
+- Refuse to apply a preview if the selected way or source node coordinates changed while the modeless preview was open
+- Refuse unsafe repeated-node selections where a selected node also occurs elsewhere in the way
+- Reject no-signal or too-weak ridge candidates before preview/apply, while still bridging short unsupported heatmap gaps between real signal
 - Detect multiple nearby ridge candidates and allow the user to pick one
 - Show a modeless preview overlay before applying, including a legend, labeled alternative ridge candidates, and a ridge selector that updates the preview before confirmation
 - Export a redacted last-slide debug bundle for remote debugging, including exact settings, sampled color schemes, logs, original/preview geometry, scoring details, CSV calibration metrics, and heatmap tile images
@@ -156,7 +159,10 @@ Shortcuts:
 7. Use the ridge selector if another candidate better matches the heatmap and ground evidence.
 8. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
 9. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless, and candidate switching/rating uses the geometry captured at slide time rather than reprojecting through the later viewport.
-10. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+10. Avoid editing the selected way while the preview is open. If the way nodes or source coordinates change, the plugin refuses to switch/apply the stale preview and asks you to run the slide again.
+11. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+
+The plugin also refuses repeated-node selections where a node in the selected segment appears more than once in the same way, because the same OSM node cannot safely represent two independent slide positions. Split the way or select a simpler segment before aligning.
 
 For rough new paths, draw a simple way approximately along the heatmap trace, select it, set `Alignment mode` to `Precise Shape`, and run alignment. Rough sketches no longer force precise-shape mode automatically because the live sliding path is kept compatible with the visible-layer algorithm.
 

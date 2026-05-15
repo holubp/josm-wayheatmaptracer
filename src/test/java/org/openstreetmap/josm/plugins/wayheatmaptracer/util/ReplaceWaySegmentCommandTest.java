@@ -93,6 +93,34 @@ class ReplaceWaySegmentCommandTest {
         assertTrue(way.getNodes().indexOf(junction) > 10, "Shared junction must not be consumed near the start of a dense preview");
     }
 
+    @Test
+    void redoReappliesTargetCoordinatesForReusedExistingNodes() {
+        Fixture fixture = fixture();
+        EastNorth original = eastNorth(fixture.reused);
+        EastNorth target = new EastNorth(original.east() + 10.0, original.north() + 5.0);
+        List<EastNorth> preview = List.of(
+            eastNorth(fixture.start),
+            target,
+            eastNorth(fixture.end)
+        );
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(
+            fixture.dataSet,
+            fixture.way,
+            fixture.selection,
+            preview,
+            "test"
+        );
+
+        command.executeCommand();
+        command.undoCommand();
+        command.executeCommand();
+
+        EastNorth moved = eastNorth(fixture.reused);
+        assertEquals(target.east(), moved.east(), 1e-6);
+        assertEquals(target.north(), moved.north(), 1e-6);
+        assertEquals(List.of(fixture.start, fixture.reused, fixture.end), fixture.way.getNodes());
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node start = node(0.0, 0.0);

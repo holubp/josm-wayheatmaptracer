@@ -61,6 +61,8 @@ public final class AlignmentService {
     private static final double LOCAL_NODE_SEARCH_METERS = 35.0;
     private static final int MAX_CAPTURE_VIEW_DIMENSION_PX = 5000;
     private static final int MAX_CAPTURE_VIEW_AREA_PX = 3_300_000;
+    private static final int MIN_APPLY_SUPPORTED_PROFILES = 2;
+    private static final double MIN_APPLY_SUPPORT_RATIO = 0.03;
 
     private final RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
     private final TileHeatmapSampler tileSampler = new TileHeatmapSampler();
@@ -133,6 +135,14 @@ public final class AlignmentService {
                 effectiveSampling, t0, t1, t2, t2, capture);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
+        List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
+        if (applicableCandidates.isEmpty()) {
+            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
+                config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
+                effectiveSampling, t0, t1, t2, t2, capture);
+            throw new AlignmentFailureException("No heatmap signal strong enough for safe alignment was detected in the sampled corridor.", partial);
+        }
+        candidates = applicableCandidates;
 
         CenterlineCandidate primary = candidates.get(0);
         List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, null);
@@ -200,12 +210,30 @@ public final class AlignmentService {
         DetectionResult detection = detectTileCandidates(mosaic, sourcePolyline, config, colorModes, effectiveSampling);
         List<CenterlineCandidate> candidates = detection.candidates();
         long t2 = System.nanoTime();
+        if (detection.outsideRasterProfiles() > 0) {
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+                detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
+                mosaics, mosaic, t0, t1, t2, t2);
+            throw new AlignmentFailureException(
+                "Selected segment is not fully inside the sampled fixed-resolution heatmap mosaic ("
+                    + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
+                    + " sampled cross-sections outside).",
+                partial);
+        }
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
                 mosaics, mosaic, t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles.", partial);
         }
+        List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
+        if (applicableCandidates.isEmpty()) {
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+                detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
+                mosaics, mosaic, t0, t1, t2, t2);
+            throw new AlignmentFailureException("No heatmap signal strong enough for safe alignment was detected in the sampled fixed-resolution heatmap tiles.", partial);
+        }
+        candidates = applicableCandidates;
 
         CenterlineCandidate primary = candidates.get(0);
         List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, mapView);
@@ -628,6 +656,9 @@ public final class AlignmentService {
     }
 
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate, ManagedHeatmapConfig config) {
+        if (!isApplicableCandidate(candidate)) {
+            throw new IllegalStateException("Selected ridge does not contain enough heatmap signal for safe alignment.");
+        }
         List<EastNorth> preview = optimize(base.selection(), base.sourcePolyline(), candidate, config, null);
         List<NodeMove> nodeMoves = interpolateMoves(base.selection(), preview);
         PluginLog.verbose("Using candidate %s for preview/apply: previewPoints=%d movableNodes=%d.",
@@ -655,6 +686,27 @@ public final class AlignmentService {
             base.diagnostics(),
             base.tileMosaics()
         );
+    }
+
+    private List<CenterlineCandidate> applicableCandidates(List<CenterlineCandidate> candidates) {
+        List<CenterlineCandidate> result = candidates.stream()
+            .filter(this::isApplicableCandidate)
+            .toList();
+        if (result.size() != candidates.size()) {
+            PluginLog.verbose("Rejected %d detected ridge candidates without enough heatmap signal for safe alignment.",
+                candidates.size() - result.size());
+        }
+        return result;
+    }
+
+    private boolean isApplicableCandidate(CenterlineCandidate candidate) {
+        if (!candidate.evidence().hasSignal()) {
+            return false;
+        }
+        if (candidate.evidence().supportedProfiles() >= MIN_APPLY_SUPPORTED_PROFILES) {
+            return true;
+        }
+        return candidate.evidence().supportRatio() >= MIN_APPLY_SUPPORT_RATIO;
     }
 
     private List<EastNorth> toEastNorth(List<Node> nodes) {
@@ -728,10 +780,7 @@ public final class AlignmentService {
             if (config.simplifyEnabled() && config.adjustJunctionNodes()) {
                 PluginLog.verbose("Simplification is ignored while junction/end node adjustment is enabled.");
             } else if (config.simplifyEnabled()) {
-                List<EastNorth> simplified = postProcessor.simplify(working, config.simplifyTolerancePx());
-                PluginLog.verbose("Simplification enabled: %d -> %d points with tolerance %.2f.",
-                    working.size(), simplified.size(), config.simplifyTolerancePx());
-                working = simplified;
+                PluginLog.verbose("Simplification enabled: precise-shape intervals will be simplified after fixed anchors are restored.");
             } else {
                 PluginLog.verbose("Simplification disabled; using raw traced centerline.");
             }
@@ -740,6 +789,11 @@ public final class AlignmentService {
             case MOVE_EXISTING_NODES -> moveExistingNodesPreview(selection, sourcePolyline, working);
             case PRECISE_SHAPE -> preciseShapePreview(selection, sourcePolyline, working);
         };
+        if (config.alignmentMode() == AlignmentMode.PRECISE_SHAPE
+            && config.simplifyEnabled()
+            && !config.adjustJunctionNodes()) {
+            preview = simplifyPrecisePreview(selection, sourcePolyline, preview, config.simplifyTolerancePx());
+        }
         return guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
     }
 
@@ -827,6 +881,53 @@ public final class AlignmentService {
         }
         PluginLog.verbose("Precise-shape preview prepared with %d points across %d fixed-anchor intervals.", result.size(), intervalCount);
         return result;
+    }
+
+    private List<EastNorth> simplifyPrecisePreview(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> preview,
+        double tolerance
+    ) {
+        if (preview.size() <= 2 || tolerance <= 0.0) {
+            return preview;
+        }
+        List<Integer> previewAnchors = new ArrayList<>();
+        for (int fixedIndex : fixedIndices(selection)) {
+            int previewIndex = findMatchingPoint(preview, sourcePolyline.get(fixedIndex));
+            if (previewIndex >= 0 && !previewAnchors.contains(previewIndex)) {
+                previewAnchors.add(previewIndex);
+            }
+        }
+        previewAnchors.sort(Integer::compareTo);
+        if (previewAnchors.isEmpty() || previewAnchors.get(0) != 0) {
+            previewAnchors.add(0, 0);
+        }
+        int last = preview.size() - 1;
+        if (previewAnchors.get(previewAnchors.size() - 1) != last) {
+            previewAnchors.add(last);
+        }
+
+        List<EastNorth> simplifiedPreview = new ArrayList<>();
+        for (int i = 0; i < previewAnchors.size() - 1; i++) {
+            int start = previewAnchors.get(i);
+            int end = previewAnchors.get(i + 1);
+            if (end <= start) {
+                continue;
+            }
+            List<EastNorth> section = new ArrayList<>(preview.subList(start, end + 1));
+            List<EastNorth> simplifiedSection = postProcessor.simplify(section, tolerance);
+            if (!simplifiedPreview.isEmpty() && !simplifiedSection.isEmpty()) {
+                simplifiedSection = new ArrayList<>(simplifiedSection.subList(1, simplifiedSection.size()));
+            }
+            simplifiedPreview.addAll(simplifiedSection);
+        }
+        if (simplifiedPreview.size() < 2) {
+            return preview;
+        }
+        PluginLog.verbose("Precise-shape interval simplification: %d -> %d points with tolerance %.2f.",
+            preview.size(), simplifiedPreview.size(), tolerance);
+        return simplifiedPreview;
     }
 
     private List<EastNorth> guardFixedAnchorTurns(

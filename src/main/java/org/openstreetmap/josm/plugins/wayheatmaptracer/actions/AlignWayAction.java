@@ -40,6 +40,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
@@ -315,6 +316,7 @@ public class AlignWayAction extends JosmAction {
         CenterlineCandidate candidate,
         ManagedHeatmapConfig config
     ) {
+        SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, base.selection(), base.sourcePolyline());
         AlignmentResult candidateResult = alignmentService.applyCandidate(base, candidate, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(candidateResult.previewPolyline(), dataSet);
@@ -410,6 +412,7 @@ public class AlignWayAction extends JosmAction {
         CenterlineCandidate chosen = preview.candidate();
         AlignmentResult chosenResult = preview.result();
 
+        SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, chosenResult.sourcePolyline());
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
         }

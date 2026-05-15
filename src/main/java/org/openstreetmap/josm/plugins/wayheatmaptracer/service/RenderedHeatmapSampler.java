@@ -135,7 +135,7 @@ public final class RenderedHeatmapSampler {
             samples.addAll(extractBrightBands(offsets));
             if (samples.isEmpty()) {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
-                samples.add(new CrossSectionPeak(0.0, strongest));
+                samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0));
             }
 
             profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal, samples, anchorWithinRaster));
