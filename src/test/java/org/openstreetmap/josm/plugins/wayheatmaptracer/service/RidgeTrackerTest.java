@@ -258,6 +258,48 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void smoothsSubSourcePixelAlternationOnCoarseHeatmap() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidth(0, 0, 0.94, 72),
+            profileWithWidth(10, 11, 0.94, 72),
+            profileWithWidth(20, -10, 0.94, 72),
+            profileWithWidth(30, 12, 0.94, 72),
+            profileWithWidth(40, -11, 0.94, 72),
+            profileWithWidth(50, 10, 0.94, 72),
+            profileWithWidth(60, 0, 0.94, 72)
+        );
+
+        var best = tracker.track(profiles, 24.0).get(0);
+
+        double maxAbs = best.offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0);
+        assertTrue(maxAbs <= 7.0,
+            "Alternating movement below one source heatmap pixel should be treated as aliasing in a broad high-signal corridor");
+    }
+
+    @Test
+    void keepsSustainedBendAboveSourcePixelFloor() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidth(0, 0, 0.94, 72),
+            profileWithWidth(10, 8, 0.94, 72),
+            profileWithWidth(20, 16, 0.94, 72),
+            profileWithWidth(30, 25, 0.94, 72),
+            profileWithWidth(40, 32, 0.94, 72),
+            profileWithWidth(50, 25, 0.94, 72),
+            profileWithWidth(60, 16, 0.94, 72),
+            profileWithWidth(70, 8, 0.94, 72),
+            profileWithWidth(80, 0, 0.94, 72)
+        );
+
+        var best = tracker.track(profiles, 24.0).get(0);
+
+        double max = best.offsetsPx().stream().mapToDouble(Double::doubleValue).max().orElse(0.0);
+        assertTrue(max >= 24.0,
+            "Sustained curvature exceeding the source-pixel evidence floor should survive alias suppression");
+    }
+
+    @Test
     void keepsBroadPlateauSustainedSwitchback() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(

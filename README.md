@@ -60,6 +60,7 @@ The current implementation is designed for private development:
 - Optionally run the same visible-layer detector with multiple color classifiers (`hot`, `blue`, `bluered`, `purple`, `gray`, internal `dual`, and experimental combined-intensity detectors) and show the resulting candidates in the preview
 - Optionally bypass palette color mapping and sample scalar rendered-pixel intensity directly from luminance, max RGB channel, or alpha for non-Strava or diagnostic scalar imagery
 - Use cross-section gradient evidence together with intensity/prominence when ranking ridge candidates and confirming longitudinal stability
+- Treat source-tile resolution as a real evidence limit: sub-source-pixel alternating wiggles are penalized, while sustained bends remain available as candidate geometry
 - Show the rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
@@ -194,7 +195,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - selected activity, visible color, sampled color schemes, and direct intensity source when enabled
 - original selected way/segment and preview geometry as OSM
 - candidate ridge geometries as OSM, including failed pre-preview candidates
-- `candidate-metrics.csv`, with detector, visible color, intensity source, raw score, calibrated score, support ratio, mean intensity, mean gradient strength, longitudinal stability, SNR, ambiguity, roughness, edge-pinning, and safety warnings for each candidate
+- `candidate-metrics.csv`, with detector, visible color, intensity source, raw score, calibrated score, support ratio, mean intensity, mean gradient strength, longitudinal stability, SNR, ambiguity, roughness, source-pixel-scale roughness, edge-pinning, and safety warnings for each candidate
 - `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, gradient strength/balance, and synthetic-center flag
 - `palette-samples.csv`, with per-profile strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points

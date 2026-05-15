@@ -331,6 +331,9 @@ public final class RenderedHeatmapSampler {
         if (offsets.size() < 3) {
             return offsets;
         }
+        if (offsets.size() >= 5) {
+            return signalGatedBinomialSmooth(offsets);
+        }
         List<OffsetSample> smoothed = new ArrayList<>(offsets.size());
         for (int i = 0; i < offsets.size(); i++) {
             double center = offsets.get(i).intensity;
@@ -339,6 +342,45 @@ public final class RenderedHeatmapSampler {
             smoothed.add(new OffsetSample(offsets.get(i).offsetPx, 0.20 * left + 0.60 * center + 0.20 * right));
         }
         return smoothed;
+    }
+
+    private List<OffsetSample> signalGatedBinomialSmooth(List<OffsetSample> offsets) {
+        double max = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
+        if (max <= 0.0) {
+            return offsets;
+        }
+        double[] kernel = {1.0, 4.0, 6.0, 4.0, 1.0};
+        List<OffsetSample> smoothed = new ArrayList<>(offsets.size());
+        for (int i = 0; i < offsets.size(); i++) {
+            double weighted = 0.0;
+            double total = 0.0;
+            for (int k = -2; k <= 2; k++) {
+                int index = Math.max(0, Math.min(offsets.size() - 1, i + k));
+                double intensity = offsets.get(index).intensity;
+                double mask = signalMask(intensity, max);
+                double weight = kernel[k + 2] * mask;
+                weighted += intensity * weight;
+                total += weight;
+            }
+            double raw = offsets.get(i).intensity;
+            double filtered = total <= 1e-9 ? raw : weighted / total;
+            double blend = max >= 0.55 ? 0.46 : (max >= 0.25 ? 0.28 : 0.14);
+            double smoothedIntensity = raw * (1.0 - blend) + filtered * blend;
+            smoothed.add(new OffsetSample(offsets.get(i).offsetPx, smoothedIntensity));
+        }
+        return smoothed;
+    }
+
+    private double signalMask(double intensity, double max) {
+        if (max <= 0.0 || intensity <= 0.0) {
+            return 0.0;
+        }
+        if (max < 0.25) {
+            return 0.25 + 0.75 * Math.min(1.0, intensity / max);
+        }
+        double floor = max * 0.18;
+        double width = Math.max(0.08, max * 0.42);
+        return Math.max(0.0, Math.min(1.0, (intensity - floor) / width));
     }
 
     private List<CrossSectionPeak> mergeClosePeaks(List<CrossSectionPeak> peaks, double sampleStep) {

@@ -69,6 +69,11 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "ambiguity": float_or_none(row.get("ambiguity")),
             "p95_delta_px": float_or_none(row.get("p95_delta_px")),
             "p95_acceleration_px": float_or_none(row.get("p95_acceleration_px")),
+            "high_frequency_p95_px": float_or_none(row.get("high_frequency_p95_px")),
+            "p95_delta_source_px": float_or_none(row.get("p95_delta_source_px")),
+            "p95_acceleration_source_px": float_or_none(row.get("p95_acceleration_source_px")),
+            "high_frequency_p95_source_px": float_or_none(row.get("high_frequency_p95_source_px")),
+            "sub_source_wiggle_ratio": float_or_none(row.get("sub_source_wiggle_ratio")),
             "sign_flips": float_or_none(row.get("sign_flips")),
             "edge_ratio": float_or_none(row.get("edge_ratio")),
         })
@@ -92,6 +97,7 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         scores = [int(row["rating_score"]) for row in rated]
         snr = compact_numbers(row["signal_to_noise"] for row in group)
         rough = compact_numbers(row["p95_delta_px"] for row in group)
+        source_rough = compact_numbers(row["high_frequency_p95_source_px"] for row in group)
         gradient = compact_numbers(row["mean_gradient_strength"] for row in group)
         stability = compact_numbers(row["longitudinal_stability"] for row in group)
         summary.append({
@@ -105,6 +111,7 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "median_gradient": statistics.median(gradient) if gradient else None,
             "median_longitudinal_stability": statistics.median(stability) if stability else None,
             "median_p95_delta_px": statistics.median(rough) if rough else None,
+            "median_high_frequency_p95_source_px": statistics.median(source_rough) if source_rough else None,
             "negative_features": negative_counts(group),
         })
     return summary
@@ -136,6 +143,7 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "median_gradient",
         "median_longitudinal_stability",
         "median_p95_delta_px",
+        "median_high_frequency_p95_source_px",
         "negative_features",
     ]
     writer = csv.DictWriter(sys.stdout, fieldnames=fields)

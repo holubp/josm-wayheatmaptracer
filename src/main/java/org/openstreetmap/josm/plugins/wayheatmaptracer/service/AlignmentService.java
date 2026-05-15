@@ -358,7 +358,7 @@ public final class AlignmentService {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
             }
-            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
             if (modeIndex++ > 0) {
@@ -409,7 +409,7 @@ public final class AlignmentService {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
             }
-            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles);
+            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
             if (modeIndex++ > 0) {
@@ -450,6 +450,8 @@ public final class AlignmentService {
             0.22 * clamp01(candidate.evidence().ambiguity() / 0.60)
             + 0.20 * clamp01(metrics.p95DeltaReferencePx() / 35.0)
             + 0.20 * clamp01(metrics.p95AccelerationReferencePx() / 35.0)
+            + 0.32 * clamp01(metrics.highFrequencyP95SourcePx() / 1.15)
+            + 0.18 * clamp01(metrics.subSourceWiggleRatio() / 0.18)
             + 0.10 * clamp01(metrics.signFlips() / 5.0)
             + 0.65 * clamp01(metrics.edgeRatio() / 0.08);
         double noOpPenalty = metrics.absMeanOffsetMeters() < 0.39 && candidate.evidence().meanIntensity() < 0.35 ? 0.80 : 0.0;
@@ -568,7 +570,8 @@ public final class AlignmentService {
     private CandidateMetrics candidateMetrics(CenterlineCandidate candidate, EffectiveSampling effectiveSampling) {
         List<Double> offsets = candidate.offsetsPx();
         if (offsets.isEmpty()) {
-            return new CandidateMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0);
+            return new CandidateMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, effectiveSampling.sourceMetersPerPixel());
         }
         double absMean = offsets.stream().mapToDouble(Math::abs).average().orElse(0.0);
         List<Double> deltas = new ArrayList<>();
@@ -581,21 +584,73 @@ public final class AlignmentService {
         }
         double p95Delta = percentileAbs(deltas, 0.95);
         double p95Acceleration = percentileAbs(accelerations, 0.95);
+        List<Double> highFrequencyResiduals = highFrequencyResiduals(offsets, 7);
+        double highFrequencyP95 = percentileAbs(highFrequencyResiduals, 0.95);
         double normalization = effectiveSampling.rasterMetersPerPixel() / effectiveSampling.referenceRasterMetersPerPixel();
+        double sourcePixelSize = effectiveSampling.sourcePixelSizeRasterPx();
         double edgeLimit = effectiveSampling.effectiveHalfWidthPx() * effectiveSampling.rasterScale() * 0.90;
         long edgeCount = offsets.stream().filter(offset -> Math.abs(offset) >= edgeLimit).count();
+        int subSourceWiggles = subSourceWiggles(offsets, highFrequencyResiduals, sourcePixelSize);
         return new CandidateMetrics(
             absMean,
             p95Delta,
             p95Acceleration,
+            highFrequencyP95,
             p95Delta * normalization,
             p95Acceleration * normalization,
+            sourcePixelSize <= 0.0 ? 0.0 : p95Delta / sourcePixelSize,
+            sourcePixelSize <= 0.0 ? 0.0 : p95Acceleration / sourcePixelSize,
+            sourcePixelSize <= 0.0 ? 0.0 : highFrequencyP95 / sourcePixelSize,
             signFlips(deltas, effectiveSampling),
+            offsets.isEmpty() ? 0.0 : (double) subSourceWiggles / offsets.size(),
             offsets.isEmpty() ? 0.0 : (double) edgeCount / offsets.size(),
             absMean * effectiveSampling.rasterMetersPerPixel(),
             p95Delta * effectiveSampling.rasterMetersPerPixel(),
-            p95Acceleration * effectiveSampling.rasterMetersPerPixel()
+            p95Acceleration * effectiveSampling.rasterMetersPerPixel(),
+            highFrequencyP95 * effectiveSampling.rasterMetersPerPixel(),
+            effectiveSampling.sourceMetersPerPixel()
         );
+    }
+
+    private List<Double> highFrequencyResiduals(List<Double> offsets, int window) {
+        if (offsets.size() < 3) {
+            return List.of();
+        }
+        int radius = Math.max(1, window / 2);
+        List<Double> residuals = new ArrayList<>();
+        for (int i = 0; i < offsets.size(); i++) {
+            int start = Math.max(0, i - radius);
+            int end = Math.min(offsets.size() - 1, i + radius);
+            double total = 0.0;
+            for (int j = start; j <= end; j++) {
+                total += offsets.get(j);
+            }
+            residuals.add(offsets.get(i) - total / (end - start + 1));
+        }
+        return residuals;
+    }
+
+    private int subSourceWiggles(List<Double> offsets, List<Double> residuals, double sourcePixelSizePx) {
+        if (offsets.size() < 3 || residuals.size() != offsets.size() || sourcePixelSizePx <= 0.0) {
+            return 0;
+        }
+        double minimumDelta = Math.max(3.0, sourcePixelSizePx * 0.12);
+        double maximumDelta = sourcePixelSizePx * 1.25;
+        double residualThreshold = Math.max(4.0, sourcePixelSizePx * 0.20);
+        int count = 0;
+        for (int i = 1; i < offsets.size() - 1; i++) {
+            double left = offsets.get(i) - offsets.get(i - 1);
+            double right = offsets.get(i + 1) - offsets.get(i);
+            if (Math.abs(left) >= minimumDelta
+                && Math.abs(right) >= minimumDelta
+                && Math.abs(left) <= maximumDelta
+                && Math.abs(right) <= maximumDelta
+                && Math.signum(left) != Math.signum(right)
+                && Math.abs(residuals.get(i)) >= residualThreshold) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private double percentileAbs(List<Double> values, double percentile) {
@@ -729,6 +784,10 @@ public final class AlignmentService {
         List<String> warnings = new ArrayList<>();
         double unsafeAccelerationMeters = Math.max(8.0, effectiveSampling.targetHalfWidthMeters() * 0.18);
         double unsafeDeltaMeters = Math.max(12.0, effectiveSampling.targetHalfWidthMeters() * 0.40);
+        if (metrics.highFrequencyP95SourcePx() > 1.65 && metrics.subSourceWiggleRatio() > 0.28) {
+            warnings.add(String.format(java.util.Locale.ROOT,
+                "source-resolution aliasing wiggles %.1fpx", metrics.highFrequencyP95SourcePx()));
+        }
         if (metrics.p95AccelerationMeters() > unsafeAccelerationMeters) {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "abrupt lateral acceleration %.1fm", metrics.p95AccelerationMeters()));
@@ -1277,7 +1336,8 @@ public final class AlignmentService {
             effectiveViewMetersPerPixel,
             targetHalfWidthMeters,
             targetStepMeters,
-            RenderedHeatmapSampler.RASTER_SCALE
+            RenderedHeatmapSampler.RASTER_SCALE,
+            effectiveViewMetersPerPixel
         );
     }
 
@@ -1295,7 +1355,8 @@ public final class AlignmentService {
             REFERENCE_VIEW_METERS_PER_PIXEL,
             targetHalfWidthMeters,
             targetStepMeters,
-            TileHeatmapSampler.REFERENCE_RASTER_SCALE
+            TileHeatmapSampler.REFERENCE_RASTER_SCALE,
+            mosaic.parameters().metersPerPixel()
         );
     }
 
@@ -1406,6 +1467,7 @@ public final class AlignmentService {
             + "\"rasterWidth\":" + mosaic.image().getWidth() + ','
             + "\"rasterHeight\":" + mosaic.image().getHeight() + ','
             + "\"sourceMetersPerPixel\":" + jsonDouble(mosaic.parameters().metersPerPixel()) + ','
+            + "\"sourcePixelSizeRasterPx\":" + jsonDouble(effectiveSampling.sourcePixelSizeRasterPx()) + ','
             + "\"virtualRasterScale\":" + jsonDouble(mosaic.virtualRasterScale()) + ','
             + "\"viewMetersPerPixel\":" + jsonDouble(effectiveSampling.viewMetersPerPixel()) + ','
             + "\"rasterMetersPerPixel\":" + jsonDouble(effectiveSampling.rasterMetersPerPixel()) + ','
@@ -1460,6 +1522,8 @@ public final class AlignmentService {
             + "\"viewWidthPx\":" + viewWidth + ','
             + "\"viewHeightPx\":" + viewHeight + ','
             + "\"dist100PixelMeters\":" + jsonDouble(dist100Pixel) + ','
+            + "\"sourceMetersPerPixel\":" + jsonDouble(effectiveSampling.sourceMetersPerPixel()) + ','
+            + "\"sourcePixelSizeRasterPx\":" + jsonDouble(effectiveSampling.sourcePixelSizeRasterPx()) + ','
             + "\"viewMetersPerPixel\":" + jsonDouble(viewMetersPerPixel) + ','
             + "\"rasterMetersPerPixel\":" + jsonDouble(rasterMetersPerPixel) + ','
             + "\"referenceViewMetersPerPixel\":" + jsonDouble(effectiveSampling.referenceViewMetersPerPixel()) + ','
@@ -1678,7 +1742,7 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling
     ) {
         StringBuilder builder = new StringBuilder(
-            "rank,candidate_id,display_name,detector,visible_color,intensity_source,raw_score,calibrated_score,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,max_consecutive_empty_profiles,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,safety_warnings\n");
+            "rank,candidate_id,display_name,detector,visible_color,intensity_source,raw_score,calibrated_score,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,safety_warnings\n");
         IntensitySamplingMode source = intensitySamplingMode(config);
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
@@ -1698,14 +1762,21 @@ public final class AlignmentService {
                 .append(format(candidate.evidence().signalToNoise())).append(',')
                 .append(format(candidate.evidence().ambiguity())).append(',')
                 .append(candidate.evidence().maxConsecutiveEmptyProfiles()).append(',')
+                .append(format(metrics.sourceMetersPerPixel())).append(',')
                 .append(format(metrics.absMeanOffsetPx())).append(',')
                 .append(format(metrics.p95DeltaPx())).append(',')
                 .append(format(metrics.p95AccelerationPx())).append(',')
+                .append(format(metrics.highFrequencyP95Px())).append(',')
+                .append(format(metrics.p95DeltaSourcePx())).append(',')
+                .append(format(metrics.p95AccelerationSourcePx())).append(',')
+                .append(format(metrics.highFrequencyP95SourcePx())).append(',')
+                .append(format(metrics.subSourceWiggleRatio())).append(',')
                 .append(metrics.signFlips()).append(',')
                 .append(format(metrics.edgeRatio())).append(',')
                 .append(format(metrics.absMeanOffsetMeters())).append(',')
                 .append(format(metrics.p95DeltaMeters())).append(',')
                 .append(format(metrics.p95AccelerationMeters())).append(',')
+                .append(format(metrics.highFrequencyP95Meters())).append(',')
                 .append(csv(String.join("; ", candidate.safetyWarnings())))
                 .append('\n');
         }
@@ -1864,11 +1935,18 @@ public final class AlignmentService {
                 .append("\"offsetAbsMeanPx\":").append(jsonDouble(metrics.absMeanOffsetPx())).append(',')
                 .append("\"offsetP95DeltaPx\":").append(jsonDouble(metrics.p95DeltaPx())).append(',')
                 .append("\"offsetP95AccelerationPx\":").append(jsonDouble(metrics.p95AccelerationPx())).append(',')
+                .append("\"offsetHighFrequencyP95Px\":").append(jsonDouble(metrics.highFrequencyP95Px())).append(',')
                 .append("\"offsetP95DeltaReferencePx\":").append(jsonDouble(metrics.p95DeltaReferencePx())).append(',')
                 .append("\"offsetP95AccelerationReferencePx\":").append(jsonDouble(metrics.p95AccelerationReferencePx())).append(',')
+                .append("\"offsetP95DeltaSourcePx\":").append(jsonDouble(metrics.p95DeltaSourcePx())).append(',')
+                .append("\"offsetP95AccelerationSourcePx\":").append(jsonDouble(metrics.p95AccelerationSourcePx())).append(',')
+                .append("\"offsetHighFrequencyP95SourcePx\":").append(jsonDouble(metrics.highFrequencyP95SourcePx())).append(',')
                 .append("\"offsetAbsMeanMeters\":").append(jsonDouble(metrics.absMeanOffsetMeters())).append(',')
                 .append("\"offsetP95DeltaMeters\":").append(jsonDouble(metrics.p95DeltaMeters())).append(',')
                 .append("\"offsetP95AccelerationMeters\":").append(jsonDouble(metrics.p95AccelerationMeters())).append(',')
+                .append("\"offsetHighFrequencyP95Meters\":").append(jsonDouble(metrics.highFrequencyP95Meters())).append(',')
+                .append("\"sourceMetersPerPixel\":").append(jsonDouble(metrics.sourceMetersPerPixel())).append(',')
+                .append("\"subSourceWiggleRatio\":").append(jsonDouble(metrics.subSourceWiggleRatio())).append(',')
                 .append("\"offsetSignFlips\":").append(metrics.signFlips()).append(',')
                 .append("\"offsetEdgeRatio\":").append(jsonDouble(metrics.edgeRatio())).append(',')
                 .append("\"screenPoints\":").append(screenPointArray(candidate.screenPoints())).append(',')
@@ -1952,13 +2030,20 @@ public final class AlignmentService {
         double absMeanOffsetPx,
         double p95DeltaPx,
         double p95AccelerationPx,
+        double highFrequencyP95Px,
         double p95DeltaReferencePx,
         double p95AccelerationReferencePx,
+        double p95DeltaSourcePx,
+        double p95AccelerationSourcePx,
+        double highFrequencyP95SourcePx,
         int signFlips,
+        double subSourceWiggleRatio,
         double edgeRatio,
         double absMeanOffsetMeters,
         double p95DeltaMeters,
-        double p95AccelerationMeters
+        double p95AccelerationMeters,
+        double highFrequencyP95Meters,
+        double sourceMetersPerPixel
     ) {
     }
 
@@ -1971,7 +2056,8 @@ public final class AlignmentService {
         double viewMetersPerPixel,
         double targetHalfWidthMeters,
         double targetStepMeters,
-        double rasterScale
+        double rasterScale,
+        double sourceMetersPerPixel
     ) {
         double referenceRasterMetersPerPixel() {
             return referenceViewMetersPerPixel / rasterScale;
@@ -1979,6 +2065,15 @@ public final class AlignmentService {
 
         double rasterMetersPerPixel() {
             return viewMetersPerPixel / rasterScale;
+        }
+
+        double sourcePixelSizeRasterPx() {
+            double rasterMeters = rasterMetersPerPixel();
+            if (!Double.isFinite(sourceMetersPerPixel) || sourceMetersPerPixel <= 0.0
+                || !Double.isFinite(rasterMeters) || rasterMeters <= 0.0) {
+                return rasterScale;
+            }
+            return Math.max(1.0, sourceMetersPerPixel / rasterMeters);
         }
 
         double effectiveHalfWidthMeters() {

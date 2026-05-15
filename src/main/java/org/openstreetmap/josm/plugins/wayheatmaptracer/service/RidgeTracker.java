@@ -12,9 +12,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 
 public final class RidgeTracker {
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
+        return track(profiles, 1.0);
+    }
+
+    public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double sourcePixelSizePx) {
         if (profiles.isEmpty()) {
             return List.of();
         }
+        double sourcePixel = Double.isFinite(sourcePixelSizePx) && sourcePixelSizePx > 0.0 ? sourcePixelSizePx : 1.0;
         profiles = suppressLongitudinalNoise(profiles);
 
         List<Double> seeds = collectSeedOffsets(profiles);
@@ -25,7 +30,7 @@ public final class RidgeTracker {
             List<Double> offsets = state.offsets();
             List<Double> intensities = state.intensities();
 
-            List<Double> smoothedOffsets = smoothOffsets(profiles, offsets, intensities);
+            List<Double> smoothedOffsets = smoothOffsets(profiles, offsets, intensities, sourcePixel);
             List<Point2D.Double> points = new ArrayList<>();
             for (int i = 0; i < profiles.size(); i++) {
                 RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
@@ -239,11 +244,16 @@ public final class RidgeTracker {
     private List<Double> smoothOffsets(
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
         List<Double> offsets,
-        List<Double> intensities
+        List<Double> intensities,
+        double sourcePixelSizePx
     ) {
         if (offsets.size() < 3) {
             return offsets;
         }
+        double sourcePixel = Math.max(1.0, sourcePixelSizePx);
+        double aliasDeltaThreshold = Math.max(4.0, sourcePixel * 0.18);
+        double aliasResidualThreshold = Math.max(5.0, sourcePixel * 0.24);
+        double plateauSupportThreshold = Math.max(36.0, sourcePixel * 1.75);
         List<Double> current = new ArrayList<>(offsets);
         for (int pass = 0; pass < 4; pass++) {
             List<Double> baseline = movingAverage(current, 7);
@@ -254,18 +264,24 @@ public final class RidgeTracker {
                 double rightDelta = current.get(i + 1) - current.get(i);
                 double neighborAverage = (current.get(i - 1) + current.get(i + 1)) / 2.0;
                 double residual = Math.abs(current.get(i) - neighborAverage);
-                boolean alternating = Math.abs(leftDelta) >= 4.0
-                    && Math.abs(rightDelta) >= 4.0
+                boolean alternating = Math.abs(leftDelta) >= aliasDeltaThreshold
+                    && Math.abs(rightDelta) >= aliasDeltaThreshold
                     && Math.signum(leftDelta) != Math.signum(rightDelta)
-                    && residual >= 6.0;
+                    && residual >= aliasResidualThreshold;
                 RenderedHeatmapSampler.CrossSectionPeak peak = selectedPeak(profiles.get(i), current.get(i));
-                boolean broadPlateau = peak.supportWidthPx() >= 48.0 && intensity >= 0.45;
-                int localFlipCount = localDeltaSignFlips(current, i, 3, 3.0);
+                boolean broadPlateau = peak.supportWidthPx() >= plateauSupportThreshold && intensity >= 0.45;
+                int localFlipCount = localDeltaSignFlips(current, i, 3, Math.max(3.0, sourcePixel * 0.14));
                 double highFrequencyResidual = Math.abs(current.get(i) - baseline.get(i));
-                boolean broadPlateauWander = broadPlateau && localFlipCount >= 2 && highFrequencyResidual >= 5.0;
+                boolean subSourcePixelWander = localFlipCount >= 2
+                    && highFrequencyResidual >= aliasResidualThreshold
+                    && Math.abs(leftDelta) <= sourcePixel * 1.25
+                    && Math.abs(rightDelta) <= sourcePixel * 1.25;
+                boolean broadPlateauWander = broadPlateau
+                    && (localFlipCount >= 2 || subSourcePixelWander)
+                    && highFrequencyResidual >= aliasResidualThreshold;
                 double lowConfidenceSmoothing = 0.45 * clamp01((0.55 - intensity) / 0.55);
                 double aliasingSmoothing = alternating ? (intensity >= 0.80 ? 0.70 : 0.55) : 0.0;
-                double plateauSmoothing = broadPlateauWander ? 0.62 : 0.0;
+                double plateauSmoothing = broadPlateauWander ? 0.70 : 0.0;
                 double smoothing = Math.max(lowConfidenceSmoothing, aliasingSmoothing);
                 smoothing = Math.max(smoothing, plateauSmoothing);
                 if (smoothing <= 0.01) {
