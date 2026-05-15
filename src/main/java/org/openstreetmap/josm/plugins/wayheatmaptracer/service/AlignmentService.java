@@ -117,12 +117,12 @@ public final class AlignmentService {
             effectiveSampling.viewMetersPerPixel()
         );
         DetectionResult detection = detectCandidates(raster, capture.sourceRasterPolyline(), capture, config, colorModes, effectiveSampling);
-        List<CenterlineCandidate> candidates = detection.candidates();
+        List<CenterlineCandidate> candidates = annotateCandidateSafety(detection.candidates(), effectiveSampling);
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
-                effectiveSampling, t0, t1, t2, t2, capture);
+                effectiveSampling, List.of(), t0, t1, t2, t2, capture);
             throw new AlignmentFailureException(
                 "Selected segment is not fully inside the captured heatmap raster ("
                     + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
@@ -132,15 +132,15 @@ public final class AlignmentService {
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
-                effectiveSampling, t0, t1, t2, t2, capture);
+                effectiveSampling, List.of(), t0, t1, t2, t2, capture);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
         }
         List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
         if (applicableCandidates.isEmpty()) {
             AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
                 config, colorModes, detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(),
-                effectiveSampling, t0, t1, t2, t2, capture);
-            throw new AlignmentFailureException("No heatmap signal strong enough for safe alignment was detected in the sampled corridor.", partial);
+                effectiveSampling, candidates, t0, t1, t2, t2, capture);
+            throw new AlignmentFailureException("Detected ridge candidates were too weak or structurally unsafe for safe alignment in the sampled corridor.", partial);
         }
         candidates = applicableCandidates;
 
@@ -208,12 +208,12 @@ public final class AlignmentService {
         long t1 = System.nanoTime();
         EffectiveSampling effectiveSampling = fixedTileEffectiveSampling(mosaic);
         DetectionResult detection = detectTileCandidates(mosaic, sourcePolyline, config, colorModes, effectiveSampling);
-        List<CenterlineCandidate> candidates = detection.candidates();
+        List<CenterlineCandidate> candidates = annotateCandidateSafety(detection.candidates(), effectiveSampling);
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
             AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
-                mosaics, mosaic, t0, t1, t2, t2);
+                mosaics, mosaic, List.of(), t0, t1, t2, t2);
             throw new AlignmentFailureException(
                 "Selected segment is not fully inside the sampled fixed-resolution heatmap mosaic ("
                     + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
@@ -223,15 +223,15 @@ public final class AlignmentService {
         if (candidates.isEmpty()) {
             AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
-                mosaics, mosaic, t0, t1, t2, t2);
+                mosaics, mosaic, List.of(), t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles.", partial);
         }
         List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
         if (applicableCandidates.isEmpty()) {
             AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
-                mosaics, mosaic, t0, t1, t2, t2);
-            throw new AlignmentFailureException("No heatmap signal strong enough for safe alignment was detected in the sampled fixed-resolution heatmap tiles.", partial);
+                mosaics, mosaic, candidates, t0, t1, t2, t2);
+            throw new AlignmentFailureException("Detected ridge candidates were too weak or structurally unsafe for safe alignment in the sampled fixed-resolution heatmap tiles.", partial);
         }
         candidates = applicableCandidates;
 
@@ -280,6 +280,7 @@ public final class AlignmentService {
         String profilePeaksCsv,
         String paletteSamplesCsv,
         EffectiveSampling effectiveSampling,
+        List<CenterlineCandidate> candidates,
         long t0,
         long t1,
         long t2,
@@ -289,12 +290,12 @@ public final class AlignmentService {
         return new AlignmentResult(
             selection,
             raster,
-            List.of(),
+            candidates,
             sourcePolyline,
             sourcePolyline,
             List.of(),
-            diagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
-                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, capture),
+            diagnostics(imageryLayer, candidates.size(), 0, t0, t1, t2, t3, raster, mapView, config, selection, colorModes,
+                candidates, profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, capture),
             null
         );
     }
@@ -311,6 +312,7 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling,
         TileHeatmapSampler.TileMosaicSet mosaics,
         TileHeatmapSampler.TileMosaic mosaic,
+        List<CenterlineCandidate> candidates,
         long t0,
         long t1,
         long t2,
@@ -319,12 +321,12 @@ public final class AlignmentService {
         return new AlignmentResult(
             selection,
             null,
-            List.of(),
+            candidates,
             sourcePolyline,
             sourcePolyline,
             List.of(),
-            tileDiagnostics(imageryLayer, 0, 0, t0, t1, t2, t3, config, selection, colorModes,
-                List.of(), profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, mosaics, mosaic),
+            tileDiagnostics(imageryLayer, candidates.size(), 0, t0, t1, t2, t3, config, selection, colorModes,
+                candidates, profilesJson, profilePeaksCsv, paletteSamplesCsv, effectiveSampling, mosaics, mosaic),
             mosaics
         );
     }
@@ -657,6 +659,10 @@ public final class AlignmentService {
 
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate, ManagedHeatmapConfig config) {
         if (!isApplicableCandidate(candidate)) {
+            if (!candidate.safetyWarnings().isEmpty()) {
+                throw new IllegalStateException("Selected ridge is structurally unsafe for safe alignment: "
+                    + String.join("; ", candidate.safetyWarnings()));
+            }
             throw new IllegalStateException("Selected ridge does not contain enough heatmap signal for safe alignment.");
         }
         List<EastNorth> preview = optimize(base.selection(), base.sourcePolyline(), candidate, config, null);
@@ -693,13 +699,16 @@ public final class AlignmentService {
             .filter(this::isApplicableCandidate)
             .toList();
         if (result.size() != candidates.size()) {
-            PluginLog.verbose("Rejected %d detected ridge candidates without enough heatmap signal for safe alignment.",
+            PluginLog.verbose("Rejected %d detected ridge candidates without enough heatmap signal or structurally safe continuity.",
                 candidates.size() - result.size());
         }
         return result;
     }
 
     private boolean isApplicableCandidate(CenterlineCandidate candidate) {
+        if (!candidate.safetyWarnings().isEmpty()) {
+            return false;
+        }
         if (!candidate.evidence().hasSignal()) {
             return false;
         }
@@ -707,6 +716,32 @@ public final class AlignmentService {
             return true;
         }
         return candidate.evidence().supportRatio() >= MIN_APPLY_SUPPORT_RATIO;
+    }
+
+    private List<CenterlineCandidate> annotateCandidateSafety(List<CenterlineCandidate> candidates, EffectiveSampling effectiveSampling) {
+        return candidates.stream()
+            .map(candidate -> candidate.withSafetyWarnings(candidateSafetyWarnings(candidate, effectiveSampling)))
+            .toList();
+    }
+
+    private List<String> candidateSafetyWarnings(CenterlineCandidate candidate, EffectiveSampling effectiveSampling) {
+        CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
+        List<String> warnings = new ArrayList<>();
+        double unsafeAccelerationMeters = Math.max(8.0, effectiveSampling.targetHalfWidthMeters() * 0.18);
+        double unsafeDeltaMeters = Math.max(12.0, effectiveSampling.targetHalfWidthMeters() * 0.40);
+        if (metrics.p95AccelerationMeters() > unsafeAccelerationMeters) {
+            warnings.add(String.format(java.util.Locale.ROOT,
+                "abrupt lateral acceleration %.1fm", metrics.p95AccelerationMeters()));
+        }
+        if (metrics.p95DeltaMeters() > unsafeDeltaMeters) {
+            warnings.add(String.format(java.util.Locale.ROOT,
+                "abrupt lateral jump %.1fm", metrics.p95DeltaMeters()));
+        }
+        if (metrics.edgeRatio() >= 0.20) {
+            warnings.add(String.format(java.util.Locale.ROOT,
+                "too many samples near search edge %.0f%%", metrics.edgeRatio() * 100.0));
+        }
+        return warnings;
     }
 
     private List<EastNorth> toEastNorth(List<Node> nodes) {

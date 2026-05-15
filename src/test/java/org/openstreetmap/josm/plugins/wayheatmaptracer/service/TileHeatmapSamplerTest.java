@@ -32,6 +32,14 @@ class TileHeatmapSamplerTest {
         assertEquals(2, TileHeatmapSampler.stableInferenceDilationRadius(13));
     }
 
+    @Test
+    void sketchLikeSelectionDoesNotAutomaticallyWidenManagedSearch() {
+        ManagedHeatmapConfig config = config(InferenceMode.STABLE_FIXED_SCALE, 15, 13);
+
+        assertEquals(28.0, TileHeatmapSampler.effectiveSearchHalfWidthMeters(config, false), 1e-9);
+        assertEquals(28.0, TileHeatmapSampler.effectiveSearchHalfWidthMeters(config, true), 1e-9);
+    }
+
     private ManagedHeatmapConfig config(InferenceMode inferenceMode, int inferenceZoom, int validationZoom) {
         return new ManagedHeatmapConfig(
             "k", "p", "s", "t",

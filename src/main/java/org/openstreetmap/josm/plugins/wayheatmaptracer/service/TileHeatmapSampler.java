@@ -311,13 +311,15 @@ public final class TileHeatmapSampler {
 
     private SamplingParameters parametersFor(ManagedHeatmapConfig config, int zoom, double latitude, boolean sketchLikeSelection) {
         double metersPerPixel = metersPerPixel(zoom, latitude);
-        double halfMeters = Math.max(2.0, sketchLikeSelection
-            ? Math.max(config.searchHalfWidthMeters(), 64.0)
-            : config.searchHalfWidthMeters());
+        double halfMeters = effectiveSearchHalfWidthMeters(config, sketchLikeSelection);
         double stepMeters = Math.max(0.5, config.sampleStepMeters());
         int halfWidthPx = clamp((int) Math.round(halfMeters / metersPerPixel), 6, 96);
         int stepPx = clamp((int) Math.round(stepMeters / metersPerPixel), 1, Math.max(1, halfWidthPx / 3));
         return new SamplingParameters(zoom, latitude, metersPerPixel, halfMeters, stepMeters, halfWidthPx, stepPx);
+    }
+
+    static double effectiveSearchHalfWidthMeters(ManagedHeatmapConfig config, boolean sketchLikeSelection) {
+        return Math.max(2.0, config.searchHalfWidthMeters());
     }
 
     private double representativeLatitude(List<EastNorth> points) {

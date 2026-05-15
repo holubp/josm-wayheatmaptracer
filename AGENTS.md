@@ -29,6 +29,8 @@ Repository-specific guardrails for future changes:
 - Keep `scripts/analyze-debug-bundles.py` compatible with exported bundles when changing candidate metrics, ratings, or CSV diagnostics.
 - Candidate ratings and negative feature tags from the opt-in preview rating mode are calibration data. Preserve them in `candidate-ratings.json`, `status.json`, and verbose log lines when changing diagnostics export behavior.
 - Rough full-way 2-5 node selections may be recognized in UI/debug metadata, but the current visible-layer path keeps the configured alignment mode to preserve predictable sliding behavior.
+- Rough full-way 2-5 node selections must not silently widen managed source-tile search beyond the configured search half-width. If a mapper needs a wider rough-sketch search, it must be explicit in settings; automatic widening can jump to unrelated parallel traces.
+- Candidates with abrupt lateral jumps or acceleration are structurally unsafe even when heatmap SNR is high. Keep candidate safety warnings exported and block preview/apply for those candidates rather than relying only on signal strength.
 - Precise-shape simplification must run after fixed anchors are restored and per fixed-anchor interval. Do not simplify the whole traced centerline before fixed-anchor interval reconstruction.
 - Precise-shape undo/redo must replay stored target coordinates for reused existing nodes on every command execute/redo, not only during first replacement-node construction.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.

@@ -209,6 +209,38 @@ class AlignmentServiceTest {
             () -> service.applyCandidate(base, candidate));
     }
 
+    @Test
+    void candidateSwitchRejectsStructurallyUnsafeCandidate() {
+        AlignmentService service = new AlignmentService();
+        SelectionContext selection = selection(3);
+        List<EastNorth> source = List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(10.0, 0.0),
+            new EastNorth(20.0, 0.0)
+        );
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "hot/ridge-1",
+            1.0,
+            List.of(),
+            List.of()
+        ).withEastNorthPoints(source)
+            .withEvidence(signalEvidence())
+            .withSafetyWarnings(List.of("abrupt lateral acceleration 13.2m"));
+        AlignmentResult base = new AlignmentResult(
+            selection,
+            null,
+            List.of(candidate),
+            source,
+            source,
+            List.of(),
+            new AlignmentDiagnostics("Strava", 1, 0, 0, 0, 0, "{}", "{}", "{}", "[\"hot\"]", "[]", "[]"),
+            null
+        );
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> service.applyCandidate(base, candidate));
+    }
+
     private SelectionContext selection(int nodeCount) {
         Way way = new Way();
         List<Node> nodes = java.util.stream.IntStream.range(0, nodeCount)
