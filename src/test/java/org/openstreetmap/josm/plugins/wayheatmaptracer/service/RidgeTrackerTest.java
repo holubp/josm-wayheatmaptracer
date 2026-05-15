@@ -399,6 +399,25 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void anchoredIntervalsRejectShortWeakEdgeExcursion() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidths(0, 48, 0.60, 48, -108, 0.34, 0),
+            profileWithWidths(10, 48, 0.61, 48, -108, 0.35, 0),
+            profileWithWidths(20, 48, 0.60, 48, -108, 0.36, 0),
+            profileWithWidths(30, 48, 0.58, 48, -108, 0.38, 0),
+            profileWithWidths(40, 48, 0.59, 48, -108, 0.39, 0),
+            profileWithWidths(50, 48, 0.61, 48, -108, 0.35, 0),
+            profileWithWidths(60, 48, 0.60, 48, -108, 0.34, 0)
+        );
+
+        var best = tracker.track(profiles, 24.0).get(0);
+
+        assertTrue(best.offsetsPx().stream().allMatch(offset -> offset > 24.0),
+            "A short weak edge strand must not pull the ridge away from stronger supported anchors");
+    }
+
+    @Test
     void syntheticCorridorCenterDoesNotReceiveSpecialScoringInV02Mode() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
@@ -451,9 +470,9 @@ class RidgeTrackerTest {
             new Point2D.Double(0, 1),
             List.of(
                 new RenderedHeatmapSampler.CrossSectionPeak(leftOffset, leftIntensity, 4.0, false,
-                    leftIntensity, 0.0, leftIntensity, leftGradient, 0.75),
+                    leftIntensity, 0.0, leftIntensity, leftGradient, 0.75, 1.0),
                 new RenderedHeatmapSampler.CrossSectionPeak(rightOffset, rightIntensity, 4.0, false,
-                    rightIntensity, 0.0, rightIntensity, rightGradient, 0.75)
+                    rightIntensity, 0.0, rightIntensity, rightGradient, 0.75, 1.0)
             )
         );
     }
@@ -526,7 +545,7 @@ class RidgeTrackerTest {
             new Point2D.Double(x, 0),
             new Point2D.Double(0, 1),
             List.of(new RenderedHeatmapSampler.CrossSectionPeak(0.0, 0.0, 0.0, true,
-                0.0, 0.0, 0.0, 0.0, 0.0))
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
         );
     }
 

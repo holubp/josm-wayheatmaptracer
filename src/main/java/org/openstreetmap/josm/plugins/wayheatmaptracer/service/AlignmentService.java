@@ -342,7 +342,7 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,synthetic_center\n");
+            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
             "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
         int modeIndex = 0;
@@ -395,7 +395,7 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,synthetic_center\n");
+            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
             "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
@@ -1664,7 +1664,8 @@ public final class AlignmentService {
                 .append("\"maxProfileIntensity\":").append(format(peak.maxProfileIntensity()))
                 .append(',')
                 .append("\"gradientStrength\":").append(format(peak.gradientStrength())).append(',')
-                .append("\"gradientBalance\":").append(format(peak.gradientBalance()))
+                .append("\"gradientBalance\":").append(format(peak.gradientBalance())).append(',')
+                .append("\"nativeFilteredAgreement\":").append(format(peak.nativeFilteredAgreement()))
                 .append('}');
         }
         return builder.append(']').toString();
@@ -1694,6 +1695,7 @@ public final class AlignmentService {
                     .append(format(peak.supportWidthPx())).append(',')
                     .append(format(peak.gradientStrength())).append(',')
                     .append(format(peak.gradientBalance())).append(',')
+                    .append(format(peak.nativeFilteredAgreement())).append(',')
                     .append(peak.syntheticCenter())
                     .append('\n');
             }

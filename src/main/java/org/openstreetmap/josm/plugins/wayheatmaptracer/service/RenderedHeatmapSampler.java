@@ -135,7 +135,7 @@ public final class RenderedHeatmapSampler {
             samples.addAll(extractBrightBands(offsets));
             if (samples.isEmpty()) {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
-                samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0));
+                samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
 
             profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal, samples, anchorWithinRaster));
@@ -236,8 +236,9 @@ public final class RenderedHeatmapSampler {
                     double maxIntensity = Math.max(left.maxProfileIntensity(), right.maxProfileIntensity());
                     double gradientStrength = Math.min(left.gradientStrength(), right.gradientStrength()) * 0.85;
                     double gradientBalance = Math.min(left.gradientBalance(), right.gradientBalance());
+                    double nativeFilteredAgreement = Math.min(left.nativeFilteredAgreement(), right.nativeFilteredAgreement());
                     augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true, prominence, noiseFloor, maxIntensity,
-                        gradientStrength, gradientBalance));
+                        gradientStrength, gradientBalance, nativeFilteredAgreement));
                 }
             }
         }
@@ -283,6 +284,14 @@ public final class RenderedHeatmapSampler {
                 center = coreCenter * 0.85 + shoulderCenter * 0.15;
             }
         }
+        double nativePeakOffset = nativePeakCenter(offsets, start, end, peakIntensity);
+        double filteredPeakOffset = offsets.get(peakIndex).offsetPx;
+        double nativeFilteredDistance = Math.abs(nativePeakOffset - filteredPeakOffset);
+        double nativeFilteredAgreement = 1.0 - Math.min(1.0,
+            nativeFilteredDistance / Math.max(sampleStep, supportWidth * 0.50 + sampleStep * 1.5));
+        if (nativeFilteredAgreement >= 0.55) {
+            center = center * 0.70 + filteredPeakOffset * 0.18 + nativePeakOffset * 0.12;
+        }
         double confidence = Math.min(1.0, peakIntensity * (0.88 + Math.min(0.12, supportWidth / 80.0)));
         if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + sampleStep) {
             center = offsets.get(peakIndex).offsetPx;
@@ -295,8 +304,10 @@ public final class RenderedHeatmapSampler {
             + prominenceWeight * 0.18
             + gradientReward
             + Math.min(0.08, supportWidth / 120.0));
+        calibratedConfidence *= 0.72 + 0.28 * nativeFilteredAgreement;
         return new CrossSectionPeak(center, calibratedConfidence, supportWidth, false,
-            prominence, stats.noiseFloor(), stats.maxIntensity(), gradient.strength(), gradient.balance());
+            prominence, stats.noiseFloor(), stats.maxIntensity(), gradient.strength(), gradient.balance(),
+            nativeFilteredAgreement);
     }
 
     private double bandCenter(List<OffsetSample> offsets, List<OffsetSample> values, int start, int end) {
@@ -310,6 +321,25 @@ public final class RenderedHeatmapSampler {
         double midpoint = (offsets.get(start).offsetPx + offsets.get(end).offsetPx) / 2.0;
         double weightedCenter = weightSum == 0.0 ? midpoint : weightedOffset / weightSum;
         return midpoint * 0.70 + weightedCenter * 0.30;
+    }
+
+    private double nativePeakCenter(List<OffsetSample> offsets, int start, int end, double peakIntensity) {
+        if (peakIntensity <= 0.0) {
+            return offsets.get((start + end) / 2).offsetPx;
+        }
+        double threshold = peakIntensity - 1e-9;
+        int nativeStart = start;
+        int nativeEnd = end;
+        while (nativeStart <= end && offsets.get(nativeStart).intensity < threshold) {
+            nativeStart++;
+        }
+        while (nativeEnd >= start && offsets.get(nativeEnd).intensity < threshold) {
+            nativeEnd--;
+        }
+        if (nativeStart > nativeEnd) {
+            return offsets.get((start + end) / 2).offsetPx;
+        }
+        return (offsets.get(nativeStart).offsetPx + offsets.get(nativeEnd).offsetPx) / 2.0;
     }
 
     private GradientEvidence gradientEvidence(List<OffsetSample> smoothed, int peakIndex, int start, int end) {
@@ -406,7 +436,8 @@ public final class RenderedHeatmapSampler {
                     Math.max(current.noiseFloor(), next.noiseFloor()),
                     Math.max(current.maxProfileIntensity(), next.maxProfileIntensity()),
                     Math.max(current.gradientStrength(), next.gradientStrength()),
-                    Math.min(current.gradientBalance(), next.gradientBalance()));
+                    Math.min(current.gradientBalance(), next.gradientBalance()),
+                    Math.min(current.nativeFilteredAgreement(), next.nativeFilteredAgreement()));
             } else {
                 merged.add(current);
                 current = next;
@@ -700,14 +731,15 @@ public final class RenderedHeatmapSampler {
         double noiseFloor,
         double maxProfileIntensity,
         double gradientStrength,
-        double gradientBalance
+        double gradientBalance,
+        double nativeFilteredAgreement
     ) {
         public CrossSectionPeak(double offsetPx, double intensity) {
             this(offsetPx, intensity, 0.0, false);
         }
 
         public CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
-            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0);
+            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0, 1.0);
         }
     }
 
