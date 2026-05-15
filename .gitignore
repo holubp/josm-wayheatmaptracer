@@ -4,6 +4,7 @@ out/
 .idea/
 *.iml
 *.log
+__pycache__/
 *.zip
 !extracted-tiles.zip
 *.jar

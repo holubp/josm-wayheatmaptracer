@@ -237,6 +237,54 @@ class RidgeTrackerTest {
     }
 
     @Test
+    void smoothsBroadPlateauWanderWithoutRequiringAlternatePeaks() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidth(0, 0, 0.93, 96),
+            profileWithWidth(10, 14, 0.94, 96),
+            profileWithWidth(20, -8, 0.94, 96),
+            profileWithWidth(30, 15, 0.94, 96),
+            profileWithWidth(40, -10, 0.93, 96),
+            profileWithWidth(50, 13, 0.94, 96),
+            profileWithWidth(60, -8, 0.94, 96),
+            profileWithWidth(70, 0, 0.93, 96)
+        );
+
+        var best = tracker.track(profiles).get(0);
+
+        double maxAbs = best.offsetsPx().stream().mapToDouble(Math::abs).max().orElse(0.0);
+        assertTrue(maxAbs <= 8.0,
+            "A single broad saturated band should not preserve left-right center-estimate wander as geometry");
+    }
+
+    @Test
+    void keepsBroadPlateauSustainedSwitchback() {
+        RidgeTracker tracker = new RidgeTracker();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(
+            profileWithWidth(0, 0, 0.93, 96),
+            profileWithWidth(10, 2, 0.93, 96),
+            profileWithWidth(20, 5, 0.93, 96),
+            profileWithWidth(30, 8, 0.93, 96),
+            profileWithWidth(40, 5, 0.93, 96),
+            profileWithWidth(50, 2, 0.93, 96),
+            profileWithWidth(60, 0, 0.93, 96),
+            profileWithWidth(70, -2, 0.93, 96),
+            profileWithWidth(80, -5, 0.93, 96),
+            profileWithWidth(90, -8, 0.93, 96),
+            profileWithWidth(100, -5, 0.93, 96),
+            profileWithWidth(110, -2, 0.93, 96),
+            profileWithWidth(120, 0, 0.93, 96)
+        );
+
+        var best = tracker.track(profiles).get(0);
+
+        double max = best.offsetsPx().stream().mapToDouble(Double::doubleValue).max().orElse(0.0);
+        double min = best.offsetsPx().stream().mapToDouble(Double::doubleValue).min().orElse(0.0);
+        assertTrue(max >= 6.0 && min <= -6.0,
+            "Broad-corridor smoothing must not erase a sustained switchback-shaped heatmap trace");
+    }
+
+    @Test
     void rejectsAlternatingHighIntensityNoise() {
         RidgeTracker tracker = new RidgeTracker();
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = List.of(

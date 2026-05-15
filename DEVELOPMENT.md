@@ -18,6 +18,14 @@ python3 scripts/analyze-debug-bundles.py /path/to/debug-bundles --raw-csv build/
 
 The script expects exported last-slide debug bundles. It reads `candidate-metrics.csv` and `candidate-ratings.json`, then groups detector performance by visible color, intensity source, subjective rating, SNR, gradient evidence, longitudinal stability, roughness, and negative feature tags.
 
+Slide roughness and heatmap plateau behavior can be quantified with:
+
+```bash
+python3 scripts/analyze-slide-undulations.py /path/to/debug-or-outer.zip --csv build/undulations.csv --json build/undulations.json
+```
+
+This script accepts either last-slide debug zips or outer zips containing them. It reports before/after geometry roughness, selected candidate roughness, high-frequency lateral offset residuals, profile support widths, peak counts, gradients, and SNR so detector and smoothing changes can be tuned from exported evidence instead of screenshots.
+
 Rendered palette samples can be collected from debug bundles, calibration tile bundles, extracted JOSM cache tiles, or plain image directories with:
 
 ```bash

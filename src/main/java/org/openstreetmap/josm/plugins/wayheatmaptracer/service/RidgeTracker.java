@@ -25,7 +25,7 @@ public final class RidgeTracker {
             List<Double> offsets = state.offsets();
             List<Double> intensities = state.intensities();
 
-            List<Double> smoothedOffsets = smoothOffsets(offsets, intensities);
+            List<Double> smoothedOffsets = smoothOffsets(profiles, offsets, intensities);
             List<Point2D.Double> points = new ArrayList<>();
             for (int i = 0; i < profiles.size(); i++) {
                 RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
@@ -236,12 +236,17 @@ public final class RidgeTracker {
         return sum / count;
     }
 
-    private List<Double> smoothOffsets(List<Double> offsets, List<Double> intensities) {
+    private List<Double> smoothOffsets(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        List<Double> offsets,
+        List<Double> intensities
+    ) {
         if (offsets.size() < 3) {
             return offsets;
         }
         List<Double> current = new ArrayList<>(offsets);
         for (int pass = 0; pass < 4; pass++) {
+            List<Double> baseline = movingAverage(current, 7);
             List<Double> next = new ArrayList<>(current);
             for (int i = 1; i < current.size() - 1; i++) {
                 double intensity = intensities.get(i);
@@ -253,17 +258,59 @@ public final class RidgeTracker {
                     && Math.abs(rightDelta) >= 4.0
                     && Math.signum(leftDelta) != Math.signum(rightDelta)
                     && residual >= 6.0;
+                RenderedHeatmapSampler.CrossSectionPeak peak = selectedPeak(profiles.get(i), current.get(i));
+                boolean broadPlateau = peak.supportWidthPx() >= 48.0 && intensity >= 0.45;
+                int localFlipCount = localDeltaSignFlips(current, i, 3, 3.0);
+                double highFrequencyResidual = Math.abs(current.get(i) - baseline.get(i));
+                boolean broadPlateauWander = broadPlateau && localFlipCount >= 2 && highFrequencyResidual >= 5.0;
                 double lowConfidenceSmoothing = 0.45 * clamp01((0.55 - intensity) / 0.55);
                 double aliasingSmoothing = alternating ? (intensity >= 0.80 ? 0.70 : 0.55) : 0.0;
+                double plateauSmoothing = broadPlateauWander ? 0.62 : 0.0;
                 double smoothing = Math.max(lowConfidenceSmoothing, aliasingSmoothing);
+                smoothing = Math.max(smoothing, plateauSmoothing);
                 if (smoothing <= 0.01) {
                     continue;
                 }
-                next.set(i, current.get(i) * (1.0 - smoothing) + neighborAverage * smoothing);
+                double target = plateauSmoothing > aliasingSmoothing ? baseline.get(i) : neighborAverage;
+                next.set(i, current.get(i) * (1.0 - smoothing) + target * smoothing);
             }
             current = next;
         }
         return current;
+    }
+
+    private List<Double> movingAverage(List<Double> offsets, int window) {
+        int radius = Math.max(1, window / 2);
+        List<Double> smoothed = new ArrayList<>(offsets.size());
+        for (int i = 0; i < offsets.size(); i++) {
+            int start = Math.max(0, i - radius);
+            int end = Math.min(offsets.size() - 1, i + radius);
+            double total = 0.0;
+            for (int j = start; j <= end; j++) {
+                total += offsets.get(j);
+            }
+            smoothed.add(total / (end - start + 1));
+        }
+        return smoothed;
+    }
+
+    private int localDeltaSignFlips(List<Double> offsets, int center, int radius, double thresholdPx) {
+        int start = Math.max(1, center - radius);
+        int end = Math.min(offsets.size() - 1, center + radius);
+        int flips = 0;
+        Double previous = null;
+        for (int i = start; i <= end; i++) {
+            double delta = offsets.get(i) - offsets.get(i - 1);
+            if (Math.abs(delta) < thresholdPx) {
+                continue;
+            }
+            double sign = Math.signum(delta);
+            if (previous != null && sign != previous) {
+                flips++;
+            }
+            previous = sign;
+        }
+        return flips;
     }
 
     private double clamp01(double value) {
