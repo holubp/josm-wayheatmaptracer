@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -56,6 +57,19 @@ class AlignmentServiceTest {
         ManagedHeatmapConfig config = config(AlignmentMode.MOVE_EXISTING_NODES);
 
         assertEquals(AlignmentMode.MOVE_EXISTING_NODES, AlignmentService.effectiveAlignmentMode(segment, config));
+    }
+
+    @Test
+    void alternativeDetectorMappingsAndSourceColorAggregationAreIndependent() {
+        AlignmentService service = new AlignmentService();
+        ManagedHeatmapConfig alternativesOnly = config(AlignmentMode.MOVE_EXISTING_NODES, true, false);
+        ManagedHeatmapConfig aggregateOnly = config(AlignmentMode.MOVE_EXISTING_NODES, false, true);
+
+        assertTrue(service.detectionColorModes(alternativesOnly).contains("bluered-combined"));
+        assertEquals(List.of("hot"), service.sourceTileColors(alternativesOnly));
+        assertEquals(List.of("hot"), service.detectionColorModes(aggregateOnly));
+        assertTrue(service.sourceTileColors(aggregateOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
+        assertFalse(service.detectionColorModes(aggregateOnly).contains("bluered-combined"));
     }
 
     @Test
@@ -269,6 +283,10 @@ class AlignmentServiceTest {
     }
 
     private ManagedHeatmapConfig config(AlignmentMode mode) {
+        return config(mode, false, false);
+    }
+
+    private ManagedHeatmapConfig config(AlignmentMode mode, boolean alternativeDetectors, boolean aggregateAllColorSchemes) {
         return new ManagedHeatmapConfig(
             "", "", "", "",
             "all",
@@ -278,7 +296,8 @@ class AlignmentServiceTest {
             mode,
             false,
             false,
-            false,
+            alternativeDetectors,
+            aggregateAllColorSchemes,
             false,
             true,
             false,

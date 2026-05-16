@@ -15,6 +15,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param verbose whether verbose slide logging is enabled
  * @param debug whether debug overlay rendering is enabled
  * @param multiColorDetection whether alternative detector mappings are shown for the selected color source
+ * @param aggregateAllColorSchemes whether managed source colors are fused into one aggregate intensity map
  * @param candidateRatingEnabled whether preview rating controls are visible
  * @param parallelWayAwareness whether nearby parallel OSM ways are considered as context
  * @param allowUndownloadedAlignment whether OSM downloaded-area checks are bypassed
@@ -44,6 +45,7 @@ public record ManagedHeatmapConfig(
     boolean verbose,
     boolean debug,
     boolean multiColorDetection,
+    boolean aggregateAllColorSchemes,
     boolean candidateRatingEnabled,
     boolean parallelWayAwareness,
     boolean allowUndownloadedAlignment,
@@ -89,6 +91,7 @@ public record ManagedHeatmapConfig(
             verbose,
             debug,
             multiColorDetection,
+            aggregateAllColorSchemes,
             candidateRatingEnabled,
             parallelWayAwareness,
             allowUndownloadedAlignment,
@@ -135,6 +138,7 @@ public record ManagedHeatmapConfig(
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','
+            + "\"aggregateAllColorSchemes\":" + aggregateAllColorSchemes + ','
             + "\"candidateRatingEnabled\":" + candidateRatingEnabled + ','
             + "\"parallelWayAwareness\":" + parallelWayAwareness + ','
             + "\"allowUndownloadedAlignment\":" + allowUndownloadedAlignment + ','

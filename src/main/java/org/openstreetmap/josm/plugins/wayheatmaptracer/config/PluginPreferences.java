@@ -26,6 +26,7 @@ public final class PluginPreferences {
     private static final String VERBOSE = PREFIX + "verbose";
     private static final String DEBUG = PREFIX + "debug";
     private static final String MULTI_COLOR_DETECTION = PREFIX + "multiColorDetection";
+    private static final String AGGREGATE_ALL_COLOR_SCHEMES = PREFIX + "aggregateAllColorSchemes";
     private static final String CANDIDATE_RATING_ENABLED = PREFIX + "candidateRatingEnabled";
     private static final String PARALLEL_WAY_AWARENESS = PREFIX + "parallelWayAwareness";
     private static final String ALLOW_UNDOWNLOADED_ALIGNMENT = PREFIX + "allowUndownloadedAlignment";
@@ -68,6 +69,7 @@ public final class PluginPreferences {
             pref.getBoolean(VERBOSE, false),
             pref.getBoolean(DEBUG, false),
             pref.getBoolean(MULTI_COLOR_DETECTION, true),
+            pref.getBoolean(AGGREGATE_ALL_COLOR_SCHEMES, pref.getBoolean(MULTI_COLOR_DETECTION, true)),
             pref.getBoolean(CANDIDATE_RATING_ENABLED, false),
             pref.getBoolean(PARALLEL_WAY_AWARENESS, true),
             pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
@@ -106,6 +108,7 @@ public final class PluginPreferences {
         Config.getPref().putBoolean(VERBOSE, config.verbose());
         Config.getPref().putBoolean(DEBUG, config.debug());
         Config.getPref().putBoolean(MULTI_COLOR_DETECTION, config.multiColorDetection());
+        Config.getPref().putBoolean(AGGREGATE_ALL_COLOR_SCHEMES, config.aggregateAllColorSchemes());
         Config.getPref().putBoolean(CANDIDATE_RATING_ENABLED, config.candidateRatingEnabled());
         Config.getPref().putBoolean(PARALLEL_WAY_AWARENESS, config.parallelWayAwareness());
         Config.getPref().putBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, config.allowUndownloadedAlignment());
@@ -174,6 +177,7 @@ public final class PluginPreferences {
             AlignmentMode.MOVE_EXISTING_NODES,
             false,
             false,
+            true,
             true,
             false,
             false,

@@ -103,9 +103,9 @@ public final class AlignmentService {
             selection.segmentNodes().size(),
             selection.fixedNodes().size(),
             imageryLayer.getName());
-        PluginLog.verbose("Alignment mode=%s simplify=%s tolerance=%.2f multiColor=%s renderedLayerZoom=%s.",
+        PluginLog.verbose("Alignment mode=%s simplify=%s tolerance=%.2f alternativeDetectors=%s aggregateAllColors=%s renderedLayerZoom=%s.",
             config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
-            config.multiColorDetection(), renderedZoomSummary(imageryLayer));
+            config.multiColorDetection(), config.aggregateAllColorSchemes(), renderedZoomSummary(imageryLayer));
         PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
 
         long t0 = System.nanoTime();
@@ -384,7 +384,7 @@ public final class AlignmentService {
             }
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
-        java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
+        java.util.Comparator<CenterlineCandidate> candidateComparator = useCalibratedDetectorRanking(config)
             ? java.util.Comparator
                 .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config, effectiveSampling))
                 .reversed()
@@ -457,7 +457,7 @@ public final class AlignmentService {
             }
             PluginLog.verbose("Fixed tile color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
-        java.util.Comparator<CenterlineCandidate> candidateComparator = config.multiColorDetection()
+        java.util.Comparator<CenterlineCandidate> candidateComparator = useCalibratedDetectorRanking(config)
             ? java.util.Comparator
                 .comparingDouble((CenterlineCandidate candidate) -> calibratedRankingScore(candidate, config, effectiveSampling))
                 .reversed()
@@ -723,7 +723,7 @@ public final class AlignmentService {
         return Math.max(0.0, Math.min(1.0, value));
     }
 
-    private List<String> detectionColorModes(ManagedHeatmapConfig config) {
+    List<String> detectionColorModes(ManagedHeatmapConfig config) {
         IntensitySamplingMode source = intensitySamplingMode(config);
         if (!source.usesColorMapping()) {
             return List.of(source.detectorName());
@@ -745,7 +745,7 @@ public final class AlignmentService {
         return modes;
     }
 
-    private List<String> sourceTileColors(ManagedHeatmapConfig config) {
+    List<String> sourceTileColors(ManagedHeatmapConfig config) {
         String selected = normalizedVisibleColor(config);
         if (!shouldRunAggregatedSourceDetector(config)) {
             return List.of(selected);
@@ -761,7 +761,7 @@ public final class AlignmentService {
     }
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config) {
-        return config.multiColorDetection() && intensitySamplingMode(config).usesColorMapping();
+        return config.aggregateAllColorSchemes() && intensitySamplingMode(config).usesColorMapping();
     }
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config, TileHeatmapSampler.TileMosaicSet mosaics) {
@@ -781,6 +781,10 @@ public final class AlignmentService {
         reported.add(AGGREGATED_COLOR_MODE);
         reported.addAll(colorModes);
         return reported;
+    }
+
+    private boolean useCalibratedDetectorRanking(ManagedHeatmapConfig config) {
+        return config.multiColorDetection() || shouldRunAggregatedSourceDetector(config);
     }
 
     private IntensitySamplingMode intensitySamplingMode(ManagedHeatmapConfig config) {
