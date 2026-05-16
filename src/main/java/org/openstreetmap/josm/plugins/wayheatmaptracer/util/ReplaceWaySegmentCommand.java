@@ -24,6 +24,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath.ProjectionOnPolyline;
 import org.openstreetmap.josm.tools.ImageProvider;
 
+/**
+ * Undoable command that replaces a selected way segment with precise preview geometry.
+ */
 public final class ReplaceWaySegmentCommand extends Command {
     private static final double ANCHOR_MATCH_EPSILON_METERS = 0.01;
     private static final double SOFT_ANCHOR_SEARCH_FRACTION = 0.08;
@@ -41,6 +44,15 @@ public final class ReplaceWaySegmentCommand extends Command {
     private final List<Node> removedExistingNodes = new ArrayList<>();
     private List<Node> replacementNodes;
 
+    /**
+     * Creates a command for replacing only the selected segment of a way.
+     *
+     * @param dataSet target OSM dataset
+     * @param way way whose selected segment will be replaced
+     * @param selection validated selected segment metadata
+     * @param previewPolyline replacement geometry in projected coordinates
+     * @param description undo/redo menu description
+     */
     public ReplaceWaySegmentCommand(DataSet dataSet, Way way, SelectionContext selection, List<EastNorth> previewPolyline, String description) {
         super(dataSet);
         this.way = way;

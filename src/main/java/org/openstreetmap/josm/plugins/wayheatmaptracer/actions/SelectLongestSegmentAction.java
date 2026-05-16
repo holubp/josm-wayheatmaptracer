@@ -18,9 +18,15 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.WaySegmentRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector;
 import org.openstreetmap.josm.tools.Shortcut;
 
+/**
+ * Selects the longest way segment bounded by endpoints or junction nodes for targeted heatmap alignment.
+ */
 public final class SelectLongestSegmentAction extends JosmAction {
     private final JunctionSegmentSelector selector = new JunctionSegmentSelector();
 
+    /**
+     * Creates the segment-selection action and registers it in the plugin menu.
+     */
     public SelectLongestSegmentAction() {
         super(
             tr("Select Longest Heatmap Segment"),

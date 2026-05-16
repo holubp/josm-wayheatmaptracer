@@ -59,7 +59,7 @@ The current implementation is designed for private development:
 - Align from managed fixed-resolution Strava source tiles, or from the JOSM-rendered heatmap imagery layer using the `0.2.0` rendered-layer sampler and ridge tracker when managed access is unavailable
 - Optionally run the same visible-layer detector with multiple color classifiers (`hot`, `blue`, `bluered`, `purple`, `gray`, internal `dual`, and experimental combined-intensity detectors) and show the resulting candidates in the preview
 - Optionally bypass palette color mapping and sample scalar rendered-pixel intensity directly from luminance, max RGB channel, or alpha for non-Strava or diagnostic scalar imagery
-- Use cross-section gradient evidence, intensity/prominence, and native-vs-filtered maximum agreement when ranking ridge candidates and confirming longitudinal stability
+- Use cross-section gradient evidence, intensity/prominence, raw/B3/B5 peak-center agreement, and source-pixel roughness when ranking ridge candidates and confirming longitudinal stability
 - Resolve ridge geometry through reliable anchor profiles and constrained intervals, reducing short weak side excursions near crossings
 - Treat source-tile resolution as a real evidence limit: sub-source-pixel alternating wiggles are penalized, while sustained bends remain available as candidate geometry
 - Show the rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
@@ -87,7 +87,7 @@ The current implementation is designed for private development:
 
 - Survey mode is not implemented yet.
 - Access values are kept out of docs and diagnostics, but the current plugin stores them in JOSM preferences rather than OS-backed secure storage.
-- Heatmap interpretation is strongest for `hot`, `bluered`, and `gray`. `blue` and `purple` are supported, but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray.
+- Heatmap interpretation is strongest for `hot`, `bluered`, and `purple`. `gray` and `blue` are supported but may still need additional tuning in difficult cases. `gray` is treated as a dual-color scheme because high-activity traces can become pink/magenta rather than merely brighter gray; `purple` uses the real purple/lavender palette path rather than strict old magenta-only hue matching.
 - Strava's current public access appears to expose signed rendered PNG tiles, not the old raw numeric heat-density tile feed used by Strava Slide. Direct intensity modes therefore operate on rendered pixel channels and are intended for scalar imagery, diagnostics, and future compatible sources.
 - Parallel-way awareness is an auxiliary ranking signal. It helps avoid snapping to a neighboring mapped road/path, but the preview still requires mapper review.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
@@ -122,7 +122,7 @@ build/libs/wayheatmaptracer.jar
 4. Click `Paste cookie header...`, paste the copied cookie header into the small window, and press `OK`.
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
-7. Enable `Use all color schemes for detection` if you want the detector to classify the same source color through all supported palette modes and show those alternatives in the preview.
+7. Enable `Run alternative detector mappings on selected color` if you want the detector to classify the same source color through all supported palette modes and show those alternatives in the preview.
 8. Leave `Intensity source` at `Color mapping` for normal Strava heatmap work. Use `Direct luminance`, `Direct max channel`, or `Direct alpha` only for scalar rendered imagery or diagnostics where pixel brightness/opacity already is the intended intensity.
 9. For fixed-resolution sliding, start with `Stable fixed scale`, inference zoom `15`, validation zoom `13`, search half-width `7.01`, and sample step `1.56`. These reproduce the z15/reference-raster setup that has been working well in recent tests.
 10. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and tests that a source tile is usable.
@@ -136,7 +136,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. Increase this setting deliberately only when the rough source geometry is genuinely far from the intended heatmap trace.
 - `Cross-section half-width px` and `Cross-section step px`: used by the legacy visible-layer fallback. Fixed source-tile alignment uses the meter-based fields above and converts them to the same 0.389 m/px reference view scale reported in the preview.
 - `Intensity source`: `Color mapping` is the default and should be used for normal Strava heatmap color schemes. Direct modes bypass palette semantics and use rendered pixel luminance, max channel, or alpha as scalar intensity; when a direct mode is selected, multi-color detection collapses to one direct detector because color-scheme alternatives no longer apply.
-- `Use all color schemes for detection`: runs multiple palette classifiers on the selected source color and shows their separate ridge candidates in the preview. Multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. Experimental `bluered-combined`, `gray-combined`, and `multi-combined` modes first fuse named color-to-intensity mappings into one intensity field, then run the same ridge tracker on that fused field.
+- `Run alternative detector mappings on selected color`: runs multiple palette classifiers on the selected source color and shows their separate ridge candidates in the preview. This is not a full all-source-tile fusion mode: the detector still samples the managed or visible source selected for the slide, then applies calibrated mappings to that sampled color data. Multi-color candidate ordering uses calibrated detector ranking from subjective assessments, while diagnostics keep both calibrated and raw scores. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. Experimental `bluered-combined`, `gray-combined`, and `multi-combined` modes first fuse named color-to-intensity mappings into one intensity field, then run the same ridge tracker on that fused field.
 - `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: retained in settings, but not used by the current sliding core.
 - `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
@@ -197,7 +197,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - original selected way/segment and preview geometry as OSM
 - candidate ridge geometries as OSM, including failed pre-preview candidates
 - `candidate-metrics.csv`, with detector, visible color, intensity source, raw score, calibrated score, support ratio, mean intensity, mean gradient strength, longitudinal stability, SNR, ambiguity, roughness, source-pixel-scale roughness, edge-pinning, and safety warnings for each candidate
-- `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, gradient strength/balance, native-vs-filtered maximum agreement, and synthetic-center flag
+- `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, gradient strength/balance, native-vs-filtered maximum agreement, raw/B3/B5 center positions, scale agreement, center uncertainty, filter parameters, and synthetic-center flag
 - `palette-samples.csv`, with per-profile strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
@@ -218,7 +218,7 @@ Analyze a calibration bundle or an existing last-slide debug bundle offline:
 python3 scripts/heatmap-palette-lab.py /path/to/heatmap-calibration.zip --output-dir build/palette-lab --copy-images
 ```
 
-The script also accepts image directories and extracted JOSM cache tiles. It writes `images.csv`, `palette-clusters.csv`, and `scheme-summary.csv`; add `--write-pixels` when you need per-color samples for deeper fitting. This is intended to let palette parameters be tuned numerically from real rendered tiles instead of by visual guessing.
+The script also accepts image directories and extracted JOSM cache tiles. It writes `images.csv`, `palette-clusters.csv`, and `scheme-summary.csv`; add `--write-pixels` when you need per-color samples for deeper fitting. Add `--analyze-filters` to write `filter-summary.csv`, which compares the planned B3 and B5 profile filters against raw cross-section centers for each exported image. This is intended to let palette parameters and convolution filters be tuned numerically from real rendered tiles instead of by visual guessing.
 
 ## Private Install Workflow
 

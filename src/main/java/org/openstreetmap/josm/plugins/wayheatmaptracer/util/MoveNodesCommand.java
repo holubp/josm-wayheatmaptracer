@@ -13,10 +13,20 @@ import org.openstreetmap.josm.data.osm.OsmPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
 import org.openstreetmap.josm.tools.ImageProvider;
 
+/**
+ * Undoable JOSM command that moves existing OSM nodes to precomputed projected coordinates.
+ */
 public final class MoveNodesCommand extends Command {
     private final List<NodeMove> nodeMoves;
     private final String description;
 
+    /**
+     * Creates a node-move command.
+     *
+     * @param dataSet target OSM dataset
+     * @param nodeMoves node-to-coordinate moves to apply
+     * @param description undo/redo menu description
+     */
     public MoveNodesCommand(DataSet dataSet, List<NodeMove> nodeMoves, String description) {
         super(dataSet);
         this.nodeMoves = List.copyOf(nodeMoves);
@@ -59,4 +69,3 @@ public final class MoveNodesCommand extends Command {
         return nodes;
     }
 }
-

@@ -14,9 +14,29 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Captures rendered heatmap imagery and converts cross-sections through a way into ridge peak evidence.
+ *
+ * <p>The sampler deliberately separates palette mapping from profile filtering. Pixels are first mapped to a
+ * scalar heatmap intensity, then the one-dimensional cross-section profile is filtered at two conservative
+ * scales. This keeps debug output useful: every ridge peak can report whether its raw maximum agrees with
+ * denoised profiles rather than hiding the choice inside final geometry smoothing.</p>
+ */
 public final class RenderedHeatmapSampler {
+    /**
+     * Oversampling factor used when rendering JOSM imagery layers into an off-screen raster.
+     */
     public static final double RASTER_SCALE = 6.0;
+    private static final double[] LIGHT_BINOMIAL_KERNEL = {1.0, 2.0, 1.0};
+    private static final double[] STANDARD_BINOMIAL_KERNEL = {1.0, 4.0, 6.0, 4.0, 1.0};
 
+    /**
+     * Renders an imagery layer into an off-screen ARGB raster using the current map view state.
+     *
+     * @param imageryLayer heatmap imagery layer to paint
+     * @param mapView JOSM map view whose current bounds and scale define the capture
+     * @return oversampled raster containing the rendered layer
+     */
     public BufferedImage captureLayer(ImageryLayer imageryLayer, MapView mapView) {
         PluginLog.verbose("Capturing heatmap layer '%s' into off-screen raster %dx%d.",
             imageryLayer.getName(),
@@ -49,6 +69,18 @@ public final class RenderedHeatmapSampler {
         return sampleProfiles(raster, mapView, sourcePolyline, halfWidthPx, stepPx, colorMode, IntensitySamplingMode.COLOR_MAPPING);
     }
 
+    /**
+     * Samples ridge candidates from a rendered heatmap along a source polyline.
+     *
+     * @param raster rendered heatmap image
+     * @param mapView map view used to project source coordinates into the raster
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @param halfWidthPx search half-width in view pixels before raster oversampling
+     * @param stepPx cross-section sample step in view pixels before raster oversampling
+     * @param colorMode Strava color mapping or detector mapping name
+     * @param intensitySamplingMode color-to-intensity strategy
+     * @return cross-section profiles with extracted heatmap peaks
+     */
     public List<CrossSectionProfile> sampleProfiles(
         BufferedImage raster,
         MapView mapView,
@@ -159,7 +191,8 @@ public final class RenderedHeatmapSampler {
     }
 
     private List<CrossSectionPeak> extractBrightBands(List<OffsetSample> offsets) {
-        List<OffsetSample> smoothed = smoothProfile(offsets);
+        ProfileFilters filters = profileFilters(offsets);
+        List<OffsetSample> smoothed = filters.standardFiltered();
         ProfileStats stats = profileStats(smoothed);
         if (stats.maxIntensity() <= 0.14 || stats.maxProminence() <= 0.025) {
             return List.of();
@@ -193,7 +226,7 @@ public final class RenderedHeatmapSampler {
             while (end + 1 < smoothed.size() && smoothed.get(end + 1).intensity >= shoulderThreshold) {
                 end++;
             }
-            peaks.add(buildBandPeak(offsets, smoothed, stats, index, start, end));
+            peaks.add(buildBandPeak(offsets, filters, stats, index, start, end));
         }
 
         if (peaks.isEmpty()) {
@@ -203,7 +236,7 @@ public final class RenderedHeatmapSampler {
                     strongest = i;
                 }
             }
-            peaks.add(buildBandPeak(offsets, smoothed, stats, strongest, strongest, strongest));
+            peaks.add(buildBandPeak(offsets, filters, stats, strongest, strongest, strongest));
         }
         List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
         return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
@@ -237,8 +270,11 @@ public final class RenderedHeatmapSampler {
                     double gradientStrength = Math.min(left.gradientStrength(), right.gradientStrength()) * 0.85;
                     double gradientBalance = Math.min(left.gradientBalance(), right.gradientBalance());
                     double nativeFilteredAgreement = Math.min(left.nativeFilteredAgreement(), right.nativeFilteredAgreement());
+                    double scaleAgreement = Math.min(left.scaleAgreement(), right.scaleAgreement());
+                    double centerUncertainty = Math.max(left.centerUncertaintyPx(), right.centerUncertaintyPx());
                     augmented.add(new CrossSectionPeak(center, weaker * 0.93, gap, true, prominence, noiseFloor, maxIntensity,
-                        gradientStrength, gradientBalance, nativeFilteredAgreement));
+                        gradientStrength, gradientBalance, nativeFilteredAgreement,
+                        center, center, center, 0.0, scaleAgreement, centerUncertainty));
                 }
             }
         }
@@ -247,12 +283,13 @@ public final class RenderedHeatmapSampler {
 
     private CrossSectionPeak buildBandPeak(
         List<OffsetSample> offsets,
-        List<OffsetSample> smoothed,
+        ProfileFilters filters,
         ProfileStats stats,
         int peakIndex,
         int start,
         int end
     ) {
+        List<OffsetSample> smoothed = filters.standardFiltered();
         double weightedOffset = 0.0;
         double weightSum = 0.0;
         double peakIntensity = 0.0;
@@ -285,12 +322,17 @@ public final class RenderedHeatmapSampler {
             }
         }
         double nativePeakOffset = nativePeakCenter(offsets, start, end, peakIntensity);
-        double filteredPeakOffset = offsets.get(peakIndex).offsetPx;
+        ScaleEvidence scaleEvidence = scaleEvidence(filters, start, end, peakIndex, sampleStep);
+        double filteredPeakOffset = scaleEvidence.lightCenterPx();
         double nativeFilteredDistance = Math.abs(nativePeakOffset - filteredPeakOffset);
         double nativeFilteredAgreement = 1.0 - Math.min(1.0,
             nativeFilteredDistance / Math.max(sampleStep, supportWidth * 0.50 + sampleStep * 1.5));
         if (nativeFilteredAgreement >= 0.55) {
-            center = center * 0.70 + filteredPeakOffset * 0.18 + nativePeakOffset * 0.12;
+            if (scaleEvidence.scaleAgreement() >= 0.90 && peakIntensity >= 0.45) {
+                center = center * 0.25 + filteredPeakOffset * 0.50 + nativePeakOffset * 0.25;
+            } else {
+                center = center * 0.70 + filteredPeakOffset * 0.18 + nativePeakOffset * 0.12;
+            }
         }
         double confidence = Math.min(1.0, peakIntensity * (0.88 + Math.min(0.12, supportWidth / 80.0)));
         if (Math.abs(center - offsets.get(peakIndex).offsetPx) > supportWidth * 0.75 + sampleStep) {
@@ -305,9 +347,12 @@ public final class RenderedHeatmapSampler {
             + gradientReward
             + Math.min(0.08, supportWidth / 120.0));
         calibratedConfidence *= 0.72 + 0.28 * nativeFilteredAgreement;
+        calibratedConfidence *= 0.78 + 0.22 * scaleEvidence.scaleAgreement();
         return new CrossSectionPeak(center, calibratedConfidence, supportWidth, false,
             prominence, stats.noiseFloor(), stats.maxIntensity(), gradient.strength(), gradient.balance(),
-            nativeFilteredAgreement);
+            nativeFilteredAgreement, scaleEvidence.rawCenterPx(), scaleEvidence.lightCenterPx(),
+            scaleEvidence.standardCenterPx(), scaleEvidence.scaleOffsetRmsPx(), scaleEvidence.scaleAgreement(),
+            scaleEvidence.centerUncertaintyPx());
     }
 
     private double bandCenter(List<OffsetSample> offsets, List<OffsetSample> values, int start, int end) {
@@ -357,48 +402,100 @@ public final class RenderedHeatmapSampler {
         return new GradientEvidence(strength, Math.max(0.0, Math.min(1.0, balance)));
     }
 
-    private List<OffsetSample> smoothProfile(List<OffsetSample> offsets) {
+    private ProfileFilters profileFilters(List<OffsetSample> offsets) {
         if (offsets.size() < 3) {
-            return offsets;
+            return new ProfileFilters(offsets, offsets, offsets);
         }
+        List<OffsetSample> light = signalGatedPowerBinomialSmooth(
+            offsets, LIGHT_BINOMIAL_KERNEL, 0.45, 0.30, 0.15);
         if (offsets.size() >= 5) {
-            return signalGatedBinomialSmooth(offsets);
+            List<OffsetSample> standard = signalGatedPowerBinomialSmooth(
+                offsets, STANDARD_BINOMIAL_KERNEL, 0.35, 0.25, 0.10);
+            return new ProfileFilters(offsets, light, standard);
         }
-        List<OffsetSample> smoothed = new ArrayList<>(offsets.size());
-        for (int i = 0; i < offsets.size(); i++) {
-            double center = offsets.get(i).intensity;
-            double left = i == 0 ? center : offsets.get(i - 1).intensity;
-            double right = i == offsets.size() - 1 ? center : offsets.get(i + 1).intensity;
-            smoothed.add(new OffsetSample(offsets.get(i).offsetPx, 0.20 * left + 0.60 * center + 0.20 * right));
-        }
-        return smoothed;
+        return new ProfileFilters(offsets, light, light);
     }
 
-    private List<OffsetSample> signalGatedBinomialSmooth(List<OffsetSample> offsets) {
+    private List<OffsetSample> signalGatedPowerBinomialSmooth(
+        List<OffsetSample> offsets,
+        double[] kernel,
+        double strongBlend,
+        double mediumBlend,
+        double weakBlend
+    ) {
         double max = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
         if (max <= 0.0) {
             return offsets;
         }
-        double[] kernel = {1.0, 4.0, 6.0, 4.0, 1.0};
+        int radius = kernel.length / 2;
+        double power = max < 0.35 ? 1.25 : 2.0;
+        double blend = max >= 0.55 ? strongBlend : (max >= 0.25 ? mediumBlend : weakBlend);
         List<OffsetSample> smoothed = new ArrayList<>(offsets.size());
         for (int i = 0; i < offsets.size(); i++) {
             double weighted = 0.0;
             double total = 0.0;
-            for (int k = -2; k <= 2; k++) {
+            for (int k = -radius; k <= radius; k++) {
                 int index = Math.max(0, Math.min(offsets.size() - 1, i + k));
                 double intensity = offsets.get(index).intensity;
                 double mask = signalMask(intensity, max);
-                double weight = kernel[k + 2] * mask;
-                weighted += intensity * weight;
+                double weight = kernel[k + radius] * mask;
+                weighted += Math.pow(Math.max(0.0, intensity), power) * weight;
                 total += weight;
             }
             double raw = offsets.get(i).intensity;
-            double filtered = total <= 1e-9 ? raw : weighted / total;
-            double blend = max >= 0.55 ? 0.46 : (max >= 0.25 ? 0.28 : 0.14);
+            double filtered = total <= 1e-9 ? raw : Math.pow(weighted / total, 1.0 / power);
             double smoothedIntensity = raw * (1.0 - blend) + filtered * blend;
             smoothed.add(new OffsetSample(offsets.get(i).offsetPx, smoothedIntensity));
         }
         return smoothed;
+    }
+
+    private ScaleEvidence scaleEvidence(ProfileFilters filters, int start, int end, int peakIndex, double sampleStep) {
+        int windowStart = Math.max(0, start - 1);
+        int windowEnd = Math.min(filters.raw().size() - 1, end + 1);
+        double rawCenter = maxPlateauCenter(filters.raw(), windowStart, windowEnd, peakIndex);
+        double lightCenter = maxPlateauCenter(filters.lightFiltered(), windowStart, windowEnd, peakIndex);
+        double standardCenter = maxPlateauCenter(filters.standardFiltered(), windowStart, windowEnd, peakIndex);
+        double mean = (rawCenter + lightCenter + standardCenter) / 3.0;
+        double rms = Math.sqrt((square(rawCenter - mean) + square(lightCenter - mean) + square(standardCenter - mean)) / 3.0);
+        double matchRadius = Math.max(1.0, sampleStep);
+        double agreement = Math.exp(-(rms * rms) / (2.0 * matchRadius * matchRadius));
+        double uncertainty = Math.max(sampleStep / 2.0, rms);
+        return new ScaleEvidence(rawCenter, lightCenter, standardCenter, rms, agreement, uncertainty);
+    }
+
+    private double maxPlateauCenter(List<OffsetSample> samples, int start, int end, int fallbackIndex) {
+        if (samples.isEmpty()) {
+            return 0.0;
+        }
+        int safeStart = Math.max(0, Math.min(start, samples.size() - 1));
+        int safeEnd = Math.max(safeStart, Math.min(end, samples.size() - 1));
+        double max = Double.NEGATIVE_INFINITY;
+        for (int i = safeStart; i <= safeEnd; i++) {
+            max = Math.max(max, samples.get(i).intensity());
+        }
+        if (!Double.isFinite(max)) {
+            return samples.get(Math.max(0, Math.min(fallbackIndex, samples.size() - 1))).offsetPx();
+        }
+        int first = -1;
+        int last = -1;
+        double threshold = max - 1e-9;
+        for (int i = safeStart; i <= safeEnd; i++) {
+            if (samples.get(i).intensity() >= threshold) {
+                if (first < 0) {
+                    first = i;
+                }
+                last = i;
+            }
+        }
+        if (first < 0) {
+            return samples.get(Math.max(0, Math.min(fallbackIndex, samples.size() - 1))).offsetPx();
+        }
+        return (samples.get(first).offsetPx() + samples.get(last).offsetPx()) / 2.0;
+    }
+
+    private double square(double value) {
+        return value * value;
     }
 
     private double signalMask(double intensity, double max) {
@@ -437,7 +534,13 @@ public final class RenderedHeatmapSampler {
                     Math.max(current.maxProfileIntensity(), next.maxProfileIntensity()),
                     Math.max(current.gradientStrength(), next.gradientStrength()),
                     Math.min(current.gradientBalance(), next.gradientBalance()),
-                    Math.min(current.nativeFilteredAgreement(), next.nativeFilteredAgreement()));
+                    Math.min(current.nativeFilteredAgreement(), next.nativeFilteredAgreement()),
+                    mergeCenter(current.rawCenterPx(), next.rawCenterPx(), current.intensity(), next.intensity()),
+                    mergeCenter(current.lightFilteredCenterPx(), next.lightFilteredCenterPx(), current.intensity(), next.intensity()),
+                    mergeCenter(current.standardFilteredCenterPx(), next.standardFilteredCenterPx(), current.intensity(), next.intensity()),
+                    Math.max(current.scaleOffsetRmsPx(), next.scaleOffsetRmsPx()),
+                    Math.min(current.scaleAgreement(), next.scaleAgreement()),
+                    Math.max(current.centerUncertaintyPx(), next.centerUncertaintyPx()));
             } else {
                 merged.add(current);
                 current = next;
@@ -445,6 +548,11 @@ public final class RenderedHeatmapSampler {
         }
         merged.add(current);
         return merged;
+    }
+
+    private double mergeCenter(double leftCenter, double rightCenter, double leftWeight, double rightWeight) {
+        double total = leftWeight + rightWeight;
+        return total <= 0.0 ? (leftCenter + rightCenter) / 2.0 : (leftCenter * leftWeight + rightCenter * rightWeight) / total;
     }
 
     private double estimateSampleStep(List<OffsetSample> offsets) {
@@ -676,8 +784,13 @@ public final class RenderedHeatmapSampler {
     }
 
     private static double purpleIntensity(double hue, double saturation, double luminance, double value) {
-        double affinity = Math.max(hueAffinity(hue, 285.0, 35.0), hueAffinity(hue, 315.0, 35.0));
-        return affinity * (0.55 + 0.45 * saturation) * value * (0.60 + 0.40 * luminance);
+        double primaryAffinity = hueAffinity(hue, 260.0, 48.0);
+        double legacyAffinity = Math.max(hueAffinity(hue, 285.0, 40.0) * 0.86, hueAffinity(hue, 315.0, 38.0) * 0.72);
+        double affinity = Math.max(primaryAffinity, legacyAffinity);
+        double chromaPath = affinity * (0.42 + 0.58 * saturation) * (0.34 + 0.66 * value);
+        double brightLavender = affinity * (0.52 + 0.48 * value) * (0.54 + 0.46 * luminance);
+        double paleCore = (0.85 * luminance + 0.15 * value) * (0.58 + 0.42 * affinity) * (1.0 - 0.40 * saturation);
+        return Math.max(chromaPath, Math.max(brightLavender * 0.95, paleCore));
     }
 
     private static double strictPurpleIntensity(double hue, double saturation, double luminance, double value) {
@@ -710,6 +823,15 @@ public final class RenderedHeatmapSampler {
         return Math.max(0.0, 1.0 - distance / width);
     }
 
+    /**
+     * Sampled heatmap evidence at one point along the source way.
+     *
+     * @param anchor projected coordinate of the sampled source point
+     * @param anchorScreen raster coordinate of the sampled source point
+     * @param normalScreen unit normal used for offset sampling
+     * @param peaks candidate heatmap ridges found on this cross-section
+     * @param anchorWithinRaster whether the source point was inside the sampled raster
+     */
     public record CrossSectionProfile(
         EastNorth anchor,
         Point2D.Double anchorScreen,
@@ -722,6 +844,26 @@ public final class RenderedHeatmapSampler {
         }
     }
 
+    /**
+     * Candidate ridge peak extracted from one cross-section.
+     *
+     * @param offsetPx lateral offset in sampled raster pixels
+     * @param intensity calibrated peak confidence after palette mapping and profile evidence
+     * @param supportWidthPx width of the detected heat band around the peak
+     * @param syntheticCenter true when the peak is inferred from paired shoulders or fallback evidence
+     * @param prominence distance from local noise floor to the profile maximum
+     * @param noiseFloor estimated background intensity for the profile
+     * @param maxProfileIntensity maximum filtered profile intensity
+     * @param gradientStrength local rise/fall evidence around the peak
+     * @param gradientBalance balance of left and right gradients
+     * @param nativeFilteredAgreement agreement between raw and primary filtered peak centers
+     * @param rawCenterPx raw-profile center for the same peak neighborhood
+     * @param lightFilteredCenterPx B3 filtered-profile center for the same peak neighborhood
+     * @param standardFilteredCenterPx B5 filtered-profile center for the same peak neighborhood
+     * @param scaleOffsetRmsPx RMS spread of raw/B3/B5 centers in pixels
+     * @param scaleAgreement confidence that the peak is stable across filter scales
+     * @param centerUncertaintyPx conservative center uncertainty derived from sample step and scale spread
+     */
     public record CrossSectionPeak(
         double offsetPx,
         double intensity,
@@ -732,18 +874,48 @@ public final class RenderedHeatmapSampler {
         double maxProfileIntensity,
         double gradientStrength,
         double gradientBalance,
-        double nativeFilteredAgreement
+        double nativeFilteredAgreement,
+        double rawCenterPx,
+        double lightFilteredCenterPx,
+        double standardFilteredCenterPx,
+        double scaleOffsetRmsPx,
+        double scaleAgreement,
+        double centerUncertaintyPx
     ) {
         public CrossSectionPeak(double offsetPx, double intensity) {
             this(offsetPx, intensity, 0.0, false);
         }
 
         public CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
-            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0, 1.0);
+            this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0, 1.0,
+                offsetPx, offsetPx, offsetPx, 0.0, 1.0, 0.5);
+        }
+
+        public CrossSectionPeak(
+            double offsetPx,
+            double intensity,
+            double supportWidthPx,
+            boolean syntheticCenter,
+            double prominence,
+            double noiseFloor,
+            double maxProfileIntensity,
+            double gradientStrength,
+            double gradientBalance,
+            double nativeFilteredAgreement
+        ) {
+            this(offsetPx, intensity, supportWidthPx, syntheticCenter, prominence, noiseFloor, maxProfileIntensity,
+                gradientStrength, gradientBalance, nativeFilteredAgreement, offsetPx, offsetPx, offsetPx, 0.0, 1.0, 0.5);
         }
     }
 
     private record OffsetSample(double offsetPx, double intensity) {
+    }
+
+    private record ProfileFilters(
+        List<OffsetSample> raw,
+        List<OffsetSample> lightFiltered,
+        List<OffsetSample> standardFiltered
+    ) {
     }
 
     private record ProfileStats(double maxIntensity, double noiseFloor, double maxProminence) {
@@ -752,6 +924,22 @@ public final class RenderedHeatmapSampler {
     private record GradientEvidence(double strength, double balance) {
     }
 
+    private record ScaleEvidence(
+        double rawCenterPx,
+        double lightCenterPx,
+        double standardCenterPx,
+        double scaleOffsetRmsPx,
+        double scaleAgreement,
+        double centerUncertaintyPx
+    ) {
+    }
+
+    /**
+     * Weighted component used by internal combined color-to-intensity mappings.
+     *
+     * @param mode detector mapping name
+     * @param weight contribution of the mapping to the combined scalar intensity
+     */
     public record IntensityComponent(String mode, double weight) {
     }
 }

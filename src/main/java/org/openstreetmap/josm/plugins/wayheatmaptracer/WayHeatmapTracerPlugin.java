@@ -30,6 +30,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.HeatmapLayerSetti
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegmentAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 
+/**
+ * Plugin entry point that registers WayHeatmapTracer menu actions and global shortcuts in JOSM.
+ */
 public class WayHeatmapTracerPlugin extends Plugin {
     private static final List<ShortcutBinding> ALIGN_SHORTCUTS = List.of(
         new ShortcutBinding("wayheatmaptracer.align.global", KeyEvent.VK_Y,
@@ -46,6 +49,11 @@ public class WayHeatmapTracerPlugin extends Plugin {
     private final AlignWayAction alignMoveNodesAction;
     private Timer shortcutInstallRetryTimer;
 
+    /**
+     * Creates the plugin and installs menu actions.
+     *
+     * @param info JOSM plugin metadata
+     */
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
         this.alignWayAction = new AlignWayAction();
@@ -67,6 +75,9 @@ public class WayHeatmapTracerPlugin extends Plugin {
         scheduleShortcutInstall();
     }
 
+    /**
+     * Removes registered actions and shortcuts when JOSM unloads the plugin.
+     */
     public void destroy() {
         JMenu menu = MainApplication.getMenu().moreToolsMenu;
         Map<Action, Component> byAction = Arrays.stream(menu.getMenuComponents())

@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 def read_zip_text(bundle: Path, name: str) -> str:
+    """Return a UTF-8 text member from a debug bundle, or an empty string when absent."""
     with zipfile.ZipFile(bundle) as archive:
         try:
             return archive.read(name).decode("utf-8")
@@ -23,6 +24,7 @@ def read_zip_text(bundle: Path, name: str) -> str:
 
 
 def read_zip_csv(bundle: Path, name: str) -> list[dict[str, str]]:
+    """Return CSV rows from a debug bundle member."""
     text = read_zip_text(bundle, name)
     if not text.strip():
         return []
@@ -30,6 +32,7 @@ def read_zip_csv(bundle: Path, name: str) -> list[dict[str, str]]:
 
 
 def rating_score(value: str) -> int | None:
+    """Convert a human preview rating token into a numeric score."""
     return {
         "++": 2,
         "+": 1,
@@ -40,6 +43,7 @@ def rating_score(value: str) -> int | None:
 
 
 def bundle_rows(bundle: Path) -> list[dict[str, object]]:
+    """Merge candidate metrics and optional human ratings for one debug bundle."""
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     try:
         ratings = json.loads(read_zip_text(bundle, "candidate-ratings.json") or "{}")
@@ -81,6 +85,7 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
 
 
 def float_or_none(value: str | None) -> float | None:
+    """Parse a float, returning ``None`` for blank or invalid values."""
     try:
         return float(value) if value not in (None, "") else None
     except ValueError:
@@ -88,6 +93,7 @@ def float_or_none(value: str | None) -> float | None:
 
 
 def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Aggregate per-candidate rows by visible color, intensity source, and detector."""
     grouped: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
     for row in rows:
         grouped[(str(row["visible_color"]), str(row["intensity_source"]), str(row["detector"]))].append(row)
@@ -118,10 +124,12 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
 
 
 def compact_numbers(values):
+    """Keep only concrete numeric values from an iterable."""
     return [float(value) for value in values if isinstance(value, (float, int))]
 
 
 def negative_counts(rows: list[dict[str, object]]) -> str:
+    """Count negative feature tags across candidate rows."""
     counts: dict[str, int] = defaultdict(int)
     for row in rows:
         for feature in str(row.get("negative_features", "")).split(","):
@@ -132,6 +140,7 @@ def negative_counts(rows: list[dict[str, object]]) -> str:
 
 
 def print_table(rows: list[dict[str, object]]) -> None:
+    """Write summary rows as CSV to standard output."""
     fields = [
         "visible_color",
         "intensity_source",
@@ -153,6 +162,7 @@ def print_table(rows: list[dict[str, object]]) -> None:
 
 
 def main() -> None:
+    """Parse command-line arguments and print detector calibration summaries."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundles", nargs="+", type=Path, help="Debug bundle .zip files or directories containing them")
     parser.add_argument("--raw-csv", type=Path, help="Optional path for per-candidate raw rows")

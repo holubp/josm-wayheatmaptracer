@@ -2,6 +2,22 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
 import java.util.List;
 
+/**
+ * Aggregate heatmap evidence collected for one centerline candidate.
+ *
+ * @param detectorMode detector or palette mapping that produced the candidate
+ * @param totalProfiles number of sampled cross-sections
+ * @param supportedProfiles profiles with usable heatmap signal
+ * @param emptyProfiles profiles without usable heatmap signal
+ * @param maxConsecutiveEmptyProfiles longest unsupported run along the way
+ * @param totalIntensity sum of selected peak intensities
+ * @param meanIntensity mean selected peak intensity
+ * @param meanGradientStrength mean cross-section gradient evidence at selected peaks
+ * @param longitudinalStability smoothness/stability score along the way
+ * @param signalToNoise estimated signal-to-noise ratio
+ * @param ambiguity estimated multimodal ambiguity
+ * @param consensusModes detector modes fused before candidate extraction
+ */
 public record CandidateEvidence(
     String detectorMode,
     int totalProfiles,
@@ -16,18 +32,39 @@ public record CandidateEvidence(
     double ambiguity,
     List<String> consensusModes
 ) {
+    /**
+     * Creates an evidence object representing a candidate with no signal.
+     *
+     * @return empty candidate evidence
+     */
     public static CandidateEvidence empty() {
         return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
     }
 
+    /**
+     * Checks whether this evidence contains enough heatmap signal to describe a real candidate.
+     *
+     * @return {@code true} when supported profiles and signal-to-noise are positive
+     */
     public boolean hasSignal() {
         return supportedProfiles > 0 && totalIntensity > 0.0 && signalToNoise > 0.0;
     }
 
+    /**
+     * Computes the fraction of profiles backed by usable signal.
+     *
+     * @return supported profile ratio in the {@code [0,1]} range
+     */
     public double supportRatio() {
         return totalProfiles <= 0 ? 0.0 : (double) supportedProfiles / totalProfiles;
     }
 
+    /**
+     * Returns a copy with a new detector mode.
+     *
+     * @param mode detector identifier to store
+     * @return copied evidence with the detector mode changed
+     */
     public CandidateEvidence withDetectorMode(String mode) {
         return new CandidateEvidence(
             mode == null ? "" : mode,
@@ -45,6 +82,12 @@ public record CandidateEvidence(
         );
     }
 
+    /**
+     * Returns a copy with the list of fused detector modes.
+     *
+     * @param modes detector mappings fused before ridge extraction
+     * @return copied evidence with consensus mode metadata
+     */
     public CandidateEvidence withConsensusModes(List<String> modes) {
         return new CandidateEvidence(
             detectorMode,
@@ -62,6 +105,11 @@ public record CandidateEvidence(
         );
     }
 
+    /**
+     * Serializes this evidence into a compact JSON object for debug bundles.
+     *
+     * @return JSON object string without secrets
+     */
     public String toJson() {
         return "{"
             + "\"detectorMode\":\"" + escape(detectorMode) + "\","

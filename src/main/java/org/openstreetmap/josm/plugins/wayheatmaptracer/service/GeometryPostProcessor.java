@@ -5,9 +5,19 @@ import java.util.List;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 
+/**
+ * Simplifies projected preview geometry while preserving sharp bends as anchors.
+ */
 public final class GeometryPostProcessor {
     private static final double CORNER_KEEP_DEGREES = 55.0;
 
+    /**
+     * Simplifies a polyline with a Douglas-Peucker pass that keeps sharp corners.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param tolerance maximum perpendicular deviation to remove a point
+     * @return simplified polyline, or the original list when no simplification is needed
+     */
     public List<EastNorth> simplify(List<EastNorth> polyline, double tolerance) {
         if (polyline.size() <= 2 || tolerance <= 0.0) {
             return polyline;

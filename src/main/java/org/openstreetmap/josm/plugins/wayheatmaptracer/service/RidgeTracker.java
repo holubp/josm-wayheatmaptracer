@@ -10,11 +10,32 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 
+/**
+ * Links cross-section heatmap peaks into one or more longitudinal ridge candidates.
+ *
+ * <p>The tracker treats every cross-section peak as a noisy observation of lateral offset from the selected
+ * way. Dynamic programming keeps candidates continuous, anchor solving stabilizes reliable intervals, and
+ * a final source-pixel-aware smoother suppresses aliasing wiggles without turning sustained bends into
+ * straight lines.</p>
+ */
 public final class RidgeTracker {
+    /**
+     * Tracks ridge candidates using a one-raster-pixel source-pixel fallback.
+     *
+     * @param profiles sampled cross-sections along the source way
+     * @return candidate centerlines sorted by score
+     */
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles) {
         return track(profiles, 1.0);
     }
 
+    /**
+     * Tracks ridge candidates with source-resolution-aware penalties.
+     *
+     * @param profiles sampled cross-sections along the source way
+     * @param sourcePixelSizePx source heatmap pixel size expressed in sampled raster pixels
+     * @return candidate centerlines sorted by score
+     */
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double sourcePixelSizePx) {
         if (profiles.isEmpty()) {
             return List.of();
@@ -195,7 +216,8 @@ public final class RidgeTracker {
         double acceleration = delta - previous.delta();
         double evidence = peak.intensity() * 2.25
             + peak.gradientStrength() * (0.22 + 0.18 * peak.gradientBalance())
-            + peak.nativeFilteredAgreement() * 0.18;
+            + peak.nativeFilteredAgreement() * 0.12
+            + peak.scaleAgreement() * 0.06;
         double continuityPenalty = Math.abs(delta) * 0.16;
         double curvaturePenalty = Math.abs(acceleration) * 0.12;
         double localPenalty = profile == null ? 0.0 : localPeakPenalty(profile, peak, sourcePixelSizePx, edgeLimitPx);
@@ -397,10 +419,12 @@ public final class RidgeTracker {
         double supportWidthReward = Math.min(0.34, peak.supportWidthPx() / Math.max(1.0, sourcePixelSizePx) * 0.08);
         double supportReward = Math.min(0.28, longitudinalSupport(profiles, index, peak) * 0.10);
         double gradientReward = peak.gradientStrength() * (0.16 + 0.10 * peak.gradientBalance());
-        double nativeFilteredReward = peak.nativeFilteredAgreement() * 0.24;
+        double nativeFilteredReward = peak.nativeFilteredAgreement() * 0.14;
+        double scaleReward = peak.scaleAgreement() * 0.08;
         double edgePenalty = isEdgePeak(peak, sourcePixelSizePx, edgeLimitPx) ? 0.55 : 0.0;
         double narrowPenalty = peak.supportWidthPx() <= sourcePixelSizePx * 0.15 ? 0.28 : 0.0;
-        return peak.intensity() + peak.prominence() * 0.18 + supportWidthReward + supportReward + gradientReward + nativeFilteredReward
+        return peak.intensity() + peak.prominence() * 0.18 + supportWidthReward + supportReward + gradientReward
+            + nativeFilteredReward + scaleReward
             - edgePenalty - narrowPenalty;
     }
 
@@ -419,7 +443,9 @@ public final class RidgeTracker {
         if (peak.supportWidthPx() <= sourcePixelSizePx * 0.15 && strongest > peak.intensity() + 0.03) {
             penalty += 0.30;
         }
-        penalty += (1.0 - peak.nativeFilteredAgreement()) * 0.26;
+        penalty += (1.0 - peak.nativeFilteredAgreement()) * 0.18;
+        penalty += (1.0 - peak.scaleAgreement()) * 0.10;
+        penalty += Math.min(0.12, peak.centerUncertaintyPx() / Math.max(1.0, sourcePixelSizePx) * 0.03);
         return penalty;
     }
 
@@ -543,9 +569,11 @@ public final class RidgeTracker {
                     && (localFlipCount >= 2 || subSourcePixelWander)
                     && highFrequencyResidual >= aliasResidualThreshold;
                 double lowConfidenceSmoothing = 0.45 * clamp01((0.55 - intensity) / 0.55);
+                double unstablePeakSmoothing = 0.18 * clamp01((0.78 - peak.scaleAgreement()) / 0.78);
                 double aliasingSmoothing = alternating ? (intensity >= 0.80 ? 0.70 : 0.55) : 0.0;
                 double plateauSmoothing = broadPlateauWander ? 0.70 : 0.0;
-                double smoothing = Math.max(lowConfidenceSmoothing, aliasingSmoothing);
+                double smoothing = Math.max(lowConfidenceSmoothing, unstablePeakSmoothing);
+                smoothing = Math.max(smoothing, aliasingSmoothing);
                 smoothing = Math.max(smoothing, plateauSmoothing);
                 if (smoothing <= 0.01) {
                     continue;

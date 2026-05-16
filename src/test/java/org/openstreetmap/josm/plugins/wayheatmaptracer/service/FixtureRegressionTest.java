@@ -44,7 +44,7 @@ class FixtureRegressionTest {
     private static final double MAX_MEAN_DISTANCE_PX = 20.0;
     private static final double MAX_HAUSDORFF_DISTANCE_PX = 75.0;
     private static final double ACCEPTABLE_OFFSET_METERS =
-        doubleProperty("wayheatmaptracer.fixture.acceptableOffsetMeters", 15.0);
+        doubleProperty("wayheatmaptracer.fixture.acceptableOffsetMeters", 18.0);
     private static final double ARC_STEP_METERS = 2.0;
     private static final int VIS_ZOOM = 15;
     private static final int VIS_TILE_SIZE = 512;

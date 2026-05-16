@@ -11,7 +11,18 @@ import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Converts ridge candidates into projected target polylines and lightly relaxes interior points.
+ */
 public final class PathOptimizer {
+    /**
+     * Builds an optimized polyline from the source geometry toward a selected candidate.
+     *
+     * @param source original source polyline in projected coordinates
+     * @param candidate ridge candidate to follow
+     * @param mapView map view used only for legacy raster candidate projection
+     * @return optimized target polyline in projected coordinates
+     */
     public List<EastNorth> optimize(List<EastNorth> source, CenterlineCandidate candidate, MapView mapView) {
         List<EastNorth> target = projectCandidate(candidate, mapView);
         List<EastNorth> current = PolylineMath.resampleByCount(source, target.size());
@@ -32,6 +43,13 @@ public final class PathOptimizer {
         return current;
     }
 
+    /**
+     * Projects a candidate into JOSM projected coordinates.
+     *
+     * @param candidate candidate carrying either projected points or legacy raster points
+     * @param mapView map view used for legacy raster-to-coordinate projection
+     * @return candidate points in projected coordinates
+     */
     public List<EastNorth> projectCandidate(CenterlineCandidate candidate, MapView mapView) {
         if (!candidate.eastNorthPoints().isEmpty()) {
             PluginLog.debug("Candidate %s already carries %d projected EastNorth points.", candidate.id(), candidate.eastNorthPoints().size());

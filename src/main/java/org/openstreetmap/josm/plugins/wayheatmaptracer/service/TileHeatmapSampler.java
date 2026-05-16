@@ -24,6 +24,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Downloads managed Strava source tiles, builds mosaics, and samples cross-sections at fixed tile zooms.
+ */
 public final class TileHeatmapSampler {
     public static final int TILE_SIZE = 512;
     public static final int DEFAULT_INFERENCE_ZOOM = 15;
@@ -32,6 +35,14 @@ public final class TileHeatmapSampler {
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
     private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png%s";
 
+    /**
+     * Prepares source-tile mosaics for a selected polyline using normal configured search width.
+     *
+     * @param config current plugin settings
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @param tileColors Strava color schemes to download
+     * @return downloaded mosaic set for inference and validation zooms
+     */
     public TileMosaicSet prepare(
         ManagedHeatmapConfig config,
         List<EastNorth> sourcePolyline,
@@ -40,6 +51,15 @@ public final class TileHeatmapSampler {
         return prepare(config, sourcePolyline, tileColors, false);
     }
 
+    /**
+     * Prepares source-tile mosaics for a selected polyline.
+     *
+     * @param config current plugin settings
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @param tileColors Strava color schemes to download
+     * @param sketchLikeSelection whether the selected geometry is a rough full-way sketch
+     * @return downloaded mosaic set for inference and validation zooms
+     */
     public TileMosaicSet prepare(
         ManagedHeatmapConfig config,
         List<EastNorth> sourcePolyline,
@@ -76,6 +96,15 @@ public final class TileHeatmapSampler {
             inferenceZoom, validationZoom, TILE_SIZE, mosaics, inference, validation);
     }
 
+    /**
+     * Samples cross-section profiles from a prepared source-tile mosaic.
+     *
+     * @param mosaic mosaic to sample
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @param detectorMode palette mapping or direct intensity detector name
+     * @param config current plugin settings
+     * @return sampled cross-section profiles with peak diagnostics
+     */
     public List<RenderedHeatmapSampler.CrossSectionProfile> sampleProfiles(
         TileMosaic mosaic,
         List<EastNorth> sourcePolyline,
@@ -117,6 +146,13 @@ public final class TileHeatmapSampler {
         );
     }
 
+    /**
+     * Projects mosaic-local candidate points back to JOSM projected coordinates.
+     *
+     * @param mosaic source mosaic that defines the world-pixel origin
+     * @param localPoints candidate points in virtual raster coordinates
+     * @return candidate points in projected coordinates
+     */
     public List<EastNorth> projectCandidate(TileMosaic mosaic, List<Point2D.Double> localPoints) {
         return localPoints.stream()
             .map(point -> toEastNorth(
@@ -411,6 +447,19 @@ public final class TileHeatmapSampler {
         }
     }
 
+    /**
+     * Collection of prepared mosaics for inference and validation zooms.
+     *
+     * @param inferenceMode configured inference strategy
+     * @param requestedInferenceZoom user-requested inference zoom
+     * @param requestedValidationZoom user-requested validation zoom
+     * @param inferenceZoom effective inference zoom
+     * @param validationZoom effective validation zoom
+     * @param tileSize source tile size in pixels
+     * @param mosaics mosaics keyed by color and zoom
+     * @param inferenceParameters effective inference sampling parameters
+     * @param validationParameters effective validation sampling parameters
+     */
     public record TileMosaicSet(
         InferenceMode inferenceMode,
         int requestedInferenceZoom,
@@ -422,10 +471,23 @@ public final class TileHeatmapSampler {
         SamplingParameters inferenceParameters,
         SamplingParameters validationParameters
     ) {
+        /**
+         * Returns the inference mosaic for a color.
+         *
+         * @param color Strava color scheme name
+         * @return prepared inference mosaic
+         */
         public TileMosaic require(String color) {
             return require(color, inferenceZoom);
         }
 
+        /**
+         * Returns the mosaic for a color and zoom.
+         *
+         * @param color Strava color scheme name
+         * @param zoom source tile zoom
+         * @return prepared mosaic
+         */
         public TileMosaic require(String color, int zoom) {
             TileMosaic mosaic = mosaics.get(color + "@" + zoom);
             if (mosaic == null) {
@@ -434,10 +496,21 @@ public final class TileHeatmapSampler {
             return mosaic;
         }
 
+        /**
+         * Returns the validation mosaic for a color.
+         *
+         * @param color Strava color scheme name
+         * @return prepared validation mosaic
+         */
         public TileMosaic validation(String color) {
             return require(color, validationZoom);
         }
 
+        /**
+         * Serializes redacted mosaic metadata for debug exports.
+         *
+         * @return JSON manifest without cookies or signed URLs
+         */
         public String manifestJson() {
             StringBuilder builder = new StringBuilder("{\"inferenceMode\":\"")
                 .append(inferenceMode.name())
@@ -467,6 +540,20 @@ public final class TileHeatmapSampler {
         }
     }
 
+    /**
+     * Downloaded source-tile mosaic for one color and zoom.
+     *
+     * @param color Strava color scheme name
+     * @param zoom source tile zoom
+     * @param originWorldPxX world-pixel x coordinate of mosaic origin
+     * @param originWorldPxY world-pixel y coordinate of mosaic origin
+     * @param image rendered mosaic image
+     * @param tiles redacted source tile metadata
+     * @param tileImages raw downloaded tile images keyed by safe debug names
+     * @param parameters effective sampling parameters
+     * @param stableInferenceRaster whether stable fixed-scale virtual raster scaling was applied
+     * @param virtualRasterScale scale from source pixels to sampler raster pixels
+     */
     public record TileMosaic(
         String color,
         int zoom,
@@ -505,6 +592,17 @@ public final class TileHeatmapSampler {
         }
     }
 
+    /**
+     * Effective sampling parameters for a fixed source-tile zoom.
+     *
+     * @param zoom source tile zoom
+     * @param latitude representative latitude used for meters-per-pixel calculation
+     * @param metersPerPixel source tile meters per pixel
+     * @param halfWidthMeters cross-section search half-width in meters
+     * @param sampleStepMeters distance between sampled profiles in meters
+     * @param halfWidthPx source-tile half-width in pixels
+     * @param stepPx source-tile profile step in pixels
+     */
     public record SamplingParameters(
         int zoom,
         double latitude,
@@ -521,6 +619,25 @@ public final class TileHeatmapSampler {
         }
     }
 
+    /**
+     * Redacted metadata and quality assessment for one downloaded heatmap tile.
+     *
+     * @param color Strava color scheme name
+     * @param zoom source tile zoom
+     * @param x tile x coordinate
+     * @param y tile y coordinate
+     * @param usable whether the tile can be used for sampling
+     * @param httpStatus HTTP status observed during download
+     * @param byteSize downloaded byte size
+     * @param width decoded image width
+     * @param height decoded image height
+     * @param sha256 tile content hash
+     * @param quality quality classification such as usable or low-resolution placeholder
+     * @param opaqueRatio fraction of opaque pixels
+     * @param heatCoverage fraction of heat-colored pixels
+     * @param sampledColorCount number of sampled colors in the tile
+     * @param error redacted fetch/decode error
+     */
     public record TileRecord(
         String color,
         int zoom,

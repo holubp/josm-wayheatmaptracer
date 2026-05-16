@@ -12,15 +12,31 @@ import javax.imageio.ImageIO;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
+/**
+ * Writes redacted managed heatmap tile mosaics for offline palette and filter calibration.
+ */
 public final class HeatmapCalibrationBundle {
     private final TileHeatmapSampler.TileMosaicSet mosaics;
     private final String sourceSummaryJson;
 
+    /**
+     * Creates a calibration bundle writer.
+     *
+     * @param mosaics source-tile mosaics to include
+     * @param sourceSummaryJson redacted selected-way and settings metadata
+     */
     public HeatmapCalibrationBundle(TileHeatmapSampler.TileMosaicSet mosaics, String sourceSummaryJson) {
         this.mosaics = mosaics;
         this.sourceSummaryJson = sourceSummaryJson;
     }
 
+    /**
+     * Writes the bundle zip file.
+     *
+     * @param file destination zip file
+     * @return the written file
+     * @throws Exception when the zip or image encoding fails
+     */
     public File writeTo(File file) throws Exception {
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             writeText(zip, "manifest.json", manifestJson());

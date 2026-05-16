@@ -30,6 +30,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Coordinates heatmap capture, ridge detection, preview construction, safety checks, and debug export data.
+ *
+ * <p>The service has two sampling paths: managed Strava source tiles when credentials are configured, and
+ * the legacy rendered-visible-layer path otherwise. Both paths produce the same candidate and diagnostics
+ * model so preview, rating, apply, and last-slide export can stay independent of the heatmap source.</p>
+ */
 public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of(
         "hot",
@@ -342,9 +349,9 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,synthetic_center\n");
+            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,raw_center_px,b3_center_px,b5_center_px,scale_offset_rms_px,scale_agreement,center_uncertainty_px,filter_kernel,filter_power,filter_blend,strong_signal_gate_floor,strong_signal_gate_width,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
+            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
         int modeIndex = 0;
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int outsideRasterProfiles = 0;
@@ -395,9 +402,9 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates = new ArrayList<>();
         StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,synthetic_center\n");
+            "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,raw_center_px,b3_center_px,b5_center_px,scale_offset_rms_px,scale_agreement,center_uncertainty_px,filter_kernel,filter_power,filter_blend,strong_signal_gate_floor,strong_signal_gate_width,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,peak_count,synthetic_center_count\n");
+            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int modeIndex = 0;
         int outsideRasterProfiles = 0;
@@ -533,11 +540,12 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "purple" -> switch (detector) {
-                case "hot", "dual-corridor" -> 1.00;
-                case "hot-corridor" -> 0.75;
-                case "bluered-cool", "bluered-corridor", "gray-strict" -> 0.65;
-                case "gray", "gray-corridor", "gray-magenta" -> 0.45;
-                case "purple", "purple-strict" -> -0.30;
+                case "purple" -> 1.05;
+                case "purple-strict" -> 0.82;
+                case "dual-corridor" -> 0.78;
+                case "hot", "hot-corridor" -> 0.60;
+                case "bluered-cool", "bluered-corridor", "gray-strict" -> 0.45;
+                case "gray", "gray-corridor", "gray-magenta" -> 0.30;
                 default -> 0.0;
             };
             default -> switch (detector) {
@@ -560,9 +568,10 @@ public final class AlignmentService {
             case "bluered-corridor" -> 0.15;
             case "bluered-cool", "gray-corridor" -> 0.10;
             case "gray-magenta" -> 0.05;
+            case "purple" -> 0.05;
             case "hot-strict" -> -0.35;
             case "gray-strict" -> -0.30;
-            case "purple", "purple-strict" -> -0.35;
+            case "purple-strict" -> -0.08;
             default -> 0.0;
         };
     }
@@ -1665,7 +1674,18 @@ public final class AlignmentService {
                 .append(',')
                 .append("\"gradientStrength\":").append(format(peak.gradientStrength())).append(',')
                 .append("\"gradientBalance\":").append(format(peak.gradientBalance())).append(',')
-                .append("\"nativeFilteredAgreement\":").append(format(peak.nativeFilteredAgreement()))
+                .append("\"nativeFilteredAgreement\":").append(format(peak.nativeFilteredAgreement())).append(',')
+                .append("\"rawCenterPx\":").append(format(peak.rawCenterPx())).append(',')
+                .append("\"b3CenterPx\":").append(format(peak.lightFilteredCenterPx())).append(',')
+                .append("\"b5CenterPx\":").append(format(peak.standardFilteredCenterPx())).append(',')
+                .append("\"scaleOffsetRmsPx\":").append(format(peak.scaleOffsetRmsPx())).append(',')
+                .append("\"scaleAgreement\":").append(format(peak.scaleAgreement())).append(',')
+                .append("\"centerUncertaintyPx\":").append(format(peak.centerUncertaintyPx())).append(',')
+                .append("\"filterKernel\":\"raw+B3+B5\",")
+                .append("\"filterPower\":\"2.0 strong/1.25 weak\",")
+                .append("\"filterBlend\":\"B3 0.45/0.30/0.15; B5 0.35/0.25/0.10\",")
+                .append("\"signalGateFloor\":\"0.18*max\",")
+                .append("\"signalGateWidth\":\"max(0.08,0.42*max)\"")
                 .append('}');
         }
         return builder.append(']').toString();
@@ -1696,6 +1716,17 @@ public final class AlignmentService {
                     .append(format(peak.gradientStrength())).append(',')
                     .append(format(peak.gradientBalance())).append(',')
                     .append(format(peak.nativeFilteredAgreement())).append(',')
+                    .append(format(peak.rawCenterPx())).append(',')
+                    .append(format(peak.lightFilteredCenterPx())).append(',')
+                    .append(format(peak.standardFilteredCenterPx())).append(',')
+                    .append(format(peak.scaleOffsetRmsPx())).append(',')
+                    .append(format(peak.scaleAgreement())).append(',')
+                    .append(format(peak.centerUncertaintyPx())).append(',')
+                    .append(csv("raw+B3+B5")).append(',')
+                    .append(csv("2.0 strong/1.25 weak")).append(',')
+                    .append(csv("B3 0.45/0.30/0.15; B5 0.35/0.25/0.10")).append(',')
+                    .append(csv("0.18*max")).append(',')
+                    .append(csv("max(0.08,0.42*max)")).append(',')
                     .append(peak.syntheticCenter())
                     .append('\n');
             }
@@ -1726,6 +1757,8 @@ public final class AlignmentService {
                 .append(format(strongest.maxProfileIntensity())).append(',')
                 .append(format(strongest.gradientStrength())).append(',')
                 .append(format(strongest.gradientBalance())).append(',')
+                .append(format(strongest.scaleAgreement())).append(',')
+                .append(format(strongest.centerUncertaintyPx())).append(',')
                 .append(peaks.size()).append(',')
                 .append(syntheticCount)
                 .append('\n');

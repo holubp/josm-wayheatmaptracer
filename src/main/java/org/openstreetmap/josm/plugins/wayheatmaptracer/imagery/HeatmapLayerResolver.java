@@ -10,10 +10,19 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Finds the heatmap imagery layer to sample, preferring the plugin-managed Strava layer.
+ */
 public final class HeatmapLayerResolver {
     private HeatmapLayerResolver() {
     }
 
+    /**
+     * Resolves a visible heatmap imagery layer or fails with a user-actionable error.
+     *
+     * @return visible heatmap imagery layer
+     * @throws IllegalStateException when no layer can be found
+     */
     public static ImageryLayer resolve() {
         return resolveOptional().orElseThrow(() -> {
             ManagedHeatmapConfig config = PluginPreferences.load();
@@ -25,6 +34,11 @@ public final class HeatmapLayerResolver {
         });
     }
 
+    /**
+     * Resolves a visible heatmap imagery layer if one is available.
+     *
+     * @return managed, manually selected, or regex-matched layer
+     */
     public static Optional<ImageryLayer> resolveOptional() {
         ManagedHeatmapConfig config = PluginPreferences.load();
         Optional<ImageryLayer> managed = resolveManaged();

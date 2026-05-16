@@ -12,14 +12,31 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
+/**
+ * Converts the current JOSM way/node selection into a validated contiguous segment.
+ */
 public final class SelectionResolver {
     private SelectionResolver() {
     }
 
+    /**
+     * Resolves the current selection with junction/endpoints fixed.
+     *
+     * @param dataSet active editable dataset
+     * @return validated selection context
+     */
     public static SelectionContext resolve(DataSet dataSet) {
         return resolve(dataSet, false);
     }
 
+    /**
+     * Resolves the current selection and determines fixed anchors.
+     *
+     * @param dataSet active editable dataset
+     * @param adjustJunctionNodes whether endpoints and shared nodes may move
+     * @return validated selection context
+     * @throws IllegalStateException when the selection is not one way or one way plus two nodes
+     */
     public static SelectionContext resolve(DataSet dataSet, boolean adjustJunctionNodes) {
         Collection<Way> ways = dataSet.getSelectedWays();
         Collection<Node> nodes = dataSet.getSelectedNodes();

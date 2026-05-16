@@ -202,6 +202,63 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void profilePeaksExposeMultiScaleCenterAgreement() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            image.setRGB(x, 18, 0xFFCC3300);
+            image.setRGB(x, 19, 0xFFFFFF00);
+            image.setRGB(x, 20, 0xFFFFFFFF);
+            image.setRGB(x, 21, 0xFFFFFF00);
+            image.setRGB(x, 22, 0xFFCC3300);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            1,
+            "hot",
+            1.0
+        );
+
+        RenderedHeatmapSampler.CrossSectionPeak peak = strongestPeak(profiles.get(0));
+        assertTrue(Math.abs(peak.rawCenterPx()) <= 1.0, "Raw center should stay on the white core");
+        assertTrue(Math.abs(peak.lightFilteredCenterPx()) <= 1.0, "B3 center should stay on the same core");
+        assertTrue(Math.abs(peak.standardFilteredCenterPx()) <= 1.0, "B5 center should stay on the same core");
+        assertTrue(peak.scaleAgreement() >= 0.85, "Stable core should have high cross-scale agreement");
+    }
+
+    @Test
+    void highIntensityBiasedFilteringDoesNotLetShouldersOutrankCore() {
+        BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < image.getWidth(); x++) {
+            for (int y = 14; y <= 26; y++) {
+                image.setRGB(x, y, 0xFFFF6600);
+            }
+            image.setRGB(x, 19, 0xFFFFFF00);
+            image.setRGB(x, 20, 0xFFFFFFFF);
+            image.setRGB(x, 21, 0xFFFFFF00);
+        }
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnRaster(
+            image,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            14,
+            1,
+            "hot",
+            1.0
+        );
+
+        RenderedHeatmapSampler.CrossSectionPeak peak = strongestPeak(profiles.get(0));
+        assertTrue(Math.abs(peak.offsetPx()) <= 2.0,
+            "Broad lower-intensity shoulders must not pull the selected peak away from the high-intensity core");
+        assertTrue(peak.centerUncertaintyPx() <= 1.5,
+            "A clear hot core should remain a low-uncertainty center after profile filtering");
+    }
+
+    @Test
     void directAlphaSamplingBypassesColorMappingForScalarImagery() {
         BufferedImage image = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
         for (int x = 0; x < image.getWidth(); x++) {
@@ -420,5 +477,11 @@ class HeatmapFixtureArchiveTest {
             weight += component.weight();
         }
         return total / weight;
+    }
+
+    private static RenderedHeatmapSampler.CrossSectionPeak strongestPeak(RenderedHeatmapSampler.CrossSectionProfile profile) {
+        return profile.peaks().stream()
+            .max(Comparator.comparingDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity))
+            .orElseThrow();
     }
 }

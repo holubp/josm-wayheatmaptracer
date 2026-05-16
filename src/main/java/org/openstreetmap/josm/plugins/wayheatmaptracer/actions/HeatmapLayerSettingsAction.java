@@ -16,7 +16,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.HeatmapSettingsDialog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.tools.Shortcut;
 
+/**
+ * Opens plugin settings and refreshes the managed Strava heatmap layer when access values are configured.
+ */
 public class HeatmapLayerSettingsAction extends JosmAction {
+    /**
+     * Creates the settings action and registers its keyboard shortcut.
+     */
     public HeatmapLayerSettingsAction() {
         super(
             tr("Heatmap Layer Settings"),

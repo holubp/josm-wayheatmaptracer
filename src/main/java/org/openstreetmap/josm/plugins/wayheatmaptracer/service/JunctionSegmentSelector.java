@@ -9,7 +9,16 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.WaySegmentRange;
 
+/**
+ * Finds junction-bounded way segments for the plugin-specific segment selection mode.
+ */
 public final class JunctionSegmentSelector {
+    /**
+     * Finds the longest contiguous part of a way bounded by endpoints or shared-node junctions.
+     *
+     * @param way way to inspect
+     * @return inclusive node-index range of the longest segment
+     */
     public WaySegmentRange longestJunctionBoundedSegment(Way way) {
         if (way.getNodesCount() < 2) {
             throw new IllegalArgumentException("Way must contain at least two nodes.");

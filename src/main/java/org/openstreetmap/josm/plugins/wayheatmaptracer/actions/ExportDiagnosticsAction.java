@@ -22,7 +22,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.tools.GBC;
 import org.openstreetmap.josm.tools.Shortcut;
 
+/**
+ * Exports the most recent redacted slide debug bundle and offers one-click path copying.
+ */
 public class ExportDiagnosticsAction extends JosmAction {
+    /**
+     * Creates the debug-bundle export action and registers its keyboard shortcut.
+     */
     public ExportDiagnosticsAction() {
         super(
             tr("Export Last Slide Debug Bundle"),

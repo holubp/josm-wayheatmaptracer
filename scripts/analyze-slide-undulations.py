@@ -23,11 +23,13 @@ from xml.etree import ElementTree
 
 @dataclass(frozen=True)
 class Bundle:
+    """In-memory debug bundle discovered from a path or nested archive."""
     name: str
     data: bytes
 
 
 def main() -> None:
+    """Parse inputs, compute roughness metrics, and print a compact report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", nargs="+", type=Path, help="Debug zip, outer zip, or directory")
     parser.add_argument("--csv", type=Path, help="Optional per-candidate CSV output")
@@ -49,6 +51,7 @@ def main() -> None:
 
 
 def discover_bundles(paths: list[Path]) -> list[Bundle]:
+    """Discover last-slide debug bundles from zip files, nested zips, or directories."""
     bundles: list[Bundle] = []
     for path in paths:
         if path.is_dir():
@@ -70,6 +73,7 @@ def discover_bundles(paths: list[Path]) -> list[Bundle]:
 
 
 def is_debug_bundle(data: bytes) -> bool:
+    """Return whether bytes look like a WayHeatmapTracer last-slide debug bundle."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             names = set(archive.namelist())
@@ -79,6 +83,7 @@ def is_debug_bundle(data: bytes) -> bool:
 
 
 def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
+    """Compute geometry, offset, and heatmap-profile metrics for every candidate in a bundle."""
     with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
         diagnostics = read_json(archive, "diagnostics.json")
         status = read_json(archive, "status.json")
@@ -154,6 +159,7 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
 
 
 def read_json(archive: zipfile.ZipFile, name: str) -> dict[str, object]:
+    """Read a JSON object member from a zip archive."""
     try:
         return json.loads(archive.read(name).decode("utf-8"))
     except KeyError:
@@ -161,6 +167,7 @@ def read_json(archive: zipfile.ZipFile, name: str) -> dict[str, object]:
 
 
 def read_text(archive: zipfile.ZipFile, name: str) -> str:
+    """Read a UTF-8 text member from a zip archive."""
     try:
         return archive.read(name).decode("utf-8")
     except KeyError:
@@ -168,11 +175,13 @@ def read_text(archive: zipfile.ZipFile, name: str) -> str:
 
 
 def read_csv(archive: zipfile.ZipFile, name: str) -> list[dict[str, str]]:
+    """Read a CSV member from a zip archive."""
     text = read_text(archive, name)
     return list(csv.DictReader(io.StringIO(text))) if text.strip() else []
 
 
 def geometry_metrics(osm_text: str) -> dict[str, float]:
+    """Compute length, turn, and local-residual metrics from a small OSM XML snippet."""
     if not osm_text.strip():
         return {}
     root = ElementTree.fromstring(osm_text)
@@ -210,20 +219,24 @@ def geometry_metrics(osm_text: str) -> dict[str, float]:
 
 
 def project_way(points: list[tuple[float, float]], lat0: float, lon0: float) -> list[tuple[float, float]]:
+    """Project lat/lon points to a local metric plane for roughness analysis."""
     meters_per_deg_lat = 111_320.0
     meters_per_deg_lon = math.cos(math.radians(lat0)) * 111_320.0
     return [((lon - lon0) * meters_per_deg_lon, (lat - lat0) * meters_per_deg_lat) for lat, lon in points]
 
 
 def polyline_length(points: list[tuple[float, float]]) -> float:
+    """Return total length of a 2D polyline."""
     return sum(distance(points[i - 1], points[i]) for i in range(1, len(points)))
 
 
 def distance(left: tuple[float, float], right: tuple[float, float]) -> float:
+    """Return Euclidean distance between two 2D points."""
     return math.hypot(right[0] - left[0], right[1] - left[1])
 
 
 def turn_angles(points: list[tuple[float, float]]) -> list[float]:
+    """Return signed turn angles between consecutive polyline segments in degrees."""
     turns = []
     for i in range(1, len(points) - 1):
         ax = points[i][0] - points[i - 1][0]
@@ -237,6 +250,7 @@ def turn_angles(points: list[tuple[float, float]]) -> list[float]:
 
 
 def local_residuals(points: list[tuple[float, float]], window: int) -> list[float]:
+    """Return signed residuals from each point to its surrounding local chord."""
     residuals = []
     for i in range(window, len(points) - window):
         start = points[i - window]
@@ -246,6 +260,7 @@ def local_residuals(points: list[tuple[float, float]], window: int) -> list[floa
 
 
 def signed_distance_to_line(point, start, end) -> float:
+    """Return signed perpendicular distance from a point to a line."""
     vx = end[0] - start[0]
     vy = end[1] - start[1]
     norm = math.hypot(vx, vy)
@@ -255,6 +270,7 @@ def signed_distance_to_line(point, start, end) -> float:
 
 
 def wrap_angle(value: float) -> float:
+    """Wrap an angle in radians into the ``(-pi, pi]`` interval."""
     while value <= -math.pi:
         value += math.tau
     while value > math.pi:
@@ -263,6 +279,7 @@ def wrap_angle(value: float) -> float:
 
 
 def profile_summary(rows: list[dict[str, str]]) -> dict[str, dict[str, float]]:
+    """Aggregate per-profile peak diagnostics by detector name."""
     grouped: dict[str, list[dict[str, str]]] = {}
     peak_counts: dict[str, dict[int, int]] = {}
     for row in rows:
@@ -283,6 +300,7 @@ def profile_summary(rows: list[dict[str, str]]) -> dict[str, dict[str, float]]:
 
 
 def offset_roughness(offsets: list[float]) -> dict[str, float]:
+    """Compute first-difference, acceleration, and high-frequency offset metrics."""
     deltas = [offsets[i] - offsets[i - 1] for i in range(1, len(offsets))]
     accels = [deltas[i] - deltas[i - 1] for i in range(1, len(deltas))]
     smooth = moving_average(offsets, 9)
@@ -298,6 +316,7 @@ def offset_roughness(offsets: list[float]) -> dict[str, float]:
 
 
 def moving_average(values: list[float], window: int) -> list[float]:
+    """Return a centered moving average with edge clipping."""
     if not values:
         return []
     radius = max(1, window // 2)
@@ -310,6 +329,7 @@ def moving_average(values: list[float], window: int) -> list[float]:
 
 
 def sign_flip_rate(values, threshold: float) -> float:
+    """Return the rate at which sufficiently large signed values alternate sign."""
     filtered = [value for value in values if abs(value) >= threshold]
     if len(filtered) < 2:
         return 0.0
@@ -318,10 +338,12 @@ def sign_flip_rate(values, threshold: float) -> float:
 
 
 def numbers(values) -> list[float]:
+    """Convert an optional JSON/list value to a list of floats."""
     return [float(value) for value in values or []]
 
 
 def fnum(value) -> float:
+    """Parse a float, returning zero for missing or invalid values."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -329,20 +351,24 @@ def fnum(value) -> float:
 
 
 def mean(values) -> float:
+    """Return the arithmetic mean or zero for empty input."""
     values = list(values)
     return statistics.mean(values) if values else 0.0
 
 
 def median(values) -> float:
+    """Return the median or zero for empty input."""
     values = [float(value) for value in values]
     return statistics.median(values) if values else 0.0
 
 
 def stdev(values: list[float]) -> float:
+    """Return population standard deviation or zero for fewer than two values."""
     return statistics.pstdev(values) if len(values) >= 2 else 0.0
 
 
 def percentile(values: list[float], fraction: float) -> float:
+    """Return a nearest-rank percentile or zero for empty input."""
     values = sorted(values)
     if not values:
         return 0.0
@@ -351,6 +377,7 @@ def percentile(values: list[float], fraction: float) -> float:
 
 
 def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
+    """Write dictionaries as CSV using the first row's field order."""
     if not rows:
         path.write_text("", encoding="utf-8")
         return
@@ -361,6 +388,7 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def bundle_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Build JSON-ready per-bundle summaries from per-candidate rows."""
     bundles = []
     for bundle in sorted({str(row["bundle"]) for row in rows}):
         group = [row for row in rows if row["bundle"] == bundle]
@@ -376,6 +404,7 @@ def bundle_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
 
 
 def print_summary(rows: list[dict[str, object]], top: int) -> None:
+    """Print a compact per-bundle roughness summary to standard output."""
     if not rows:
         print("No debug bundles found.", file=sys.stderr)
         return

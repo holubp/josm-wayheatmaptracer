@@ -180,6 +180,14 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void purpleVisibleColorPrefersRecalibratedPurpleDetectorOverGenericHotDetector() {
+        assertTrue(AlignmentService.detectorPrior("purple", "purple")
+            > AlignmentService.detectorPrior("purple", "hot"));
+        assertTrue(AlignmentService.detectorPrior("purple", "purple-strict")
+            > AlignmentService.detectorPrior("purple", "gray"));
+    }
+
+    @Test
     void candidateSwitchRejectsNoSignalCandidate() {
         AlignmentService service = new AlignmentService();
         SelectionContext selection = selection(3);

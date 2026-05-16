@@ -1,5 +1,24 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
+/**
+ * Redacted diagnostics generated during one alignment attempt.
+ *
+ * @param layerName imagery layer used for sampling
+ * @param candidateCount number of generated candidates
+ * @param movableNodeCount number of nodes that may be changed on apply
+ * @param rasterCaptureMillis elapsed raster/source capture time
+ * @param ridgeTrackingMillis elapsed ridge-tracking time
+ * @param optimizationMillis elapsed geometry optimization time
+ * @param configJson redacted settings JSON
+ * @param selectionJson selected-way metadata JSON
+ * @param samplingJson sampling source, scale, and tile metadata JSON
+ * @param colorSchemesJson sampled detector/color metadata JSON
+ * @param candidatesJson candidate geometry/evidence JSON
+ * @param profileDiagnosticsJson per-profile diagnostic JSON
+ * @param candidateMetricsCsv candidate metrics CSV
+ * @param profilePeaksCsv per-profile peak CSV
+ * @param paletteSamplesCsv palette sample CSV
+ */
 public record AlignmentDiagnostics(
     String layerName,
     int candidateCount,
@@ -17,6 +36,22 @@ public record AlignmentDiagnostics(
     String profilePeaksCsv,
     String paletteSamplesCsv
 ) {
+    /**
+     * Creates diagnostics without CSV calibration payloads.
+     *
+     * @param layerName imagery layer used for sampling
+     * @param candidateCount number of generated candidates
+     * @param movableNodeCount number of nodes that may be changed on apply
+     * @param rasterCaptureMillis elapsed raster/source capture time
+     * @param ridgeTrackingMillis elapsed ridge-tracking time
+     * @param optimizationMillis elapsed geometry optimization time
+     * @param configJson redacted settings JSON
+     * @param selectionJson selected-way metadata JSON
+     * @param samplingJson sampling source, scale, and tile metadata JSON
+     * @param colorSchemesJson sampled detector/color metadata JSON
+     * @param candidatesJson candidate geometry/evidence JSON
+     * @param profileDiagnosticsJson per-profile diagnostic JSON
+     */
     public AlignmentDiagnostics(
         String layerName,
         int candidateCount,
@@ -35,6 +70,11 @@ public record AlignmentDiagnostics(
             configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson, "", "", "");
     }
 
+    /**
+     * Serializes the main diagnostics fields for status and debug exports.
+     *
+     * @return JSON object string without CSV payloads
+     */
     public String toJson() {
         return "{"
             + "\"layerName\":\"" + escape(layerName) + "\","
@@ -52,6 +92,11 @@ public record AlignmentDiagnostics(
             + "}";
     }
 
+    /**
+     * Builds the concise sampling description shown in the preview dialog.
+     *
+     * @return human-readable sampling source, zoom, scale, and search summary
+     */
     public String samplingSummary() {
         String type = jsonString(samplingJson, "type");
         String algorithm = jsonString(samplingJson, "algorithm");

@@ -32,9 +32,15 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.tools.GBC;
 import org.openstreetmap.josm.tools.Shortcut;
 
+/**
+ * Exports managed heatmap source tiles for palette and convolution-filter calibration.
+ */
 public class ExportCalibrationTilesAction extends JosmAction {
     private static final List<String> CALIBRATION_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 
+    /**
+     * Creates the calibration tile export action and registers its keyboard shortcut.
+     */
     public ExportCalibrationTilesAction() {
         super(
             tr("Export Heatmap Calibration Tiles"),

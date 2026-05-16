@@ -6,10 +6,20 @@ import java.util.List;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 
+/**
+ * Geometry helpers for resampling, interpolating, and projecting points along polylines.
+ */
 public final class PolylineMath {
     private PolylineMath() {
     }
 
+    /**
+     * Resamples a polyline to approximately equal point spacing.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param spacing requested spacing in meters
+     * @return resampled geometry including original endpoints
+     */
     public static List<EastNorth> resampleBySpacing(List<EastNorth> polyline, double spacing) {
         if (polyline.size() < 2) {
             return polyline;
@@ -19,6 +29,13 @@ public final class PolylineMath {
         return resampleByCount(polyline, count);
     }
 
+    /**
+     * Resamples a polyline to a fixed number of evenly spaced points.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param count requested point count
+     * @return resampled geometry including endpoints when possible
+     */
     public static List<EastNorth> resampleByCount(List<EastNorth> polyline, int count) {
         if (polyline.isEmpty()) {
             return List.of();
@@ -40,6 +57,13 @@ public final class PolylineMath {
         return result;
     }
 
+    /**
+     * Normalizes a vector, returning the unit x-axis for zero-length vectors.
+     *
+     * @param x vector x component
+     * @param y vector y component
+     * @return normalized vector
+     */
     public static Point2D.Double normalize(double x, double y) {
         double norm = Math.hypot(x, y);
         if (norm == 0.0) {
@@ -48,6 +72,12 @@ public final class PolylineMath {
         return new Point2D.Double(x / norm, y / norm);
     }
 
+    /**
+     * Computes cumulative path-length fractions for each point in a polyline.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @return fractions from {@code 0.0} at the start to {@code 1.0} at the end
+     */
     public static List<Double> fractionsForSegment(List<EastNorth> polyline) {
         if (polyline.isEmpty()) {
             return List.of();
@@ -72,6 +102,14 @@ public final class PolylineMath {
         return fractions;
     }
 
+    /**
+     * Interpolates a point at a cumulative path-length fraction.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param fractions fractions produced by {@link #fractionsForSegment(List)}
+     * @param targetFraction requested fraction along the polyline
+     * @return interpolated projected coordinate
+     */
     public static EastNorth interpolateAtFraction(List<EastNorth> polyline, List<Double> fractions, double targetFraction) {
         if (targetFraction <= 0.0) {
             return polyline.get(0);
@@ -96,6 +134,16 @@ public final class PolylineMath {
         return polyline.get(polyline.size() - 1);
     }
 
+    /**
+     * Projects a source point onto a polyline near a requested path fraction.
+     *
+     * @param polyline target polyline
+     * @param fractions target polyline fractions
+     * @param source point to project
+     * @param sourceFraction expected fraction around which to search
+     * @param window half-width of the allowed fraction search window
+     * @return closest projected point and its fraction/distance
+     */
     public static ProjectionOnPolyline closestPointNearFraction(
         List<EastNorth> polyline,
         List<Double> fractions,
@@ -164,6 +212,12 @@ public final class PolylineMath {
         return polyline.get(polyline.size() - 1);
     }
 
+    /**
+     * Computes total polyline length.
+     *
+     * @param polyline projected polyline
+     * @return total length in projected units/meters
+     */
     public static double length(List<EastNorth> polyline) {
         double total = 0.0;
         for (int i = 1; i < polyline.size(); i++) {
@@ -172,6 +226,13 @@ public final class PolylineMath {
         return total;
     }
 
+    /**
+     * Result of projecting a point onto a polyline.
+     *
+     * @param point closest point on the polyline
+     * @param fraction cumulative fraction at the closest point
+     * @param distance distance from the source point to the projection
+     */
     public record ProjectionOnPolyline(EastNorth point, double fraction, double distance) {
     }
 }

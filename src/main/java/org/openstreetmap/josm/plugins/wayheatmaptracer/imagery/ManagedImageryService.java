@@ -8,6 +8,9 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 
+/**
+ * Creates and locates the plugin-managed Strava heatmap TMS layer.
+ */
 public final class ManagedImageryService {
     public static final String MANAGED_LAYER_ID = "wayheatmaptracer.managed.heatmap";
     public static final String MANAGED_LAYER_NAME = "WayHeatmapTracer Heatmap";
@@ -16,6 +19,12 @@ public final class ManagedImageryService {
     private ManagedImageryService() {
     }
 
+    /**
+     * Recreates the managed heatmap layer from current settings.
+     *
+     * @return newly added imagery layer
+     * @throws IllegalStateException when managed Strava access values are incomplete
+     */
     public static ImageryLayer applyOrUpdateManagedLayer() {
         ManagedHeatmapConfig config = PluginPreferences.load();
         if (!config.hasManagedAccessValues()) {
@@ -41,6 +50,11 @@ public final class ManagedImageryService {
         return layer;
     }
 
+    /**
+     * Locates the current managed heatmap layer by its imagery id.
+     *
+     * @return managed layer if it is currently loaded
+     */
     public static Optional<ImageryLayer> findManagedLayer() {
         return MainApplication.getLayerManager().getLayers().stream()
             .filter(ImageryLayer.class::isInstance)

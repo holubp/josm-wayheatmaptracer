@@ -20,6 +20,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
+/**
+ * Redacted diagnostic archive for the latest alignment attempt.
+ */
 public final class LastSlideDebugBundle {
     private final String diagnosticsJson;
     private final String verboseLog;
@@ -62,10 +65,29 @@ public final class LastSlideDebugBundle {
         this.tileImages = tileImages;
     }
 
+    /**
+     * Creates a bundle from an alignment result without user ratings.
+     *
+     * @param result alignment result to export
+     * @param selected selected preview candidate
+     * @param status slide status such as {@code preview-open}, {@code applied}, or {@code failed}
+     * @param verboseLog per-slide verbose log text
+     * @return debug bundle ready to write
+     */
     public static LastSlideDebugBundle fromResult(AlignmentResult result, CenterlineCandidate selected, String status, String verboseLog) {
         return fromResult(result, selected, status, verboseLog, Map.of());
     }
 
+    /**
+     * Creates a bundle from an alignment result with optional user candidate ratings.
+     *
+     * @param result alignment result to export
+     * @param selected selected preview candidate
+     * @param status slide status such as {@code preview-open}, {@code applied}, or {@code failed}
+     * @param verboseLog per-slide verbose log text
+     * @param candidateRatings preview ratings keyed by candidate id
+     * @return debug bundle ready to write
+     */
     public static LastSlideDebugBundle fromResult(
         AlignmentResult result,
         CenterlineCandidate selected,
@@ -109,6 +131,13 @@ public final class LastSlideDebugBundle {
         );
     }
 
+    /**
+     * Writes the redacted debug bundle zip file.
+     *
+     * @param file destination zip file
+     * @return the written file
+     * @throws Exception when zip writing or image encoding fails
+     */
     public File writeTo(File file) throws Exception {
         try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(file))) {
             writeText(zip, "manifest.json", manifestJson());

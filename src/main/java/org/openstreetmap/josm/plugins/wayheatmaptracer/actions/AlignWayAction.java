@@ -50,6 +50,9 @@ import org.openstreetmap.josm.tools.GBC;
 import org.openstreetmap.josm.tools.Logging;
 import org.openstreetmap.josm.tools.Shortcut;
 
+/**
+ * JOSM action that samples the selected way against the heatmap, opens candidate preview, and applies the chosen result.
+ */
 public class AlignWayAction extends JosmAction {
     private static final String[] RATING_VALUES = {"", "++", "+", "0", "-", "--"};
     private static final String FEATURE_OFF_THE_LINE = "off-the-line";
@@ -62,10 +65,18 @@ public class AlignWayAction extends JosmAction {
     private final AlignmentMode forcedAlignmentMode;
     private JDialog activePreviewDialog;
 
+    /**
+     * Creates the default alignment action using the mode configured in plugin settings.
+     */
     public AlignWayAction() {
         this(null);
     }
 
+    /**
+     * Creates an alignment action with an optional one-shot mode override.
+     *
+     * @param forcedAlignmentMode alignment mode to force for this action, or {@code null} to use settings
+     */
     public AlignWayAction(AlignmentMode forcedAlignmentMode) {
         super(
             actionName(forcedAlignmentMode),
@@ -78,6 +89,11 @@ public class AlignWayAction extends JosmAction {
         putValue("help", HelpUtil.ht("/Plugin/WayHeatmapTracer"));
     }
 
+    /**
+     * Returns the one-shot mode override used by this action.
+     *
+     * @return forced mode, or {@code null} when settings control the mode
+     */
     public AlignmentMode forcedAlignmentMode() {
         return forcedAlignmentMode;
     }

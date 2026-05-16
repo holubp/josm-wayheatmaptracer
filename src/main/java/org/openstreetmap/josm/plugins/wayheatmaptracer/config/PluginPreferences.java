@@ -9,6 +9,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.IPreferences;
 
+/**
+ * Loads and stores plugin preferences, keeping sensitive heatmap access values out of debug exports.
+ */
 public final class PluginPreferences {
     private static final String PREFIX = "wayheatmaptracer.";
     private static final String KEY_PAIR_ID = PREFIX + "keyPairId";
@@ -42,6 +45,11 @@ public final class PluginPreferences {
     private PluginPreferences() {
     }
 
+    /**
+     * Reads current plugin settings from JOSM preferences.
+     *
+     * @return complete settings object, falling back to defaults when preferences are unavailable
+     */
     public static ManagedHeatmapConfig load() {
         IPreferences pref = Config.getPref();
         if (pref == null) {
@@ -78,6 +86,12 @@ public final class PluginPreferences {
         );
     }
 
+    /**
+     * Persists plugin settings to JOSM preferences.
+     *
+     * @param config settings to store
+     * @throws NullPointerException if {@code config} is {@code null}
+     */
     public static void save(ManagedHeatmapConfig config) {
         Objects.requireNonNull(config, "config");
         Config.getPref().put(KEY_PAIR_ID, nullToEmpty(config.keyPairId()));
@@ -113,14 +127,27 @@ public final class PluginPreferences {
         Config.getPref().putLong(CACHE_BUSTER, Math.max(0L, config.cacheBuster()));
     }
 
+    /**
+     * Advances the managed tile cache generation so later requests bypass stale cached tiles.
+     */
     public static void bumpManagedTileCacheBuster() {
         Config.getPref().putLong(CACHE_BUSTER, System.currentTimeMillis());
     }
 
+    /**
+     * Checks whether verbose slide logging is enabled.
+     *
+     * @return current verbose flag
+     */
     public static boolean isVerboseEnabled() {
         return load().verbose();
     }
 
+    /**
+     * Checks whether debug overlay rendering is enabled.
+     *
+     * @return current debug overlay flag
+     */
     public static boolean isDebugEnabled() {
         return load().debug();
     }

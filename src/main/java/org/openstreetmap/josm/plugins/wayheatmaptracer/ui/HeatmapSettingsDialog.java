@@ -26,6 +26,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieParser;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieValues;
 import org.openstreetmap.josm.tools.GBC;
 
+/**
+ * Modal settings editor for managed Strava access, sampling parameters, and preview/debug options.
+ */
 public final class HeatmapSettingsDialog {
     private static final String[] ACTIVITIES = {"all", "ride", "run", "water", "winter"};
     private static final String[] COLORS = {"hot", "blue", "bluered", "purple", "gray"};
@@ -43,7 +46,7 @@ public final class HeatmapSettingsDialog {
     private final JTextField regex = new JTextField(36);
     private final JCheckBox verbose = new JCheckBox(tr("Verbose logging"));
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
-    private final JCheckBox multiColorDetection = new JCheckBox(tr("Use all color schemes for detection"));
+    private final JCheckBox multiColorDetection = new JCheckBox(tr("Run alternative detector mappings on selected color"));
     private final JCheckBox candidateRatingEnabled = new JCheckBox(tr("Enable preview candidate rating mode"));
     private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
@@ -59,6 +62,11 @@ public final class HeatmapSettingsDialog {
     private final Window parent;
     private long cacheBuster;
 
+    /**
+     * Creates a settings dialog initialized from stored plugin preferences.
+     *
+     * @param parent parent window for modal prompts
+     */
     public HeatmapSettingsDialog(Window parent) {
         this.parent = parent;
         ManagedHeatmapConfig config = PluginPreferences.load();
@@ -98,6 +106,11 @@ public final class HeatmapSettingsDialog {
         manualLayer.setSelectedItem(config.manualLayerName());
     }
 
+    /**
+     * Displays the dialog and saves settings when the user confirms.
+     *
+     * @return {@code true} when settings were saved
+     */
     public boolean showDialog() {
         JPanel panel = new JPanel(new GridBagLayout());
         JButton pasteCookies = new JButton(tr("Paste cookie header..."));

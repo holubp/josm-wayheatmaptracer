@@ -4,6 +4,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
+/**
+ * Parses the Strava CloudFront cookie header copied from browser/JOSM tooling into individual settings fields.
+ */
 public final class StravaCookieParser {
     private static final String KEY_PAIR_ID = "CloudFront-Key-Pair-Id";
     private static final String POLICY = "CloudFront-Policy";
@@ -13,6 +16,14 @@ public final class StravaCookieParser {
     private StravaCookieParser() {
     }
 
+    /**
+     * Splits a semicolon-separated cookie header into the required Strava access values.
+     *
+     * @param cookieHeader raw cookie header pasted by the user
+     * @return parsed access values
+     * @throws NullPointerException if {@code cookieHeader} is {@code null}
+     * @throws IllegalArgumentException if any required cookie is missing
+     */
     public static StravaCookieValues parse(String cookieHeader) {
         Objects.requireNonNull(cookieHeader, "cookieHeader");
         Map<String, String> values = new LinkedHashMap<>();

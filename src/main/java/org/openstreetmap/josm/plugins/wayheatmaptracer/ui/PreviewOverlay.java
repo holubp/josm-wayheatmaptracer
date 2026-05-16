@@ -17,6 +17,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 
+/**
+ * Temporary map overlay that draws original geometry, selected preview geometry, and alternative ridge candidates.
+ */
 public final class PreviewOverlay implements MapViewPaintable {
     private static final PreviewOverlay INSTANCE = new PreviewOverlay();
 
@@ -26,10 +29,23 @@ public final class PreviewOverlay implements MapViewPaintable {
     private boolean debugEnabled;
     private boolean attached;
 
+    /**
+     * Returns the singleton overlay instance used by the modeless preview dialog.
+     *
+     * @return shared overlay instance
+     */
     public static PreviewOverlay getInstance() {
         return INSTANCE;
     }
 
+    /**
+     * Attaches or refreshes the overlay for an active preview.
+     *
+     * @param selection slide-time selection metadata
+     * @param result alignment result whose source/preview/candidates should be drawn
+     * @param chosenCandidate currently selected candidate
+     * @param debugEnabled whether to show more candidate labels
+     */
     public void show(SelectionContext selection, AlignmentResult result, CenterlineCandidate chosenCandidate, boolean debugEnabled) {
         this.selection = selection;
         this.result = result;
@@ -43,6 +59,9 @@ public final class PreviewOverlay implements MapViewPaintable {
         mapView.repaint();
     }
 
+    /**
+     * Removes the overlay from the map and clears preview state.
+     */
     public void hide() {
         if (attached && MainApplication.getMap() != null && MainApplication.getMap().mapView != null) {
             MainApplication.getMap().mapView.removeTemporaryLayer(this);

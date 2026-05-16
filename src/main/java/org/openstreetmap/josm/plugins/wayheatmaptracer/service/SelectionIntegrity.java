@@ -12,12 +12,23 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 
+/**
+ * Guards modeless preview/apply operations against unsafe or stale OSM selections.
+ */
 public final class SelectionIntegrity {
     private static final double SOURCE_POSITION_EPSILON_METERS = 0.001;
 
     private SelectionIntegrity() {
     }
 
+    /**
+     * Rejects selected segments whose nodes appear more than once in the way.
+     *
+     * @param way selected way
+     * @param startIndex first selected node index
+     * @param endIndex last selected node index
+     * @throws IllegalStateException when repeated-node occurrence identity would be ambiguous
+     */
     public static void requireNoRepeatedNodeOccurrences(Way way, int startIndex, int endIndex) {
         Map<Node, List<Integer>> occurrences = occurrenceIndexes(way);
         for (Map.Entry<Node, List<Integer>> entry : occurrences.entrySet()) {
@@ -34,6 +45,14 @@ public final class SelectionIntegrity {
         }
     }
 
+    /**
+     * Ensures the way and selected source coordinates still match the slide-time preview snapshot.
+     *
+     * @param dataSet expected active dataset
+     * @param selection slide-time selected segment
+     * @param previewSourcePolyline source geometry stored when the preview was opened
+     * @throws IllegalStateException when the selection or source geometry changed
+     */
     public static void requirePreviewSourceUnchanged(
         DataSet dataSet,
         SelectionContext selection,

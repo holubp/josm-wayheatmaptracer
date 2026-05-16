@@ -5,6 +5,17 @@ import java.util.List;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 
+/**
+ * One heatmap ridge candidate that can be previewed, rated, and applied.
+ *
+ * @param id stable detector/candidate identifier used in debug exports and preview labels
+ * @param score calibrated candidate ranking score
+ * @param screenPoints candidate points in the slide-time raster/screen coordinate space
+ * @param offsetsPx lateral offsets from each sampled source profile in raster pixels
+ * @param eastNorthPoints slide-time projected candidate geometry, preferred for modeless preview selection
+ * @param evidence aggregate heatmap and longitudinal evidence for the candidate
+ * @param safetyWarnings structural warnings that should prevent unsafe apply operations
+ */
 public record CenterlineCandidate(
     String id,
     double score,
@@ -22,30 +33,73 @@ public record CenterlineCandidate(
         safetyWarnings = safetyWarnings == null ? List.of() : List.copyOf(safetyWarnings);
     }
 
+    /**
+     * Creates a legacy visible-raster candidate without projected geometry or explicit evidence.
+     *
+     * @param id detector/candidate identifier
+     * @param score candidate ranking score
+     * @param screenPoints candidate points in raster/screen coordinates
+     * @param offsetsPx lateral offsets from sampled profiles in raster pixels
+     */
     public CenterlineCandidate(String id, double score, List<Point2D.Double> screenPoints, List<Double> offsetsPx) {
         this(id, score, screenPoints, offsetsPx, List.of(), CandidateEvidence.empty(), List.of());
     }
 
+    /**
+     * Returns a copy with a different identifier.
+     *
+     * @param newId replacement candidate identifier
+     * @return candidate copy using {@code newId}
+     */
     public CenterlineCandidate withId(String newId) {
         return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
     }
 
+    /**
+     * Returns a copy with a different score.
+     *
+     * @param newScore replacement ranking score
+     * @return candidate copy using {@code newScore}
+     */
     public CenterlineCandidate withScore(double newScore) {
         return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
     }
 
+    /**
+     * Returns a copy with projected slide-time candidate points.
+     *
+     * @param points candidate geometry in JOSM projected coordinates
+     * @return candidate copy using {@code points}
+     */
     public CenterlineCandidate withEastNorthPoints(List<EastNorth> points) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points, evidence, safetyWarnings);
     }
 
+    /**
+     * Returns a copy with updated detector evidence.
+     *
+     * @param newEvidence aggregate heatmap evidence to attach
+     * @return candidate copy using {@code newEvidence}
+     */
     public CenterlineCandidate withEvidence(CandidateEvidence newEvidence) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, newEvidence, safetyWarnings);
     }
 
+    /**
+     * Returns a copy with updated structural warnings.
+     *
+     * @param warnings warnings such as self-intersection or abrupt lateral jumps
+     * @return candidate copy using {@code warnings}
+     */
     public CenterlineCandidate withSafetyWarnings(List<String> warnings) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, evidence, warnings);
     }
 
+    /**
+     * Builds the user-facing candidate label shown in the preview selector.
+     *
+     * @return readable detector name, confidence label, and safety warning summary
+     */
     public String displayName() {
         String normalized = id.replace("-mapped-parallel", " mapped parallel");
         String[] parts = normalized.split("/");
