@@ -747,7 +747,7 @@ public final class AlignmentService {
 
     List<String> sourceTileColors(ManagedHeatmapConfig config) {
         String selected = normalizedVisibleColor(config);
-        if (!shouldRunAggregatedSourceDetector(config)) {
+        if (!shouldPrepareAggregateSourceColors(config)) {
             return List.of(selected);
         }
         List<String> colors = new ArrayList<>();
@@ -762,6 +762,11 @@ public final class AlignmentService {
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config) {
         return config.aggregateAllColorSchemes() && intensitySamplingMode(config).usesColorMapping();
+    }
+
+    private boolean shouldPrepareAggregateSourceColors(ManagedHeatmapConfig config) {
+        return (config.aggregateAllColorSchemes() || config.showAggregateIntensityLayer())
+            && intensitySamplingMode(config).usesColorMapping();
     }
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config, TileHeatmapSampler.TileMosaicSet mosaics) {

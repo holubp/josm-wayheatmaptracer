@@ -106,6 +106,7 @@ public class AlignWayAction extends JosmAction {
             activePreviewDialog.toFront();
             return;
         }
+        ManagedHeatmapConfig config = null;
         PluginLog.beginSlideSession();
         try {
             PluginLog.verbose("Align Way to Heatmap invoked.");
@@ -119,7 +120,7 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
 
-            ManagedHeatmapConfig config = effectiveConfig(PluginPreferences.load());
+            config = effectiveConfig(PluginPreferences.load());
             SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
             if (!config.allowUndownloadedAlignment()) {
                 requireDownloadedAreaCoverage(selection, dataSet);
@@ -138,6 +139,9 @@ public class AlignWayAction extends JosmAction {
             showCandidatePreview(dataSet, selection, result, config);
         } catch (AlignmentService.AlignmentFailureException ex) {
             overlay.hide();
+            if (config != null) {
+                updateAggregateIntensityLayer(ex.partialResult(), config);
+            }
             Logging.warn("WayHeatmapTracer alignment failed without applying geometry: " + ex.getMessage());
             PluginLog.verbose("Alignment failed without applying geometry: %s", ex.toString());
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
@@ -174,6 +178,9 @@ public class AlignWayAction extends JosmAction {
             TileHeatmapSampler.AggregateVisualization visualization = new TileHeatmapSampler()
                 .buildAggregatedIntensityVisualization(result.tileMosaics(), result.tileMosaics().inferenceZoom());
             AggregateIntensityLayer.show(visualization);
+            PluginLog.verbose("Aggregate intensity layer updated from source tile z%d colors=%s.",
+                visualization == null ? -1 : visualization.zoom(),
+                visualization == null ? List.of() : visualization.colors());
         } catch (RuntimeException ex) {
             Logging.warn("WayHeatmapTracer could not build aggregate intensity layer: " + ex.getMessage());
             PluginLog.verbose("Aggregate intensity layer generation failed: %s", ex.toString());

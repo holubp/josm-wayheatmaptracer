@@ -64,12 +64,15 @@ class AlignmentServiceTest {
         AlignmentService service = new AlignmentService();
         ManagedHeatmapConfig alternativesOnly = config(AlignmentMode.MOVE_EXISTING_NODES, true, false);
         ManagedHeatmapConfig aggregateOnly = config(AlignmentMode.MOVE_EXISTING_NODES, false, true);
+        ManagedHeatmapConfig visualizationOnly = config(AlignmentMode.MOVE_EXISTING_NODES, false, false, true);
 
         assertTrue(service.detectionColorModes(alternativesOnly).contains("bluered-combined"));
         assertEquals(List.of("hot"), service.sourceTileColors(alternativesOnly));
         assertEquals(List.of("hot"), service.detectionColorModes(aggregateOnly));
         assertTrue(service.sourceTileColors(aggregateOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
         assertFalse(service.detectionColorModes(aggregateOnly).contains("bluered-combined"));
+        assertEquals(List.of("hot"), service.detectionColorModes(visualizationOnly));
+        assertTrue(service.sourceTileColors(visualizationOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
     }
 
     @Test
@@ -287,6 +290,15 @@ class AlignmentServiceTest {
     }
 
     private ManagedHeatmapConfig config(AlignmentMode mode, boolean alternativeDetectors, boolean aggregateAllColorSchemes) {
+        return config(mode, alternativeDetectors, aggregateAllColorSchemes, false);
+    }
+
+    private ManagedHeatmapConfig config(
+        AlignmentMode mode,
+        boolean alternativeDetectors,
+        boolean aggregateAllColorSchemes,
+        boolean showAggregateIntensityLayer
+    ) {
         return new ManagedHeatmapConfig(
             "", "", "", "",
             "all",
@@ -298,7 +310,7 @@ class AlignmentServiceTest {
             false,
             alternativeDetectors,
             aggregateAllColorSchemes,
-            false,
+            showAggregateIntensityLayer,
             false,
             true,
             false,
