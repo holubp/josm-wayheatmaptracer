@@ -32,6 +32,7 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -42,6 +43,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -130,6 +132,7 @@ public class AlignWayAction extends JosmAction {
             MapView mapView = MainApplication.getMap().mapView;
 
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, config);
+            updateAggregateIntensityLayer(result, config);
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(result, result.candidates().get(0), "preview-open", PluginLog.currentSlideLog()));
 
             showCandidatePreview(dataSet, selection, result, config);
@@ -160,6 +163,21 @@ public class AlignWayAction extends JosmAction {
         }
         PluginLog.verbose("Using one-shot alignment mode override: %s.", forcedAlignmentMode);
         return config.withAlignmentMode(forcedAlignmentMode);
+    }
+
+    private void updateAggregateIntensityLayer(AlignmentResult result, ManagedHeatmapConfig config) {
+        if (!config.showAggregateIntensityLayer() || !config.aggregateAllColorSchemes() || result.tileMosaics() == null) {
+            AggregateIntensityLayer.removeExisting();
+            return;
+        }
+        try {
+            TileHeatmapSampler.AggregateVisualization visualization = new TileHeatmapSampler()
+                .buildAggregatedIntensityVisualization(result.tileMosaics(), result.tileMosaics().inferenceZoom());
+            AggregateIntensityLayer.show(visualization);
+        } catch (RuntimeException ex) {
+            Logging.warn("WayHeatmapTracer could not build aggregate intensity layer: " + ex.getMessage());
+            PluginLog.verbose("Aggregate intensity layer generation failed: %s", ex.toString());
+        }
     }
 
     private static String actionName(AlignmentMode forcedAlignmentMode) {

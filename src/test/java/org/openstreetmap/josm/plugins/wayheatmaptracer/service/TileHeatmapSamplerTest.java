@@ -10,13 +10,21 @@ import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 
 class TileHeatmapSamplerTest {
+    @BeforeAll
+    static void setProjection() {
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+    }
+
     @Test
     void stableFixedScalePreservesConfiguredInferenceAndLowerValidationZoom() {
         ManagedHeatmapConfig config = config(InferenceMode.STABLE_FIXED_SCALE, 15, 13);
@@ -98,6 +106,57 @@ class TileHeatmapSamplerTest {
         assertTrue(ex.getMessage().contains("missing [blue, bluered, purple, gray]"));
     }
 
+    @Test
+    void aggregateVisualizationUsesAllBaseColorsAndHighlightsFusedSignal() {
+        TileHeatmapSampler.SamplingParameters parameters = new TileHeatmapSampler.SamplingParameters(
+            15, 50.0, 0.5, 28.0, 6.0, 56, 12);
+        Map<String, TileHeatmapSampler.TileMosaic> mosaics = Map.of(
+            "hot@15", mosaic("hot", 0xFFFFFFFF, parameters),
+            "blue@15", mosaic("blue", 0xFF006CFF, parameters),
+            "bluered@15", mosaic("bluered", 0xFFFF1028, parameters),
+            "purple@15", mosaic("purple", 0xFFE4BBFF, parameters),
+            "gray@15", mosaic("gray", 0xFFFF55DD, parameters)
+        );
+        TileHeatmapSampler.TileMosaicSet set = new TileHeatmapSampler.TileMosaicSet(
+            InferenceMode.STABLE_FIXED_SCALE,
+            15,
+            13,
+            15,
+            13,
+            TileHeatmapSampler.TILE_SIZE,
+            mosaics,
+            parameters,
+            parameters
+        );
+
+        TileHeatmapSampler.AggregateVisualization visualization =
+            new TileHeatmapSampler().buildAggregatedIntensityVisualization(set, 15);
+
+        assertEquals(List.of("bluered", "purple", "hot", "gray", "blue").size(), visualization.colors().size());
+        assertTrue(visualization.colors().containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
+        assertTrue(alpha(visualization.image().getRGB(256, 256)) > alpha(visualization.image().getRGB(0, 0)));
+        assertTrue(visualization.metadataJson().contains("\"type\":\"all-colors-combined-visualization\""));
+    }
+
+    private TileHeatmapSampler.TileMosaic mosaic(
+        String color,
+        int centerArgb,
+        TileHeatmapSampler.SamplingParameters parameters
+    ) {
+        BufferedImage image = new BufferedImage(TileHeatmapSampler.TILE_SIZE, TileHeatmapSampler.TILE_SIZE, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 250; y <= 262; y++) {
+            for (int x = 250; x <= 262; x++) {
+                image.setRGB(x, y, centerArgb);
+            }
+        }
+        return new TileHeatmapSampler.TileMosaic(color, 15, 0.0, 0.0, image, List.of(), Map.of(),
+            parameters, false, 1.0);
+    }
+
+    private int alpha(int argb) {
+        return (argb >>> 24) & 0xFF;
+    }
+
     private ManagedHeatmapConfig config(InferenceMode inferenceMode, int inferenceZoom, int validationZoom) {
         return config(inferenceMode, inferenceZoom, validationZoom, 0L);
     }
@@ -110,6 +169,7 @@ class TileHeatmapSamplerTest {
             "",
             ".*",
             AlignmentMode.MOVE_EXISTING_NODES,
+            false,
             false,
             false,
             false,

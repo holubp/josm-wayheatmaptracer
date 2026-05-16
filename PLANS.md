@@ -19,7 +19,7 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Evaluate multi-blur or multi-filter ensembles where stable maxima across levels are trusted.
   - Consider edge-preserving or anisotropic filters if they outperform current signal-gated filters on calibration bundles.
 - Visible-layer all-color aggregation:
-  - Managed source tiles can aggregate all base color schemes.
+  - Managed source tiles can aggregate all base color schemes and can show/export a diagnostic aggregate intensity visualization layer.
   - Manual visible-layer fallback has only the selected rendered source; true all-color aggregation there would require managed source access or another way to obtain all color rasters.
 - Broader topology safety:
   - Current cleanup prunes endpoint clusters and self-intersection loops in precise previews.

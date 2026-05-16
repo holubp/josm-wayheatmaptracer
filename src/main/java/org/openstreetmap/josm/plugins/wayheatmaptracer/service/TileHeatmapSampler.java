@@ -164,27 +164,12 @@ public final class TileHeatmapSampler {
         int zoom,
         List<EastNorth> sourcePolyline
     ) {
-        List<TileMosaic> colorMosaics = mosaics.mosaics().values().stream()
-            .filter(mosaic -> mosaic.zoom() == zoom)
-            .filter(mosaic -> BASE_AGGREGATE_COLORS.contains(mosaic.color()))
-            .toList();
-        if (colorMosaics.isEmpty()) {
+        AggregateSourceFrame frame = aggregateSourceFrame(mosaics, zoom);
+        if (frame == null) {
             return List.of();
         }
-        TileMosaic reference = colorMosaics.get(0);
-        Map<String, BufferedImage> images = new LinkedHashMap<>();
-        for (TileMosaic mosaic : colorMosaics) {
-            if (sameSamplingFrame(reference, mosaic)) {
-                images.put(mosaic.color(), mosaic.image());
-            }
-        }
-        List<String> missing = BASE_AGGREGATE_COLORS.stream()
-            .filter(color -> !images.containsKey(color))
-            .toList();
-        if (!missing.isEmpty()) {
-            throw new IllegalStateException("All-color heatmap aggregation requires matching source mosaics for "
-                + BASE_AGGREGATE_COLORS + "; missing " + missing + ".");
-        }
+        TileMosaic reference = frame.reference();
+        Map<String, BufferedImage> images = frame.images();
         List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, reference.parameters().sampleStepMeters()));
         if (dense.size() < 2) {
             return List.of();
@@ -208,6 +193,36 @@ public final class TileHeatmapSampler {
             referenceStepPx,
             REFERENCE_RASTER_SCALE,
             reference.virtualRasterScale()
+        );
+    }
+
+    /**
+     * Builds a colorized visualization of the same fused scalar intensity field used by all-color detection.
+     *
+     * @param mosaics prepared source-tile mosaics
+     * @param zoom source tile zoom to visualize
+     * @return georeferenced aggregate intensity image, or {@code null} when no aggregate frame exists
+     */
+    public AggregateVisualization buildAggregatedIntensityVisualization(TileMosaicSet mosaics, int zoom) {
+        AggregateSourceFrame frame = aggregateSourceFrame(mosaics, zoom);
+        if (frame == null) {
+            return null;
+        }
+        TileMosaic reference = frame.reference();
+        BufferedImage image = RenderedHeatmapSampler.renderAggregatedIntensityRaster(frame.images());
+        EastNorth topLeft = toEastNorth(reference.originWorldPxX(), reference.originWorldPxY(), reference.zoom());
+        EastNorth topRight = toEastNorth(reference.originWorldPxX() + image.getWidth(), reference.originWorldPxY(), reference.zoom());
+        EastNorth bottomLeft = toEastNorth(reference.originWorldPxX(), reference.originWorldPxY() + image.getHeight(), reference.zoom());
+        EastNorth bottomRight = toEastNorth(reference.originWorldPxX() + image.getWidth(), reference.originWorldPxY() + image.getHeight(), reference.zoom());
+        return new AggregateVisualization(
+            image,
+            reference.zoom(),
+            frame.images().keySet().stream().toList(),
+            topLeft,
+            topRight,
+            bottomLeft,
+            bottomRight,
+            aggregateMetadataJson(reference, frame.images())
         );
     }
 
@@ -572,6 +587,55 @@ public final class TileHeatmapSampler {
             && Math.abs(reference.virtualRasterScale() - mosaic.virtualRasterScale()) < 1e-9;
     }
 
+    private AggregateSourceFrame aggregateSourceFrame(TileMosaicSet mosaics, int zoom) {
+        List<TileMosaic> colorMosaics = mosaics.mosaics().values().stream()
+            .filter(mosaic -> mosaic.zoom() == zoom)
+            .filter(mosaic -> BASE_AGGREGATE_COLORS.contains(mosaic.color()))
+            .toList();
+        if (colorMosaics.isEmpty()) {
+            return null;
+        }
+        TileMosaic reference = colorMosaics.get(0);
+        Map<String, BufferedImage> images = new LinkedHashMap<>();
+        for (TileMosaic mosaic : colorMosaics) {
+            if (sameSamplingFrame(reference, mosaic)) {
+                images.put(mosaic.color(), mosaic.image());
+            }
+        }
+        List<String> missing = BASE_AGGREGATE_COLORS.stream()
+            .filter(color -> !images.containsKey(color))
+            .toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("All-color heatmap aggregation requires matching source mosaics for "
+                + BASE_AGGREGATE_COLORS + "; missing " + missing + ".");
+        }
+        return new AggregateSourceFrame(reference, images);
+    }
+
+    private String aggregateMetadataJson(TileMosaic reference, Map<String, BufferedImage> images) {
+        StringBuilder builder = new StringBuilder("{\"type\":\"all-colors-combined-visualization\",")
+            .append("\"zoom\":").append(reference.zoom())
+            .append(",\"palette\":\"aggregate-debug-blue-red-white\",")
+            .append("\"colors\":[");
+        int index = 0;
+        for (String color : images.keySet()) {
+            if (index++ > 0) {
+                builder.append(',');
+            }
+            builder.append('"').append(color).append('"');
+        }
+        builder.append("],\"weights\":{");
+        index = 0;
+        for (String color : images.keySet()) {
+            if (index++ > 0) {
+                builder.append(',');
+            }
+            builder.append('"').append(color).append("\":")
+                .append(RenderedHeatmapSampler.aggregateSourceWeight(color));
+        }
+        return builder.append("}}").toString();
+    }
+
     private String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -806,7 +870,34 @@ public final class TileHeatmapSampler {
     private record FetchedTile(BufferedImage image, TileRecord record) {
     }
 
+    private record AggregateSourceFrame(TileMosaic reference, Map<String, BufferedImage> images) {
+    }
+
     private record BoundsPx(double minX, double minY, double maxX, double maxY) {
+    }
+
+    /**
+     * Georeferenced visualization of the fused all-color source intensity field.
+     *
+     * @param image colorized aggregate intensity image
+     * @param zoom source tile zoom
+     * @param colors source colors included in the aggregate
+     * @param topLeft projected top-left corner
+     * @param topRight projected top-right corner
+     * @param bottomLeft projected bottom-left corner
+     * @param bottomRight projected bottom-right corner
+     * @param metadataJson redacted visualization metadata
+     */
+    public record AggregateVisualization(
+        BufferedImage image,
+        int zoom,
+        List<String> colors,
+        EastNorth topLeft,
+        EastNorth topRight,
+        EastNorth bottomLeft,
+        EastNorth bottomRight,
+        String metadataJson
+    ) {
     }
 
     private static String escape(String value) {

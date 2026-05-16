@@ -16,6 +16,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param debug whether debug overlay rendering is enabled
  * @param multiColorDetection whether alternative detector mappings are shown for the selected color source
  * @param aggregateAllColorSchemes whether managed source colors are fused into one aggregate intensity map
+ * @param showAggregateIntensityLayer whether a visual layer of the aggregate intensity map is shown
  * @param candidateRatingEnabled whether preview rating controls are visible
  * @param parallelWayAwareness whether nearby parallel OSM ways are considered as context
  * @param allowUndownloadedAlignment whether OSM downloaded-area checks are bypassed
@@ -46,6 +47,7 @@ public record ManagedHeatmapConfig(
     boolean debug,
     boolean multiColorDetection,
     boolean aggregateAllColorSchemes,
+    boolean showAggregateIntensityLayer,
     boolean candidateRatingEnabled,
     boolean parallelWayAwareness,
     boolean allowUndownloadedAlignment,
@@ -92,6 +94,7 @@ public record ManagedHeatmapConfig(
             debug,
             multiColorDetection,
             aggregateAllColorSchemes,
+            showAggregateIntensityLayer,
             candidateRatingEnabled,
             parallelWayAwareness,
             allowUndownloadedAlignment,
@@ -139,6 +142,7 @@ public record ManagedHeatmapConfig(
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','
             + "\"aggregateAllColorSchemes\":" + aggregateAllColorSchemes + ','
+            + "\"showAggregateIntensityLayer\":" + showAggregateIntensityLayer + ','
             + "\"candidateRatingEnabled\":" + candidateRatingEnabled + ','
             + "\"parallelWayAwareness\":" + parallelWayAwareness + ','
             + "\"allowUndownloadedAlignment\":" + allowUndownloadedAlignment + ','

@@ -35,6 +35,7 @@ public final class LastSlideDebugBundle {
     private final String profilePeaksCsv;
     private final String paletteSamplesCsv;
     private final String tileManifestJson;
+    private final String aggregateMetadataJson;
     private final Map<String, BufferedImage> tileImages;
 
     private LastSlideDebugBundle(
@@ -49,6 +50,7 @@ public final class LastSlideDebugBundle {
         String profilePeaksCsv,
         String paletteSamplesCsv,
         String tileManifestJson,
+        String aggregateMetadataJson,
         Map<String, BufferedImage> tileImages
     ) {
         this.diagnosticsJson = diagnosticsJson;
@@ -62,6 +64,7 @@ public final class LastSlideDebugBundle {
         this.profilePeaksCsv = profilePeaksCsv;
         this.paletteSamplesCsv = paletteSamplesCsv;
         this.tileManifestJson = tileManifestJson;
+        this.aggregateMetadataJson = aggregateMetadataJson;
         this.tileImages = tileImages;
     }
 
@@ -98,6 +101,7 @@ public final class LastSlideDebugBundle {
         Map<String, BufferedImage> images = new LinkedHashMap<>();
         String tileManifest = "{\"sampling\":\"rendered-visible-layer\",\"images\":[\"rendered-layer-capture.png\"],"
             + "\"details\":\"see diagnostics.json sampling and profiles\"}";
+        String aggregateMetadata = "{}";
         if (result.tileMosaics() != null) {
             tileManifest = result.tileMosaics().manifestJson();
             for (TileHeatmapSampler.TileMosaic mosaic : result.tileMosaics().mosaics().values()) {
@@ -105,6 +109,16 @@ public final class LastSlideDebugBundle {
                 for (Map.Entry<String, BufferedImage> tile : mosaic.tileImages().entrySet()) {
                     images.put("tiles/source/" + safeName(tile.getKey()), tile.getValue());
                 }
+            }
+            try {
+                TileHeatmapSampler.AggregateVisualization visualization = new TileHeatmapSampler()
+                    .buildAggregatedIntensityVisualization(result.tileMosaics(), result.tileMosaics().inferenceZoom());
+                if (visualization != null) {
+                    images.put("aggregate-intensity/all-colors-combined-z" + visualization.zoom() + ".png", visualization.image());
+                    aggregateMetadata = visualization.metadataJson();
+                }
+            } catch (RuntimeException ex) {
+                aggregateMetadata = "{\"error\":\"" + escape(ex.getMessage()) + "\"}";
             }
         } else if (result.capturedHeatmap() != null) {
             images.put("rendered-layer-capture.png", result.capturedHeatmap());
@@ -127,6 +141,7 @@ public final class LastSlideDebugBundle {
             result.diagnostics().profilePeaksCsv(),
             result.diagnostics().paletteSamplesCsv(),
             tileManifest,
+            aggregateMetadata,
             images
         );
     }
@@ -152,6 +167,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "profile-peaks.csv", profilePeaksCsv);
             writeText(zip, "palette-samples.csv", paletteSamplesCsv);
             writeText(zip, "tile-manifest.json", tileManifestJson);
+            writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 ImageIO.write(entry.getValue(), "png", zip);
@@ -166,7 +182,7 @@ public final class LastSlideDebugBundle {
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
             + "\"formatVersion\":1,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"tile-manifest.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 

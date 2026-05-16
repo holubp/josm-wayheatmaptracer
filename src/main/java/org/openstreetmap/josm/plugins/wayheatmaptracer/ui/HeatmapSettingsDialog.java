@@ -48,6 +48,7 @@ public final class HeatmapSettingsDialog {
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
     private final JCheckBox multiColorDetection = new JCheckBox(tr("Run alternative detector mappings on current source"));
     private final JCheckBox aggregateAllColorSchemes = new JCheckBox(tr("Aggregate all managed color schemes into one intensity map"));
+    private final JCheckBox showAggregateIntensityLayer = new JCheckBox(tr("Show aggregate intensity layer"));
     private final JCheckBox candidateRatingEnabled = new JCheckBox(tr("Enable preview candidate rating mode"));
     private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
@@ -85,6 +86,7 @@ public final class HeatmapSettingsDialog {
         debug.setSelected(config.debug());
         multiColorDetection.setSelected(config.multiColorDetection());
         aggregateAllColorSchemes.setSelected(config.aggregateAllColorSchemes());
+        showAggregateIntensityLayer.setSelected(config.showAggregateIntensityLayer());
         candidateRatingEnabled.setSelected(config.candidateRatingEnabled());
         parallelWayAwareness.setSelected(config.parallelWayAwareness());
         allowUndownloadedAlignment.setSelected(config.allowUndownloadedAlignment());
@@ -161,6 +163,7 @@ public final class HeatmapSettingsDialog {
         panel.add(debug, GBC.eol());
         panel.add(multiColorDetection, GBC.eol());
         panel.add(aggregateAllColorSchemes, GBC.eol());
+        panel.add(showAggregateIntensityLayer, GBC.eol());
         panel.add(candidateRatingEnabled, GBC.eol());
         panel.add(parallelWayAwareness, GBC.eol());
         panel.add(allowUndownloadedAlignment, GBC.eol());
@@ -192,6 +195,7 @@ public final class HeatmapSettingsDialog {
             debug.isSelected(),
             multiColorDetection.isSelected(),
             aggregateAllColorSchemes.isSelected(),
+            showAggregateIntensityLayer.isSelected(),
             candidateRatingEnabled.isSelected(),
             parallelWayAwareness.isSelected(),
             allowUndownloadedAlignment.isSelected(),

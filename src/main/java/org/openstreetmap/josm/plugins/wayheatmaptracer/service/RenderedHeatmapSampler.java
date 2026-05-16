@@ -216,7 +216,7 @@ public final class RenderedHeatmapSampler {
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = current.x + normal.x * offset;
                 double y = current.y + normal.y * offset;
-                double intensity = aggregatedIntensityAt(rastersByColor, x / coordinateScale, y / coordinateScale);
+                double intensity = aggregatedSourceIntensityAt(rastersByColor, x / coordinateScale, y / coordinateScale);
                 offsets.add(new OffsetSample(offset, intensity));
             }
             samples.addAll(extractBrightBands(offsets));
@@ -646,18 +646,18 @@ public final class RenderedHeatmapSampler {
         return colorIntensity(red, green, blue, colorMode);
     }
 
-    private double aggregatedIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
+    static double aggregatedSourceIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
         double weighted = 0.0;
         double totalWeight = 0.0;
         for (java.util.Map.Entry<String, BufferedImage> entry : rastersByColor.entrySet()) {
             double weight = aggregateSourceWeight(entry.getKey());
-            weighted += weight * intensityAt(entry.getValue(), x, y, entry.getKey(), IntensitySamplingMode.COLOR_MAPPING);
+            weighted += weight * sourceIntensityAt(entry.getValue(), x, y, entry.getKey());
             totalWeight += weight;
         }
         return totalWeight <= 0.0 ? 0.0 : Math.min(1.0, Math.max(0.0, weighted / totalWeight));
     }
 
-    private double aggregateSourceWeight(String color) {
+    static double aggregateSourceWeight(String color) {
         return switch (color == null ? "" : color.trim().toLowerCase(java.util.Locale.ROOT)) {
             case "bluered" -> 0.30;
             case "gray" -> 0.22;
@@ -668,7 +668,67 @@ public final class RenderedHeatmapSampler {
         };
     }
 
-    private boolean isInsideRaster(BufferedImage image, double x, double y) {
+    static BufferedImage renderAggregatedIntensityRaster(java.util.Map<String, BufferedImage> rastersByColor) {
+        if (rastersByColor.isEmpty()) {
+            return new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        }
+        int width = rastersByColor.values().stream().mapToInt(BufferedImage::getWidth).min().orElse(1);
+        int height = rastersByColor.values().stream().mapToInt(BufferedImage::getHeight).min().orElse(1);
+        BufferedImage rendered = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                rendered.setRGB(x, y, aggregateDisplayColor(aggregatedSourceIntensityAt(rastersByColor, x, y)));
+            }
+        }
+        return rendered;
+    }
+
+    private static int aggregateDisplayColor(double intensity) {
+        double value = Math.max(0.0, Math.min(1.0, intensity));
+        if (value <= 0.005) {
+            return 0;
+        }
+        int alpha = Math.max(36, Math.min(230, (int) Math.round(32 + 210 * Math.pow(value, 0.72))));
+        int red;
+        int green;
+        int blue;
+        if (value < 0.35) {
+            double t = value / 0.35;
+            red = (int) Math.round(20 * t);
+            green = (int) Math.round(40 + 180 * t);
+            blue = (int) Math.round(120 + 135 * t);
+        } else if (value < 0.72) {
+            double t = (value - 0.35) / 0.37;
+            red = (int) Math.round(20 + 235 * t);
+            green = (int) Math.round(220 * (1.0 - t));
+            blue = (int) Math.round(255 * (1.0 - t) + 40 * t);
+        } else {
+            double t = (value - 0.72) / 0.28;
+            red = 255;
+            green = (int) Math.round(40 + 215 * t);
+            blue = (int) Math.round(40 + 215 * t);
+        }
+        return (alpha << 24) | (red << 16) | (green << 8) | blue;
+    }
+
+    private static double sourceIntensityAt(BufferedImage image, double x, double y, String colorMode) {
+        int sx = (int) Math.round(x);
+        int sy = (int) Math.round(y);
+        if (!isInsideRaster(image, sx, sy)) {
+            return 0.0;
+        }
+        int argb = image.getRGB(sx, sy);
+        int alpha = (argb >>> 24) & 0xFF;
+        if (alpha == 0) {
+            return 0.0;
+        }
+        int red = (argb >>> 16) & 0xFF;
+        int green = (argb >>> 8) & 0xFF;
+        int blue = argb & 0xFF;
+        return colorIntensity(red, green, blue, colorMode);
+    }
+
+    private static boolean isInsideRaster(BufferedImage image, double x, double y) {
         int sx = (int) Math.round(x);
         int sy = (int) Math.round(y);
         return sx >= 0 && sy >= 0 && sx < image.getWidth() && sy < image.getHeight();

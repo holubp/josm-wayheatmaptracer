@@ -299,6 +299,7 @@ class AlignmentServiceTest {
             alternativeDetectors,
             aggregateAllColorSchemes,
             false,
+            false,
             true,
             false,
             false,
