@@ -47,6 +47,83 @@ public final class GeometryPostProcessor {
         return result;
     }
 
+    /**
+     * Removes short loops created by non-adjacent segment self-intersections.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param protectedPoints points that must not be deleted, typically fixed anchors and junctions
+     * @return geometry with removable loop interiors collapsed
+     */
+    public List<EastNorth> removeSelfIntersectionLoops(List<EastNorth> polyline, List<EastNorth> protectedPoints) {
+        List<EastNorth> result = new ArrayList<>(polyline);
+        boolean changed = true;
+        int passes = 0;
+        while (changed && passes++ < 12 && result.size() >= 4) {
+            changed = false;
+            for (int i = 0; i < result.size() - 3 && !changed; i++) {
+                for (int j = i + 2; j < result.size() - 1; j++) {
+                    if (i == 0 && j == result.size() - 2) {
+                        continue;
+                    }
+                    if (!segmentsIntersect(result.get(i), result.get(i + 1), result.get(j), result.get(j + 1))) {
+                        continue;
+                    }
+                    if (containsProtectedPoint(result, i + 1, j, protectedPoints)) {
+                        continue;
+                    }
+                    result.subList(i + 1, j + 1).clear();
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Removes tiny endpoint clusters that backtrack or create unsupported sharp turns into anchors.
+     *
+     * @param polyline source geometry in projected coordinates
+     * @param nearDistance maximum distance from an endpoint anchor for pruning
+     * @param turnThresholdDegrees minimum turn angle considered an unsupported kink
+     * @return geometry with unstable endpoint-adjacent points removed
+     */
+    public List<EastNorth> pruneEndpointClusters(List<EastNorth> polyline, double nearDistance, double turnThresholdDegrees) {
+        if (polyline.size() < 4 || nearDistance <= 0.0) {
+            return polyline;
+        }
+        List<EastNorth> result = new ArrayList<>(polyline);
+        while (result.size() >= 4 && shouldPruneStart(result, nearDistance, turnThresholdDegrees)) {
+            result.remove(1);
+        }
+        while (result.size() >= 4 && shouldPruneEnd(result, nearDistance, turnThresholdDegrees)) {
+            result.remove(result.size() - 2);
+        }
+        return result;
+    }
+
+    private boolean shouldPruneStart(List<EastNorth> points, double nearDistance, double turnThresholdDegrees) {
+        EastNorth anchor = points.get(0);
+        EastNorth first = points.get(1);
+        EastNorth second = points.get(2);
+        if (first.distance(anchor) > nearDistance) {
+            return false;
+        }
+        return second.distance(anchor) <= first.distance(anchor) * 0.92
+            || turningAngleDegrees(anchor, first, second) >= turnThresholdDegrees;
+    }
+
+    private boolean shouldPruneEnd(List<EastNorth> points, double nearDistance, double turnThresholdDegrees) {
+        EastNorth anchor = points.get(points.size() - 1);
+        EastNorth first = points.get(points.size() - 2);
+        EastNorth second = points.get(points.size() - 3);
+        if (first.distance(anchor) > nearDistance) {
+            return false;
+        }
+        return second.distance(anchor) <= first.distance(anchor) * 0.92
+            || turningAngleDegrees(second, first, anchor) >= turnThresholdDegrees;
+    }
+
     private void markSharpCorners(List<EastNorth> polyline, boolean[] keep) {
         for (int i = 1; i < polyline.size() - 1; i++) {
             EastNorth prev = polyline.get(i - 1);
@@ -112,5 +189,29 @@ public final class GeometryPostProcessor {
         double projectionEast = start.east() + t * dx;
         double projectionNorth = start.north() + t * dy;
         return Math.hypot(point.east() - projectionEast, point.north() - projectionNorth);
+    }
+
+    private boolean containsProtectedPoint(List<EastNorth> points, int startInclusive, int endInclusive, List<EastNorth> protectedPoints) {
+        for (int i = startInclusive; i <= endInclusive; i++) {
+            for (EastNorth protectedPoint : protectedPoints) {
+                if (points.get(i).distance(protectedPoint) < 0.01) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean segmentsIntersect(EastNorth a, EastNorth b, EastNorth c, EastNorth d) {
+        double denominator = (b.east() - a.east()) * (d.north() - c.north())
+            - (b.north() - a.north()) * (d.east() - c.east());
+        if (Math.abs(denominator) < 1e-9) {
+            return false;
+        }
+        double ua = ((d.east() - c.east()) * (a.north() - c.north())
+            - (d.north() - c.north()) * (a.east() - c.east())) / denominator;
+        double ub = ((b.east() - a.east()) * (a.north() - c.north())
+            - (b.north() - a.north()) * (a.east() - c.east())) / denominator;
+        return ua > 1e-9 && ua < 1.0 - 1e-9 && ub > 1e-9 && ub < 1.0 - 1e-9;
     }
 }

@@ -46,7 +46,7 @@ public final class HeatmapSettingsDialog {
     private final JTextField regex = new JTextField(36);
     private final JCheckBox verbose = new JCheckBox(tr("Verbose logging"));
     private final JCheckBox debug = new JCheckBox(tr("Debug overlay"));
-    private final JCheckBox multiColorDetection = new JCheckBox(tr("Run alternative detector mappings on selected color"));
+    private final JCheckBox multiColorDetection = new JCheckBox(tr("Run alternative mappings and aggregate all source colors"));
     private final JCheckBox candidateRatingEnabled = new JCheckBox(tr("Enable preview candidate rating mode"));
     private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));

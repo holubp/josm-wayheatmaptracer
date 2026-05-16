@@ -58,6 +58,8 @@ public final class AlignmentService {
         "gray-combined",
         "multi-combined"
     );
+    private static final List<String> BASE_SOURCE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
+    private static final String AGGREGATED_COLOR_MODE = "all-colors-combined";
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
     private static final double REFERENCE_VIEW_METERS_PER_PIXEL = TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
     private static final int MIN_EFFECTIVE_HALF_WIDTH_PX = 6;
@@ -210,15 +212,16 @@ public final class AlignmentService {
         PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
 
         long t0 = System.nanoTime();
-        TileHeatmapSampler.TileMosaicSet mosaics = tileSampler.prepare(config, sourcePolyline, List.of(sourceColor), isSketchLikeSelection(selection));
+        TileHeatmapSampler.TileMosaicSet mosaics = tileSampler.prepare(config, sourcePolyline, sourceTileColors(config), isSketchLikeSelection(selection));
         TileHeatmapSampler.TileMosaic mosaic = mosaics.require(sourceColor);
         long t1 = System.nanoTime();
         EffectiveSampling effectiveSampling = fixedTileEffectiveSampling(mosaic);
-        DetectionResult detection = detectTileCandidates(mosaic, sourcePolyline, config, colorModes, effectiveSampling);
+        DetectionResult detection = detectTileCandidates(mosaics, mosaic, sourcePolyline, config, colorModes, effectiveSampling);
+        List<String> reportedColorModes = reportedTileColorModes(config, mosaics, colorModes);
         List<CenterlineCandidate> candidates = annotateCandidateSafety(detection.candidates(), effectiveSampling);
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
                 mosaics, mosaic, List.of(), t0, t1, t2, t2);
             throw new AlignmentFailureException(
@@ -228,14 +231,14 @@ public final class AlignmentService {
                 partial);
         }
         if (candidates.isEmpty()) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
                 mosaics, mosaic, List.of(), t0, t1, t2, t2);
             throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles.", partial);
         }
         List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
         if (applicableCandidates.isEmpty()) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, colorModes,
+            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
                 detection.profilesJson(), detection.profilePeaksCsv(), detection.paletteSamplesCsv(), effectiveSampling,
                 mosaics, mosaic, candidates, t0, t1, t2, t2);
             throw new AlignmentFailureException("Detected ridge candidates were too weak or structurally unsafe for safe alignment in the sampled fixed-resolution heatmap tiles.", partial);
@@ -257,7 +260,7 @@ public final class AlignmentService {
             t3,
             config,
             selection,
-            colorModes,
+            reportedColorModes,
             candidates,
             detection.profilesJson(),
             detection.profilePeaksCsv(),
@@ -393,6 +396,7 @@ public final class AlignmentService {
     }
 
     private DetectionResult detectTileCandidates(
+        TileHeatmapSampler.TileMosaicSet mosaics,
         TileHeatmapSampler.TileMosaic mosaic,
         List<EastNorth> sourcePolyline,
         ManagedHeatmapConfig config,
@@ -409,6 +413,27 @@ public final class AlignmentService {
         int modeIndex = 0;
         int outsideRasterProfiles = 0;
         int totalProfiles = 0;
+        if (shouldRunAggregatedSourceDetector(config, mosaics)) {
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
+                tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+            totalProfiles = profiles.size();
+            outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
+            List<CenterlineCandidate> colorCandidates = ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx());
+            appendProfilePeaksCsv(profilePeaksCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
+            appendPaletteSamplesCsv(paletteSamplesCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
+            profileDiagnostics.append(profilesToJson(AGGREGATED_COLOR_MODE, intensitySource, profiles, colorCandidates));
+            for (CenterlineCandidate candidate : colorCandidates) {
+                CenterlineCandidate withMode = candidate
+                    .withId(AGGREGATED_COLOR_MODE + "/" + candidate.id())
+                    .withEvidence(candidate.evidence().withDetectorMode(AGGREGATED_COLOR_MODE)
+                        .withConsensusModes(BASE_SOURCE_COLORS));
+                withMode = withMode.withEastNorthPoints(tileSampler.projectCandidate(mosaic, withMode.screenPoints()));
+                candidates.add(withMode);
+            }
+            modeIndex++;
+            PluginLog.verbose("Aggregated source color mode '%s' produced %d ridge candidates from colors %s.",
+                AGGREGATED_COLOR_MODE, colorCandidates.size(), BASE_SOURCE_COLORS);
+        }
         for (String colorMode : colorModes) {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
                 tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
@@ -493,6 +518,7 @@ public final class AlignmentService {
     static double detectorPrior(String visibleColor, String detector) {
         return switch (visibleColor) {
             case "hot" -> switch (detector) {
+                case "all-colors-combined" -> 1.12;
                 case "hot-corridor" -> 1.00;
                 case "hot" -> 0.65;
                 case "dual-corridor" -> 0.55;
@@ -502,6 +528,7 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "bluered" -> switch (detector) {
+                case "all-colors-combined" -> 1.28;
                 case "bluered-combined" -> 1.18;
                 case "bluered-corridor" -> 1.08;
                 case "bluered-cool" -> 1.00;
@@ -519,6 +546,7 @@ public final class AlignmentService {
                 default -> -0.40;
             };
             case "blue" -> switch (detector) {
+                case "all-colors-combined" -> 1.08;
                 case "dual-corridor" -> 1.00;
                 case "hot", "hot-corridor" -> 0.75;
                 case "bluered-cool", "bluered-corridor" -> 0.55;
@@ -528,6 +556,7 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "gray" -> switch (detector) {
+                case "all-colors-combined" -> 1.16;
                 case "gray-combined" -> 1.10;
                 case "multi-combined" -> 0.82;
                 case "blue" -> 1.00;
@@ -540,6 +569,7 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             case "purple" -> switch (detector) {
+                case "all-colors-combined" -> 1.10;
                 case "purple" -> 1.05;
                 case "purple-strict" -> 0.82;
                 case "dual-corridor" -> 0.78;
@@ -549,6 +579,7 @@ public final class AlignmentService {
                 default -> 0.0;
             };
             default -> switch (detector) {
+                case "all-colors-combined" -> 1.00;
                 case "multi-combined" -> 0.72;
                 case "bluered-combined", "gray-combined" -> 0.62;
                 case "hot-corridor", "dual-corridor" -> 0.60;
@@ -561,6 +592,7 @@ public final class AlignmentService {
 
     private double globalDetectorAdjustment(String detector) {
         return switch (detector) {
+            case "all-colors-combined" -> 0.30;
             case "bluered-combined", "gray-combined" -> 0.22;
             case "multi-combined" -> 0.18;
             case "hot-corridor" -> 0.25;
@@ -711,6 +743,44 @@ public final class AlignmentService {
             }
         }
         return modes;
+    }
+
+    private List<String> sourceTileColors(ManagedHeatmapConfig config) {
+        String selected = normalizedVisibleColor(config);
+        if (!shouldRunAggregatedSourceDetector(config)) {
+            return List.of(selected);
+        }
+        List<String> colors = new ArrayList<>();
+        colors.add(selected);
+        for (String color : BASE_SOURCE_COLORS) {
+            if (!colors.contains(color)) {
+                colors.add(color);
+            }
+        }
+        return colors;
+    }
+
+    private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config) {
+        return config.multiColorDetection() && intensitySamplingMode(config).usesColorMapping();
+    }
+
+    private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config, TileHeatmapSampler.TileMosaicSet mosaics) {
+        return shouldRunAggregatedSourceDetector(config)
+            && BASE_SOURCE_COLORS.stream().allMatch(color -> mosaics.mosaics().containsKey(color + "@" + mosaics.inferenceZoom()));
+    }
+
+    private List<String> reportedTileColorModes(
+        ManagedHeatmapConfig config,
+        TileHeatmapSampler.TileMosaicSet mosaics,
+        List<String> colorModes
+    ) {
+        if (!shouldRunAggregatedSourceDetector(config, mosaics)) {
+            return colorModes;
+        }
+        List<String> reported = new ArrayList<>();
+        reported.add(AGGREGATED_COLOR_MODE);
+        reported.addAll(colorModes);
+        return reported;
     }
 
     private IntensitySamplingMode intensitySamplingMode(ManagedHeatmapConfig config) {
@@ -897,7 +967,8 @@ public final class AlignmentService {
             && !config.adjustJunctionNodes()) {
             preview = simplifyPrecisePreview(selection, sourcePolyline, preview, config.simplifyTolerancePx());
         }
-        return guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
+        preview = guardFixedAnchorTurns(selection, sourcePolyline, preview, config.alignmentMode());
+        return cleanPreviewTopology(selection, sourcePolyline, preview, config.alignmentMode());
     }
 
     private List<EastNorth> candidateCenterline(CenterlineCandidate candidate, MapView mapView) {
@@ -1046,6 +1117,30 @@ public final class AlignmentService {
             case MOVE_EXISTING_NODES -> guardMoveModeFixedTurns(selection, sourcePolyline, preview);
             case PRECISE_SHAPE -> guardPreciseModeFixedTurns(selection, sourcePolyline, preview);
         };
+    }
+
+    private List<EastNorth> cleanPreviewTopology(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> preview,
+        AlignmentMode mode
+    ) {
+        if (preview.size() < 4 || mode != AlignmentMode.PRECISE_SHAPE) {
+            return preview;
+        }
+        List<EastNorth> protectedPoints = fixedIndices(selection).stream()
+            .map(sourcePolyline::get)
+            .toList();
+        double nearAnchorDistance = Math.max(3.0, Math.min(12.0, PolylineMath.length(sourcePolyline) * 0.08));
+        List<EastNorth> cleaned = postProcessor.pruneEndpointClusters(preview, nearAnchorDistance, 95.0);
+        cleaned = postProcessor.removeSelfIntersectionLoops(cleaned, protectedPoints);
+        if (cleaned.size() < 2) {
+            return preview;
+        }
+        if (cleaned.size() != preview.size()) {
+            PluginLog.verbose("Topology cleanup reduced precise preview points from %d to %d.", preview.size(), cleaned.size());
+        }
+        return cleaned;
     }
 
     private List<EastNorth> guardMoveModeFixedTurns(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {

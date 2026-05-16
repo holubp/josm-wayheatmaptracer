@@ -34,6 +34,7 @@ public final class TileHeatmapSampler {
     public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
     private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png%s";
+    private static final List<String> BASE_AGGREGATE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 
     /**
      * Prepares source-tile mosaics for a selected polyline using normal configured search width.
@@ -143,6 +144,59 @@ public final class TileHeatmapSampler {
             REFERENCE_RASTER_SCALE,
             mosaic.virtualRasterScale(),
             config.intensitySamplingMode()
+        );
+    }
+
+    /**
+     * Samples cross-section profiles from a fused intensity field across multiple source color mosaics.
+     *
+     * @param mosaics prepared source-tile mosaics for the same zoom and source geometry
+     * @param zoom source tile zoom to aggregate
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @return sampled profiles from the aggregated color intensity field
+     */
+    public List<RenderedHeatmapSampler.CrossSectionProfile> sampleAggregatedProfiles(
+        TileMosaicSet mosaics,
+        int zoom,
+        List<EastNorth> sourcePolyline
+    ) {
+        List<TileMosaic> colorMosaics = mosaics.mosaics().values().stream()
+            .filter(mosaic -> mosaic.zoom() == zoom)
+            .filter(mosaic -> BASE_AGGREGATE_COLORS.contains(mosaic.color()))
+            .toList();
+        if (colorMosaics.isEmpty()) {
+            return List.of();
+        }
+        TileMosaic reference = colorMosaics.get(0);
+        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, reference.parameters().sampleStepMeters()));
+        if (dense.size() < 2) {
+            return List.of();
+        }
+        List<Point2D.Double> local = new ArrayList<>(dense.size());
+        for (EastNorth point : dense) {
+            Point2D.Double world = toWorldPixel(point, reference.zoom());
+            local.add(new Point2D.Double(
+                (world.x - reference.originWorldPxX()) * reference.virtualRasterScale(),
+                (world.y - reference.originWorldPxY()) * reference.virtualRasterScale()
+            ));
+        }
+        Map<String, BufferedImage> images = new LinkedHashMap<>();
+        for (TileMosaic mosaic : colorMosaics) {
+            if (sameSamplingFrame(reference, mosaic)) {
+                images.put(mosaic.color(), mosaic.image());
+            }
+        }
+        int referenceHalfWidthPx = Math.max(1, (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceStepPx = Math.max(1, (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        PluginLog.verbose("Sampling %d fixed-tile aggregate cross-sections at z%d from colors %s.",
+            dense.size(), zoom, images.keySet());
+        return new RenderedHeatmapSampler().sampleProfilesOnAggregatedScaledRasters(
+            images,
+            local,
+            referenceHalfWidthPx,
+            referenceStepPx,
+            REFERENCE_RASTER_SCALE,
+            reference.virtualRasterScale()
         );
     }
 
@@ -437,6 +491,15 @@ public final class TileHeatmapSampler {
 
     private String key(String color, int zoom) {
         return color + "@" + zoom;
+    }
+
+    private boolean sameSamplingFrame(TileMosaic reference, TileMosaic mosaic) {
+        return reference.zoom() == mosaic.zoom()
+            && Math.abs(reference.originWorldPxX() - mosaic.originWorldPxX()) < 1e-9
+            && Math.abs(reference.originWorldPxY() - mosaic.originWorldPxY()) < 1e-9
+            && reference.image().getWidth() == mosaic.image().getWidth()
+            && reference.image().getHeight() == mosaic.image().getHeight()
+            && Math.abs(reference.virtualRasterScale() - mosaic.virtualRasterScale()) < 1e-9;
     }
 
     private String sha256(byte[] bytes) {

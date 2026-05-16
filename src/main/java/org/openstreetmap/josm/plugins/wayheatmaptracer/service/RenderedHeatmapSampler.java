@@ -185,6 +185,52 @@ public final class RenderedHeatmapSampler {
         return profiles;
     }
 
+    List<CrossSectionProfile> sampleProfilesOnAggregatedScaledRasters(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale
+    ) {
+        if (denseScreenPolyline.size() < 2 || rastersByColor.isEmpty()) {
+            return Collections.emptyList();
+        }
+        double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
+            ? sourceCoordinateScale
+            : 1.0;
+        List<CrossSectionProfile> profiles = new ArrayList<>();
+        for (int i = 0; i < denseScreenPolyline.size(); i++) {
+            Point2D.Double current = denseScreenPolyline.get(i);
+            Point2D.Double prevScreen = denseScreenPolyline.get(Math.max(0, i - 1));
+            Point2D.Double nextScreen = denseScreenPolyline.get(Math.min(denseScreenPolyline.size() - 1, i + 1));
+            Point2D.Double tangent = PolylineMath.normalize(nextScreen.x - prevScreen.x, nextScreen.y - prevScreen.y);
+            Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
+
+            List<CrossSectionPeak> samples = new ArrayList<>();
+            List<OffsetSample> offsets = new ArrayList<>();
+            int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
+            int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
+            boolean anchorWithinRaster = rastersByColor.values().stream()
+                .allMatch(raster -> isInsideRaster(raster, current.x / coordinateScale, current.y / coordinateScale));
+            for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
+                double x = current.x + normal.x * offset;
+                double y = current.y + normal.y * offset;
+                double intensity = aggregatedIntensityAt(rastersByColor, x / coordinateScale, y / coordinateScale);
+                offsets.add(new OffsetSample(offset, intensity));
+            }
+            samples.addAll(extractBrightBands(offsets));
+            if (samples.isEmpty()) {
+                double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
+                samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
+            }
+            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal, samples, anchorWithinRaster));
+        }
+        PluginLog.verbose("Aggregated heatmap sampling produced %d profiles from color sources %s.",
+            profiles.size(), rastersByColor.keySet());
+        return profiles;
+    }
+
     private Point2D.Double toRasterScreen(EastNorth point, MapView mapView) {
         Point2D point2D = mapView.getPoint2D(point);
         return new Point2D.Double(point2D.getX() * RASTER_SCALE, point2D.getY() * RASTER_SCALE);
@@ -600,6 +646,28 @@ public final class RenderedHeatmapSampler {
         return colorIntensity(red, green, blue, colorMode);
     }
 
+    private double aggregatedIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
+        double weighted = 0.0;
+        double totalWeight = 0.0;
+        for (java.util.Map.Entry<String, BufferedImage> entry : rastersByColor.entrySet()) {
+            double weight = aggregateSourceWeight(entry.getKey());
+            weighted += weight * intensityAt(entry.getValue(), x, y, entry.getKey(), IntensitySamplingMode.COLOR_MAPPING);
+            totalWeight += weight;
+        }
+        return totalWeight <= 0.0 ? 0.0 : Math.min(1.0, Math.max(0.0, weighted / totalWeight));
+    }
+
+    private double aggregateSourceWeight(String color) {
+        return switch (color == null ? "" : color.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "bluered" -> 0.30;
+            case "gray" -> 0.22;
+            case "purple" -> 0.20;
+            case "hot" -> 0.16;
+            case "blue" -> 0.12;
+            default -> 0.10;
+        };
+    }
+
     private boolean isInsideRaster(BufferedImage image, double x, double y) {
         int sx = (int) Math.round(x);
         int sy = (int) Math.round(y);
@@ -687,7 +755,8 @@ public final class RenderedHeatmapSampler {
         String mode = colorMode == null ? "" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
         return "bluered-combined".equals(mode)
             || "gray-combined".equals(mode)
-            || "multi-combined".equals(mode);
+            || "multi-combined".equals(mode)
+            || "all-colors-combined".equals(mode);
     }
 
     static List<IntensityComponent> intensityComponents(String colorMode) {
@@ -711,6 +780,13 @@ public final class RenderedHeatmapSampler {
                 new IntensityComponent("gray-corridor", 0.20),
                 new IntensityComponent("hot-corridor", 0.15),
                 new IntensityComponent("blue", 0.10)
+            );
+            case "all-colors-combined" -> List.of(
+                new IntensityComponent("source:bluered", 0.30),
+                new IntensityComponent("source:gray", 0.22),
+                new IntensityComponent("source:purple", 0.20),
+                new IntensityComponent("source:hot", 0.16),
+                new IntensityComponent("source:blue", 0.12)
             );
             default -> List.of(new IntensityComponent(mode.isBlank() ? "hot" : mode, 1.0));
         };

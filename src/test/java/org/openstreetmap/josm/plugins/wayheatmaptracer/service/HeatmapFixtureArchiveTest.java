@@ -11,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -199,6 +201,42 @@ class HeatmapFixtureArchiveTest {
         assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
             .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 1.0 && peak.intensity() > 0.35)),
             "The fused intensity field should preserve the warm center before ridge tracking");
+    }
+
+    @Test
+    void allColorAggregateProfilesFuseSourceColorIntensitiesBeforeRidgeExtraction() {
+        BufferedImage hot = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage bluered = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage purple = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage gray = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage blue = new BufferedImage(80, 40, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < hot.getWidth(); x++) {
+            hot.setRGB(x, 20, 0xFFFFFFFF);
+            bluered.setRGB(x, 20, 0xFFFF466E);
+            purple.setRGB(x, 20, 0xFFCD78F5);
+            gray.setRGB(x, 20, 0xFFD741A0);
+            blue.setRGB(x, 26, 0xFF326EFF);
+        }
+        Map<String, BufferedImage> sources = new LinkedHashMap<>();
+        sources.put("hot", hot);
+        sources.put("blue", blue);
+        sources.put("bluered", bluered);
+        sources.put("purple", purple);
+        sources.put("gray", gray);
+
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = sampler.sampleProfilesOnAggregatedScaledRasters(
+            sources,
+            List.of(new Point2D.Double(10, 20), new Point2D.Double(70, 20)),
+            12,
+            2,
+            1.0,
+            1.0
+        );
+
+        assertTrue(profiles.stream().allMatch(profile -> profile.peaks().stream()
+            .anyMatch(peak -> Math.abs(peak.offsetPx()) <= 1.0 && peak.intensity() > 0.35)),
+            "Aggregating all source colors should keep the common center before ridge tracking");
     }
 
     @Test
