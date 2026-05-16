@@ -4,9 +4,12 @@ import java.awt.Graphics2D;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -22,6 +25,7 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
@@ -168,6 +172,19 @@ public final class TileHeatmapSampler {
             return List.of();
         }
         TileMosaic reference = colorMosaics.get(0);
+        Map<String, BufferedImage> images = new LinkedHashMap<>();
+        for (TileMosaic mosaic : colorMosaics) {
+            if (sameSamplingFrame(reference, mosaic)) {
+                images.put(mosaic.color(), mosaic.image());
+            }
+        }
+        List<String> missing = BASE_AGGREGATE_COLORS.stream()
+            .filter(color -> !images.containsKey(color))
+            .toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException("All-color heatmap aggregation requires matching source mosaics for "
+                + BASE_AGGREGATE_COLORS + "; missing " + missing + ".");
+        }
         List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, reference.parameters().sampleStepMeters()));
         if (dense.size() < 2) {
             return List.of();
@@ -179,12 +196,6 @@ public final class TileHeatmapSampler {
                 (world.x - reference.originWorldPxX()) * reference.virtualRasterScale(),
                 (world.y - reference.originWorldPxY()) * reference.virtualRasterScale()
             ));
-        }
-        Map<String, BufferedImage> images = new LinkedHashMap<>();
-        for (TileMosaic mosaic : colorMosaics) {
-            if (sameSamplingFrame(reference, mosaic)) {
-                images.put(mosaic.color(), mosaic.image());
-            }
         }
         int referenceHalfWidthPx = Math.max(1, (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1, (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
@@ -332,6 +343,11 @@ public final class TileHeatmapSampler {
     private FetchedTile fetchTile(ManagedHeatmapConfig config, String color, int zoom, int x, int y) {
         String activity = safe(config.activity(), "all");
         String tileColor = safe(color, "hot");
+        File cacheFile = managedTileCacheFile(config, activity, tileColor, zoom, x, y);
+        FetchedTile cached = readCachedTile(cacheFile, tileColor, zoom, x, y);
+        if (cached != null) {
+            return cached;
+        }
         String url = HEATMAP_URL.formatted(activity, tileColor, zoom, x, y, "");
         try {
             HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
@@ -349,10 +365,64 @@ public final class TileHeatmapSampler {
                 return failedTile(tileColor, zoom, x, y, response, "decode-error", "tile was not an image");
             }
             TileRecord record = classifyTile(tileColor, zoom, x, y, response, bytes, image);
+            if (record.usable()) {
+                writeCachedTile(cacheFile, bytes, tileColor, zoom, x, y);
+            }
             return new FetchedTile(image, record);
         } catch (IOException ex) {
             return failedTile(tileColor, zoom, x, y, -1, "network-error", ex.getMessage());
         }
+    }
+
+    private FetchedTile readCachedTile(File cacheFile, String color, int zoom, int x, int y) {
+        if (!cacheFile.isFile()) {
+            return null;
+        }
+        Path path = cacheFile.toPath();
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (image == null) {
+                Files.deleteIfExists(path);
+                return null;
+            }
+            TileRecord record = classifyTile(color, zoom, x, y, 200, bytes, image);
+            if (!record.usable()) {
+                Files.deleteIfExists(path);
+                return null;
+            }
+            return new FetchedTile(image, record);
+        } catch (IOException ex) {
+            return null;
+        }
+    }
+
+    private void writeCachedTile(File cacheFile, byte[] bytes, String color, int zoom, int x, int y) {
+        try {
+            File parent = cacheFile.getParentFile();
+            if (parent != null) {
+                parent.mkdirs();
+            }
+            Files.write(cacheFile.toPath(), bytes);
+        } catch (IOException ex) {
+            PluginLog.verbose("Unable to cache managed heatmap tile %s z%d x=%d y=%d: %s",
+                color, zoom, x, y, ex.getMessage());
+        }
+    }
+
+    static File managedTileCacheFile(ManagedHeatmapConfig config, String activity, String color, int zoom, int x, int y) {
+        File root = new File(PluginDirectories.ensurePluginDataDirectory(), "managed-source-tile-cache");
+        File generation = new File(root, "cache-" + Math.max(0L, config.cacheBuster()));
+        File activityDir = new File(generation, safePathPart(activity, "all"));
+        File colorDir = new File(activityDir, safePathPart(color, "hot"));
+        return new File(new File(new File(colorDir, Integer.toString(zoom)), Integer.toString(x)), y + ".png");
+    }
+
+    private static String safePathPart(String value, String fallback) {
+        String normalized = value == null || value.isBlank()
+            ? fallback
+            : value.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.replaceAll("[^a-z0-9_.-]", "_");
     }
 
     private FetchedTile failedTile(String color, int zoom, int x, int y, int response, String quality, String error) {
