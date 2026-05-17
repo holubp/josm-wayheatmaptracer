@@ -43,7 +43,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -170,20 +169,8 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void updateAggregateIntensityLayer(AlignmentResult result, ManagedHeatmapConfig config) {
-        if (!config.showAggregateIntensityLayer() || !config.aggregateAllColorSchemes() || result.tileMosaics() == null) {
+        if (!config.showAggregateIntensityLayer() || !config.hasManagedAccessValues()) {
             AggregateIntensityLayer.removeExisting();
-            return;
-        }
-        try {
-            TileHeatmapSampler.AggregateVisualization visualization = new TileHeatmapSampler()
-                .buildAggregatedIntensityVisualization(result.tileMosaics(), result.tileMosaics().inferenceZoom());
-            AggregateIntensityLayer.show(visualization);
-            PluginLog.verbose("Aggregate intensity layer updated from source tile z%d colors=%s.",
-                visualization == null ? -1 : visualization.zoom(),
-                visualization == null ? List.of() : visualization.colors());
-        } catch (RuntimeException ex) {
-            Logging.warn("WayHeatmapTracer could not build aggregate intensity layer: " + ex.getMessage());
-            PluginLog.verbose("Aggregate intensity layer generation failed: %s", ex.toString());
         }
     }
 

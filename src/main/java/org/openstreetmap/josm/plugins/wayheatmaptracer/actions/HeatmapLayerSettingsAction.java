@@ -9,7 +9,9 @@ import javax.swing.JOptionPane;
 
 import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.gui.MainApplication;
+import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedImageryService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.HeatmapSettingsDialog;
@@ -47,6 +49,7 @@ public class HeatmapLayerSettingsAction extends JosmAction {
 
         ManagedHeatmapConfig config = PluginPreferences.load();
         if (!config.hasManagedAccessValues()) {
+            AggregateIntensityLayer.applyOrUpdateManagedLayer(config, null);
             PluginLog.verbose("Saved settings without managed access values; using manual layer selection and regex fallback only.");
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),
@@ -58,7 +61,8 @@ public class HeatmapLayerSettingsAction extends JosmAction {
         }
 
         try {
-            ManagedImageryService.applyOrUpdateManagedLayer();
+            ImageryLayer managedLayer = ManagedImageryService.applyOrUpdateManagedLayer();
+            AggregateIntensityLayer.applyOrUpdateManagedLayer(config, managedLayer);
             PluginLog.verbose("Managed heatmap layer refreshed.");
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),

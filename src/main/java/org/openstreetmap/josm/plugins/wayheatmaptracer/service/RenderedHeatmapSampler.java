@@ -649,12 +649,13 @@ public final class RenderedHeatmapSampler {
     static double aggregatedSourceIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
         double weighted = 0.0;
         double totalWeight = 0.0;
+        double power = 2.0;
         for (java.util.Map.Entry<String, BufferedImage> entry : rastersByColor.entrySet()) {
             double weight = aggregateSourceWeight(entry.getKey());
-            weighted += weight * sourceIntensityAt(entry.getValue(), x, y, entry.getKey());
+            weighted += weight * Math.pow(sourceIntensityAt(entry.getValue(), x, y, entry.getKey()), power);
             totalWeight += weight;
         }
-        return totalWeight <= 0.0 ? 0.0 : Math.min(1.0, Math.max(0.0, weighted / totalWeight));
+        return totalWeight <= 0.0 ? 0.0 : Math.min(1.0, Math.max(0.0, Math.pow(weighted / totalWeight, 1.0 / power)));
     }
 
     static double aggregateSourceWeight(String color) {
@@ -668,7 +669,7 @@ public final class RenderedHeatmapSampler {
         };
     }
 
-    static BufferedImage renderAggregatedIntensityRaster(java.util.Map<String, BufferedImage> rastersByColor) {
+    public static BufferedImage renderAggregatedIntensityRaster(java.util.Map<String, BufferedImage> rastersByColor) {
         if (rastersByColor.isEmpty()) {
             return new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
         }
@@ -688,7 +689,7 @@ public final class RenderedHeatmapSampler {
         if (value <= 0.005) {
             return 0;
         }
-        int alpha = Math.max(20, Math.min(235, (int) Math.round(235 * Math.pow(value, 0.72))));
+        int alpha = Math.max(20, Math.min(255, (int) Math.round(255 * Math.pow(value, 0.72))));
         return (alpha << 24) | 0x00FFFFFF;
     }
 

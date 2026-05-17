@@ -138,6 +138,7 @@ class TileHeatmapSamplerTest {
         assertTrue(alpha(center) > alpha(visualization.image().getRGB(0, 0)));
         assertEquals(0x00FFFFFF, center & 0x00FFFFFF);
         assertTrue(visualization.metadataJson().contains("\"palette\":\"white-on-transparent\""));
+        assertTrue(visualization.metadataJson().contains("\"aggregatePowerMean\":2.0"));
     }
 
     private TileHeatmapSampler.TileMosaic mosaic(
