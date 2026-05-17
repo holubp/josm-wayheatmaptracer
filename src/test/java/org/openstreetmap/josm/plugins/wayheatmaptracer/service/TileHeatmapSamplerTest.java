@@ -134,8 +134,10 @@ class TileHeatmapSamplerTest {
 
         assertEquals(List.of("bluered", "purple", "hot", "gray", "blue").size(), visualization.colors().size());
         assertTrue(visualization.colors().containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
-        assertTrue(alpha(visualization.image().getRGB(256, 256)) > alpha(visualization.image().getRGB(0, 0)));
-        assertTrue(visualization.metadataJson().contains("\"type\":\"all-colors-combined-visualization\""));
+        int center = visualization.image().getRGB(256, 256);
+        assertTrue(alpha(center) > alpha(visualization.image().getRGB(0, 0)));
+        assertEquals(0x00FFFFFF, center & 0x00FFFFFF);
+        assertTrue(visualization.metadataJson().contains("\"palette\":\"white-on-transparent\""));
     }
 
     private TileHeatmapSampler.TileMosaic mosaic(

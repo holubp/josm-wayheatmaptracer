@@ -688,27 +688,8 @@ public final class RenderedHeatmapSampler {
         if (value <= 0.005) {
             return 0;
         }
-        int alpha = Math.max(36, Math.min(230, (int) Math.round(32 + 210 * Math.pow(value, 0.72))));
-        int red;
-        int green;
-        int blue;
-        if (value < 0.35) {
-            double t = value / 0.35;
-            red = (int) Math.round(20 * t);
-            green = (int) Math.round(40 + 180 * t);
-            blue = (int) Math.round(120 + 135 * t);
-        } else if (value < 0.72) {
-            double t = (value - 0.35) / 0.37;
-            red = (int) Math.round(20 + 235 * t);
-            green = (int) Math.round(220 * (1.0 - t));
-            blue = (int) Math.round(255 * (1.0 - t) + 40 * t);
-        } else {
-            double t = (value - 0.72) / 0.28;
-            red = 255;
-            green = (int) Math.round(40 + 215 * t);
-            blue = (int) Math.round(40 + 215 * t);
-        }
-        return (alpha << 24) | (red << 16) | (green << 8) | blue;
+        int alpha = Math.max(20, Math.min(235, (int) Math.round(235 * Math.pow(value, 0.72))));
+        return (alpha << 24) | 0x00FFFFFF;
     }
 
     private static double sourceIntensityAt(BufferedImage image, double x, double y, String colorMode) {

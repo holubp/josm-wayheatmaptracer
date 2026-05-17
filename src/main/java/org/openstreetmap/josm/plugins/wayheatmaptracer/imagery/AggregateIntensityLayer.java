@@ -23,7 +23,7 @@ import org.openstreetmap.josm.gui.layer.Layer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
 /**
- * Non-editable map layer that visualizes the fused all-color managed heatmap intensity field.
+ * Non-editable white-on-transparent map layer that visualizes the fused all-color managed heatmap intensity field.
  */
 public final class AggregateIntensityLayer extends Layer {
     public static final String LAYER_NAME = "WayHeatmapTracer aggregate intensity";

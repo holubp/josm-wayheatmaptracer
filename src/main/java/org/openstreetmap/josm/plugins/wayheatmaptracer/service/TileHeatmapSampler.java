@@ -615,7 +615,7 @@ public final class TileHeatmapSampler {
     private String aggregateMetadataJson(TileMosaic reference, Map<String, BufferedImage> images) {
         StringBuilder builder = new StringBuilder("{\"type\":\"all-colors-combined-visualization\",")
             .append("\"zoom\":").append(reference.zoom())
-            .append(",\"palette\":\"aggregate-debug-blue-red-white\",")
+            .append(",\"palette\":\"white-on-transparent\",")
             .append("\"colors\":[");
         int index = 0;
         for (String color : images.keySet()) {
