@@ -616,7 +616,7 @@ public final class TileHeatmapSampler {
         StringBuilder builder = new StringBuilder("{\"type\":\"all-colors-combined-visualization\",")
             .append("\"zoom\":").append(reference.zoom())
             .append(",\"palette\":\"white-on-transparent\",")
-            .append("\"aggregatePowerMean\":2.0,")
+            .append("\"aggregatePowerMean\":").append(RenderedHeatmapSampler.AGGREGATE_POWER_MEAN).append(',')
             .append("\"colors\":[");
         int index = 0;
         for (String color : images.keySet()) {

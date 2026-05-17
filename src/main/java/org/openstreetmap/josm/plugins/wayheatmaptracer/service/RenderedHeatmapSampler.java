@@ -27,6 +27,7 @@ public final class RenderedHeatmapSampler {
      * Oversampling factor used when rendering JOSM imagery layers into an off-screen raster.
      */
     public static final double RASTER_SCALE = 6.0;
+    public static final double AGGREGATE_POWER_MEAN = 1.25;
     private static final double[] LIGHT_BINOMIAL_KERNEL = {1.0, 2.0, 1.0};
     private static final double[] STANDARD_BINOMIAL_KERNEL = {1.0, 4.0, 6.0, 4.0, 1.0};
 
@@ -649,7 +650,7 @@ public final class RenderedHeatmapSampler {
     static double aggregatedSourceIntensityAt(java.util.Map<String, BufferedImage> rastersByColor, double x, double y) {
         double weighted = 0.0;
         double totalWeight = 0.0;
-        double power = 2.0;
+        double power = AGGREGATE_POWER_MEAN;
         for (java.util.Map.Entry<String, BufferedImage> entry : rastersByColor.entrySet()) {
             double weight = aggregateSourceWeight(entry.getKey());
             weighted += weight * Math.pow(sourceIntensityAt(entry.getValue(), x, y, entry.getKey()), power);

@@ -138,7 +138,32 @@ class TileHeatmapSamplerTest {
         assertTrue(alpha(center) > alpha(visualization.image().getRGB(0, 0)));
         assertEquals(0x00FFFFFF, center & 0x00FFFFFF);
         assertTrue(visualization.metadataJson().contains("\"palette\":\"white-on-transparent\""));
-        assertTrue(visualization.metadataJson().contains("\"aggregatePowerMean\":2.0"));
+        assertTrue(visualization.metadataJson().contains("\"aggregatePowerMean\":1.25"));
+    }
+
+    @Test
+    void aggregateIntensityRewardsCrossColorConsensusMoreThanSingleSourceSignal() {
+        Map<String, BufferedImage> consensus = Map.of(
+            "hot", pointImage(0xFFFFFFFF),
+            "blue", pointImage(0xFF006CFF),
+            "bluered", pointImage(0xFFFF1028),
+            "purple", pointImage(0xFFE4BBFF),
+            "gray", pointImage(0xFFFF55DD)
+        );
+        Map<String, BufferedImage> singleSource = Map.of(
+            "hot", pointImage(0xFFFFFFFF),
+            "blue", pointImage(0),
+            "bluered", pointImage(0),
+            "purple", pointImage(0),
+            "gray", pointImage(0)
+        );
+
+        double consensusCenter = RenderedHeatmapSampler.aggregatedSourceIntensityAt(consensus, 1, 1);
+        double singleCenter = RenderedHeatmapSampler.aggregatedSourceIntensityAt(singleSource, 1, 1);
+        double background = RenderedHeatmapSampler.aggregatedSourceIntensityAt(consensus, 0, 0);
+
+        assertTrue(consensusCenter > singleCenter + 0.25);
+        assertTrue(consensusCenter > background + 0.50);
     }
 
     private TileHeatmapSampler.TileMosaic mosaic(
@@ -154,6 +179,12 @@ class TileHeatmapSamplerTest {
         }
         return new TileHeatmapSampler.TileMosaic(color, 15, 0.0, 0.0, image, List.of(), Map.of(),
             parameters, false, 1.0);
+    }
+
+    private BufferedImage pointImage(int centerArgb) {
+        BufferedImage image = new BufferedImage(3, 3, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(1, 1, centerArgb);
+        return image;
     }
 
     private int alpha(int argb) {

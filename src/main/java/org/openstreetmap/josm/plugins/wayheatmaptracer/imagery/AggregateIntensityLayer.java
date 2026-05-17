@@ -204,9 +204,14 @@ public class AggregateIntensityLayer extends Layer {
         for (String color : SOURCE_COLORS) {
             BufferedImage image = fetchSourceTile(color, key);
             if (image == null) {
-                return null;
+                PluginLog.verbose("Aggregate intensity visualization skipped color '%s' for z%d x=%d y=%d.",
+                    color, ZOOM, key.x(), key.y());
+                continue;
             }
             sources.put(color, image);
+        }
+        if (sources.isEmpty()) {
+            return null;
         }
         return RenderedHeatmapSampler.renderAggregatedIntensityRaster(sources);
     }
@@ -312,7 +317,7 @@ public class AggregateIntensityLayer extends Layer {
         List<Layer> layers = MainApplication.getLayerManager().getLayers();
         int managedIndex = layers.indexOf(managedLayer);
         if (managedIndex >= 0) {
-            MainApplication.getLayerManager().moveLayer(aggregate, Math.max(0, managedIndex));
+            MainApplication.getLayerManager().moveLayer(aggregate, Math.min(layers.size() - 1, managedIndex + 1));
         }
     }
 
