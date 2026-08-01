@@ -34,6 +34,11 @@ public final class LastSlideDebugBundle {
     private final String candidateMetricsCsv;
     private final String profilePeaksCsv;
     private final String paletteSamplesCsv;
+    private final String profileIntensityCsv;
+    private final String corridorBandsCsv;
+    private final String corridorTracksCsv;
+    private final String optimizerCostsCsv;
+    private final String parallelContextJson;
     private final String tileManifestJson;
     private final String aggregateMetadataJson;
     private final Map<String, BufferedImage> tileImages;
@@ -49,6 +54,11 @@ public final class LastSlideDebugBundle {
         String candidateMetricsCsv,
         String profilePeaksCsv,
         String paletteSamplesCsv,
+        String profileIntensityCsv,
+        String corridorBandsCsv,
+        String corridorTracksCsv,
+        String optimizerCostsCsv,
+        String parallelContextJson,
         String tileManifestJson,
         String aggregateMetadataJson,
         Map<String, BufferedImage> tileImages
@@ -63,6 +73,11 @@ public final class LastSlideDebugBundle {
         this.candidateMetricsCsv = candidateMetricsCsv;
         this.profilePeaksCsv = profilePeaksCsv;
         this.paletteSamplesCsv = paletteSamplesCsv;
+        this.profileIntensityCsv = profileIntensityCsv;
+        this.corridorBandsCsv = corridorBandsCsv;
+        this.corridorTracksCsv = corridorTracksCsv;
+        this.optimizerCostsCsv = optimizerCostsCsv;
+        this.parallelContextJson = parallelContextJson;
         this.tileManifestJson = tileManifestJson;
         this.aggregateMetadataJson = aggregateMetadataJson;
         this.tileImages = tileImages;
@@ -140,6 +155,11 @@ public final class LastSlideDebugBundle {
             result.diagnostics().candidateMetricsCsv(),
             result.diagnostics().profilePeaksCsv(),
             result.diagnostics().paletteSamplesCsv(),
+            result.diagnostics().profileIntensityCsv(),
+            result.diagnostics().corridorBandsCsv(),
+            result.diagnostics().corridorTracksCsv(),
+            result.diagnostics().optimizerCostsCsv(),
+            result.diagnostics().parallelContextJson(),
             tileManifest,
             aggregateMetadata,
             images
@@ -166,6 +186,11 @@ public final class LastSlideDebugBundle {
             writeText(zip, "candidate-metrics.csv", candidateMetricsCsv);
             writeText(zip, "profile-peaks.csv", profilePeaksCsv);
             writeText(zip, "palette-samples.csv", paletteSamplesCsv);
+            writeText(zip, "profile-intensity.csv", profileIntensityCsv);
+            writeText(zip, "corridor-bands.csv", corridorBandsCsv);
+            writeText(zip, "corridor-tracks.csv", corridorTracksCsv);
+            writeText(zip, "optimizer-costs.csv", optimizerCostsCsv);
+            writeText(zip, "parallel-context.json", parallelContextJson);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
@@ -180,9 +205,9 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":1,"
+            + "\"formatVersion\":2,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 

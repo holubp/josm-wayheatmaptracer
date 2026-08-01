@@ -12,6 +12,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param manualLayerName explicit non-managed imagery layer name
  * @param layerRegex fallback regular expression for locating a manual heatmap layer
  * @param alignmentMode default apply mode for alignment commands
+ * @param trackerMode ridge-tracking implementation used for candidate detection
  * @param verbose whether verbose slide logging is enabled
  * @param debug whether debug overlay rendering is enabled
  * @param multiColorDetection whether alternative detector mappings are shown for the selected color source
@@ -43,6 +44,7 @@ public record ManagedHeatmapConfig(
     String manualLayerName,
     String layerRegex,
     AlignmentMode alignmentMode,
+    TrackerMode trackerMode,
     boolean verbose,
     boolean debug,
     boolean multiColorDetection,
@@ -90,6 +92,7 @@ public record ManagedHeatmapConfig(
             manualLayerName,
             layerRegex,
             mode == null ? alignmentMode : mode,
+            trackerMode,
             verbose,
             debug,
             multiColorDetection,
@@ -138,6 +141,7 @@ public record ManagedHeatmapConfig(
             + "\"manualLayerName\":\"" + escape(manualLayerName) + "\","
             + "\"layerRegex\":\"" + escape(layerRegex) + "\","
             + "\"alignmentMode\":\"" + alignmentMode.name() + "\","
+            + "\"trackerMode\":\"" + (trackerMode == null ? TrackerMode.LEGACY_V02 : trackerMode).name() + "\","
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','

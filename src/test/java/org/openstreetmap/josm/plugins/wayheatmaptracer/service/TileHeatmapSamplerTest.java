@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 
 class TileHeatmapSamplerTest {
     @BeforeAll
@@ -203,6 +204,7 @@ class TileHeatmapSamplerTest {
             "",
             ".*",
             AlignmentMode.MOVE_EXISTING_NODES,
+            TrackerMode.LEGACY_V02,
             false,
             false,
             false,

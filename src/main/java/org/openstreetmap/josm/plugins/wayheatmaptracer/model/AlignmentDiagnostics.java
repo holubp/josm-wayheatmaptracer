@@ -18,6 +18,11 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param candidateMetricsCsv candidate metrics CSV
  * @param profilePeaksCsv per-profile peak CSV
  * @param paletteSamplesCsv palette sample CSV
+ * @param profileIntensityCsv complete scalar profile CSV for corridor-aware tracking
+ * @param corridorBandsCsv extracted corridor-band CSV
+ * @param corridorTracksCsv longitudinal association and grouping CSV
+ * @param optimizerCostsCsv decomposed corridor optimizer CSV
+ * @param parallelContextJson redacted nearby-way assignment context JSON
  */
 public record AlignmentDiagnostics(
     String layerName,
@@ -34,8 +39,55 @@ public record AlignmentDiagnostics(
     String profileDiagnosticsJson,
     String candidateMetricsCsv,
     String profilePeaksCsv,
-    String paletteSamplesCsv
+    String paletteSamplesCsv,
+    String profileIntensityCsv,
+    String corridorBandsCsv,
+    String corridorTracksCsv,
+    String optimizerCostsCsv,
+    String parallelContextJson
 ) {
+    /**
+     * Creates diagnostics using the legacy CSV payload set.
+     *
+     * @param layerName imagery layer used for sampling
+     * @param candidateCount generated candidate count
+     * @param movableNodeCount movable node count
+     * @param rasterCaptureMillis raster capture time
+     * @param ridgeTrackingMillis ridge tracking time
+     * @param optimizationMillis geometry optimization time
+     * @param configJson redacted configuration JSON
+     * @param selectionJson selection metadata JSON
+     * @param samplingJson sampling metadata JSON
+     * @param colorSchemesJson sampled color metadata JSON
+     * @param candidatesJson candidate JSON
+     * @param profileDiagnosticsJson profile JSON
+     * @param candidateMetricsCsv candidate metrics CSV
+     * @param profilePeaksCsv legacy peak CSV
+     * @param paletteSamplesCsv palette CSV
+     */
+    public AlignmentDiagnostics(
+        String layerName,
+        int candidateCount,
+        int movableNodeCount,
+        long rasterCaptureMillis,
+        long ridgeTrackingMillis,
+        long optimizationMillis,
+        String configJson,
+        String selectionJson,
+        String samplingJson,
+        String colorSchemesJson,
+        String candidatesJson,
+        String profileDiagnosticsJson,
+        String candidateMetricsCsv,
+        String profilePeaksCsv,
+        String paletteSamplesCsv
+    ) {
+        this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
+            optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
+            profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
+            "", "", "", "", "{}");
+    }
+
     /**
      * Creates diagnostics without CSV calibration payloads.
      *
@@ -67,7 +119,8 @@ public record AlignmentDiagnostics(
         String profileDiagnosticsJson
     ) {
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis, optimizationMillis,
-            configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson, "", "", "");
+            configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson,
+            "", "", "", "", "", "", "", "{}");
     }
 
     /**
@@ -88,7 +141,8 @@ public record AlignmentDiagnostics(
             + "\"sampling\":" + samplingJson + ','
             + "\"colorSchemes\":" + colorSchemesJson + ','
             + "\"candidates\":" + candidatesJson + ','
-            + "\"profiles\":" + profileDiagnosticsJson
+            + "\"profiles\":" + profileDiagnosticsJson + ','
+            + "\"parallelContext\":" + (parallelContextJson == null || parallelContextJson.isBlank() ? "{}" : parallelContextJson)
             + "}";
     }
 

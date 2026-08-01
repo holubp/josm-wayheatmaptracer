@@ -16,6 +16,10 @@ import java.util.List;
  * @param longitudinalStability smoothness/stability score along the way
  * @param signalToNoise estimated signal-to-noise ratio
  * @param ambiguity estimated multimodal ambiguity
+ * @param signalExistenceConfidence confidence that a persistent heat corridor exists
+ * @param localizationConfidence confidence that the selected corridor center is localized
+ * @param optimizerCost normalized corridor-aware objective cost
+ * @param inCorridorFraction fraction of optimized points inside selected corridor shoulders
  * @param consensusModes detector modes fused before candidate extraction
  */
 public record CandidateEvidence(
@@ -30,15 +34,55 @@ public record CandidateEvidence(
     double longitudinalStability,
     double signalToNoise,
     double ambiguity,
+    double signalExistenceConfidence,
+    double localizationConfidence,
+    double optimizerCost,
+    double inCorridorFraction,
     List<String> consensusModes
 ) {
+    /**
+     * Creates legacy evidence without corridor-aware confidence fields.
+     *
+     * @param detectorMode detector or palette mapping
+     * @param totalProfiles total sampled profiles
+     * @param supportedProfiles supported profiles
+     * @param emptyProfiles empty profiles
+     * @param maxConsecutiveEmptyProfiles longest empty run
+     * @param totalIntensity total selected intensity
+     * @param meanIntensity mean selected intensity
+     * @param meanGradientStrength mean gradient strength
+     * @param longitudinalStability longitudinal stability
+     * @param signalToNoise signal-to-noise estimate
+     * @param ambiguity multimodal ambiguity
+     * @param consensusModes fused detector modes
+     */
+    public CandidateEvidence(
+        String detectorMode,
+        int totalProfiles,
+        int supportedProfiles,
+        int emptyProfiles,
+        int maxConsecutiveEmptyProfiles,
+        double totalIntensity,
+        double meanIntensity,
+        double meanGradientStrength,
+        double longitudinalStability,
+        double signalToNoise,
+        double ambiguity,
+        List<String> consensusModes
+    ) {
+        this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
+            totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
+            ambiguity, 0.0, 0.0, 0.0, 0.0, consensusModes);
+    }
+
     /**
      * Creates an evidence object representing a candidate with no signal.
      *
      * @return empty candidate evidence
      */
     public static CandidateEvidence empty() {
-        return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
+        return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, List.of());
     }
 
     /**
@@ -78,6 +122,10 @@ public record CandidateEvidence(
             longitudinalStability,
             signalToNoise,
             ambiguity,
+            signalExistenceConfidence,
+            localizationConfidence,
+            optimizerCost,
+            inCorridorFraction,
             consensusModes
         );
     }
@@ -101,6 +149,10 @@ public record CandidateEvidence(
             longitudinalStability,
             signalToNoise,
             ambiguity,
+            signalExistenceConfidence,
+            localizationConfidence,
+            optimizerCost,
+            inCorridorFraction,
             modes == null ? List.of() : List.copyOf(modes)
         );
     }
@@ -124,6 +176,10 @@ public record CandidateEvidence(
             + "\"longitudinalStability\":" + longitudinalStability + ','
             + "\"signalToNoise\":" + signalToNoise + ','
             + "\"ambiguity\":" + ambiguity + ','
+            + "\"signalExistenceConfidence\":" + signalExistenceConfidence + ','
+            + "\"localizationConfidence\":" + localizationConfidence + ','
+            + "\"optimizerCost\":" + optimizerCost + ','
+            + "\"inCorridorFraction\":" + inCorridorFraction + ','
             + "\"consensusModes\":" + stringArray(consensusModes)
             + "}";
     }

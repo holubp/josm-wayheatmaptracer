@@ -68,6 +68,40 @@ class HeatmapFixtureArchiveTest {
     }
 
     @Test
+    void corridorAwareTrackerConsumesCompleteProfilesFromRealSparseAndDenseTiles() throws Exception {
+        Path archive = Path.of(ARCHIVE_NAME).toAbsolutePath().normalize();
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            BufferedImage sparse = readImage(zip, SPARSE_TILE);
+            BufferedImage dense = readImage(zip, DENSE_TILE);
+            RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+            CorridorAwareTracker tracker = new CorridorAwareTracker();
+
+            List<RenderedHeatmapSampler.CrossSectionProfile> sparseProfiles = sampler.sampleProfilesOnScaledRaster(
+                sparse, horizontalProfiles(289), 28, 2, "hot", 1.0, 1.0, IntensitySamplingMode.COLOR_MAPPING);
+            List<RenderedHeatmapSampler.CrossSectionProfile> denseProfiles = sampler.sampleProfilesOnScaledRaster(
+                dense, horizontalProfiles(288), 28, 2, "hot", 1.0, 1.0, IntensitySamplingMode.COLOR_MAPPING);
+
+            assertTrue(sparseProfiles.stream().allMatch(profile -> !profile.intensitySamples().isEmpty()));
+            assertTrue(denseProfiles.stream().allMatch(profile -> !profile.intensitySamples().isEmpty()));
+            assertTrue(sparseProfiles.stream().anyMatch(profile -> profile.intensitySamples().stream()
+                .anyMatch(sample -> sample.nativeIntensity() > 0.0)));
+            assertTrue(denseProfiles.stream().anyMatch(profile -> profile.intensitySamples().stream()
+                .anyMatch(sample -> sample.nativeIntensity() > 0.0)));
+            assertNotNull(tracker.trackDetailed(sparseProfiles, 1.0));
+            assertTrue(!tracker.track(denseProfiles, 1.0).isEmpty(),
+                "Dense real fixture should produce a corridor-aware candidate");
+        }
+    }
+
+    private List<Point2D.Double> horizontalProfiles(double y) {
+        List<Point2D.Double> points = new ArrayList<>();
+        for (int x = 32; x <= 480; x += 8) {
+            points.add(new Point2D.Double(x, y));
+        }
+        return points;
+    }
+
+    @Test
     void intensityPrefersBrightCenterOverSaturatedShoulder() {
         double white = intensity(0xFFFFFFFF);
         double yellow = intensity(0xFFFFFF00);

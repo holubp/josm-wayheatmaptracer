@@ -76,7 +76,7 @@ class FixtureRegressionTest {
             ComparisonResult best = null;
             for (String color : COLORS) {
                 TileMosaic mosaic = mosaics.computeIfAbsent(color, c -> fixture.loadMosaic(c));
-                ComparisonResult result = traceAndCompare(changed, color, mosaic, sampler, tracker);
+                ComparisonResult result = traceAndCompare(changed, color, mosaic, sampler, tracker::track);
                 if (best == null || result.betterThan(best)) {
                     best = result;
                 }
@@ -95,6 +95,40 @@ class FixtureRegressionTest {
             "Changed-way fixture regression exceeded tolerance:\n" + String.join("\n", failures));
     }
 
+    @Test
+    void corridorAwareTrackerStaysInsideRealWorldAcceptanceEnvelope() throws Exception {
+        Path archive = Path.of(FIXTURE_ARCHIVE).toAbsolutePath().normalize();
+        FixtureBundle fixture = FixtureBundle.load(archive);
+        List<ChangedWaySegment> regressionCases = fixture.changedWays().stream()
+            .filter(this::isMaterialRegressionCase)
+            .toList();
+        Map<String, TileMosaic> mosaics = new HashMap<>();
+        RenderedHeatmapSampler sampler = new RenderedHeatmapSampler();
+        CorridorAwareTracker tracker = new CorridorAwareTracker();
+        List<String> failures = new ArrayList<>();
+
+        for (ChangedWaySegment changed : regressionCases) {
+            ComparisonResult best = null;
+            for (String color : COLORS) {
+                TileMosaic mosaic = mosaics.computeIfAbsent(color, fixture::loadMosaic);
+                ComparisonResult result = traceAndCompare(changed, color, mosaic, sampler,
+                    profiles -> tracker.track(profiles, 1.0));
+                if (best == null || result.betterThan(best)) {
+                    best = result;
+                }
+            }
+            assertTrue(best != null, "No corridor comparison result produced for way " + changed.wayId());
+            if (best.outsideEnvelope()
+                || best.meanDistancePx() > MAX_MEAN_DISTANCE_PX
+                || best.hausdorffDistancePx() > MAX_HAUSDORFF_DISTANCE_PX) {
+                failures.add(best.describe());
+            }
+        }
+
+        assertTrue(failures.isEmpty(),
+            "Corridor-aware fixture regression exceeded tolerance:\n" + String.join("\n", failures));
+    }
+
     private boolean isMaterialRegressionCase(ChangedWaySegment changed) {
         double maxDisplacement = segmentMaxDisplacement(changed);
         return changed.beforeSegment().size() >= 3
@@ -109,7 +143,7 @@ class FixtureRegressionTest {
         String color,
         TileMosaic mosaic,
         RenderedHeatmapSampler sampler,
-        RidgeTracker tracker
+        ProfileTracker tracker
     ) {
         List<Point2D.Double> beforePixels = mosaic.toLocalPixels(changed.beforeSegment());
         List<Point2D.Double> afterPixels = mosaic.toLocalPixels(changed.afterSegment());
@@ -145,6 +179,11 @@ class FixtureRegressionTest {
             tracedPolyline,
             changed.afterSegment()
         );
+    }
+
+    @FunctionalInterface
+    private interface ProfileTracker {
+        List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles);
     }
 
     private CurveMetrics compareCurves(List<Point2D.Double> left, List<Point2D.Double> right, double spacingPx) {

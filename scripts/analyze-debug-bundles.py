@@ -7,6 +7,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import statistics
 import sys
 import zipfile
@@ -45,6 +46,8 @@ def rating_score(value: str) -> int | None:
 def bundle_rows(bundle: Path) -> list[dict[str, object]]:
     """Merge candidate metrics and optional human ratings for one debug bundle."""
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
+    optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
+    grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
     try:
         ratings = json.loads(read_zip_text(bundle, "candidate-ratings.json") or "{}")
     except json.JSONDecodeError:
@@ -52,6 +55,8 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for row in metrics:
         candidate_id = row.get("candidate_id", "")
+        detector, track_id = candidate_track_identity(candidate_id)
+        optimizer_summary = optimizer.get((detector, track_id), {})
         rating = ratings.get(candidate_id, {})
         numeric = rating_score(str(rating.get("rating", ""))) if isinstance(rating, dict) else None
         negative = ",".join(rating.get("negativeFeatures", [])) if isinstance(rating, dict) else ""
@@ -71,6 +76,10 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "longitudinal_stability": float_or_none(row.get("longitudinal_stability")),
             "signal_to_noise": float_or_none(row.get("signal_to_noise")),
             "ambiguity": float_or_none(row.get("ambiguity")),
+            "signal_existence_confidence": float_or_none(row.get("signal_existence_confidence")),
+            "localization_confidence": float_or_none(row.get("localization_confidence")),
+            "optimizer_cost": float_or_none(row.get("optimizer_cost")),
+            "in_corridor_fraction": float_or_none(row.get("in_corridor_fraction")),
             "p95_delta_px": float_or_none(row.get("p95_delta_px")),
             "p95_acceleration_px": float_or_none(row.get("p95_acceleration_px")),
             "high_frequency_p95_px": float_or_none(row.get("high_frequency_p95_px")),
@@ -80,8 +89,68 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "sub_source_wiggle_ratio": float_or_none(row.get("sub_source_wiggle_ratio")),
             "sign_flips": float_or_none(row.get("sign_flips")),
             "edge_ratio": float_or_none(row.get("edge_ratio")),
+            "corridor_center_wander_px": optimizer_summary.get("center_wander_px"),
+            "corridor_lateral_acceleration": optimizer_summary.get("lateral_acceleration"),
+            "in_core_or_shoulder_fraction": optimizer_summary.get("in_corridor_fraction"),
+            "in_core_fraction": optimizer_summary.get("in_core_fraction"),
+            "endpoint_approach_angle_degrees": optimizer_summary.get("endpoint_approach_angle_degrees"),
+            "grouping_decision": grouping.get((detector, track_id), ""),
         })
     return rows
+
+
+def candidate_track_identity(candidate_id: str) -> tuple[str, str]:
+    """Return detector and corridor track ids from a namespaced candidate id."""
+    parts = (candidate_id or "").split("/")
+    return (parts[0], parts[1]) if len(parts) >= 2 else ("", candidate_id or "")
+
+
+def optimizer_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, float]]:
+    """Calculate stable geometry metrics from optional corridor optimizer diagnostics."""
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        grouped[(row.get("detector", ""), row.get("track_id", ""))].append(row)
+    summaries: dict[tuple[str, str], dict[str, float]] = {}
+    for key, group in grouped.items():
+        ordered = sorted(group, key=lambda row: int(row.get("profile_index", "0") or 0))
+        offsets = compact_numbers(float_or_none(row.get("chosen_offset_px")) for row in ordered)
+        spacings = compact_numbers(float_or_none(row.get("profile_spacing_px")) for row in ordered)
+        accelerations = compact_numbers(float_or_none(row.get("acceleration_cost")) for row in ordered)
+        in_core = [str(row.get("inside_core", "")).lower() == "true" for row in ordered]
+        contained = [str(row.get("inside_corridor", "")).lower() == "true" for row in ordered]
+        if not offsets:
+            continue
+        linear = []
+        if len(offsets) == 1:
+            linear = offsets
+        else:
+            linear = [offsets[0] + (offsets[-1] - offsets[0]) * index / (len(offsets) - 1)
+                      for index in range(len(offsets))]
+        residuals = [offset - baseline for offset, baseline in zip(offsets, linear)]
+        start_spacing = spacings[1] if len(spacings) > 1 else (spacings[0] if spacings else 1.0)
+        end_spacing = spacings[-1] if spacings else 1.0
+        endpoint_slope = max(
+            abs(offsets[1] - offsets[0]) / max(1e-9, start_spacing) if len(offsets) > 1 else 0.0,
+            abs(offsets[-1] - offsets[-2]) / max(1e-9, end_spacing) if len(offsets) > 1 else 0.0,
+        )
+        summaries[key] = {
+            "center_wander_px": statistics.pstdev(residuals) if len(residuals) > 1 else 0.0,
+            "lateral_acceleration": statistics.mean(accelerations) if accelerations else 0.0,
+            "in_corridor_fraction": sum(contained) / len(contained) if contained else 0.0,
+            "in_core_fraction": sum(in_core) / len(in_core) if in_core else 0.0,
+            "endpoint_approach_angle_degrees": math.degrees(math.atan(endpoint_slope)),
+        }
+    return summaries
+
+
+def track_grouping(rows: list[dict[str, str]]) -> dict[tuple[str, str], str]:
+    """Return parent/child grouping labels from optional corridor track diagnostics."""
+    result: dict[tuple[str, str], str] = {}
+    for row in rows:
+        track_id = row.get("track_id", "")
+        if track_id:
+            result[(row.get("detector", ""), track_id)] = row.get("grouping_decision", "")
+    return result
 
 
 def float_or_none(value: str | None) -> float | None:
@@ -106,6 +175,13 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         source_rough = compact_numbers(row["high_frequency_p95_source_px"] for row in group)
         gradient = compact_numbers(row["mean_gradient_strength"] for row in group)
         stability = compact_numbers(row["longitudinal_stability"] for row in group)
+        existence = compact_numbers(row["signal_existence_confidence"] for row in group)
+        localization = compact_numbers(row["localization_confidence"] for row in group)
+        in_corridor = compact_numbers(row["in_corridor_fraction"] for row in group)
+        wander = compact_numbers(row["corridor_center_wander_px"] for row in group)
+        acceleration = compact_numbers(row["corridor_lateral_acceleration"] for row in group)
+        endpoint_angle = compact_numbers(row["endpoint_approach_angle_degrees"] for row in group)
+        core_fraction = compact_numbers(row["in_core_fraction"] for row in group)
         summary.append({
             "visible_color": visible_color,
             "intensity_source": intensity_source,
@@ -116,6 +192,13 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "median_snr": statistics.median(snr) if snr else None,
             "median_gradient": statistics.median(gradient) if gradient else None,
             "median_longitudinal_stability": statistics.median(stability) if stability else None,
+            "median_signal_existence_confidence": statistics.median(existence) if existence else None,
+            "median_localization_confidence": statistics.median(localization) if localization else None,
+            "median_in_corridor_fraction": statistics.median(in_corridor) if in_corridor else None,
+            "median_corridor_center_wander_px": statistics.median(wander) if wander else None,
+            "median_corridor_lateral_acceleration": statistics.median(acceleration) if acceleration else None,
+            "median_endpoint_approach_angle_degrees": statistics.median(endpoint_angle) if endpoint_angle else None,
+            "median_in_core_fraction": statistics.median(core_fraction) if core_fraction else None,
             "median_p95_delta_px": statistics.median(rough) if rough else None,
             "median_high_frequency_p95_source_px": statistics.median(source_rough) if source_rough else None,
             "negative_features": negative_counts(group),
@@ -151,6 +234,13 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "median_snr",
         "median_gradient",
         "median_longitudinal_stability",
+        "median_signal_existence_confidence",
+        "median_localization_confidence",
+        "median_in_corridor_fraction",
+        "median_corridor_center_wander_px",
+        "median_corridor_lateral_acceleration",
+        "median_endpoint_approach_angle_degrees",
+        "median_in_core_fraction",
         "median_p95_delta_px",
         "median_high_frequency_p95_source_px",
         "negative_features",

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Set;
+import org.openstreetmap.josm.data.osm.DataSet;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.junit.jupiter.api.BeforeAll;
@@ -24,6 +25,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -41,6 +43,33 @@ class AlignmentServiceTest {
 
         assertTrue(AlignmentService.isSketchLikeSelection(sketch));
         assertEquals(AlignmentMode.MOVE_EXISTING_NODES, AlignmentService.effectiveAlignmentMode(sketch, config));
+    }
+
+    @Test
+    void detectsCandidateCrossingConnectedWayBeforeSharedJunction() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchEnd = nodeAt(8, 10);
+        dataSet.addPrimitive(start);
+        dataSet.addPrimitive(junction);
+        dataSet.addPrimitive(branchEnd);
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate crossing = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 5), new EastNorth(12, 5), new EastNorth(10, 0)));
+        CenterlineCandidate correct = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
+
+        AlignmentService service = new AlignmentService();
+        assertTrue(service.crossesConnectedWayBeforeJunction(crossing, selected));
+        assertFalse(service.crossesConnectedWayBeforeJunction(correct, selected));
     }
 
     @Test
@@ -275,6 +304,10 @@ class AlignmentServiceTest {
         return new SelectionContext(way, 0, nodeCount - 1, nodes, Set.of(nodes.get(0), nodes.get(nodeCount - 1)));
     }
 
+    private Node nodeAt(double east, double north) {
+        return new Node(ProjectionRegistry.getProjection().eastNorth2latlon(new EastNorth(east, north)));
+    }
+
     private SelectionContext segmentSelection(int nodeCount, int start, int end) {
         Way way = new Way();
         List<Node> nodes = java.util.stream.IntStream.range(0, nodeCount)
@@ -306,6 +339,7 @@ class AlignmentServiceTest {
             "",
             ".*",
             mode,
+            TrackerMode.LEGACY_V02,
             false,
             false,
             alternativeDetectors,

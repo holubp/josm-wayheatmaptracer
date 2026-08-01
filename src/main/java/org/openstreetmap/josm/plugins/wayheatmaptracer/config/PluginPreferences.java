@@ -6,6 +6,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.IPreferences;
 
@@ -23,6 +24,7 @@ public final class PluginPreferences {
     private static final String MANUAL_LAYER = PREFIX + "manualLayerName";
     private static final String REGEX = PREFIX + "layerRegex";
     private static final String ALIGNMENT_MODE = PREFIX + "alignmentMode";
+    private static final String TRACKER_MODE = PREFIX + "trackerMode";
     private static final String VERBOSE = PREFIX + "verbose";
     private static final String DEBUG = PREFIX + "debug";
     private static final String MULTI_COLOR_DETECTION = PREFIX + "multiColorDetection";
@@ -67,13 +69,14 @@ public final class PluginPreferences {
             pref.get(MANUAL_LAYER, ""),
             pref.get(REGEX, ".*(Heatmap|Strava).*"),
             AlignmentMode.fromPreference(pref.get(ALIGNMENT_MODE, AlignmentMode.MOVE_EXISTING_NODES.name())),
+            TrackerMode.fromPreference(pref.get(TRACKER_MODE, TrackerMode.LEGACY_V02.name())),
             pref.getBoolean(VERBOSE, false),
             pref.getBoolean(DEBUG, false),
             pref.getBoolean(MULTI_COLOR_DETECTION, true),
             pref.getBoolean(AGGREGATE_ALL_COLOR_SCHEMES, pref.getBoolean(MULTI_COLOR_DETECTION, true)),
             pref.getBoolean(SHOW_AGGREGATE_INTENSITY_LAYER, false),
             pref.getBoolean(CANDIDATE_RATING_ENABLED, false),
-            pref.getBoolean(PARALLEL_WAY_AWARENESS, true),
+            pref.getBoolean(PARALLEL_WAY_AWARENESS, false),
             pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
             pref.getBoolean(ADJUST_JUNCTION_NODES, false),
             pref.getBoolean(SIMPLIFY_ENABLED, false),
@@ -107,6 +110,9 @@ public final class PluginPreferences {
         Config.getPref().put(MANUAL_LAYER, nullToEmpty(config.manualLayerName()));
         Config.getPref().put(REGEX, nullToEmpty(config.layerRegex()));
         Config.getPref().put(ALIGNMENT_MODE, config.alignmentMode().name());
+        Config.getPref().put(TRACKER_MODE, (config.trackerMode() == null
+            ? TrackerMode.LEGACY_V02
+            : config.trackerMode()).name());
         Config.getPref().putBoolean(VERBOSE, config.verbose());
         Config.getPref().putBoolean(DEBUG, config.debug());
         Config.getPref().putBoolean(MULTI_COLOR_DETECTION, config.multiColorDetection());
@@ -178,6 +184,7 @@ public final class PluginPreferences {
             "",
             ".*(Heatmap|Strava).*",
             AlignmentMode.MOVE_EXISTING_NODES,
+            TrackerMode.LEGACY_V02,
             false,
             false,
             true,

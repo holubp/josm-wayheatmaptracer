@@ -12,8 +12,8 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Ratings and detector metrics are exported.
   - Add automation that consumes many rated bundles and proposes calibrated detector weights/priors.
 - More advanced longitudinal reasoning:
-  - Current longitudinal stability and topology cleanup are not a full trace identity model.
-  - Add explicit reasoning that a ridge remains the same physical trace over distance when parallel traces compete.
+  - The experimental corridor-aware tracker now keeps elementary longitudinal strand identities and parent/child corridor hypotheses.
+  - Continue calibration on rated real bundles before considering it a replacement for the legacy tracker.
 - Adaptive smoothing and blur experiments:
   - Current filtering uses signal-gated B3/B5 one-dimensional profile filters.
   - Evaluate multi-blur or multi-filter ensembles where stable maxima across levels are trusted.

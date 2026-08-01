@@ -156,22 +156,28 @@ public final class RenderedHeatmapSampler {
 
             List<CrossSectionPeak> samples = new ArrayList<>();
             List<OffsetSample> offsets = new ArrayList<>();
+            List<Boolean> insideRaster = new ArrayList<>();
             int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
             int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
             boolean anchorWithinRaster = isInsideRaster(raster, baseScreen.x / coordinateScale, baseScreen.y / coordinateScale);
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = baseScreen.x + normal.x * offset;
                 double y = baseScreen.y + normal.y * offset;
-                double intensity = intensityAt(raster, x / coordinateScale, y / coordinateScale, colorMode, intensitySamplingMode);
+                double sourceX = x / coordinateScale;
+                double sourceY = y / coordinateScale;
+                double intensity = intensityAt(raster, sourceX, sourceY, colorMode, intensitySamplingMode);
                 offsets.add(new OffsetSample(offset, intensity));
+                insideRaster.add(isInsideRaster(raster, sourceX, sourceY));
             }
-            samples.addAll(extractBrightBands(offsets));
+            ProfileFilters filters = profileFilters(offsets);
+            samples.addAll(extractBrightBands(offsets, filters));
             if (samples.isEmpty()) {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
 
-            profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal, samples, anchorWithinRaster));
+            profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal,
+                samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
         }
         if (!profiles.isEmpty()) {
             int maxPeaks = profiles.stream().mapToInt(profile -> profile.peaks().size()).max().orElse(0);
@@ -210,6 +216,7 @@ public final class RenderedHeatmapSampler {
 
             List<CrossSectionPeak> samples = new ArrayList<>();
             List<OffsetSample> offsets = new ArrayList<>();
+            List<Boolean> insideRaster = new ArrayList<>();
             int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
             int scaledStep = Math.max(1, (int) Math.round(stepPx * rasterScale));
             boolean anchorWithinRaster = rastersByColor.values().stream()
@@ -217,15 +224,20 @@ public final class RenderedHeatmapSampler {
             for (int offset = -scaledHalfWidth; offset <= scaledHalfWidth; offset += scaledStep) {
                 double x = current.x + normal.x * offset;
                 double y = current.y + normal.y * offset;
-                double intensity = aggregatedSourceIntensityAt(rastersByColor, x / coordinateScale, y / coordinateScale);
+                double sourceX = x / coordinateScale;
+                double sourceY = y / coordinateScale;
+                double intensity = aggregatedSourceIntensityAt(rastersByColor, sourceX, sourceY);
                 offsets.add(new OffsetSample(offset, intensity));
+                insideRaster.add(rastersByColor.values().stream().allMatch(raster -> isInsideRaster(raster, sourceX, sourceY)));
             }
-            samples.addAll(extractBrightBands(offsets));
+            ProfileFilters filters = profileFilters(offsets);
+            samples.addAll(extractBrightBands(offsets, filters));
             if (samples.isEmpty()) {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
-            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal, samples, anchorWithinRaster));
+            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal,
+                samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
         }
         PluginLog.verbose("Aggregated heatmap sampling produced %d profiles from color sources %s.",
             profiles.size(), rastersByColor.keySet());
@@ -238,7 +250,10 @@ public final class RenderedHeatmapSampler {
     }
 
     private List<CrossSectionPeak> extractBrightBands(List<OffsetSample> offsets) {
-        ProfileFilters filters = profileFilters(offsets);
+        return extractBrightBands(offsets, profileFilters(offsets));
+    }
+
+    private List<CrossSectionPeak> extractBrightBands(List<OffsetSample> offsets, ProfileFilters filters) {
         List<OffsetSample> smoothed = filters.standardFiltered();
         ProfileStats stats = profileStats(smoothed);
         if (stats.maxIntensity() <= 0.14 || stats.maxProminence() <= 0.025) {
@@ -287,6 +302,20 @@ public final class RenderedHeatmapSampler {
         }
         List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
         return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
+    }
+
+    private List<IntensitySample> intensitySamples(ProfileFilters filters, List<Boolean> insideRaster) {
+        List<IntensitySample> samples = new ArrayList<>(filters.raw().size());
+        for (int i = 0; i < filters.raw().size(); i++) {
+            samples.add(new IntensitySample(
+                filters.raw().get(i).offsetPx(),
+                filters.raw().get(i).intensity(),
+                filters.lightFiltered().get(i).intensity(),
+                filters.standardFiltered().get(i).intensity(),
+                i < insideRaster.size() && insideRaster.get(i)
+            ));
+        }
+        return List.copyOf(samples);
     }
 
     private List<CrossSectionPeak> addPairedShoulderCenters(List<CrossSectionPeak> peaks, double sampleStep) {
@@ -950,17 +979,71 @@ public final class RenderedHeatmapSampler {
      * @param normalScreen unit normal used for offset sampling
      * @param peaks candidate heatmap ridges found on this cross-section
      * @param anchorWithinRaster whether the source point was inside the sampled raster
+     * @param intensitySamples complete raw and filtered cross-section evidence
      */
     public record CrossSectionProfile(
         EastNorth anchor,
         Point2D.Double anchorScreen,
         Point2D.Double normalScreen,
         List<CrossSectionPeak> peaks,
-        boolean anchorWithinRaster
+        boolean anchorWithinRaster,
+        List<IntensitySample> intensitySamples
     ) {
-        public CrossSectionProfile(EastNorth anchor, Point2D.Double anchorScreen, Point2D.Double normalScreen, List<CrossSectionPeak> peaks) {
-            this(anchor, anchorScreen, normalScreen, peaks, true);
+        /** Makes peak and full-profile evidence immutable. */
+        public CrossSectionProfile {
+            peaks = List.copyOf(peaks);
+            intensitySamples = List.copyOf(intensitySamples);
         }
+
+        /**
+         * Creates an in-raster profile without retained full-profile samples.
+         *
+         * @param anchor profile anchor
+         * @param anchorScreen raster-space anchor
+         * @param normalScreen raster-space unit normal
+         * @param peaks extracted legacy ridge peaks
+         */
+        public CrossSectionProfile(EastNorth anchor, Point2D.Double anchorScreen,
+            Point2D.Double normalScreen, List<CrossSectionPeak> peaks) {
+            this(anchor, anchorScreen, normalScreen, peaks, true, List.of());
+        }
+
+        /**
+         * Creates a profile without retained full-profile samples.
+         *
+         * @param anchor profile anchor
+         * @param anchorScreen raster-space anchor
+         * @param normalScreen raster-space unit normal
+         * @param peaks extracted legacy ridge peaks
+         * @param anchorWithinRaster whether the anchor lies in the raster
+         */
+        public CrossSectionProfile(
+            EastNorth anchor,
+            Point2D.Double anchorScreen,
+            Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks,
+            boolean anchorWithinRaster
+        ) {
+            this(anchor, anchorScreen, normalScreen, peaks, anchorWithinRaster, List.of());
+        }
+    }
+
+    /**
+     * Scalar heatmap evidence retained at one lateral cross-section offset.
+     *
+     * @param offsetPx lateral offset in sampled-raster pixels
+     * @param nativeIntensity palette-mapped intensity before filtering
+     * @param lightFilteredIntensity intensity after the B3 filter
+     * @param standardFilteredIntensity intensity after the B5 filter
+     * @param insideRaster whether this sample was inside every required source raster
+     */
+    public record IntensitySample(
+        double offsetPx,
+        double nativeIntensity,
+        double lightFilteredIntensity,
+        double standardFilteredIntensity,
+        boolean insideRaster
+    ) {
     }
 
     /**

@@ -24,6 +24,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieParser;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieValues;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.tools.GBC;
 
 /**
@@ -41,6 +42,7 @@ public final class HeatmapSettingsDialog {
     private final JComboBox<String> color = new JComboBox<>(COLORS);
     private final JComboBox<String> manualLayer = new JComboBox<>();
     private final JComboBox<AlignmentMode> alignmentMode = new JComboBox<>(AlignmentMode.values());
+    private final JComboBox<TrackerMode> trackerMode = new JComboBox<>(TrackerMode.values());
     private final JComboBox<InferenceMode> inferenceMode = new JComboBox<>(InferenceMode.values());
     private final JComboBox<IntensitySamplingMode> intensitySamplingMode = new JComboBox<>(IntensitySamplingMode.values());
     private final JTextField regex = new JTextField(36);
@@ -80,6 +82,7 @@ public final class HeatmapSettingsDialog {
         color.setSelectedItem(config.color());
         regex.setText(config.layerRegex());
         alignmentMode.setSelectedItem(config.alignmentMode());
+        trackerMode.setSelectedItem(config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode());
         inferenceMode.setSelectedItem(config.inferenceMode());
         intensitySamplingMode.setSelectedItem(config.intensitySamplingMode());
         verbose.setSelected(config.verbose());
@@ -141,6 +144,8 @@ public final class HeatmapSettingsDialog {
         panel.add(regex, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Alignment mode")), GBC.std());
         panel.add(alignmentMode, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Ridge tracker")), GBC.std());
+        panel.add(trackerMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Inference mode")), GBC.std());
         panel.add(inferenceMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Intensity source")), GBC.std());
@@ -191,6 +196,7 @@ public final class HeatmapSettingsDialog {
             manualLayer.getSelectedItem() == null ? "" : manualLayer.getSelectedItem().toString(),
             regex.getText().trim(),
             (AlignmentMode) alignmentMode.getSelectedItem(),
+            (TrackerMode) trackerMode.getSelectedItem(),
             verbose.isSelected(),
             debug.isSelected(),
             multiColorDetection.isSelected(),
