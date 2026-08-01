@@ -18,6 +18,7 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 
 /**
@@ -38,9 +39,11 @@ public final class LastSlideDebugBundle {
     private final String corridorBandsCsv;
     private final String corridorTracksCsv;
     private final String optimizerCostsCsv;
+    private final String scaleSpaceCsv;
     private final String parallelContextJson;
     private final String tileManifestJson;
     private final String aggregateMetadataJson;
+    private final String detectorAttemptsJson;
     private final Map<String, BufferedImage> tileImages;
 
     private LastSlideDebugBundle(
@@ -58,9 +61,11 @@ public final class LastSlideDebugBundle {
         String corridorBandsCsv,
         String corridorTracksCsv,
         String optimizerCostsCsv,
+        String scaleSpaceCsv,
         String parallelContextJson,
         String tileManifestJson,
         String aggregateMetadataJson,
+        String detectorAttemptsJson,
         Map<String, BufferedImage> tileImages
     ) {
         this.diagnosticsJson = diagnosticsJson;
@@ -77,9 +82,11 @@ public final class LastSlideDebugBundle {
         this.corridorBandsCsv = corridorBandsCsv;
         this.corridorTracksCsv = corridorTracksCsv;
         this.optimizerCostsCsv = optimizerCostsCsv;
+        this.scaleSpaceCsv = scaleSpaceCsv;
         this.parallelContextJson = parallelContextJson;
         this.tileManifestJson = tileManifestJson;
         this.aggregateMetadataJson = aggregateMetadataJson;
+        this.detectorAttemptsJson = detectorAttemptsJson;
         this.tileImages = tileImages;
     }
 
@@ -139,9 +146,11 @@ public final class LastSlideDebugBundle {
             images.put("rendered-layer-capture.png", result.capturedHeatmap());
         }
         String ratingsJson = ratingsJson(candidateRatings);
+        String attemptsJson = detectorAttemptsJson(result);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
             + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
+            + "\"detectorAttempts\":" + attemptsJson + ','
             + "\"candidateRatings\":" + ratingsJson
             + "}";
         return new LastSlideDebugBundle(
@@ -159,9 +168,11 @@ public final class LastSlideDebugBundle {
             result.diagnostics().corridorBandsCsv(),
             result.diagnostics().corridorTracksCsv(),
             result.diagnostics().optimizerCostsCsv(),
+            result.diagnostics().scaleSpaceCsv(),
             result.diagnostics().parallelContextJson(),
             tileManifest,
             aggregateMetadata,
+            attemptsJson,
             images
         );
     }
@@ -190,9 +201,11 @@ public final class LastSlideDebugBundle {
             writeText(zip, "corridor-bands.csv", corridorBandsCsv);
             writeText(zip, "corridor-tracks.csv", corridorTracksCsv);
             writeText(zip, "optimizer-costs.csv", optimizerCostsCsv);
+            writeText(zip, "scale-space.csv", scaleSpaceCsv);
             writeText(zip, "parallel-context.json", parallelContextJson);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
+            writeText(zip, "detector-attempts.json", detectorAttemptsJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 ImageIO.write(entry.getValue(), "png", zip);
@@ -205,10 +218,36 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":2,"
+            + "\"formatVersion\":3,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
+    }
+
+    private static String detectorAttemptsJson(AlignmentResult result) {
+        StringBuilder builder = new StringBuilder("[");
+        for (int i = 0; i < result.detectorAttempts().size(); i++) {
+            DetectorAttempt attempt = result.detectorAttempts().get(i);
+            if (i > 0) {
+                builder.append(',');
+            }
+            builder.append('{')
+                .append("\"sourcePalette\":\"").append(escape(attempt.sourcePalette())).append("\",")
+                .append("\"mappingName\":\"").append(escape(attempt.mappingName())).append("\",")
+                .append("\"trackerMode\":\"").append(attempt.trackerMode()).append("\",")
+                .append("\"status\":\"").append(attempt.status()).append("\",")
+                .append("\"reasonCode\":\"").append(escape(attempt.reasonCode())).append("\",")
+                .append("\"reason\":\"").append(escape(attempt.reason())).append("\",")
+                .append("\"candidateIds\":[");
+            for (int idIndex = 0; idIndex < attempt.candidateIds().size(); idIndex++) {
+                if (idIndex > 0) {
+                    builder.append(',');
+                }
+                builder.append('"').append(escape(attempt.candidateIds().get(idIndex))).append('"');
+            }
+            builder.append("]}");
+        }
+        return builder.append(']').toString();
     }
 
     private static String ratingsJson(Map<String, CandidateRating> candidateRatings) {

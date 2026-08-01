@@ -16,8 +16,10 @@ import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.DefaultListCellRenderer;
 
 import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.data.UndoRedoHandler;
@@ -242,11 +244,26 @@ public class AlignWayAction extends JosmAction {
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
         comboBox.setSelectedItem(initial);
+        comboBox.setRenderer(new DefaultListCellRenderer() {
+            @Override
+            public java.awt.Component getListCellRendererComponent(
+                JList<?> list, Object value, int index, boolean selected, boolean focused
+            ) {
+                super.getListCellRendererComponent(list, value, index, selected, focused);
+                if (value instanceof CenterlineCandidate candidate) {
+                    setText(candidate.displayName() + (candidateApplicable(result, candidate)
+                        ? " - applicable" : " - inspection only"));
+                }
+                return this;
+            }
+        });
         JComboBox<String> ratingBox = new JComboBox<>(RATING_VALUES);
         JCheckBox offTheLine = new JCheckBox(tr("off-the-line"));
         JCheckBox jumping = new JCheckBox(tr("jumping"));
         JCheckBox unnecessaryKinks = new JCheckBox(tr("unnecessary kinks"));
         JCheckBox badJunctionShapes = new JCheckBox(tr("bad junction shapes"));
+        JButton apply = new JButton(tr("Apply"));
+        apply.setEnabled(candidateApplicable(result, initial));
 
         JPanel panel = buildSummaryPanel(
             current[0].result(),
@@ -267,6 +284,7 @@ public class AlignWayAction extends JosmAction {
             try {
                 current[0] = buildPreviewSelection(dataSet, result, selected, config);
                 overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+                apply.setEnabled(candidateApplicable(result, selected));
                 loadingRating[0] = true;
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
@@ -287,7 +305,6 @@ public class AlignWayAction extends JosmAction {
         unnecessaryKinks.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
         badJunctionShapes.addActionListener(event -> saveCandidateRating(current[0], candidateRatings, ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes));
 
-        JButton apply = new JButton(tr("Apply"));
         JButton cancel = new JButton(tr("Cancel"));
         JPanel buttons = new JPanel();
         buttons.add(apply);
@@ -345,11 +362,23 @@ public class AlignWayAction extends JosmAction {
         ManagedHeatmapConfig config
     ) {
         SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, base.selection(), base.sourcePolyline());
+        if (!candidateApplicable(base, candidate)) {
+            List<EastNorth> geometry = candidate.eastNorthPoints().size() >= 2
+                ? candidate.eastNorthPoints() : base.sourcePolyline();
+            AlignmentResult diagnostic = new AlignmentResult(base.selection(), base.capturedHeatmap(),
+                base.candidates(), base.sourcePolyline(), geometry, List.of(), base.diagnostics(), base.tileMosaics(),
+                base.detectorAttempts(), base.applicableCandidates());
+            return new PreviewSelection(candidate, diagnostic);
+        }
         AlignmentResult candidateResult = alignmentService.applyCandidate(base, candidate, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(candidateResult.previewPolyline(), dataSet);
         }
         return new PreviewSelection(candidate, candidateResult);
+    }
+
+    private boolean candidateApplicable(AlignmentResult result, CenterlineCandidate candidate) {
+        return result.applicableCandidates().stream().anyMatch(value -> value.id().equals(candidate.id()));
     }
 
     private void loadCandidateRating(

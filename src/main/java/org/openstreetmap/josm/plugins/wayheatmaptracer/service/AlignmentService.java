@@ -26,6 +26,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostic
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
@@ -135,12 +137,15 @@ public final class AlignmentService {
             config, colorModes, effectiveSampling);
         List<CenterlineCandidate> contextualCandidates = applyParallelContext(
             detection.candidates(), selection, sourcePolyline, config);
-        List<CenterlineCandidate> candidates = annotateCandidateSafety(
-            contextualCandidates, effectiveSampling, selection, config);
+        List<CenterlineCandidate> candidates = rankCandidates(annotateCandidateSafety(
+            contextualCandidates, effectiveSampling, selection, config), config, effectiveSampling);
+        List<DetectorAttempt> attempts = detectorAttempts(colorModes, candidates, config,
+            detection.outsideRasterProfiles(), false);
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
-            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
-                config, colorModes, detection, effectiveSampling, List.of(), t0, t1, t2, t2, capture);
+            AlignmentResult partial = withDetectorState(partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
+                config, colorModes, detection, effectiveSampling, candidates, t0, t1, t2, t2, capture),
+                candidates, attempts, List.of());
             throw new AlignmentFailureException(
                 "Selected segment is not fully inside the captured heatmap raster ("
                     + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
@@ -148,21 +153,18 @@ public final class AlignmentService {
                 partial);
         }
         if (candidates.isEmpty()) {
-            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
-                config, colorModes, detection, effectiveSampling, List.of(), t0, t1, t2, t2, capture);
-            throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap.", partial);
+            AlignmentResult partial = withDetectorState(partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
+                config, colorModes, detection, effectiveSampling, List.of(), t0, t1, t2, t2, capture),
+                List.of(), attempts, List.of());
+            throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled heatmap. "
+                + attemptSummary(attempts), partial);
         }
         List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
-        if (applicableCandidates.isEmpty()) {
-            AlignmentResult partial = partialResult(selection, raster, sourcePolyline, imageryLayer, mapView,
-                config, colorModes, detection, effectiveSampling, candidates, t0, t1, t2, t2, capture);
-            throw new AlignmentFailureException("Detected ridge candidates were too weak or structurally unsafe for safe alignment in the sampled corridor.", partial);
-        }
-        candidates = applicableCandidates;
-
-        CenterlineCandidate primary = candidates.get(0);
-        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, null);
-        List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
+        CenterlineCandidate primary = applicableCandidates.isEmpty() ? candidates.get(0) : applicableCandidates.get(0);
+        List<EastNorth> preview = applicableCandidates.isEmpty()
+            ? diagnosticGeometry(primary, sourcePolyline)
+            : optimize(selection, sourcePolyline, primary, config, null);
+        List<NodeMove> nodeMoves = applicableCandidates.isEmpty() ? List.of() : interpolateMoves(selection, preview);
         long t3 = System.nanoTime();
 
         AlignmentDiagnostics diagnostics = diagnostics(
@@ -194,7 +196,8 @@ public final class AlignmentService {
             }
         }
 
-        return new AlignmentResult(selection, raster, candidates, sourcePolyline, preview, nodeMoves, diagnostics, null);
+        return new AlignmentResult(selection, raster, candidates, sourcePolyline, preview, nodeMoves, diagnostics,
+            null, attempts, applicableCandidates);
     }
 
     private AlignmentResult alignFromManagedTiles(
@@ -226,13 +229,15 @@ public final class AlignmentService {
         List<String> reportedColorModes = reportedTileColorModes(config, mosaics, colorModes);
         List<CenterlineCandidate> contextualCandidates = applyParallelContext(
             detection.candidates(), selection, sourcePolyline, config);
-        List<CenterlineCandidate> candidates = annotateCandidateSafety(
-            contextualCandidates, effectiveSampling, selection, config);
+        List<CenterlineCandidate> candidates = rankCandidates(annotateCandidateSafety(
+            contextualCandidates, effectiveSampling, selection, config), config, effectiveSampling);
+        List<DetectorAttempt> attempts = detectorAttempts(reportedColorModes, candidates, config,
+            detection.outsideRasterProfiles(), shouldRunAggregatedSourceDetector(config, mosaics));
         long t2 = System.nanoTime();
         if (detection.outsideRasterProfiles() > 0) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
-                detection, effectiveSampling,
-                mosaics, mosaic, List.of(), t0, t1, t2, t2);
+            AlignmentResult partial = withDetectorState(partialTileResult(selection, sourcePolyline, imageryLayer, config,
+                reportedColorModes, detection, effectiveSampling, mosaics, mosaic, candidates, t0, t1, t2, t2),
+                candidates, attempts, List.of());
             throw new AlignmentFailureException(
                 "Selected segment is not fully inside the sampled fixed-resolution heatmap mosaic ("
                     + detection.outsideRasterProfiles() + "/" + detection.totalProfiles()
@@ -240,23 +245,18 @@ public final class AlignmentService {
                 partial);
         }
         if (candidates.isEmpty()) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
-                detection, effectiveSampling,
-                mosaics, mosaic, List.of(), t0, t1, t2, t2);
-            throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles.", partial);
+            AlignmentResult partial = withDetectorState(partialTileResult(selection, sourcePolyline, imageryLayer, config,
+                reportedColorModes, detection, effectiveSampling, mosaics, mosaic, List.of(), t0, t1, t2, t2),
+                List.of(), attempts, List.of());
+            throw new AlignmentFailureException("No stable ridge candidate was detected in the sampled fixed-resolution heatmap tiles. "
+                + attemptSummary(attempts), partial);
         }
         List<CenterlineCandidate> applicableCandidates = applicableCandidates(candidates);
-        if (applicableCandidates.isEmpty()) {
-            AlignmentResult partial = partialTileResult(selection, sourcePolyline, imageryLayer, config, reportedColorModes,
-                detection, effectiveSampling,
-                mosaics, mosaic, candidates, t0, t1, t2, t2);
-            throw new AlignmentFailureException("Detected ridge candidates were too weak or structurally unsafe for safe alignment in the sampled fixed-resolution heatmap tiles.", partial);
-        }
-        candidates = applicableCandidates;
-
-        CenterlineCandidate primary = candidates.get(0);
-        List<EastNorth> preview = optimize(selection, sourcePolyline, primary, config, mapView);
-        List<NodeMove> nodeMoves = interpolateMoves(selection, preview);
+        CenterlineCandidate primary = applicableCandidates.isEmpty() ? candidates.get(0) : applicableCandidates.get(0);
+        List<EastNorth> preview = applicableCandidates.isEmpty()
+            ? diagnosticGeometry(primary, sourcePolyline)
+            : optimize(selection, sourcePolyline, primary, config, mapView);
+        List<NodeMove> nodeMoves = applicableCandidates.isEmpty() ? List.of() : interpolateMoves(selection, preview);
         long t3 = System.nanoTime();
 
         AlignmentDiagnostics diagnostics = tileDiagnostics(
@@ -278,11 +278,35 @@ public final class AlignmentService {
         );
         PluginLog.verbose("Fixed-source-tile alignment finished: tiles=%d ms ridge=%d ms optimize=%d ms candidates=%d movableNodes=%d.",
             millisBetween(t0, t1), millisBetween(t1, t2), millisBetween(t2, t3), candidates.size(), nodeMoves.size());
-        return new AlignmentResult(selection, null, candidates, sourcePolyline, preview, nodeMoves, diagnostics, mosaics);
+        return new AlignmentResult(selection, null, candidates, sourcePolyline, preview, nodeMoves, diagnostics,
+            mosaics, attempts, applicableCandidates);
     }
 
     private boolean useManagedTileAlignment(ManagedHeatmapConfig config) {
         return config != null && config.hasManagedAccessValues();
+    }
+
+    private AlignmentResult withDetectorState(
+        AlignmentResult base,
+        List<CenterlineCandidate> candidates,
+        List<DetectorAttempt> attempts,
+        List<CenterlineCandidate> applicable
+    ) {
+        return new AlignmentResult(base.selection(), base.capturedHeatmap(), candidates, base.sourcePolyline(),
+            base.previewPolyline(), base.nodeMoves(), base.diagnostics(), base.tileMosaics(), attempts, applicable);
+    }
+
+    private List<EastNorth> diagnosticGeometry(
+        CenterlineCandidate candidate,
+        List<EastNorth> sourcePolyline
+    ) {
+        return candidate.eastNorthPoints().size() >= 2 ? candidate.eastNorthPoints() : sourcePolyline;
+    }
+
+    private String attemptSummary(List<DetectorAttempt> attempts) {
+        return "Detector outcomes: " + attempts.stream()
+            .map(attempt -> attempt.mappingName() + "=" + attempt.status().name().toLowerCase(Locale.ROOT))
+            .collect(java.util.stream.Collectors.joining(", ")) + ".";
     }
 
     private AlignmentResult partialResult(
@@ -366,26 +390,38 @@ public final class AlignmentService {
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
         StringBuilder optimizerCostsCsv = new StringBuilder(
-            "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,endpoint_cost,inside_core,inside_corridor,total_cost\n");
+            optimizerCostsCsvHeader());
+        StringBuilder scaleSpaceCsv = new StringBuilder(scaleSpaceCsvHeader());
         int modeIndex = 0;
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int outsideRasterProfiles = 0;
         int totalProfiles = 0;
         for (String colorMode : colorModes) {
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                sampler.sampleProfilesOnRaster(raster, sourceRasterPolyline,
+            boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
+            MultiScaleProfileSet profileSet = multiScale
+                ? sampler.sampleMultiScaleProfilesOnScaledRaster(raster, sourceRasterPolyline,
+                    effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
+                    RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource,
+                    effectiveSampling.sourcePixelSizeRasterPx())
+                : null;
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
+                ? profileSet.levelZeroProfiles()
+                : sampler.sampleProfilesOnRaster(raster, sourceRasterPolyline,
                     effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(),
                     colorMode, RenderedHeatmapSampler.RASTER_SCALE, intensitySource);
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
             }
-            TrackerOutput tracking = trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
+            TrackerOutput tracking = multiScale
+                ? trackProfiles(profileSet, effectiveSampling, config, selection, colorMode)
+                : trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
+            scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
             if (modeIndex++ > 0) {
@@ -411,6 +447,7 @@ public final class AlignmentService {
         return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
+            scaleSpaceCsv.toString(),
             outsideRasterProfiles, totalProfiles);
     }
 
@@ -436,22 +473,31 @@ public final class AlignmentService {
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
         StringBuilder optimizerCostsCsv = new StringBuilder(
-            "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,endpoint_cost,inside_core,inside_corridor,total_cost\n");
+            optimizerCostsCsvHeader());
+        StringBuilder scaleSpaceCsv = new StringBuilder(scaleSpaceCsvHeader());
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int modeIndex = 0;
         int outsideRasterProfiles = 0;
         int totalProfiles = 0;
         if (shouldRunAggregatedSourceDetector(config, mosaics)) {
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+            boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
+            MultiScaleProfileSet profileSet = multiScale
+                ? tileSampler.sampleAggregatedMultiScaleProfiles(mosaics, mosaic.zoom(), sourcePolyline)
+                : null;
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
+                ? profileSet.levelZeroProfiles()
+                : tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
             totalProfiles = profiles.size();
             outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
-            TrackerOutput tracking = trackProfiles(profiles, effectiveSampling, config, selection, AGGREGATED_COLOR_MODE);
+            TrackerOutput tracking = multiScale
+                ? trackProfiles(profileSet, effectiveSampling, config, selection, AGGREGATED_COLOR_MODE)
+                : trackProfiles(profiles, effectiveSampling, config, selection, AGGREGATED_COLOR_MODE);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
+            scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             appendProfilePeaksCsv(profilePeaksCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
             profileDiagnostics.append(profilesToJson(AGGREGATED_COLOR_MODE, intensitySource, profiles, colorCandidates));
@@ -468,18 +514,26 @@ public final class AlignmentService {
                 AGGREGATED_COLOR_MODE, colorCandidates.size(), BASE_SOURCE_COLORS);
         }
         for (String colorMode : colorModes) {
-            List<RenderedHeatmapSampler.CrossSectionProfile> profiles =
-                tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+            boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
+            MultiScaleProfileSet profileSet = multiScale
+                ? tileSampler.sampleMultiScaleProfiles(mosaic, sourcePolyline, colorMode, config)
+                : null;
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
+                ? profileSet.levelZeroProfiles()
+                : tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
             }
-            TrackerOutput tracking = trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
+            TrackerOutput tracking = multiScale
+                ? trackProfiles(profileSet, effectiveSampling, config, selection, colorMode)
+                : trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
+            scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
             if (modeIndex++ > 0) {
@@ -505,6 +559,7 @@ public final class AlignmentService {
         return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
+            scaleSpaceCsv.toString(),
             outsideRasterProfiles, totalProfiles);
     }
 
@@ -532,11 +587,30 @@ public final class AlignmentService {
         PluginLog.verbose("Tracking %d profiles with %s.", profiles.size(), trackerMode.name());
         return switch (trackerMode) {
             case LEGACY_V02 -> new TrackerOutput(
-                ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx()), "", "", "", "");
+                ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx()), "", "", "", "", "");
             case CORRIDOR_AWARE -> corridorTrackerOutput(detector, profiles,
                 corridorAwareTracker.trackDetailed(profiles, effectiveSampling.sourcePixelSizeRasterPx(),
                     junctionContext(selection, profiles.size(), config, effectiveSampling)));
         };
+    }
+
+    private TrackerOutput trackProfiles(
+        MultiScaleProfileSet profileSet,
+        EffectiveSampling effectiveSampling,
+        ManagedHeatmapConfig config,
+        SelectionContext selection,
+        String detector
+    ) {
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = profileSet.levelZeroProfiles();
+        PluginLog.verbose("Tracking %d profiles with CORRIDOR_AWARE Gaussian levels=%d.",
+            profiles.size(), profileSet.levels().size());
+        return corridorTrackerOutput(detector, profiles,
+            corridorAwareTracker.trackDetailed(profileSet, effectiveSampling.sourcePixelSizeRasterPx(),
+                junctionContext(selection, profiles.size(), config, effectiveSampling)));
+    }
+
+    private TrackerMode trackerMode(ManagedHeatmapConfig config) {
+        return config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
     }
 
     private TrackerOutput corridorTrackerOutput(
@@ -548,6 +622,7 @@ public final class AlignmentService {
         StringBuilder bands = new StringBuilder();
         StringBuilder tracks = new StringBuilder();
         StringBuilder costs = new StringBuilder();
+        StringBuilder scaleSpace = new StringBuilder();
         for (CorridorProfile profile : result.profiles()) {
             double prominence = Math.max(1e-9, profile.prominence());
             for (RenderedHeatmapSampler.IntensitySample sample : sourceProfiles.get(profile.index()).intensitySamples()) {
@@ -592,13 +667,50 @@ public final class AlignmentService {
                 costs.append(csv(detector)).append(',').append(csv(entry.getKey())).append(',')
                     .append(row.profileIndex()).append(',').append(row.chosenOffsetPx()).append(',')
                     .append(row.profileSpacingPx()).append(',').append(row.dataCost()).append(',').append(row.continuityCost()).append(',')
-                    .append(row.accelerationCost()).append(',').append(row.endpointCost()).append(',')
+                    .append(row.accelerationCost()).append(',').append(row.plateauCenterCost()).append(',')
+                    .append(row.coarsePriorCost()).append(',').append(row.endpointCost()).append(',')
+                    .append(row.weightedTotal()).append(',')
                     .append(row.insideCore()).append(',').append(row.insideCorridor()).append(',')
                     .append(totalCost).append('\n');
             }
         });
+        for (MultiScaleCorridorProfile profile : result.multiScaleProfiles()) {
+            for (ScaleCorridorObservation observation : profile.observations()) {
+                if (observation.bands().isEmpty()) {
+                    scaleSpace.append(csv(detector)).append(',').append(profile.profileIndex()).append(',')
+                        .append(observation.level()).append(',').append(observation.reduction()).append(',')
+                        .append(observation.effectiveSigmaL0()).append(',').append(observation.valid())
+                        .append(",,,,,,,,,,,,\n");
+                }
+                for (CorridorBand band : observation.bands()) {
+                    BandScaleEvidence evidence = observation.level() == 0
+                        ? result.scaleEvidence().get(CorridorCenterlineOptimizer.scaleEvidenceKey(
+                            profile.profileIndex(), band.id())) : null;
+                    scaleSpace.append(csv(detector)).append(',').append(profile.profileIndex()).append(',')
+                        .append(observation.level()).append(',').append(observation.reduction()).append(',')
+                        .append(observation.effectiveSigmaL0()).append(',').append(observation.valid()).append(',')
+                        .append(csv(band.id())).append(',').append(band.centerOffsetPx()).append(',')
+                        .append(band.shoulderMinPx()).append(',').append(band.shoulderMaxPx()).append(',')
+                        .append(band.coreMinPx()).append(',').append(band.coreMaxPx()).append(',')
+                        .append(evidence == null ? "" : evidence.scalePersistence()).append(',')
+                        .append(evidence == null ? "" : evidence.coarseCenterPx()).append(',')
+                        .append(evidence == null ? "" : evidence.coarseUncertaintyPx()).append(',')
+                        .append(evidence != null && evidence.scaleConflict()).append(',')
+                        .append(evidence != null && evidence.parentMerge()).append(',')
+                        .append(csv(evidence == null ? "" : evidence.participatingLevels().toString())).append('\n');
+                }
+            }
+        }
         return new TrackerOutput(result.candidates(), intensities.toString(), bands.toString(),
-            tracks.toString(), costs.toString());
+            tracks.toString(), costs.toString(), scaleSpace.toString());
+    }
+
+    private String scaleSpaceCsvHeader() {
+        return "detector,profile_index,level,reduction,effective_sigma_l0,valid,band_id,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,scale_persistence,coarse_center_px,coarse_uncertainty_px,scale_conflict,parent_merge,participating_levels\n";
+    }
+
+    private String optimizerCostsCsvHeader() {
+        return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,plateau_center_cost,coarse_prior_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost\n";
     }
 
     private JunctionContext junctionContext(
@@ -702,6 +814,86 @@ public final class AlignmentService {
             - roughnessPenalty
             - noOpPenalty
             - largeOffsetPenalty;
+    }
+
+    private List<CenterlineCandidate> rankCandidates(
+        List<CenterlineCandidate> candidates,
+        ManagedHeatmapConfig config,
+        EffectiveSampling effectiveSampling
+    ) {
+        String source = normalizedVisibleColor(config);
+        return candidates.stream().sorted(java.util.Comparator
+            .comparing((CenterlineCandidate candidate) -> isApplicableCandidate(candidate),
+                java.util.Comparator.reverseOrder())
+            .thenComparing(java.util.Comparator.comparingInt((CenterlineCandidate candidate) ->
+                DetectorFamily.sourceTier(source, detectorMode(candidate))).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                candidate.evidence().scalePersistence()).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                candidate.evidence().inCorridorFraction()).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                candidate.evidence().localizationConfidence()).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                candidate.evidence().longitudinalStability()).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                detectorPrior(source, detectorMode(candidate))).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
+                calibratedRankingScore(candidate, config, effectiveSampling)).reversed())
+            .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
+        ).toList();
+    }
+
+    List<DetectorAttempt> detectorAttempts(
+        List<String> requestedModes,
+        List<CenterlineCandidate> candidates,
+        ManagedHeatmapConfig config,
+        int outsideRasterProfiles,
+        boolean aggregateAvailable
+    ) {
+        List<String> modes = new ArrayList<>(requestedModes);
+        if (config.aggregateAllColorSchemes() && !modes.contains(AGGREGATED_COLOR_MODE)) {
+            modes.add(0, AGGREGATED_COLOR_MODE);
+        }
+        List<DetectorAttempt> attempts = new ArrayList<>();
+        for (String mode : modes.stream().distinct().toList()) {
+            List<CenterlineCandidate> produced = candidates.stream()
+                .filter(candidate -> detectorMode(candidate).equals(mode))
+                .toList();
+            DetectorAttemptStatus status;
+            String reasonCode;
+            String reason;
+            if (AGGREGATED_COLOR_MODE.equals(mode) && !aggregateAvailable) {
+                status = DetectorAttemptStatus.SOURCE_UNAVAILABLE;
+                reasonCode = "aggregate-source-incomplete";
+                reason = "The complete managed all-color source frame was unavailable.";
+            } else if (outsideRasterProfiles > 0) {
+                status = DetectorAttemptStatus.OFF_RASTER;
+                reasonCode = "profile-off-raster";
+                reason = "One or more requested cross-sections were outside the sampled raster.";
+            } else if (produced.isEmpty()) {
+                status = DetectorAttemptStatus.NO_PERSISTENT_CORRIDOR;
+                reasonCode = "no-persistent-corridor";
+                reason = "No longitudinally persistent corridor was extracted.";
+            } else if (produced.stream().anyMatch(this::isApplicableCandidate)) {
+                status = DetectorAttemptStatus.APPLICABLE;
+                reasonCode = "applicable";
+                reason = "At least one candidate passed signal and structural safety checks.";
+            } else if (produced.stream().anyMatch(candidate -> !candidate.safetyWarnings().isEmpty())) {
+                status = DetectorAttemptStatus.STRUCTURALLY_UNSAFE;
+                reasonCode = "structurally-unsafe";
+                reason = produced.stream().flatMap(candidate -> candidate.safetyWarnings().stream())
+                    .distinct().collect(java.util.stream.Collectors.joining("; "));
+            } else {
+                status = DetectorAttemptStatus.INSUFFICIENT_SIGNAL;
+                reasonCode = "insufficient-signal";
+                reason = "Candidates did not contain enough supported heatmap signal.";
+            }
+            attempts.add(new DetectorAttempt(normalizedVisibleColor(config), mode, trackerMode(config), status,
+                produced.stream().map(CenterlineCandidate::id).toList(), reasonCode, reason));
+            PluginLog.verbose("Detector attempt source=%s mapping=%s status=%s candidates=%d reason=%s.",
+                normalizedVisibleColor(config), mode, status, produced.size(), reasonCode);
+        }
+        return List.copyOf(attempts);
     }
 
     private String detectorMode(CenterlineCandidate candidate) {
@@ -1041,7 +1233,9 @@ public final class AlignmentService {
             preview,
             nodeMoves,
             base.diagnostics(),
-            base.tileMosaics()
+            base.tileMosaics(),
+            base.detectorAttempts(),
+            base.applicableCandidates()
         );
     }
 
@@ -1811,6 +2005,7 @@ public final class AlignmentService {
             detection.corridorBandsCsv(),
             detection.corridorTracksCsv(),
             detection.optimizerCostsCsv(),
+            detection.scaleSpaceCsv(),
             parallelContextJson(selection, candidates, config)
         );
     }
@@ -1853,6 +2048,7 @@ public final class AlignmentService {
             detection.corridorBandsCsv(),
             detection.corridorTracksCsv(),
             detection.optimizerCostsCsv(),
+            detection.scaleSpaceCsv(),
             parallelContextJson(selection, candidates, config)
         );
     }
@@ -2229,7 +2425,7 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling
     ) {
         StringBuilder builder = new StringBuilder(
-            "rank,candidate_id,display_name,detector,visible_color,intensity_source,raw_score,calibrated_score,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,in_corridor_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,safety_warnings\n");
+            "rank,candidate_id,display_name,detector,visible_color,intensity_source,source_tier,applicable,raw_score,calibrated_score,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,in_corridor_fraction,scale_persistence,scale_conflict_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,safety_warnings\n");
         IntensitySamplingMode source = intensitySamplingMode(config);
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
@@ -2240,6 +2436,8 @@ public final class AlignmentService {
                 .append(csv(detectorMode(candidate))).append(',')
                 .append(csv(normalizedVisibleColor(config))).append(',')
                 .append(csv(source.name())).append(',')
+                .append(DetectorFamily.sourceTier(normalizedVisibleColor(config), detectorMode(candidate))).append(',')
+                .append(isApplicableCandidate(candidate)).append(',')
                 .append(format(candidate.score())).append(',')
                 .append(format(calibratedRankingScore(candidate, config, effectiveSampling))).append(',')
                 .append(format(candidate.evidence().supportRatio())).append(',')
@@ -2252,6 +2450,8 @@ public final class AlignmentService {
                 .append(format(candidate.evidence().localizationConfidence())).append(',')
                 .append(format(candidate.evidence().optimizerCost())).append(',')
                 .append(format(candidate.evidence().inCorridorFraction())).append(',')
+                .append(format(candidate.evidence().scalePersistence())).append(',')
+                .append(format(candidate.evidence().scaleConflictFraction())).append(',')
                 .append(candidate.evidence().maxConsecutiveEmptyProfiles()).append(',')
                 .append(format(metrics.sourceMetersPerPixel())).append(',')
                 .append(format(metrics.absMeanOffsetPx())).append(',')
@@ -2616,6 +2816,7 @@ public final class AlignmentService {
         String corridorBandsCsv,
         String corridorTracksCsv,
         String optimizerCostsCsv,
+        String scaleSpaceCsv,
         int outsideRasterProfiles,
         int totalProfiles
     ) {
@@ -2626,7 +2827,8 @@ public final class AlignmentService {
         String profileIntensityCsv,
         String corridorBandsCsv,
         String corridorTracksCsv,
-        String optimizerCostsCsv
+        String optimizerCostsCsv,
+        String scaleSpaceCsv
     ) {
     }
 }

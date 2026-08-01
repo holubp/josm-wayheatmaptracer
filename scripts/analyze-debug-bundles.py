@@ -48,6 +48,15 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
+    scale_space = scale_space_summaries(read_zip_csv(bundle, "scale-space.csv"))
+    try:
+        attempts = json.loads(read_zip_text(bundle, "detector-attempts.json") or "[]")
+    except json.JSONDecodeError:
+        attempts = []
+    attempt_status = {
+        str(attempt.get("mappingName", "")): str(attempt.get("status", ""))
+        for attempt in attempts if isinstance(attempt, dict)
+    }
     try:
         ratings = json.loads(read_zip_text(bundle, "candidate-ratings.json") or "{}")
     except json.JSONDecodeError:
@@ -57,6 +66,7 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
         candidate_id = row.get("candidate_id", "")
         detector, track_id = candidate_track_identity(candidate_id)
         optimizer_summary = optimizer.get((detector, track_id), {})
+        scale_summary = scale_space.get(detector, {})
         rating = ratings.get(candidate_id, {})
         numeric = rating_score(str(rating.get("rating", ""))) if isinstance(rating, dict) else None
         negative = ",".join(rating.get("negativeFeatures", [])) if isinstance(rating, dict) else ""
@@ -66,6 +76,8 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "detector": row.get("detector", ""),
             "visible_color": row.get("visible_color", ""),
             "intensity_source": row.get("intensity_source", ""),
+            "source_tier": float_or_none(row.get("source_tier")),
+            "applicable": row.get("applicable", ""),
             "rating": rating.get("rating", "") if isinstance(rating, dict) else "",
             "rating_score": numeric,
             "negative_features": negative,
@@ -95,6 +107,11 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             "in_core_fraction": optimizer_summary.get("in_core_fraction"),
             "endpoint_approach_angle_degrees": optimizer_summary.get("endpoint_approach_angle_degrees"),
             "grouping_decision": grouping.get((detector, track_id), ""),
+            "detector_attempt_status": attempt_status.get(detector, ""),
+            "scale_persistence": float_or_none(row.get("scale_persistence"))
+            if row.get("scale_persistence", "") != "" else scale_summary.get("median_persistence"),
+            "cross_scale_center_drift_px": scale_summary.get("median_center_drift_px"),
+            "scale_conflict_ratio": scale_summary.get("conflict_ratio"),
         })
     return rows
 
@@ -153,6 +170,30 @@ def track_grouping(rows: list[dict[str, str]]) -> dict[tuple[str, str], str]:
     return result
 
 
+def scale_space_summaries(rows: list[dict[str, str]]) -> dict[str, dict[str, float]]:
+    """Summarize persistence, center drift, and conflicts from optional scale-space diagnostics."""
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        grouped[row.get("detector", "")].append(row)
+    result: dict[str, dict[str, float]] = {}
+    for detector, detector_rows in grouped.items():
+        persistence = compact_numbers(float_or_none(row.get("scale_persistence")) for row in detector_rows)
+        conflicts = [str(row.get("scale_conflict", "")).lower() == "true"
+                     for row in detector_rows if row.get("level", "") == "0"]
+        centers: dict[int, list[float]] = defaultdict(list)
+        for row in detector_rows:
+            center = float_or_none(row.get("center_px"))
+            if center is not None:
+                centers[int(row.get("profile_index", "0") or 0)].append(center)
+        drift = [max(values) - min(values) for values in centers.values() if len(values) >= 2]
+        result[detector] = {
+            "median_persistence": statistics.median(persistence) if persistence else 0.0,
+            "median_center_drift_px": statistics.median(drift) if drift else 0.0,
+            "conflict_ratio": sum(conflicts) / len(conflicts) if conflicts else 0.0,
+        }
+    return result
+
+
 def float_or_none(value: str | None) -> float | None:
     """Parse a float, returning ``None`` for blank or invalid values."""
     try:
@@ -182,6 +223,9 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         acceleration = compact_numbers(row["corridor_lateral_acceleration"] for row in group)
         endpoint_angle = compact_numbers(row["endpoint_approach_angle_degrees"] for row in group)
         core_fraction = compact_numbers(row["in_core_fraction"] for row in group)
+        persistence = compact_numbers(row["scale_persistence"] for row in group)
+        scale_drift = compact_numbers(row["cross_scale_center_drift_px"] for row in group)
+        scale_conflicts = compact_numbers(row["scale_conflict_ratio"] for row in group)
         summary.append({
             "visible_color": visible_color,
             "intensity_source": intensity_source,
@@ -201,6 +245,11 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "median_in_core_fraction": statistics.median(core_fraction) if core_fraction else None,
             "median_p95_delta_px": statistics.median(rough) if rough else None,
             "median_high_frequency_p95_source_px": statistics.median(source_rough) if source_rough else None,
+            "median_scale_persistence": statistics.median(persistence) if persistence else None,
+            "median_cross_scale_center_drift_px": statistics.median(scale_drift) if scale_drift else None,
+            "median_scale_conflict_ratio": statistics.median(scale_conflicts) if scale_conflicts else None,
+            "attempt_statuses": "; ".join(sorted({str(row["detector_attempt_status"]) for row in group
+                                                   if row["detector_attempt_status"]})),
             "negative_features": negative_counts(group),
         })
     return summary
@@ -243,6 +292,10 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "median_in_core_fraction",
         "median_p95_delta_px",
         "median_high_frequency_p95_source_px",
+        "median_scale_persistence",
+        "median_cross_scale_center_drift_px",
+        "median_scale_conflict_ratio",
+        "attempt_statuses",
         "negative_features",
     ]
     writer = csv.DictWriter(sys.stdout, fieldnames=fields)

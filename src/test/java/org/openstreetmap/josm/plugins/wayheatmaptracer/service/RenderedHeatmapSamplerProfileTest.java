@@ -12,6 +12,30 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 
 class RenderedHeatmapSamplerProfileTest {
     @Test
+    void renderedFallbackSelectsCoarseLevelsFromEstimatedSourcePixelPitch() {
+        BufferedImage raster = new BufferedImage(320, 180, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 82; y <= 98; y++) {
+            for (int x = 30; x < 290; x++) {
+                raster.setRGB(x, y, 0xFFFFFFFF);
+            }
+        }
+        MultiScaleProfileSet result = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+            raster,
+            List.of(new Point2D.Double(50.0, 90.0), new Point2D.Double(270.0, 90.0)),
+            12,
+            1,
+            "hot",
+            1.0,
+            1.0,
+            IntensitySamplingMode.DIRECT_VALUE,
+            6.0
+        );
+
+        assertEquals(List.of(1, 8, 16), result.levels().stream().map(MultiScaleProfileSet.ScaleProfileLevel::reduction).toList());
+        assertTrue(result.levelZeroProfiles().stream().allMatch(RenderedHeatmapSampler.CrossSectionProfile::anchorWithinRaster));
+    }
+
+    @Test
     void retainsNativeAndBothFilteredIntensityScales() {
         BufferedImage image = new BufferedImage(21, 21, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < image.getHeight(); y++) {

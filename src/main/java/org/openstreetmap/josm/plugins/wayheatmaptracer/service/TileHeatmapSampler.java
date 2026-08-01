@@ -152,6 +152,36 @@ public final class TileHeatmapSampler {
     }
 
     /**
+     * Samples L0/L1/L2 scalar profiles from one already prepared managed mosaic.
+     *
+     * @param mosaic prepared source mosaic
+     * @param sourcePolyline selected projected geometry
+     * @param detectorMode palette mapping
+     * @param config active plugin settings
+     * @return aligned Gaussian-level profiles without any additional tile request
+     */
+    public MultiScaleProfileSet sampleMultiScaleProfiles(
+        TileMosaic mosaic,
+        List<EastNorth> sourcePolyline,
+        String detectorMode,
+        ManagedHeatmapConfig config
+    ) {
+        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
+            Math.max(4.0, mosaic.parameters().sampleStepMeters()));
+        if (dense.size() < 2) {
+            return new MultiScaleProfileSet(List.of(), 0L, 0L);
+        }
+        List<Point2D.Double> local = localPolyline(mosaic, dense);
+        int referenceHalfWidthPx = Math.max(1,
+            (int) Math.round(mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceStepPx = Math.max(1,
+            (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+            mosaic.image(), local, referenceHalfWidthPx, referenceStepPx, detectorMode,
+            REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), config.intensitySamplingMode());
+    }
+
+    /**
      * Samples cross-section profiles from a fused intensity field across multiple source color mosaics.
      *
      * @param mosaics prepared source-tile mosaics for the same zoom and source geometry
@@ -194,6 +224,51 @@ public final class TileHeatmapSampler {
             REFERENCE_RASTER_SCALE,
             reference.virtualRasterScale()
         );
+    }
+
+    /**
+     * Samples a Gaussian pyramid after native semantic mappings have been aggregated to scalar L0.
+     *
+     * @param mosaics complete managed source set
+     * @param zoom source tile zoom
+     * @param sourcePolyline selected projected geometry
+     * @return aligned aggregate Gaussian-level profiles
+     */
+    public MultiScaleProfileSet sampleAggregatedMultiScaleProfiles(
+        TileMosaicSet mosaics,
+        int zoom,
+        List<EastNorth> sourcePolyline
+    ) {
+        AggregateSourceFrame frame = aggregateSourceFrame(mosaics, zoom);
+        if (frame == null) {
+            return new MultiScaleProfileSet(List.of(), 0L, 0L);
+        }
+        TileMosaic reference = frame.reference();
+        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
+            Math.max(4.0, reference.parameters().sampleStepMeters()));
+        if (dense.size() < 2) {
+            return new MultiScaleProfileSet(List.of(), 0L, 0L);
+        }
+        List<Point2D.Double> local = localPolyline(reference, dense);
+        int referenceHalfWidthPx = Math.max(1,
+            (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceStepPx = Math.max(1,
+            (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAggregatedScaledRasters(
+            frame.images(), local, referenceHalfWidthPx, referenceStepPx, REFERENCE_RASTER_SCALE,
+            reference.virtualRasterScale());
+    }
+
+    private List<Point2D.Double> localPolyline(TileMosaic mosaic, List<EastNorth> dense) {
+        List<Point2D.Double> local = new ArrayList<>(dense.size());
+        for (EastNorth point : dense) {
+            Point2D.Double world = toWorldPixel(point, mosaic.zoom());
+            local.add(new Point2D.Double(
+                (world.x - mosaic.originWorldPxX()) * mosaic.virtualRasterScale(),
+                (world.y - mosaic.originWorldPxY()) * mosaic.virtualRasterScale()
+            ));
+        }
+        return local;
     }
 
     /**

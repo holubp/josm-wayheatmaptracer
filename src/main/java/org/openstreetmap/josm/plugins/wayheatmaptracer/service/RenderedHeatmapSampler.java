@@ -192,6 +192,206 @@ public final class RenderedHeatmapSampler {
         return profiles;
     }
 
+    /**
+     * Maps one already acquired raster to scalar intensity and samples aligned L0/L1/L2 profiles.
+     *
+     * @param raster source raster already acquired for this slide
+     * @param denseScreenPolyline profile anchors in sampled-raster coordinates
+     * @param halfWidthPx configured search half-width before raster oversampling
+     * @param stepPx configured cross-section step before raster oversampling
+     * @param colorMode detector palette mapping
+     * @param rasterScale sampled-raster oversampling factor
+     * @param sourceCoordinateScale sampled-raster pixels per source image pixel
+     * @param intensitySamplingMode scalar source mode
+     * @return geographically aligned Gaussian-level profiles
+     */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnScaledRaster(
+        BufferedImage raster,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode
+    ) {
+        return sampleMultiScaleProfilesOnScaledRaster(raster, denseScreenPolyline, halfWidthPx, stepPx,
+            colorMode, rasterScale, sourceCoordinateScale, intensitySamplingMode, 1.0);
+    }
+
+    /**
+     * Samples Gaussian profiles while respecting the source-pixel pitch of an oversampled rendered raster.
+     *
+     * @param raster source raster already acquired for this slide
+     * @param denseScreenPolyline profile anchors in sampled-raster coordinates
+     * @param halfWidthPx configured search half-width before oversampling
+     * @param stepPx configured cross-section step before oversampling
+     * @param colorMode detector palette mapping
+     * @param rasterScale sampled-raster oversampling factor
+     * @param sourceCoordinateScale sampled-raster coordinates per image pixel
+     * @param intensitySamplingMode scalar source mode
+     * @param sourcePixelPitchInImagePixels estimated native source-pixel pitch in image pixels
+     * @return fine profiles plus two source-aware coarse Gaussian levels
+     */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnScaledRaster(
+        BufferedImage raster,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        double sourcePixelPitchInImagePixels
+    ) {
+        if (denseScreenPolyline.size() < 2) {
+            return new MultiScaleProfileSet(List.of(), 0L, 0L);
+        }
+        double coordinateScale = validCoordinateScale(sourceCoordinateScale);
+        int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
+        double sourcePitch = Double.isFinite(sourcePixelPitchInImagePixels) && sourcePixelPitchInImagePixels > 0.0
+            ? sourcePixelPitchInImagePixels : 1.0;
+        CropBounds crop = cropBounds(raster, denseScreenPolyline, scaledHalfWidth, coordinateScale,
+            Math.max(12.0, 8.0 * sourcePitch));
+        long started = System.nanoTime();
+        ScalarIntensityField levelZero = ScalarIntensityField.fromRaster(raster, crop.minX(), crop.minY(),
+            crop.maxX(), crop.maxY(), colorMode, intensitySamplingMode);
+        GaussianIntensityPyramid pyramid = GaussianIntensityPyramid.build(levelZero,
+            Math.max(4, (int) Math.ceil(4.0 * sourcePitch)));
+        long buildNanos = System.nanoTime() - started;
+        List<MultiScaleProfileSet.ScaleProfileLevel> levels = new ArrayList<>();
+        for (IntensityScaleLevel level : selectedAnalysisLevels(pyramid, sourcePitch)) {
+            levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
+                level.effectiveSigmaL0(), sampleProfilesFromField(level, denseScreenPolyline,
+                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
+        }
+        PluginLog.verbose("Built scalar Gaussian pyramid for '%s': levels=%s crop=%dx%d bytes=%d time=%.1fms.",
+            colorMode, levels.stream().map(value -> "L" + value.level() + ":" + value.reduction() + "x").toList(),
+            levelZero.width(), levelZero.height(), pyramid.estimatedBytes(), buildNanos / 1_000_000.0);
+        return new MultiScaleProfileSet(levels, buildNanos, pyramid.estimatedBytes());
+    }
+
+    private List<IntensityScaleLevel> selectedAnalysisLevels(
+        GaussianIntensityPyramid pyramid,
+        double sourcePixelPitch
+    ) {
+        List<IntensityScaleLevel> available = pyramid.levels();
+        List<IntensityScaleLevel> selected = new ArrayList<>();
+        selected.add(available.get(0));
+        for (double target : List.of(2.0 * sourcePixelPitch, 4.0 * sourcePixelPitch)) {
+            IntensityScaleLevel nearest = available.stream()
+                .filter(level -> level.level() > 0)
+                .min(java.util.Comparator
+                    .comparingDouble((IntensityScaleLevel level) -> Math.abs(level.reduction() - target))
+                    .thenComparingInt(IntensityScaleLevel::reduction))
+                .orElse(null);
+            if (nearest != null && selected.stream().noneMatch(level -> level.reduction() == nearest.reduction())) {
+                selected.add(nearest);
+            }
+        }
+        return selected;
+    }
+
+    /** Samples aligned Gaussian profiles from the complete managed all-color aggregate. */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnAggregatedScaledRasters(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<Point2D.Double> denseScreenPolyline,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale
+    ) {
+        if (denseScreenPolyline.size() < 2 || rastersByColor.isEmpty()) {
+            return new MultiScaleProfileSet(List.of(), 0L, 0L);
+        }
+        double coordinateScale = validCoordinateScale(sourceCoordinateScale);
+        int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
+        BufferedImage reference = rastersByColor.values().iterator().next();
+        CropBounds crop = cropBounds(reference, denseScreenPolyline, scaledHalfWidth, coordinateScale, 12.0);
+        long started = System.nanoTime();
+        ScalarIntensityField levelZero = ScalarIntensityField.fromAggregatedRasters(rastersByColor,
+            crop.minX(), crop.minY(), crop.maxX(), crop.maxY());
+        GaussianIntensityPyramid pyramid = GaussianIntensityPyramid.build(levelZero);
+        long buildNanos = System.nanoTime() - started;
+        List<MultiScaleProfileSet.ScaleProfileLevel> levels = new ArrayList<>();
+        for (IntensityScaleLevel level : pyramid.levels()) {
+            levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
+                level.effectiveSigmaL0(), sampleProfilesFromField(level, denseScreenPolyline,
+                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
+        }
+        PluginLog.verbose("Built all-color scalar Gaussian pyramid: levels=%s crop=%dx%d bytes=%d time=%.1fms.",
+            levels.stream().map(value -> "L" + value.level() + ":" + value.reduction() + "x").toList(),
+            levelZero.width(), levelZero.height(), pyramid.estimatedBytes(), buildNanos / 1_000_000.0);
+        return new MultiScaleProfileSet(levels, buildNanos, pyramid.estimatedBytes());
+    }
+
+    private List<CrossSectionProfile> sampleProfilesFromField(
+        IntensityScaleLevel level,
+        List<Point2D.Double> denseScreenPolyline,
+        int scaledHalfWidth,
+        int scaledStep,
+        double coordinateScale
+    ) {
+        List<CrossSectionProfile> profiles = new ArrayList<>(denseScreenPolyline.size());
+        double levelStep = Math.max(scaledStep, coordinateScale * level.reduction());
+        for (int i = 0; i < denseScreenPolyline.size(); i++) {
+            Point2D.Double current = denseScreenPolyline.get(i);
+            Point2D.Double previous = denseScreenPolyline.get(Math.max(0, i - 1));
+            Point2D.Double next = denseScreenPolyline.get(Math.min(denseScreenPolyline.size() - 1, i + 1));
+            Point2D.Double tangent = PolylineMath.normalize(next.x - previous.x, next.y - previous.y);
+            Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
+            List<OffsetSample> offsets = new ArrayList<>();
+            List<Boolean> inside = new ArrayList<>();
+            for (double offset = -scaledHalfWidth; offset <= scaledHalfWidth + 1e-9; offset += levelStep) {
+                double sourceX = (current.x + normal.x * offset) / coordinateScale;
+                double sourceY = (current.y + normal.y * offset) / coordinateScale;
+                double intensity = level.field().sample(sourceX, sourceY);
+                boolean valid = Double.isFinite(intensity);
+                offsets.add(new OffsetSample(offset, valid ? intensity : 0.0));
+                inside.add(valid);
+            }
+            ProfileFilters filters = profileFilters(offsets);
+            List<CrossSectionPeak> peaks = new ArrayList<>(extractBrightBands(offsets, filters));
+            if (peaks.isEmpty()) {
+                double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
+                peaks.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest,
+                    0.0, 0.0, 0.0));
+            }
+            boolean anchorValid = Double.isFinite(level.field().sample(current.x / coordinateScale,
+                current.y / coordinateScale));
+            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal,
+                peaks, anchorValid, intensitySamples(filters, inside)));
+        }
+        return profiles;
+    }
+
+    private CropBounds cropBounds(
+        BufferedImage raster,
+        List<Point2D.Double> polyline,
+        int scaledHalfWidth,
+        double coordinateScale,
+        double convolutionHalo
+    ) {
+        double minimumX = polyline.stream().mapToDouble(point -> point.x / coordinateScale).min().orElse(0.0);
+        double maximumX = polyline.stream().mapToDouble(point -> point.x / coordinateScale).max().orElse(0.0);
+        double minimumY = polyline.stream().mapToDouble(point -> point.y / coordinateScale).min().orElse(0.0);
+        double maximumY = polyline.stream().mapToDouble(point -> point.y / coordinateScale).max().orElse(0.0);
+        double radius = scaledHalfWidth / coordinateScale + convolutionHalo;
+        return new CropBounds(
+            Math.max(0, (int) Math.floor(minimumX - radius)),
+            Math.max(0, (int) Math.floor(minimumY - radius)),
+            Math.min(raster.getWidth() - 1, (int) Math.ceil(maximumX + radius)),
+            Math.min(raster.getHeight() - 1, (int) Math.ceil(maximumY + radius))
+        );
+    }
+
+    private double validCoordinateScale(double sourceCoordinateScale) {
+        return sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale) ? sourceCoordinateScale : 1.0;
+    }
+
+    private record CropBounds(int minX, int minY, int maxX, int maxY) {
+    }
+
     List<CrossSectionProfile> sampleProfilesOnAggregatedScaledRasters(
         java.util.Map<String, BufferedImage> rastersByColor,
         List<Point2D.Double> denseScreenPolyline,

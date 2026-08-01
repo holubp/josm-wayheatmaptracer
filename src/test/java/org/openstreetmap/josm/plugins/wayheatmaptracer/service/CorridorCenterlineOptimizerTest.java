@@ -69,6 +69,21 @@ class CorridorCenterlineOptimizerTest {
         assertTrue(result.offsetsPx().get(0) <= 3.0);
     }
 
+    @Test
+    void diagnosticRowTotalsMatchTheWeightedObjectiveTerms() {
+        Scenario scenario = scenario(index -> 1.5, false);
+
+        CorridorCenterlineOptimizer.OptimizationResult result = new CorridorCenterlineOptimizer()
+            .optimize(scenario.track(), scenario.profiles(), 1.0);
+
+        for (CorridorCenterlineOptimizer.CostRow row : result.costs()) {
+            assertEquals(row.dataCost() + row.continuityCost() + row.accelerationCost() + row.endpointCost(),
+                row.weightedTotal(), 1e-12);
+        }
+        assertEquals(result.totalCost(), result.costs().stream()
+            .mapToDouble(CorridorCenterlineOptimizer.CostRow::weightedTotal).sum(), 1e-9);
+    }
+
     private Scenario scenario(java.util.function.IntToDoubleFunction centerFunction, boolean alternatingNative) {
         List<CorridorProfile> profiles = new ArrayList<>();
         Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();

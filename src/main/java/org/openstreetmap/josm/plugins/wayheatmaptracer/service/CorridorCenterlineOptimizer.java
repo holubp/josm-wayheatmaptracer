@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
@@ -35,7 +36,7 @@ public final class CorridorCenterlineOptimizer {
         List<CorridorProfile> profiles,
         double sourcePixelSizePx
     ) {
-        return optimize(track, profiles, sourcePixelSizePx, JunctionContext.empty());
+        return optimize(track, profiles, sourcePixelSizePx, JunctionContext.empty(), Map.of());
     }
 
     /**
@@ -53,6 +54,26 @@ public final class CorridorCenterlineOptimizer {
         double sourcePixelSizePx,
         JunctionContext junctionContext
     ) {
+        return optimize(track, profiles, sourcePixelSizePx, junctionContext, Map.of());
+    }
+
+    /**
+     * Optimizes one track with endpoint constraints and cross-scale localization evidence.
+     *
+     * @param track selected corridor identity
+     * @param profiles fine L0 corridor profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction constraints
+     * @param scaleEvidence cross-scale evidence keyed by profile index and fine band id
+     * @return optimized fine-coordinate geometry
+     */
+    public OptimizationResult optimize(
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
         if (profiles.isEmpty() || track.points().isEmpty()) {
             return OptimizationResult.empty();
         }
@@ -64,26 +85,35 @@ public final class CorridorCenterlineOptimizer {
 
         List<State> states = new ArrayList<>();
         for (double offset : allowed.get(0)) {
-            double data = dataCost(track, profiles.get(0), 0, offset, sourcePixel)
+            double data = dataCost(track, profiles.get(0), 0, offset, sourcePixel, scaleEvidence)
                 + constraintCost(track, 0, offset, junctionContext, sourcePixel);
-            states.add(new State(offset, 0.0, data, List.of(offset)));
+            states.add(new State(offset, 0.0, Double.NaN, Double.NaN, 0.0, data, List.of(offset)));
         }
         for (int profileIndex = 1; profileIndex < profiles.size(); profileIndex++) {
             List<State> next = new ArrayList<>();
             double spacing = profileSpacing(profiles, profileIndex, sourcePixel);
+            double spacingSourcePixels = spacing / sourcePixel;
             for (double offset : allowed.get(profileIndex)) {
                 for (State previous : states) {
                     double delta = (offset - previous.offset()) / spacing;
-                    double continuity = continuityWeight(track, profileIndex) * square(delta / sourcePixel);
+                    Point2D.Double currentPoint = pointFor(profiles.get(profileIndex), offset);
+                    Point2D.Double previousPoint = pointFor(profiles.get(profileIndex - 1), previous.offset());
+                    double heading = heading(previousPoint, currentPoint);
+                    double referenceHeading = heading(
+                        profiles.get(profileIndex - 1).source().anchorScreen(),
+                        profiles.get(profileIndex).source().anchorScreen());
+                    double continuity = continuityWeight(track, profileIndex) * square(delta);
                     double acceleration = profileIndex < 2
                         ? 0.0
-                        : accelerationWeight(track, profileIndex) * square((delta - previous.delta()) / sourcePixel);
-                    double data = dataCost(track, profiles.get(profileIndex), profileIndex, offset, sourcePixel)
+                        : accelerationWeight(track, profileIndex, scaleEvidence) * geometricCurvatureCost(
+                            heading, referenceHeading, previous, spacingSourcePixels);
+                    double data = dataCost(track, profiles.get(profileIndex), profileIndex, offset, sourcePixel,
+                        scaleEvidence)
                         + constraintCost(track, profileIndex, offset, junctionContext, sourcePixel);
                     double cost = previous.cost() + data + continuity + acceleration;
                     List<Double> offsets = new ArrayList<>(previous.offsets());
                     offsets.add(offset);
-                    next.add(new State(offset, delta, cost, offsets));
+                    next.add(new State(offset, delta, heading, referenceHeading, spacingSourcePixels, cost, offsets));
                 }
             }
             states = next.stream().sorted(Comparator.comparingDouble(State::cost)).limit(MAX_OFFSET_STATES * MAX_OFFSET_STATES).toList();
@@ -107,16 +137,20 @@ public final class CorridorCenterlineOptimizer {
             if (contained) {
                 inCorridor++;
             }
-            double data = dataCost(track, profile, i, offset, sourcePixel);
-            double continuity = i == 0 ? 0.0 : square((offset - best.offsets().get(i - 1)) / sourcePixel);
-            double acceleration = i < 2 ? 0.0
-                : square((offset - 2.0 * best.offsets().get(i - 1) + best.offsets().get(i - 2)) / sourcePixel);
+            DataCost dataComponents = dataCostComponents(track, profile, i, offset, sourcePixel, scaleEvidence);
+            double data = dataComponents.total();
+            double continuity = i == 0 ? 0.0 : continuityWeight(track, i)
+                * square((offset - best.offsets().get(i - 1)) / profileSpacing(profiles, i, sourcePixel));
+            double acceleration = i < 2 ? 0.0 : accelerationWeight(track, i, scaleEvidence)
+                * geometricCurvatureCost(profiles, best.offsets(), i, sourcePixel);
             accelerationEnergy += acceleration;
             double endpoint = constraintCost(track, i, offset, junctionContext, sourcePixel);
             double spacing = i == 0 && profiles.size() > 1
                 ? profileSpacing(profiles, 1, sourcePixel)
                 : (i == 0 ? sourcePixel : profileSpacing(profiles, i, sourcePixel));
-            costs.add(new CostRow(i, offset, spacing, data, continuity, acceleration, endpoint, insideCore, contained));
+            costs.add(new CostRow(i, offset, spacing, data, continuity, acceleration,
+                dataComponents.plateauCenterCost(), dataComponents.coarsePriorCost(), endpoint,
+                data + continuity + acceleration + endpoint, insideCore, contained));
         }
         double inCorridorFraction = (double) inCorridor / profiles.size();
         double stability = 1.0 / (1.0 + accelerationEnergy / Math.max(1, profiles.size() - 2));
@@ -171,25 +205,76 @@ public final class CorridorCenterlineOptimizer {
         CorridorProfile profile,
         int profileIndex,
         double offset,
-        double sourcePixel
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
+        return dataCostComponents(track, profile, profileIndex, offset, sourcePixel, scaleEvidence).total();
+    }
+
+    private DataCost dataCostComponents(
+        CorridorTrack track,
+        CorridorProfile profile,
+        int profileIndex,
+        double offset,
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
     ) {
         CorridorBand band = bandAt(track, profileIndex);
         if (band == null) {
-            return 0.35;
+            return new DataCost(0.35, 0.0, 0.0);
         }
         IntensitySample sample = nearestSample(profile, offset);
         double scaleIntensity = sample == null ? 0.0
             : (0.30 * sample.nativeIntensity() + 0.30 * sample.lightFilteredIntensity()
                 + 0.40 * sample.standardFilteredIntensity());
+        double bandMaximum = profile.source().intensitySamples().stream()
+            .filter(IntensitySample::insideRaster)
+            .filter(value -> value.offsetPx() >= band.shoulderMinPx() - 1e-9
+                && value.offsetPx() <= band.shoulderMaxPx() + 1e-9)
+            .mapToDouble(this::scaleIntensity)
+            .max().orElse(scaleIntensity);
+        double deadband = plateauDeadband(profile, band);
+        boolean equivalentPeak = bandMaximum - scaleIntensity <= deadband;
         double normalizedIntensity = band.peakIntensity() <= band.noiseFloor() + 1e-9
             ? 0.0
             : clamp((scaleIntensity - band.noiseFloor()) / (band.peakIntensity() - band.noiseFloor()));
-        double intensityCost = (1.0 - normalizedIntensity) * (0.55 + 0.45 * band.signalExistenceConfidence());
+        double intensityCost = (equivalentPeak ? 0.0 : 1.0 - normalizedIntensity)
+            * (0.55 + 0.45 * band.signalExistenceConfidence());
         double coreDistance = distanceOutside(offset, band.coreMinPx(), band.coreMaxPx()) / sourcePixel;
         double shoulderDistance = distanceOutside(offset, band.shoulderMinPx(), band.shoulderMaxPx()) / sourcePixel;
-        double centerDistance = Math.abs(offset - band.centerOffsetPx()) / Math.max(sourcePixel, band.uncertaintyPx());
+        double robustCoreCenter = (band.coreMinPx() + band.coreMaxPx()) / 2.0;
+        double centerTarget = equivalentPeak ? robustCoreCenter : band.centerOffsetPx();
+        double centerDistance = Math.abs(offset - centerTarget) / Math.max(sourcePixel, band.uncertaintyPx());
         double centerCost = square(centerDistance) * (0.12 + 0.38 * band.localizationConfidence());
-        return intensityCost + 0.55 * square(coreDistance) + 4.0 * square(shoulderDistance) + centerCost;
+        BandScaleEvidence evidence = scaleEvidence.get(scaleEvidenceKey(profileIndex, band.id()));
+        double coarsePrior = evidence == null || !evidence.hasCoarseCenterPrior()
+            ? 0.0
+            : 4.0 * evidence.scalePersistence() * (0.35 + 0.65 * (1.0 - band.localizationConfidence()))
+                * square((offset - evidence.coarseCenterPx())
+                    / Math.max(sourcePixel, Math.min(evidence.coarseUncertaintyPx(), 2.0 * sourcePixel)));
+        double total = intensityCost + 0.55 * square(coreDistance) + 4.0 * square(shoulderDistance)
+            + centerCost + coarsePrior;
+        return new DataCost(total, equivalentPeak ? centerCost : 0.0, coarsePrior);
+    }
+
+    static String scaleEvidenceKey(int profileIndex, String bandId) {
+        return profileIndex + "/" + bandId;
+    }
+
+    private double scaleIntensity(IntensitySample sample) {
+        return 0.30 * sample.nativeIntensity() + 0.30 * sample.lightFilteredIntensity()
+            + 0.40 * sample.standardFilteredIntensity();
+    }
+
+    private double plateauDeadband(CorridorProfile profile, CorridorBand band) {
+        double disagreement = profile.source().intensitySamples().stream()
+            .filter(IntensitySample::insideRaster)
+            .filter(sample -> sample.offsetPx() >= band.coreMinPx() - 1e-9
+                && sample.offsetPx() <= band.coreMaxPx() + 1e-9)
+            .mapToDouble(sample -> (Math.abs(sample.nativeIntensity() - sample.lightFilteredIntensity())
+                + Math.abs(sample.lightFilteredIntensity() - sample.standardFilteredIntensity())) / 2.0)
+            .average().orElse(0.0);
+        return Math.max(0.02, Math.min(0.10, 0.02 + 0.5 * disagreement));
     }
 
     private double continuityWeight(CorridorTrack track, int profileIndex) {
@@ -197,14 +282,18 @@ public final class CorridorCenterlineOptimizer {
         return band == null ? 0.16 : 0.06 + 0.18 * (1.0 - band.localizationConfidence());
     }
 
-    private double accelerationWeight(CorridorTrack track, int profileIndex) {
+    private double accelerationWeight(
+        CorridorTrack track,
+        int profileIndex,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
         CorridorBand current = bandAt(track, profileIndex);
         if (current == null) {
             return 0.42;
         }
-        boolean sustainedMotion = sustainedCenterMotion(track, profileIndex);
+        boolean sustainedMotion = sustainedCenterMotion(track, profileIndex, scaleEvidence);
         double base = 0.34 + 0.30 * (1.0 - current.localizationConfidence());
-        return sustainedMotion ? base * 0.42 : base;
+        return sustainedMotion ? base * 0.65 : base;
     }
 
     private double constraintCost(
@@ -254,20 +343,46 @@ public final class CorridorCenterlineOptimizer {
         return Math.max(-maximum, Math.min(maximum, offset));
     }
 
-    private boolean sustainedCenterMotion(CorridorTrack track, int profileIndex) {
-        if (profileIndex < 2) {
+    private boolean sustainedCenterMotion(
+        CorridorTrack track,
+        int profileIndex,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
+        int windowProfiles = 7;
+        if (profileIndex < windowProfiles - 1) {
             return false;
         }
-        CorridorBand a = bandAt(track, profileIndex - 2);
-        CorridorBand b = bandAt(track, profileIndex - 1);
-        CorridorBand c = bandAt(track, profileIndex);
-        if (a == null || b == null || c == null) {
+        int start = profileIndex - windowProfiles + 1;
+        CorridorBand firstBand = bandAt(track, start);
+        CorridorBand lastBand = bandAt(track, profileIndex);
+        if (firstBand == null || lastBand == null) {
             return false;
         }
-        double first = b.centerOffsetPx() - a.centerOffsetPx();
-        double second = c.centerOffsetPx() - b.centerOffsetPx();
-        return first * second > 0.0
-            && Math.min(a.localizationConfidence(), Math.min(b.localizationConfidence(), c.localizationConfidence())) >= 0.35;
+        double totalMotion = lastBand.centerOffsetPx() - firstBand.centerOffsetPx();
+        double maximumUncertainty = 0.0;
+        int coherent = 0;
+        int transitions = 0;
+        for (int index = start; index <= profileIndex; index++) {
+            CorridorBand band = bandAt(track, index);
+            if (band == null || band.scaleAgreement() < 0.55) {
+                return false;
+            }
+            BandScaleEvidence evidence = scaleEvidence.get(scaleEvidenceKey(index, band.id()));
+            if (evidence != null && evidence.scaleConflict()) {
+                return false;
+            }
+            maximumUncertainty = Math.max(maximumUncertainty, band.uncertaintyPx());
+            if (index > start) {
+                CorridorBand previous = bandAt(track, index - 1);
+                double motion = band.centerOffsetPx() - previous.centerOffsetPx();
+                if (Math.abs(motion) <= 1e-9 || Math.signum(motion) == Math.signum(totalMotion)) {
+                    coherent++;
+                }
+                transitions++;
+            }
+        }
+        return transitions > 0 && coherent >= Math.ceil(transitions * 0.70)
+            && Math.abs(totalMotion) > maximumUncertainty;
     }
 
     private double interpolatedGapOffset(CorridorTrack track, int profileIndex) {
@@ -313,6 +428,59 @@ public final class CorridorCenterlineOptimizer {
         Point2D.Double previous = profiles.get(index - 1).source().anchorScreen();
         Point2D.Double current = profiles.get(index).source().anchorScreen();
         return Math.max(sourcePixel, previous.distance(current));
+    }
+
+    private Point2D.Double pointFor(CorridorProfile profile, double offset) {
+        return new Point2D.Double(
+            profile.source().anchorScreen().x + profile.source().normalScreen().x * offset,
+            profile.source().anchorScreen().y + profile.source().normalScreen().y * offset
+        );
+    }
+
+    private double heading(Point2D.Double from, Point2D.Double to) {
+        return Math.atan2(to.y - from.y, to.x - from.x);
+    }
+
+    private double geometricCurvatureCost(
+        double heading,
+        double referenceHeading,
+        State previous,
+        double spacingSourcePixels
+    ) {
+        double candidateTurn = angleDifference(heading, previous.segmentHeading());
+        double referenceTurn = angleDifference(referenceHeading, previous.referenceHeading());
+        double meanSpacing = Math.max(1.0, (spacingSourcePixels + previous.spacingSourcePixels()) / 2.0);
+        return square(angleDifference(candidateTurn, referenceTurn) / meanSpacing);
+    }
+
+    private double geometricCurvatureCost(
+        List<CorridorProfile> profiles,
+        List<Double> offsets,
+        int index,
+        double sourcePixel
+    ) {
+        Point2D.Double a = pointFor(profiles.get(index - 2), offsets.get(index - 2));
+        Point2D.Double b = pointFor(profiles.get(index - 1), offsets.get(index - 1));
+        Point2D.Double c = pointFor(profiles.get(index), offsets.get(index));
+        double candidateTurn = angleDifference(heading(b, c), heading(a, b));
+        Point2D.Double sourceA = profiles.get(index - 2).source().anchorScreen();
+        Point2D.Double sourceB = profiles.get(index - 1).source().anchorScreen();
+        Point2D.Double sourceC = profiles.get(index).source().anchorScreen();
+        double referenceTurn = angleDifference(heading(sourceB, sourceC), heading(sourceA, sourceB));
+        double spacing = (profileSpacing(profiles, index - 1, sourcePixel)
+            + profileSpacing(profiles, index, sourcePixel)) / (2.0 * sourcePixel);
+        return square(angleDifference(candidateTurn, referenceTurn) / Math.max(1.0, spacing));
+    }
+
+    private double angleDifference(double angle, double reference) {
+        double difference = angle - reference;
+        while (difference > Math.PI) {
+            difference -= 2.0 * Math.PI;
+        }
+        while (difference < -Math.PI) {
+            difference += 2.0 * Math.PI;
+        }
+        return difference;
     }
 
     private double distanceOutside(double value, double minimum, double maximum) {
@@ -377,6 +545,9 @@ public final class CorridorCenterlineOptimizer {
      * @param continuityCost first-difference diagnostic
      * @param accelerationCost second-difference diagnostic
      * @param endpointCost endpoint prior cost
+     * @param plateauCenterCost robust center cost applied within an intensity plateau
+     * @param coarsePriorCost compatible coarse-scale localization prior
+     * @param weightedTotal exact sum of this row's weighted objective terms
      * @param insideCore whether the point is inside its selected high-level core
      * @param insideCorridor whether the point is inside its selected shoulder envelope
      */
@@ -387,12 +558,26 @@ public final class CorridorCenterlineOptimizer {
         double dataCost,
         double continuityCost,
         double accelerationCost,
+        double plateauCenterCost,
+        double coarsePriorCost,
         double endpointCost,
+        double weightedTotal,
         boolean insideCore,
         boolean insideCorridor
     ) {
     }
 
-    private record State(double offset, double delta, double cost, List<Double> offsets) {
+    private record State(
+        double offset,
+        double delta,
+        double segmentHeading,
+        double referenceHeading,
+        double spacingSourcePixels,
+        double cost,
+        List<Double> offsets
+    ) {
+    }
+
+    private record DataCost(double total, double plateauCenterCost, double coarsePriorCost) {
     }
 }

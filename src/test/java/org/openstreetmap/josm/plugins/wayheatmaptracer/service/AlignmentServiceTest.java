@@ -21,6 +21,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -102,6 +103,30 @@ class AlignmentServiceTest {
         assertFalse(service.detectionColorModes(aggregateOnly).contains("bluered-combined"));
         assertEquals(List.of("hot"), service.detectionColorModes(visualizationOnly));
         assertTrue(service.sourceTileColors(visualizationOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
+    }
+
+    @Test
+    void everyRequestedHotMappingLeavesAnAttemptEvenWithoutCandidates() {
+        AlignmentService service = new AlignmentService();
+        ManagedHeatmapConfig alternatives = config(AlignmentMode.MOVE_EXISTING_NODES, true, false);
+
+        var attempts = service.detectorAttempts(service.detectionColorModes(alternatives), List.of(),
+            alternatives, 0, false);
+
+        assertTrue(attempts.stream().anyMatch(attempt -> attempt.mappingName().equals("hot")
+            && attempt.status() == DetectorAttemptStatus.NO_PERSISTENT_CORRIDOR));
+    }
+
+    @Test
+    void renderedFallbackReportsManagedAggregateAsUnavailable() {
+        AlignmentService service = new AlignmentService();
+        ManagedHeatmapConfig aggregate = config(AlignmentMode.MOVE_EXISTING_NODES, false, true);
+
+        var attempts = service.detectorAttempts(service.detectionColorModes(aggregate), List.of(),
+            aggregate, 0, false);
+
+        assertTrue(attempts.stream().anyMatch(attempt -> attempt.mappingName().equals("all-colors-combined")
+            && attempt.status() == DetectorAttemptStatus.SOURCE_UNAVAILABLE));
     }
 
     @Test

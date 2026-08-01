@@ -80,7 +80,11 @@ public final class PreviewOverlay implements MapViewPaintable {
 
         drawPolyline(g, mv, result.sourcePolyline(), new Color(255, 153, 0, 190), new float[] {6f, 6f}, 2f);
         drawCandidateAlternatives(g, mv);
-        drawPolyline(g, mv, result.previewPolyline(), new Color(0, 90, 255, 230), null, 3.5f);
+        boolean applicable = result.applicableCandidates().stream()
+            .anyMatch(candidate -> candidate.id().equals(chosenCandidate.id()));
+        drawPolyline(g, mv, result.previewPolyline(),
+            applicable ? new Color(0, 90, 255, 230) : new Color(210, 35, 35, 220),
+            applicable ? null : new float[] {7f, 5f}, applicable ? 3.5f : 2.8f);
         drawLegend(g);
     }
 
