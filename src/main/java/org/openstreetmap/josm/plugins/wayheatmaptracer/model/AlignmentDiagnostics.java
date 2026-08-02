@@ -23,6 +23,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param corridorTracksCsv longitudinal association and grouping CSV
  * @param optimizerCostsCsv decomposed corridor optimizer CSV
  * @param scaleSpaceCsv per-profile Gaussian-level corridor evidence CSV
+ * @param corridorTubeCsv robust longitudinal corridor tube CSV
+ * @param associationDecisionsCsv selected longitudinal association decisions CSV
+ * @param endpointApproachesCsv endpoint boundary evidence CSV
  * @param parallelContextJson redacted nearby-way assignment context JSON
  */
 public record AlignmentDiagnostics(
@@ -46,6 +49,9 @@ public record AlignmentDiagnostics(
     String corridorTracksCsv,
     String optimizerCostsCsv,
     String scaleSpaceCsv,
+    String corridorTubeCsv,
+    String associationDecisionsCsv,
+    String endpointApproachesCsv,
     String parallelContextJson
 ) {
     /**
@@ -83,7 +89,8 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv, "", parallelContextJson);
+            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv, "", "", "", "",
+            parallelContextJson);
     }
 
     /**
@@ -125,7 +132,7 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "{}");
     }
 
     /**
@@ -160,7 +167,7 @@ public record AlignmentDiagnostics(
     ) {
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis, optimizationMillis,
             configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson,
-            "", "", "", "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "", "", "", "{}");
     }
 
     /**

@@ -12,7 +12,8 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Ratings and detector metrics are exported.
   - Add automation that consumes many rated bundles and proposes calibrated detector weights/priors.
 - More advanced longitudinal reasoning:
-  - The experimental corridor-aware tracker now keeps elementary longitudinal strand identities and parent/child corridor hypotheses.
+  - The experimental corridor-aware tracker now keeps elementary longitudinal strand identities and parent/child corridor hypotheses, rejects temporary scale-conflict strand switches, fits a robust physical-distance tube, and uses one exact second-order optimizer with subpixel evidence.
+  - Endpoint approaches now derive their entry direction from a reliable interior anchor on the selected branch; unsupported approaches are inspectable but not applicable.
   - Continue calibration on rated real bundles before considering it a replacement for the legacy tracker.
 - Adaptive smoothing and blur experiments:
   - Current filtering uses signal-gated B3/B5 one-dimensional profile filters.
@@ -22,7 +23,7 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Managed source tiles can aggregate all base color schemes and can show/export a diagnostic aggregate intensity visualization layer.
   - Manual visible-layer fallback has only the selected rendered source; true all-color aggregation there would require managed source access or another way to obtain all color rasters.
 - Broader topology safety:
-  - Current cleanup prunes endpoint clusters and self-intersection loops in precise previews.
+  - Current cleanup prunes endpoint clusters and self-intersection loops in precise previews, while corridor-aware physical gates reject foldbacks, unsupported short excursions, and unsafe terminal approaches.
   - Add explicit checks against crossing connected or nearby existing OSM ways before junction points.
 - Rough sketch workflow improvements:
   - Rough 2-5 node selections are recognized in metadata.

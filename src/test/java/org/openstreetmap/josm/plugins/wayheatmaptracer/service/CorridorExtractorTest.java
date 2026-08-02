@@ -49,6 +49,22 @@ class CorridorExtractorTest {
     }
 
     @Test
+    void interpolatesThresholdBoundariesBetweenSourceSamples() {
+        CrossSectionProfile profile = profile(
+            new double[] {0.0, 0.4, 1.0, 0.4, 0.0},
+            new double[] {0.0, 0.4, 1.0, 0.4, 0.0}
+        );
+
+        CorridorBand band = extractor.extract(0, profile).bands().get(0);
+
+        assertEquals(-2.0 / 3.0, band.shoulderMinPx(), 1e-9);
+        assertEquals(2.0 / 3.0, band.shoulderMaxPx(), 1e-9);
+        assertEquals(-2.0 / 15.0, band.coreMinPx(), 1e-9);
+        assertEquals(2.0 / 15.0, band.coreMaxPx(), 1e-9);
+        assertEquals(0.0, band.centerOffsetPx(), 1e-9);
+    }
+
+    @Test
     void retainsChildrenAndParentWhenHighCoresShareShoulder() {
         CrossSectionProfile profile = profile(
             new double[] {0.0, 0.0, 0.0, 0.64, 1.0, 0.68, 0.66, 0.68, 0.98, 0.64, 0.0, 0.0, 0.0},
@@ -71,6 +87,24 @@ class CorridorExtractorTest {
         assertFalse(extractor.extract(0, unsupported).supported());
         assertTrue(extractor.extract(1, empty).supported());
         assertTrue(extractor.extract(1, empty).bands().isEmpty());
+    }
+
+    @Test
+    void invalidRasterSampleSplitsRatherThanBridgesCorridorEvidence() {
+        List<IntensitySample> samples = List.of(
+            new IntensitySample(-2.0, 0.0, 0.0, 0.0, true),
+            new IntensitySample(-1.0, 1.0, 1.0, 1.0, true),
+            new IntensitySample(0.0, 0.0, 0.0, 0.0, false),
+            new IntensitySample(1.0, 1.0, 1.0, 1.0, true),
+            new IntensitySample(2.0, 0.0, 0.0, 0.0, true)
+        );
+        CrossSectionProfile profile = new CrossSectionProfile(new EastNorth(0, 0), point(), normal(),
+            List.of(), true, samples);
+
+        CorridorProfile extracted = extractor.extract(0, profile);
+
+        assertEquals(2, extracted.bands().size());
+        assertTrue(extracted.bands().get(0).shoulderMaxPx() < extracted.bands().get(1).shoulderMinPx());
     }
 
     @Test

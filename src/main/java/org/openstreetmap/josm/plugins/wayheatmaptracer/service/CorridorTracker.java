@@ -11,7 +11,9 @@ import java.util.Map;
  * Associates elementary corridor bands across profiles while preserving longitudinal identity.
  */
 public final class CorridorTracker {
-    private static final int MAX_GAP_PROFILES = 2;
+    private static final int MAX_GAP_PROFILES = 16;
+    private static final double MAX_GAP_METERS = 20.0;
+    private static final double LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS = 1.5;
     private static final int MAX_STATES_PER_SEED = 24;
 
     /**
@@ -29,6 +31,22 @@ public final class CorridorTracker {
      * @return distinct elementary tracks ordered by score
      */
     public List<CorridorTrack> track(List<CorridorProfile> profiles, double sourcePixelSizePx) {
+        return track(profiles, sourcePixelSizePx, Map.of());
+    }
+
+    /**
+     * Tracks elementary bands with cross-scale conflicts available to transition gating.
+     *
+     * @param profiles extracted corridor profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param scaleEvidence cross-scale evidence keyed by profile and band id
+     * @return distinct elementary tracks ordered by score
+     */
+    public List<CorridorTrack> track(
+        List<CorridorProfile> profiles,
+        double sourcePixelSizePx,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
         if (profiles.isEmpty()) {
             return List.of();
         }
@@ -40,7 +58,7 @@ public final class CorridorTracker {
         List<CorridorTrack> tracks = new ArrayList<>();
         int trackIndex = 1;
         for (Seed seed : seeds) {
-            PathState best = solveSeed(profiles, seed.profileIndex(), seed.band(), sourcePixel);
+            PathState best = solveSeed(profiles, seed.profileIndex(), seed.band(), sourcePixel, scaleEvidence);
             int minimumSupport = Math.max(2, (int) Math.ceil(profiles.size() * 0.03));
             if (best.points().size() < minimumSupport) {
                 continue;
@@ -58,19 +76,23 @@ public final class CorridorTracker {
         List<CorridorProfile> profiles,
         int seedProfile,
         CorridorBand seed,
-        double sourcePixel
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
     ) {
         Map<Integer, CorridorTrackPoint> seedPoints = new LinkedHashMap<>();
         seedPoints.put(seedProfile, new CorridorTrackPoint(seedProfile, seed, false));
         Point2D.Double seedCenter = centerPoint(profiles.get(seedProfile), seed);
-        PathState seedState = new PathState(seedProfile, seed, seedCenter, null,
+        PathState seedState = new PathState(seedProfile, -1, seed, seedCenter, null, Double.NaN,
             bandReward(seed), 0, seedPoints);
-        PathState forward = advance(profiles, seedState, seedProfile + 1, profiles.size(), 1, sourcePixel);
-        PathState backward = advance(profiles, seedState, seedProfile - 1, -1, -1, sourcePixel);
+        PathState forward = advance(profiles, seedState, seedProfile + 1, profiles.size(), 1, sourcePixel,
+            scaleEvidence);
+        PathState backward = advance(profiles, seedState, seedProfile - 1, -1, -1, sourcePixel,
+            scaleEvidence);
         Map<Integer, CorridorTrackPoint> merged = new LinkedHashMap<>(backward.points());
         merged.putAll(forward.points());
-        return new PathState(forward.lastProfileIndex(), forward.band(), forward.centerPoint(),
-            forward.previousCenterPoint(), forward.score() + backward.score() - bandReward(seed), 0, merged);
+        return new PathState(forward.lastProfileIndex(), forward.previousProfileIndex(), forward.band(),
+            forward.centerPoint(), forward.previousCenterPoint(), forward.previousOffsetPx(),
+            forward.score() + backward.score() - bandReward(seed), 0, merged);
     }
 
     private PathState advance(
@@ -79,7 +101,8 @@ public final class CorridorTracker {
         int start,
         int endExclusive,
         int direction,
-        double sourcePixel
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
     ) {
         List<PathState> states = List.of(seedState);
         for (int profileIndex = start; profileIndex != endExclusive; profileIndex += direction) {
@@ -87,11 +110,14 @@ public final class CorridorTracker {
             List<CorridorBand> observations = elementaryBands(profile);
             List<PathState> next = new ArrayList<>();
             for (PathState state : states) {
-                if (state.gapCount() < MAX_GAP_PROFILES) {
+                double gapDistanceMeters = profileDistanceMeters(
+                    profiles, state.lastProfileIndex(), profileIndex);
+                if (state.gapCount() < MAX_GAP_PROFILES && gapDistanceMeters <= MAX_GAP_METERS + 1e-9) {
                     next.add(state.withGap());
                 }
                 for (CorridorBand observation : observations) {
-                    PathState extended = extend(state, profiles, profileIndex, profile, observation, sourcePixel);
+                    PathState extended = extend(state, profiles, profileIndex, profile, observation, sourcePixel,
+                        direction, scaleEvidence);
                     if (extended != null) {
                         next.add(extended);
                     }
@@ -114,8 +140,14 @@ public final class CorridorTracker {
         int profileIndex,
         CorridorProfile profile,
         CorridorBand observation,
-        double sourcePixel
+        double sourcePixel,
+        int direction,
+        Map<String, BandScaleEvidence> scaleEvidence
     ) {
+        if (state.gapCount() > 0
+            && profileDistanceMeters(profiles, state.lastProfileIndex(), profileIndex) > MAX_GAP_METERS + 1e-9) {
+            return null;
+        }
         Point2D.Double center = centerPoint(profile, observation);
         double longitudinalDistance = center.distance(state.centerPoint());
         double anchorDistance = profile.source().anchorScreen().distance(
@@ -125,6 +157,19 @@ public final class CorridorTracker {
         double lateralTolerance = Math.max(sourcePixel * 3.0,
             (observation.shoulderWidthPx() + state.band().shoulderWidthPx()) * 0.75 + sourcePixel);
         if (excessDistance > lateralTolerance * (state.gapCount() + 1.0)) {
+            return null;
+        }
+
+        double predictedOffset = predictedOffset(state, profiles, profileIndex);
+        double predictionResidual = Math.abs(observation.centerOffsetPx() - predictedOffset) / sourcePixel;
+        BandScaleEvidence observationScale = scaleEvidence.get(
+            CorridorCenterlineOptimizer.scaleEvidenceKey(profileIndex, observation.id()));
+        boolean unreliableScale = observationScale != null
+            && (observationScale.scaleConflict() || observationScale.parentMerge());
+        boolean sustainedMotion = hasSustainedMotion(
+            profiles, state, profileIndex, observation, direction, sourcePixel);
+        if (predictionResidual > LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS
+            && (unreliableScale || !sustainedMotion)) {
             return null;
         }
 
@@ -144,8 +189,71 @@ public final class CorridorTracker {
             + uncertainty * 0.10 + state.gapCount() * 0.35;
         Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>(state.points());
         points.put(profileIndex, new CorridorTrackPoint(profileIndex, observation, state.gapCount() > 0));
-        return new PathState(profileIndex, observation, center, state.centerPoint(),
-            state.score() + bandReward(observation) - cost, 0, points);
+        return new PathState(profileIndex, state.lastProfileIndex(), observation, center, state.centerPoint(),
+            state.band().centerOffsetPx(), state.score() + bandReward(observation) - cost, 0, points);
+    }
+
+    private double predictedOffset(PathState state, List<CorridorProfile> profiles, int profileIndex) {
+        if (state.previousProfileIndex() < 0 || !Double.isFinite(state.previousOffsetPx())) {
+            return state.band().centerOffsetPx();
+        }
+        double previousDistance = profileDistancePixels(profiles, state.previousProfileIndex(),
+            state.lastProfileIndex());
+        if (previousDistance <= 1e-9) {
+            return state.band().centerOffsetPx();
+        }
+        double currentDistance = profileDistancePixels(profiles, state.lastProfileIndex(), profileIndex);
+        double slope = (state.band().centerOffsetPx() - state.previousOffsetPx()) / previousDistance;
+        return state.band().centerOffsetPx() + slope * currentDistance;
+    }
+
+    private boolean hasSustainedMotion(
+        List<CorridorProfile> profiles,
+        PathState state,
+        int profileIndex,
+        CorridorBand observation,
+        int direction,
+        double sourcePixel
+    ) {
+        double initialMotion = observation.centerOffsetPx() - state.band().centerOffsetPx();
+        if (Math.abs(initialMotion) <= 1e-9) {
+            return false;
+        }
+        double currentOffset = observation.centerOffsetPx();
+        int coherent = 0;
+        int examined = 0;
+        for (int lookahead = 1; lookahead <= 3; lookahead++) {
+            int nextIndex = profileIndex + direction * lookahead;
+            if (nextIndex < 0 || nextIndex >= profiles.size()) {
+                break;
+            }
+            double expectedOffset = currentOffset;
+            CorridorBand next = elementaryBands(profiles.get(nextIndex)).stream()
+                .min(Comparator.comparingDouble(band -> Math.abs(band.centerOffsetPx() - expectedOffset)))
+                .orElse(null);
+            if (next == null) {
+                break;
+            }
+            double motion = next.centerOffsetPx() - currentOffset;
+            if (Math.abs(motion) > 0.10 * sourcePixel
+                && Math.signum(motion) == Math.signum(initialMotion)) {
+                coherent++;
+            }
+            examined++;
+            currentOffset = next.centerOffsetPx();
+        }
+        return examined >= 2 && coherent >= 2
+            && Math.abs(currentOffset - observation.centerOffsetPx()) >= 0.5 * sourcePixel;
+    }
+
+    private double profileDistancePixels(List<CorridorProfile> profiles, int leftIndex, int rightIndex) {
+        return profiles.get(leftIndex).source().anchorScreen().distance(
+            profiles.get(rightIndex).source().anchorScreen());
+    }
+
+    private double profileDistanceMeters(List<CorridorProfile> profiles, int leftIndex, int rightIndex) {
+        return profiles.get(leftIndex).source().anchor().distance(
+            profiles.get(rightIndex).source().anchor());
     }
 
     private double bandReward(CorridorBand band) {
@@ -236,16 +344,18 @@ public final class CorridorTracker {
 
     private record PathState(
         int lastProfileIndex,
+        int previousProfileIndex,
         CorridorBand band,
         Point2D.Double centerPoint,
         Point2D.Double previousCenterPoint,
+        double previousOffsetPx,
         double score,
         int gapCount,
         Map<Integer, CorridorTrackPoint> points
     ) {
         PathState withGap() {
-            return new PathState(lastProfileIndex, band, centerPoint, previousCenterPoint,
-                score - 0.18 * (gapCount + 1), gapCount + 1, points);
+            return new PathState(lastProfileIndex, previousProfileIndex, band, centerPoint, previousCenterPoint,
+                previousOffsetPx, score - 0.18 * (gapCount + 1), gapCount + 1, points);
         }
     }
 

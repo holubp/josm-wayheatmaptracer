@@ -12,19 +12,28 @@ import statistics
 import sys
 import zipfile
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 
-def read_zip_text(bundle: Path, name: str) -> str:
+@dataclass(frozen=True)
+class BundleSource:
+    """One direct or nested debug bundle held entirely in memory."""
+
+    name: str
+    data: bytes
+
+
+def read_zip_text(bundle: BundleSource, name: str) -> str:
     """Return a UTF-8 text member from a debug bundle, or an empty string when absent."""
-    with zipfile.ZipFile(bundle) as archive:
+    with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
         try:
             return archive.read(name).decode("utf-8")
         except KeyError:
             return ""
 
 
-def read_zip_csv(bundle: Path, name: str) -> list[dict[str, str]]:
+def read_zip_csv(bundle: BundleSource, name: str) -> list[dict[str, str]]:
     """Return CSV rows from a debug bundle member."""
     text = read_zip_text(bundle, name)
     if not text.strip():
@@ -43,7 +52,7 @@ def rating_score(value: str) -> int | None:
     }.get((value or "").strip())
 
 
-def bundle_rows(bundle: Path) -> list[dict[str, object]]:
+def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     """Merge candidate metrics and optional human ratings for one debug bundle."""
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
@@ -112,6 +121,19 @@ def bundle_rows(bundle: Path) -> list[dict[str, object]]:
             if row.get("scale_persistence", "") != "" else scale_summary.get("median_persistence"),
             "cross_scale_center_drift_px": scale_summary.get("median_center_drift_px"),
             "scale_conflict_ratio": scale_summary.get("conflict_ratio"),
+            "tube_residual_mean_source_px": float_or_none(row.get("tube_residual_mean_source_px")),
+            "tube_residual_p95_source_px": float_or_none(row.get("tube_residual_p95_source_px")),
+            "corridor_hf_rms_source_px": float_or_none(row.get("corridor_hf_rms_source_px")),
+            "corridor_hf_p95_source_px": float_or_none(row.get("corridor_hf_p95_source_px")),
+            "turn_p95_deg": float_or_none(row.get("turn_p95_deg")),
+            "turn_max_deg": float_or_none(row.get("turn_max_deg")),
+            "curvature_change_p95_deg": float_or_none(row.get("curvature_change_p95_deg")),
+            "forward_progress_violations": float_or_none(row.get("forward_progress_violations")),
+            "unsupported_excursions": float_or_none(row.get("unsupported_excursions")),
+            "max_gap_m": float_or_none(row.get("max_gap_m")),
+            "endpoint_approach_max_turn_deg": float_or_none(row.get("endpoint_approach_max_turn_deg")),
+            "true_longitudinal_persistence": float_or_none(row.get("true_longitudinal_persistence")),
+            "endpoint_approaches_supported": row.get("endpoint_approaches_supported", ""),
         })
     return rows
 
@@ -226,6 +248,10 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         persistence = compact_numbers(row["scale_persistence"] for row in group)
         scale_drift = compact_numbers(row["cross_scale_center_drift_px"] for row in group)
         scale_conflicts = compact_numbers(row["scale_conflict_ratio"] for row in group)
+        tube_residual = compact_numbers(row["tube_residual_p95_source_px"] for row in group)
+        corridor_hf = compact_numbers(row["corridor_hf_p95_source_px"] for row in group)
+        turns = compact_numbers(row["turn_p95_deg"] for row in group)
+        persistence_physical = compact_numbers(row["true_longitudinal_persistence"] for row in group)
         summary.append({
             "visible_color": visible_color,
             "intensity_source": intensity_source,
@@ -248,6 +274,11 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "median_scale_persistence": statistics.median(persistence) if persistence else None,
             "median_cross_scale_center_drift_px": statistics.median(scale_drift) if scale_drift else None,
             "median_scale_conflict_ratio": statistics.median(scale_conflicts) if scale_conflicts else None,
+            "median_tube_residual_p95_source_px": statistics.median(tube_residual) if tube_residual else None,
+            "median_corridor_hf_p95_source_px": statistics.median(corridor_hf) if corridor_hf else None,
+            "median_turn_p95_deg": statistics.median(turns) if turns else None,
+            "median_true_longitudinal_persistence": statistics.median(persistence_physical)
+            if persistence_physical else None,
             "attempt_statuses": "; ".join(sorted({str(row["detector_attempt_status"]) for row in group
                                                    if row["detector_attempt_status"]})),
             "negative_features": negative_counts(group),
@@ -295,6 +326,10 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "median_scale_persistence",
         "median_cross_scale_center_drift_px",
         "median_scale_conflict_ratio",
+        "median_tube_residual_p95_source_px",
+        "median_corridor_hf_p95_source_px",
+        "median_turn_p95_deg",
+        "median_true_longitudinal_persistence",
         "attempt_statuses",
         "negative_features",
     ]
@@ -302,6 +337,28 @@ def print_table(rows: list[dict[str, object]]) -> None:
     writer.writeheader()
     for row in rows:
         writer.writerow({field: row.get(field, "") for field in fields})
+
+
+def debug_bundles(path: Path) -> list[BundleSource]:
+    """Return direct and recursively nested WayHeatmapTracer debug bundles from one zip path."""
+    return nested_debug_bundles(path.name, path.read_bytes(), 0)
+
+
+def nested_debug_bundles(name: str, data: bytes, depth: int) -> list[BundleSource]:
+    """Discover debug bundles in a possibly nested zip without extracting user data to disk."""
+    if depth > 8:
+        raise ValueError(f"Nested zip depth exceeds safety limit: {name}")
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            names = set(archive.namelist())
+            if "candidate-metrics.csv" in names:
+                return [BundleSource(name, data)]
+            result: list[BundleSource] = []
+            for member in sorted(value for value in names if value.lower().endswith(".zip")):
+                result.extend(nested_debug_bundles(f"{name}!{member}", archive.read(member), depth + 1))
+            return result
+    except zipfile.BadZipFile as error:
+        raise ValueError(f"Not a readable zip bundle: {name}") from error
 
 
 def main() -> None:
@@ -317,8 +374,11 @@ def main() -> None:
             bundle_paths.extend(sorted(path.glob("*.zip")))
         else:
             bundle_paths.append(path)
+    bundles: list[BundleSource] = []
+    for path in bundle_paths:
+        bundles.extend(debug_bundles(path))
     rows: list[dict[str, object]] = []
-    for bundle in bundle_paths:
+    for bundle in bundles:
         rows.extend(bundle_rows(bundle))
 
     if args.raw_csv:

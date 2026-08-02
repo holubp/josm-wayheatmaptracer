@@ -40,6 +40,9 @@ public final class LastSlideDebugBundle {
     private final String corridorTracksCsv;
     private final String optimizerCostsCsv;
     private final String scaleSpaceCsv;
+    private final String corridorTubeCsv;
+    private final String associationDecisionsCsv;
+    private final String endpointApproachesCsv;
     private final String parallelContextJson;
     private final String tileManifestJson;
     private final String aggregateMetadataJson;
@@ -62,6 +65,9 @@ public final class LastSlideDebugBundle {
         String corridorTracksCsv,
         String optimizerCostsCsv,
         String scaleSpaceCsv,
+        String corridorTubeCsv,
+        String associationDecisionsCsv,
+        String endpointApproachesCsv,
         String parallelContextJson,
         String tileManifestJson,
         String aggregateMetadataJson,
@@ -83,6 +89,9 @@ public final class LastSlideDebugBundle {
         this.corridorTracksCsv = corridorTracksCsv;
         this.optimizerCostsCsv = optimizerCostsCsv;
         this.scaleSpaceCsv = scaleSpaceCsv;
+        this.corridorTubeCsv = corridorTubeCsv;
+        this.associationDecisionsCsv = associationDecisionsCsv;
+        this.endpointApproachesCsv = endpointApproachesCsv;
         this.parallelContextJson = parallelContextJson;
         this.tileManifestJson = tileManifestJson;
         this.aggregateMetadataJson = aggregateMetadataJson;
@@ -169,6 +178,9 @@ public final class LastSlideDebugBundle {
             result.diagnostics().corridorTracksCsv(),
             result.diagnostics().optimizerCostsCsv(),
             result.diagnostics().scaleSpaceCsv(),
+            result.diagnostics().corridorTubeCsv(),
+            result.diagnostics().associationDecisionsCsv(),
+            result.diagnostics().endpointApproachesCsv(),
             result.diagnostics().parallelContextJson(),
             tileManifest,
             aggregateMetadata,
@@ -202,6 +214,9 @@ public final class LastSlideDebugBundle {
             writeText(zip, "corridor-tracks.csv", corridorTracksCsv);
             writeText(zip, "optimizer-costs.csv", optimizerCostsCsv);
             writeText(zip, "scale-space.csv", scaleSpaceCsv);
+            writeText(zip, "corridor-tube.csv", corridorTubeCsv);
+            writeText(zip, "association-decisions.csv", associationDecisionsCsv);
+            writeText(zip, "endpoint-approaches.csv", endpointApproachesCsv);
             writeText(zip, "parallel-context.json", parallelContextJson);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
@@ -218,9 +233,9 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":3,"
+            + "\"formatVersion\":4,"
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"candidate-ridges.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 

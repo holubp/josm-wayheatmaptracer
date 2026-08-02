@@ -21,6 +21,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -71,6 +72,21 @@ class AlignmentServiceTest {
         AlignmentService service = new AlignmentService();
         assertTrue(service.crossesConnectedWayBeforeJunction(crossing, selected));
         assertFalse(service.crossesConnectedWayBeforeJunction(correct, selected));
+    }
+
+    @Test
+    void corridorQualityPenalizesRipplesAndBlocksUnsupportedEndpointApproaches() {
+        CorridorQuality smooth = new CorridorQuality(0.1, 0.2, 0.08, 0.15, 0.2, 0.3,
+            4.0, 8.0, 3.0, 0, 0, 0.0, 8.0, 0.85, true);
+        CorridorQuality rough = new CorridorQuality(0.6, 1.1, 0.7, 1.2, 1.8, 2.4,
+            20.0, 45.0, 30.0, 1, 2, 12.0, 42.0, 0.20, false);
+        AlignmentService service = new AlignmentService();
+
+        assertTrue(service.corridorQualityAdjustment(smooth) > service.corridorQualityAdjustment(rough));
+        assertTrue(service.corridorQualityWarnings(rough).contains("unsupported endpoint approach"));
+        assertTrue(service.corridorQualityWarnings(rough).stream()
+            .anyMatch(value -> value.contains("folds backward")));
+        assertTrue(service.corridorQualityWarnings(smooth).isEmpty());
     }
 
     @Test

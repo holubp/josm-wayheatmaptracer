@@ -30,6 +30,12 @@ class CorridorRasterIntegrationTest {
         double rms = Math.sqrt(candidates.get(0).offsetsPx().stream()
             .mapToDouble(offset -> offset * offset).average().orElseThrow());
         assertTrue(rms <= 0.5, "Broad-corridor RMS was " + rms);
+        assertTrue(candidates.get(0).evidence().corridorQuality().highFrequencyRmsSourcePx() <= 0.15,
+            "Broad-corridor high-frequency RMS was "
+                + candidates.get(0).evidence().corridorQuality().highFrequencyRmsSourcePx());
+        assertTrue(candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx() <= 0.25,
+            "Broad-corridor high-frequency p95 was "
+                + candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx());
     }
 
     @Test
@@ -41,6 +47,7 @@ class CorridorRasterIntegrationTest {
         assertFalse(candidates.isEmpty());
         assertTrue(candidates.get(0).evidence().signalExistenceConfidence() > 0.0);
         assertEquals(2.0, mean(candidates.get(0).offsetsPx()), 0.75);
+        assertTrue(candidates.get(0).evidence().corridorQuality().longitudinalPersistence() > 0.5);
     }
 
     @Test

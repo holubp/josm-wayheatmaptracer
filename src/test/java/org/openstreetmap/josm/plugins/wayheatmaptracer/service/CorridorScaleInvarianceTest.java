@@ -28,8 +28,10 @@ class CorridorScaleInvarianceTest {
 
             double rms = highFrequencyRms(offsets);
             double p95 = highFrequencyP95(offsets);
-            assertTrue(rms <= 0.25, "scale=" + scale + " high-frequency RMS=" + rms);
-            assertTrue(p95 <= 0.50, "scale=" + scale + " high-frequency p95=" + p95);
+            double meanBias = Math.abs(offsets.stream().mapToDouble(Double::doubleValue).average().orElseThrow());
+            assertTrue(rms <= 0.15, "scale=" + scale + " high-frequency RMS=" + rms);
+            assertTrue(p95 <= 0.25, "scale=" + scale + " high-frequency p95=" + p95);
+            assertTrue(meanBias <= 0.25, "scale=" + scale + " mean center bias=" + meanBias);
         }
 
         List<Double> reference = normalizedOffsets.get(0);
@@ -57,7 +59,7 @@ class CorridorScaleInvarianceTest {
                 Point2D.Double point = result.screenPoints().get(i);
                 crossTrack.add(((point.x - anchor.x) * normal.x + (point.y - anchor.y) * normal.y) / scale);
             }
-            assertTrue(highFrequencyRms(crossTrack) <= 0.25,
+            assertTrue(highFrequencyRms(crossTrack) <= 0.15,
                 "scale=" + scale + " geometric high-frequency RMS=" + highFrequencyRms(crossTrack));
         }
     }

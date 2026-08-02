@@ -64,6 +64,9 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("corridor-bands.csv"));
             assertNotNull(zip.getEntry("corridor-tracks.csv"));
             assertNotNull(zip.getEntry("optimizer-costs.csv"));
+            assertNotNull(zip.getEntry("corridor-tube.csv"));
+            assertNotNull(zip.getEntry("association-decisions.csv"));
+            assertNotNull(zip.getEntry("endpoint-approaches.csv"));
             assertNotNull(zip.getEntry("parallel-context.json"));
             assertEquals("intensity\n", text(zip, "profile-intensity.csv"));
             assertTrue(text(zip, "diagnostics.json").contains("CORRIDOR_AWARE"));

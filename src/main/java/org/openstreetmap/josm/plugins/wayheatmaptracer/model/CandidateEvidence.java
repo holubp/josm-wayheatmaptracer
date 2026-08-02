@@ -22,6 +22,7 @@ import java.util.List;
  * @param inCorridorFraction fraction of optimized points inside selected corridor shoulders
  * @param scalePersistence mean compatible L0/L1/L2 corridor persistence
  * @param scaleConflictFraction fraction of supported profiles with incompatible coarse evidence
+ * @param corridorQuality unweighted corridor-aware physical quality metrics
  * @param consensusModes detector modes fused before candidate extraction
  */
 public record CandidateEvidence(
@@ -42,8 +43,57 @@ public record CandidateEvidence(
     double inCorridorFraction,
     double scalePersistence,
     double scaleConflictFraction,
+    CorridorQuality corridorQuality,
     List<String> consensusModes
 ) {
+    /**
+     * Creates scale-space evidence without the newer physical-quality payload.
+     *
+     * @param detectorMode detector mapping
+     * @param totalProfiles sampled profile count
+     * @param supportedProfiles supported profile count
+     * @param emptyProfiles empty profile count
+     * @param maxConsecutiveEmptyProfiles longest empty run
+     * @param totalIntensity selected intensity sum
+     * @param meanIntensity selected mean intensity
+     * @param meanGradientStrength mean gradient strength
+     * @param longitudinalStability objective-derived stability score
+     * @param signalToNoise signal-to-noise estimate
+     * @param ambiguity multimodal ambiguity estimate
+     * @param signalExistenceConfidence signal-existence confidence
+     * @param localizationConfidence localization confidence
+     * @param optimizerCost normalized optimizer cost
+     * @param inCorridorFraction fraction inside shoulders
+     * @param scalePersistence cross-scale persistence
+     * @param scaleConflictFraction cross-scale conflict fraction
+     * @param consensusModes fused detector mappings
+     */
+    public CandidateEvidence(
+        String detectorMode,
+        int totalProfiles,
+        int supportedProfiles,
+        int emptyProfiles,
+        int maxConsecutiveEmptyProfiles,
+        double totalIntensity,
+        double meanIntensity,
+        double meanGradientStrength,
+        double longitudinalStability,
+        double signalToNoise,
+        double ambiguity,
+        double signalExistenceConfidence,
+        double localizationConfidence,
+        double optimizerCost,
+        double inCorridorFraction,
+        double scalePersistence,
+        double scaleConflictFraction,
+        List<String> consensusModes
+    ) {
+        this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
+            totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
+            ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
+            scalePersistence, scaleConflictFraction, CorridorQuality.empty(), consensusModes);
+    }
+
     /**
      * Creates pre-scale-space corridor evidence.
      *
@@ -85,7 +135,7 @@ public record CandidateEvidence(
         this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
             totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
             ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
-            0.0, 0.0, consensusModes);
+            0.0, 0.0, CorridorQuality.empty(), consensusModes);
     }
 
     /**
@@ -120,7 +170,7 @@ public record CandidateEvidence(
     ) {
         this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
             totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
-            ambiguity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, consensusModes);
+            ambiguity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), consensusModes);
     }
 
     /**
@@ -130,7 +180,7 @@ public record CandidateEvidence(
      */
     public static CandidateEvidence empty() {
         return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, List.of());
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), List.of());
     }
 
     /**
@@ -176,6 +226,7 @@ public record CandidateEvidence(
             inCorridorFraction,
             scalePersistence,
             scaleConflictFraction,
+            corridorQuality,
             consensusModes
         );
     }
@@ -205,6 +256,7 @@ public record CandidateEvidence(
             inCorridorFraction,
             scalePersistence,
             scaleConflictFraction,
+            corridorQuality,
             modes == null ? List.of() : List.copyOf(modes)
         );
     }
@@ -234,6 +286,7 @@ public record CandidateEvidence(
             + "\"inCorridorFraction\":" + inCorridorFraction + ','
             + "\"scalePersistence\":" + scalePersistence + ','
             + "\"scaleConflictFraction\":" + scaleConflictFraction + ','
+            + "\"corridorQuality\":" + corridorQuality.toJson() + ','
             + "\"consensusModes\":" + stringArray(consensusModes)
             + "}";
     }
@@ -251,5 +304,11 @@ public record CandidateEvidence(
 
     private static String escape(String value) {
         return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /** Makes nested evidence immutable and non-null. */
+    public CandidateEvidence {
+        corridorQuality = corridorQuality == null ? CorridorQuality.empty() : corridorQuality;
+        consensusModes = consensusModes == null ? List.of() : List.copyOf(consensusModes);
     }
 }

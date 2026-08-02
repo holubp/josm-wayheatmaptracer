@@ -59,17 +59,21 @@ def discover_bundles(paths: list[Path]) -> list[Bundle]:
                 bundles.extend(discover_bundles([child]))
             continue
         data = path.read_bytes()
-        if is_debug_bundle(data):
-            bundles.append(Bundle(path.name, data))
-            continue
-        with zipfile.ZipFile(io.BytesIO(data)) as outer:
-            for name in sorted(outer.namelist()):
-                if not name.endswith(".zip"):
-                    continue
-                nested = outer.read(name)
-                if is_debug_bundle(nested):
-                    bundles.append(Bundle(name, nested))
+        bundles.extend(discover_nested_bundle(path.name, data, 0))
     return bundles
+
+
+def discover_nested_bundle(name: str, data: bytes, depth: int) -> list[Bundle]:
+    """Recursively discover debug bundles without extracting their contents to disk."""
+    if depth > 8:
+        raise ValueError(f"Nested zip depth exceeds safety limit: {name}")
+    if is_debug_bundle(data):
+        return [Bundle(name, data)]
+    result: list[Bundle] = []
+    with zipfile.ZipFile(io.BytesIO(data)) as outer:
+        for member in sorted(value for value in outer.namelist() if value.lower().endswith(".zip")):
+            result.extend(discover_nested_bundle(f"{name}!{member}", outer.read(member), depth + 1))
+    return result
 
 
 def is_debug_bundle(data: bytes) -> bool:
@@ -138,6 +142,15 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "metric_p95_accel_source_px": fnum(metric.get("p95_acceleration_source_px")),
             "metric_high_frequency_p95_source_px": fnum(metric.get("high_frequency_p95_source_px")),
             "metric_sub_source_wiggle_ratio": fnum(metric.get("sub_source_wiggle_ratio")),
+            "production_tube_residual_p95_source_px": fnum(metric.get("tube_residual_p95_source_px")),
+            "production_hf_rms_source_px": fnum(metric.get("corridor_hf_rms_source_px")),
+            "production_hf_p95_source_px": fnum(metric.get("corridor_hf_p95_source_px")),
+            "production_turn_p95_deg": fnum(metric.get("turn_p95_deg")),
+            "production_turn_max_deg": fnum(metric.get("turn_max_deg")),
+            "production_curvature_change_p95_deg": fnum(metric.get("curvature_change_p95_deg")),
+            "production_forward_progress_violations": fnum(metric.get("forward_progress_violations")),
+            "production_unsupported_excursions": fnum(metric.get("unsupported_excursions")),
+            "production_true_longitudinal_persistence": fnum(metric.get("true_longitudinal_persistence")),
             "source_meters_per_pixel": fnum(metric.get("source_meters_per_pixel") or sampling.get("sourceMetersPerPixel")),
             "metric_sign_flips": fnum(metric.get("sign_flips")),
             "offset_mean_px": mean(offsets),

@@ -44,14 +44,14 @@ public final class CorridorExtractor {
      */
     public CorridorProfile extract(int index, CrossSectionProfile profile) {
         List<IntensitySample> samples = profile.intensitySamples().stream()
-            .filter(IntensitySample::insideRaster)
             .sorted(Comparator.comparingDouble(IntensitySample::offsetPx))
             .toList();
-        if (samples.isEmpty()) {
+        List<IntensitySample> validSamples = samples.stream().filter(IntensitySample::insideRaster).toList();
+        if (validSamples.isEmpty()) {
             return new CorridorProfile(index, profile, List.of(), 0.0, 0.0, 0.0, false);
         }
 
-        ProfileStatistics stats = statistics(samples);
+        ProfileStatistics stats = statistics(validSamples);
         if (stats.prominence() <= NUMERICAL_EMPTY_PROMINENCE) {
             return new CorridorProfile(index, profile, List.of(), stats.maximum(), stats.noiseFloor(),
                 stats.prominence(), true);
@@ -82,7 +82,9 @@ public final class CorridorExtractor {
             if (highestChildren.size() > 1) {
                 Interval combinedCore = new Interval(
                     highestChildren.get(0).start(),
-                    highestChildren.get(highestChildren.size() - 1).end()
+                    highestChildren.get(highestChildren.size() - 1).end(),
+                    highestChildren.get(0).minimumOffsetPx(),
+                    highestChildren.get(highestChildren.size() - 1).maximumOffsetPx()
                 );
                 bands.add(buildBand("parent-" + lowIndex, samples, stats, shoulder, combinedCore,
                     levels, true, childIds));
@@ -107,20 +109,20 @@ public final class CorridorExtractor {
             double weight = RELATIVE_LEVELS[level] * RELATIVE_LEVELS[level];
             for (Interval interval : levels.get(level)) {
                 if (overlaps(core, interval) && overlaps(shoulder, interval)) {
-                    centers.add(new WeightedCenter(midpoint(samples, interval), weight));
+                    centers.add(new WeightedCenter(midpoint(interval), weight));
                 }
             }
         }
         if (parent) {
-            centers.add(new WeightedCenter(midpoint(samples, core), 2.0));
-            centers.add(new WeightedCenter(midpoint(samples, shoulder), 1.0));
+            centers.add(new WeightedCenter(midpoint(core), 2.0));
+            centers.add(new WeightedCenter(midpoint(shoulder), 1.0));
         }
         double center = weightedMedian(centers);
         List<Double> nestedCenters = centers.stream().map(WeightedCenter::center).toList();
-        double shoulderMin = samples.get(shoulder.start()).offsetPx();
-        double shoulderMax = samples.get(shoulder.end()).offsetPx();
-        double coreMin = samples.get(core.start()).offsetPx();
-        double coreMax = samples.get(core.end()).offsetPx();
+        double shoulderMin = shoulder.minimumOffsetPx();
+        double shoulderMax = shoulder.maximumOffsetPx();
+        double coreMin = core.minimumOffsetPx();
+        double coreMax = core.maximumOffsetPx();
         double peak = maximum(samples, shoulder);
         double sampleStep = sampleStep(samples);
         double centerSpread = centerSpread(nestedCenters, center);
@@ -159,20 +161,41 @@ public final class CorridorExtractor {
     private List<Interval> intervals(List<IntensitySample> samples, double threshold) {
         List<Interval> result = new ArrayList<>();
         int start = -1;
+        double minimumOffset = Double.NaN;
         for (int i = 0; i < samples.size(); i++) {
-            if (samples.get(i).standardFilteredIntensity() >= threshold) {
+            IntensitySample sample = samples.get(i);
+            if (sample.insideRaster() && sample.standardFilteredIntensity() >= threshold) {
                 if (start < 0) {
                     start = i;
+                    minimumOffset = i == 0 || !samples.get(i - 1).insideRaster()
+                        ? sample.offsetPx()
+                        : thresholdCrossing(samples.get(i - 1), samples.get(i), threshold);
                 }
             } else if (start >= 0) {
-                result.add(new Interval(start, i - 1));
+                result.add(new Interval(start, i - 1, minimumOffset,
+                    sample.insideRaster()
+                        ? thresholdCrossing(samples.get(i - 1), sample, threshold)
+                        : samples.get(i - 1).offsetPx()));
                 start = -1;
+                minimumOffset = Double.NaN;
             }
         }
         if (start >= 0) {
-            result.add(new Interval(start, samples.size() - 1));
+            result.add(new Interval(start, samples.size() - 1, minimumOffset,
+                samples.get(samples.size() - 1).offsetPx()));
         }
         return result;
+    }
+
+    private double thresholdCrossing(IntensitySample left, IntensitySample right, double threshold) {
+        double leftValue = left.standardFilteredIntensity();
+        double rightValue = right.standardFilteredIntensity();
+        double difference = rightValue - leftValue;
+        if (Math.abs(difference) <= 1e-12) {
+            return (left.offsetPx() + right.offsetPx()) / 2.0;
+        }
+        double fraction = clamp((threshold - leftValue) / difference);
+        return left.offsetPx() + fraction * (right.offsetPx() - left.offsetPx());
     }
 
     private Interval strongestNestedInterval(List<List<Interval>> levels, Interval shoulder) {
@@ -194,6 +217,9 @@ public final class CorridorExtractor {
         int count = 0;
         for (int i = interval.start(); i <= interval.end(); i++) {
             IntensitySample sample = samples.get(i);
+            if (!sample.insideRaster()) {
+                continue;
+            }
             disagreement += Math.abs(sample.nativeIntensity() - sample.lightFilteredIntensity());
             disagreement += Math.abs(sample.lightFilteredIntensity() - sample.standardFilteredIntensity());
             count += 2;
@@ -220,13 +246,15 @@ public final class CorridorExtractor {
     private double maximum(List<IntensitySample> samples, Interval interval) {
         double maximum = 0.0;
         for (int i = interval.start(); i <= interval.end(); i++) {
-            maximum = Math.max(maximum, samples.get(i).standardFilteredIntensity());
+            if (samples.get(i).insideRaster()) {
+                maximum = Math.max(maximum, samples.get(i).standardFilteredIntensity());
+            }
         }
         return maximum;
     }
 
-    private double midpoint(List<IntensitySample> samples, Interval interval) {
-        return (samples.get(interval.start()).offsetPx() + samples.get(interval.end()).offsetPx()) / 2.0;
+    private double midpoint(Interval interval) {
+        return (interval.minimumOffsetPx() + interval.maximumOffsetPx()) / 2.0;
     }
 
     private double weightedMedian(List<WeightedCenter> centers) {
@@ -255,7 +283,8 @@ public final class CorridorExtractor {
     }
 
     private boolean overlaps(Interval left, Interval right) {
-        return left.start() <= right.end() && right.start() <= left.end();
+        return left.minimumOffsetPx() <= right.maximumOffsetPx()
+            && right.minimumOffsetPx() <= left.maximumOffsetPx();
     }
 
     private double clamp(double value) {
@@ -266,7 +295,7 @@ public final class CorridorExtractor {
         return value * value;
     }
 
-    private record Interval(int start, int end) {
+    private record Interval(int start, int end, double minimumOffsetPx, double maximumOffsetPx) {
     }
 
     private record WeightedCenter(double center, double weight) {

@@ -70,6 +70,23 @@ class CorridorCenterlineOptimizerTest {
     }
 
     @Test
+    void movableJunctionWithoutLocalBandStillHonorsConfiguredMaximum() {
+        Scenario scenario = scenario(index -> 8.0, false);
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>(scenario.track().points());
+        points.remove(0);
+        CorridorTrack track = new CorridorTrack("track", points, 29.0, 29.0 / 30.0,
+            false, List.of(), "");
+        JunctionContext constraints = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, false, true, 3.0, 1.25, 6)
+        ));
+
+        CorridorCenterlineOptimizer.OptimizationResult result = new CorridorCenterlineOptimizer()
+            .optimize(track, scenario.profiles(), 1.0, constraints);
+
+        assertTrue(Math.abs(result.offsetsPx().get(0)) <= 3.0);
+    }
+
+    @Test
     void diagnosticRowTotalsMatchTheWeightedObjectiveTerms() {
         Scenario scenario = scenario(index -> 1.5, false);
 

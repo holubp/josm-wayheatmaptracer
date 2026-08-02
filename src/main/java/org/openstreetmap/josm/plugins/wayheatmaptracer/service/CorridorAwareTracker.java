@@ -16,6 +16,7 @@ public final class CorridorAwareTracker {
     private final CorridorExtractor extractor = new CorridorExtractor();
     private final CorridorTracker tracker = new CorridorTracker();
     private final CorridorGrouping grouping = new CorridorGrouping();
+    private final CorridorTubeBuilder tubeBuilder = new CorridorTubeBuilder();
     private final CorridorCenterlineOptimizer optimizer = new CorridorCenterlineOptimizer();
 
     /**
@@ -118,13 +119,16 @@ public final class CorridorAwareTracker {
         Map<String, BandScaleEvidence> scaleEvidence,
         List<MultiScaleCorridorProfile> multiScaleProfiles
     ) {
-        List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx);
+        List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles);
         List<CenterlineCandidate> candidates = new ArrayList<>();
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations = new LinkedHashMap<>();
+        Map<String, LongitudinalCorridorTube> tubes = new LinkedHashMap<>();
         for (CorridorTrack track : grouped.tracks()) {
+            LongitudinalCorridorTube tube = tubeBuilder.build(
+                track, corridorProfiles, sourcePixelSizePx, scaleEvidence);
             CorridorCenterlineOptimizer.OptimizationResult optimized = optimizer.optimize(
-                track, corridorProfiles, sourcePixelSizePx, junctionContext, scaleEvidence);
+                track, corridorProfiles, sourcePixelSizePx, junctionContext, scaleEvidence, tube);
             if (optimized.offsetsPx().isEmpty()) {
                 continue;
             }
@@ -140,12 +144,13 @@ public final class CorridorAwareTracker {
             candidates.add(new CenterlineCandidate(track.id(), score, optimized.screenPoints(), optimized.offsetsPx())
                 .withEvidence(evidence));
             optimizations.put(track.id(), optimized);
+            tubes.put(track.id(), tube);
         }
         List<CenterlineCandidate> sorted = candidates.stream()
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
         return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), optimizations,
-            multiScaleProfiles, scaleEvidence);
+            tubes, multiScaleProfiles, scaleEvidence, sourcePixelSizePx);
     }
 
     private CandidateEvidence evidence(
@@ -205,6 +210,7 @@ public final class CorridorAwareTracker {
             optimized.inCorridorFraction(),
             meanPersistence,
             conflictFraction,
+            optimized.quality(),
             List.of()
         );
     }
@@ -308,8 +314,10 @@ public final class CorridorAwareTracker {
      * @param tracks elementary and parent tracks
      * @param groupingDecisions pairwise lane/carriageway interpretation evidence
      * @param optimizations optimizer output keyed by track id
+     * @param tubes robust longitudinal evidence keyed by track id
      * @param multiScaleProfiles extracted L0/L1/L2 observations
      * @param scaleEvidence fine-band scale associations keyed by profile and band id
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
      */
     public record TrackingResult(
         List<CenterlineCandidate> candidates,
@@ -317,8 +325,10 @@ public final class CorridorAwareTracker {
         List<CorridorTrack> tracks,
         List<CorridorGrouping.GroupingDecision> groupingDecisions,
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations,
+        Map<String, LongitudinalCorridorTube> tubes,
         List<MultiScaleCorridorProfile> multiScaleProfiles,
-        Map<String, BandScaleEvidence> scaleEvidence
+        Map<String, BandScaleEvidence> scaleEvidence,
+        double sourcePixelSizePx
     ) {
         /** Makes diagnostic result collections immutable. */
         public TrackingResult {
@@ -327,6 +337,7 @@ public final class CorridorAwareTracker {
             tracks = List.copyOf(tracks);
             groupingDecisions = List.copyOf(groupingDecisions);
             optimizations = Map.copyOf(optimizations);
+            tubes = Map.copyOf(tubes);
             multiScaleProfiles = List.copyOf(multiScaleProfiles);
             scaleEvidence = Map.copyOf(scaleEvidence);
         }
