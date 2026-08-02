@@ -1473,7 +1473,8 @@ public final class AlignmentService {
         TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
         if (trackerMode == TrackerMode.CORRIDOR_AWARE) {
             warnings.addAll(corridorQualityWarnings(candidate.evidence().corridorQuality()));
-            if (crossesConnectedWayBeforeJunction(candidate, selection)) {
+            if (crossesConnectedWayBeforeJunction(candidate, selection,
+                junctionIntersectionToleranceMeters(effectiveSampling))) {
                 warnings.add("crosses a connected way before its junction");
             }
         }
@@ -1485,9 +1486,6 @@ public final class AlignmentService {
             return List.of();
         }
         List<String> warnings = new ArrayList<>();
-        if (!quality.endpointApproachesSupported()) {
-            warnings.add("unsupported endpoint approach");
-        }
         if (quality.forwardProgressViolations() > 0) {
             warnings.add("candidate folds backward along the selected way");
         }
@@ -1508,6 +1506,14 @@ public final class AlignmentService {
     }
 
     boolean crossesConnectedWayBeforeJunction(CenterlineCandidate candidate, SelectionContext selection) {
+        return crossesConnectedWayBeforeJunction(candidate, selection, 2.5);
+    }
+
+    private boolean crossesConnectedWayBeforeJunction(
+        CenterlineCandidate candidate,
+        SelectionContext selection,
+        double junctionToleranceMeters
+    ) {
         List<EastNorth> geometry = candidate.eastNorthPoints();
         if (geometry.size() < 2) {
             return false;
@@ -1524,15 +1530,23 @@ public final class AlignmentService {
             int start = Math.max(0, nearest - 6);
             int end = Math.min(geometry.size() - 2, nearest + 5);
             for (Way way : connected) {
-                List<EastNorth> connectedGeometry = toEastNorth(way.getNodes()).stream()
-                    .filter(java.util.Objects::nonNull)
-                    .toList();
                 for (int candidateIndex = start; candidateIndex <= end; candidateIndex++) {
-                    for (int wayIndex = 0; wayIndex + 1 < connectedGeometry.size(); wayIndex++) {
+                    for (int wayIndex = 0; wayIndex + 1 < way.getNodesCount(); wayIndex++) {
+                        if (way.getNode(wayIndex) != junction && way.getNode(wayIndex + 1) != junction) {
+                            continue;
+                        }
+                        EastNorth connectedStart = way.getNode(wayIndex).getEastNorth(
+                            ProjectionRegistry.getProjection());
+                        EastNorth connectedEnd = way.getNode(wayIndex + 1).getEastNorth(
+                            ProjectionRegistry.getProjection());
+                        if (connectedStart == null || connectedEnd == null) {
+                            continue;
+                        }
                         EastNorth intersection = segmentIntersection(
                             geometry.get(candidateIndex), geometry.get(candidateIndex + 1),
-                            connectedGeometry.get(wayIndex), connectedGeometry.get(wayIndex + 1));
-                        if (intersection != null && intersection.distance(junctionPoint) > 1.0) {
+                            connectedStart, connectedEnd);
+                        if (intersection != null
+                            && intersection.distance(junctionPoint) > junctionToleranceMeters) {
                             return true;
                         }
                     }
@@ -1540,6 +1554,12 @@ public final class AlignmentService {
             }
         }
         return false;
+    }
+
+    private double junctionIntersectionToleranceMeters(EffectiveSampling effectiveSampling) {
+        double samplingTolerance = Math.max(effectiveSampling.effectiveStepMeters() * 1.5,
+            effectiveSampling.sourceMetersPerPixel() * 2.0);
+        return Math.max(1.0, Math.min(5.0, samplingTolerance));
     }
 
     private int nearestPointIndex(List<EastNorth> geometry, EastNorth target) {

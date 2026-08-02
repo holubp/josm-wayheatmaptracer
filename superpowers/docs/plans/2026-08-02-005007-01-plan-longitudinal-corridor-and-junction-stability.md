@@ -2,6 +2,8 @@
 
 **Status:** Implemented and verified for release `v0.16.0`.
 
+**Post-release correction:** Field testing showed that absence of endpoint-guide evidence and source-scale junction intersections were too strict as hard gates. Release `v0.16.1` keeps missing endpoint evidence as a ranking/diagnostic penalty, restricts connected-way checks to junction-adjacent segments with sampling-aware tolerance, and measures unsupported short excursions against the robust tube. Proven foldbacks, terminal turns, and pre-junction crossings remain blocking.
+
 **Goal:** Make the experimental corridor-aware tracker follow the stable longitudinal center of broad, medium-strength, and sparse heatmap trails without short left/right ripples or temporary strand switches, while giving fixed and movable endpoints explicit branch-approach constraints that prevent terminal kinks, foldbacks, pre-junction crossings, and point cliques.
 
 **Why planning is required:** The observed failures are produced by interacting stages rather than one tunable constant: corridor boundaries are quantized to source samples, association can switch strands during short scale conflicts, the optimizer globally beam-prunes second-order states, its quality metrics do not measure physical longitudinal roughness, and endpoint constraints interpolate offsets without modeling the branch's entry tangent. A local smoothing pass would hide symptoms, could erase real switchbacks, and would violate the one-pass corridor-aware design. The implementation therefore changes evidence representation, association, optimization, endpoint boundary conditions, ranking, safety checks, diagnostics, and tests while preserving the proven legacy path.

@@ -43,4 +43,34 @@ class CorridorQualityMetricsTest {
         assertEquals(0, quality.forwardProgressViolations());
         assertTrue(quality.longitudinalPersistence() < 0.25);
     }
+
+    @Test
+    void doesNotCallTubeSupportedSharpGeometryAnUnsupportedExcursion() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        List<CorridorTubeSlice> slices = new ArrayList<>();
+        List<Double> offsets = List.of(0.0, 0.0, 2.0, 0.0, 0.0);
+        List<Point2D.Double> points = new ArrayList<>();
+        var trackPoints = new LinkedHashMap<Integer, CorridorTrackPoint>();
+        for (int index = 0; index < offsets.size(); index++) {
+            double offset = offsets.get(index);
+            CorridorBand band = new CorridorBand("band", offset, offset - 1.0, offset + 1.0,
+                offset - 0.5, offset + 0.5, List.of(offset), 1.0, 0.0, 1.0,
+                0.9, 0.8, 0.5, false, List.of());
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(index * 2.0, 0.0),
+                new Point2D.Double(index * 5.0, 0.0), new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
+            profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.0, 1.0, true));
+            slices.add(new CorridorTubeSlice(index, index * 2.0, offset, 0.0, 0.0,
+                offset - 0.5, offset + 0.5, offset - 1.0, offset + 1.0,
+                0.5, 1.0, false, false, offset, offset, offset, true));
+            points.add(new Point2D.Double(index * 5.0, offset));
+            trackPoints.put(index, new CorridorTrackPoint(index, band, false));
+        }
+        CorridorTrack track = new CorridorTrack("track", trackPoints, 5.0, 1.0, false, List.of(), "");
+
+        var quality = new CorridorQualityCalculator().calculate(track, profiles,
+            new LongitudinalCorridorTube(slices), offsets, points, 1.0,
+            new EndpointApproachModel(List.of()));
+
+        assertEquals(0, quality.unsupportedExcursions());
+    }
 }

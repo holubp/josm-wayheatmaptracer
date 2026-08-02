@@ -66,16 +66,43 @@ class AlignmentServiceTest {
             List.of(start, junction), Set.of(start, junction));
         CenterlineCandidate crossing = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
             .withEastNorthPoints(List.of(new EastNorth(0, 5), new EastNorth(12, 5), new EastNorth(10, 0)));
+        CenterlineCandidate samplingScaleJoin = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 1.5), new EastNorth(12, 1.5), new EastNorth(10, 0)));
         CenterlineCandidate correct = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
             .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
 
         AlignmentService service = new AlignmentService();
         assertTrue(service.crossesConnectedWayBeforeJunction(crossing, selected));
+        assertFalse(service.crossesConnectedWayBeforeJunction(samplingScaleJoin, selected));
         assertFalse(service.crossesConnectedWayBeforeJunction(correct, selected));
     }
 
     @Test
-    void corridorQualityPenalizesRipplesAndBlocksUnsupportedEndpointApproaches() {
+    void ignoresCrossingsWithRemoteSegmentsOfAConnectedWay() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchBend = nodeAt(8, 10);
+        Node branchEnd = nodeAt(20, 10);
+        for (Node node : List.of(start, junction, branchBend, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchBend, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate remoteCrossing = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(12, 12), new EastNorth(12, 5), new EastNorth(10, 0)));
+
+        assertFalse(new AlignmentService().crossesConnectedWayBeforeJunction(remoteCrossing, selected));
+    }
+
+    @Test
+    void corridorQualityPenalizesRipplesWithoutBlockingMissingEndpointEvidenceAlone() {
         CorridorQuality smooth = new CorridorQuality(0.1, 0.2, 0.08, 0.15, 0.2, 0.3,
             4.0, 8.0, 3.0, 0, 0, 0.0, 8.0, 0.85, true);
         CorridorQuality rough = new CorridorQuality(0.6, 1.1, 0.7, 1.2, 1.8, 2.4,
@@ -83,7 +110,7 @@ class AlignmentServiceTest {
         AlignmentService service = new AlignmentService();
 
         assertTrue(service.corridorQualityAdjustment(smooth) > service.corridorQualityAdjustment(rough));
-        assertTrue(service.corridorQualityWarnings(rough).contains("unsupported endpoint approach"));
+        assertFalse(service.corridorQualityWarnings(rough).contains("unsupported endpoint approach"));
         assertTrue(service.corridorQualityWarnings(rough).stream()
             .anyMatch(value -> value.contains("folds backward")));
         assertTrue(service.corridorQualityWarnings(smooth).isEmpty());

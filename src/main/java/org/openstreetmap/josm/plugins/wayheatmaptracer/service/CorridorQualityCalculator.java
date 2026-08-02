@@ -55,7 +55,7 @@ public final class CorridorQualityCalculator {
         List<Double> turns = turnsDegrees(points);
         List<Double> curvatureChanges = differences(turns);
         int forwardViolations = forwardProgressViolations(profiles, points);
-        int excursions = unsupportedExcursions(deltas);
+        int excursions = unsupportedExcursions(residuals);
         double maximumGap = maximumGapMeters(track, tube);
         double endpointTurn = endpointMaximumTurn(turns, approaches);
         double persistence = 1.0 / (1.0 + percentileAbs(residuals, 0.95)
@@ -130,12 +130,11 @@ public final class CorridorQualityCalculator {
         return violations;
     }
 
-    private int unsupportedExcursions(List<Double> deltas) {
+    private int unsupportedExcursions(List<Double> tubeResiduals) {
         int count = 0;
-        for (int index = 1; index < deltas.size(); index++) {
-            double left = deltas.get(index - 1);
-            double right = deltas.get(index);
-            if (Math.abs(left) > 1.5 && Math.abs(right) > 1.5 && Math.signum(left) != Math.signum(right)) {
+        for (int index = 1; index + 1 < tubeResiduals.size(); index++) {
+            double localBaseline = (tubeResiduals.get(index - 1) + tubeResiduals.get(index + 1)) / 2.0;
+            if (Math.abs(tubeResiduals.get(index) - localBaseline) > 1.5) {
                 count++;
             }
         }
