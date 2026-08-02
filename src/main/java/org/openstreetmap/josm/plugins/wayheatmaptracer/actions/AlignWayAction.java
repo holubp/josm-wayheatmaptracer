@@ -42,6 +42,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
@@ -470,6 +471,9 @@ public class AlignWayAction extends JosmAction {
         AlignmentResult chosenResult = preview.result();
 
         SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, chosenResult.sourcePolyline());
+        if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE) {
+            alignmentService.requireCurrentTopologySafe(chosen, selection);
+        }
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(chosenResult.previewPolyline(), dataSet);
         }

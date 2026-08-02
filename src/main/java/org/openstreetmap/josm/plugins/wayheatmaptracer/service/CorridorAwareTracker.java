@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 
 /**
  * Orchestrates extraction, longitudinal association, grouping, and stable corridor optimization.
@@ -18,6 +19,7 @@ public final class CorridorAwareTracker {
     private final CorridorGrouping grouping = new CorridorGrouping();
     private final CorridorTubeBuilder tubeBuilder = new CorridorTubeBuilder();
     private final CorridorCenterlineOptimizer optimizer = new CorridorCenterlineOptimizer();
+    private final CorridorCoverageCalculator coverageCalculator = new CorridorCoverageCalculator();
 
     /**
      * Creates a tracker with the standard extraction, association, grouping, and optimization stages.
@@ -83,6 +85,7 @@ public final class CorridorAwareTracker {
         double sourcePixelSizePx,
         JunctionContext junctionContext
     ) {
+        validatePhysicalProfileSequence(profiles);
         List<CorridorProfile> corridorProfiles = extractor.extract(profiles);
         return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, Map.of(), List.of());
     }
@@ -103,6 +106,10 @@ public final class CorridorAwareTracker {
         if (profileSet.levels().isEmpty()) {
             return trackDetailed(List.of(), sourcePixelSizePx, junctionContext);
         }
+        for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
+            validatePhysicalProfileSequence(level.profiles());
+        }
+        validateAlignedPhysicalSequences(profileSet);
         List<List<CorridorProfile>> extractedLevels = profileSet.levels().stream()
             .map(level -> extractor.extract(level.profiles()))
             .toList();
@@ -110,6 +117,38 @@ public final class CorridorAwareTracker {
         ScaleAssociation association = associateScales(profileSet, extractedLevels, sourcePixelSizePx);
         return trackExtracted(fine, sourcePixelSizePx, junctionContext,
             association.evidence(), association.profiles());
+    }
+
+    private void validatePhysicalProfileSequence(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles
+    ) {
+        double previous = -1.0;
+        for (int index = 0; index < profiles.size(); index++) {
+            double current = profiles.get(index).cumulativeGroundDistanceMeters();
+            if (!Double.isFinite(current) || current < 0.0 || current + 1e-9 < previous) {
+                throw new IllegalArgumentException(
+                    "Corridor profile physical distances must be finite, non-negative, and monotonic at index "
+                        + index + '.');
+            }
+            previous = current;
+        }
+    }
+
+    private void validateAlignedPhysicalSequences(MultiScaleProfileSet profileSet) {
+        List<RenderedHeatmapSampler.CrossSectionProfile> reference = profileSet.levelZeroProfiles();
+        for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
+            if (level.profiles().size() != reference.size()) {
+                throw new IllegalArgumentException("Corridor scale levels must have identical profile counts.");
+            }
+            for (int index = 0; index < reference.size(); index++) {
+                double expected = reference.get(index).cumulativeGroundDistanceMeters();
+                double actual = level.profiles().get(index).cumulativeGroundDistanceMeters();
+                if (Math.abs(expected - actual) > 1e-6) {
+                    throw new IllegalArgumentException(
+                        "Corridor scale levels must share one physical profile-distance sequence.");
+                }
+            }
+        }
     }
 
     private TrackingResult trackExtracted(
@@ -132,7 +171,9 @@ public final class CorridorAwareTracker {
             if (optimized.offsetsPx().isEmpty()) {
                 continue;
             }
-            CandidateEvidence evidence = evidence(track, corridorProfiles, optimized, scaleEvidence);
+            CorridorCoverage coverage = coverageCalculator.calculate(
+                track, corridorProfiles, optimized.endpointApproaches());
+            CandidateEvidence evidence = evidence(track, corridorProfiles, optimized, scaleEvidence, coverage);
             double normalizedCost = optimized.totalCost() / Math.max(1, corridorProfiles.size());
             double score = 2.0 * evidence.signalExistenceConfidence()
                 + evidence.localizationConfidence()
@@ -157,7 +198,8 @@ public final class CorridorAwareTracker {
         CorridorTrack track,
         List<CorridorProfile> profiles,
         CorridorCenterlineOptimizer.OptimizationResult optimized,
-        Map<String, BandScaleEvidence> scaleEvidence
+        Map<String, BandScaleEvidence> scaleEvidence,
+        CorridorCoverage coverage
     ) {
         int supported = track.points().size();
         int empty = Math.max(0, profiles.size() - supported);
@@ -211,6 +253,7 @@ public final class CorridorAwareTracker {
             meanPersistence,
             conflictFraction,
             optimized.quality(),
+            coverage,
             List.of()
         );
     }

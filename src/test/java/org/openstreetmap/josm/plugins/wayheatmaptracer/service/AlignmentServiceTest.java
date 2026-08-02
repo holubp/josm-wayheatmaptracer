@@ -22,6 +22,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -70,11 +71,17 @@ class AlignmentServiceTest {
             .withEastNorthPoints(List.of(new EastNorth(0, 1.5), new EastNorth(12, 1.5), new EastNorth(10, 0)));
         CenterlineCandidate correct = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
             .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
+        CenterlineCandidate repairedPreview = crossing.withFinalPreviewPoints(
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
+        CenterlineCandidate brokenPreview = correct.withFinalPreviewPoints(
+            List.of(new EastNorth(0, 5), new EastNorth(12, 5), new EastNorth(10, 0)));
 
         AlignmentService service = new AlignmentService();
         assertTrue(service.crossesConnectedWayBeforeJunction(crossing, selected));
         assertFalse(service.crossesConnectedWayBeforeJunction(samplingScaleJoin, selected));
         assertFalse(service.crossesConnectedWayBeforeJunction(correct, selected));
+        assertFalse(service.crossesConnectedWayBeforeJunction(repairedPreview, selected));
+        assertTrue(service.crossesConnectedWayBeforeJunction(brokenPreview, selected));
     }
 
     @Test
@@ -102,6 +109,47 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void applyTopologyRecheckDetectsAConnectedWayAddedDuringModelessPreview() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node connectedEnd = nodeAt(8, 10);
+        for (Node node : List.of(start, junction, connectedEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate candidate = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 5), new EastNorth(12, 5), new EastNorth(10, 0)))
+            .withFinalPreviewPoints(List.of(new EastNorth(0, 5), new EastNorth(12, 5), new EastNorth(10, 0)))
+            .withJunctionSafetyEvaluation(List.of(), 2.5);
+        AlignmentService service = new AlignmentService();
+        service.requireCurrentTopologySafe(candidate, selected);
+
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, connectedEnd));
+        dataSet.addPrimitive(connectedWay);
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> service.requireCurrentTopologySafe(candidate, selected));
+    }
+
+    @Test
+    void applyTopologyRecheckRejectsFinalPreviewSelfIntersection() {
+        SelectionContext selected = selection(2);
+        CenterlineCandidate candidate = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withFinalPreviewPoints(List.of(
+                new EastNorth(0, 0), new EastNorth(10, 10),
+                new EastNorth(0, 10), new EastNorth(10, 0)));
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> new AlignmentService().requireCurrentTopologySafe(candidate, selected));
+    }
+
+    @Test
     void corridorQualityPenalizesRipplesWithoutBlockingMissingEndpointEvidenceAlone() {
         CorridorQuality smooth = new CorridorQuality(0.1, 0.2, 0.08, 0.15, 0.2, 0.3,
             4.0, 8.0, 3.0, 0, 0, 0.0, 8.0, 0.85, true);
@@ -114,6 +162,52 @@ class AlignmentServiceTest {
         assertTrue(service.corridorQualityWarnings(rough).stream()
             .anyMatch(value -> value.contains("folds backward")));
         assertTrue(service.corridorQualityWarnings(smooth).isEmpty());
+    }
+
+    @Test
+    void corridorRankingPrefersCompleteLowResidualCandidateBeforeDetectorPrior() {
+        CorridorCoverage complete = completeCoverage(100, 99);
+        CenterlineCandidate fragmentedQuality = candidate("all-colors-combined/strand-2",
+            corridorEvidence("all-colors-combined", 27, 76.93,
+                quality(25.50, 0.04), complete));
+        CenterlineCandidate continuousQuality = candidate("hot-corridor/strand-8",
+            corridorEvidence("hot-corridor", 99, 0.12,
+                quality(0.44, 0.58), complete));
+
+        List<CenterlineCandidate> ranked = new AlignmentService().rankCandidatesForTesting(
+            List.of(fragmentedQuality, continuousQuality), corridorConfig());
+
+        assertEquals(continuousQuality.id(), ranked.get(0).id());
+    }
+
+    @Test
+    void corridorRankingPrefersLowCostNativeHotTrack() {
+        CorridorCoverage complete = completeCoverage(100, 80);
+        CenterlineCandidate bad = candidate("hot-corridor/strand-4",
+            corridorEvidence("hot-corridor", 53, 61.35, quality(23.68, 0.04), complete));
+        CenterlineCandidate good = candidate("hot/strand-8",
+            corridorEvidence("hot", 81, 0.37, quality(1.50, 0.36), complete));
+
+        List<CenterlineCandidate> ranked = new AlignmentService().rankCandidatesForTesting(
+            List.of(bad, good), corridorConfig());
+
+        assertEquals(good.id(), ranked.get(0).id());
+    }
+
+    @Test
+    void incompleteMeasuredCorridorCannotBeApplied() {
+        CenterlineCandidate incomplete = candidate("hot/strand-2", signalEvidence().withCorridorCoverage(
+            new CorridorCoverage(true, false, 3, 10, 0.3, 2, 4, 5.0, 12.0,
+                0, 0.0, 0, true, "unsupported-trailing-corridor")));
+        SelectionContext selection = selection(3);
+        AlignmentResult base = new AlignmentResult(selection, null, List.of(incomplete),
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0), new EastNorth(20, 0)),
+            List.of(), List.of(),
+            new AlignmentDiagnostics("Strava", 1, 0, 0, 0, 0, "{}", "{}", "{}", "[]", "[]", "[]"),
+            null);
+
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> new AlignmentService().applyCandidate(base, incomplete, corridorConfig()));
     }
 
     @Test
@@ -433,6 +527,50 @@ class AlignmentServiceTest {
 
     private CandidateEvidence signalEvidence() {
         return new CandidateEvidence("hot", 3, 3, 0, 0, 2.4, 0.8, 0.2, 1.0, 0.4, 0.0, List.of());
+    }
+
+    private ManagedHeatmapConfig corridorConfig() {
+        ManagedHeatmapConfig legacy = config(AlignmentMode.MOVE_EXISTING_NODES);
+        return new ManagedHeatmapConfig(
+            legacy.keyPairId(), legacy.policy(), legacy.signature(), legacy.sessionToken(),
+            legacy.activity(), legacy.color(), legacy.manualLayerName(), legacy.layerRegex(),
+            legacy.alignmentMode(), TrackerMode.CORRIDOR_AWARE, legacy.verbose(), legacy.debug(),
+            legacy.multiColorDetection(), legacy.aggregateAllColorSchemes(),
+            legacy.showAggregateIntensityLayer(), legacy.candidateRatingEnabled(), legacy.parallelWayAwareness(),
+            legacy.allowUndownloadedAlignment(), legacy.adjustJunctionNodes(), legacy.simplifyEnabled(), legacy.crossSectionHalfWidthPx(),
+            legacy.crossSectionStepPx(), legacy.simplifyTolerancePx(), legacy.inferenceMode(),
+            legacy.inferenceZoom(), legacy.validationZoom(), legacy.searchHalfWidthMeters(),
+            legacy.sampleStepMeters(), legacy.intensitySamplingMode(), legacy.cacheBuster());
+    }
+
+    private CenterlineCandidate candidate(String id, CandidateEvidence evidence) {
+        return new CenterlineCandidate(id, 0.0,
+            List.of(new java.awt.geom.Point2D.Double(0, 0), new java.awt.geom.Point2D.Double(10, 0),
+                new java.awt.geom.Point2D.Double(20, 0)),
+            List.of(0.0, 0.0, 0.0)).withEvidence(evidence);
+    }
+
+    private CandidateEvidence corridorEvidence(
+        String detector,
+        int supported,
+        double optimizerCost,
+        CorridorQuality quality,
+        CorridorCoverage coverage
+    ) {
+        int total = 100;
+        return new CandidateEvidence(detector, total, supported, total - supported, total - supported,
+            supported * 0.7, 0.7, 0.4, 0.8, 0.5, 0.0, 0.9, 0.85,
+            optimizerCost, 0.95, 0.8, 0.0, quality, coverage, List.of());
+    }
+
+    private CorridorCoverage completeCoverage(int total, int observed) {
+        return new CorridorCoverage(true, true, observed, total, observed / (double) total,
+            0, total - 1, 0.0, 0.0, 0, 0.0, 0, false, "complete");
+    }
+
+    private CorridorQuality quality(double residualP95, double persistence) {
+        return new CorridorQuality(residualP95 * 0.5, residualP95, 0.1, 0.2, 0.3, 0.4,
+            3.0, 8.0, 4.0, 0, 0, 0.0, 5.0, persistence, true);
     }
 
 }

@@ -139,9 +139,9 @@ public final class TileHeatmapSampler {
             referenceStepPx,
             mosaic.parameters().sampleStepMeters(),
             mosaic.virtualRasterScale());
-        return new RenderedHeatmapSampler().sampleProfilesOnScaledRaster(
+        return new RenderedHeatmapSampler().sampleProfilesOnAnchors(
             mosaic.image(),
-            local,
+            ProfileSamplingAnchor.pair(dense, local),
             referenceHalfWidthPx,
             referenceStepPx,
             detectorMode,
@@ -176,9 +176,9 @@ public final class TileHeatmapSampler {
             (int) Math.round(mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1,
             (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
-            mosaic.image(), local, referenceHalfWidthPx, referenceStepPx, detectorMode,
-            REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), config.intensitySamplingMode());
+        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAnchors(
+            mosaic.image(), ProfileSamplingAnchor.pair(dense, local), referenceHalfWidthPx, referenceStepPx, detectorMode,
+            REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), config.intensitySamplingMode(), 1.0);
     }
 
     /**
@@ -216,9 +216,9 @@ public final class TileHeatmapSampler {
         int referenceStepPx = Math.max(1, (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         PluginLog.verbose("Sampling %d fixed-tile aggregate cross-sections at z%d from colors %s.",
             dense.size(), zoom, images.keySet());
-        return new RenderedHeatmapSampler().sampleProfilesOnAggregatedScaledRasters(
+        return new RenderedHeatmapSampler().sampleProfilesOnAggregatedAnchors(
             images,
-            local,
+            ProfileSamplingAnchor.pair(dense, local),
             referenceHalfWidthPx,
             referenceStepPx,
             REFERENCE_RASTER_SCALE,
@@ -254,8 +254,8 @@ public final class TileHeatmapSampler {
             (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1,
             (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAggregatedScaledRasters(
-            frame.images(), local, referenceHalfWidthPx, referenceStepPx, REFERENCE_RASTER_SCALE,
+        return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAggregatedAnchors(
+            frame.images(), ProfileSamplingAnchor.pair(dense, local), referenceHalfWidthPx, referenceStepPx, REFERENCE_RASTER_SCALE,
             reference.virtualRasterScale());
     }
 

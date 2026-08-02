@@ -121,7 +121,7 @@ class CorridorCenterlineOptimizerTest {
                 samples.add(new IntensitySample(offset, nativeValue, filtered, filtered, true));
             }
             RenderedHeatmapSampler.CrossSectionProfile source = new RenderedHeatmapSampler.CrossSectionProfile(
-                new EastNorth(i * 5.0, 0.0), new Point2D.Double(i * 5.0, 0.0),
+                new ProfileSamplingAnchor(new EastNorth(i * 5.0, 0.0), i * 5.0, 0.0, i * 5.0),
                 new Point2D.Double(0.0, 1.0), List.of(), true, samples);
             profiles.add(new CorridorProfile(i, source, List.of(band), 1.0, 0.0, 1.0, true));
             points.put(i, new CorridorTrackPoint(i, band, false));

@@ -204,30 +204,31 @@ The debug bundle is focused on the latest slide attempt. It includes:
 
 - exact redacted settings used for that slide, including intensity source
 - selected activity, visible color, sampled color schemes, and direct intensity source when enabled
-- original selected way/segment and preview geometry as OSM
-- candidate ridge geometries as OSM, including inspection-only rejected candidates
-- `candidate-metrics.csv`, with detector, visible color, intensity source, source tier, applicability, raw score, calibrated score, support ratio, mean intensity, mean gradient strength, objective-derived and physical longitudinal stability, SNR, ambiguity, corridor existence/localization confidence, optimizer cost, containment, tube residuals, source-pixel high-frequency residuals/deltas/acceleration, turns, forward-progress violations, unsupported excursions, endpoint quality, edge-pinning, and safety warnings for each candidate
+- immutable original selected geometry, proposed preview geometry, and, after Apply, the actual resulting segment as separate OSM files
+- raw candidate ridge geometries and final fixed-anchor preview geometries as separate OSM files, including inspection-only rejected candidates
+- `candidate-metrics.csv`, with detector, visible color, intensity source, source tier, applicability, raw score, measurable-quality score, detector prior, calibrated score, longitudinal coverage and gap details, support ratio, mean intensity, mean gradient strength, objective-derived and physical longitudinal stability, SNR, ambiguity, corridor existence/localization confidence, normalized optimizer cost, containment, tube residuals, source-pixel high-frequency residuals/deltas/acceleration, turns, forward-progress violations, unsupported excursions, endpoint quality, edge-pinning, and safety warnings for each candidate
 - `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, gradient strength/balance, native-vs-filtered maximum agreement, raw/B3/B5 center positions, scale agreement, center uncertainty, filter parameters, and synthetic-center flag
 - `palette-samples.csv`, with per-profile strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration
 - `profile-intensity.csv`, with every in-raster and off-raster cross-section offset plus native, B3, B5, and profile-normalized scalar intensity
 - `corridor-bands.csv`, with nested shoulder/core boundaries, robust centers, valley ratios, confidence, uncertainty, and parent/child identity
 - `corridor-tracks.csv`, with longitudinal associations, bridged gaps, support, parent/child grouping, and lane/carriageway ambiguity evidence
 - `corridor-tube.csv`, with the robust physical-distance center/tangent, core and shoulder bounds, uncertainty, confidence, scale conflicts, and raw/B3/B5 center evidence
-- `association-decisions.csv`, with the selected strand transitions, predicted and observed offsets, source-pixel residuals, and gap decisions
+- `association-decisions.csv`, with the selected strand transitions, predicted and observed offsets, source-pixel residuals, and gap decisions including profile count and physical distance
 - `endpoint-approaches.csv`, with fixed or movable boundary constraints, selected branch anchors, Hermite guide targets, and explicit unsupported reasons
+- `junction-safety.csv` and `junction-context.osm`, with the exact final-preview junction crossing evidence and only the adjacent connected segments that were evaluated
 - `optimizer-costs.csv`, with the selected offset and data, continuity, acceleration, tube, endpoint, containment, and total costs plus exact-state/evaluation counts for every profile/track
 - `parallel-context.json`, with redacted nearby OSM ids, assignment-relevant tags, distances, directions, overlap, and candidate reservation costs
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
 - `detector-attempts.json`, with every requested source/mapping pair, terminal status, reason, and produced candidate ids
 - `scale-space.csv`, with L0/L1/L2 transforms, extracted bands, persistence, compatible coarse centers, conflicts, and parallel-parent merges
-- visible-rendered-layer sampling details: source tile zoom reported by JOSM, whether a virtual viewport/chunked capture was used, requested and actual capture bounds, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, capture size, chunk count, and estimated visible tile range
+- visible-rendered-layer sampling details: source tile zoom reported by JOSM, whether a virtual viewport/chunked capture was used, requested and actual capture bounds, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, physical profile count/path length and min/median/p95/max profile spacing, capture size, chunk count, and estimated visible tile range
 - managed all-color aggregate visualization, when source mosaics are available, as `aggregate-intensity/all-colors-combined-z*.png` plus `aggregate-intensity/metadata.json`
 - per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, gradient strength/balance, synthetic center flags, combined detector component weights, and per-detector support statistics
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling
 
-The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
+Format-5 exports include the runtime plugin version and a short SHA-256 jar identity when available. Older format-4 bundles remain analyzable, but post-Apply original geometry and metre-labelled corridor fields are marked untrusted because those exports could contain mutable node positions or raster-space distances. The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
 
 ## Palette Calibration Workflow
 

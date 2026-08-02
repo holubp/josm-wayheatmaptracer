@@ -207,9 +207,12 @@ public final class CorridorTubeBuilder {
 
     private double[] cumulativeDistanceMeters(List<CorridorProfile> profiles) {
         double[] result = new double[profiles.size()];
-        for (int index = 1; index < profiles.size(); index++) {
-            result[index] = result[index - 1] + profiles.get(index - 1).source().anchor().distance(
-                profiles.get(index).source().anchor());
+        if (profiles.isEmpty()) {
+            return result;
+        }
+        double origin = profiles.get(0).source().cumulativeGroundDistanceMeters();
+        for (int index = 0; index < profiles.size(); index++) {
+            result[index] = profiles.get(index).source().cumulativeGroundDistanceMeters() - origin;
         }
         return result;
     }

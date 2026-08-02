@@ -8,9 +8,38 @@ import java.awt.image.BufferedImage;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 
 class RenderedHeatmapSamplerProfileTest {
+    @BeforeAll
+    static void setProjection() {
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+    }
+
+    @Test
+    void physicalProfileDistanceIsIndependentOfRasterScale() {
+        var projection = ProjectionRegistry.getProjection();
+        List<org.openstreetmap.josm.data.coor.EastNorth> source = List.of(
+            projection.latlon2eastNorth(new LatLon(49.44, 15.95)),
+            projection.latlon2eastNorth(new LatLon(49.4400234, 15.95))
+        );
+
+        List<ProfileSamplingAnchor> scaleOne = ProfileSamplingAnchor.pair(source,
+            List.of(new Point2D.Double(10.0, 10.0), new Point2D.Double(50.0, 10.0)));
+        List<ProfileSamplingAnchor> scaleSix = ProfileSamplingAnchor.pair(source,
+            List.of(new Point2D.Double(60.0, 60.0), new Point2D.Double(300.0, 60.0)));
+
+        assertEquals(scaleOne.get(1).cumulativeGroundDistanceMeters(),
+            scaleSix.get(1).cumulativeGroundDistanceMeters(), 1e-9);
+        assertTrue(scaleOne.get(1).cumulativeGroundDistanceMeters() > 2.5);
+        assertTrue(scaleOne.get(1).cumulativeGroundDistanceMeters() < 2.7);
+        assertEquals(40.0, scaleOne.get(0).rasterCoordinate().distance(scaleOne.get(1).rasterCoordinate()), 1e-9);
+    }
+
     @Test
     void renderedFallbackSelectsCoarseLevelsFromEstimatedSourcePixelPitch() {
         BufferedImage raster = new BufferedImage(320, 180, BufferedImage.TYPE_INT_ARGB);

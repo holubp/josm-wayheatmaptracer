@@ -23,8 +23,9 @@ class CorridorQualityMetricsTest {
             double offset = index % 2 == 0 ? -1.0 : 1.0;
             CorridorBand band = new CorridorBand("band", 0.0, -3.0, 3.0, -2.0, 2.0,
                 List.of(0.0), 1.0, 0.0, 1.0, 0.9, 0.5, 0.5, false, List.of());
-            var source = new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(index * 2.0, 0.0),
-                new Point2D.Double(index * 5.0, 0.0), new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(index * 2.0, 0.0), index * 5.0, 0.0, index * 2.0),
+                new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
             profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.0, 1.0, true));
             slices.add(new CorridorTubeSlice(index, index * 2.0, 0.0, 0.0, 0.0,
                 -2.0, 2.0, -3.0, 3.0, 0.5, 1.0, false, false, 0.0, 0.0, 0.0, true));
@@ -56,8 +57,9 @@ class CorridorQualityMetricsTest {
             CorridorBand band = new CorridorBand("band", offset, offset - 1.0, offset + 1.0,
                 offset - 0.5, offset + 0.5, List.of(offset), 1.0, 0.0, 1.0,
                 0.9, 0.8, 0.5, false, List.of());
-            var source = new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(index * 2.0, 0.0),
-                new Point2D.Double(index * 5.0, 0.0), new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(index * 2.0, 0.0), index * 5.0, 0.0, index * 2.0),
+                new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
             profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.0, 1.0, true));
             slices.add(new CorridorTubeSlice(index, index * 2.0, offset, 0.0, 0.0,
                 offset - 0.5, offset + 0.5, offset - 1.0, offset + 1.0,

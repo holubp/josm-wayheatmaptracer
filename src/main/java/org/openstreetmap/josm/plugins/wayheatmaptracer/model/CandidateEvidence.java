@@ -23,6 +23,7 @@ import java.util.List;
  * @param scalePersistence mean compatible L0/L1/L2 corridor persistence
  * @param scaleConflictFraction fraction of supported profiles with incompatible coarse evidence
  * @param corridorQuality unweighted corridor-aware physical quality metrics
+ * @param corridorCoverage longitudinal coverage and applicability evidence
  * @param consensusModes detector modes fused before candidate extraction
  */
 public record CandidateEvidence(
@@ -44,6 +45,7 @@ public record CandidateEvidence(
     double scalePersistence,
     double scaleConflictFraction,
     CorridorQuality corridorQuality,
+    CorridorCoverage corridorCoverage,
     List<String> consensusModes
 ) {
     /**
@@ -91,7 +93,7 @@ public record CandidateEvidence(
         this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
             totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
             ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
-            scalePersistence, scaleConflictFraction, CorridorQuality.empty(), consensusModes);
+            scalePersistence, scaleConflictFraction, CorridorQuality.empty(), CorridorCoverage.empty(), consensusModes);
     }
 
     /**
@@ -135,7 +137,7 @@ public record CandidateEvidence(
         this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
             totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
             ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
-            0.0, 0.0, CorridorQuality.empty(), consensusModes);
+            0.0, 0.0, CorridorQuality.empty(), CorridorCoverage.empty(), consensusModes);
     }
 
     /**
@@ -170,7 +172,7 @@ public record CandidateEvidence(
     ) {
         this(detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
             totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
-            ambiguity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), consensusModes);
+            ambiguity, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), CorridorCoverage.empty(), consensusModes);
     }
 
     /**
@@ -180,7 +182,7 @@ public record CandidateEvidence(
      */
     public static CandidateEvidence empty() {
         return new CandidateEvidence("", 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), List.of());
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, CorridorQuality.empty(), CorridorCoverage.empty(), List.of());
     }
 
     /**
@@ -227,6 +229,7 @@ public record CandidateEvidence(
             scalePersistence,
             scaleConflictFraction,
             corridorQuality,
+            corridorCoverage,
             consensusModes
         );
     }
@@ -257,7 +260,40 @@ public record CandidateEvidence(
             scalePersistence,
             scaleConflictFraction,
             corridorQuality,
+            corridorCoverage,
             modes == null ? List.of() : List.copyOf(modes)
+        );
+    }
+
+    /**
+     * Returns a copy with corridor-aware longitudinal coverage.
+     *
+     * @param coverage measured coverage summary
+     * @return copied evidence with the supplied coverage
+     */
+    public CandidateEvidence withCorridorCoverage(CorridorCoverage coverage) {
+        return new CandidateEvidence(
+            detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
+            totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
+            ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
+            scalePersistence, scaleConflictFraction, corridorQuality,
+            coverage == null ? CorridorCoverage.empty() : coverage, consensusModes
+        );
+    }
+
+    /**
+     * Returns a copy with physical corridor quality metrics.
+     *
+     * @param quality measured physical quality, or {@code null} for an empty summary
+     * @return copied evidence with the supplied quality
+     */
+    public CandidateEvidence withCorridorQuality(CorridorQuality quality) {
+        return new CandidateEvidence(
+            detectorMode, totalProfiles, supportedProfiles, emptyProfiles, maxConsecutiveEmptyProfiles,
+            totalIntensity, meanIntensity, meanGradientStrength, longitudinalStability, signalToNoise,
+            ambiguity, signalExistenceConfidence, localizationConfidence, optimizerCost, inCorridorFraction,
+            scalePersistence, scaleConflictFraction, quality == null ? CorridorQuality.empty() : quality,
+            corridorCoverage, consensusModes
         );
     }
 
@@ -287,6 +323,7 @@ public record CandidateEvidence(
             + "\"scalePersistence\":" + scalePersistence + ','
             + "\"scaleConflictFraction\":" + scaleConflictFraction + ','
             + "\"corridorQuality\":" + corridorQuality.toJson() + ','
+            + "\"corridorCoverage\":" + corridorCoverage.toJson() + ','
             + "\"consensusModes\":" + stringArray(consensusModes)
             + "}";
     }

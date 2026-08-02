@@ -48,9 +48,9 @@ class CorridorScaleSpacePerformanceTest {
                 double intensity = distance <= 2.0 ? 0.95 : (distance <= 5.0 ? 0.5 : 0.02);
                 samples.add(new IntensitySample(offset, intensity, intensity, intensity, true));
             }
-            var source = new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(index * 1.5, 0.0),
-                new Point2D.Double(index * 4.0, 0.0), new Point2D.Double(0.0, 1.0),
-                List.of(), true, samples);
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(index * 1.5, 0.0), index * 4.0, 0.0, index * 1.5),
+                new Point2D.Double(0.0, 1.0), List.of(), true, samples);
             profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.02, 0.98, true));
             points.put(index, new CorridorTrackPoint(index, band, false));
         }

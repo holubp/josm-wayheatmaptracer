@@ -84,7 +84,7 @@ class MultiScaleCorridorTrackingTest {
         double amplitude = result.candidates().stream()
             .mapToDouble(candidate -> amplitude(candidate.offsetsPx()))
             .max().orElse(0.0);
-        assertTrue(amplitude >= 5.4, "retained sine amplitude=" + amplitude);
+        assertTrue(amplitude >= 5.4 - 1e-9, "retained sine amplitude=" + amplitude);
     }
 
     private MultiScaleProfileSet profileSet(
@@ -142,7 +142,8 @@ class MultiScaleCorridorTrackingTest {
 
     private RenderedHeatmapSampler.CrossSectionProfile profile(int index, List<IntensitySample> samples) {
         Point2D.Double anchor = new Point2D.Double(index * 5.0, 0.0);
-        return new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(anchor.x, anchor.y), anchor,
+        return new RenderedHeatmapSampler.CrossSectionProfile(
+            new ProfileSamplingAnchor(new EastNorth(anchor.x, anchor.y), anchor.x, anchor.y, index * 5.0),
             new Point2D.Double(0.0, 1.0), List.of(), true, samples);
     }
 

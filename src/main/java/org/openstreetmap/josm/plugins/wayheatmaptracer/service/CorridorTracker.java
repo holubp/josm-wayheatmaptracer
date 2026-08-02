@@ -252,8 +252,8 @@ public final class CorridorTracker {
     }
 
     private double profileDistanceMeters(List<CorridorProfile> profiles, int leftIndex, int rightIndex) {
-        return profiles.get(leftIndex).source().anchor().distance(
-            profiles.get(rightIndex).source().anchor());
+        return Math.abs(profiles.get(rightIndex).source().cumulativeGroundDistanceMeters()
+            - profiles.get(leftIndex).source().cumulativeGroundDistanceMeters());
     }
 
     private double bandReward(CorridorBand band) {

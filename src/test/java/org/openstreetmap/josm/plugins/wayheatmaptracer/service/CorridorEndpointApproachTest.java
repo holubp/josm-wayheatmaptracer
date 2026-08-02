@@ -50,7 +50,30 @@ class CorridorEndpointApproachTest {
         assertEquals("no-reliable-interior-corridor", model.approaches().get(0).reason());
     }
 
+    @Test
+    void selectsPhysicalEndpointAnchorIndependentlyOfRasterScale() {
+        JunctionContext context = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, true, true, 0.0, 0.0, 6)
+        ));
+        Scenario normal = scenario(4.0, 16, true, 5.0);
+        Scenario oversampled = scenario(4.0, 16, true, 120.0);
+
+        EndpointApproachModel first = new EndpointApproachBuilder().build(normal.track(), normal.profiles(),
+            new CorridorTubeBuilder().build(normal.track(), normal.profiles(), 1.0, Map.of()), context, Map.of());
+        EndpointApproachModel second = new EndpointApproachBuilder().build(oversampled.track(), oversampled.profiles(),
+            new CorridorTubeBuilder().build(oversampled.track(), oversampled.profiles(), 1.0, Map.of()), context, Map.of());
+
+        assertTrue(first.supportsConstraint(0));
+        assertTrue(second.supportsConstraint(0));
+        assertEquals(first.approaches().get(0).interiorAnchorProfileIndex(),
+            second.approaches().get(0).interiorAnchorProfileIndex());
+    }
+
     private Scenario scenario(double center, int count, boolean withEvidence) {
+        return scenario(center, count, withEvidence, 5.0);
+    }
+
+    private Scenario scenario(double center, int count, boolean withEvidence, double rasterSpacing) {
         List<CorridorProfile> profiles = new ArrayList<>();
         Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
         for (int index = 0; index < count; index++) {
@@ -64,7 +87,8 @@ class CorridorEndpointApproachTest {
                 samples.add(new IntensitySample(offset, intensity, intensity, intensity, true));
             }
             RenderedHeatmapSampler.CrossSectionProfile source = new RenderedHeatmapSampler.CrossSectionProfile(
-                new EastNorth(index * 2.0, 0.0), new Point2D.Double(index * 5.0, 0.0),
+                new ProfileSamplingAnchor(new EastNorth(index * 2.0, 0.0), index * rasterSpacing, 0.0,
+                    index * 2.0),
                 new Point2D.Double(0.0, 1.0), List.of(), true, samples);
             profiles.add(new CorridorProfile(index, source, withEvidence ? List.of(band) : List.of(),
                 withEvidence ? 1.0 : 0.0, 0.02, withEvidence ? 0.98 : 0.0, true));

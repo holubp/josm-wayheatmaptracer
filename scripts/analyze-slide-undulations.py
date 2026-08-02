@@ -90,11 +90,17 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
     """Compute geometry, offset, and heatmap-profile metrics for every candidate in a bundle."""
     with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
         diagnostics = read_json(archive, "diagnostics.json")
+        manifest = read_json(archive, "manifest.json")
         status = read_json(archive, "status.json")
         candidate_metrics = read_csv(archive, "candidate-metrics.csv")
         profile_rows = read_csv(archive, "profile-peaks.csv")
         original = geometry_metrics(read_text(archive, "original-segment.osm"))
         preview = geometry_metrics(read_text(archive, "preview-segment.osm"))
+        applied = geometry_metrics(read_text(archive, "applied-segment.osm"))
+
+    bundle_format = int(manifest.get("formatVersion", 0) or 0)
+    original_trust = "immutable" if bundle_format >= 5 else (
+        "unreliable-after-apply" if status.get("status") == "applied" else "pre-apply-snapshot")
 
     profiles_by_detector = profile_summary(profile_rows)
     candidates = {candidate.get("id", ""): candidate for candidate in diagnostics.get("candidates", [])}
@@ -111,6 +117,10 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
         profile_stats = profiles_by_detector.get(metric.get("detector", ""), {})
         rows.append({
             "bundle": bundle.name,
+            "bundle_format": bundle_format,
+            "plugin_version": manifest.get("pluginVersion", diagnostics.get("pluginVersion", "")),
+            "build_identity": manifest.get("buildIdentity", diagnostics.get("buildIdentity", "")),
+            "original_geometry_trust": original_trust,
             "rank": int(float(metric.get("rank") or 9999)),
             "selected": candidate_id == selected,
             "candidate_id": candidate_id,
@@ -123,8 +133,10 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "half_width_m": config.get("searchHalfWidthMeters", ""),
             "original_nodes": original.get("points", 0),
             "preview_nodes": preview.get("points", 0),
+            "applied_nodes": applied.get("points", 0),
             "original_len_m": original.get("length_m", 0.0),
             "preview_len_m": preview.get("length_m", 0.0),
+            "applied_len_m": applied.get("length_m", 0.0),
             "preview_p95_turn_deg": preview.get("p95_turn_deg", 0.0),
             "preview_max_turn_deg": preview.get("max_turn_deg", 0.0),
             "preview_p95_local_residual_m": preview.get("p95_local_residual_m", 0.0),

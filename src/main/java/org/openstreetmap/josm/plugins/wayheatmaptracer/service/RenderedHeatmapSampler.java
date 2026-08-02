@@ -139,17 +139,45 @@ public final class RenderedHeatmapSampler {
         double sourceCoordinateScale,
         IntensitySamplingMode intensitySamplingMode
     ) {
-        if (denseScreenPolyline.size() < 2) {
+        return sampleProfilesOnAnchors(raster, ProfileSamplingAnchor.rasterOnly(denseScreenPolyline),
+            halfWidthPx, stepPx, colorMode, rasterScale, sourceCoordinateScale, intensitySamplingMode);
+    }
+
+    /**
+     * Samples profiles from explicitly paired map, raster, and physical anchors.
+     *
+     * @param raster source raster
+     * @param anchors aligned profile sampling anchors
+     * @param halfWidthPx configured search half-width
+     * @param stepPx configured lateral step
+     * @param colorMode palette mapping
+     * @param rasterScale raster oversampling scale
+     * @param sourceCoordinateScale raster pixels per source-image pixel
+     * @param intensitySamplingMode scalar intensity source
+     * @return sampled cross-section profiles
+     */
+    List<CrossSectionProfile> sampleProfilesOnAnchors(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode
+    ) {
+        if (anchors.size() < 2) {
             return Collections.emptyList();
         }
         double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
             ? sourceCoordinateScale
             : 1.0;
         List<CrossSectionProfile> profiles = new ArrayList<>();
-        for (int i = 0; i < denseScreenPolyline.size(); i++) {
-            Point2D.Double current = denseScreenPolyline.get(i);
-            Point2D.Double prevScreen = denseScreenPolyline.get(Math.max(0, i - 1));
-            Point2D.Double nextScreen = denseScreenPolyline.get(Math.min(denseScreenPolyline.size() - 1, i + 1));
+        for (int i = 0; i < anchors.size(); i++) {
+            ProfileSamplingAnchor samplingAnchor = anchors.get(i);
+            Point2D.Double current = samplingAnchor.rasterCoordinate();
+            Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
+            Point2D.Double nextScreen = anchors.get(Math.min(anchors.size() - 1, i + 1)).rasterCoordinate();
             Point2D.Double tangent = PolylineMath.normalize(nextScreen.x - prevScreen.x, nextScreen.y - prevScreen.y);
             Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
             Point2D.Double baseScreen = current;
@@ -176,7 +204,7 @@ public final class RenderedHeatmapSampler {
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
 
-            profiles.add(new CrossSectionProfile(new EastNorth(baseScreen.x, baseScreen.y), baseScreen, normal,
+            profiles.add(new CrossSectionProfile(samplingAnchor, normal,
                 samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
         }
         if (!profiles.isEmpty()) {
@@ -244,14 +272,32 @@ public final class RenderedHeatmapSampler {
         IntensitySamplingMode intensitySamplingMode,
         double sourcePixelPitchInImagePixels
     ) {
-        if (denseScreenPolyline.size() < 2) {
+        return sampleMultiScaleProfilesOnAnchors(raster, ProfileSamplingAnchor.rasterOnly(denseScreenPolyline),
+            halfWidthPx, stepPx, colorMode, rasterScale, sourceCoordinateScale, intensitySamplingMode,
+            sourcePixelPitchInImagePixels);
+    }
+
+    /** Samples Gaussian levels using one explicit physical anchor sequence for every level. */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnAnchors(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        double sourcePixelPitchInImagePixels
+    ) {
+        if (anchors.size() < 2) {
             return new MultiScaleProfileSet(List.of(), 0L, 0L);
         }
         double coordinateScale = validCoordinateScale(sourceCoordinateScale);
         int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
         double sourcePitch = Double.isFinite(sourcePixelPitchInImagePixels) && sourcePixelPitchInImagePixels > 0.0
             ? sourcePixelPitchInImagePixels : 1.0;
-        CropBounds crop = cropBounds(raster, denseScreenPolyline, scaledHalfWidth, coordinateScale,
+        List<Point2D.Double> rasterPolyline = anchors.stream().map(ProfileSamplingAnchor::rasterCoordinate).toList();
+        CropBounds crop = cropBounds(raster, rasterPolyline, scaledHalfWidth, coordinateScale,
             Math.max(12.0, 8.0 * sourcePitch));
         long started = System.nanoTime();
         ScalarIntensityField levelZero = ScalarIntensityField.fromRaster(raster, crop.minX(), crop.minY(),
@@ -262,7 +308,7 @@ public final class RenderedHeatmapSampler {
         List<MultiScaleProfileSet.ScaleProfileLevel> levels = new ArrayList<>();
         for (IntensityScaleLevel level : selectedAnalysisLevels(pyramid, sourcePitch)) {
             levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
-                level.effectiveSigmaL0(), sampleProfilesFromField(level, denseScreenPolyline,
+                level.effectiveSigmaL0(), sampleProfilesFromField(level, anchors,
                     scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
         }
         PluginLog.verbose("Built scalar Gaussian pyramid for '%s': levels=%s crop=%dx%d bytes=%d time=%.1fms.",
@@ -301,13 +347,28 @@ public final class RenderedHeatmapSampler {
         double rasterScale,
         double sourceCoordinateScale
     ) {
-        if (denseScreenPolyline.size() < 2 || rastersByColor.isEmpty()) {
+        return sampleMultiScaleProfilesOnAggregatedAnchors(rastersByColor,
+            ProfileSamplingAnchor.rasterOnly(denseScreenPolyline), halfWidthPx, stepPx, rasterScale,
+            sourceCoordinateScale);
+    }
+
+    /** Samples an all-color Gaussian field using one explicit physical anchor sequence. */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnAggregatedAnchors(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale
+    ) {
+        if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return new MultiScaleProfileSet(List.of(), 0L, 0L);
         }
         double coordinateScale = validCoordinateScale(sourceCoordinateScale);
         int scaledHalfWidth = Math.max(1, (int) Math.round(halfWidthPx * rasterScale));
         BufferedImage reference = rastersByColor.values().iterator().next();
-        CropBounds crop = cropBounds(reference, denseScreenPolyline, scaledHalfWidth, coordinateScale, 12.0);
+        List<Point2D.Double> rasterPolyline = anchors.stream().map(ProfileSamplingAnchor::rasterCoordinate).toList();
+        CropBounds crop = cropBounds(reference, rasterPolyline, scaledHalfWidth, coordinateScale, 12.0);
         long started = System.nanoTime();
         ScalarIntensityField levelZero = ScalarIntensityField.fromAggregatedRasters(rastersByColor,
             crop.minX(), crop.minY(), crop.maxX(), crop.maxY());
@@ -316,7 +377,7 @@ public final class RenderedHeatmapSampler {
         List<MultiScaleProfileSet.ScaleProfileLevel> levels = new ArrayList<>();
         for (IntensityScaleLevel level : pyramid.levels()) {
             levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
-                level.effectiveSigmaL0(), sampleProfilesFromField(level, denseScreenPolyline,
+                level.effectiveSigmaL0(), sampleProfilesFromField(level, anchors,
                     scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
         }
         PluginLog.verbose("Built all-color scalar Gaussian pyramid: levels=%s crop=%dx%d bytes=%d time=%.1fms.",
@@ -327,17 +388,18 @@ public final class RenderedHeatmapSampler {
 
     private List<CrossSectionProfile> sampleProfilesFromField(
         IntensityScaleLevel level,
-        List<Point2D.Double> denseScreenPolyline,
+        List<ProfileSamplingAnchor> anchors,
         int scaledHalfWidth,
         int scaledStep,
         double coordinateScale
     ) {
-        List<CrossSectionProfile> profiles = new ArrayList<>(denseScreenPolyline.size());
+        List<CrossSectionProfile> profiles = new ArrayList<>(anchors.size());
         double levelStep = Math.max(scaledStep, coordinateScale * level.reduction());
-        for (int i = 0; i < denseScreenPolyline.size(); i++) {
-            Point2D.Double current = denseScreenPolyline.get(i);
-            Point2D.Double previous = denseScreenPolyline.get(Math.max(0, i - 1));
-            Point2D.Double next = denseScreenPolyline.get(Math.min(denseScreenPolyline.size() - 1, i + 1));
+        for (int i = 0; i < anchors.size(); i++) {
+            ProfileSamplingAnchor samplingAnchor = anchors.get(i);
+            Point2D.Double current = samplingAnchor.rasterCoordinate();
+            Point2D.Double previous = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
+            Point2D.Double next = anchors.get(Math.min(anchors.size() - 1, i + 1)).rasterCoordinate();
             Point2D.Double tangent = PolylineMath.normalize(next.x - previous.x, next.y - previous.y);
             Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
             List<OffsetSample> offsets = new ArrayList<>();
@@ -359,7 +421,7 @@ public final class RenderedHeatmapSampler {
             }
             boolean anchorValid = Double.isFinite(level.field().sample(current.x / coordinateScale,
                 current.y / coordinateScale));
-            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal,
+            profiles.add(new CrossSectionProfile(samplingAnchor, normal,
                 peaks, anchorValid, intensitySamples(filters, inside)));
         }
         return profiles;
@@ -400,17 +462,32 @@ public final class RenderedHeatmapSampler {
         double rasterScale,
         double sourceCoordinateScale
     ) {
-        if (denseScreenPolyline.size() < 2 || rastersByColor.isEmpty()) {
+        return sampleProfilesOnAggregatedAnchors(rastersByColor,
+            ProfileSamplingAnchor.rasterOnly(denseScreenPolyline), halfWidthPx, stepPx, rasterScale,
+            sourceCoordinateScale);
+    }
+
+    /** Samples an all-color scalar field with explicit physical anchors. */
+    List<CrossSectionProfile> sampleProfilesOnAggregatedAnchors(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale
+    ) {
+        if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return Collections.emptyList();
         }
         double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
             ? sourceCoordinateScale
             : 1.0;
         List<CrossSectionProfile> profiles = new ArrayList<>();
-        for (int i = 0; i < denseScreenPolyline.size(); i++) {
-            Point2D.Double current = denseScreenPolyline.get(i);
-            Point2D.Double prevScreen = denseScreenPolyline.get(Math.max(0, i - 1));
-            Point2D.Double nextScreen = denseScreenPolyline.get(Math.min(denseScreenPolyline.size() - 1, i + 1));
+        for (int i = 0; i < anchors.size(); i++) {
+            ProfileSamplingAnchor samplingAnchor = anchors.get(i);
+            Point2D.Double current = samplingAnchor.rasterCoordinate();
+            Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
+            Point2D.Double nextScreen = anchors.get(Math.min(anchors.size() - 1, i + 1)).rasterCoordinate();
             Point2D.Double tangent = PolylineMath.normalize(nextScreen.x - prevScreen.x, nextScreen.y - prevScreen.y);
             Point2D.Double normal = new Point2D.Double(-tangent.y, tangent.x);
 
@@ -436,7 +513,7 @@ public final class RenderedHeatmapSampler {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
-            profiles.add(new CrossSectionProfile(new EastNorth(current.x, current.y), current, normal,
+            profiles.add(new CrossSectionProfile(samplingAnchor, normal,
                 samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
         }
         PluginLog.verbose("Aggregated heatmap sampling produced %d profiles from color sources %s.",
@@ -1174,16 +1251,14 @@ public final class RenderedHeatmapSampler {
     /**
      * Sampled heatmap evidence at one point along the source way.
      *
-     * @param anchor projected coordinate of the sampled source point
-     * @param anchorScreen raster coordinate of the sampled source point
+     * @param samplingAnchor paired source, raster, and physical-distance position
      * @param normalScreen unit normal used for offset sampling
      * @param peaks candidate heatmap ridges found on this cross-section
      * @param anchorWithinRaster whether the source point was inside the sampled raster
      * @param intensitySamples complete raw and filtered cross-section evidence
      */
     public record CrossSectionProfile(
-        EastNorth anchor,
-        Point2D.Double anchorScreen,
+        ProfileSamplingAnchor samplingAnchor,
         Point2D.Double normalScreen,
         List<CrossSectionPeak> peaks,
         boolean anchorWithinRaster,
@@ -1191,8 +1266,48 @@ public final class RenderedHeatmapSampler {
     ) {
         /** Makes peak and full-profile evidence immutable. */
         public CrossSectionProfile {
+            java.util.Objects.requireNonNull(samplingAnchor, "samplingAnchor");
             peaks = List.copyOf(peaks);
             intensitySamples = List.copyOf(intensitySamples);
+        }
+
+        /**
+         * Returns the source position in the active JOSM projection.
+         *
+         * @return source position in the active JOSM projection
+         */
+        public EastNorth anchor() {
+            return samplingAnchor.sourceMapCoordinate();
+        }
+
+        /**
+         * Returns the sampled-raster anchor.
+         *
+         * @return sampled-raster anchor
+         */
+        public Point2D.Double anchorScreen() {
+            return samplingAnchor.rasterCoordinate();
+        }
+
+        /**
+         * Returns monotonic cumulative ground distance from the first profile.
+         *
+         * @return cumulative ground distance in metres
+         */
+        public double cumulativeGroundDistanceMeters() {
+            return samplingAnchor.cumulativeGroundDistanceMeters();
+        }
+
+        /**
+         * Creates a profile from an explicit physical anchor without retained full-profile samples.
+         *
+         * @param samplingAnchor paired source, raster, and physical-distance position
+         * @param normalScreen raster-space unit normal
+         * @param peaks extracted ridge peaks
+         */
+        public CrossSectionProfile(ProfileSamplingAnchor samplingAnchor, Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks) {
+            this(samplingAnchor, normalScreen, peaks, true, List.of());
         }
 
         /**
@@ -1205,7 +1320,8 @@ public final class RenderedHeatmapSampler {
          */
         public CrossSectionProfile(EastNorth anchor, Point2D.Double anchorScreen,
             Point2D.Double normalScreen, List<CrossSectionPeak> peaks) {
-            this(anchor, anchorScreen, normalScreen, peaks, true, List.of());
+            this(new ProfileSamplingAnchor(anchor, anchorScreen.x, anchorScreen.y, 0.0),
+                normalScreen, peaks, true, List.of());
         }
 
         /**
@@ -1224,7 +1340,30 @@ public final class RenderedHeatmapSampler {
             List<CrossSectionPeak> peaks,
             boolean anchorWithinRaster
         ) {
-            this(anchor, anchorScreen, normalScreen, peaks, anchorWithinRaster, List.of());
+            this(new ProfileSamplingAnchor(anchor, anchorScreen.x, anchorScreen.y, 0.0),
+                normalScreen, peaks, anchorWithinRaster, List.of());
+        }
+
+        /**
+         * Compatibility constructor for legacy and isolated tests without a physical anchor sequence.
+         *
+         * @param anchor profile anchor in projected coordinates
+         * @param anchorScreen raster-space anchor
+         * @param normalScreen raster-space unit normal
+         * @param peaks extracted ridge peaks
+         * @param anchorWithinRaster whether the anchor lies in the raster
+         * @param intensitySamples retained raw and filtered cross-section evidence
+         */
+        public CrossSectionProfile(
+            EastNorth anchor,
+            Point2D.Double anchorScreen,
+            Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks,
+            boolean anchorWithinRaster,
+            List<IntensitySample> intensitySamples
+        ) {
+            this(new ProfileSamplingAnchor(anchor, anchorScreen.x, anchorScreen.y, 0.0), normalScreen,
+                peaks, anchorWithinRaster, intensitySamples);
         }
     }
 

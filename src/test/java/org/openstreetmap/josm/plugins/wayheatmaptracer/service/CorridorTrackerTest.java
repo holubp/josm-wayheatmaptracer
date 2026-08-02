@@ -107,14 +107,45 @@ class CorridorTrackerTest {
             track.points().containsKey(1) && track.points().containsKey(3)));
     }
 
+    @Test
+    void boundedPhysicalGapBridgesRegardlessOfRasterOversampling() {
+        List<CorridorProfile> scaleOne = new ArrayList<>();
+        List<CorridorProfile> scaleSix = new ArrayList<>();
+        for (int index = 0; index < 10; index++) {
+            List<CorridorBand> bandsScaleOne = index >= 3 && index <= 7
+                ? List.of(band("temporary-side", 80.0))
+                : List.of(band("ridge", 0.0));
+            List<CorridorBand> bandsScaleSix = index >= 3 && index <= 7
+                ? List.of(band("temporary-side", 480.0))
+                : List.of(band("ridge", 0.0));
+            scaleOne.add(profile(index, bandsScaleOne, 2.6, 40.0));
+            scaleSix.add(profile(index, bandsScaleSix, 2.6, 240.0));
+        }
+
+        CorridorTrack first = new CorridorTracker().track(scaleOne, 24.0).stream()
+            .filter(track -> track.points().containsKey(0) && track.points().containsKey(9))
+            .findFirst().orElseThrow();
+        CorridorTrack second = new CorridorTracker().track(scaleSix, 144.0).stream()
+            .filter(track -> track.points().containsKey(0) && track.points().containsKey(9))
+            .findFirst().orElseThrow();
+
+        assertEquals(first.points().keySet(), second.points().keySet());
+        assertTrue(first.points().get(8).bridged());
+        assertTrue(second.points().get(8).bridged());
+    }
+
     private CorridorProfile profile(int index, List<CorridorBand> bands) {
         return profile(index, bands, 10.0);
     }
 
     private CorridorProfile profile(int index, List<CorridorBand> bands, double spacing) {
+        return profile(index, bands, spacing, spacing);
+    }
+
+    private CorridorProfile profile(int index, List<CorridorBand> bands, double groundSpacing, double rasterSpacing) {
         RenderedHeatmapSampler.CrossSectionProfile source = new RenderedHeatmapSampler.CrossSectionProfile(
-            new EastNorth(index * spacing, 0.0),
-            new Point2D.Double(index * spacing, 0.0),
+            new ProfileSamplingAnchor(new EastNorth(index * groundSpacing, 0.0),
+                index * rasterSpacing, 0.0, index * groundSpacing),
             new Point2D.Double(0.0, 1.0),
             List.of(),
             true,

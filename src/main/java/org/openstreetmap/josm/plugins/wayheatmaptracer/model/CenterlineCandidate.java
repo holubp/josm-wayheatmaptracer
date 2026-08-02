@@ -13,6 +13,9 @@ import org.openstreetmap.josm.data.coor.EastNorth;
  * @param screenPoints candidate points in the slide-time raster/screen coordinate space
  * @param offsetsPx lateral offsets from each sampled source profile in raster pixels
  * @param eastNorthPoints slide-time projected candidate geometry, preferred for modeless preview selection
+ * @param finalPreviewPoints candidate-specific geometry after mode reconstruction and fixed-anchor restoration
+ * @param junctionSafetyFindings structured final-preview connected-way findings
+ * @param junctionSafetyToleranceMeters slide-time tolerance used to evaluate connected-way junction crossings
  * @param evidence aggregate heatmap and longitudinal evidence for the candidate
  * @param safetyWarnings structural warnings that should prevent unsafe apply operations
  */
@@ -22,13 +25,19 @@ public record CenterlineCandidate(
     List<Point2D.Double> screenPoints,
     List<Double> offsetsPx,
     List<EastNorth> eastNorthPoints,
+    List<EastNorth> finalPreviewPoints,
+    List<JunctionSafetyFinding> junctionSafetyFindings,
+    double junctionSafetyToleranceMeters,
     CandidateEvidence evidence,
     List<String> safetyWarnings
 ) {
+    /** Normalizes optional collections and evidence to immutable non-null values. */
     public CenterlineCandidate {
         screenPoints = screenPoints == null ? List.of() : List.copyOf(screenPoints);
         offsetsPx = offsetsPx == null ? List.of() : List.copyOf(offsetsPx);
         eastNorthPoints = eastNorthPoints == null ? List.of() : List.copyOf(eastNorthPoints);
+        finalPreviewPoints = finalPreviewPoints == null ? List.of() : List.copyOf(finalPreviewPoints);
+        junctionSafetyFindings = junctionSafetyFindings == null ? List.of() : List.copyOf(junctionSafetyFindings);
         evidence = evidence == null ? CandidateEvidence.empty() : evidence;
         safetyWarnings = safetyWarnings == null ? List.of() : List.copyOf(safetyWarnings);
     }
@@ -42,7 +51,32 @@ public record CenterlineCandidate(
      * @param offsetsPx lateral offsets from sampled profiles in raster pixels
      */
     public CenterlineCandidate(String id, double score, List<Point2D.Double> screenPoints, List<Double> offsetsPx) {
-        this(id, score, screenPoints, offsetsPx, List.of(), CandidateEvidence.empty(), List.of());
+        this(id, score, screenPoints, offsetsPx, List.of(), List.of(), List.of(), Double.NaN,
+            CandidateEvidence.empty(), List.of());
+    }
+
+    /**
+     * Creates a candidate using the pre-format-5 projected-geometry contract.
+     *
+     * @param id detector/candidate identifier
+     * @param score candidate ranking score
+     * @param screenPoints candidate points in raster/screen coordinates
+     * @param offsetsPx lateral offsets from sampled profiles in raster pixels
+     * @param eastNorthPoints candidate geometry in JOSM projected coordinates
+     * @param evidence aggregate heatmap and longitudinal evidence
+     * @param safetyWarnings structural warnings that prevent unsafe application
+     */
+    public CenterlineCandidate(
+        String id,
+        double score,
+        List<Point2D.Double> screenPoints,
+        List<Double> offsetsPx,
+        List<EastNorth> eastNorthPoints,
+        CandidateEvidence evidence,
+        List<String> safetyWarnings
+    ) {
+        this(id, score, screenPoints, offsetsPx, eastNorthPoints, List.of(), List.of(), Double.NaN,
+            evidence, safetyWarnings);
     }
 
     /**
@@ -52,7 +86,8 @@ public record CenterlineCandidate(
      * @return candidate copy using {@code newId}
      */
     public CenterlineCandidate withId(String newId) {
-        return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
+        return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
     }
 
     /**
@@ -62,7 +97,8 @@ public record CenterlineCandidate(
      * @return candidate copy using {@code newScore}
      */
     public CenterlineCandidate withScore(double newScore) {
-        return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints, evidence, safetyWarnings);
+        return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
     }
 
     /**
@@ -72,7 +108,45 @@ public record CenterlineCandidate(
      * @return candidate copy using {@code points}
      */
     public CenterlineCandidate withEastNorthPoints(List<EastNorth> points) {
-        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points, evidence, safetyWarnings);
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points,
+            finalPreviewPoints, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with candidate-specific final preview geometry.
+     *
+     * @param points geometry after mode reconstruction and fixed-anchor restoration
+     * @return candidate copy using {@code points} for preview and application
+     */
+    public CenterlineCandidate withFinalPreviewPoints(List<EastNorth> points) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            points, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with structured final-preview junction findings.
+     *
+     * @param findings connected-way findings for the final preview geometry
+     * @return candidate copy using {@code findings}
+     */
+    public CenterlineCandidate withJunctionSafetyFindings(List<JunctionSafetyFinding> findings) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, findings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with structured findings and the tolerance used for their evaluation.
+     *
+     * @param findings connected-way findings for the final preview geometry
+     * @param toleranceMeters slide-time crossing tolerance in metres
+     * @return candidate copy using the supplied safety evaluation
+     */
+    public CenterlineCandidate withJunctionSafetyEvaluation(
+        List<JunctionSafetyFinding> findings,
+        double toleranceMeters
+    ) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, findings, toleranceMeters, evidence, safetyWarnings);
     }
 
     /**
@@ -82,7 +156,8 @@ public record CenterlineCandidate(
      * @return candidate copy using {@code newEvidence}
      */
     public CenterlineCandidate withEvidence(CandidateEvidence newEvidence) {
-        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, newEvidence, safetyWarnings);
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, junctionSafetyFindings, junctionSafetyToleranceMeters, newEvidence, safetyWarnings);
     }
 
     /**
@@ -92,7 +167,8 @@ public record CenterlineCandidate(
      * @return candidate copy using {@code warnings}
      */
     public CenterlineCandidate withSafetyWarnings(List<String> warnings) {
-        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints, evidence, warnings);
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, warnings);
     }
 
     /**

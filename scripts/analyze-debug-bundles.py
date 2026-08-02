@@ -54,6 +54,11 @@ def rating_score(value: str) -> int | None:
 
 def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     """Merge candidate metrics and optional human ratings for one debug bundle."""
+    manifest = json_object(read_zip_text(bundle, "manifest.json"))
+    diagnostics = json_object(read_zip_text(bundle, "diagnostics.json"))
+    bundle_format = int(manifest.get("formatVersion", 0) or 0)
+    plugin_version = str(manifest.get("pluginVersion") or diagnostics.get("pluginVersion") or "")
+    physical_warning = physical_distance_warning(bundle, bundle_format, diagnostics)
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
@@ -81,6 +86,11 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         negative = ",".join(rating.get("negativeFeatures", [])) if isinstance(rating, dict) else ""
         rows.append({
             "bundle": bundle.name,
+            "bundle_format": bundle_format,
+            "plugin_version": plugin_version,
+            "build_identity": str(manifest.get("buildIdentity") or diagnostics.get("buildIdentity") or ""),
+            "original_geometry_trust": "immutable" if bundle_format >= 5 else "unreliable-after-apply",
+            "physical_distance_warning": physical_warning,
             "candidate_id": candidate_id,
             "detector": row.get("detector", ""),
             "visible_color": row.get("visible_color", ""),
@@ -91,6 +101,14 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "rating_score": numeric,
             "negative_features": negative,
             "calibrated_score": float_or_none(row.get("calibrated_score")),
+            "measurable_quality_score": float_or_none(row.get("measurable_quality_score")),
+            "detector_prior": float_or_none(row.get("detector_prior")),
+            "coverage_complete": row.get("coverage_complete", ""),
+            "coverage_reason": row.get("coverage_reason", ""),
+            "informative_coverage_ratio": float_or_none(row.get("informative_coverage_ratio")),
+            "leading_unsupported_m": float_or_none(row.get("leading_unsupported_m")),
+            "trailing_unsupported_m": float_or_none(row.get("trailing_unsupported_m")),
+            "max_internal_unsupported_m": float_or_none(row.get("max_internal_unsupported_m")),
             "support_ratio": float_or_none(row.get("support_ratio")),
             "mean_intensity": float_or_none(row.get("mean_intensity")),
             "mean_gradient_strength": float_or_none(row.get("mean_gradient_strength")),
@@ -136,6 +154,47 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "endpoint_approaches_supported": row.get("endpoint_approaches_supported", ""),
         })
     return rows
+
+
+def json_object(text: str) -> dict[str, object]:
+    """Parse a JSON object, returning an empty object for absent or invalid input."""
+    try:
+        value = json.loads(text or "{}")
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def physical_distance_warning(
+    bundle: BundleSource,
+    bundle_format: int,
+    diagnostics: dict[str, object],
+) -> str:
+    """Return a concise warning for missing or internally inconsistent physical-distance diagnostics."""
+    if bundle_format < 5:
+        return "format<5 metre fields may contain raster-space values"
+    sampling = diagnostics.get("sampling", {})
+    if not isinstance(sampling, dict):
+        return "format-5 sampling object missing"
+    profile_count = int(sampling.get("profileCount", 0) or 0)
+    path_length = float_or_none(str(sampling.get("physicalPathLengthMeters", "")))
+    spacing = sampling.get("longitudinalProfileSpacingMeters", {})
+    median = float_or_none(str(spacing.get("median", ""))) if isinstance(spacing, dict) else None
+    if profile_count > 1 and path_length is not None and median is not None and median > 0.0:
+        expected = median * (profile_count - 1)
+        ratio = path_length / expected if expected > 0.0 else 1.0
+        if ratio < 0.5 or ratio > 1.5:
+            return f"path length/profile spacing mismatch ratio={ratio:.3f}"
+    tube_rows = read_zip_csv(bundle, "corridor-tube.csv")
+    grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
+    for row in tube_rows:
+        distance = float_or_none(row.get("distance_m"))
+        if distance is not None:
+            grouped[(row.get("detector", ""), row.get("track_id", ""))].append(distance)
+    if any(any(after + 1e-9 < before for before, after in zip(values, values[1:]))
+           for values in grouped.values()):
+        return "non-monotonic corridor tube distance"
+    return ""
 
 
 def candidate_track_identity(candidate_id: str) -> tuple[str, str]:

@@ -43,7 +43,8 @@ class LastSlideDebugBundleTest {
         SelectionContext selection = new SelectionContext(way, 0, 1, List.of(first, last), Set.of(first, last));
         CenterlineCandidate candidate = new CenterlineCandidate("hot/strand-1", 1.0,
             List.of(new Point2D.Double(0, 0), new Point2D.Double(10, 0)), List.of(0.0, 0.0))
-            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
+            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)))
+            .withFinalPreviewPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
         AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
             "Strava", 1, 0, 1, 2, 3,
             "{\"trackerMode\":\"CORRIDOR_AWARE\"}", "{}", "{}", "[\"hot\"]", "[]", "[]",
@@ -68,9 +69,44 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("association-decisions.csv"));
             assertNotNull(zip.getEntry("endpoint-approaches.csv"));
             assertNotNull(zip.getEntry("parallel-context.json"));
+            assertNotNull(zip.getEntry("candidate-previews.osm"));
+            assertNotNull(zip.getEntry("applied-segment.osm"));
+            assertNotNull(zip.getEntry("junction-safety.csv"));
+            assertNotNull(zip.getEntry("junction-context.osm"));
             assertEquals("intensity\n", text(zip, "profile-intensity.csv"));
             assertTrue(text(zip, "diagnostics.json").contains("CORRIDOR_AWARE"));
+            assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
+            assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":5"));
+            assertTrue(text(zip, "verbose-log.txt").contains("Plugin-Build:"));
+        }
+    }
+
+    @Test
+    void appliedBundleKeepsImmutableSourceAndCapturesActualCoordinates(@TempDir Path temporaryDirectory)
+        throws Exception {
+        Node first = node(new EastNorth(0, 0));
+        Node last = node(new EastNorth(10, 0));
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        SelectionContext selection = new SelectionContext(way, 0, 1, List.of(first, last), Set.of(first, last));
+        AlignmentResult result = new AlignmentResult(selection, null, List.of(),
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)), List.of(),
+            new AlignmentDiagnostics("Strava", 0, 0, 0, 0, 0, "{}", "{}", "{}", "[]", "[]", "[]"),
+            null);
+        first.setCoor(ProjectionRegistry.getProjection().eastNorth2latlon(new EastNorth(100, 50)));
+        Path bundlePath = temporaryDirectory.resolve("applied.zip");
+
+        LastSlideDebugBundle.fromResult(result, null, "applied", "log").writeTo(bundlePath.toFile());
+
+        try (ZipFile zip = new ZipFile(bundlePath.toFile())) {
+            String original = text(zip, "original-segment.osm");
+            String applied = text(zip, "applied-segment.osm");
+            assertTrue(original.contains("lon=\"0.0\""));
+            assertTrue(applied.contains("node"));
+            assertTrue(!original.equals(applied));
         }
     }
 

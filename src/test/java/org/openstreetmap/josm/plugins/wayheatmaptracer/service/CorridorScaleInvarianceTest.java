@@ -87,8 +87,10 @@ class CorridorScaleInvarianceTest {
                 tangent.x * i * 4.0 * scale,
                 tangent.y * i * 4.0 * scale
             );
+            EastNorth sourceCoordinate = new EastNorth(tangent.x * i * 4.0, tangent.y * i * 4.0);
             RenderedHeatmapSampler.CrossSectionProfile source = new RenderedHeatmapSampler.CrossSectionProfile(
-                new EastNorth(anchor.x, anchor.y), anchor, normal, List.of(), true, samples);
+                new ProfileSamplingAnchor(sourceCoordinate, anchor.x, anchor.y, i * 4.0),
+                normal, List.of(), true, samples);
             profiles.add(new CorridorProfile(i, source, List.of(band), 1.0, 0.02, 0.98, true));
             points.put(i, new CorridorTrackPoint(i, band, false));
         }
