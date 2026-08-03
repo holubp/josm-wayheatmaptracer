@@ -121,6 +121,69 @@ class ReplaceWaySegmentCommandTest {
         assertEquals(List.of(fixture.start, fixture.reused, fixture.end), fixture.way.getNodes());
     }
 
+    @Test
+    void reusesExistingNodesNearTheirOriginalLongitudinalFractions() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0.0, 0.0);
+        Node quarter = nodeAtEastNorth(25.0, 0.0);
+        Node middle = nodeAtEastNorth(50.0, 0.0);
+        Node threeQuarters = nodeAtEastNorth(75.0, 0.0);
+        Node end = nodeAtEastNorth(100.0, 0.0);
+        for (Node node : List.of(start, quarter, middle, threeQuarters, end)) {
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(List.of(start, quarter, middle, threeQuarters, end));
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(
+            way, 0, 4, List.of(start, quarter, middle, threeQuarters, end), Set.of(start, end));
+        List<EastNorth> preview = java.util.stream.IntStream.rangeClosed(0, 20)
+            .mapToObj(index -> new EastNorth(index * 5.0, index == 0 || index == 20 ? 0.0 : 10.0))
+            .toList();
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(dataSet, way, selection, preview, "test");
+
+        command.executeCommand();
+
+        assertTrue(Math.abs(25.0 - eastNorth(quarter).east()) <= 5.01);
+        assertEquals(50.0, eastNorth(middle).east(), 1e-6);
+        assertTrue(Math.abs(75.0 - eastNorth(threeQuarters).east()) <= 5.01);
+        assertTrue(way.getNodes().indexOf(quarter) < way.getNodes().indexOf(middle));
+        assertTrue(way.getNodes().indexOf(middle) < way.getNodes().indexOf(threeQuarters));
+    }
+
+    @Test
+    void reusableNodesCannotCrossAnInteriorFixedAnchor() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0.0, 0.0);
+        Node beforeAnchor = nodeAtEastNorth(49.0, 0.0);
+        Node anchor = nodeAtEastNorth(50.0, 0.0);
+        Node afterAnchor = nodeAtEastNorth(51.0, 0.0);
+        Node end = nodeAtEastNorth(100.0, 0.0);
+        for (Node node : List.of(start, beforeAnchor, anchor, afterAnchor, end)) {
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(List.of(start, beforeAnchor, anchor, afterAnchor, end));
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(
+            way, 0, 4, way.getNodes(), Set.of(start, anchor, end));
+        List<EastNorth> preview = List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(50.0, 0.0),
+            new EastNorth(50.0, 100.0),
+            new EastNorth(100.0, 100.0),
+            new EastNorth(100.0, 0.0));
+
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(dataSet, way, selection, preview, "test");
+
+        command.executeCommand();
+
+        assertTrue(way.getNodes().indexOf(beforeAnchor) < way.getNodes().indexOf(anchor),
+            "A reusable node from before a fixed anchor must remain before it");
+        assertTrue(way.getNodes().indexOf(afterAnchor) > way.getNodes().indexOf(anchor),
+            "A reusable node from after a fixed anchor must remain after it");
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node start = node(0.0, 0.0);

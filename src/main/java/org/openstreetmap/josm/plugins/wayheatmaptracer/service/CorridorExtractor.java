@@ -28,9 +28,20 @@ public final class CorridorExtractor {
      * @return profile-aligned corridor observations
      */
     public List<CorridorProfile> extract(List<CrossSectionProfile> profiles) {
+        return extract(profiles, Double.NaN);
+    }
+
+    /**
+     * Extracts corridor observations while retaining the native source-pixel localization floor.
+     *
+     * @param profiles complete scalar cross-sections
+     * @param sourcePixelSizePx native source-pixel pitch in sampled-raster pixels
+     * @return profile-aligned corridor observations
+     */
+    public List<CorridorProfile> extract(List<CrossSectionProfile> profiles, double sourcePixelSizePx) {
         List<CorridorProfile> result = new ArrayList<>(profiles.size());
         for (int i = 0; i < profiles.size(); i++) {
-            result.add(extract(i, profiles.get(i)));
+            result.add(extract(i, profiles.get(i), sourcePixelSizePx));
         }
         return List.copyOf(result);
     }
@@ -43,6 +54,10 @@ public final class CorridorExtractor {
      * @return corridor profile, including an explicit unsupported state
      */
     public CorridorProfile extract(int index, CrossSectionProfile profile) {
+        return extract(index, profile, Double.NaN);
+    }
+
+    private CorridorProfile extract(int index, CrossSectionProfile profile, double sourcePixelSizePx) {
         List<IntensitySample> samples = profile.intensitySamples().stream()
             .sorted(Comparator.comparingDouble(IntensitySample::offsetPx))
             .toList();
@@ -77,7 +92,8 @@ public final class CorridorExtractor {
             for (Interval childCore : highestChildren) {
                 String id = "band-" + lowIndex + '-' + childIndex++;
                 childIds.add(id);
-                bands.add(buildBand(id, samples, stats, shoulder, childCore, levels, false, List.of()));
+                bands.add(buildBand(id, samples, stats, shoulder, childCore, levels, false, List.of(),
+                    sourcePixelSizePx));
             }
             if (highestChildren.size() > 1) {
                 Interval combinedCore = new Interval(
@@ -87,7 +103,7 @@ public final class CorridorExtractor {
                     highestChildren.get(highestChildren.size() - 1).maximumOffsetPx()
                 );
                 bands.add(buildBand("parent-" + lowIndex, samples, stats, shoulder, combinedCore,
-                    levels, true, childIds));
+                    levels, true, childIds, sourcePixelSizePx));
             }
             lowIndex++;
         }
@@ -102,7 +118,8 @@ public final class CorridorExtractor {
         Interval core,
         List<List<Interval>> levels,
         boolean parent,
-        List<String> childIds
+        List<String> childIds,
+        double sourcePixelSizePx
     ) {
         List<WeightedCenter> centers = new ArrayList<>();
         for (int level = 0; level < levels.size(); level++) {
@@ -125,9 +142,13 @@ public final class CorridorExtractor {
         double coreMax = core.maximumOffsetPx();
         double peak = maximum(samples, shoulder);
         double sampleStep = sampleStep(samples);
+        double localizationResolution = Double.isFinite(sourcePixelSizePx) && sourcePixelSizePx > 0.0
+            ? Math.max(sampleStep, sourcePixelSizePx)
+            : sampleStep;
+        int gradientStride = Math.max(1, (int) Math.round(localizationResolution / sampleStep));
         double centerSpread = centerSpread(nestedCenters, center);
-        double leftGradient = boundaryGradient(samples, shoulder.start(), -1, stats.prominence());
-        double rightGradient = boundaryGradient(samples, shoulder.end(), 1, stats.prominence());
+        double leftGradient = boundaryGradient(samples, shoulder.start(), -gradientStride, stats.prominence());
+        double rightGradient = boundaryGradient(samples, shoulder.end(), gradientStride, stats.prominence());
         double gradientStrength = clamp((leftGradient + rightGradient) / 2.0);
         double gradientBalance = leftGradient + rightGradient <= 1e-9
             ? 0.0
@@ -135,12 +156,12 @@ public final class CorridorExtractor {
         double scaleAgreement = scaleAgreement(samples, shoulder, stats.prominence());
         double amplitude = stats.prominence() / (stats.prominence() + 0.08);
         double existence = clamp(0.55 * amplitude + 0.25 * gradientStrength + 0.20 * scaleAgreement);
-        double nestedAgreement = Math.exp(-centerSpread / Math.max(sampleStep, 1.0));
-        double shoulderWidth = Math.max(sampleStep, shoulderMax - shoulderMin);
+        double nestedAgreement = Math.exp(-centerSpread / Math.max(localizationResolution, 1.0));
+        double shoulderWidth = Math.max(localizationResolution, shoulderMax - shoulderMin);
         double coreWidth = Math.max(0.0, coreMax - coreMin);
-        double coreDefinition = clamp(1.0 - coreWidth / (shoulderWidth + sampleStep));
+        double coreDefinition = clamp(1.0 - coreWidth / (shoulderWidth + localizationResolution));
         double localization = clamp(0.35 * gradientBalance + 0.40 * nestedAgreement + 0.25 * coreDefinition);
-        double uncertainty = Math.max(sampleStep / 2.0,
+        double uncertainty = Math.max(localizationResolution / 2.0,
             centerSpread + (1.0 - localization) * shoulderWidth * 0.35);
         double valleyRatio = parent ? valleyRatio(samples, core) : 1.0;
         return new CorridorBand(id, center, shoulderMin, shoulderMax, coreMin, coreMax, nestedCenters,

@@ -87,7 +87,7 @@ public final class CorridorAwareTracker {
     ) {
         validatePhysicalProfileSequence(profiles);
         long extractionStart = System.nanoTime();
-        List<CorridorProfile> corridorProfiles = extractor.extract(profiles);
+        List<CorridorProfile> corridorProfiles = extractor.extract(profiles, sourcePixelSizePx);
         long extractionNanos = System.nanoTime() - extractionStart;
         return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, Map.of(), List.of(),
             extractionNanos, 0L);
@@ -115,7 +115,7 @@ public final class CorridorAwareTracker {
         validateAlignedPhysicalSequences(profileSet);
         long extractionStart = System.nanoTime();
         List<List<CorridorProfile>> extractedLevels = profileSet.levels().stream()
-            .map(level -> extractor.extract(level.profiles()))
+            .map(level -> extractor.extract(level.profiles(), sourcePixelSizePx))
             .toList();
         long extractionNanos = System.nanoTime() - extractionStart;
         List<CorridorProfile> fine = extractedLevels.get(0);

@@ -27,7 +27,8 @@ class CorridorQualityMetricsTest {
                 new ProfileSamplingAnchor(new EastNorth(index * 2.0, 0.0), index * 5.0, 0.0, index * 2.0),
                 new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
             profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.0, 1.0, true));
-            slices.add(new CorridorTubeSlice(index, index * 2.0, 0.0, 0.0, 0.0,
+            slices.add(new CorridorTubeSlice(index, index * 2.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.5, 0.0, "reversing-noise", 0.0,
                 -2.0, 2.0, -3.0, 3.0, 0.5, 1.0, false, false, 0.0, 0.0, 0.0, true));
             offsets.add(offset);
             points.add(new Point2D.Double(index * 5.0, offset));
@@ -41,6 +42,9 @@ class CorridorQualityMetricsTest {
 
         assertTrue(quality.highFrequencyP95SourcePx() > 1.0);
         assertTrue(quality.unsupportedExcursions() >= 10);
+        assertTrue(quality.nonSustainedHighFrequencyP95SourcePx() > 1.0);
+        assertTrue(quality.unsupportedReversalCount() >= 10);
+        assertTrue(quality.unsupportedReversalRatio() > 0.8);
         assertEquals(0, quality.forwardProgressViolations());
         assertTrue(quality.longitudinalPersistence() < 0.25);
     }
@@ -74,5 +78,6 @@ class CorridorQualityMetricsTest {
             new EndpointApproachModel(List.of()));
 
         assertEquals(0, quality.unsupportedExcursions());
+        assertEquals(0, quality.unsupportedReversalCount());
     }
 }

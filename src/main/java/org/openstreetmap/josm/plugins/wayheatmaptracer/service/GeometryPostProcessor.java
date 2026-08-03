@@ -109,8 +109,12 @@ public final class GeometryPostProcessor {
         if (first.distance(anchor) > nearDistance) {
             return false;
         }
-        return second.distance(anchor) <= first.distance(anchor) * 0.92
-            || turningAngleDegrees(anchor, first, second) >= turnThresholdDegrees;
+        if (second.distance(anchor) <= first.distance(anchor) * 0.92) {
+            return true;
+        }
+        double currentTurn = turningAngleDegrees(anchor, first, second);
+        double shortcutTurn = turningAngleDegrees(anchor, second, points.get(3));
+        return currentTurn >= turnThresholdDegrees && shortcutTurn + 10.0 < currentTurn;
     }
 
     private boolean shouldPruneEnd(List<EastNorth> points, double nearDistance, double turnThresholdDegrees) {
@@ -120,8 +124,12 @@ public final class GeometryPostProcessor {
         if (first.distance(anchor) > nearDistance) {
             return false;
         }
-        return second.distance(anchor) <= first.distance(anchor) * 0.92
-            || turningAngleDegrees(second, first, anchor) >= turnThresholdDegrees;
+        if (second.distance(anchor) <= first.distance(anchor) * 0.92) {
+            return true;
+        }
+        double currentTurn = turningAngleDegrees(second, first, anchor);
+        double shortcutTurn = turningAngleDegrees(points.get(points.size() - 4), second, anchor);
+        return currentTurn >= turnThresholdDegrees && shortcutTurn + 10.0 < currentTurn;
     }
 
     private void markSharpCorners(List<EastNorth> polyline, boolean[] keep) {

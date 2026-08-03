@@ -30,6 +30,7 @@ public final class RenderedHeatmapSampler {
     public static final double AGGREGATE_POWER_MEAN = 1.25;
     private static final double[] LIGHT_BINOMIAL_KERNEL = {1.0, 2.0, 1.0};
     private static final double[] STANDARD_BINOMIAL_KERNEL = {1.0, 4.0, 6.0, 4.0, 1.0};
+    private static final int FINE_LOCALIZATION_PHASES = 2;
 
     /**
      * Renders an imagery layer into an off-screen ARGB raster using the current map view state.
@@ -394,7 +395,9 @@ public final class RenderedHeatmapSampler {
         double coordinateScale
     ) {
         List<CrossSectionProfile> profiles = new ArrayList<>(anchors.size());
-        double levelStep = Math.max(scaledStep, coordinateScale * level.reduction());
+        double physicalStep = Math.max(scaledStep, coordinateScale * level.reduction());
+        int localizationPhases = level.level() == 0 ? FINE_LOCALIZATION_PHASES : 1;
+        double levelStep = physicalStep / localizationPhases;
         for (int i = 0; i < anchors.size(); i++) {
             ProfileSamplingAnchor samplingAnchor = anchors.get(i);
             Point2D.Double current = samplingAnchor.rasterCoordinate();
@@ -412,7 +415,7 @@ public final class RenderedHeatmapSampler {
                 offsets.add(new OffsetSample(offset, valid ? intensity : 0.0));
                 inside.add(valid);
             }
-            ProfileFilters filters = profileFilters(offsets);
+            ProfileFilters filters = profileFilters(offsets, localizationPhases);
             List<CrossSectionPeak> peaks = new ArrayList<>(extractBrightBands(offsets, filters));
             if (peaks.isEmpty()) {
                 double strongest = offsets.stream().mapToDouble(OffsetSample::intensity).max().orElse(0.0);
@@ -577,8 +580,8 @@ public final class RenderedHeatmapSampler {
             }
             peaks.add(buildBandPeak(offsets, filters, stats, strongest, strongest, strongest));
         }
-        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, estimateSampleStep(offsets));
-        return addPairedShoulderCenters(merged, estimateSampleStep(offsets));
+        List<CrossSectionPeak> merged = mergeClosePeaks(peaks, filters.physicalSampleStepPx());
+        return addPairedShoulderCenters(merged, filters.physicalSampleStepPx());
     }
 
     private List<IntensitySample> intensitySamples(ProfileFilters filters, List<Boolean> insideRaster) {
@@ -657,7 +660,7 @@ public final class RenderedHeatmapSampler {
         double shoulderCenter = midpoint * 0.70 + weightedCenter * 0.30;
         double supportWidth = Math.abs(offsets.get(end).offsetPx - offsets.get(start).offsetPx);
         double center = shoulderCenter;
-        double sampleStep = estimateSampleStep(offsets);
+        double sampleStep = filters.physicalSampleStepPx();
         if (supportWidth >= sampleStep * 3.0 && peakIntensity >= 0.45) {
             double coreThreshold = Math.max(stats.noiseFloor() + Math.max(0.0, peakIntensity - stats.noiseFloor()) * 0.72,
                 peakIntensity * 0.86);
@@ -693,7 +696,7 @@ public final class RenderedHeatmapSampler {
         }
         double prominence = Math.max(0.0, peakIntensity - stats.noiseFloor());
         double prominenceWeight = stats.maxProminence() <= 0.0 ? 0.0 : prominence / stats.maxProminence();
-        GradientEvidence gradient = gradientEvidence(smoothed, peakIndex, start, end);
+        GradientEvidence gradient = gradientEvidence(smoothed, peakIndex, start, end, filters.filterStride());
         double gradientReward = gradient.strength() * (0.06 + 0.08 * gradient.balance());
         double calibratedConfidence = Math.min(1.0, confidence * 0.68
             + prominenceWeight * 0.18
@@ -740,14 +743,23 @@ public final class RenderedHeatmapSampler {
         return (offsets.get(nativeStart).offsetPx + offsets.get(nativeEnd).offsetPx) / 2.0;
     }
 
-    private GradientEvidence gradientEvidence(List<OffsetSample> smoothed, int peakIndex, int start, int end) {
+    private GradientEvidence gradientEvidence(
+        List<OffsetSample> smoothed,
+        int peakIndex,
+        int start,
+        int end,
+        int filterStride
+    ) {
         if (smoothed.size() < 3) {
             return new GradientEvidence(0.0, 0.0);
         }
-        int leftIndex = Math.max(1, Math.min(peakIndex, start + 1));
-        int rightIndex = Math.min(smoothed.size() - 2, Math.max(peakIndex, end - 1));
-        double leftRise = Math.max(0.0, smoothed.get(leftIndex).intensity - smoothed.get(leftIndex - 1).intensity);
-        double rightFall = Math.max(0.0, smoothed.get(rightIndex).intensity - smoothed.get(rightIndex + 1).intensity);
+        int stride = Math.max(1, filterStride);
+        int leftIndex = Math.max(stride, Math.min(peakIndex, start + stride));
+        int rightIndex = Math.min(smoothed.size() - stride - 1, Math.max(peakIndex, end - stride));
+        double leftRise = Math.max(0.0,
+            smoothed.get(leftIndex).intensity - smoothed.get(leftIndex - stride).intensity);
+        double rightFall = Math.max(0.0,
+            smoothed.get(rightIndex).intensity - smoothed.get(rightIndex + stride).intensity);
         double strength = Math.min(1.0, (leftRise + rightFall) * 4.0);
         double balance = leftRise + rightFall <= 0.0
             ? 0.0
@@ -756,22 +768,36 @@ public final class RenderedHeatmapSampler {
     }
 
     private ProfileFilters profileFilters(List<OffsetSample> offsets) {
+        return profileFilters(offsets, 1);
+    }
+
+    /**
+     * Filters one profile while retaining the same physical B3/B5 support on an interleaved localization grid.
+     *
+     * @param offsets scalar samples ordered by lateral offset
+     * @param filterStride sample-index distance corresponding to one physical source sample
+     * @return raw, B3, and B5 profiles on the input localization grid
+     */
+    private ProfileFilters profileFilters(List<OffsetSample> offsets, int filterStride) {
+        int stride = Math.max(1, filterStride);
+        double physicalSampleStep = estimateSampleStep(offsets) * stride;
         if (offsets.size() < 3) {
-            return new ProfileFilters(offsets, offsets, offsets);
+            return new ProfileFilters(offsets, offsets, offsets, stride, physicalSampleStep);
         }
         List<OffsetSample> light = signalGatedPowerBinomialSmooth(
-            offsets, LIGHT_BINOMIAL_KERNEL, 0.45, 0.30, 0.15);
-        if (offsets.size() >= 5) {
+            offsets, LIGHT_BINOMIAL_KERNEL, stride, 0.45, 0.30, 0.15);
+        if (offsets.size() >= 1 + (STANDARD_BINOMIAL_KERNEL.length - 1) * stride) {
             List<OffsetSample> standard = signalGatedPowerBinomialSmooth(
-                offsets, STANDARD_BINOMIAL_KERNEL, 0.35, 0.25, 0.10);
-            return new ProfileFilters(offsets, light, standard);
+                offsets, STANDARD_BINOMIAL_KERNEL, stride, 0.35, 0.25, 0.10);
+            return new ProfileFilters(offsets, light, standard, stride, physicalSampleStep);
         }
-        return new ProfileFilters(offsets, light, light);
+        return new ProfileFilters(offsets, light, light, stride, physicalSampleStep);
     }
 
     private List<OffsetSample> signalGatedPowerBinomialSmooth(
         List<OffsetSample> offsets,
         double[] kernel,
+        int filterStride,
         double strongBlend,
         double mediumBlend,
         double weakBlend
@@ -788,7 +814,7 @@ public final class RenderedHeatmapSampler {
             double weighted = 0.0;
             double total = 0.0;
             for (int k = -radius; k <= radius; k++) {
-                int index = Math.max(0, Math.min(offsets.size() - 1, i + k));
+                int index = Math.max(0, Math.min(offsets.size() - 1, i + k * filterStride));
                 double intensity = offsets.get(index).intensity;
                 double mask = signalMask(intensity, max);
                 double weight = kernel[k + radius] * mask;
@@ -1455,7 +1481,9 @@ public final class RenderedHeatmapSampler {
     private record ProfileFilters(
         List<OffsetSample> raw,
         List<OffsetSample> lightFiltered,
-        List<OffsetSample> standardFiltered
+        List<OffsetSample> standardFiltered,
+        int filterStride,
+        double physicalSampleStepPx
     ) {
     }
 

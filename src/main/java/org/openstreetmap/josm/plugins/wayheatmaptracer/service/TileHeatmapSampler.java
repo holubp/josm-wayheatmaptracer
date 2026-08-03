@@ -33,6 +33,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  */
 public final class TileHeatmapSampler {
     public static final int TILE_SIZE = 512;
+    private static final double IMAGE_SAMPLE_CENTER_WORLD_PX = 0.5;
     public static final int DEFAULT_INFERENCE_ZOOM = 15;
     public static final int DEFAULT_VALIDATION_ZOOM = 13;
     public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
@@ -120,14 +121,7 @@ public final class TileHeatmapSampler {
         if (dense.size() < 2) {
             return List.of();
         }
-        List<Point2D.Double> local = new ArrayList<>(dense.size());
-        for (EastNorth point : dense) {
-            Point2D.Double world = toWorldPixel(point, mosaic.zoom());
-            local.add(new Point2D.Double(
-                (world.x - mosaic.originWorldPxX()) * mosaic.virtualRasterScale(),
-                (world.y - mosaic.originWorldPxY()) * mosaic.virtualRasterScale()
-            ));
-        }
+        List<Point2D.Double> local = localPolyline(mosaic, dense);
         int referenceHalfWidthPx = Math.max(1, (int) Math.round(mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1, (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         PluginLog.verbose("Sampling %d fixed-tile cross-sections for color '%s' z%d (halfWidth=%d ref px/%.1fm, step=%d ref px/%.1fm, virtualScale=%.2f).",
@@ -204,14 +198,7 @@ public final class TileHeatmapSampler {
         if (dense.size() < 2) {
             return List.of();
         }
-        List<Point2D.Double> local = new ArrayList<>(dense.size());
-        for (EastNorth point : dense) {
-            Point2D.Double world = toWorldPixel(point, reference.zoom());
-            local.add(new Point2D.Double(
-                (world.x - reference.originWorldPxX()) * reference.virtualRasterScale(),
-                (world.y - reference.originWorldPxY()) * reference.virtualRasterScale()
-            ));
-        }
+        List<Point2D.Double> local = localPolyline(reference, dense);
         int referenceHalfWidthPx = Math.max(1, (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1, (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         PluginLog.verbose("Sampling %d fixed-tile aggregate cross-sections at z%d from colors %s.",
@@ -262,13 +249,27 @@ public final class TileHeatmapSampler {
     private List<Point2D.Double> localPolyline(TileMosaic mosaic, List<EastNorth> dense) {
         List<Point2D.Double> local = new ArrayList<>(dense.size());
         for (EastNorth point : dense) {
-            Point2D.Double world = toWorldPixel(point, mosaic.zoom());
-            local.add(new Point2D.Double(
-                (world.x - mosaic.originWorldPxX()) * mosaic.virtualRasterScale(),
-                (world.y - mosaic.originWorldPxY()) * mosaic.virtualRasterScale()
-            ));
+            local.add(toMosaicSample(mosaic, point));
         }
         return local;
+    }
+
+    /**
+     * Converts projected geometry to the virtual coordinate of a decoded image sample.
+     *
+     * <p>Mosaic origins are Web Mercator pixel boundaries, while decoded raster index zero is
+     * the sample centered half a world pixel inside that boundary.</p>
+     *
+     * @param mosaic source mosaic and virtual sampling scale
+     * @param point projected point to convert
+     * @return virtual sampled-raster coordinate whose integer source index denotes a pixel center
+     */
+    private Point2D.Double toMosaicSample(TileMosaic mosaic, EastNorth point) {
+        Point2D.Double world = toWorldPixel(point, mosaic.zoom());
+        return new Point2D.Double(
+            (world.x - mosaic.originWorldPxX() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale(),
+            (world.y - mosaic.originWorldPxY() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale()
+        );
     }
 
     /**
@@ -311,8 +312,8 @@ public final class TileHeatmapSampler {
     public List<EastNorth> projectCandidate(TileMosaic mosaic, List<Point2D.Double> localPoints) {
         return localPoints.stream()
             .map(point -> toEastNorth(
-                point.x / mosaic.virtualRasterScale() + mosaic.originWorldPxX(),
-                point.y / mosaic.virtualRasterScale() + mosaic.originWorldPxY(),
+                point.x / mosaic.virtualRasterScale() + mosaic.originWorldPxX() + IMAGE_SAMPLE_CENTER_WORLD_PX,
+                point.y / mosaic.virtualRasterScale() + mosaic.originWorldPxY() + IMAGE_SAMPLE_CENTER_WORLD_PX,
                 mosaic.zoom()))
             .toList();
     }

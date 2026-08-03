@@ -121,10 +121,12 @@ public final class ReplaceWaySegmentCommand extends Command {
         }
 
         List<Node> mutableExisting = new ArrayList<>();
+        List<Double> mutableFractions = new ArrayList<>();
         for (int i = 0; i < selection.segmentNodes().size(); i++) {
             Node node = selection.segmentNodes().get(i);
             if (!selection.fixedNodes().contains(node) && !softAnchorNodes.contains(node)) {
                 mutableExisting.add(node);
+                mutableFractions.add(sourceFractions.get(i));
             }
         }
 
@@ -140,6 +142,21 @@ public final class ReplaceWaySegmentCommand extends Command {
             .mapToDouble(SoftAnchor::fraction)
             .findFirst()
             .orElse(1.0);
+        List<AnchorBoundary> anchorBoundaries = anchorBoundaries(
+            sourceFractions, previewFractions, softAnchors, orderedFixedNodes);
+        Map<Integer, Node> mutableAssignments = assignMutableNodes(
+            mutableExisting, mutableFractions, previewFractions, startBoundary, endBoundary,
+            orderedFixedNodes, softAnchors, anchorBoundaries);
+        for (Map.Entry<Integer, Node> entry : mutableAssignments.entrySet()) {
+            int sourceIndex = mutableExisting.indexOf(entry.getValue());
+            double sourceFraction = sourceIndex < 0 ? Double.NaN : mutableFractions.get(sourceIndex);
+            double previewFraction = previewFractions.get(entry.getKey());
+            PluginLog.verbose(
+                "Precise node reuse node=%d sourceFraction=%.6f previewIndex=%d previewFraction=%.6f error=%.6f.",
+                entry.getValue().getUniqueId(), sourceFraction, entry.getKey(), previewFraction,
+                Math.abs(sourceFraction - previewFraction));
+        }
+        Set<Node> usedMutableNodes = new HashSet<>();
         for (int i = 0; i < previewPolyline.size(); i++) {
             EastNorth target = previewPolyline.get(i);
             double previewFraction = previewFractions.get(i);
@@ -161,7 +178,7 @@ public final class ReplaceWaySegmentCommand extends Command {
             if (fixedCursor < orderedFixedNodes.size() && matchesFixedAnchor(target, orderedFixedNodes.get(fixedCursor))) {
                 node = orderedFixedNodes.get(fixedCursor++);
             } else {
-                node = nextMutableNode(mutableExisting);
+                node = mutableAssignments.get(i);
                 if (node == null) {
                     node = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(target));
                     createdNodes.add(node);
@@ -169,6 +186,9 @@ public final class ReplaceWaySegmentCommand extends Command {
             }
 
             appendNode(segmentReplacement, node, target);
+            if (mutableExisting.contains(node)) {
+                usedMutableNodes.add(node);
+            }
         }
         while (softCursor < softAnchors.size()) {
             appendNode(segmentReplacement, softAnchors.get(softCursor).node(), softAnchors.get(softCursor).target());
@@ -176,7 +196,7 @@ public final class ReplaceWaySegmentCommand extends Command {
         }
 
         for (Node dropped : mutableExisting) {
-            if (dropped != null && !removedExistingNodes.contains(dropped)) {
+            if (!usedMutableNodes.contains(dropped) && !removedExistingNodes.contains(dropped)) {
                 removedExistingNodes.add(dropped);
             }
         }
@@ -188,15 +208,154 @@ public final class ReplaceWaySegmentCommand extends Command {
         return nodes;
     }
 
-    private Node nextMutableNode(List<Node> mutableExisting) {
-        for (int i = 0; i < mutableExisting.size(); i++) {
-            Node node = mutableExisting.get(i);
-            if (node != null) {
-                mutableExisting.set(i, null);
-                return node;
+    private Map<Integer, Node> assignMutableNodes(
+        List<Node> nodes,
+        List<Double> sourceFractions,
+        List<Double> previewFractions,
+        double startBoundary,
+        double endBoundary,
+        List<Node> fixedNodes,
+        List<SoftAnchor> softAnchors,
+        List<AnchorBoundary> anchorBoundaries
+    ) {
+        List<Integer> slots = new ArrayList<>();
+        for (int previewIndex = 0; previewIndex < previewPolyline.size(); previewIndex++) {
+            double fraction = previewFractions.get(previewIndex);
+            EastNorth target = previewPolyline.get(previewIndex);
+            if (fraction >= startBoundary - 1e-9 && fraction <= endBoundary + 1e-9
+                && fixedNodes.stream().noneMatch(node -> matchesFixedAnchor(target, node))
+                && softAnchors.stream().noneMatch(anchor -> anchor.target().distance(target)
+                    < ANCHOR_MATCH_EPSILON_METERS)) {
+                slots.add(previewIndex);
             }
         }
-        return null;
+        MatchCell[][] table = new MatchCell[nodes.size() + 1][slots.size() + 1];
+        table[nodes.size()][slots.size()] = new MatchCell(0, 0.0, MatchDecision.DONE);
+        for (int sourceIndex = nodes.size(); sourceIndex >= 0; sourceIndex--) {
+            for (int slotIndex = slots.size(); slotIndex >= 0; slotIndex--) {
+                if (sourceIndex == nodes.size() && slotIndex == slots.size()) {
+                    continue;
+                }
+                MatchCell best = null;
+                if (sourceIndex < nodes.size()) {
+                    best = choose(best, advance(table[sourceIndex + 1][slotIndex], MatchDecision.SKIP_SOURCE,
+                        0, 0.0));
+                }
+                if (slotIndex < slots.size()) {
+                    best = choose(best, advance(table[sourceIndex][slotIndex + 1], MatchDecision.SKIP_SLOT,
+                        0, 0.0));
+                }
+                if (sourceIndex < nodes.size() && slotIndex < slots.size()) {
+                    double sourceFraction = sourceFractions.get(sourceIndex);
+                    double previewFraction = previewFractions.get(slots.get(slotIndex));
+                    if (anchorInterval(sourceFraction, anchorBoundaries, true)
+                        == anchorInterval(previewFraction, anchorBoundaries, false)) {
+                        double error = Math.abs(sourceFraction - previewFraction);
+                        best = choose(best, advance(table[sourceIndex + 1][slotIndex + 1], MatchDecision.MATCH,
+                            1, error));
+                    }
+                }
+                table[sourceIndex][slotIndex] = best;
+            }
+        }
+        Map<Integer, Node> result = new java.util.LinkedHashMap<>();
+        int sourceIndex = 0;
+        int slotIndex = 0;
+        while (sourceIndex < nodes.size() || slotIndex < slots.size()) {
+            MatchDecision decision = table[sourceIndex][slotIndex].decision();
+            if (decision == MatchDecision.MATCH) {
+                result.put(slots.get(slotIndex), nodes.get(sourceIndex));
+                sourceIndex++;
+                slotIndex++;
+            } else if (decision == MatchDecision.SKIP_SOURCE) {
+                sourceIndex++;
+            } else if (decision == MatchDecision.SKIP_SLOT) {
+                slotIndex++;
+            } else {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private List<AnchorBoundary> anchorBoundaries(
+        List<Double> sourceFractions,
+        List<Double> previewFractions,
+        List<SoftAnchor> softAnchors,
+        List<Node> fixedNodes
+    ) {
+        List<AnchorBoundary> result = new ArrayList<>();
+        for (SoftAnchor anchor : softAnchors) {
+            result.add(new AnchorBoundary(anchor.sourceFraction(), anchor.fraction(), anchor.node()));
+        }
+        for (Node fixedNode : fixedNodes) {
+            int sourceIndex = identityIndexOf(selection.segmentNodes(), fixedNode);
+            int previewIndex = matchingPreviewIndex(fixedNode);
+            if (sourceIndex < 0 || previewIndex < 0) {
+                throw new IllegalStateException("Fixed anchor is missing from source or preview geometry");
+            }
+            result.add(new AnchorBoundary(sourceFractions.get(sourceIndex), previewFractions.get(previewIndex),
+                fixedNode));
+        }
+        result.sort(Comparator.comparingDouble(AnchorBoundary::sourceFraction));
+        double previousPreviewFraction = Double.NEGATIVE_INFINITY;
+        for (AnchorBoundary boundary : result) {
+            if (boundary.previewFraction() + 1e-9 < previousPreviewFraction) {
+                throw new IllegalStateException("Protected anchors are not monotonic in preview geometry");
+            }
+            previousPreviewFraction = boundary.previewFraction();
+        }
+        return List.copyOf(result);
+    }
+
+    private int anchorInterval(double fraction, List<AnchorBoundary> boundaries, boolean source) {
+        int interval = 0;
+        for (AnchorBoundary boundary : boundaries) {
+            double boundaryFraction = source ? boundary.sourceFraction() : boundary.previewFraction();
+            if (fraction <= boundaryFraction + 1e-9) {
+                break;
+            }
+            interval++;
+        }
+        return interval;
+    }
+
+    private int identityIndexOf(List<Node> nodes, Node target) {
+        for (int index = 0; index < nodes.size(); index++) {
+            if (nodes.get(index) == target) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private int matchingPreviewIndex(Node fixedNode) {
+        for (int index = 0; index < previewPolyline.size(); index++) {
+            if (matchesFixedAnchor(previewPolyline.get(index), fixedNode)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private MatchCell advance(MatchCell following, MatchDecision decision, int matches, double error) {
+        if (following == null) {
+            return null;
+        }
+        return new MatchCell(following.matches() + matches, following.error() + error, decision);
+    }
+
+    private MatchCell choose(MatchCell first, MatchCell second) {
+        if (second == null) {
+            return first;
+        }
+        if (first == null || second.matches() > first.matches()
+            || second.matches() == first.matches() && second.error() < first.error() - 1e-12
+            || second.matches() == first.matches() && Math.abs(second.error() - first.error()) <= 1e-12
+                && second.decision().priority < first.decision().priority) {
+            return second;
+        }
+        return first;
     }
 
     private boolean canRemoveDroppedNode(Node node) {
@@ -249,7 +408,7 @@ public final class ReplaceWaySegmentCommand extends Command {
                 sourceFractions.get(i),
                 window
             );
-            anchors.add(new SoftAnchor(node, projection.point(), projection.fraction()));
+            anchors.add(new SoftAnchor(node, projection.point(), projection.fraction(), sourceFractions.get(i)));
         }
         anchors.sort(Comparator.comparingDouble(SoftAnchor::fraction));
         return anchors;
@@ -312,7 +471,26 @@ public final class ReplaceWaySegmentCommand extends Command {
         return primitives;
     }
 
-    private record SoftAnchor(Node node, EastNorth target, double fraction) {
+    private record SoftAnchor(Node node, EastNorth target, double fraction, double sourceFraction) {
+    }
+
+    private record AnchorBoundary(double sourceFraction, double previewFraction, Node node) {
+    }
+
+    private record MatchCell(int matches, double error, MatchDecision decision) {
+    }
+
+    private enum MatchDecision {
+        MATCH(0),
+        SKIP_SLOT(1),
+        SKIP_SOURCE(2),
+        DONE(3);
+
+        private final int priority;
+
+        MatchDecision(int priority) {
+            this.priority = priority;
+        }
     }
 
 }

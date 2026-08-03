@@ -136,8 +136,12 @@ public final class EndpointApproachBuilder {
         if (evidence != null && (evidence.scaleConflict() || evidence.parentMerge())) {
             return false;
         }
+        double referenceDisagreement = Math.abs(slice.localCenterOffsetPx() - slice.stabilityCenterOffsetPx());
+        double referenceTolerance = 2.0 * Math.max(1.0,
+            slice.uncertaintyPx() + slice.stabilityUncertaintyPx());
         return point.band().signalExistenceConfidence() >= 0.15
-            && (point.band().localizationConfidence() >= 0.15 || slice.confidence() >= 0.20);
+            && (point.band().localizationConfidence() >= 0.15 || slice.confidence() >= 0.20)
+            && referenceDisagreement <= referenceTolerance;
     }
 
     private boolean ambiguousProfile(CorridorProfile profile) {

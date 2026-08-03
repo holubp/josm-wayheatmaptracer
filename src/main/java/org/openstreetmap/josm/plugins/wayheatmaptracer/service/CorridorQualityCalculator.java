@@ -50,6 +50,18 @@ public final class CorridorQualityCalculator {
         }
         List<Double> highFrequency = highFrequencyResiduals(offsetsPx).stream()
             .map(value -> value / sourcePixel).toList();
+        List<Double> stabilityResiduals = new ArrayList<>(offsetsPx.size());
+        for (int index = 0; index < offsetsPx.size(); index++) {
+            stabilityResiduals.add((offsetsPx.get(index) - tube.at(index).stabilityCenterOffsetPx()) / sourcePixel);
+        }
+        List<Double> stabilityHighFrequency = highFrequencyResiduals(stabilityResiduals);
+        List<Double> nonSustainedHighFrequency = new ArrayList<>();
+        for (int index = 0; index < stabilityHighFrequency.size(); index++) {
+            if (tube.at(index).motionSupport() < 0.35) {
+                nonSustainedHighFrequency.add(stabilityHighFrequency.get(index));
+            }
+        }
+        ReversalEvidence reversals = unsupportedReversals(stabilityResiduals, tube);
         List<Double> deltas = differences(offsetsPx).stream().map(value -> value / sourcePixel).toList();
         List<Double> accelerations = differences(deltas);
         List<Double> turns = turnsDegrees(points);
@@ -67,6 +79,10 @@ public final class CorridorQualityCalculator {
             percentileAbs(residuals, 0.95),
             rms(highFrequency),
             percentileAbs(highFrequency, 0.95),
+            rms(nonSustainedHighFrequency),
+            percentileAbs(nonSustainedHighFrequency, 0.95),
+            reversals.count(),
+            reversals.ratio(),
             percentileAbs(deltas, 0.95),
             percentileAbs(accelerations, 0.95),
             percentileAbs(turns, 0.95),
@@ -141,6 +157,26 @@ public final class CorridorQualityCalculator {
         return count;
     }
 
+    private ReversalEvidence unsupportedReversals(
+        List<Double> stabilityResiduals,
+        LongitudinalCorridorTube tube
+    ) {
+        int count = 0;
+        int eligible = 0;
+        for (int index = 2; index < stabilityResiduals.size(); index++) {
+            if (tube.at(index - 1).motionSupport() >= 0.35 || tube.at(index).motionSupport() >= 0.35) {
+                continue;
+            }
+            eligible++;
+            double before = stabilityResiduals.get(index - 1) - stabilityResiduals.get(index - 2);
+            double after = stabilityResiduals.get(index) - stabilityResiduals.get(index - 1);
+            if (Math.abs(before) >= 0.15 && Math.abs(after) >= 0.15 && before * after < 0.0) {
+                count++;
+            }
+        }
+        return new ReversalEvidence(count, eligible == 0 ? 0.0 : (double) count / eligible);
+    }
+
     private double maximumGapMeters(CorridorTrack track, LongitudinalCorridorTube tube) {
         double maximum = 0.0;
         int gapStart = -1;
@@ -200,5 +236,8 @@ public final class CorridorQualityCalculator {
             difference += 2.0 * Math.PI;
         }
         return difference;
+    }
+
+    private record ReversalEvidence(int count, double ratio) {
     }
 }

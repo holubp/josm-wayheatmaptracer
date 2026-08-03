@@ -29,7 +29,7 @@ class CorridorScaleInvarianceTest {
             double rms = highFrequencyRms(offsets);
             double p95 = highFrequencyP95(offsets);
             double meanBias = Math.abs(offsets.stream().mapToDouble(Double::doubleValue).average().orElseThrow());
-            assertTrue(rms <= 0.15, "scale=" + scale + " high-frequency RMS=" + rms);
+            assertTrue(rms <= 0.15, "scale=" + scale + " high-frequency RMS=" + rms + ", offsets=" + offsets);
             assertTrue(p95 <= 0.25, "scale=" + scale + " high-frequency p95=" + p95);
             assertTrue(meanBias <= 0.25, "scale=" + scale + " mean center bias=" + meanBias);
         }

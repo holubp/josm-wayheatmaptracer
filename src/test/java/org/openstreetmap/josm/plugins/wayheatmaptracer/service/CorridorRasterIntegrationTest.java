@@ -25,15 +25,26 @@ class CorridorRasterIntegrationTest {
     void centersBroadSaturatedCorridorDespiteAlternatingBrightestPixels() {
         BufferedImage raster = raster((x) -> 0.0, 0.92, true, false);
 
-        List<CenterlineCandidate> candidates = track(raster);
+        CorridorAwareTracker.TrackingResult result = detailed(raster);
+        List<CenterlineCandidate> candidates = result.candidates();
 
         assertFalse(candidates.isEmpty());
+        CorridorTrack track = result.tracks().stream()
+            .filter(value -> value.id().equals(candidates.get(0).id())).findFirst().orElseThrow();
+        CorridorBand middleBand = track.points().get(PROFILE_COUNT / 2).band();
+        CorridorTubeSlice middleTube = result.tubes().get(candidates.get(0).id()).at(PROFILE_COUNT / 2);
+        String centerEvidence = "band=" + middleBand.centerOffsetPx()
+            + ", localization=" + middleBand.localizationConfidence()
+            + ", raw=" + middleTube.rawCenterPx()
+            + ", b3=" + middleTube.lightCenterPx()
+            + ", b5=" + middleTube.standardCenterPx();
         double rms = Math.sqrt(candidates.get(0).offsetsPx().stream()
             .mapToDouble(offset -> offset * offset).average().orElseThrow());
         assertTrue(rms <= 0.5, "Broad-corridor RMS was " + rms);
         assertTrue(candidates.get(0).evidence().corridorQuality().highFrequencyRmsSourcePx() <= 0.15,
             "Broad-corridor high-frequency RMS was "
-                + candidates.get(0).evidence().corridorQuality().highFrequencyRmsSourcePx());
+                + candidates.get(0).evidence().corridorQuality().highFrequencyRmsSourcePx()
+                + "; " + centerEvidence);
         assertTrue(candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx() <= 0.25,
             "Broad-corridor high-frequency p95 was "
                 + candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx());
@@ -49,6 +60,50 @@ class CorridorRasterIntegrationTest {
         assertTrue(candidates.get(0).evidence().signalExistenceConfidence() > 0.0);
         assertEquals(2.0, mean(candidates.get(0).offsetsPx()), 0.75);
         assertTrue(candidates.get(0).evidence().corridorQuality().longitudinalPersistence() > 0.5);
+    }
+
+    @Test
+    void centersWeakOffGridCorridorWithoutLongitudinalRipple() {
+        double sourcePixelPitch = 4.0;
+        List<Point2D.Double> scaledSource = sourcePolyline().stream()
+            .map(point -> new Point2D.Double(point.x * sourcePixelPitch, point.y * sourcePixelPitch))
+            .toList();
+        List<String> diagnostics = new ArrayList<>();
+        double maximumCenterError = 0.0;
+        double maximumRipple = 0.0;
+        for (double expectedSourceCenter : List.of(-1.75, -1.25, -0.75, -0.25, 0.25, 0.75, 1.25, 1.75)) {
+            double expectedCenter = expectedSourceCenter * sourcePixelPitch;
+            BufferedImage raster = weakOffGridRaster(expectedSourceCenter);
+            MultiScaleProfileSet profiles = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+                raster, scaledSource, 18, 1, "hot", sourcePixelPitch, sourcePixelPitch,
+                IntensitySamplingMode.DIRECT_VALUE, 1.0);
+
+            CorridorAwareTracker.TrackingResult result = new CorridorAwareTracker()
+                .trackDetailed(profiles, sourcePixelPitch, JunctionContext.empty());
+
+            assertFalse(result.candidates().isEmpty());
+            CenterlineCandidate candidate = result.candidates().get(0);
+            double centerError = Math.abs(mean(candidate.offsetsPx()) - expectedCenter);
+            double ripple = highFrequencyRms(candidate.offsetsPx());
+            maximumCenterError = Math.max(maximumCenterError, centerError);
+            maximumRipple = Math.max(maximumRipple, ripple);
+            CorridorTrack selectedTrack = result.tracks().stream()
+                .filter(track -> track.id().equals(candidate.id())).findFirst().orElseThrow();
+            CorridorBand middleBand = selectedTrack.points().get(PROFILE_COUNT / 2).band();
+            CorridorTubeSlice middleTube = result.tubes().get(candidate.id()).at(PROFILE_COUNT / 2);
+            BandScaleEvidence middleScale = result.scaleEvidence().get(
+                CorridorCenterlineOptimizer.scaleEvidenceKey(PROFILE_COUNT / 2, middleBand.id()));
+            diagnostics.add("sourceCenter=" + expectedSourceCenter + ", mean=" + mean(candidate.offsetsPx())
+                + ", ripple=" + ripple + ", band=" + middleBand.centerOffsetPx()
+                + ", core=" + (middleBand.coreMinPx() + middleBand.coreMaxPx()) / 2.0
+                + ", localization=" + middleBand.localizationConfidence()
+                + ", tube=" + middleTube.centerOffsetPx()
+                + ", coarse=" + (middleScale == null ? Double.NaN : middleScale.coarseCenterPx()));
+        }
+        assertTrue(maximumCenterError <= sourcePixelPitch * 0.05,
+            "Weak corridor should be centered independently of source-pixel phase: " + diagnostics);
+        assertTrue(maximumRipple <= sourcePixelPitch * 0.07,
+            "Weak corridor should not ripple longitudinally: " + diagnostics);
     }
 
     @Test
@@ -179,6 +234,22 @@ class CorridorRasterIntegrationTest {
         return raster;
     }
 
+    private BufferedImage weakOffGridRaster(double centerOffset) {
+        BufferedImage raster = background();
+        for (int profile = 0; profile < PROFILE_COUNT; profile++) {
+            int x = START_X + profile * STEP_X;
+            double localCenter = SOURCE_Y + centerOffset + (profile % 2 == 0 ? -0.08 : 0.08);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int y = SOURCE_Y - 14; y <= SOURCE_Y + 14; y++) {
+                    double distance = y - localCenter;
+                    double intensity = 0.02 + 0.20 * Math.exp(-0.5 * distance * distance / 4.0);
+                    setIntensity(raster, x + dx, y, intensity);
+                }
+            }
+        }
+        return raster;
+    }
+
     private BufferedImage background() {
         BufferedImage raster = new BufferedImage(160, 120, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < raster.getHeight(); y++) {
@@ -207,6 +278,15 @@ class CorridorRasterIntegrationTest {
 
     private double mean(List<Double> values) {
         return values.stream().mapToDouble(Double::doubleValue).average().orElseThrow();
+    }
+
+    private double highFrequencyRms(List<Double> values) {
+        double squaredResiduals = 0.0;
+        for (int index = 1; index < values.size() - 1; index++) {
+            double residual = values.get(index) - (values.get(index - 1) + values.get(index + 1)) / 2.0;
+            squaredResiduals += residual * residual;
+        }
+        return values.size() < 3 ? 0.0 : Math.sqrt(squaredResiduals / (values.size() - 2));
     }
 
     private double maximumPointToPolylineDistance(

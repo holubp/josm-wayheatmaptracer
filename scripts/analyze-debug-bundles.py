@@ -61,6 +61,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     physical_warning = physical_distance_warning(bundle, bundle_format, diagnostics)
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
+    tubes = tube_summaries(read_zip_csv(bundle, "corridor-tube.csv"))
     performance = performance_summaries(read_zip_csv(bundle, "detector-performance.csv"))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
     bridge_directions = bridge_direction_summaries(read_zip_csv(bundle, "corridor-tracks.csv"))
@@ -82,6 +83,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         candidate_id = row.get("candidate_id", "")
         detector, track_id = candidate_track_identity(candidate_id)
         optimizer_summary = optimizer.get((detector, track_id), {})
+        tube_summary = tubes.get((detector, track_id), {})
         performance_summary = performance.get(detector, {})
         bridge_summary = bridge_directions.get((detector, track_id), {})
         scale_summary = scale_space.get(detector, {})
@@ -137,6 +139,9 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "in_core_or_shoulder_fraction": optimizer_summary.get("in_corridor_fraction"),
             "in_core_fraction": optimizer_summary.get("in_core_fraction"),
             "endpoint_approach_angle_degrees": optimizer_summary.get("endpoint_approach_angle_degrees"),
+            "tube_motion_support_mean": tube_summary.get("motion_support_mean"),
+            "tube_local_stability_residual_p95_px": tube_summary.get("local_stability_residual_p95_px"),
+            "tube_motion_support_reasons": tube_summary.get("motion_support_reasons", ""),
             "grouping_decision": grouping.get((detector, track_id), ""),
             "detector_attempt_status": attempt_status.get(detector, ""),
             "scale_persistence": float_or_none(row.get("scale_persistence"))
@@ -147,6 +152,10 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "tube_residual_p95_source_px": float_or_none(row.get("tube_residual_p95_source_px")),
             "corridor_hf_rms_source_px": float_or_none(row.get("corridor_hf_rms_source_px")),
             "corridor_hf_p95_source_px": float_or_none(row.get("corridor_hf_p95_source_px")),
+            "non_sustained_hf_rms_source_px": float_or_none(row.get("non_sustained_hf_rms_source_px")),
+            "non_sustained_hf_p95_source_px": float_or_none(row.get("non_sustained_hf_p95_source_px")),
+            "unsupported_reversal_count": float_or_none(row.get("unsupported_reversal_count")),
+            "unsupported_reversal_ratio": float_or_none(row.get("unsupported_reversal_ratio")),
             "turn_p95_deg": float_or_none(row.get("turn_p95_deg")),
             "turn_max_deg": float_or_none(row.get("turn_max_deg")),
             "curvature_change_p95_deg": float_or_none(row.get("curvature_change_p95_deg")),
@@ -266,6 +275,30 @@ def optimizer_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dic
             "in_corridor_fraction": sum(contained) / len(contained) if contained else 0.0,
             "in_core_fraction": sum(in_core) / len(in_core) if in_core else 0.0,
             "endpoint_approach_angle_degrees": math.degrees(math.atan(endpoint_slope)),
+        }
+    return summaries
+
+
+def tube_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, object]]:
+    """Summarize optional dual-window longitudinal references without requiring new bundle fields."""
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        grouped[(row.get("detector", ""), row.get("track_id", ""))].append(row)
+    summaries: dict[tuple[str, str], dict[str, object]] = {}
+    for key, group in grouped.items():
+        supports = compact_numbers(float_or_none(row.get("motion_support")) for row in group)
+        residuals = compact_numbers(
+            abs(local - stable)
+            for row in group
+            if (local := float_or_none(row.get("local_center_px"))) is not None
+            and (stable := float_or_none(row.get("stability_center_px"))) is not None
+        )
+        reasons = sorted({row.get("motion_support_reason", "") for row in group
+                          if row.get("motion_support_reason", "")})
+        summaries[key] = {
+            "motion_support_mean": statistics.mean(supports) if supports else None,
+            "local_stability_residual_p95_px": percentile(residuals, 0.95) if residuals else None,
+            "motion_support_reasons": ",".join(reasons),
         }
     return summaries
 
@@ -454,6 +487,13 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
 def compact_numbers(values):
     """Keep only concrete numeric values from an iterable."""
     return [float(value) for value in values if isinstance(value, (float, int))]
+
+
+def percentile(values: list[float], quantile: float) -> float:
+    """Return a deterministic nearest-rank percentile for a non-empty numeric sequence."""
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(quantile * len(ordered)) - 1))
+    return ordered[index]
 
 
 def negative_counts(rows: list[dict[str, object]]) -> str:

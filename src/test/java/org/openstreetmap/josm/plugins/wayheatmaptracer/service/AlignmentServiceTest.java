@@ -177,6 +177,51 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void preciseTopologyCleanupRemovesShortUnsupportedEndpointHook() {
+        Node start = nodeAt(0.0, 0.0);
+        Node end = nodeAt(20.0, 10.0);
+        Way way = new Way();
+        way.setNodes(List.of(start, end));
+        SelectionContext selected = new SelectionContext(way, 0, 1, List.of(start, end), Set.of(start, end));
+        List<EastNorth> source = List.of(new EastNorth(0.0, 0.0), new EastNorth(20.0, 10.0));
+        EastNorth hook = new EastNorth(2.0, 0.0);
+        List<EastNorth> preview = List.of(
+            source.get(0),
+            hook,
+            new EastNorth(3.035276, 3.863703),
+            new EastNorth(10.0, 7.0),
+            source.get(1)
+        );
+
+        List<EastNorth> cleaned = new AlignmentService().cleanPreviewTopology(
+            selected, source, preview, AlignmentMode.PRECISE_SHAPE);
+
+        assertFalse(cleaned.contains(hook), "The short 75-degree endpoint hook should be removed");
+        assertEquals(source.get(0), cleaned.get(0));
+        assertEquals(source.get(1), cleaned.get(cleaned.size() - 1));
+    }
+
+    @Test
+    void preciseTopologyCleanupPreservesSupportedTurnBeyondTerminalWindow() {
+        Node start = nodeAt(0.0, 0.0);
+        Node end = nodeAt(5.0, 15.0);
+        Way way = new Way();
+        way.setNodes(List.of(start, end));
+        SelectionContext selected = new SelectionContext(way, 0, 1, List.of(start, end), Set.of(start, end));
+        List<EastNorth> preview = List.of(
+            new EastNorth(0.0, 0.0),
+            new EastNorth(5.0, 0.0),
+            new EastNorth(5.0, 5.0),
+            new EastNorth(5.0, 15.0)
+        );
+
+        List<EastNorth> cleaned = new AlignmentService().cleanPreviewTopology(
+            selected, List.of(preview.get(0), preview.get(3)), preview, AlignmentMode.PRECISE_SHAPE);
+
+        assertEquals(preview, cleaned);
+    }
+
+    @Test
     void corridorQualityPenalizesRipplesWithoutBlockingMissingEndpointEvidenceAlone() {
         CorridorQuality smooth = new CorridorQuality(0.1, 0.2, 0.08, 0.15, 0.2, 0.3,
             4.0, 8.0, 3.0, 0, 0, 0.0, 8.0, 0.85, true);
@@ -189,6 +234,19 @@ class AlignmentServiceTest {
         assertTrue(service.corridorQualityWarnings(rough).stream()
             .anyMatch(value -> value.contains("folds backward")));
         assertTrue(service.corridorQualityWarnings(smooth).isEmpty());
+    }
+
+    @Test
+    void repairedFinalPreviewDoesNotRetainRawTerminalTurnWarning() {
+        CorridorQuality rawEndpointHook = new CorridorQuality(0.4, 0.8, 0.2, 0.3, 0.4, 0.5,
+            10.0, 75.0, 30.0, 0, 0, 0.0, 75.0, 0.6, true);
+        List<EastNorth> repaired = List.of(
+            new EastNorth(0.0, 0.0), new EastNorth(5.0, 0.0),
+            new EastNorth(10.0, 0.0), new EastNorth(15.0, 0.0));
+
+        List<String> warnings = new AlignmentService().corridorQualityWarnings(rawEndpointHook, repaired);
+
+        assertFalse(warnings.stream().anyMatch(value -> value.contains("terminal turn")));
     }
 
     @Test

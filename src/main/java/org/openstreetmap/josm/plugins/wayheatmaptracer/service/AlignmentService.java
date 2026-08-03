@@ -838,6 +838,11 @@ public final class AlignmentService {
                 tubeRows.append(csv(detector)).append(',').append(csv(entry.getKey())).append(',')
                     .append(slice.profileIndex()).append(',').append(slice.distanceMeters()).append(',')
                     .append(slice.centerOffsetPx()).append(',').append(slice.tangentOffsetPerMeter()).append(',')
+                    .append(slice.localCenterOffsetPx()).append(',').append(slice.localTangentOffsetPerMeter()).append(',')
+                    .append(slice.stabilityCenterOffsetPx()).append(',')
+                    .append(slice.stabilityTangentOffsetPerMeter()).append(',')
+                    .append(slice.stabilityUncertaintyPx()).append(',').append(slice.motionSupport()).append(',')
+                    .append(csv(slice.motionSupportReason())).append(',')
                     .append(slice.curvatureOffsetPerMeterSquared()).append(',').append(slice.coreMinPx()).append(',')
                     .append(slice.coreMaxPx()).append(',').append(slice.shoulderMinPx()).append(',')
                     .append(slice.shoulderMaxPx()).append(',').append(slice.uncertaintyPx()).append(',')
@@ -926,7 +931,7 @@ public final class AlignmentService {
     }
 
     private String corridorTubeCsvHeader() {
-        return "detector,track_id,profile_index,distance_m,center_px,tangent_px_per_m,curvature_px_per_m2,core_min_px,core_max_px,shoulder_min_px,shoulder_max_px,uncertainty_px,confidence,scale_conflict,parent_merge,raw_center_px,b3_center_px,b5_center_px,observed\n";
+        return "detector,track_id,profile_index,distance_m,center_px,tangent_px_per_m,local_center_px,local_tangent_px_per_m,stability_center_px,stability_tangent_px_per_m,stability_uncertainty_px,motion_support,motion_support_reason,curvature_px_per_m2,core_min_px,core_max_px,shoulder_min_px,shoulder_max_px,uncertainty_px,confidence,scale_conflict,parent_merge,raw_center_px,b3_center_px,b5_center_px,observed\n";
     }
 
     private String associationDecisionsCsvHeader() {
@@ -1091,10 +1096,10 @@ public final class AlignmentService {
             return 0.0;
         }
         double reward = 0.45 * clamp01(quality.longitudinalPersistence());
-        double penalty = 0.45 * clamp01(quality.highFrequencyP95SourcePx() / 0.50)
+        double penalty = 0.45 * clamp01(quality.nonSustainedHighFrequencyP95SourcePx() / 0.60)
             + 0.30 * clamp01(quality.p95AccelerationSourcePx() / 1.50)
             + 0.20 * Math.log1p(Math.max(0.0, quality.tubeResidualP95SourcePx()))
-            + 0.35 * clamp01(quality.unsupportedExcursions())
+            + 0.35 * clamp01(quality.unsupportedReversalCount() / 4.0)
             + 0.45 * clamp01(quality.forwardProgressViolations());
         if (!quality.endpointApproachesSupported()) {
             penalty += 0.75;
@@ -1728,7 +1733,8 @@ public final class AlignmentService {
             if (hasFinalPreviewSelfIntersection(candidate)) {
                 warnings.add("self-intersection in final preview");
             }
-            warnings.addAll(corridorQualityWarnings(candidate.evidence().corridorQuality()));
+            warnings.addAll(corridorQualityWarnings(
+                candidate.evidence().corridorQuality(), candidate.finalPreviewPoints()));
             if (!candidate.junctionSafetyFindings().isEmpty()) {
                 warnings.add("crosses a connected way before its junction");
             }
@@ -1737,6 +1743,10 @@ public final class AlignmentService {
     }
 
     List<String> corridorQualityWarnings(CorridorQuality quality) {
+        return corridorQualityWarnings(quality, List.of());
+    }
+
+    List<String> corridorQualityWarnings(CorridorQuality quality, List<EastNorth> finalPreview) {
         if (quality == null || !quality.measured()) {
             return List.of();
         }
@@ -1744,20 +1754,35 @@ public final class AlignmentService {
         if (quality.forwardProgressViolations() > 0) {
             warnings.add("candidate folds backward along the selected way");
         }
-        if (quality.unsupportedExcursions() > 0) {
+        if (quality.nonSustainedHighFrequencyP95SourcePx() > 0.60
+            && quality.unsupportedReversalCount() >= 4
+            && quality.unsupportedReversalRatio() > 0.08) {
             warnings.add(String.format(java.util.Locale.ROOT,
-                "unsupported short lateral excursions %d", quality.unsupportedExcursions()));
+                "unsupported alternating lateral ripple %.1fpx (%d reversals)",
+                quality.nonSustainedHighFrequencyP95SourcePx(), quality.unsupportedReversalCount()));
         }
         if (quality.p95AccelerationSourcePx() > 2.0) {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "source-normalized lateral acceleration %.1fpx", quality.p95AccelerationSourcePx()));
         }
         if (quality.endpointApproachMaximumTurnDegrees() > 35.0
-            && quality.tubeResidualP95SourcePx() > 0.5) {
+            && quality.tubeResidualP95SourcePx() > 0.5
+            && (finalPreview.isEmpty() || terminalTurnDegrees(finalPreview) > 35.0)) {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "unsupported terminal turn %.0f degrees", quality.endpointApproachMaximumTurnDegrees()));
         }
         return List.copyOf(warnings);
+    }
+
+    private double terminalTurnDegrees(List<EastNorth> polyline) {
+        if (polyline.size() < 3) {
+            return 0.0;
+        }
+        return Math.max(
+            turningAngleDegrees(polyline.get(0), polyline.get(1), polyline.get(2)),
+            turningAngleDegrees(polyline.get(polyline.size() - 3), polyline.get(polyline.size() - 2),
+                polyline.get(polyline.size() - 1))
+        );
     }
 
     boolean crossesConnectedWayBeforeJunction(CenterlineCandidate candidate, SelectionContext selection) {
@@ -2161,7 +2186,7 @@ public final class AlignmentService {
         };
     }
 
-    private List<EastNorth> cleanPreviewTopology(
+    List<EastNorth> cleanPreviewTopology(
         SelectionContext selection,
         List<EastNorth> sourcePolyline,
         List<EastNorth> preview,
@@ -2174,13 +2199,15 @@ public final class AlignmentService {
             .map(sourcePolyline::get)
             .toList();
         double nearAnchorDistance = Math.max(3.0, Math.min(12.0, PolylineMath.length(sourcePolyline) * 0.08));
-        List<EastNorth> cleaned = postProcessor.pruneEndpointClusters(preview, nearAnchorDistance, 95.0);
+        List<EastNorth> cleaned = postProcessor.pruneEndpointClusters(preview, nearAnchorDistance, 35.0);
         cleaned = postProcessor.removeSelfIntersectionLoops(cleaned, protectedPoints);
         if (cleaned.size() < 2) {
             return preview;
         }
         if (cleaned.size() != preview.size()) {
-            PluginLog.verbose("Topology cleanup reduced precise preview points from %d to %d.", preview.size(), cleaned.size());
+            PluginLog.verbose(
+                "Topology cleanup reduced precise preview points from %d to %d; terminal turn %.1f -> %.1f degrees.",
+                preview.size(), cleaned.size(), terminalTurnDegrees(preview), terminalTurnDegrees(cleaned));
         }
         return cleaned;
     }
@@ -2767,6 +2794,10 @@ public final class AlignmentService {
             + "\"samplingScaleVersion\":1,"
             + "\"type\":\"managed-source-tiles\","
             + "\"algorithm\":\"fixed-scale source tiles\","
+            + "\"imageSampleConvention\":\"decoded-index-is-pixel-center\","
+            + "\"imageSampleCenterOffsetWorldPx\":0.5,"
+            + "\"l0LateralLocalizationPhases\":2,"
+            + "\"l0PhysicalFilterStride\":2,"
             + "\"tileZoom\":" + mosaic.zoom() + ','
             + "\"bestTileZoom\":" + mosaics.inferenceZoom() + ','
             + "\"sourceTileZoom\":" + mosaic.zoom() + ','
@@ -2833,6 +2864,10 @@ public final class AlignmentService {
             + "\"samplingScaleVersion\":1,"
             + "\"type\":\"rendered-visible-layer\","
             + "\"algorithm\":\"v0.2-compatible\","
+            + "\"imageSampleConvention\":\"rendered-capture-coordinate\","
+            + "\"imageSampleCenterOffsetWorldPx\":null,"
+            + "\"l0LateralLocalizationPhases\":2,"
+            + "\"l0PhysicalFilterStride\":2,"
             + "\"layerClass\":\"" + jsonEscape(imageryLayer.getClass().getName()) + "\","
             + "\"tileZoom\":" + nullableInt(zoom) + ','
             + "\"bestTileZoom\":" + nullableInt(bestZoom) + ','
@@ -2993,7 +3028,7 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling
     ) {
         StringBuilder builder = new StringBuilder(
-            "rank,candidate_id,display_name,detector,visible_color,intensity_source,source_tier,applicable,raw_score,calibrated_score,measurable_quality_score,detector_prior,global_detector_adjustment,coverage_complete,coverage_reason,observed_profiles,informative_profiles,informative_coverage_ratio,first_observed_profile,last_observed_profile,leading_unsupported_m,trailing_unsupported_m,max_internal_unsupported_profiles,max_internal_unsupported_m,approved_bridge_count,informative_evidence_beyond_track,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,optimizer_cost_per_profile,in_corridor_fraction,scale_persistence,scale_conflict_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,tube_residual_mean_source_px,tube_residual_p95_source_px,corridor_hf_rms_source_px,corridor_hf_p95_source_px,turn_p95_deg,turn_max_deg,curvature_change_p95_deg,forward_progress_violations,unsupported_excursions,max_gap_m,endpoint_approach_max_turn_deg,true_longitudinal_persistence,endpoint_approaches_supported,topology_reason_codes,junction_safety_tolerance_m,safety_warnings\n");
+            "rank,candidate_id,display_name,detector,visible_color,intensity_source,source_tier,applicable,raw_score,calibrated_score,measurable_quality_score,detector_prior,global_detector_adjustment,coverage_complete,coverage_reason,observed_profiles,informative_profiles,informative_coverage_ratio,first_observed_profile,last_observed_profile,leading_unsupported_m,trailing_unsupported_m,max_internal_unsupported_profiles,max_internal_unsupported_m,approved_bridge_count,informative_evidence_beyond_track,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,optimizer_cost_per_profile,in_corridor_fraction,scale_persistence,scale_conflict_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,tube_residual_mean_source_px,tube_residual_p95_source_px,corridor_hf_rms_source_px,corridor_hf_p95_source_px,non_sustained_hf_rms_source_px,non_sustained_hf_p95_source_px,unsupported_reversal_count,unsupported_reversal_ratio,turn_p95_deg,turn_max_deg,curvature_change_p95_deg,forward_progress_violations,unsupported_excursions,max_gap_m,endpoint_approach_max_turn_deg,true_longitudinal_persistence,endpoint_approaches_supported,topology_reason_codes,junction_safety_tolerance_m,safety_warnings\n");
         IntensitySamplingMode source = intensitySamplingMode(config);
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
@@ -3060,6 +3095,10 @@ public final class AlignmentService {
                 .append(format(quality.tubeResidualP95SourcePx())).append(',')
                 .append(format(quality.highFrequencyRmsSourcePx())).append(',')
                 .append(format(quality.highFrequencyP95SourcePx())).append(',')
+                .append(format(quality.nonSustainedHighFrequencyRmsSourcePx())).append(',')
+                .append(format(quality.nonSustainedHighFrequencyP95SourcePx())).append(',')
+                .append(quality.unsupportedReversalCount()).append(',')
+                .append(format(quality.unsupportedReversalRatio())).append(',')
                 .append(format(quality.turnP95Degrees())).append(',')
                 .append(format(quality.turnMaximumDegrees())).append(',')
                 .append(format(quality.curvatureChangeP95Degrees())).append(',')

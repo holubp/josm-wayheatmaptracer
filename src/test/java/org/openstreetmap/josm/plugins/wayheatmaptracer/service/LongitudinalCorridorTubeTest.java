@@ -53,6 +53,31 @@ class LongitudinalCorridorTubeTest {
         }
     }
 
+    @Test
+    void reversingShortRunsDoNotAuthorizeTheLocalReference() {
+        Scenario scenario = scenario(index -> switch ((index / 3) % 4) {
+            case 0, 3 -> -1.0;
+            default -> 1.0;
+        }, 30);
+
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            scenario.track(), scenario.profiles(), 1.0, Map.of());
+
+        assertEquals(0.0, tube.at(15).motionSupport(), 1e-9);
+        assertEquals("reversing-noise", tube.at(15).motionSupportReason());
+    }
+
+    @Test
+    void onePersistentApexAuthorizesTheLocalTurnReference() {
+        Scenario scenario = scenario(index -> 5.0 * Math.sin(index * Math.PI / 10.0), 30);
+
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            scenario.track(), scenario.profiles(), 1.0, Map.of());
+
+        assertTrue(tube.at(5).motionSupport() > 0.5);
+        assertTrue(tube.at(5).motionSupportReason().startsWith("supported-apex"));
+    }
+
     private Scenario scenario(java.util.function.IntToDoubleFunction centers, int count) {
         return scenario(centers, count, 6.0);
     }

@@ -5,13 +5,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.File;
+import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -40,6 +43,43 @@ class TileHeatmapSamplerTest {
 
         assertEquals(15, TileHeatmapSampler.effectiveInferenceZoom(config));
         assertEquals(13, TileHeatmapSampler.effectiveValidationZoom(config));
+    }
+
+    @Test
+    void managedSamplingAndProjectionUseDecodedPixelCenters() {
+        for (int zoom : List.of(13, 14, 15)) {
+            for (double latitude : List.of(0.0, 49.44, 80.0)) {
+                double originX = 2_000.0 * TileHeatmapSampler.TILE_SIZE;
+                double targetWorldY = latitudeToWorldPixelY(latitude, zoom);
+                double originY = Math.floor((targetWorldY - 128.0) / TileHeatmapSampler.TILE_SIZE)
+                    * TileHeatmapSampler.TILE_SIZE;
+                double localY = targetWorldY - originY - 0.5;
+                double virtualScale = 6.0;
+                TileHeatmapSampler.SamplingParameters parameters = new TileHeatmapSampler.SamplingParameters(
+                    zoom, latitude, TileHeatmapSampler.metersPerPixel(zoom, latitude, TileHeatmapSampler.TILE_SIZE),
+                    28.0, 6.0, 56, 12);
+                TileHeatmapSampler.TileMosaic mosaic = new TileHeatmapSampler.TileMosaic(
+                    "hot", zoom, originX, originY,
+                    new BufferedImage(TileHeatmapSampler.TILE_SIZE, TileHeatmapSampler.TILE_SIZE,
+                        BufferedImage.TYPE_INT_ARGB),
+                    List.of(), Map.of(), parameters, false, virtualScale);
+                EastNorth first = worldPixelToEastNorth(originX + 100.5, targetWorldY, zoom);
+                EastNorth second = worldPixelToEastNorth(originX + 104.5, targetWorldY, zoom);
+
+                List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new TileHeatmapSampler().sampleProfiles(
+                    mosaic, List.of(first, second), "hot", config(InferenceMode.RAW_HIGH_RESOLUTION, zoom, 13));
+                Point2D.Double projectedSample = new Point2D.Double(100.0 * virtualScale, localY * virtualScale);
+                EastNorth projected = new TileHeatmapSampler().projectCandidate(mosaic, List.of(projectedSample)).get(0);
+
+                assertFalse(profiles.isEmpty());
+                assertEquals(100.0 * virtualScale, profiles.get(0).anchorScreen().x, 1e-7,
+                    "sample x at z" + zoom + " lat " + latitude);
+                assertEquals(localY * virtualScale, profiles.get(0).anchorScreen().y, 1e-7,
+                    "sample y at z" + zoom + " lat " + latitude);
+                assertEquals(0.0, projected.distance(first), 1e-3,
+                    "projection at z" + zoom + " lat " + latitude);
+            }
+        }
     }
 
     @Test
@@ -190,6 +230,21 @@ class TileHeatmapSamplerTest {
 
     private int alpha(int argb) {
         return (argb >>> 24) & 0xFF;
+    }
+
+    private EastNorth worldPixelToEastNorth(double worldX, double worldY, int zoom) {
+        double scale = TileHeatmapSampler.TILE_SIZE * Math.pow(2.0, zoom);
+        double lon = worldX / scale * 360.0 - 180.0;
+        double mercator = Math.PI * (1.0 - 2.0 * worldY / scale);
+        double lat = Math.toDegrees(Math.atan(Math.sinh(mercator)));
+        return ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(lat, lon));
+    }
+
+    private double latitudeToWorldPixelY(double latitude, int zoom) {
+        double scale = TileHeatmapSampler.TILE_SIZE * Math.pow(2.0, zoom);
+        double tangent = Math.tan(Math.toRadians(latitude));
+        double mercator = Math.log(tangent + Math.sqrt(tangent * tangent + 1.0));
+        return scale * (1.0 - mercator / Math.PI) / 2.0;
     }
 
     private ManagedHeatmapConfig config(InferenceMode inferenceMode, int inferenceZoom, int validationZoom) {
