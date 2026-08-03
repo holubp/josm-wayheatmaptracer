@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -106,6 +107,32 @@ class AlignmentServiceTest {
             .withEastNorthPoints(List.of(new EastNorth(12, 12), new EastNorth(12, 5), new EastNorth(10, 0)));
 
         assertFalse(new AlignmentService().crossesConnectedWayBeforeJunction(remoteCrossing, selected));
+    }
+
+    @Test
+    void connectedWayCrossingToleranceUsesGroundMetersAtNonEquatorialLatitude() {
+        EastNorth center = ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(49.44, 14.5));
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(center.east() - 20.0, center.north());
+        Node junction = nodeAt(center.east(), center.north());
+        Node branchEnd = nodeAt(center.east(), center.north() + 20.0);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate insidePhysicalTolerance = crossingAtNorthing(center, 3.0);
+        CenterlineCandidate outsidePhysicalTolerance = crossingAtNorthing(center, 5.0);
+
+        AlignmentService service = new AlignmentService();
+        assertFalse(service.crossesConnectedWayBeforeJunction(insidePhysicalTolerance, selected));
+        assertTrue(service.crossesConnectedWayBeforeJunction(outsidePhysicalTolerance, selected));
     }
 
     @Test
@@ -286,8 +313,45 @@ class AlignmentServiceTest {
         );
 
         assertEquals("visible rendered layer, v0.2-compatible, source tile z15 (best z15), raster 6.0x, "
-                + "view 0.750 m/px, sampled 0.1250 m/raster-px, capture 6000x3600",
+                + "ground 0.750 m/view-px, sampled 0.1250 m/raster-px, capture 6000x3600",
             diagnostics.samplingSummary());
+    }
+
+    @Test
+    void samplingSummarySeparatesProjectionGroundAndNativeSourceScales() {
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
+            "Strava", 1, 0, 1, 2, 3, "{}", "{}",
+            "{\"type\":\"rendered-visible-layer\",\"algorithm\":\"v0.2-compatible\","
+                + "\"tileZoom\":15,\"bestTileZoom\":15,\"rasterScale\":6.0,"
+                + "\"projectionUnitsPerViewPixel\":0.389,\"groundMetersPerViewPixel\":0.2527,"
+                + "\"groundMetersPerRasterPixel\":0.04212,\"nativeSourceResolutionKnown\":true,"
+                + "\"nativeSourceTileSizePx\":512,\"nativeSourcePixelSizeRasterPx\":36.84}",
+            "[\"hot\"]", "[]", "[]");
+
+        String summary = diagnostics.samplingSummary();
+        assertTrue(summary.contains("capture 0.389 projection-units/view-px"));
+        assertTrue(summary.contains("ground 0.253 m/view-px"));
+        assertTrue(summary.contains("512 px tiles, 36.84 raster-px/source-px"));
+    }
+
+    @Test
+    void corridorDecisionsUseMeasuredGroundScaleWhileLegacyKeepsReferenceCalibration() {
+        double measuredGroundMetersPerViewPixel = 0.2527;
+
+        assertEquals(measuredGroundMetersPerViewPixel,
+            AlignmentService.decisionGroundMetersPerViewPixel(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE,
+                measuredGroundMetersPerViewPixel),
+            0.0);
+        assertEquals(TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL,
+            AlignmentService.decisionGroundMetersPerViewPixel(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_V02,
+                measuredGroundMetersPerViewPixel),
+            0.0);
+        assertThrows(IllegalArgumentException.class,
+            () -> AlignmentService.decisionGroundMetersPerViewPixel(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.CORRIDOR_AWARE,
+                Double.NaN));
     }
 
     @Test
@@ -468,6 +532,14 @@ class AlignmentServiceTest {
 
     private Node nodeAt(double east, double north) {
         return new Node(ProjectionRegistry.getProjection().eastNorth2latlon(new EastNorth(east, north)));
+    }
+
+    private CenterlineCandidate crossingAtNorthing(EastNorth center, double projectedNorthing) {
+        return new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(
+                new EastNorth(center.east() - 10.0, center.north() + projectedNorthing),
+                new EastNorth(center.east() + 10.0, center.north() + projectedNorthing),
+                center));
     }
 
     private SelectionContext segmentSelection(int nodeCount, int start, int end) {

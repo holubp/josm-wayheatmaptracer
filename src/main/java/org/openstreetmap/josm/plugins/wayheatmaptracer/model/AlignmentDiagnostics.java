@@ -1,5 +1,10 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+
 /**
  * Redacted diagnostics generated during one alignment attempt.
  *
@@ -14,7 +19,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param samplingJson sampling source, scale, and tile metadata JSON
  * @param colorSchemesJson sampled detector/color metadata JSON
  * @param candidatesJson candidate geometry/evidence JSON
- * @param profileDiagnosticsJson per-profile diagnostic JSON
+ * @param profileDiagnosticsJson legacy profile JSON retained for constructor compatibility; format 6 uses CSV artifacts
  * @param candidateMetricsCsv candidate metrics CSV
  * @param profilePeaksCsv per-profile peak CSV
  * @param paletteSamplesCsv palette sample CSV
@@ -26,6 +31,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param corridorTubeCsv robust longitudinal corridor tube CSV
  * @param associationDecisionsCsv selected longitudinal association decisions CSV
  * @param endpointApproachesCsv endpoint boundary evidence CSV
+ * @param detectorPerformanceCsv per-detector phase timing and operation-count CSV
  * @param parallelContextJson redacted nearby-way assignment context JSON
  */
 public record AlignmentDiagnostics(
@@ -52,6 +58,7 @@ public record AlignmentDiagnostics(
     String corridorTubeCsv,
     String associationDecisionsCsv,
     String endpointApproachesCsv,
+    String detectorPerformanceCsv,
     String parallelContextJson
 ) {
     /**
@@ -89,7 +96,7 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv, "", "", "", "",
+            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv, "", "", "", "", "",
             parallelContextJson);
     }
 
@@ -132,7 +139,7 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            "", "", "", "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "", "{}");
     }
 
     /**
@@ -167,13 +174,13 @@ public record AlignmentDiagnostics(
     ) {
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis, optimizationMillis,
             configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson,
-            "", "", "", "", "", "", "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "", "", "", "", "{}");
     }
 
     /**
      * Serializes the main diagnostics fields for status and debug exports.
      *
-     * @return JSON object string without CSV payloads
+     * @return JSON object string with checksummed CSV artifact metadata instead of duplicated profile payloads
      */
     public String toJson() {
         return "{"
@@ -188,9 +195,42 @@ public record AlignmentDiagnostics(
             + "\"sampling\":" + samplingJson + ','
             + "\"colorSchemes\":" + colorSchemesJson + ','
             + "\"candidates\":" + candidatesJson + ','
-            + "\"profiles\":" + profileDiagnosticsJson + ','
+            + "\"profiles\":" + profileArtifactSummaryJson() + ','
             + "\"parallelContext\":" + (parallelContextJson == null || parallelContextJson.isBlank() ? "{}" : parallelContextJson)
             + "}";
+    }
+
+    private String profileArtifactSummaryJson() {
+        return "{\"storage\":\"dedicated-csv-artifacts\",\"artifacts\":["
+            + artifactJson("profile-peaks.csv", profilePeaksCsv) + ','
+            + artifactJson("palette-samples.csv", paletteSamplesCsv) + ','
+            + artifactJson("profile-intensity.csv", profileIntensityCsv) + ','
+            + artifactJson("corridor-bands.csv", corridorBandsCsv) + ','
+            + artifactJson("corridor-tracks.csv", corridorTracksCsv) + ','
+            + artifactJson("optimizer-costs.csv", optimizerCostsCsv) + ','
+            + artifactJson("scale-space.csv", scaleSpaceCsv) + ','
+            + artifactJson("corridor-tube.csv", corridorTubeCsv) + ','
+            + artifactJson("detector-performance.csv", detectorPerformanceCsv)
+            + "]}";
+    }
+
+    private String artifactJson(String file, String contents) {
+        String value = contents == null ? "" : contents;
+        long lineCount = value.lines().count();
+        long rowCount = Math.max(0L, lineCount - (value.isBlank() ? 0L : 1L));
+        return "{\"file\":\"" + escape(file) + "\",\"rows\":" + rowCount
+            + ",\"bytes\":" + value.getBytes(StandardCharsets.UTF_8).length
+            + ",\"sha256\":\"" + sha256(value) + "\"}";
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is required for diagnostic artifact summaries", ex);
+        }
     }
 
     /**
@@ -203,8 +243,14 @@ public record AlignmentDiagnostics(
         String algorithm = jsonString(samplingJson, "algorithm");
         String tileZoom = jsonValue(samplingJson, "tileZoom");
         String bestTileZoom = jsonValue(samplingJson, "bestTileZoom");
-        String viewMetersPerPixel = jsonValue(samplingJson, "viewMetersPerPixel");
-        String rasterMetersPerPixel = jsonValue(samplingJson, "rasterMetersPerPixel");
+        String projectionUnitsPerViewPixel = jsonValue(samplingJson, "projectionUnitsPerViewPixel");
+        String viewMetersPerPixel = firstJsonValue(samplingJson,
+            "groundMetersPerViewPixel", "viewMetersPerPixel");
+        String rasterMetersPerPixel = firstJsonValue(samplingJson,
+            "groundMetersPerRasterPixel", "rasterMetersPerPixel");
+        String nativeSourcePixelSize = jsonValue(samplingJson, "nativeSourcePixelSizeRasterPx");
+        String nativeTileSize = jsonValue(samplingJson, "nativeSourceTileSizePx");
+        String nativeResolutionKnown = jsonValue(samplingJson, "nativeSourceResolutionKnown");
         String rasterScale = jsonValue(samplingJson, "rasterScale");
         String rasterWidth = jsonValue(samplingJson, "rasterWidth");
         String rasterHeight = jsonValue(samplingJson, "rasterHeight");
@@ -236,11 +282,24 @@ public record AlignmentDiagnostics(
         if (!rasterScale.isBlank()) {
             summary.append(", raster ").append(rasterScale).append("x");
         }
+        if (!projectionUnitsPerViewPixel.isBlank() && !"null".equals(projectionUnitsPerViewPixel)) {
+            summary.append(", capture ").append(formatDouble(projectionUnitsPerViewPixel, 3))
+                .append(" projection-units/view-px");
+        }
         if (!viewMetersPerPixel.isBlank() && !"null".equals(viewMetersPerPixel)) {
-            summary.append(", view ").append(formatDouble(viewMetersPerPixel, 3)).append(" m/px");
+            summary.append(", ground ").append(formatDouble(viewMetersPerPixel, 3)).append(" m/view-px");
         }
         if (!rasterMetersPerPixel.isBlank() && !"null".equals(rasterMetersPerPixel)) {
             summary.append(", sampled ").append(formatDouble(rasterMetersPerPixel, 4)).append(" m/raster-px");
+        }
+        if ("true".equals(nativeResolutionKnown)
+            && !nativeSourcePixelSize.isBlank() && !"null".equals(nativeSourcePixelSize)) {
+            if (!nativeTileSize.isBlank() && !"null".equals(nativeTileSize)) {
+                summary.append(", ").append(nativeTileSize).append(" px tiles");
+            }
+            summary.append(", ").append(formatDouble(nativeSourcePixelSize, 2)).append(" raster-px/source-px");
+        } else if ("false".equals(nativeResolutionKnown)) {
+            summary.append(", native source resolution unavailable");
         }
         if (!effectiveHalfWidthMeters.isBlank() && !"null".equals(effectiveHalfWidthMeters)
                 && !effectiveStepMeters.isBlank() && !"null".equals(effectiveStepMeters)) {
@@ -321,5 +380,10 @@ public record AlignmentDiagnostics(
             end++;
         }
         return json.substring(index, end).trim();
+    }
+
+    private static String firstJsonValue(String json, String primaryKey, String fallbackKey) {
+        String primary = jsonValue(json, primaryKey);
+        return primary.isBlank() ? jsonValue(json, fallbackKey) : primary;
     }
 }

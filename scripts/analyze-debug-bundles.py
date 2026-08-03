@@ -61,7 +61,9 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     physical_warning = physical_distance_warning(bundle, bundle_format, diagnostics)
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
     optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
+    performance = performance_summaries(read_zip_csv(bundle, "detector-performance.csv"))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
+    bridge_directions = bridge_direction_summaries(read_zip_csv(bundle, "corridor-tracks.csv"))
     scale_space = scale_space_summaries(read_zip_csv(bundle, "scale-space.csv"))
     try:
         attempts = json.loads(read_zip_text(bundle, "detector-attempts.json") or "[]")
@@ -80,6 +82,8 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         candidate_id = row.get("candidate_id", "")
         detector, track_id = candidate_track_identity(candidate_id)
         optimizer_summary = optimizer.get((detector, track_id), {})
+        performance_summary = performance.get(detector, {})
+        bridge_summary = bridge_directions.get((detector, track_id), {})
         scale_summary = scale_space.get(detector, {})
         rating = ratings.get(candidate_id, {})
         numeric = rating_score(str(rating.get("rating", ""))) if isinstance(rating, dict) else None
@@ -152,6 +156,22 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "endpoint_approach_max_turn_deg": float_or_none(row.get("endpoint_approach_max_turn_deg")),
             "true_longitudinal_persistence": float_or_none(row.get("true_longitudinal_persistence")),
             "endpoint_approaches_supported": row.get("endpoint_approaches_supported", ""),
+            "detector_total_ms": performance_summary.get("total_ms"),
+            "sampling_ms": performance_summary.get("sampling_ms"),
+            "extraction_ms": performance_summary.get("extraction_ms"),
+            "scale_association_ms": performance_summary.get("scale_association_ms"),
+            "tracking_grouping_ms": performance_summary.get("tracking_grouping_ms"),
+            "exact_optimization_ms": performance_summary.get("optimization_ms"),
+            "diagnostic_serialization_ms": performance_summary.get("diagnostic_serialization_ms"),
+            "projection_ms": performance_summary.get("projection_ms"),
+            "timing_unaccounted_ratio": performance_summary.get("unaccounted_ratio"),
+            "timing_dominant_phase": performance_summary.get("dominant_phase", ""),
+            "timing_warning": performance_warning(bundle_format, performance_summary),
+            "transition_evaluations": performance_summary.get("transition_evaluations"),
+            "profile_cost_evaluations": performance_summary.get("profile_cost_evaluations"),
+            "transition_to_profile_cost_ratio": performance_summary.get("transition_to_profile_cost_ratio"),
+            "canonical_bridge_count": bridge_summary.get("canonical", 0),
+            "backward_marker_bridge_count": bridge_summary.get("backward_marker", 0),
         })
     return rows
 
@@ -175,7 +195,16 @@ def physical_distance_warning(
         return "format<5 metre fields may contain raster-space values"
     sampling = diagnostics.get("sampling", {})
     if not isinstance(sampling, dict):
-        return "format-5 sampling object missing"
+        return f"format-{bundle_format} sampling object missing"
+    if bundle_format == 5 and sampling.get("type") == "rendered-visible-layer":
+        return "format-5 visible-layer metre fields used projection units and are untrusted"
+    if bundle_format >= 6:
+        if int(sampling.get("samplingScaleVersion", 0) or 0) < 1:
+            return "format-6 sampling scale contract missing"
+        for field in ("groundMetersPerViewPixel", "groundMetersPerRasterPixel",
+                      "trackerNormalizationRasterPx", "trackerNormalizationMethod"):
+            if sampling.get(field) in (None, ""):
+                return f"format-6 sampling field missing: {field}"
     profile_count = int(sampling.get("profileCount", 0) or 0)
     path_length = float_or_none(str(sampling.get("physicalPathLengthMeters", "")))
     spacing = sampling.get("longitudinalProfileSpacingMeters", {})
@@ -241,6 +270,53 @@ def optimizer_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dic
     return summaries
 
 
+def performance_summaries(rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
+    """Parse format-6 per-detector phase timings and exact-optimizer operation counts."""
+    result: dict[str, dict[str, object]] = {}
+    for row in rows:
+        detector = row.get("detector", "")
+        total = float_or_none(row.get("total_nanos")) or 0.0
+        unaccounted = float_or_none(row.get("unaccounted_nanos")) or 0.0
+        transitions = float_or_none(row.get("transition_evaluations")) or 0.0
+        profile_costs = float_or_none(row.get("profile_cost_evaluations")) or 0.0
+        phases = {
+            "sampling": (float_or_none(row.get("sampling_nanos")) or 0.0) / 1_000_000.0,
+            "extraction": (float_or_none(row.get("extraction_nanos")) or 0.0) / 1_000_000.0,
+            "scale-association": (float_or_none(row.get("scale_association_nanos")) or 0.0) / 1_000_000.0,
+            "tracking-grouping": (float_or_none(row.get("tracking_grouping_nanos")) or 0.0) / 1_000_000.0,
+            "optimization": (float_or_none(row.get("optimization_nanos")) or 0.0) / 1_000_000.0,
+            "diagnostic-serialization":
+                (float_or_none(row.get("diagnostic_serialization_nanos")) or 0.0) / 1_000_000.0,
+            "projection": (float_or_none(row.get("projection_nanos")) or 0.0) / 1_000_000.0,
+        }
+        result[detector] = {
+            "total_ms": total / 1_000_000.0,
+            "sampling_ms": phases["sampling"],
+            "extraction_ms": phases["extraction"],
+            "scale_association_ms": phases["scale-association"],
+            "tracking_grouping_ms": phases["tracking-grouping"],
+            "optimization_ms": phases["optimization"],
+            "diagnostic_serialization_ms": phases["diagnostic-serialization"],
+            "projection_ms": phases["projection"],
+            "dominant_phase": max(phases, key=phases.get),
+            "unaccounted_ratio": unaccounted / total if total > 0.0 else 0.0,
+            "transition_evaluations": transitions,
+            "profile_cost_evaluations": profile_costs,
+            "transition_to_profile_cost_ratio": transitions / profile_costs if profile_costs > 0.0 else 0.0,
+        }
+    return result
+
+
+def performance_warning(bundle_format: int, summary: dict[str, object]) -> str:
+    """Return a concise warning for missing or materially unreconciled format-6 timing."""
+    if bundle_format < 6:
+        return ""
+    if not summary:
+        return "format-6 detector performance row missing"
+    ratio = float(summary.get("unaccounted_ratio", 0.0) or 0.0)
+    return f"{ratio:.1%} detector time is unaccounted" if ratio > 0.20 else ""
+
+
 def track_grouping(rows: list[dict[str, str]]) -> dict[tuple[str, str], str]:
     """Return parent/child grouping labels from optional corridor track diagnostics."""
     result: dict[tuple[str, str], str] = {}
@@ -248,6 +324,30 @@ def track_grouping(rows: list[dict[str, str]]) -> dict[tuple[str, str], str]:
         track_id = row.get("track_id", "")
         if track_id:
             result[(row.get("detector", ""), track_id)] = row.get("grouping_decision", "")
+    return result
+
+
+def bridge_direction_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, int]]:
+    """Count canonical and legacy backward-owned bridge markers for each corridor track."""
+    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        if row.get("track_id", "") and row.get("profile_index", ""):
+            grouped[(row.get("detector", ""), row.get("track_id", ""))].append(row)
+    result: dict[tuple[str, str], dict[str, int]] = {}
+    for key, track_rows in grouped.items():
+        ordered = sorted(track_rows, key=lambda row: int(row.get("profile_index", "0") or 0))
+        canonical = 0
+        backward = 0
+        for left, right in zip(ordered, ordered[1:]):
+            left_index = int(left.get("profile_index", "0") or 0)
+            right_index = int(right.get("profile_index", "0") or 0)
+            if right_index - left_index <= 1:
+                continue
+            left_bridged = str(left.get("bridged", "")).lower() == "true"
+            right_bridged = str(right.get("bridged", "")).lower() == "true"
+            canonical += int(right_bridged)
+            backward += int(left_bridged and not right_bridged)
+        result[key] = {"canonical": canonical, "backward_marker": backward}
     return result
 
 
@@ -311,6 +411,9 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         corridor_hf = compact_numbers(row["corridor_hf_p95_source_px"] for row in group)
         turns = compact_numbers(row["turn_p95_deg"] for row in group)
         persistence_physical = compact_numbers(row["true_longitudinal_persistence"] for row in group)
+        total_ms = compact_numbers(row["detector_total_ms"] for row in group)
+        optimization_ms = compact_numbers(row["exact_optimization_ms"] for row in group)
+        cost_ratio = compact_numbers(row["transition_to_profile_cost_ratio"] for row in group)
         summary.append({
             "visible_color": visible_color,
             "intensity_source": intensity_source,
@@ -338,6 +441,9 @@ def detector_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             "median_turn_p95_deg": statistics.median(turns) if turns else None,
             "median_true_longitudinal_persistence": statistics.median(persistence_physical)
             if persistence_physical else None,
+            "median_detector_total_ms": statistics.median(total_ms) if total_ms else None,
+            "median_exact_optimization_ms": statistics.median(optimization_ms) if optimization_ms else None,
+            "median_transition_to_profile_cost_ratio": statistics.median(cost_ratio) if cost_ratio else None,
             "attempt_statuses": "; ".join(sorted({str(row["detector_attempt_status"]) for row in group
                                                    if row["detector_attempt_status"]})),
             "negative_features": negative_counts(group),
@@ -389,6 +495,9 @@ def print_table(rows: list[dict[str, object]]) -> None:
         "median_corridor_hf_p95_source_px",
         "median_turn_p95_deg",
         "median_true_longitudinal_persistence",
+        "median_detector_total_ms",
+        "median_exact_optimization_ms",
+        "median_transition_to_profile_cost_ratio",
         "attempt_statuses",
         "negative_features",
     ]

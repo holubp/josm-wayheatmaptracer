@@ -12,8 +12,31 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 
 class CorridorTrackerTest {
+    @Test
+    void canonicalBridgeBoundaryIsIndependentOfTrackingDirection() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 9; index++) {
+            profiles.add(profile(index, index == 3 || index == 4
+                ? List.of() : List.of(band("ridge", 2.0)), 2.5));
+        }
+        CorridorTracker tracker = new CorridorTracker();
+
+        CorridorTrack forward = tracker.trackFromSeed(profiles, 0, profiles.get(0).bands().get(0), 1.0);
+        CorridorTrack backward = tracker.trackFromSeed(profiles, 8, profiles.get(8).bands().get(0), 1.0);
+
+        for (CorridorTrack track : List.of(forward, backward)) {
+            assertFalse(track.points().get(2).bridged(), "left boundary must not own bridge approval");
+            assertTrue(track.points().get(5).bridged(), "higher-index boundary must own bridge approval");
+            CorridorCoverage coverage = new CorridorCoverageCalculator().calculate(
+                track, profiles, new EndpointApproachModel(List.of()));
+            assertTrue(coverage.complete(), "tracker-approved bounded gap must be complete");
+            assertEquals(1, coverage.approvedBridgeCount());
+        }
+    }
+
     @Test
     void preservesTwoParallelIdentitiesAndRejectsOneProfileExcursion() {
         List<CorridorProfile> profiles = new ArrayList<>();

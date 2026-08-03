@@ -15,6 +15,58 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
 
 class CorridorCenterlineOptimizerTest {
     @Test
+    void preservesExactOptimizerBaselineWhileBoundingInvariantWork() {
+        CorridorCenterlineOptimizer optimizer = new CorridorCenterlineOptimizer();
+        Scenario plateauScenario = scenario(index -> 0.0, true);
+        CorridorCenterlineOptimizer.OptimizationResult plateau = optimizer.optimize(
+            plateauScenario.track(), plateauScenario.profiles(), 1.0);
+        Scenario sineScenario = scenario(index -> 5.0 * Math.sin(index * Math.PI / 10.0), false);
+        CorridorCenterlineOptimizer.OptimizationResult sine = optimizer.optimize(
+            sineScenario.track(), sineScenario.profiles(), 1.0);
+
+        assertEquals(java.util.Collections.nCopies(30, 0.0), plateau.offsetsPx());
+        assertEquals(0.0, plateau.totalCost());
+        assertEquals(9, plateau.maximumOffsetStates());
+        assertEquals(81, plateau.maximumPairStates());
+        assertEquals(20_493L, plateau.transitionEvaluations());
+        assertEquals(7_934_189_944_734_589_313L, costChecksum(plateau.costs()));
+
+        assertEquals(List.of(
+            0.2547627247472146, 1.455819241042368, 2.6568757573375215, 4.0,
+            4.755282581475767, 5.0, 4.755282581475768, 4.0, 2.656875757337522,
+            1.396802246667421, 0.0, -1.3968022466674197, -2.6568757573375206, -4.0,
+            -4.755282581475767, -5.0, -4.755282581475768, -4.0, -2.656875757337522,
+            -1.3968022466674217, -1.839136020201776E-15, 1.3968022466674188,
+            2.65687575733752, 4.0, 4.755282581475767, 5.0, 4.755282581475768, 4.0,
+            2.938926261462367, 1.545084971874739), sine.offsetsPx());
+        assertEquals(1.2577134765540414, sine.totalCost());
+        assertEquals(15, sine.maximumOffsetStates());
+        assertEquals(225, sine.maximumPairStates());
+        assertEquals(71_901L, sine.transitionEvaluations());
+        assertEquals(2_702_081_427_610_160_215L, costChecksum(sine.costs()));
+
+        assertTrue(plateau.profileCostEvaluations() <= 30L * plateau.maximumOffsetStates());
+        assertTrue(sine.profileCostEvaluations() <= 30L * sine.maximumOffsetStates());
+        assertEquals(plateau.profileCostEvaluations(), plateau.pointTableEntries());
+        assertEquals(sine.profileCostEvaluations(), sine.pointTableEntries());
+        assertTrue(plateau.retainedPairStateAllocations() <= plateau.transitionEvaluations());
+        assertTrue(sine.retainedPairStateAllocations() <= sine.transitionEvaluations());
+    }
+
+    private long costChecksum(List<CorridorCenterlineOptimizer.CostRow> costs) {
+        long checksum = 1L;
+        for (CorridorCenterlineOptimizer.CostRow row : costs) {
+            checksum = 31L * checksum + Double.doubleToLongBits(row.chosenOffsetPx());
+            checksum = 31L * checksum + Double.doubleToLongBits(row.dataCost());
+            checksum = 31L * checksum + Double.doubleToLongBits(row.continuityCost());
+            checksum = 31L * checksum + Double.doubleToLongBits(row.accelerationCost());
+            checksum = 31L * checksum + Double.doubleToLongBits(row.endpointCost());
+            checksum = 31L * checksum + Double.doubleToLongBits(row.weightedTotal());
+        }
+        return checksum;
+    }
+
+    @Test
     void staysAtRobustCenterWhenNativeBrightestPixelAlternatesAcrossPlateau() {
         Scenario scenario = scenario(index -> 0.0, true);
 

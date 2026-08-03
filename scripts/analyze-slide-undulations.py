@@ -42,12 +42,14 @@ def main() -> None:
     for bundle in bundles:
         rows.extend(analyze_bundle(bundle))
 
+    annotate_repeat_relationships(rows)
     rows.sort(key=lambda row: (str(row["bundle"]), int(row["rank"])))
+    public_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in rows]
     if args.csv:
-        write_csv(args.csv, rows)
+        write_csv(args.csv, public_rows)
     if args.json:
-        args.json.write_text(json.dumps({"bundles": bundle_summary(rows)}, indent=2), encoding="utf-8")
-    print_summary(rows, args.top)
+        args.json.write_text(json.dumps({"bundles": bundle_summary(public_rows)}, indent=2), encoding="utf-8")
+    print_summary(public_rows, args.top)
 
 
 def discover_bundles(paths: list[Path]) -> list[Bundle]:
@@ -97,6 +99,8 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
         original = geometry_metrics(read_text(archive, "original-segment.osm"))
         preview = geometry_metrics(read_text(archive, "preview-segment.osm"))
         applied = geometry_metrics(read_text(archive, "applied-segment.osm"))
+        original_points = way_coordinates(read_text(archive, "original-segment.osm"))
+        applied_points = way_coordinates(read_text(archive, "applied-segment.osm"))
 
     bundle_format = int(manifest.get("formatVersion", 0) or 0)
     original_trust = "immutable" if bundle_format >= 5 else (
@@ -108,6 +112,8 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
     sampling = diagnostics.get("sampling", {})
     config = diagnostics.get("config", {})
     raster_m_per_px = fnum(sampling.get("rasterMetersPerPixel"))
+    applicable_count = sum(str(metric.get("applicable", "")).lower() == "true"
+                           for metric in candidate_metrics)
     rows: list[dict[str, object]] = []
     for metric in candidate_metrics:
         candidate_id = metric.get("candidate_id", "")
@@ -163,7 +169,8 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "production_forward_progress_violations": fnum(metric.get("forward_progress_violations")),
             "production_unsupported_excursions": fnum(metric.get("unsupported_excursions")),
             "production_true_longitudinal_persistence": fnum(metric.get("true_longitudinal_persistence")),
-            "source_meters_per_pixel": fnum(metric.get("source_meters_per_pixel") or sampling.get("sourceMetersPerPixel")),
+            "source_meters_per_pixel": optional_fnum(
+                metric.get("source_meters_per_pixel") or sampling.get("sourceMetersPerPixel")),
             "metric_sign_flips": fnum(metric.get("sign_flips")),
             "offset_mean_px": mean(offsets),
             "offset_stdev_px": stdev(offsets),
@@ -179,6 +186,18 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "profile_median_support_width_px": profile_stats.get("median_support_width_px", 0.0),
             "profile_median_gradient": profile_stats.get("median_gradient", 0.0),
             "profile_median_peak_count": profile_stats.get("median_peak_count", 0.0),
+            "repeat_of": "",
+            "repeat_input_match_max_m": 0.0,
+            "repeat_point_growth": 0,
+            "repeat_length_change_m": 0.0,
+            "repeat_bidirectional_mean_drift_m": 0.0,
+            "repeat_bidirectional_p95_drift_m": 0.0,
+            "repeat_bidirectional_max_drift_m": 0.0,
+            "repeat_applicable_candidate_count": applicable_count,
+            "repeat_warning_delta": 0,
+            "_original_points": original_points,
+            "_applied_points": applied_points,
+            "_selected_warning_count": len(candidate.get("safetyWarnings", []) or []),
         })
     return rows
 
@@ -241,6 +260,99 @@ def geometry_metrics(osm_text: str) -> dict[str, float]:
         "max_local_residual_m": max([abs(value) for value in residuals], default=0.0),
         "residual_flip_rate": sign_flip_rate(residuals, 0.05),
     }
+
+
+def way_coordinates(osm_text: str) -> list[tuple[float, float]]:
+    """Return the longest way as latitude/longitude pairs, or an empty list."""
+    if not osm_text.strip():
+        return []
+    root = ElementTree.fromstring(osm_text)
+    nodes = {
+        node.attrib.get("id", ""): (float(node.attrib["lat"]), float(node.attrib["lon"]))
+        for node in root.findall("node")
+        if node.attrib.get("id") and node.attrib.get("lat") and node.attrib.get("lon")
+    }
+    ways = [
+        [nodes[ref] for ref in (nd.attrib.get("ref", "") for nd in way.findall("nd")) if ref in nodes]
+        for way in root.findall("way")
+    ]
+    usable = [way for way in ways if len(way) >= 2]
+    return max(usable, key=len) if usable else []
+
+
+def annotate_repeat_relationships(rows: list[dict[str, object]], match_tolerance_m: float = 0.10) -> None:
+    """Annotate consecutive slide bundles whose input equals the prior applied geometry."""
+    representatives: dict[str, dict[str, object]] = {}
+    for row in rows:
+        bundle = str(row["bundle"])
+        current = representatives.get(bundle)
+        if current is None or bool(row.get("selected")):
+            representatives[bundle] = row
+    ordered = [representatives[name] for name in sorted(representatives)]
+    for previous, current in zip(ordered, ordered[1:]):
+        previous_applied = previous.get("_applied_points", [])
+        current_original = current.get("_original_points", [])
+        if not previous_applied or not current_original:
+            continue
+        input_drift = bidirectional_polyline_drift(previous_applied, current_original)
+        if input_drift["maximum"] > match_tolerance_m:
+            continue
+        output_drift = bidirectional_polyline_drift(
+            current_original, current.get("_applied_points", []) or current_original)
+        bundle_rows = [row for row in rows if row["bundle"] == current["bundle"]]
+        for row in bundle_rows:
+            row["repeat_of"] = previous["bundle"]
+            row["repeat_input_match_max_m"] = input_drift["maximum"]
+            row["repeat_point_growth"] = int(row.get("applied_nodes", 0)) - int(row.get("original_nodes", 0))
+            row["repeat_length_change_m"] = float(row.get("applied_len_m", 0.0)) \
+                - float(row.get("original_len_m", 0.0))
+            row["repeat_bidirectional_mean_drift_m"] = output_drift["mean"]
+            row["repeat_bidirectional_p95_drift_m"] = output_drift["p95"]
+            row["repeat_bidirectional_max_drift_m"] = output_drift["maximum"]
+            row["repeat_warning_delta"] = int(current.get("_selected_warning_count", 0)) \
+                - int(previous.get("_selected_warning_count", 0))
+
+
+def bidirectional_polyline_drift(
+    left: list[tuple[float, float]],
+    right: list[tuple[float, float]],
+) -> dict[str, float]:
+    """Return symmetric point-to-polyline distances in a shared local metric plane."""
+    if len(left) < 2 or len(right) < 2:
+        return {"mean": 0.0, "p95": 0.0, "maximum": 0.0}
+    latitude = mean(point[0] for point in left + right)
+    longitude = mean(point[1] for point in left + right)
+    left_xy = project_way(left, latitude, longitude)
+    right_xy = project_way(right, latitude, longitude)
+    distances = [point_to_polyline_distance(point, right_xy) for point in left_xy]
+    distances.extend(point_to_polyline_distance(point, left_xy) for point in right_xy)
+    return {
+        "mean": mean(distances),
+        "p95": percentile(distances, 0.95),
+        "maximum": max(distances, default=0.0),
+    }
+
+
+def point_to_polyline_distance(
+    point: tuple[float, float],
+    polyline: list[tuple[float, float]],
+) -> float:
+    """Return minimum Euclidean distance from a point to a polyline."""
+    return min(point_to_segment_distance(point, polyline[index - 1], polyline[index])
+               for index in range(1, len(polyline)))
+
+
+def point_to_segment_distance(point, start, end) -> float:
+    """Return Euclidean point-to-segment distance."""
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    denominator = dx * dx + dy * dy
+    if denominator <= 1e-18:
+        return distance(point, start)
+    fraction = max(0.0, min(1.0,
+        ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / denominator))
+    projection = (start[0] + fraction * dx, start[1] + fraction * dy)
+    return distance(point, projection)
 
 
 def project_way(points: list[tuple[float, float]], lat0: float, lon0: float) -> list[tuple[float, float]]:
@@ -375,6 +487,14 @@ def fnum(value) -> float:
         return 0.0
 
 
+def optional_fnum(value) -> float | None:
+    """Parse an optional float without turning unavailable physical metadata into zero."""
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def mean(values) -> float:
     """Return the arithmetic mean or zero for empty input."""
     values = list(values)
@@ -448,6 +568,14 @@ def print_summary(rows: list[dict[str, object]], top: int) -> None:
             "smoothest={candidate_id} rank={rank} hf95={offset_hf_p95_px:.2f}px "
             "({offset_hf_p95_m:.2f}m) accel95={offset_p95_accel_px:.2f}px snr={snr:.2f}".format(**best_hf)
         )
+        if selected.get("repeat_of"):
+            print(
+                "repeat_of={repeat_of} input_match_max={repeat_input_match_max_m:.3f}m "
+                "drift_mean/p95/max={repeat_bidirectional_mean_drift_m:.3f}/"
+                "{repeat_bidirectional_p95_drift_m:.3f}/{repeat_bidirectional_max_drift_m:.3f}m "
+                "point_growth={repeat_point_growth:+d} applicable={repeat_applicable_candidate_count}".format(
+                    **selected)
+            )
         for row in group[:top]:
             print(
                 "  #{rank:>2} {candidate_id:<30} sel={selected!s:<5} "

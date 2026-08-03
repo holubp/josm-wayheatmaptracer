@@ -583,7 +583,22 @@ public final class TileHeatmapSampler {
     }
 
     static double metersPerPixel(int zoom, double latitude) {
-        return Math.cos(Math.toRadians(latitude)) * 156543.03392804097 / (Math.pow(2.0, zoom) * (TILE_SIZE / 256.0));
+        return metersPerPixel(zoom, latitude, TILE_SIZE);
+    }
+
+    /** Returns Web Mercator ground resolution for an explicit native tile size. */
+    static double metersPerPixel(int zoom, double latitude, int tileSize) {
+        if (zoom < 0 || zoom > 30) {
+            throw new IllegalArgumentException("Tile zoom must be between 0 and 30");
+        }
+        if (!Double.isFinite(latitude) || Math.abs(latitude) > 85.05112878) {
+            throw new IllegalArgumentException("Tile latitude must be finite and inside Web Mercator bounds");
+        }
+        if (tileSize <= 0) {
+            throw new IllegalArgumentException("Native tile size must be positive");
+        }
+        return Math.cos(Math.toRadians(latitude)) * 156543.03392804097
+            / (Math.pow(2.0, zoom) * (tileSize / 256.0));
     }
 
     private Point2D.Double toWorldPixel(EastNorth eastNorth, int zoom) {

@@ -3,7 +3,6 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +15,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
  * Selects a stable centerline inside one longitudinal corridor using second-order dynamic programming.
  */
 public final class CorridorCenterlineOptimizer {
+    private static final Comparator<PairState> PAIR_STATE_COMPARATOR = Comparator
+        .comparingDouble(PairState::cost)
+        .thenComparingDouble(PairState::currentOffset)
+        .thenComparingDouble(PairState::previousOffset);
+
     private final CorridorOptimizationParameters parameters;
 
     /**
@@ -167,7 +171,9 @@ public final class CorridorCenterlineOptimizer {
             optimizedOffsets, points, sourcePixel, endpointApproaches);
         return new OptimizationResult(optimizedOffsets, points, totalCost, costs, inCorridorFraction, stability,
             quality, endpointApproaches, exactSolution.maximumOffsetStates(), exactSolution.maximumPairStates(),
-            exactSolution.transitionEvaluations());
+            exactSolution.transitionEvaluations(), exactSolution.profileCostEvaluations(),
+            exactSolution.pointTableEntries(), exactSolution.adjacentGeometryEntries(),
+            exactSolution.retainedPairStateAllocations());
     }
 
     private ExactSolution solveExact(
@@ -180,69 +186,87 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,
         EndpointApproachModel endpointApproaches
     ) {
+        List<List<OffsetState>> stateTables = buildStateTables(track, profiles, allowed, sourcePixel,
+            junctionContext, scaleEvidence, tube, endpointApproaches);
+        long profileCostEvaluations = stateTables.stream().mapToLong(List::size).sum();
+        long pointTableEntries = profileCostEvaluations;
         if (profiles.size() == 1) {
-            double best = allowed.get(0).stream().min(Comparator
-                .comparingDouble((Double offset) -> profileCost(track, profiles, 0, offset, sourcePixel,
-                    junctionContext, scaleEvidence, tube, endpointApproaches))
-                .thenComparingDouble(Double::doubleValue)).orElseThrow();
-            return new ExactSolution(List.of(best), allowed.get(0).size(), allowed.get(0).size(),
-                allowed.get(0).size());
+            OffsetState best = stateTables.get(0).stream().min(Comparator
+                .comparingDouble(OffsetState::profileCost)
+                .thenComparingDouble(OffsetState::offset)).orElseThrow();
+            int stateCount = stateTables.get(0).size();
+            return new ExactSolution(List.of(best.offset()), stateCount, stateCount, stateCount,
+                profileCostEvaluations, pointTableEntries, 0L, 0L);
         }
 
-        Map<PairKey, PairState> states = new LinkedHashMap<>();
+        PairState[][] states = new PairState[stateTables.get(0).size()][stateTables.get(1).size()];
         long transitionEvaluations = 0L;
+        long adjacentGeometryEntries = 0L;
+        long retainedPairStateAllocations = 0L;
         int maximumOffsetStates = allowed.stream().mapToInt(List::size).max().orElse(0);
         double spacing = profileSpacing(profiles, 1, sourcePixel);
         double spacingSourcePixels = spacing / sourcePixel;
-        for (double first : allowed.get(0)) {
-            double firstCost = profileCost(track, profiles, 0, first, sourcePixel, junctionContext,
-                scaleEvidence, tube, endpointApproaches);
-            for (double second : allowed.get(1)) {
+        AdjacentGeometry firstGeometry = adjacentGeometry(
+            stateTables.get(0), stateTables.get(1), profiles, tube, track, 1, spacing);
+        adjacentGeometryEntries += firstGeometry.entryCount();
+        for (int firstIndex = 0; firstIndex < stateTables.get(0).size(); firstIndex++) {
+            OffsetState first = stateTables.get(0).get(firstIndex);
+            for (int secondIndex = 0; secondIndex < stateTables.get(1).size(); secondIndex++) {
+                OffsetState second = stateTables.get(1).get(secondIndex);
                 transitionEvaluations++;
-                Point2D.Double firstPoint = pointFor(profiles.get(0), first);
-                Point2D.Double secondPoint = pointFor(profiles.get(1), second);
-                double heading = heading(firstPoint, secondPoint);
-                double referenceHeading = tubeHeading(profiles, tube, 0, 1);
-                double continuity = continuityWeight(track, 1) * square((second - first) / spacing);
-                double cost = firstCost + profileCost(track, profiles, 1, second, sourcePixel,
-                    junctionContext, scaleEvidence, tube, endpointApproaches) + continuity;
-                PairState candidate = new PairState(1, first, second, heading, referenceHeading,
+                double cost = first.profileCost() + second.profileCost()
+                    + firstGeometry.continuityCost(firstIndex, secondIndex);
+                requireFiniteCost(cost, 1);
+                states[firstIndex][secondIndex] = new PairState(1, first.offset(), second.offset(),
+                    firstGeometry.heading(firstIndex, secondIndex), firstGeometry.referenceHeading(),
                     spacingSourcePixels, cost, null);
-                retainBest(states, new PairKey(first, second), candidate);
+                retainedPairStateAllocations++;
             }
         }
-        int maximumPairStates = states.size();
+        int maximumPairStates = countStates(states);
 
         for (int profileIndex = 2; profileIndex < profiles.size(); profileIndex++) {
-            Map<PairKey, PairState> next = new LinkedHashMap<>();
+            List<OffsetState> previousOffsets = stateTables.get(profileIndex - 1);
+            List<OffsetState> currentOffsets = stateTables.get(profileIndex);
+            PairState[][] next = new PairState[previousOffsets.size()][currentOffsets.size()];
             spacing = profileSpacing(profiles, profileIndex, sourcePixel);
             spacingSourcePixels = spacing / sourcePixel;
-            for (PairState previous : states.values()) {
-                for (double offset : allowed.get(profileIndex)) {
-                    transitionEvaluations++;
-                    Point2D.Double previousPoint = pointFor(profiles.get(profileIndex - 1),
-                        previous.currentOffset());
-                    Point2D.Double currentPoint = pointFor(profiles.get(profileIndex), offset);
-                    double heading = heading(previousPoint, currentPoint);
-                    double referenceHeading = tubeHeading(profiles, tube, profileIndex - 1, profileIndex);
-                    double continuity = continuityWeight(track, profileIndex)
-                        * square((offset - previous.currentOffset()) / spacing);
-                    double acceleration = accelerationWeight(track, profileIndex, scaleEvidence)
-                        * geometricCurvatureCost(heading, referenceHeading, previous, spacingSourcePixels);
-                    double cost = previous.cost()
-                        + profileCost(track, profiles, profileIndex, offset, sourcePixel, junctionContext,
-                            scaleEvidence, tube, endpointApproaches)
-                        + continuity + acceleration;
-                    PairState candidate = new PairState(profileIndex, previous.currentOffset(), offset,
-                        heading, referenceHeading, spacingSourcePixels, cost, previous);
-                    retainBest(next, new PairKey(previous.currentOffset(), offset), candidate);
+            AdjacentGeometry geometry = adjacentGeometry(previousOffsets, currentOffsets,
+                profiles, tube, track, profileIndex, spacing);
+            adjacentGeometryEntries += geometry.entryCount();
+            double profileAccelerationWeight = accelerationWeight(track, profileIndex, scaleEvidence);
+            for (int beforeIndex = 0; beforeIndex < states.length; beforeIndex++) {
+                for (int previousIndex = 0; previousIndex < states[beforeIndex].length; previousIndex++) {
+                    PairState previous = states[beforeIndex][previousIndex];
+                    if (previous == null) {
+                        continue;
+                    }
+                    for (int currentIndex = 0; currentIndex < currentOffsets.size(); currentIndex++) {
+                        OffsetState current = currentOffsets.get(currentIndex);
+                        transitionEvaluations++;
+                        double candidateHeading = geometry.heading(previousIndex, currentIndex);
+                        double acceleration = profileAccelerationWeight
+                            * geometricCurvatureCost(candidateHeading, geometry.referenceHeading(),
+                                previous, spacingSourcePixels);
+                        double cost = previous.cost()
+                            + current.profileCost()
+                            + geometry.continuityCost(previousIndex, currentIndex) + acceleration;
+                        requireFiniteCost(cost, profileIndex);
+                        PairState existing = next[previousIndex][currentIndex];
+                        if (existing == null || cost < existing.cost()) {
+                            next[previousIndex][currentIndex] = new PairState(profileIndex,
+                                previous.currentOffset(), current.offset(), candidateHeading,
+                                geometry.referenceHeading(), spacingSourcePixels, cost, previous);
+                            retainedPairStateAllocations++;
+                        }
+                    }
                 }
             }
             states = next;
-            maximumPairStates = Math.max(maximumPairStates, states.size());
+            maximumPairStates = Math.max(maximumPairStates, countStates(states));
         }
 
-        PairState best = states.values().stream().min(pairStateComparator()).orElseThrow();
+        PairState best = bestState(states);
         Double[] result = new Double[profiles.size()];
         PairState cursor = best;
         while (cursor != null) {
@@ -250,7 +274,90 @@ public final class CorridorCenterlineOptimizer {
             result[cursor.profileIndex() - 1] = cursor.previousOffset();
             cursor = cursor.predecessor();
         }
-        return new ExactSolution(List.of(result), maximumOffsetStates, maximumPairStates, transitionEvaluations);
+        return new ExactSolution(List.of(result), maximumOffsetStates, maximumPairStates, transitionEvaluations,
+            profileCostEvaluations, pointTableEntries, adjacentGeometryEntries, retainedPairStateAllocations);
+    }
+
+    private List<List<OffsetState>> buildStateTables(
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        List<List<Double>> allowed,
+        double sourcePixel,
+        JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence,
+        LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches
+    ) {
+        List<List<OffsetState>> tables = new ArrayList<>(profiles.size());
+        for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
+            List<OffsetState> states = new ArrayList<>(allowed.get(profileIndex).size());
+            for (double offset : allowed.get(profileIndex)) {
+                double cost = profileCost(track, profiles, profileIndex, offset, sourcePixel,
+                    junctionContext, scaleEvidence, tube, endpointApproaches);
+                requireFiniteCost(cost, profileIndex);
+                states.add(new OffsetState(offset, pointFor(profiles.get(profileIndex), offset), cost));
+            }
+            tables.add(List.copyOf(states));
+        }
+        return List.copyOf(tables);
+    }
+
+    private void requireFiniteCost(double cost, int profileIndex) {
+        if (!Double.isFinite(cost)) {
+            throw new IllegalStateException("Corridor optimizer produced a non-finite cost at profile "
+                + profileIndex);
+        }
+    }
+
+    private AdjacentGeometry adjacentGeometry(
+        List<OffsetState> previous,
+        List<OffsetState> current,
+        List<CorridorProfile> profiles,
+        LongitudinalCorridorTube tube,
+        CorridorTrack track,
+        int profileIndex,
+        double spacing
+    ) {
+        double[][] headings = new double[previous.size()][current.size()];
+        double[][] continuityCosts = new double[previous.size()][current.size()];
+        double continuityWeight = continuityWeight(track, profileIndex);
+        for (int previousIndex = 0; previousIndex < previous.size(); previousIndex++) {
+            for (int currentIndex = 0; currentIndex < current.size(); currentIndex++) {
+                headings[previousIndex][currentIndex] = heading(
+                    previous.get(previousIndex).point(), current.get(currentIndex).point());
+                continuityCosts[previousIndex][currentIndex] = continuityWeight * square(
+                    (current.get(currentIndex).offset() - previous.get(previousIndex).offset()) / spacing);
+            }
+        }
+        return new AdjacentGeometry(headings, continuityCosts,
+            tubeHeading(profiles, tube, profileIndex - 1, profileIndex));
+    }
+
+    private int countStates(PairState[][] states) {
+        int count = 0;
+        for (PairState[] row : states) {
+            for (PairState state : row) {
+                if (state != null) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private PairState bestState(PairState[][] states) {
+        PairState best = null;
+        for (PairState[] row : states) {
+            for (PairState state : row) {
+                if (state != null && (best == null || PAIR_STATE_COMPARATOR.compare(state, best) < 0)) {
+                    best = state;
+                }
+            }
+        }
+        if (best == null) {
+            throw new IllegalStateException("Exact corridor optimizer retained no pair state");
+        }
+        return best;
     }
 
     private double profileCost(
@@ -267,19 +374,6 @@ public final class CorridorCenterlineOptimizer {
         return dataCost(track, profiles.get(profileIndex), profileIndex, offset, sourcePixel, scaleEvidence,
             tube.at(profileIndex), heatmapWeight(endpointApproaches, profileIndex))
             + constraintCost(profileIndex, offset, junctionContext, endpointApproaches, sourcePixel);
-    }
-
-    private void retainBest(Map<PairKey, PairState> states, PairKey key, PairState candidate) {
-        PairState existing = states.get(key);
-        if (existing == null || pairStateComparator().compare(candidate, existing) < 0) {
-            states.put(key, candidate);
-        }
-    }
-
-    private Comparator<PairState> pairStateComparator() {
-        return Comparator.comparingDouble(PairState::cost)
-            .thenComparingDouble(PairState::currentOffset)
-            .thenComparingDouble(PairState::previousOffset);
     }
 
     private double tubeHeading(
@@ -675,6 +769,10 @@ public final class CorridorCenterlineOptimizer {
      * @param maximumOffsetStates maximum lateral states retained at any profile
      * @param maximumPairStates maximum exact second-order pair states retained at any profile
      * @param transitionEvaluations number of evaluated exact DP transitions
+     * @param profileCostEvaluations number of profile/offset costs evaluated before the DP
+     * @param pointTableEntries number of profile/offset points constructed before the DP
+     * @param adjacentGeometryEntries number of adjacent offset pairs precomputed
+     * @param retainedPairStateAllocations number of pair states allocated after strict improvement
      */
     public record OptimizationResult(
         List<Double> offsetsPx,
@@ -687,7 +785,11 @@ public final class CorridorCenterlineOptimizer {
         EndpointApproachModel endpointApproaches,
         int maximumOffsetStates,
         int maximumPairStates,
-        long transitionEvaluations
+        long transitionEvaluations,
+        long profileCostEvaluations,
+        long pointTableEntries,
+        long adjacentGeometryEntries,
+        long retainedPairStateAllocations
     ) {
         /** Makes optimizer output collections immutable. */
         public OptimizationResult {
@@ -700,7 +802,7 @@ public final class CorridorCenterlineOptimizer {
 
         static OptimizationResult empty() {
             return new OptimizationResult(List.of(), List.of(), Double.POSITIVE_INFINITY, List.of(), 0.0, 0.0,
-                CorridorQuality.empty(), new EndpointApproachModel(List.of()), 0, 0, 0L);
+                CorridorQuality.empty(), new EndpointApproachModel(List.of()), 0, 0, 0L, 0L, 0L, 0L, 0L);
         }
     }
 
@@ -738,7 +840,25 @@ public final class CorridorCenterlineOptimizer {
     ) {
     }
 
-    private record PairKey(double previousOffset, double currentOffset) {
+    private record OffsetState(double offset, Point2D.Double point, double profileCost) {
+    }
+
+    private record AdjacentGeometry(
+        double[][] headings,
+        double[][] continuityCosts,
+        double referenceHeading
+    ) {
+        double heading(int previousIndex, int currentIndex) {
+            return headings[previousIndex][currentIndex];
+        }
+
+        double continuityCost(int previousIndex, int currentIndex) {
+            return continuityCosts[previousIndex][currentIndex];
+        }
+
+        long entryCount() {
+            return headings.length == 0 ? 0L : (long) headings.length * headings[0].length;
+        }
     }
 
     private record PairState(
@@ -757,7 +877,11 @@ public final class CorridorCenterlineOptimizer {
         List<Double> offsetsPx,
         int maximumOffsetStates,
         int maximumPairStates,
-        long transitionEvaluations
+        long transitionEvaluations,
+        long profileCostEvaluations,
+        long pointTableEntries,
+        long adjacentGeometryEntries,
+        long retainedPairStateAllocations
     ) {
     }
 

@@ -72,6 +72,29 @@ public final class CorridorTracker {
         return deduplicate(ranked, sourcePixel);
     }
 
+    /**
+     * Tracks one explicit seed for deterministic direction and bridge-contract tests.
+     *
+     * @param profiles extracted corridor profiles
+     * @param seedProfile profile containing the seed band
+     * @param seed seed band
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @return track assembled in both longitudinal directions
+     */
+    CorridorTrack trackFromSeed(
+        List<CorridorProfile> profiles,
+        int seedProfile,
+        CorridorBand seed,
+        double sourcePixelSizePx
+    ) {
+        if (profiles == null || profiles.isEmpty() || seedProfile < 0 || seedProfile >= profiles.size()) {
+            throw new IllegalArgumentException("Explicit corridor seed must identify a profile in a non-empty list");
+        }
+        PathState state = solveSeed(profiles, seedProfile, seed, validSourcePixel(sourcePixelSizePx), Map.of());
+        return new CorridorTrack("seed-track", state.points(), state.score(),
+            state.points().size() / (double) profiles.size(), false, List.of(), "");
+    }
+
     private PathState solveSeed(
         List<CorridorProfile> profiles,
         int seedProfile,
@@ -88,8 +111,7 @@ public final class CorridorTracker {
             scaleEvidence);
         PathState backward = advance(profiles, seedState, seedProfile - 1, -1, -1, sourcePixel,
             scaleEvidence);
-        Map<Integer, CorridorTrackPoint> merged = new LinkedHashMap<>(backward.points());
-        merged.putAll(forward.points());
+        Map<Integer, CorridorTrackPoint> merged = mergeTrackPoints(backward.points(), forward.points());
         return new PathState(forward.lastProfileIndex(), forward.previousProfileIndex(), forward.band(),
             forward.centerPoint(), forward.previousCenterPoint(), forward.previousOffsetPx(),
             forward.score() + backward.score() - bandReward(seed), 0, merged);
@@ -188,9 +210,40 @@ public final class CorridorTracker {
         double cost = displacement * 0.75 + widthChange * 0.35 + acceleration * 0.18
             + uncertainty * 0.10 + state.gapCount() * 0.35;
         Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>(state.points());
-        points.put(profileIndex, new CorridorTrackPoint(profileIndex, observation, state.gapCount() > 0));
+        boolean bridged = state.gapCount() > 0;
+        if (bridged && direction < 0) {
+            CorridorTrackPoint higherBoundary = points.get(state.lastProfileIndex());
+            if (higherBoundary == null) {
+                throw new IllegalStateException("Backward bridge lost its higher-index observed boundary");
+            }
+            points.put(state.lastProfileIndex(), new CorridorTrackPoint(
+                higherBoundary.profileIndex(), higherBoundary.band(), true));
+        }
+        points.put(profileIndex, new CorridorTrackPoint(profileIndex, observation, bridged && direction > 0));
         return new PathState(profileIndex, state.lastProfileIndex(), observation, center, state.centerPoint(),
             state.band().centerOffsetPx(), state.score() + bandReward(observation) - cost, 0, points);
+    }
+
+    private Map<Integer, CorridorTrackPoint> mergeTrackPoints(
+        Map<Integer, CorridorTrackPoint> backward,
+        Map<Integer, CorridorTrackPoint> forward
+    ) {
+        Map<Integer, CorridorTrackPoint> merged = new LinkedHashMap<>(backward);
+        for (Map.Entry<Integer, CorridorTrackPoint> entry : forward.entrySet()) {
+            CorridorTrackPoint existing = merged.get(entry.getKey());
+            if (existing == null) {
+                merged.put(entry.getKey(), entry.getValue());
+                continue;
+            }
+            CorridorTrackPoint incoming = entry.getValue();
+            if (!existing.band().id().equals(incoming.band().id())
+                || Math.abs(existing.band().centerOffsetPx() - incoming.band().centerOffsetPx()) > 1e-9) {
+                throw new IllegalStateException("Forward and backward corridor tracks disagree at their seed");
+            }
+            merged.put(entry.getKey(), new CorridorTrackPoint(entry.getKey(), existing.band(),
+                existing.bridged() || incoming.bridged()));
+        }
+        return merged;
     }
 
     private double predictedOffset(PathState state, List<CorridorProfile> profiles, int profileIndex) {

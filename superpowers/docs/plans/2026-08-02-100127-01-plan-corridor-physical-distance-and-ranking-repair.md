@@ -2,6 +2,8 @@
 
 **Status:** Implemented and verified for release `v0.16.2`.
 
+**Corrective follow-up:** The visible rendered-layer pixel-to-ground naming and normalization issue discovered after this release is addressed by [`2026-08-02-221142-01-plan-visible-rendered-pixel-ground-scale-repair.md`](2026-08-02-221142-01-plan-visible-rendered-pixel-ground-scale-repair.md). This note does not alter the historical `v0.16.2` status or findings.
+
 **Target release:** `v0.16.2` bugfix release. Do not change the legacy tracker or palette calibration in this work.
 
 **Goal:** Repair the `v0.16.x` corridor-aware regression by carrying real cumulative ground distance independently of raster coordinates, requiring longitudinally complete evidence before Apply, ranking measurable candidate quality ahead of detector priors within a source tier, checking junction crossings on final preview geometry, and exporting immutable before/after diagnostics.

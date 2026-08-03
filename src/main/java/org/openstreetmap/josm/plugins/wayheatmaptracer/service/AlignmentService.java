@@ -69,6 +69,8 @@ public final class AlignmentService {
     private static final String AGGREGATED_COLOR_MODE = "all-colors-combined";
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
     private static final double REFERENCE_VIEW_METERS_PER_PIXEL = TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
+    private static final double REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL =
+        TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
     private static final int MIN_EFFECTIVE_HALF_WIDTH_PX = 6;
     private static final int MAX_EFFECTIVE_HALF_WIDTH_PX = 120;
     private static final int MIN_EFFECTIVE_STEP_PX = 1;
@@ -146,16 +148,19 @@ public final class AlignmentService {
         long t1 = System.nanoTime();
 
         List<String> colorModes = detectionColorModes(config);
-        EffectiveSampling effectiveSampling = effectiveSampling(config, capture.viewMetersPerPixel());
+        EffectiveSampling effectiveSampling = effectiveSampling(config, capture, sourcePolyline);
         PluginLog.verbose(
-            "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; target halfWidth=%.2f m step=%.2f m; effective halfWidth=%d px step=%d px at view %.3f m/px.",
+            "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; measured halfWidth=%.2f m "
+                + "step=%.2f m; projectionScale=%.3f units/view-px groundScale=%.3f m/view-px "
+                + "trackerNormalization=%.2f raster-px (%s).",
             config.crossSectionHalfWidthPx(),
             config.crossSectionStepPx(),
-            effectiveSampling.targetHalfWidthMeters(),
-            effectiveSampling.targetStepMeters(),
-            effectiveSampling.effectiveHalfWidthPx(),
-            effectiveSampling.effectiveStepPx(),
-            effectiveSampling.viewMetersPerPixel()
+            effectiveSampling.effectiveHalfWidthGroundMeters(),
+            effectiveSampling.effectiveStepGroundMeters(),
+            capture.projectionUnitsPerViewPixel(),
+            effectiveSampling.samplingScale().groundMetersPerViewPixel(),
+            effectiveSampling.samplingScale().trackerNormalizationRasterPx(),
+            effectiveSampling.samplingScale().trackerNormalizationMethod()
         );
         DetectionResult detection = detectCandidates(raster, sourcePolyline, capture.sourceRasterPolyline(), capture, selection,
             config, colorModes, effectiveSampling);
@@ -409,11 +414,10 @@ public final class AlignmentService {
         List<ProfileSamplingAnchor> samplingAnchors = ProfileSamplingAnchor.pair(
             sourcePolyline, sourceRasterPolyline);
         List<CenterlineCandidate> candidates = new ArrayList<>();
-        StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
             "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,raw_center_px,b3_center_px,b5_center_px,scale_offset_rms_px,scale_agreement,center_uncertainty_px,filter_kernel,filter_power,filter_blend,strong_signal_gate_floor,strong_signal_gate_width,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
+            "detector,intensity_source,components,profile_index,anchor_raster_x,anchor_raster_y,normal_raster_x,normal_raster_y,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
         StringBuilder profileIntensityCsv = new StringBuilder(
             "detector,profile_index,offset_px,native_intensity,b3_intensity,b5_intensity,normalized_intensity,inside_raster\n");
         StringBuilder corridorBandsCsv = new StringBuilder(
@@ -426,24 +430,28 @@ public final class AlignmentService {
         StringBuilder corridorTubeCsv = new StringBuilder(corridorTubeCsvHeader());
         StringBuilder associationDecisionsCsv = new StringBuilder(associationDecisionsCsvHeader());
         StringBuilder endpointApproachesCsv = new StringBuilder(endpointApproachesCsvHeader());
+        StringBuilder detectorPerformanceCsv = new StringBuilder(detectorPerformanceCsvHeader());
         int modeIndex = 0;
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int outsideRasterProfiles = 0;
         int totalProfiles = 0;
         ProfileSpacingStats profileSpacing = ProfileSpacingStats.empty();
         for (String colorMode : colorModes) {
+            long detectorStart = System.nanoTime();
+            long samplingStart = System.nanoTime();
             boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
             MultiScaleProfileSet profileSet = multiScale
                 ? sampler.sampleMultiScaleProfilesOnAnchors(raster, samplingAnchors,
                     effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
                     RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource,
-                    effectiveSampling.sourcePixelSizeRasterPx())
+                    effectiveSampling.trackerNormalizationRasterPx())
                 : null;
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
                 : sampler.sampleProfilesOnAnchors(raster, samplingAnchors,
                     effectiveSampling.effectiveHalfWidthPx(), effectiveSampling.effectiveStepPx(), colorMode,
                     RenderedHeatmapSampler.RASTER_SCALE, 1.0, intensitySource);
+            long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
@@ -453,6 +461,8 @@ public final class AlignmentService {
                 ? trackProfiles(profileSet, effectiveSampling, config, selection, colorMode)
                 : trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
+            long outerDiagnosticStart = System.nanoTime();
+            int profileDiagnosticCharactersBefore = profilePeaksCsv.length() + paletteSamplesCsv.length();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
@@ -463,10 +473,11 @@ public final class AlignmentService {
             endpointApproachesCsv.append(tracking.endpointApproachesCsv());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
-            if (modeIndex++ > 0) {
-                profileDiagnostics.append(',');
-            }
-            profileDiagnostics.append(profilesToJson(colorMode, intensitySource, profiles, colorCandidates));
+            long outerDiagnosticNanos = System.nanoTime() - outerDiagnosticStart;
+            int profileDiagnosticCharacters = profilePeaksCsv.length() + paletteSamplesCsv.length()
+                - profileDiagnosticCharactersBefore;
+            modeIndex++;
+            long projectionStart = System.nanoTime();
             for (CenterlineCandidate candidate : colorCandidates) {
                 CenterlineCandidate withMode = candidate
                     .withId(colorMode + "/" + candidate.id())
@@ -474,6 +485,11 @@ public final class AlignmentService {
                 withMode = withMode.withEastNorthPoints(projectRenderedCandidate(capture, withMode.screenPoints()));
                 candidates.add(withMode);
             }
+            long projectionNanos = System.nanoTime() - projectionStart;
+            DetectorPerformance performance = tracking.performance().withOuterPhases(
+                samplingNanos, outerDiagnosticNanos, projectionNanos,
+                System.nanoTime() - detectorStart, profileDiagnosticCharacters);
+            appendDetectorPerformance(detectorPerformanceCsv, colorMode, performance);
             PluginLog.verbose("Color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
         java.util.Comparator<CenterlineCandidate> candidateComparator = useCalibratedDetectorRanking(config)
@@ -483,11 +499,11 @@ public final class AlignmentService {
                 .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
         List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
-        return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
+        return new DetectionResult(sorted, "[]",
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
-            endpointApproachesCsv.toString(),
+            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
             outsideRasterProfiles, totalProfiles, profileSpacing);
     }
 
@@ -501,11 +517,10 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling
     ) {
         List<CenterlineCandidate> candidates = new ArrayList<>();
-        StringBuilder profileDiagnostics = new StringBuilder("[");
         StringBuilder profilePeaksCsv = new StringBuilder(
             "detector,intensity_source,components,profile_index,peak_index,offset_px,intensity,prominence,noise_floor,max_profile_intensity,support_width_px,gradient_strength,gradient_balance,native_filtered_agreement,raw_center_px,b3_center_px,b5_center_px,scale_offset_rms_px,scale_agreement,center_uncertainty_px,filter_kernel,filter_power,filter_blend,strong_signal_gate_floor,strong_signal_gate_width,synthetic_center\n");
         StringBuilder paletteSamplesCsv = new StringBuilder(
-            "detector,intensity_source,components,profile_index,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
+            "detector,intensity_source,components,profile_index,anchor_raster_x,anchor_raster_y,normal_raster_x,normal_raster_y,anchor_within_raster,strongest_intensity,strongest_prominence,noise_floor,max_profile_intensity,strongest_gradient_strength,strongest_gradient_balance,strongest_scale_agreement,strongest_center_uncertainty_px,peak_count,synthetic_center_count\n");
         StringBuilder profileIntensityCsv = new StringBuilder(
             "detector,profile_index,offset_px,native_intensity,b3_intensity,b5_intensity,normalized_intensity,inside_raster\n");
         StringBuilder corridorBandsCsv = new StringBuilder(
@@ -518,12 +533,15 @@ public final class AlignmentService {
         StringBuilder corridorTubeCsv = new StringBuilder(corridorTubeCsvHeader());
         StringBuilder associationDecisionsCsv = new StringBuilder(associationDecisionsCsvHeader());
         StringBuilder endpointApproachesCsv = new StringBuilder(endpointApproachesCsvHeader());
+        StringBuilder detectorPerformanceCsv = new StringBuilder(detectorPerformanceCsvHeader());
         IntensitySamplingMode intensitySource = intensitySamplingMode(config);
         int modeIndex = 0;
         int outsideRasterProfiles = 0;
         int totalProfiles = 0;
         ProfileSpacingStats profileSpacing = ProfileSpacingStats.empty();
         if (shouldRunAggregatedSourceDetector(config, mosaics)) {
+            long detectorStart = System.nanoTime();
+            long samplingStart = System.nanoTime();
             boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
             MultiScaleProfileSet profileSet = multiScale
                 ? tileSampler.sampleAggregatedMultiScaleProfiles(mosaics, mosaic.zoom(), sourcePolyline)
@@ -531,6 +549,7 @@ public final class AlignmentService {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
                 : tileSampler.sampleAggregatedProfiles(mosaics, mosaic.zoom(), sourcePolyline);
+            long samplingNanos = System.nanoTime() - samplingStart;
             totalProfiles = profiles.size();
             outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
             profileSpacing = ProfileSpacingStats.from(profiles);
@@ -538,6 +557,8 @@ public final class AlignmentService {
                 ? trackProfiles(profileSet, effectiveSampling, config, selection, AGGREGATED_COLOR_MODE)
                 : trackProfiles(profiles, effectiveSampling, config, selection, AGGREGATED_COLOR_MODE);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
+            long outerDiagnosticStart = System.nanoTime();
+            int profileDiagnosticCharactersBefore = profilePeaksCsv.length() + paletteSamplesCsv.length();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
@@ -548,7 +569,10 @@ public final class AlignmentService {
             endpointApproachesCsv.append(tracking.endpointApproachesCsv());
             appendProfilePeaksCsv(profilePeaksCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, AGGREGATED_COLOR_MODE, intensitySource, profiles);
-            profileDiagnostics.append(profilesToJson(AGGREGATED_COLOR_MODE, intensitySource, profiles, colorCandidates));
+            long outerDiagnosticNanos = System.nanoTime() - outerDiagnosticStart;
+            int profileDiagnosticCharacters = profilePeaksCsv.length() + paletteSamplesCsv.length()
+                - profileDiagnosticCharactersBefore;
+            long projectionStart = System.nanoTime();
             for (CenterlineCandidate candidate : colorCandidates) {
                 CenterlineCandidate withMode = candidate
                     .withId(AGGREGATED_COLOR_MODE + "/" + candidate.id())
@@ -557,11 +581,18 @@ public final class AlignmentService {
                 withMode = withMode.withEastNorthPoints(tileSampler.projectCandidate(mosaic, withMode.screenPoints()));
                 candidates.add(withMode);
             }
+            long projectionNanos = System.nanoTime() - projectionStart;
+            appendDetectorPerformance(detectorPerformanceCsv, AGGREGATED_COLOR_MODE,
+                tracking.performance().withOuterPhases(
+                    samplingNanos, outerDiagnosticNanos, projectionNanos,
+                    System.nanoTime() - detectorStart, profileDiagnosticCharacters));
             modeIndex++;
             PluginLog.verbose("Aggregated source color mode '%s' produced %d ridge candidates from colors %s.",
                 AGGREGATED_COLOR_MODE, colorCandidates.size(), BASE_SOURCE_COLORS);
         }
         for (String colorMode : colorModes) {
+            long detectorStart = System.nanoTime();
+            long samplingStart = System.nanoTime();
             boolean multiScale = trackerMode(config) == TrackerMode.CORRIDOR_AWARE;
             MultiScaleProfileSet profileSet = multiScale
                 ? tileSampler.sampleMultiScaleProfiles(mosaic, sourcePolyline, colorMode, config)
@@ -569,6 +600,7 @@ public final class AlignmentService {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles = multiScale
                 ? profileSet.levelZeroProfiles()
                 : tileSampler.sampleProfiles(mosaic, sourcePolyline, colorMode, config);
+            long samplingNanos = System.nanoTime() - samplingStart;
             if (modeIndex == 0) {
                 totalProfiles = profiles.size();
                 outsideRasterProfiles = (int) profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count();
@@ -578,6 +610,8 @@ public final class AlignmentService {
                 ? trackProfiles(profileSet, effectiveSampling, config, selection, colorMode)
                 : trackProfiles(profiles, effectiveSampling, config, selection, colorMode);
             List<CenterlineCandidate> colorCandidates = tracking.candidates();
+            long outerDiagnosticStart = System.nanoTime();
+            int profileDiagnosticCharactersBefore = profilePeaksCsv.length() + paletteSamplesCsv.length();
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
@@ -588,10 +622,11 @@ public final class AlignmentService {
             endpointApproachesCsv.append(tracking.endpointApproachesCsv());
             appendProfilePeaksCsv(profilePeaksCsv, colorMode, intensitySource, profiles);
             appendPaletteSamplesCsv(paletteSamplesCsv, colorMode, intensitySource, profiles);
-            if (modeIndex++ > 0) {
-                profileDiagnostics.append(',');
-            }
-            profileDiagnostics.append(profilesToJson(colorMode, intensitySource, profiles, colorCandidates));
+            long outerDiagnosticNanos = System.nanoTime() - outerDiagnosticStart;
+            int profileDiagnosticCharacters = profilePeaksCsv.length() + paletteSamplesCsv.length()
+                - profileDiagnosticCharactersBefore;
+            modeIndex++;
+            long projectionStart = System.nanoTime();
             for (CenterlineCandidate candidate : colorCandidates) {
                 CenterlineCandidate withMode = candidate
                     .withId(colorMode + "/" + candidate.id())
@@ -599,6 +634,11 @@ public final class AlignmentService {
                 withMode = withMode.withEastNorthPoints(tileSampler.projectCandidate(mosaic, withMode.screenPoints()));
                 candidates.add(withMode);
             }
+            long projectionNanos = System.nanoTime() - projectionStart;
+            appendDetectorPerformance(detectorPerformanceCsv, colorMode,
+                tracking.performance().withOuterPhases(
+                    samplingNanos, outerDiagnosticNanos, projectionNanos,
+                    System.nanoTime() - detectorStart, profileDiagnosticCharacters));
             PluginLog.verbose("Fixed tile color mode '%s' produced %d ridge candidates.", colorMode, colorCandidates.size());
         }
         java.util.Comparator<CenterlineCandidate> candidateComparator = useCalibratedDetectorRanking(config)
@@ -608,11 +648,11 @@ public final class AlignmentService {
                 .thenComparing(java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             : java.util.Comparator.comparingDouble(CenterlineCandidate::score).reversed();
         List<CenterlineCandidate> sorted = candidates.stream().sorted(candidateComparator).toList();
-        return new DetectionResult(sorted, profileDiagnostics.append(']').toString(),
+        return new DetectionResult(sorted, "[]",
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
-            endpointApproachesCsv.toString(),
+            endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
             outsideRasterProfiles, totalProfiles, profileSpacing);
     }
 
@@ -639,13 +679,23 @@ public final class AlignmentService {
         TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
         PluginLog.verbose("Tracking %d profiles with %s.", profiles.size(), trackerMode.name());
         return switch (trackerMode) {
-            case LEGACY_V02 -> new TrackerOutput(
-                ridgeTracker.track(profiles, effectiveSampling.sourcePixelSizeRasterPx()), "", "", "", "", "",
-                "", "", "");
+            case LEGACY_V02 -> legacyTrackerOutput(profiles, effectiveSampling.trackerNormalizationRasterPx());
             case CORRIDOR_AWARE -> corridorTrackerOutput(detector, profiles,
-                corridorAwareTracker.trackDetailed(profiles, effectiveSampling.sourcePixelSizeRasterPx(),
+                corridorAwareTracker.trackDetailed(profiles, effectiveSampling.trackerNormalizationRasterPx(),
                     junctionContext(selection, profiles.size(), config, effectiveSampling)));
         };
+    }
+
+    private TrackerOutput legacyTrackerOutput(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        double sourcePixelSizeRasterPx
+    ) {
+        long start = System.nanoTime();
+        List<CenterlineCandidate> candidates = ridgeTracker.track(profiles, sourcePixelSizeRasterPx);
+        long trackingNanos = System.nanoTime() - start;
+        DetectorPerformance performance = new DetectorPerformance(0L, 0L, 0L, trackingNanos,
+            0L, 0L, 0L, 0L, profiles.size(), 0, 0, candidates.size(), 0, 0L, 0L, 0L, 0);
+        return new TrackerOutput(candidates, "", "", "", "", "", "", "", "", performance);
     }
 
     private TrackerOutput trackProfiles(
@@ -659,7 +709,7 @@ public final class AlignmentService {
         PluginLog.verbose("Tracking %d profiles with CORRIDOR_AWARE Gaussian levels=%d.",
             profiles.size(), profileSet.levels().size());
         return corridorTrackerOutput(detector, profiles,
-            corridorAwareTracker.trackDetailed(profileSet, effectiveSampling.sourcePixelSizeRasterPx(),
+            corridorAwareTracker.trackDetailed(profileSet, effectiveSampling.trackerNormalizationRasterPx(),
                 junctionContext(selection, profiles.size(), config, effectiveSampling)));
     }
 
@@ -672,6 +722,7 @@ public final class AlignmentService {
         List<RenderedHeatmapSampler.CrossSectionProfile> sourceProfiles,
         CorridorAwareTracker.TrackingResult result
     ) {
+        long serializationStart = System.nanoTime();
         StringBuilder intensities = new StringBuilder();
         StringBuilder bands = new StringBuilder();
         StringBuilder tracks = new StringBuilder();
@@ -734,7 +785,10 @@ public final class AlignmentService {
                     .append(csv(previous == null ? "seed" : point.bridged() ? "compatible-after-gap" : "selected-transition"))
                     .append(',').append(csv(point.band().id())).append(',')
                     .append(point.bridged()).append(',').append(gapProfiles).append(',')
-                    .append(gapDistanceMeters).append('\n');
+                    .append(gapDistanceMeters).append(',')
+                    .append(point.bridged() && previous != null ? previous.profileIndex() : "").append(',')
+                    .append(point.bridged() ? point.profileIndex() : "").append(',')
+                    .append(csv(point.bridged() ? "higher-index-right-boundary" : "none")).append('\n');
             }
         }
         for (CorridorGrouping.GroupingDecision decision : result.groupingDecisions()) {
@@ -756,7 +810,11 @@ public final class AlignmentService {
                     .append(row.insideCore()).append(',').append(row.insideCorridor()).append(',')
                     .append(totalCost).append(',').append(entry.getValue().maximumOffsetStates()).append(',')
                     .append(entry.getValue().maximumPairStates()).append(',')
-                    .append(entry.getValue().transitionEvaluations()).append('\n');
+                    .append(entry.getValue().transitionEvaluations()).append(',')
+                    .append(entry.getValue().profileCostEvaluations()).append(',')
+                    .append(entry.getValue().pointTableEntries()).append(',')
+                    .append(entry.getValue().adjacentGeometryEntries()).append(',')
+                    .append(entry.getValue().retainedPairStateAllocations()).append('\n');
             }
             for (EndpointApproachModel.EndpointApproach approach : entry.getValue().endpointApproaches().approaches()) {
                 if (approach.targets().isEmpty()) {
@@ -816,9 +874,26 @@ public final class AlignmentService {
                 }
             }
         }
+        long serializationNanos = System.nanoTime() - serializationStart;
+        long profileCostEvaluations = result.optimizations().values().stream()
+            .mapToLong(CorridorCenterlineOptimizer.OptimizationResult::profileCostEvaluations).sum();
+        long transitions = result.optimizations().values().stream()
+            .mapToLong(CorridorCenterlineOptimizer.OptimizationResult::transitionEvaluations).sum();
+        long retainedStates = result.optimizations().values().stream()
+            .mapToLong(CorridorCenterlineOptimizer.OptimizationResult::retainedPairStateAllocations).sum();
+        int allowedStates = Math.toIntExact(Math.min(Integer.MAX_VALUE, profileCostEvaluations));
+        int diagnosticCharacters = intensities.length() + bands.length() + tracks.length() + costs.length()
+            + scaleSpace.length() + tubeRows.length() + associationRows.length() + endpointRows.length();
+        CorridorAwareTracker.TrackingTiming timing = result.timing();
+        DetectorPerformance performance = new DetectorPerformance(0L, timing.extractionNanos(),
+            timing.scaleAssociationNanos(), timing.trackingAndGroupingNanos(), timing.optimizationNanos(),
+            serializationNanos, 0L, 0L, result.profiles().size(),
+            result.profiles().stream().mapToInt(profile -> profile.bands().size()).sum(), result.tracks().size(),
+            result.candidates().size(), allowedStates, transitions, profileCostEvaluations, retainedStates,
+            diagnosticCharacters);
         return new TrackerOutput(result.candidates(), intensities.toString(), bands.toString(),
             tracks.toString(), costs.toString(), scaleSpace.toString(), tubeRows.toString(),
-            associationRows.toString(), endpointRows.toString());
+            associationRows.toString(), endpointRows.toString(), performance);
     }
 
     private double predictedAssociationOffset(
@@ -847,7 +922,7 @@ public final class AlignmentService {
     }
 
     private String optimizerCostsCsvHeader() {
-        return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,plateau_center_cost,coarse_prior_cost,tube_center_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost,maximum_offset_states,maximum_pair_states,transition_evaluations\n";
+        return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,plateau_center_cost,coarse_prior_cost,tube_center_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost,maximum_offset_states,maximum_pair_states,transition_evaluations,profile_cost_evaluations,point_table_entries,adjacent_geometry_entries,retained_pair_state_allocations\n";
     }
 
     private String corridorTubeCsvHeader() {
@@ -855,11 +930,42 @@ public final class AlignmentService {
     }
 
     private String associationDecisionsCsvHeader() {
-        return "detector,track_id,profile_index,previous_profile_index,predicted_offset_px,observed_offset_px,prediction_residual_source_px,decision,reason,band_id,bridged,gap_profiles,gap_distance_m\n";
+        return "detector,track_id,profile_index,previous_profile_index,predicted_offset_px,observed_offset_px,prediction_residual_source_px,decision,reason,band_id,bridged,gap_profiles,gap_distance_m,gap_left_profile_index,gap_right_profile_index,bridge_owner\n";
     }
 
     private String endpointApproachesCsvHeader() {
         return "detector,track_id,constraint_profile_index,direction,anchor_profile_index,supported,reason,target_profile_index,expected_offset_px,position_weight,ambiguous_heatmap\n";
+    }
+
+    private String detectorPerformanceCsvHeader() {
+        return "detector,sampling_nanos,extraction_nanos,scale_association_nanos,tracking_grouping_nanos,optimization_nanos,diagnostic_serialization_nanos,projection_nanos,total_nanos,unaccounted_nanos,profile_count,band_count,track_count,candidate_count,allowed_state_count,transition_evaluations,profile_cost_evaluations,retained_pair_state_allocations,diagnostic_characters\n";
+    }
+
+    private void appendDetectorPerformance(
+        StringBuilder output,
+        String detector,
+        DetectorPerformance performance
+    ) {
+        long unaccounted = Math.max(0L, performance.detectorTotalNanos() - performance.accountedNanos());
+        output.append(csv(detector)).append(',')
+            .append(performance.samplingNanos()).append(',')
+            .append(performance.extractionNanos()).append(',')
+            .append(performance.scaleAssociationNanos()).append(',')
+            .append(performance.trackingAndGroupingNanos()).append(',')
+            .append(performance.optimizationNanos()).append(',')
+            .append(performance.diagnosticSerializationNanos()).append(',')
+            .append(performance.projectionNanos()).append(',')
+            .append(performance.detectorTotalNanos()).append(',')
+            .append(unaccounted).append(',')
+            .append(performance.profileCount()).append(',')
+            .append(performance.bandCount()).append(',')
+            .append(performance.trackCount()).append(',')
+            .append(performance.candidateCount()).append(',')
+            .append(performance.allowedStateCount()).append(',')
+            .append(performance.transitionEvaluations()).append(',')
+            .append(performance.profileCostEvaluations()).append(',')
+            .append(performance.retainedPairStateAllocations()).append(',')
+            .append(performance.diagnosticCharacters()).append('\n');
     }
 
     private JunctionContext junctionContext(
@@ -873,14 +979,14 @@ public final class AlignmentService {
         }
         List<EastNorth> source = toEastNorth(selection.segmentNodes());
         List<Double> fractions = PolylineMath.fractionsForSegment(source);
-        double rasterMeters = effectiveSampling.rasterMetersPerPixel();
+        double rasterMeters = effectiveSampling.decisionRasterMetersPerPixel();
         if (!Double.isFinite(rasterMeters) || rasterMeters <= 0.0) {
-            rasterMeters = Math.max(0.01, effectiveSampling.sourceMetersPerPixel()
-                / effectiveSampling.sourcePixelSizeRasterPx());
+            rasterMeters = Math.max(0.01, effectiveSampling.decisionSourceMetersPerPixel()
+                / effectiveSampling.trackerNormalizationRasterPx());
         }
         double maxMovableMeters = Math.min(Math.max(0.0, config.searchHalfWidthMeters()), 10.0);
         double maxMovablePx = maxMovableMeters / rasterMeters;
-        double profileSpacingMeters = Math.max(0.5, effectiveSampling.effectiveStepMeters());
+        double profileSpacingMeters = Math.max(0.5, effectiveSampling.decisionEffectiveStepUnits());
         int approachProfiles = Math.max(2, (int) Math.round(15.0 / profileSpacingMeters));
         List<EndpointConstraint> constraints = new ArrayList<>();
         for (int nodeIndex = 0; nodeIndex < selection.segmentNodes().size(); nodeIndex++) {
@@ -1208,7 +1314,7 @@ public final class AlignmentService {
         List<Double> offsets = candidate.offsetsPx();
         if (offsets.isEmpty()) {
             return new CandidateMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, effectiveSampling.sourceMetersPerPixel());
+                0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, effectiveSampling.decisionSourceMetersPerPixel());
         }
         double absMean = offsets.stream().mapToDouble(Math::abs).average().orElse(0.0);
         List<Double> deltas = new ArrayList<>();
@@ -1223,8 +1329,9 @@ public final class AlignmentService {
         double p95Acceleration = percentileAbs(accelerations, 0.95);
         List<Double> highFrequencyResiduals = highFrequencyResiduals(offsets, 7);
         double highFrequencyP95 = percentileAbs(highFrequencyResiduals, 0.95);
-        double normalization = effectiveSampling.rasterMetersPerPixel() / effectiveSampling.referenceRasterMetersPerPixel();
-        double sourcePixelSize = effectiveSampling.sourcePixelSizeRasterPx();
+        double normalization = effectiveSampling.decisionRasterMetersPerPixel()
+            / effectiveSampling.referenceRasterMetersPerPixel();
+        double sourcePixelSize = effectiveSampling.trackerNormalizationRasterPx();
         double edgeLimit = effectiveSampling.effectiveHalfWidthPx() * effectiveSampling.rasterScale() * 0.90;
         long edgeCount = offsets.stream().filter(offset -> Math.abs(offset) >= edgeLimit).count();
         int subSourceWiggles = subSourceWiggles(offsets, highFrequencyResiduals, sourcePixelSize);
@@ -1241,11 +1348,64 @@ public final class AlignmentService {
             signFlips(deltas, effectiveSampling),
             offsets.isEmpty() ? 0.0 : (double) subSourceWiggles / offsets.size(),
             offsets.isEmpty() ? 0.0 : (double) edgeCount / offsets.size(),
-            absMean * effectiveSampling.rasterMetersPerPixel(),
-            p95Delta * effectiveSampling.rasterMetersPerPixel(),
-            p95Acceleration * effectiveSampling.rasterMetersPerPixel(),
-            highFrequencyP95 * effectiveSampling.rasterMetersPerPixel(),
-            effectiveSampling.sourceMetersPerPixel()
+            absMean * effectiveSampling.decisionRasterMetersPerPixel(),
+            p95Delta * effectiveSampling.decisionRasterMetersPerPixel(),
+            p95Acceleration * effectiveSampling.decisionRasterMetersPerPixel(),
+            highFrequencyP95 * effectiveSampling.decisionRasterMetersPerPixel(),
+            effectiveSampling.decisionSourceMetersPerPixel()
+        );
+    }
+
+    /**
+     * Re-expresses candidate pixel measurements using the factual slide-time sampling scale for export.
+     * Legacy ranking and safety deliberately continue to use {@link #candidateMetrics(CenterlineCandidate,
+     * EffectiveSampling)} so correcting diagnostics cannot alter v0.2-compatible decisions.
+     */
+    private CandidateMetrics candidateDiagnosticMetrics(
+        CenterlineCandidate candidate,
+        EffectiveSampling effectiveSampling
+    ) {
+        CandidateMetrics decisionMetrics = candidateMetrics(candidate, effectiveSampling);
+        List<Double> offsets = candidate.offsetsPx();
+        if (offsets.isEmpty()) {
+            return new CandidateMetrics(
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                Double.NaN, Double.NaN, Double.NaN, 0, Double.NaN, 0.0,
+                0.0, 0.0, 0.0, 0.0,
+                effectiveSampling.samplingScale().nativeSourceMetersPerPixel().orElse(Double.NaN)
+            );
+        }
+
+        SamplingScale scale = effectiveSampling.samplingScale();
+        double rasterGroundMeters = scale.groundMetersPerRasterPixel();
+        double referenceRasterMeters = effectiveSampling.referenceRasterMetersPerPixel();
+        double nativeSourceRasterPx = scale.nativeSourcePixelSizeRasterPx().orElse(Double.NaN);
+        List<Double> deltas = new ArrayList<>();
+        for (int i = 1; i < offsets.size(); i++) {
+            deltas.add(offsets.get(i) - offsets.get(i - 1));
+        }
+        List<Double> residuals = highFrequencyResiduals(offsets, 7);
+        double subSourceWiggleRatio = Double.isFinite(nativeSourceRasterPx)
+            ? (double) subSourceWiggles(offsets, residuals, nativeSourceRasterPx) / offsets.size()
+            : Double.NaN;
+        return new CandidateMetrics(
+            decisionMetrics.absMeanOffsetPx(),
+            decisionMetrics.p95DeltaPx(),
+            decisionMetrics.p95AccelerationPx(),
+            decisionMetrics.highFrequencyP95Px(),
+            decisionMetrics.p95DeltaPx() * rasterGroundMeters / referenceRasterMeters,
+            decisionMetrics.p95AccelerationPx() * rasterGroundMeters / referenceRasterMeters,
+            scale.nativeSourcePixelsForRasterPixels(decisionMetrics.p95DeltaPx()).orElse(Double.NaN),
+            scale.nativeSourcePixelsForRasterPixels(decisionMetrics.p95AccelerationPx()).orElse(Double.NaN),
+            scale.nativeSourcePixelsForRasterPixels(decisionMetrics.highFrequencyP95Px()).orElse(Double.NaN),
+            signFlips(deltas, rasterGroundMeters),
+            subSourceWiggleRatio,
+            decisionMetrics.edgeRatio(),
+            scale.groundMetersForRasterPixels(decisionMetrics.absMeanOffsetPx()),
+            scale.groundMetersForRasterPixels(decisionMetrics.p95DeltaPx()),
+            scale.groundMetersForRasterPixels(decisionMetrics.p95AccelerationPx()),
+            scale.groundMetersForRasterPixels(decisionMetrics.highFrequencyP95Px()),
+            scale.nativeSourceMetersPerPixel().orElse(Double.NaN)
         );
     }
 
@@ -1303,8 +1463,12 @@ public final class AlignmentService {
     }
 
     private int signFlips(List<Double> deltas, EffectiveSampling effectiveSampling) {
+        return signFlips(deltas, effectiveSampling.decisionRasterMetersPerPixel());
+    }
+
+    private int signFlips(List<Double> deltas, double rasterMetersPerPixel) {
         int flips = 0;
-        double flipThresholdPx = 0.52 / effectiveSampling.rasterMetersPerPixel();
+        double flipThresholdPx = 0.52 / rasterMetersPerPixel;
         for (int i = 1; i < deltas.size(); i++) {
             double left = deltas.get(i - 1);
             double right = deltas.get(i);
@@ -1537,8 +1701,8 @@ public final class AlignmentService {
     ) {
         CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
         List<String> warnings = new ArrayList<>();
-        double unsafeAccelerationMeters = Math.max(8.0, effectiveSampling.targetHalfWidthMeters() * 0.18);
-        double unsafeDeltaMeters = Math.max(12.0, effectiveSampling.targetHalfWidthMeters() * 0.40);
+        double unsafeAccelerationMeters = Math.max(8.0, effectiveSampling.decisionHalfWidthUnits() * 0.18);
+        double unsafeDeltaMeters = Math.max(12.0, effectiveSampling.decisionHalfWidthUnits() * 0.40);
         if (metrics.highFrequencyP95SourcePx() > 1.65 && metrics.subSourceWiggleRatio() > 0.28) {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "source-resolution aliasing wiggles %.1fpx", metrics.highFrequencyP95SourcePx()));
@@ -1677,8 +1841,9 @@ public final class AlignmentService {
                         EastNorth intersection = segmentIntersection(
                             geometry.get(candidateIndex), geometry.get(candidateIndex + 1),
                             connectedStart, connectedEnd);
-                        if (intersection != null
-                            && intersection.distance(junctionPoint) > junctionToleranceMeters) {
+                        double intersectionDistanceMeters = intersection == null
+                            ? Double.NaN : groundDistanceMeters(intersection, junctionPoint);
+                        if (intersection != null && intersectionDistanceMeters > junctionToleranceMeters) {
                             findings.add(new JunctionSafetyFinding(
                                 "connected-way-crossing",
                                 "final-preview",
@@ -1691,7 +1856,7 @@ public final class AlignmentService {
                                 connectedStart,
                                 connectedEnd,
                                 intersection,
-                                intersection.distance(junctionPoint),
+                                intersectionDistanceMeters,
                                 junctionToleranceMeters
                             ));
                         }
@@ -1702,9 +1867,17 @@ public final class AlignmentService {
         return List.copyOf(findings);
     }
 
+    private double groundDistanceMeters(EastNorth left, EastNorth right) {
+        if (left == null || right == null) {
+            throw new IllegalArgumentException("Ground-distance points must not be null");
+        }
+        return ProjectionRegistry.getProjection().eastNorth2latlon(left)
+            .greatCircleDistance(ProjectionRegistry.getProjection().eastNorth2latlon(right));
+    }
+
     private double junctionIntersectionToleranceMeters(EffectiveSampling effectiveSampling) {
-        double samplingTolerance = Math.max(effectiveSampling.effectiveStepMeters() * 1.5,
-            effectiveSampling.sourceMetersPerPixel() * 2.0);
+        double samplingTolerance = Math.max(effectiveSampling.decisionEffectiveStepUnits() * 1.5,
+            effectiveSampling.decisionSourceMetersPerPixel() * 2.0);
         return Math.max(1.0, Math.min(5.0, samplingTolerance));
     }
 
@@ -2132,8 +2305,8 @@ public final class AlignmentService {
         EastNorth originalCenter = mapView.getCenter();
         double originalScale = mapView.getScale();
         Dimension originalSize = mapView.getSize();
-        ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginMeters(config));
-        double targetScale = REFERENCE_VIEW_METERS_PER_PIXEL;
+        ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginProjectionUnits(config));
+        double targetScale = REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
         Dimension captureSize = requiredCaptureSize(requestedBounds, targetScale);
         ProjectionBounds captureBounds = captureBoundsForSize(requestedBounds.getCenter(), captureSize, targetScale);
         VisibleCaptureState captureState = new VisibleCaptureState(originalCenter, originalScale, originalBounds,
@@ -2150,12 +2323,23 @@ public final class AlignmentService {
                 int chunkCount = chunkCount(captureSize, chunkSize(originalSize));
                 captureState = captureState.withCapturePlan(true, chunkCount);
             }
+            CapturedTileZoom capturedZoom = capturedTileZoom(imageryLayer);
+            double representativeLatitude = sourcePolyline.stream()
+                .map(ProjectionRegistry.getProjection()::eastNorth2latlon)
+                .mapToDouble(LatLon::lat)
+                .average().orElse(0.0);
+            VisibleSourceResolutionResolver.SourceResolution sourceResolution =
+                new VisibleSourceResolutionResolver().resolveAtZoom(
+                    imageryLayer, capturedZoom.sourceTileZoom(), representativeLatitude);
             return new RenderedCapture(
                 raster,
                 captureBounds,
                 targetScale,
                 sourcePolyline.stream().map(point -> toCaptureRasterPoint(point, captureBounds, targetScale)).toList(),
-                captureState
+                captureState,
+                capturedZoom.sourceTileZoom(),
+                capturedZoom.bestSourceTileZoom(),
+                sourceResolution
             );
         } finally {
             mapView.setSize(originalSize);
@@ -2202,11 +2386,13 @@ public final class AlignmentService {
         } finally {
             graphics.dispose();
         }
-        PluginLog.verbose("Rendered heatmap extent in %d JOSM viewport chunks at %.3f m/px.", chunks, targetScale);
+        PluginLog.verbose(
+            "Rendered heatmap extent in %d JOSM viewport chunks at %.3f projection-units/view-px.",
+            chunks, targetScale);
         return mosaic;
     }
 
-    private ProjectionBounds expandedBounds(List<EastNorth> points, double marginMeters) {
+    private ProjectionBounds expandedBounds(List<EastNorth> points, double marginProjectionUnits) {
         if (points.isEmpty()) {
             return new ProjectionBounds();
         }
@@ -2220,13 +2406,14 @@ public final class AlignmentService {
             maxEast = Math.max(maxEast, point.east());
             maxNorth = Math.max(maxNorth, point.north());
         }
-        double margin = Math.max(5.0, marginMeters);
+        double margin = Math.max(5.0, marginProjectionUnits);
         return new ProjectionBounds(minEast - margin, minNorth - margin, maxEast + margin, maxNorth + margin);
     }
 
-    private double visibleCaptureMarginMeters(ManagedHeatmapConfig config) {
-        double halfWidthMeters = config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
-        return Math.max(halfWidthMeters * 2.0, halfWidthMeters + 20.0);
+    private double visibleCaptureMarginProjectionUnits(ManagedHeatmapConfig config) {
+        double halfWidthProjectionUnits = config.crossSectionHalfWidthPx()
+            * REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
+        return Math.max(halfWidthProjectionUnits * 2.0, halfWidthProjectionUnits + 20.0);
     }
 
     private Dimension requiredCaptureSize(ProjectionBounds bounds, double scale) {
@@ -2263,54 +2450,117 @@ public final class AlignmentService {
         );
     }
 
-    private Point2D.Double toCaptureRasterPoint(EastNorth point, ProjectionBounds bounds, double viewMetersPerPixel) {
+    private Point2D.Double toCaptureRasterPoint(
+        EastNorth point,
+        ProjectionBounds bounds,
+        double projectionUnitsPerViewPixel
+    ) {
         return new Point2D.Double(
-            (point.east() - bounds.minEast) / viewMetersPerPixel * RenderedHeatmapSampler.RASTER_SCALE,
-            (bounds.maxNorth - point.north()) / viewMetersPerPixel * RenderedHeatmapSampler.RASTER_SCALE
+            (point.east() - bounds.minEast) / projectionUnitsPerViewPixel * RenderedHeatmapSampler.RASTER_SCALE,
+            (bounds.maxNorth - point.north()) / projectionUnitsPerViewPixel * RenderedHeatmapSampler.RASTER_SCALE
         );
     }
 
     private List<EastNorth> projectRenderedCandidate(RenderedCapture capture, List<Point2D.Double> rasterPoints) {
         return rasterPoints.stream()
             .map(point -> new EastNorth(
-                capture.bounds().minEast + point.x / RenderedHeatmapSampler.RASTER_SCALE * capture.viewMetersPerPixel(),
-                capture.bounds().maxNorth - point.y / RenderedHeatmapSampler.RASTER_SCALE * capture.viewMetersPerPixel()
+                capture.bounds().minEast
+                    + point.x / RenderedHeatmapSampler.RASTER_SCALE * capture.projectionUnitsPerViewPixel(),
+                capture.bounds().maxNorth
+                    - point.y / RenderedHeatmapSampler.RASTER_SCALE * capture.projectionUnitsPerViewPixel()
             ))
             .toList();
     }
 
-    private EffectiveSampling effectiveSampling(ManagedHeatmapConfig config, double viewMetersPerPixel) {
-        double targetHalfWidthMeters = config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
-        double targetStepMeters = config.crossSectionStepPx() * REFERENCE_VIEW_METERS_PER_PIXEL;
-        int effectiveHalfWidthPx = scaleMetersToViewPixels(
-            targetHalfWidthMeters,
-            viewMetersPerPixel,
-            config.crossSectionHalfWidthPx(),
-            MIN_EFFECTIVE_HALF_WIDTH_PX,
-            MAX_EFFECTIVE_HALF_WIDTH_PX
+    private EffectiveSampling effectiveSampling(
+        ManagedHeatmapConfig config,
+        RenderedCapture capture,
+        List<EastNorth> sourcePolyline
+    ) {
+        double projectionUnitsPerViewPixel = capture.projectionUnitsPerViewPixel();
+        ProjectionGroundScale ground = ProjectionGroundScale.measure(sourcePolyline, projectionUnitsPerViewPixel);
+        TrackerMode mode = trackerMode(config);
+        if (mode == TrackerMode.CORRIDOR_AWARE
+            && (ground.anisotropyRatio() > 0.02 || ground.longitudinalVariationRatio() > 0.02)) {
+            throw new IllegalStateException(String.format(java.util.Locale.ROOT,
+                "Ground scale varies too much across the rendered capture (anisotropy %.1f%%, variation %.1f%%). "
+                    + "Select a shorter segment or use managed source-tile alignment.",
+                ground.anisotropyRatio() * 100.0, ground.longitudinalVariationRatio() * 100.0));
+        }
+        VisibleSourceResolutionResolver.SourceResolution sourceResolution = capture.sourceResolution();
+        double groundMetersPerViewPixel = projectionUnitsPerViewPixel
+            * ground.representativeMetersPerProjectionUnit();
+        double groundMetersPerRasterPixel = groundMetersPerViewPixel / RenderedHeatmapSampler.RASTER_SCALE;
+        boolean nativeCorridorScale = mode == TrackerMode.CORRIDOR_AWARE && sourceResolution.known();
+        double trackerNormalization = nativeCorridorScale
+            ? sourceResolution.metersPerPixel().orElseThrow() / groundMetersPerRasterPixel
+            : RenderedHeatmapSampler.RASTER_SCALE;
+        String normalizationMethod = nativeCorridorScale
+            ? "native-source-pixel" : "legacy-rendered-pixel-compatibility";
+        SamplingScale samplingScale = SamplingScale.visible(
+            projectionUnitsPerViewPixel,
+            RenderedHeatmapSampler.RASTER_SCALE,
+            ground,
+            sourceResolution,
+            trackerNormalization,
+            normalizationMethod
         );
-        int effectiveStepPx = scaleMetersToViewPixels(
-            targetStepMeters,
-            viewMetersPerPixel,
-            config.crossSectionStepPx(),
-            MIN_EFFECTIVE_STEP_PX,
-            MAX_EFFECTIVE_STEP_PX
-        );
+        double decisionViewMetersPerPixel = decisionGroundMetersPerViewPixel(mode, groundMetersPerViewPixel);
+        double decisionSourceMetersPerPixel = nativeCorridorScale
+            ? sourceResolution.metersPerPixel().orElseThrow() : decisionViewMetersPerPixel;
+        double decisionHalfWidthUnits = config.crossSectionHalfWidthPx() * decisionViewMetersPerPixel;
+        double decisionStepUnits = config.crossSectionStepPx() * decisionViewMetersPerPixel;
+        int effectiveHalfWidthPx = Math.max(MIN_EFFECTIVE_HALF_WIDTH_PX,
+            Math.min(MAX_EFFECTIVE_HALF_WIDTH_PX, config.crossSectionHalfWidthPx()));
+        int effectiveStepPx = Math.max(MIN_EFFECTIVE_STEP_PX,
+            Math.min(MAX_EFFECTIVE_STEP_PX, config.crossSectionStepPx()));
         effectiveStepPx = Math.max(1, Math.min(effectiveStepPx, Math.max(1, effectiveHalfWidthPx)));
-        double effectiveViewMetersPerPixel = Double.isFinite(viewMetersPerPixel) && viewMetersPerPixel > 0.0
-            ? viewMetersPerPixel
-            : REFERENCE_VIEW_METERS_PER_PIXEL;
         return new EffectiveSampling(
             config.crossSectionHalfWidthPx(),
             config.crossSectionStepPx(),
             effectiveHalfWidthPx,
             effectiveStepPx,
             REFERENCE_VIEW_METERS_PER_PIXEL,
-            effectiveViewMetersPerPixel,
-            targetHalfWidthMeters,
-            targetStepMeters,
+            decisionViewMetersPerPixel,
+            decisionHalfWidthUnits,
+            decisionStepUnits,
             RenderedHeatmapSampler.RASTER_SCALE,
-            effectiveViewMetersPerPixel
+            decisionSourceMetersPerPixel,
+            samplingScale
+        );
+    }
+
+    /**
+     * Selects the ground scale used by detector decisions without changing legacy v0.2 behavior.
+     *
+     * @param mode active tracker mode
+     * @param measuredGroundMetersPerViewPixel factual slide-time ground resolution
+     * @return measured ground resolution for corridor tracking, or the historical reference for legacy tracking
+     */
+    static double decisionGroundMetersPerViewPixel(TrackerMode mode, double measuredGroundMetersPerViewPixel) {
+        if (!Double.isFinite(measuredGroundMetersPerViewPixel) || measuredGroundMetersPerViewPixel <= 0.0) {
+            throw new IllegalArgumentException("Measured ground resolution must be finite and positive");
+        }
+        return mode == TrackerMode.CORRIDOR_AWARE
+            ? measuredGroundMetersPerViewPixel : REFERENCE_VIEW_METERS_PER_PIXEL;
+    }
+
+    private EffectiveSampling effectiveSampling(ManagedHeatmapConfig config, double compatibilityViewScale) {
+        double viewScale = Double.isFinite(compatibilityViewScale) && compatibilityViewScale > 0.0
+            ? compatibilityViewScale : REFERENCE_VIEW_METERS_PER_PIXEL;
+        SamplingScale scale = SamplingScale.managed(viewScale, RenderedHeatmapSampler.RASTER_SCALE, viewScale);
+        return new EffectiveSampling(
+            config.crossSectionHalfWidthPx(),
+            config.crossSectionStepPx(),
+            config.crossSectionHalfWidthPx(),
+            Math.max(1, Math.min(config.crossSectionStepPx(), Math.max(1, config.crossSectionHalfWidthPx()))),
+            REFERENCE_VIEW_METERS_PER_PIXEL,
+            viewScale,
+            config.crossSectionHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL,
+            config.crossSectionStepPx() * REFERENCE_VIEW_METERS_PER_PIXEL,
+            RenderedHeatmapSampler.RASTER_SCALE,
+            viewScale,
+            scale
         );
     }
 
@@ -2319,6 +2569,13 @@ public final class AlignmentService {
         double targetStepMeters = mosaic.parameters().sampleStepMeters();
         int referenceHalfWidthPx = Math.max(1, (int) Math.round(targetHalfWidthMeters / REFERENCE_VIEW_METERS_PER_PIXEL));
         int referenceStepPx = Math.max(1, (int) Math.round(targetStepMeters / REFERENCE_VIEW_METERS_PER_PIXEL));
+        SamplingScale samplingScale = SamplingScale.managed(
+            REFERENCE_VIEW_METERS_PER_PIXEL,
+            TileHeatmapSampler.REFERENCE_RASTER_SCALE,
+            mosaic.parameters().metersPerPixel(),
+            mosaic.zoom(),
+            512
+        );
         return new EffectiveSampling(
             referenceHalfWidthPx,
             referenceStepPx,
@@ -2329,21 +2586,9 @@ public final class AlignmentService {
             targetHalfWidthMeters,
             targetStepMeters,
             TileHeatmapSampler.REFERENCE_RASTER_SCALE,
-            mosaic.parameters().metersPerPixel()
+            mosaic.parameters().metersPerPixel(),
+            samplingScale
         );
-    }
-
-    private int scaleMetersToViewPixels(double meters, double viewMetersPerPixel, int fallbackPx, int minPx, int maxPx) {
-        if (!Double.isFinite(viewMetersPerPixel) || viewMetersPerPixel <= 0.0) {
-            return Math.max(minPx, Math.min(maxPx, fallbackPx));
-        }
-        int pixels = (int) Math.round(meters / viewMetersPerPixel);
-        return Math.max(minPx, Math.min(maxPx, pixels));
-    }
-
-    private double currentViewMetersPerPixel(MapView mapView) {
-        double dist100Pixel = mapView == null ? Double.NaN : safeDouble(mapView.getDist100Pixel());
-        return dist100Pixel > 0.0 ? dist100Pixel / 100.0 : Double.NaN;
     }
 
     private AlignmentDiagnostics diagnostics(
@@ -2389,6 +2634,7 @@ public final class AlignmentService {
             detection.corridorTubeCsv(),
             detection.associationDecisionsCsv(),
             detection.endpointApproachesCsv(),
+            detection.detectorPerformanceCsv(),
             parallelContextJson(selection, candidates, config)
         );
     }
@@ -2435,6 +2681,7 @@ public final class AlignmentService {
             detection.corridorTubeCsv(),
             detection.associationDecisionsCsv(),
             detection.endpointApproachesCsv(),
+            detection.detectorPerformanceCsv(),
             parallelContextJson(selection, candidates, config)
         );
     }
@@ -2515,7 +2762,9 @@ public final class AlignmentService {
         TileHeatmapSampler.TileMosaic mosaic,
         EffectiveSampling effectiveSampling
     ) {
+        SamplingScale scale = effectiveSampling.samplingScale();
         return "{"
+            + "\"samplingScaleVersion\":1,"
             + "\"type\":\"managed-source-tiles\","
             + "\"algorithm\":\"fixed-scale source tiles\","
             + "\"tileZoom\":" + mosaic.zoom() + ','
@@ -2525,20 +2774,33 @@ public final class AlignmentService {
             + "\"rasterScale\":" + effectiveSampling.rasterScale() + ','
             + "\"rasterWidth\":" + mosaic.image().getWidth() + ','
             + "\"rasterHeight\":" + mosaic.image().getHeight() + ','
-            + "\"sourceMetersPerPixel\":" + jsonDouble(mosaic.parameters().metersPerPixel()) + ','
-            + "\"sourcePixelSizeRasterPx\":" + jsonDouble(effectiveSampling.sourcePixelSizeRasterPx()) + ','
+            + "\"projectionUnitsPerViewPixel\":null,"
+            + "\"groundMetersPerViewPixel\":" + jsonDouble(scale.groundMetersPerViewPixel()) + ','
+            + "\"groundMetersPerRasterPixel\":" + jsonDouble(scale.groundMetersPerRasterPixel()) + ','
+            + "\"nativeSourceMetersPerPixel\":" + optionalDouble(scale.nativeSourceMetersPerPixel()) + ','
+            + "\"nativeSourcePixelSizeRasterPx\":" + optionalDouble(scale.nativeSourcePixelSizeRasterPx()) + ','
+            + "\"nativeSourceZoom\":" + optionalInt(scale.nativeSourceZoom()) + ','
+            + "\"nativeSourceTileSizePx\":" + optionalInt(scale.nativeSourceTileSizePx()) + ','
+            + "\"nativeSourceResolutionKnown\":" + scale.nativeResolutionKnown() + ','
+            + "\"nativeSourceResolutionMethod\":\"" + jsonEscape(scale.nativeResolutionMethod()) + "\","
+            + "\"trackerNormalizationRasterPx\":" + jsonDouble(scale.trackerNormalizationRasterPx()) + ','
+            + "\"trackerNormalizationMethod\":\"" + jsonEscape(scale.trackerNormalizationMethod()) + "\","
+            + "\"legacyCompatibilityScaleUsed\":false,"
+            + "\"sourceMetersPerPixel\":" + optionalDouble(scale.nativeSourceMetersPerPixel()) + ','
+            + "\"sourcePixelSizeRasterPx\":" + optionalDouble(scale.nativeSourcePixelSizeRasterPx()) + ','
             + "\"virtualRasterScale\":" + jsonDouble(mosaic.virtualRasterScale()) + ','
-            + "\"viewMetersPerPixel\":" + jsonDouble(effectiveSampling.viewMetersPerPixel()) + ','
-            + "\"rasterMetersPerPixel\":" + jsonDouble(effectiveSampling.rasterMetersPerPixel()) + ','
-            + "\"referenceViewMetersPerPixel\":" + jsonDouble(effectiveSampling.referenceViewMetersPerPixel()) + ','
+            + "\"viewMetersPerPixel\":" + jsonDouble(scale.groundMetersPerViewPixel()) + ','
+            + "\"rasterMetersPerPixel\":" + jsonDouble(scale.groundMetersPerRasterPixel()) + ','
+            + "\"referenceGroundMetersPerViewPixel\":"
+            + jsonDouble(effectiveSampling.referenceGroundMetersPerViewPixel()) + ','
             + "\"configuredHalfWidthPx\":" + effectiveSampling.configuredHalfWidthPx() + ','
             + "\"configuredStepPx\":" + effectiveSampling.configuredStepPx() + ','
             + "\"effectiveHalfWidthPx\":" + effectiveSampling.effectiveHalfWidthPx() + ','
             + "\"effectiveStepPx\":" + effectiveSampling.effectiveStepPx() + ','
-            + "\"targetHalfWidthMeters\":" + jsonDouble(effectiveSampling.targetHalfWidthMeters()) + ','
-            + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.targetStepMeters()) + ','
-            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthMeters()) + ','
-            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepMeters()) + ','
+            + "\"targetHalfWidthMeters\":" + jsonDouble(effectiveSampling.decisionHalfWidthUnits()) + ','
+            + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.decisionStepUnits()) + ','
+            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthGroundMeters()) + ','
+            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepGroundMeters()) + ','
             + "\"tileManifest\":" + mosaics.manifestJson()
             + "}";
     }
@@ -2550,24 +2812,25 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling,
         RenderedCapture capture
     ) {
-        int zoom = -1;
-        int bestZoom = -1;
-        if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
-            zoom = tileLayer.getZoomLevel();
-            bestZoom = tileLayer.getBestZoom();
-        }
+        CapturedTileZoom currentZoom = capture == null ? capturedTileZoom(imageryLayer) : null;
+        int zoom = capture == null ? currentZoom.sourceTileZoom() : capture.sourceTileZoom();
+        int bestZoom = capture == null ? currentZoom.bestSourceTileZoom() : capture.bestSourceTileZoom();
         VisibleCaptureState captureState = capture == null ? null : capture.state();
         int viewWidth = captureState == null ? (mapView == null ? 0 : mapView.getWidth()) : captureState.captureSize().width;
         int viewHeight = captureState == null ? (mapView == null ? 0 : mapView.getHeight()) : captureState.captureSize().height;
-        double viewMetersPerPixel = capture == null ? currentViewMetersPerPixel(mapView) : capture.viewMetersPerPixel();
-        double dist100Pixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel * 100.0 : Double.NaN;
-        double rasterMetersPerPixel = viewMetersPerPixel > 0.0 ? viewMetersPerPixel / effectiveSampling.rasterScale() : Double.NaN;
-        double mapScale = capture == null ? safeDouble(mapView == null ? Double.NaN : mapView.getScale()) : capture.viewMetersPerPixel();
+        SamplingScale scale = effectiveSampling.samplingScale();
+        double projectionUnitsPerViewPixel = capture == null
+            ? scale.projectionUnitsPerViewPixel().orElse(Double.NaN) : capture.projectionUnitsPerViewPixel();
+        double viewMetersPerPixel = scale.groundMetersPerViewPixel();
+        double dist100Pixel = viewMetersPerPixel * 100.0;
+        double rasterMetersPerPixel = scale.groundMetersPerRasterPixel();
+        double mapScale = projectionUnitsPerViewPixel;
         EastNorth center = capture == null ? (mapView == null ? null : mapView.getCenter()) : capture.bounds().getCenter();
         LatLon centerLatLon = center == null ? null : ProjectionRegistry.getProjection().eastNorth2latlon(center);
         ProjectionBounds projectionBounds = capture == null ? (mapView == null ? null : mapView.getProjectionBounds()) : capture.bounds();
         Bounds realBounds = projectionBoundsToRealBounds(projectionBounds);
         return "{"
+            + "\"samplingScaleVersion\":1,"
             + "\"type\":\"rendered-visible-layer\","
             + "\"algorithm\":\"v0.2-compatible\","
             + "\"layerClass\":\"" + jsonEscape(imageryLayer.getClass().getName()) + "\","
@@ -2575,170 +2838,69 @@ public final class AlignmentService {
             + "\"bestTileZoom\":" + nullableInt(bestZoom) + ','
             + "\"sourceTileZoom\":" + nullableInt(zoom) + ','
             + "\"bestSourceTileZoom\":" + nullableInt(bestZoom) + ','
+            + "\"sourceTileZoomCapturedAtSlideTime\":" + (capture != null) + ','
             + "\"rasterScale\":" + effectiveSampling.rasterScale() + ','
             + "\"rasterWidth\":" + (raster == null ? 0 : raster.getWidth()) + ','
             + "\"rasterHeight\":" + (raster == null ? 0 : raster.getHeight()) + ','
             + "\"viewWidthPx\":" + viewWidth + ','
             + "\"viewHeightPx\":" + viewHeight + ','
             + "\"dist100PixelMeters\":" + jsonDouble(dist100Pixel) + ','
-            + "\"sourceMetersPerPixel\":" + jsonDouble(effectiveSampling.sourceMetersPerPixel()) + ','
-            + "\"sourcePixelSizeRasterPx\":" + jsonDouble(effectiveSampling.sourcePixelSizeRasterPx()) + ','
+            + "\"projectionUnitsPerViewPixel\":" + jsonDouble(projectionUnitsPerViewPixel) + ','
+            + "\"groundMetersPerViewPixel\":" + jsonDouble(viewMetersPerPixel) + ','
+            + "\"groundMetersPerRasterPixel\":" + jsonDouble(rasterMetersPerPixel) + ','
+            + "\"nativeSourceMetersPerPixel\":" + optionalDouble(scale.nativeSourceMetersPerPixel()) + ','
+            + "\"nativeSourcePixelSizeRasterPx\":" + optionalDouble(scale.nativeSourcePixelSizeRasterPx()) + ','
+            + "\"nativeSourceZoom\":" + optionalInt(scale.nativeSourceZoom()) + ','
+            + "\"nativeSourceTileSizePx\":" + optionalInt(scale.nativeSourceTileSizePx()) + ','
+            + "\"nativeSourceResolutionKnown\":" + scale.nativeResolutionKnown() + ','
+            + "\"nativeSourceResolutionMethod\":\"" + jsonEscape(scale.nativeResolutionMethod()) + "\","
+            + "\"trackerNormalizationRasterPx\":" + jsonDouble(scale.trackerNormalizationRasterPx()) + ','
+            + "\"trackerNormalizationMethod\":\"" + jsonEscape(scale.trackerNormalizationMethod()) + "\","
+            + "\"legacyCompatibilityScaleUsed\":"
+            + scale.trackerNormalizationMethod().contains("legacy") + ','
+            + "\"sourceMetersPerPixel\":" + optionalDouble(scale.nativeSourceMetersPerPixel()) + ','
+            + "\"sourcePixelSizeRasterPx\":" + optionalDouble(scale.nativeSourcePixelSizeRasterPx()) + ','
             + "\"viewMetersPerPixel\":" + jsonDouble(viewMetersPerPixel) + ','
             + "\"rasterMetersPerPixel\":" + jsonDouble(rasterMetersPerPixel) + ','
-            + "\"referenceViewMetersPerPixel\":" + jsonDouble(effectiveSampling.referenceViewMetersPerPixel()) + ','
+            + "\"legacyReferenceUnitsPerViewPixel\":"
+            + jsonDouble(effectiveSampling.referenceGroundMetersPerViewPixel()) + ','
             + "\"configuredHalfWidthPx\":" + effectiveSampling.configuredHalfWidthPx() + ','
             + "\"configuredStepPx\":" + effectiveSampling.configuredStepPx() + ','
             + "\"effectiveHalfWidthPx\":" + effectiveSampling.effectiveHalfWidthPx() + ','
             + "\"effectiveStepPx\":" + effectiveSampling.effectiveStepPx() + ','
-            + "\"targetHalfWidthMeters\":" + jsonDouble(effectiveSampling.targetHalfWidthMeters()) + ','
-            + "\"targetStepMeters\":" + jsonDouble(effectiveSampling.targetStepMeters()) + ','
-            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthMeters()) + ','
-            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepMeters()) + ','
+            + "\"targetHalfWidthMeters\":"
+            + jsonDouble(effectiveSampling.configuredHalfWidthPx() * scale.groundMetersPerViewPixel()) + ','
+            + "\"targetStepMeters\":"
+            + jsonDouble(effectiveSampling.configuredStepPx() * scale.groundMetersPerViewPixel()) + ','
+            + "\"decisionHalfWidthUnits\":"
+            + jsonDouble(effectiveSampling.decisionHalfWidthUnits()) + ','
+            + "\"decisionStepUnits\":"
+            + jsonDouble(effectiveSampling.decisionStepUnits()) + ','
+            + "\"legacyConfiguredHalfWidthReferenceUnits\":"
+            + jsonDouble(effectiveSampling.configuredHalfWidthPx() * REFERENCE_VIEW_METERS_PER_PIXEL) + ','
+            + "\"legacyConfiguredStepReferenceUnits\":"
+            + jsonDouble(effectiveSampling.configuredStepPx() * REFERENCE_VIEW_METERS_PER_PIXEL) + ','
+            + "\"effectiveHalfWidthMeters\":" + jsonDouble(effectiveSampling.effectiveHalfWidthGroundMeters()) + ','
+            + "\"effectiveStepMeters\":" + jsonDouble(effectiveSampling.effectiveStepGroundMeters()) + ','
+            + "\"eastMetersPerProjectionUnit\":" + optionalDouble(scale.eastMetersPerProjectionUnit()) + ','
+            + "\"northMetersPerProjectionUnit\":" + optionalDouble(scale.northMetersPerProjectionUnit()) + ','
+            + "\"minimumGroundMetersPerViewPixel\":" + jsonDouble(scale.minimumGroundMetersPerViewPixel()) + ','
+            + "\"maximumGroundMetersPerViewPixel\":" + jsonDouble(scale.maximumGroundMetersPerViewPixel()) + ','
+            + "\"groundScaleAnisotropyRatio\":" + jsonDouble(scale.anisotropyRatio()) + ','
+            + "\"groundScaleLongitudinalVariationRatio\":" + jsonDouble(scale.longitudinalVariationRatio()) + ','
             + "\"viewportAdjustedForSelection\":" + (captureState != null && captureState.adjusted()) + ','
             + "\"chunkedCapture\":" + (captureState != null && captureState.chunked()) + ','
             + "\"captureChunkCount\":" + (captureState == null ? 1 : captureState.chunkCount()) + ','
             + "\"requestedCaptureBounds\":" + projectionBoundsJson(captureState == null ? null : captureState.requestedBounds()) + ','
             + "\"captureProjectionBounds\":" + projectionBoundsJson(capture == null ? null : capture.bounds()) + ','
             + "\"originalProjectionBounds\":" + projectionBoundsJson(captureState == null ? null : captureState.originalBounds()) + ','
-            + "\"mapScale\":" + jsonDouble(mapScale) + ','
+            + "\"mapScaleProjectionUnitsPerViewPixel\":" + jsonDouble(mapScale) + ','
             + "\"layerPPD\":" + jsonDouble(safeDouble(imageryLayer.getPPD())) + ','
             + "\"viewportCenter\":" + eastNorthLatLonJson(center, centerLatLon) + ','
             + "\"projectionBounds\":" + projectionBoundsJson(projectionBounds) + ','
             + "\"realBounds\":" + realBoundsJson(realBounds) + ','
             + "\"estimatedVisibleTiles\":" + estimatedVisibleTilesJson(realBounds, zoom)
             + "}";
-    }
-
-    private String profilesToJson(
-        String colorMode,
-        IntensitySamplingMode intensitySource,
-        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
-        List<CenterlineCandidate> colorCandidates
-    ) {
-        int supportedProfiles = 0;
-        int emptyProfiles = 0;
-        int maxPeaks = 0;
-        double strongestTotal = 0.0;
-        double maxIntensity = 0.0;
-        for (RenderedHeatmapSampler.CrossSectionProfile profile : profiles) {
-            maxPeaks = Math.max(maxPeaks, profile.peaks().size());
-            double strongest = profile.peaks().stream()
-                .mapToDouble(RenderedHeatmapSampler.CrossSectionPeak::intensity)
-                .max()
-                .orElse(0.0);
-            if (strongest > 0.0) {
-                supportedProfiles++;
-                strongestTotal += strongest;
-            } else {
-                emptyProfiles++;
-            }
-            maxIntensity = Math.max(maxIntensity, strongest);
-        }
-        double meanStrongest = supportedProfiles == 0 ? 0.0 : strongestTotal / supportedProfiles;
-        StringBuilder builder = new StringBuilder("{")
-            .append("\"detectorMode\":\"").append(jsonEscape(colorMode)).append("\",")
-            .append("\"intensitySource\":\"").append(jsonEscape(intensitySource.name())).append("\",")
-            .append("\"profileCount\":").append(profiles.size()).append(',')
-            .append("\"outsideRasterProfiles\":").append(profiles.stream().filter(profile -> !profile.anchorWithinRaster()).count()).append(',')
-            .append("\"candidateCount\":").append(colorCandidates.size()).append(',')
-            .append("\"supportedProfiles\":").append(supportedProfiles).append(',')
-            .append("\"emptyProfiles\":").append(emptyProfiles).append(',')
-            .append("\"supportRatio\":").append(profiles.isEmpty() ? 0.0 : (double) supportedProfiles / profiles.size()).append(',')
-            .append("\"maxPeaksPerProfile\":").append(maxPeaks).append(',')
-            .append("\"maxIntensity\":").append(maxIntensity).append(',')
-            .append("\"meanStrongestIntensity\":").append(meanStrongest).append(',')
-            .append("\"combinedIntensity\":").append(RenderedHeatmapSampler.isCombinedColorMode(colorMode)).append(',')
-            .append("\"intensityComponents\":").append(intensityComponentsJson(colorMode)).append(',')
-            .append("\"candidateSummaries\":").append(colorCandidateSummariesJson(colorCandidates)).append(',')
-            .append("\"profiles\":[");
-        for (int i = 0; i < profiles.size(); i++) {
-            if (i > 0) {
-                builder.append(',');
-            }
-            RenderedHeatmapSampler.CrossSectionProfile profile = profiles.get(i);
-            builder.append('{')
-                .append("\"index\":").append(i).append(',')
-                .append("\"anchorRasterX\":").append(format(profile.anchorScreen().x)).append(',')
-                .append("\"anchorRasterY\":").append(format(profile.anchorScreen().y)).append(',')
-                .append("\"normalX\":").append(format(profile.normalScreen().x)).append(',')
-                .append("\"normalY\":").append(format(profile.normalScreen().y)).append(',')
-                .append("\"anchorWithinRaster\":").append(profile.anchorWithinRaster()).append(',')
-                .append("\"peaks\":").append(peaksToJson(profile.peaks()))
-                .append('}');
-        }
-        return builder.append("]}").toString();
-    }
-
-    private String intensityComponentsJson(String colorMode) {
-        StringBuilder builder = new StringBuilder("[");
-        List<RenderedHeatmapSampler.IntensityComponent> components = RenderedHeatmapSampler.intensityComponents(colorMode);
-        for (int i = 0; i < components.size(); i++) {
-            if (i > 0) {
-                builder.append(',');
-            }
-            RenderedHeatmapSampler.IntensityComponent component = components.get(i);
-            builder.append('{')
-                .append("\"mode\":\"").append(jsonEscape(component.mode())).append("\",")
-                .append("\"weight\":").append(format(component.weight()))
-                .append('}');
-        }
-        return builder.append(']').toString();
-    }
-
-    private String colorCandidateSummariesJson(List<CenterlineCandidate> candidates) {
-        StringBuilder builder = new StringBuilder("[");
-        for (int i = 0; i < candidates.size(); i++) {
-            if (i > 0) {
-                builder.append(',');
-            }
-            CenterlineCandidate candidate = candidates.get(i);
-            builder.append('{')
-                .append("\"id\":\"").append(jsonEscape(candidate.id())).append("\",")
-                .append("\"score\":").append(candidate.score()).append(',')
-                .append("\"pointCount\":").append(candidate.screenPoints().size()).append(',')
-                .append("\"offsetMinPx\":").append(jsonDouble(min(candidate.offsetsPx()))).append(',')
-                .append("\"offsetMaxPx\":").append(jsonDouble(max(candidate.offsetsPx()))).append(',')
-                .append("\"offsetMeanPx\":").append(jsonDouble(mean(candidate.offsetsPx()))).append(',')
-                .append("\"evidence\":").append(candidate.evidence().toJson())
-                .append('}');
-        }
-        return builder.append(']').toString();
-    }
-
-    private String peaksToJson(List<RenderedHeatmapSampler.CrossSectionPeak> peaks) {
-        StringBuilder builder = new StringBuilder("[");
-        for (int i = 0; i < peaks.size(); i++) {
-            if (i > 0) {
-                builder.append(',');
-            }
-            RenderedHeatmapSampler.CrossSectionPeak peak = peaks.get(i);
-            builder.append('{')
-                .append("\"offsetPx\":").append(format(peak.offsetPx())).append(',')
-                .append("\"intensity\":").append(format(peak.intensity())).append(',')
-                .append("\"supportWidthPx\":").append(format(peak.supportWidthPx())).append(',')
-                .append("\"syntheticCenter\":").append(peak.syntheticCenter())
-                .append(',')
-                .append("\"prominence\":").append(format(peak.prominence())).append(',')
-                .append("\"noiseFloor\":").append(format(peak.noiseFloor())).append(',')
-                .append("\"maxProfileIntensity\":").append(format(peak.maxProfileIntensity()))
-                .append(',')
-                .append("\"gradientStrength\":").append(format(peak.gradientStrength())).append(',')
-                .append("\"gradientBalance\":").append(format(peak.gradientBalance())).append(',')
-                .append("\"nativeFilteredAgreement\":").append(format(peak.nativeFilteredAgreement())).append(',')
-                .append("\"rawCenterPx\":").append(format(peak.rawCenterPx())).append(',')
-                .append("\"b3CenterPx\":").append(format(peak.lightFilteredCenterPx())).append(',')
-                .append("\"b5CenterPx\":").append(format(peak.standardFilteredCenterPx())).append(',')
-                .append("\"scaleOffsetRmsPx\":").append(format(peak.scaleOffsetRmsPx())).append(',')
-                .append("\"scaleAgreement\":").append(format(peak.scaleAgreement())).append(',')
-                .append("\"centerUncertaintyPx\":").append(format(peak.centerUncertaintyPx())).append(',')
-                .append("\"filterKernel\":\"raw+B3+B5\",")
-                .append("\"filterPower\":\"2.0 strong/1.25 weak\",")
-                .append("\"filterBlend\":\"B3 0.45/0.30/0.15; B5 0.35/0.25/0.10\",")
-                .append("\"signalGateFloor\":\"0.18*max\",")
-                .append("\"signalGateWidth\":\"max(0.08,0.42*max)\"")
-                .append('}');
-        }
-        return builder.append(']').toString();
     }
 
     private void appendProfilePeaksCsv(
@@ -2800,6 +2962,10 @@ public final class AlignmentService {
                 .append(csv(intensitySource.name())).append(',')
                 .append(csv(components)).append(',')
                 .append(profileIndex).append(',')
+                .append(format(profiles.get(profileIndex).anchorScreen().x)).append(',')
+                .append(format(profiles.get(profileIndex).anchorScreen().y)).append(',')
+                .append(format(profiles.get(profileIndex).normalScreen().x)).append(',')
+                .append(format(profiles.get(profileIndex).normalScreen().y)).append(',')
                 .append(profiles.get(profileIndex).anchorWithinRaster()).append(',')
                 .append(format(strongest.intensity())).append(',')
                 .append(format(strongest.prominence())).append(',')
@@ -2831,7 +2997,7 @@ public final class AlignmentService {
         IntensitySamplingMode source = intensitySamplingMode(config);
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
-            CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
+            CandidateMetrics metrics = candidateDiagnosticMetrics(candidate, effectiveSampling);
             CorridorQuality quality = candidate.evidence().corridorQuality();
             var coverage = candidate.evidence().corridorCoverage();
             String detector = detectorMode(candidate);
@@ -2875,15 +3041,15 @@ public final class AlignmentService {
                 .append(format(candidate.evidence().scalePersistence())).append(',')
                 .append(format(candidate.evidence().scaleConflictFraction())).append(',')
                 .append(candidate.evidence().maxConsecutiveEmptyProfiles()).append(',')
-                .append(format(metrics.sourceMetersPerPixel())).append(',')
+                .append(csvNumber(metrics.sourceMetersPerPixel())).append(',')
                 .append(format(metrics.absMeanOffsetPx())).append(',')
                 .append(format(metrics.p95DeltaPx())).append(',')
                 .append(format(metrics.p95AccelerationPx())).append(',')
                 .append(format(metrics.highFrequencyP95Px())).append(',')
-                .append(format(metrics.p95DeltaSourcePx())).append(',')
-                .append(format(metrics.p95AccelerationSourcePx())).append(',')
-                .append(format(metrics.highFrequencyP95SourcePx())).append(',')
-                .append(format(metrics.subSourceWiggleRatio())).append(',')
+                .append(csvNumber(metrics.p95DeltaSourcePx())).append(',')
+                .append(csvNumber(metrics.p95AccelerationSourcePx())).append(',')
+                .append(csvNumber(metrics.highFrequencyP95SourcePx())).append(',')
+                .append(csvNumber(metrics.subSourceWiggleRatio())).append(',')
                 .append(metrics.signFlips()).append(',')
                 .append(format(metrics.edgeRatio())).append(',')
                 .append(format(metrics.absMeanOffsetMeters())).append(',')
@@ -2915,10 +3081,18 @@ public final class AlignmentService {
     }
 
     private String renderedZoomSummary(ImageryLayer imageryLayer) {
-        if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
-            return "z" + tileLayer.getZoomLevel() + " (best z" + tileLayer.getBestZoom() + ")";
+        CapturedTileZoom zoom = capturedTileZoom(imageryLayer);
+        if (zoom.sourceTileZoom() >= 0) {
+            return "z" + zoom.sourceTileZoom() + " (best z" + zoom.bestSourceTileZoom() + ")";
         }
         return "not a tiled imagery layer";
+    }
+
+    private CapturedTileZoom capturedTileZoom(ImageryLayer imageryLayer) {
+        if (imageryLayer instanceof AbstractTileSourceLayer<?> tileLayer) {
+            return new CapturedTileZoom(tileLayer.getZoomLevel(), tileLayer.getBestZoom());
+        }
+        return new CapturedTileZoom(-1, -1);
     }
 
     private String eastNorthLatLonJson(EastNorth eastNorth, LatLon latLon) {
@@ -3011,12 +3185,24 @@ public final class AlignmentService {
         return value < 0 ? "null" : Integer.toString(value);
     }
 
+    private String optionalInt(java.util.OptionalInt value) {
+        return value != null && value.isPresent() ? Integer.toString(value.getAsInt()) : "null";
+    }
+
+    private String optionalDouble(java.util.OptionalDouble value) {
+        return value != null && value.isPresent() ? jsonDouble(value.getAsDouble()) : "null";
+    }
+
     private double safeDouble(double value) {
         return Double.isFinite(value) ? value : Double.NaN;
     }
 
     private String jsonDouble(double value) {
         return Double.isFinite(value) ? format(value) : "null";
+    }
+
+    private String csvNumber(double value) {
+        return Double.isFinite(value) ? format(value) : "";
     }
 
     private String format(double value) {
@@ -3053,7 +3239,7 @@ public final class AlignmentService {
         StringBuilder builder = new StringBuilder("[");
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
-            CandidateMetrics metrics = candidateMetrics(candidate, effectiveSampling);
+            CandidateMetrics metrics = candidateDiagnosticMetrics(candidate, effectiveSampling);
             if (i > 0) {
                 builder.append(',');
             }
@@ -3194,46 +3380,83 @@ public final class AlignmentService {
         int configuredStepPx,
         int effectiveHalfWidthPx,
         int effectiveStepPx,
-        double referenceViewMetersPerPixel,
-        double viewMetersPerPixel,
-        double targetHalfWidthMeters,
-        double targetStepMeters,
+        double referenceGroundMetersPerViewPixel,
+        double decisionGroundMetersPerViewPixel,
+        double decisionHalfWidthUnits,
+        double decisionStepUnits,
         double rasterScale,
-        double sourceMetersPerPixel
+        double decisionSourceMetersPerPixel,
+        SamplingScale samplingScale
     ) {
-        double referenceRasterMetersPerPixel() {
-            return referenceViewMetersPerPixel / rasterScale;
-        }
-
-        double rasterMetersPerPixel() {
-            return viewMetersPerPixel / rasterScale;
-        }
-
-        double sourcePixelSizeRasterPx() {
-            double rasterMeters = rasterMetersPerPixel();
-            if (!Double.isFinite(sourceMetersPerPixel) || sourceMetersPerPixel <= 0.0
-                || !Double.isFinite(rasterMeters) || rasterMeters <= 0.0) {
-                return rasterScale;
+        EffectiveSampling {
+            if (samplingScale == null) {
+                throw new IllegalArgumentException("Effective sampling requires an explicit physical scale");
             }
-            return Math.max(1.0, sourceMetersPerPixel / rasterMeters);
+            if (configuredHalfWidthPx <= 0 || configuredStepPx <= 0
+                || effectiveHalfWidthPx <= 0 || effectiveStepPx <= 0
+                || effectiveStepPx > effectiveHalfWidthPx) {
+                throw new IllegalArgumentException("Effective sampling pixel widths and steps must be positive and bounded");
+            }
+            requireFinitePositive(referenceGroundMetersPerViewPixel, "reference ground resolution");
+            requireFinitePositive(decisionGroundMetersPerViewPixel, "decision ground/reference resolution");
+            requireFinitePositive(decisionHalfWidthUnits, "decision half-width");
+            requireFinitePositive(decisionStepUnits, "decision step");
+            requireFinitePositive(rasterScale, "effective raster scale");
+            requireFinitePositive(decisionSourceMetersPerPixel, "decision source resolution");
+            if (Math.abs(rasterScale - samplingScale.rasterScale()) > 1e-12) {
+                throw new IllegalArgumentException("Effective and physical sampling raster scales must match");
+            }
         }
 
-        double effectiveHalfWidthMeters() {
-            return effectiveHalfWidthPx * viewMetersPerPixel;
+        private static void requireFinitePositive(double value, String name) {
+            if (!Double.isFinite(value) || value <= 0.0) {
+                throw new IllegalArgumentException(name + " must be finite and positive");
+            }
         }
 
-        double effectiveStepMeters() {
-            return effectiveStepPx * viewMetersPerPixel;
+        double referenceRasterMetersPerPixel() {
+            return referenceGroundMetersPerViewPixel / rasterScale;
+        }
+
+        double decisionRasterMetersPerPixel() {
+            return decisionGroundMetersPerViewPixel / rasterScale;
+        }
+
+        double trackerNormalizationRasterPx() {
+            return samplingScale.trackerNormalizationRasterPx();
+        }
+
+        double decisionEffectiveStepUnits() {
+            return effectiveStepPx * decisionGroundMetersPerViewPixel;
+        }
+
+        double effectiveHalfWidthGroundMeters() {
+            return effectiveHalfWidthPx * samplingScale.groundMetersPerViewPixel();
+        }
+
+        double effectiveStepGroundMeters() {
+            return effectiveStepPx * samplingScale.groundMetersPerViewPixel();
         }
     }
 
     private record RenderedCapture(
         BufferedImage raster,
         ProjectionBounds bounds,
-        double viewMetersPerPixel,
+        double projectionUnitsPerViewPixel,
         List<Point2D.Double> sourceRasterPolyline,
-        VisibleCaptureState state
+        VisibleCaptureState state,
+        int sourceTileZoom,
+        int bestSourceTileZoom,
+        VisibleSourceResolutionResolver.SourceResolution sourceResolution
     ) {
+        RenderedCapture {
+            if (sourceResolution == null) {
+                throw new IllegalArgumentException("Rendered capture requires slide-time source resolution metadata");
+            }
+        }
+    }
+
+    private record CapturedTileZoom(int sourceTileZoom, int bestSourceTileZoom) {
     }
 
     private record VisibleCaptureState(
@@ -3244,7 +3467,7 @@ public final class AlignmentService {
         ProjectionBounds requestedBounds,
         ProjectionBounds captureBounds,
         Dimension captureSize,
-        double targetViewMetersPerPixel,
+        double targetProjectionUnitsPerViewPixel,
         boolean chunked,
         int chunkCount
     ) {
@@ -3254,7 +3477,8 @@ public final class AlignmentService {
 
         VisibleCaptureState withCapturePlan(boolean newChunked, int newChunkCount) {
             return new VisibleCaptureState(originalCenter, originalScale, originalBounds, originalSize,
-                requestedBounds, captureBounds, captureSize, targetViewMetersPerPixel, newChunked, newChunkCount);
+                requestedBounds, captureBounds, captureSize, targetProjectionUnitsPerViewPixel,
+                newChunked, newChunkCount);
         }
     }
 
@@ -3271,6 +3495,7 @@ public final class AlignmentService {
         String corridorTubeCsv,
         String associationDecisionsCsv,
         String endpointApproachesCsv,
+        String detectorPerformanceCsv,
         int outsideRasterProfiles,
         int totalProfiles,
         ProfileSpacingStats profileSpacing
@@ -3326,7 +3551,68 @@ public final class AlignmentService {
         String scaleSpaceCsv,
         String corridorTubeCsv,
         String associationDecisionsCsv,
-        String endpointApproachesCsv
+        String endpointApproachesCsv,
+        DetectorPerformance performance
     ) {
+        TrackerOutput(
+            List<CenterlineCandidate> candidates,
+            String profileIntensityCsv,
+            String corridorBandsCsv,
+            String corridorTracksCsv,
+            String optimizerCostsCsv,
+            String scaleSpaceCsv,
+            String corridorTubeCsv,
+            String associationDecisionsCsv,
+            String endpointApproachesCsv
+        ) {
+            this(candidates, profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv,
+                scaleSpaceCsv, corridorTubeCsv, associationDecisionsCsv, endpointApproachesCsv,
+                DetectorPerformance.empty(candidates.size()));
+        }
+    }
+
+    private record DetectorPerformance(
+        long samplingNanos,
+        long extractionNanos,
+        long scaleAssociationNanos,
+        long trackingAndGroupingNanos,
+        long optimizationNanos,
+        long diagnosticSerializationNanos,
+        long projectionNanos,
+        long detectorTotalNanos,
+        int profileCount,
+        int bandCount,
+        int trackCount,
+        int candidateCount,
+        int allowedStateCount,
+        long transitionEvaluations,
+        long profileCostEvaluations,
+        long retainedPairStateAllocations,
+        int diagnosticCharacters
+    ) {
+        static DetectorPerformance empty(int candidateCount) {
+            return new DetectorPerformance(0L, 0L, 0L, 0L, 0L, 0L, 0L, 0L,
+                0, 0, 0, candidateCount, 0, 0L, 0L, 0L, 0);
+        }
+
+        DetectorPerformance withOuterPhases(
+            long newSamplingNanos,
+            long additionalDiagnosticNanos,
+            long newProjectionNanos,
+            long newTotalNanos,
+            int additionalDiagnosticCharacters
+        ) {
+            return new DetectorPerformance(newSamplingNanos, extractionNanos, scaleAssociationNanos,
+                trackingAndGroupingNanos, optimizationNanos,
+                diagnosticSerializationNanos + additionalDiagnosticNanos,
+                newProjectionNanos, newTotalNanos, profileCount, bandCount, trackCount, candidateCount,
+                allowedStateCount, transitionEvaluations, profileCostEvaluations,
+                retainedPairStateAllocations, diagnosticCharacters + additionalDiagnosticCharacters);
+        }
+
+        long accountedNanos() {
+            return samplingNanos + extractionNanos + scaleAssociationNanos + trackingAndGroupingNanos
+                + optimizationNanos + diagnosticSerializationNanos + projectionNanos;
+        }
     }
 }

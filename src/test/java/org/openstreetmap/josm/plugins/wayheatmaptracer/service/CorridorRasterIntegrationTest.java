@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.geom.Line2D;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -87,15 +88,52 @@ class CorridorRasterIntegrationTest {
         assertTrue(carriageways.tracks().stream().filter(track -> !track.parent()).count() >= 2);
     }
 
+    @Test
+    void repeatedCurvedCorridorPassStaysWithinOneSourcePixelAndKeepsFixedAnchors() {
+        IntToDoubleFunction center = profile -> 6.0 * Math.sin(profile * 2.0 * Math.PI / (PROFILE_COUNT - 1));
+        BufferedImage raster = raster(center, 0.82, false, true);
+        JunctionContext fixedAnchors = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, true, true, 0.0, 0.0, 6),
+            new EndpointConstraint(PROFILE_COUNT / 2, 2L, true, true, 0.0, 0.0, 6),
+            new EndpointConstraint(PROFILE_COUNT - 1, 3L, true, true, 0.0, 0.0, 6)
+        ));
+
+        CenterlineCandidate first = detailed(raster, sourcePolyline(), fixedAnchors).candidates().get(0);
+        CenterlineCandidate repeated = detailed(raster, first.screenPoints(), fixedAnchors).candidates().stream()
+            .filter(candidate -> candidate.evidence().corridorCoverage().complete())
+            .min(java.util.Comparator.comparingDouble(candidate -> bidirectionalMaximumDrift(
+                first.screenPoints(), candidate.screenPoints())))
+            .orElseThrow();
+
+        assertTrue(first.evidence().corridorCoverage().complete());
+        assertTrue(repeated.evidence().corridorCoverage().complete());
+        assertTrue(repeated.evidence().corridorQuality().unsupportedExcursions()
+            <= first.evidence().corridorQuality().unsupportedExcursions());
+        assertEquals(first.screenPoints().size(), repeated.screenPoints().size());
+        double maximumDrift = bidirectionalMaximumDrift(first.screenPoints(), repeated.screenPoints());
+        assertTrue(maximumDrift <= 1.0, "repeat maximum drift=" + maximumDrift);
+        for (int index : List.of(0, PROFILE_COUNT / 2, PROFILE_COUNT - 1)) {
+            assertEquals(0.0, repeated.offsetsPx().get(index), 1e-9);
+        }
+    }
+
     private List<CenterlineCandidate> track(BufferedImage raster) {
         return detailed(raster).candidates();
     }
 
     private CorridorAwareTracker.TrackingResult detailed(BufferedImage raster) {
+        return detailed(raster, sourcePolyline(), JunctionContext.empty());
+    }
+
+    private CorridorAwareTracker.TrackingResult detailed(
+        BufferedImage raster,
+        List<Point2D.Double> source,
+        JunctionContext junctionContext
+    ) {
         List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new RenderedHeatmapSampler()
-            .sampleProfilesOnScaledRaster(raster, sourcePolyline(), 18, 1, "hot", 1.0, 1.0,
+            .sampleProfilesOnScaledRaster(raster, source, 18, 1, "hot", 1.0, 1.0,
                 IntensitySamplingMode.DIRECT_VALUE);
-        return new CorridorAwareTracker().trackDetailed(profiles, 1.0);
+        return new CorridorAwareTracker().trackDetailed(profiles, 1.0, junctionContext);
     }
 
     private BufferedImage raster(
@@ -169,5 +207,28 @@ class CorridorRasterIntegrationTest {
 
     private double mean(List<Double> values) {
         return values.stream().mapToDouble(Double::doubleValue).average().orElseThrow();
+    }
+
+    private double maximumPointToPolylineDistance(
+        List<Point2D.Double> points,
+        List<Point2D.Double> polyline
+    ) {
+        return points.stream().mapToDouble(point -> {
+            double nearest = Double.POSITIVE_INFINITY;
+            for (int index = 1; index < polyline.size(); index++) {
+                nearest = Math.min(nearest, Line2D.ptSegDist(
+                    polyline.get(index - 1).x, polyline.get(index - 1).y,
+                    polyline.get(index).x, polyline.get(index).y, point.x, point.y));
+            }
+            return nearest;
+        }).max().orElse(0.0);
+    }
+
+    private double bidirectionalMaximumDrift(
+        List<Point2D.Double> left,
+        List<Point2D.Double> right
+    ) {
+        return Math.max(maximumPointToPolylineDistance(left, right),
+            maximumPointToPolylineDistance(right, left));
     }
 }

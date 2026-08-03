@@ -86,8 +86,11 @@ public final class CorridorAwareTracker {
         JunctionContext junctionContext
     ) {
         validatePhysicalProfileSequence(profiles);
+        long extractionStart = System.nanoTime();
         List<CorridorProfile> corridorProfiles = extractor.extract(profiles);
-        return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, Map.of(), List.of());
+        long extractionNanos = System.nanoTime() - extractionStart;
+        return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, Map.of(), List.of(),
+            extractionNanos, 0L);
     }
 
     /**
@@ -110,13 +113,17 @@ public final class CorridorAwareTracker {
             validatePhysicalProfileSequence(level.profiles());
         }
         validateAlignedPhysicalSequences(profileSet);
+        long extractionStart = System.nanoTime();
         List<List<CorridorProfile>> extractedLevels = profileSet.levels().stream()
             .map(level -> extractor.extract(level.profiles()))
             .toList();
+        long extractionNanos = System.nanoTime() - extractionStart;
         List<CorridorProfile> fine = extractedLevels.get(0);
+        long associationStart = System.nanoTime();
         ScaleAssociation association = associateScales(profileSet, extractedLevels, sourcePixelSizePx);
+        long associationNanos = System.nanoTime() - associationStart;
         return trackExtracted(fine, sourcePixelSizePx, junctionContext,
-            association.evidence(), association.profiles());
+            association.evidence(), association.profiles(), extractionNanos, associationNanos);
     }
 
     private void validatePhysicalProfileSequence(
@@ -156,10 +163,15 @@ public final class CorridorAwareTracker {
         double sourcePixelSizePx,
         JunctionContext junctionContext,
         Map<String, BandScaleEvidence> scaleEvidence,
-        List<MultiScaleCorridorProfile> multiScaleProfiles
+        List<MultiScaleCorridorProfile> multiScaleProfiles,
+        long extractionNanos,
+        long scaleAssociationNanos
     ) {
+        long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles);
+        long trackingNanos = System.nanoTime() - trackingStart;
+        long optimizationStart = System.nanoTime();
         List<CenterlineCandidate> candidates = new ArrayList<>();
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations = new LinkedHashMap<>();
         Map<String, LongitudinalCorridorTube> tubes = new LinkedHashMap<>();
@@ -190,8 +202,10 @@ public final class CorridorAwareTracker {
         List<CenterlineCandidate> sorted = candidates.stream()
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+        long optimizationNanos = System.nanoTime() - optimizationStart;
         return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), optimizations,
-            tubes, multiScaleProfiles, scaleEvidence, sourcePixelSizePx);
+            tubes, multiScaleProfiles, scaleEvidence, sourcePixelSizePx,
+            new TrackingTiming(extractionNanos, scaleAssociationNanos, trackingNanos, optimizationNanos));
     }
 
     private CandidateEvidence evidence(
@@ -361,6 +375,7 @@ public final class CorridorAwareTracker {
      * @param multiScaleProfiles extracted L0/L1/L2 observations
      * @param scaleEvidence fine-band scale associations keyed by profile and band id
      * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param timing observational phase timings that never affect candidate decisions
      */
     public record TrackingResult(
         List<CenterlineCandidate> candidates,
@@ -371,7 +386,8 @@ public final class CorridorAwareTracker {
         Map<String, LongitudinalCorridorTube> tubes,
         List<MultiScaleCorridorProfile> multiScaleProfiles,
         Map<String, BandScaleEvidence> scaleEvidence,
-        double sourcePixelSizePx
+        double sourcePixelSizePx,
+        TrackingTiming timing
     ) {
         /** Makes diagnostic result collections immutable. */
         public TrackingResult {
@@ -383,6 +399,30 @@ public final class CorridorAwareTracker {
             tubes = Map.copyOf(tubes);
             multiScaleProfiles = List.copyOf(multiScaleProfiles);
             scaleEvidence = Map.copyOf(scaleEvidence);
+            timing = java.util.Objects.requireNonNull(timing);
+        }
+    }
+
+    /**
+     * Observational corridor phase timings in nanoseconds.
+     *
+     * @param extractionNanos scalar-profile corridor extraction
+     * @param scaleAssociationNanos cross-scale association
+     * @param trackingAndGroupingNanos longitudinal tracking and grouping
+     * @param optimizationNanos exact optimization, evidence, and candidate construction
+     */
+    public record TrackingTiming(
+        long extractionNanos,
+        long scaleAssociationNanos,
+        long trackingAndGroupingNanos,
+        long optimizationNanos
+    ) {
+        /** Rejects negative timer values. */
+        public TrackingTiming {
+            if (extractionNanos < 0L || scaleAssociationNanos < 0L
+                || trackingAndGroupingNanos < 0L || optimizationNanos < 0L) {
+                throw new IllegalArgumentException("Corridor timing values must be non-negative");
+            }
         }
     }
 

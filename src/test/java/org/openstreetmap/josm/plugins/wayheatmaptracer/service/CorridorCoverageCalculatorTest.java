@@ -57,6 +57,36 @@ class CorridorCoverageCalculatorTest {
         assertEquals(10.0, coverage.maximumInternalUnsupportedMeters(), 1e-9);
     }
 
+    @Test
+    void rejectsUnapprovedProfileLimitedAndDistanceLimitedBridges() {
+        CorridorCoverage unapproved = coverageAcrossGap(profiles(8, 1.0), 0, 7, false);
+        CorridorCoverage tooManyProfiles = coverageAcrossGap(profiles(20, 0.5), 0, 18, true);
+        CorridorCoverage tooFar = coverageAcrossGap(profiles(6, 5.1), 0, 5, true);
+
+        assertFalse(unapproved.complete());
+        assertFalse(tooManyProfiles.complete());
+        assertFalse(tooFar.complete());
+        assertEquals("unapproved-internal-gap", unapproved.reason());
+        assertEquals("unapproved-internal-gap", tooManyProfiles.reason());
+        assertEquals("unapproved-internal-gap", tooFar.reason());
+    }
+
+    private CorridorCoverage coverageAcrossGap(
+        List<CorridorProfile> profiles,
+        int left,
+        int right,
+        boolean rightBoundaryApproved
+    ) {
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        points.put(left, new CorridorTrackPoint(left, profiles.get(left).bands().get(0), false));
+        points.put(right, new CorridorTrackPoint(
+            right, profiles.get(right).bands().get(0), rightBoundaryApproved));
+        return new CorridorCoverageCalculator().calculate(
+            new CorridorTrack("gap", points, 1.0, 0.1, false, List.of(), ""),
+            profiles,
+            new EndpointApproachModel(List.of()));
+    }
+
     private List<CorridorProfile> profiles(int count, double spacingMeters) {
         return java.util.stream.IntStream.range(0, count).mapToObj(index -> {
             CorridorBand band = new CorridorBand("band", 0.0, -2.0, 2.0, -0.5, 0.5,

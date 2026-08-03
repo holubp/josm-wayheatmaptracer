@@ -67,7 +67,7 @@ The current implementation is designed for private development:
 - In corridor-aware mode, map RGB to scalar intensity first, interpolate corridor edges and intensity evidence between source samples, then build local L0/L1/L2 Gaussian levels from the imagery already acquired for the slide. Source pixels define evidence uncertainty, not a grid to which the result must snap.
 - In corridor-aware mode, associate the same longitudinal strand through short gaps, fit a confidence-weighted robust corridor tube over physical distance, and solve one exact second-order centerline optimization. Temporary side traces or coarse-scale parent merges cannot by themselves authorize a lateral strand switch, and there is no completed-line smoothing pass that could erase a supported switchback.
 - In corridor-aware mode, constrain fixed anchors before geometry is built, derive endpoint approach direction from the selected branch rather than the connected road, and keep movable endpoints/junctions within both a source-position prior and a hard 10 metre/configured-search limit. Missing reliable branch-approach evidence lowers candidate ranking and remains visible in diagnostics, but does not alone disable Apply; independently detected foldbacks, terminal kinks, or genuine pre-junction crossings still do.
-- Show the rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
+- Show the slide-time rendered tile zoom used by JOSM in the preview dialog when the heatmap layer exposes one
 - Optionally allow alignment in local/no-download layers, bypassing downloaded-area checks for heatmap-only drawing
 - Optionally allow junction and endpoint nodes to move with the traced heatmap geometry
 - Resolve the heatmap source as a managed source-tile configuration or as a visible imagery layer by managed layer, exact selected layer title, or regex
@@ -208,7 +208,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - raw candidate ridge geometries and final fixed-anchor preview geometries as separate OSM files, including inspection-only rejected candidates
 - `candidate-metrics.csv`, with detector, visible color, intensity source, source tier, applicability, raw score, measurable-quality score, detector prior, calibrated score, longitudinal coverage and gap details, support ratio, mean intensity, mean gradient strength, objective-derived and physical longitudinal stability, SNR, ambiguity, corridor existence/localization confidence, normalized optimizer cost, containment, tube residuals, source-pixel high-frequency residuals/deltas/acceleration, turns, forward-progress violations, unsupported excursions, endpoint quality, edge-pinning, and safety warnings for each candidate
 - `profile-peaks.csv`, with every detected cross-section peak, including offset, intensity, prominence, noise floor, support width, gradient strength/balance, native-vs-filtered maximum agreement, raw/B3/B5 center positions, scale agreement, center uncertainty, filter parameters, and synthetic-center flag
-- `palette-samples.csv`, with per-profile strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration
+- `palette-samples.csv`, with every profile's slide-time raster anchor/normal, strongest evidence, strongest gradient evidence, and peak counts for quick detector calibration and geometric reconstruction
 - `profile-intensity.csv`, with every in-raster and off-raster cross-section offset plus native, B3, B5, and profile-normalized scalar intensity
 - `corridor-bands.csv`, with nested shoulder/core boundaries, robust centers, valley ratios, confidence, uncertainty, and parent/child identity
 - `corridor-tracks.csv`, with longitudinal associations, bridged gaps, support, parent/child grouping, and lane/carriageway ambiguity evidence
@@ -217,18 +217,27 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - `endpoint-approaches.csv`, with fixed or movable boundary constraints, selected branch anchors, Hermite guide targets, and explicit unsupported reasons
 - `junction-safety.csv` and `junction-context.osm`, with the exact final-preview junction crossing evidence and only the adjacent connected segments that were evaluated
 - `optimizer-costs.csv`, with the selected offset and data, continuity, acceleration, tube, endpoint, containment, and total costs plus exact-state/evaluation counts for every profile/track
+- `detector-performance.csv`, with per-detector sampling, extraction, scale association, tracking/grouping, exact optimization, diagnostic serialization, projection, total/unaccounted time, and operation counts
 - `parallel-context.json`, with redacted nearby OSM ids, assignment-relevant tags, distances, directions, overlap, and candidate reservation costs
 - selected candidate, raw candidate scores, calibrated ranking scores, SNR/evidence details, sampled offsets, roughness metrics, screen-space ridge points, and projected East/North ridge points
 - optional human candidate ratings and negative feature tags entered in the preview dialog, stored in both `candidate-ratings.json` and `status.json`
 - `detector-attempts.json`, with every requested source/mapping pair, terminal status, reason, and produced candidate ids
 - `scale-space.csv`, with L0/L1/L2 transforms, extracted bands, persistence, compatible coarse centers, conflicts, and parallel-parent merges
-- visible-rendered-layer sampling details: source tile zoom reported by JOSM, whether a virtual viewport/chunked capture was used, requested and actual capture bounds, viewport size and bounds, view meters per pixel, oversampled raster meters per pixel, configured and effective cross-section width/step, physical profile count/path length and min/median/p95/max profile spacing, capture size, chunk count, and estimated visible tile range
+- visible-rendered-layer sampling details: source tile zoom captured while JOSM rendered the slide viewport, whether a virtual viewport/chunked capture was used, requested and actual capture bounds, viewport size and bounds, projection units per view pixel, measured ground metres per view/raster pixel, optional native tile resolution and raster footprint, tracker normalization policy, configured and effective cross-section width/step, physical profile count/path length and min/median/p95/max profile spacing, capture size, chunk count, and estimated visible tile range
 - managed all-color aggregate visualization, when source mosaics are available, as `aggregate-intensity/all-colors-combined-z*.png` plus `aggregate-intensity/metadata.json`
 - per-detector profile evidence: cross-section anchors, normals, detected peak offsets/intensities, peak support widths, gradient strength/balance, synthetic center flags, combined detector component weights, and per-detector support statistics
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling
 
-Format-5 exports include the runtime plugin version and a short SHA-256 jar identity when available. Older format-4 bundles remain analyzable, but post-Apply original geometry and metre-labelled corridor fields are marked untrusted because those exports could contain mutable node positions or raster-space distances. The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
+Format-6 exports include the runtime plugin version, a short SHA-256 jar identity when available, unit-explicit sampling scale, canonical bridge ownership, checksummed detailed CSV artifacts, and per-detector performance. The summary JSON no longer duplicates the complete profile arrays. Format-5 bundles remain analyzable, but visible-rendered metre fields are marked untrusted because JOSM projection units were labeled as metres. Older format-4 bundles additionally have mutable post-Apply original geometry and raster-space-distance risks. The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
+
+For local numerical analysis of nested bundles and repeated slides:
+
+```bash
+python3 scripts/analyze-debug-bundles.py problems.zip --raw-csv build/debug-candidates.csv
+python3 scripts/analyze-slide-undulations.py problems.zip --csv build/undulations.csv --json build/undulations.json
+python3 scripts/validate-sampling-scale.py --pretty
+```
 
 ## Palette Calibration Workflow
 

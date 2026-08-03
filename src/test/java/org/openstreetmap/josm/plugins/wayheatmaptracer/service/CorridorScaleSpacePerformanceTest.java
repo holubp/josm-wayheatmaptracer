@@ -67,6 +67,13 @@ class CorridorScaleSpacePerformanceTest {
             "maximum pair states=" + result.maximumPairStates());
         assertTrue(result.transitionEvaluations() <= 400L * 21L * 21L * 21L,
             "transition evaluations=" + result.transitionEvaluations());
+        assertTrue(result.profileCostEvaluations() <= 400L * result.maximumOffsetStates(),
+            "profile cost evaluations=" + result.profileCostEvaluations());
+        assertTrue(result.transitionEvaluations() >= result.profileCostEvaluations() * 20L,
+            "invariant-work reduction was only "
+                + result.transitionEvaluations() / (double) result.profileCostEvaluations() + "x");
+        assertTrue(result.retainedPairStateAllocations() <= result.transitionEvaluations(),
+            "retained pair states=" + result.retainedPairStateAllocations());
         assertTrue(elapsedMillis < 10_000L, "exact optimizer took " + elapsedMillis + " ms");
     }
 }

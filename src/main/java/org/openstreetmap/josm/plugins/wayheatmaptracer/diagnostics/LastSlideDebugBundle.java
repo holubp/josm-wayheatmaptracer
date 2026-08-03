@@ -52,6 +52,7 @@ public final class LastSlideDebugBundle {
     private final String corridorTubeCsv;
     private final String associationDecisionsCsv;
     private final String endpointApproachesCsv;
+    private final String detectorPerformanceCsv;
     private final String parallelContextJson;
     private final String tileManifestJson;
     private final String aggregateMetadataJson;
@@ -81,6 +82,7 @@ public final class LastSlideDebugBundle {
         String corridorTubeCsv,
         String associationDecisionsCsv,
         String endpointApproachesCsv,
+        String detectorPerformanceCsv,
         String parallelContextJson,
         String tileManifestJson,
         String aggregateMetadataJson,
@@ -109,6 +111,7 @@ public final class LastSlideDebugBundle {
         this.corridorTubeCsv = corridorTubeCsv;
         this.associationDecisionsCsv = associationDecisionsCsv;
         this.endpointApproachesCsv = endpointApproachesCsv;
+        this.detectorPerformanceCsv = detectorPerformanceCsv;
         this.parallelContextJson = parallelContextJson;
         this.tileManifestJson = tileManifestJson;
         this.aggregateMetadataJson = aggregateMetadataJson;
@@ -205,6 +208,7 @@ public final class LastSlideDebugBundle {
             result.diagnostics().corridorTubeCsv(),
             result.diagnostics().associationDecisionsCsv(),
             result.diagnostics().endpointApproachesCsv(),
+            result.diagnostics().detectorPerformanceCsv(),
             result.diagnostics().parallelContextJson(),
             tileManifest,
             aggregateMetadata,
@@ -245,6 +249,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "corridor-tube.csv", corridorTubeCsv);
             writeText(zip, "association-decisions.csv", associationDecisionsCsv);
             writeText(zip, "endpoint-approaches.csv", endpointApproachesCsv);
+            writeText(zip, "detector-performance.csv", detectorPerformanceCsv);
             writeText(zip, "parallel-context.json", parallelContextJson);
             writeText(zip, "tile-manifest.json", tileManifestJson);
             writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
@@ -261,11 +266,11 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":5,"
+            + "\"formatVersion\":6,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 
