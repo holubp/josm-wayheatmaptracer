@@ -1,6 +1,6 @@
 # Subpixel Corridor and Endpoint Stability
 
-**Status:** Implemented and verified locally on 2026-08-03; release remains separately authorized.
+**Status:** Implemented, reviewed, committed, and pushed on 2026-08-03. Release `v0.17.0` is separately authorized and in progress.
 
 **Goal:** Make corridor-aware hot-source alignment land on the geographic and longitudinal center of broad or sparse trails, reject short-lived lateral strand noise, enter fixed junctions cleanly, and preserve existing OSM node identity without weakening real turns or the legacy tracker.
 
@@ -133,3 +133,10 @@
 - Endpoint hook cleanup and final-preview warning evaluation pass alongside the supported-turn control. Reusable node identities are matched monotonically by path fraction; command execute/undo/redo and orphan cleanup tests pass.
 - Format-6 diagnostics add sample-center metadata, dual-window tube fields, support reasons, and non-sustained ripple metrics. Both debug analyzers read the two supplied old bundles, and older missing columns remain optional.
 - Verification completed with `sh gradlew test`, the focused fixture/corridor/endpoint/node/sampling suite, analyzer execution on both supplied bundles, and Python compilation. No version, release, tag, push, or private diagnostic artifact was added.
+
+### Outcome 10: Publish the separately authorized release
+
+- Work: Release the reviewed implementation as `v0.17.0`, because the managed-pixel coordinate contract, corridor objective/support model, endpoint safety processing, and node-reuse algorithm are broader than a patch-only correction. Change only `gradle.properties` and this authorization record after reviewed commit `e8fbd25`.
+- Work: Before publication, require local `main` to match `origin/main`, require no existing local/remote `v0.17.0` tag or GitHub release, rebuild from the version commit, and verify the jar manifest reports `Plugin-Version: 0.17.0`. Keep private debug and human-reference files untracked.
+- Work: Tag the exact verified version commit as `v0.17.0`, push `main` and the tag without force, and create a non-draft, non-prerelease GitHub release titled exactly `v0.17.0` with primary asset `wayheatmaptracer.jar`. Stop and report without deleting or rewriting remote state if any collision, push, upload, manifest, or verification check fails.
+- Verify: `sh gradlew clean test build javadoc`, Python analyzer compilation/tests, jar manifest inspection, `git ls-remote --tags origin refs/tags/v0.17.0`, and `gh release view v0.17.0 --json tagName,name,isDraft,isPrerelease,assets,targetCommitish,url`.
