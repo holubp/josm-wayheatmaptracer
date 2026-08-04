@@ -272,7 +272,7 @@ public record CenterlineCandidate(
             if (!label.isEmpty() && !label.toString().endsWith(" - ")) {
                 label.append(" - ");
             }
-            label.append(parts[index].replace('-', ' '));
+            label.append(readableCandidatePart(parts[index]));
             index++;
         }
         while (index < parts.length) {

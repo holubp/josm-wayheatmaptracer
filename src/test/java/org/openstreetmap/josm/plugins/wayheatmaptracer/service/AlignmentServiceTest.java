@@ -141,6 +141,55 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void rejectsIncidentWayCrossingAtCandidateVertex() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchEnd = nodeAt(10, 10);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate crossing = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(
+                new EastNorth(0, 5), new EastNorth(10, 5), new EastNorth(12, 5), new EastNorth(10, 0)));
+
+        assertTrue(new AlignmentService().crossesConnectedWayBeforeJunction(crossing, selected),
+            "A crossing must not disappear merely because it coincides with a candidate vertex");
+    }
+
+    @Test
+    void rejectsCollinearOverlapWithIncidentWayBeforeJunction() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchEnd = nodeAt(10, 10);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of(start, junction));
+        CenterlineCandidate overlapping = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 5), new EastNorth(10, 5), new EastNorth(10, 0)));
+
+        assertTrue(new AlignmentService().crossesConnectedWayBeforeJunction(overlapping, selected),
+            "Following an incident segment before the junction is an unsafe overlap");
+    }
+
+    @Test
     void ignoresCrossingsWithRemoteSegmentsOfAConnectedWay() {
         DataSet dataSet = new DataSet();
         Node start = nodeAt(0, 0);
@@ -228,6 +277,18 @@ class AlignmentServiceTest {
                 new EastNorth(0, 10), new EastNorth(10, 0)));
 
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+            () -> new AlignmentService().requireCurrentTopologySafe(candidate, selected));
+    }
+
+    @Test
+    void applyTopologyRecheckRejectsNonAdjacentVertexSelfTouch() {
+        SelectionContext selected = selection(2);
+        CenterlineCandidate candidate = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withFinalPreviewPoints(List.of(
+                new EastNorth(0, 0), new EastNorth(10, 10), new EastNorth(20, 0),
+                new EastNorth(10, 10), new EastNorth(20, 20)));
+
+        assertThrows(IllegalStateException.class,
             () -> new AlignmentService().requireCurrentTopologySafe(candidate, selected));
     }
 

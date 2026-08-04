@@ -52,21 +52,30 @@ public final class CorridorTubeBuilder {
                 scaleEvidence))
             .sorted(Comparator.comparingInt(Observation::profileIndex))
             .toList();
+        List<Observation> directObservations = observations.stream()
+            .filter(value -> value.support() == CorridorPointSupport.DIRECT_UNION).toList();
         List<CorridorTubeSlice> slices = new ArrayList<>(profiles.size());
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
             CorridorTrackPoint point = track.points().get(profileIndex);
+            boolean directlyObserved = point != null && point.support() == CorridorPointSupport.DIRECT_UNION;
+            boolean allowMinimumExpansion = !track.parent() || directlyObserved;
             List<Observation> localWindow = supportWindow(observations, distanceMeters[profileIndex],
-                LOCAL_HALF_WINDOW_METERS, LOCAL_MIN_WINDOW_PROFILES, LOCAL_MAX_WINDOW_PROFILES);
+                LOCAL_HALF_WINDOW_METERS, LOCAL_MIN_WINDOW_PROFILES, LOCAL_MAX_WINDOW_PROFILES,
+                allowMinimumExpansion);
             List<Observation> stabilityWindow = supportWindow(observations, distanceMeters[profileIndex],
-                STABILITY_HALF_WINDOW_METERS, STABILITY_MIN_WINDOW_PROFILES, STABILITY_MAX_WINDOW_PROFILES);
+                STABILITY_HALF_WINDOW_METERS, STABILITY_MIN_WINDOW_PROFILES, STABILITY_MAX_WINDOW_PROFILES,
+                allowMinimumExpansion);
+            List<Observation> directStabilityWindow = supportWindow(directObservations,
+                distanceMeters[profileIndex], STABILITY_HALF_WINDOW_METERS, STABILITY_MIN_WINDOW_PROFILES,
+                STABILITY_MAX_WINDOW_PROFILES, allowMinimumExpansion);
             List<Observation> weakStabilityWindow = supportWindow(observations, distanceMeters[profileIndex],
                 WEAK_STABILITY_HALF_WINDOW_METERS, WEAK_STABILITY_MIN_WINDOW_PROFILES,
-                WEAK_STABILITY_MAX_WINDOW_PROFILES);
+                WEAK_STABILITY_MAX_WINDOW_PROFILES, allowMinimumExpansion);
             Regression local = robustRegression(localWindow, distanceMeters[profileIndex], sourcePixel);
             Regression stability = robustRegression(stabilityWindow, distanceMeters[profileIndex], sourcePixel);
             Regression weakStability = robustRegression(
                 weakStabilityWindow, distanceMeters[profileIndex], sourcePixel);
-            MotionEvidence motion = motionSupport(stabilityWindow, sourcePixel);
+            MotionEvidence motion = motionSupport(directStabilityWindow, sourcePixel);
             double motionSupport = motion.support();
             CorridorBand band = point == null ? null : point.band();
             double prominence = band == null ? 0.0 : Math.max(0.0, band.peakIntensity() - band.noiseFloor());
@@ -146,7 +155,7 @@ public final class CorridorTubeBuilder {
                 Math.abs(centers.lightCenterPx() - centers.standardCenterPx())));
         return new Observation(point.profileIndex(), distanceMeters[point.profileIndex()], band.centerOffsetPx(),
             Math.max(1e-6, weight), band.uncertaintyPx(), centerSpread / sourcePixel,
-            evidence.scaleConflict(), evidence.parentMerge());
+            evidence.scaleConflict(), evidence.parentMerge(), point.support());
     }
 
     private List<Observation> supportWindow(
@@ -154,23 +163,53 @@ public final class CorridorTubeBuilder {
         double targetDistanceMeters,
         double halfWindowMeters,
         int minimumProfiles,
-        int maximumProfiles
+        int maximumProfiles,
+        boolean allowMinimumExpansion
     ) {
-        List<Observation> local = observations.stream()
-            .filter(value -> Math.abs(value.distanceMeters() - targetDistanceMeters) <= halfWindowMeters)
-            .sorted(Comparator.comparingDouble(value -> Math.abs(value.distanceMeters() - targetDistanceMeters)))
-            .limit(maximumProfiles)
-            .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-        if (local.size() < Math.min(minimumProfiles, observations.size())) {
-            for (Observation observation : observations.stream()
-                .sorted(Comparator.comparingDouble(value -> Math.abs(value.distanceMeters() - targetDistanceMeters)))
-                .toList()) {
-                if (!local.contains(observation)) {
-                    local.add(observation);
-                }
-                if (local.size() >= Math.min(minimumProfiles, observations.size())) {
-                    break;
-                }
+        int low = 0;
+        int high = observations.size();
+        while (low < high) {
+            int middle = (low + high) >>> 1;
+            if (observations.get(middle).distanceMeters() < targetDistanceMeters) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        int left = low - 1;
+        int right = low;
+        List<Observation> local = new ArrayList<>(Math.min(maximumProfiles, observations.size()));
+        while (local.size() < maximumProfiles) {
+            double leftDistance = left >= 0
+                ? Math.abs(observations.get(left).distanceMeters() - targetDistanceMeters)
+                : Double.POSITIVE_INFINITY;
+            double rightDistance = right < observations.size()
+                ? Math.abs(observations.get(right).distanceMeters() - targetDistanceMeters)
+                : Double.POSITIVE_INFINITY;
+            if (Math.min(leftDistance, rightDistance) > halfWindowMeters + 1e-9) {
+                break;
+            }
+            if (leftDistance <= rightDistance) {
+                local.add(observations.get(left--));
+            } else {
+                local.add(observations.get(right++));
+            }
+        }
+        while (allowMinimumExpansion
+            && local.size() < Math.min(minimumProfiles, observations.size())) {
+            double leftDistance = left >= 0
+                ? Math.abs(observations.get(left).distanceMeters() - targetDistanceMeters)
+                : Double.POSITIVE_INFINITY;
+            double rightDistance = right < observations.size()
+                ? Math.abs(observations.get(right).distanceMeters() - targetDistanceMeters)
+                : Double.POSITIVE_INFINITY;
+            if (!Double.isFinite(Math.min(leftDistance, rightDistance))) {
+                break;
+            }
+            if (leftDistance <= rightDistance) {
+                local.add(observations.get(left--));
+            } else {
+                local.add(observations.get(right++));
             }
         }
         return local.stream().sorted(Comparator.comparingDouble(Observation::distanceMeters)).toList();
@@ -178,7 +217,7 @@ public final class CorridorTubeBuilder {
 
     private MotionEvidence motionSupport(List<Observation> observations, double sourcePixel) {
         if (observations.size() < 5) {
-            return new MotionEvidence(0.0, "insufficient-profiles");
+            return new MotionEvidence(0.0, "insufficient-direct-profiles");
         }
         double span = observations.get(observations.size() - 1).distanceMeters()
             - observations.get(0).distanceMeters();
@@ -360,7 +399,8 @@ public final class CorridorTubeBuilder {
         double uncertaintyPx,
         double centerSpreadSourcePx,
         boolean scaleConflict,
-        boolean parentMerge
+        boolean parentMerge,
+        CorridorPointSupport support
     ) {
     }
 

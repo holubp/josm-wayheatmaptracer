@@ -493,12 +493,18 @@ public class AlignWayAction extends JosmAction {
             ));
         } else {
             PluginLog.verbose("Applying precise-shape alignment for candidate %s with %d preview points.", chosen.id(), chosenResult.previewPolyline().size());
+            Map<Long, EastNorth> proposedNodePositions = config.trackerMode() == TrackerMode.CORRIDOR_AWARE
+                ? chosen.proposedNodePositions() : null;
+            if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE && proposedNodePositions.isEmpty()) {
+                throw new IllegalStateException(
+                    "The corridor-aware preview has no existing-node assignment plan. Run the slide again.");
+            }
             UndoRedoHandler.getInstance().add(new ReplaceWaySegmentCommand(
                 dataSet,
                 selection.way(),
                 selection,
                 chosenResult.previewPolyline(),
-                chosen.proposedNodePositions(),
+                proposedNodePositions,
                 tr("Align way to heatmap precisely")
             ));
         }

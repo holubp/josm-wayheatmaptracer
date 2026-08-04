@@ -81,6 +81,15 @@ class CenterlineCandidateTest {
     }
 
     @Test
+    void formatsSparseBundleAsCorridorForUsers() {
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "hot/bundle-3", 3.0, List.of(), List.of());
+
+        assertTrue(candidate.displayName().contains("sparse corridor 3"));
+        assertFalse(candidate.displayName().contains("bundle 3"));
+    }
+
+    @Test
     void preservesImmutableProposedNodePositionsAcrossCandidateCopies() {
         Map<Long, EastNorth> mutable = new java.util.LinkedHashMap<>();
         mutable.put(123L, new EastNorth(4.0, 5.0));

@@ -247,6 +247,29 @@ class ReplaceWaySegmentCommandTest {
         assertEquals(new EastNorth(10.0, 0.0), eastNorth(end));
     }
 
+    @Test
+    void emptyCandidatePlanKeepsLegacyPreciseCommandCompatible() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0.0, 0.0);
+        Node end = nodeAtEastNorth(10.0, 0.0);
+        dataSet.addPrimitive(start);
+        dataSet.addPrimitive(end);
+        Way way = new Way();
+        way.setNodes(List.of(start, end));
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 0, 1, way.getNodes(), Set.of(start, end));
+        List<EastNorth> preview = List.of(
+            new EastNorth(0.0, 0.0), new EastNorth(5.0, 2.0), new EastNorth(10.0, 0.0));
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(
+            dataSet, way, selection, preview, Map.of(), "legacy precise test");
+
+        command.executeCommand();
+
+        assertEquals(3, way.getNodesCount());
+        assertEquals(start, way.firstNode());
+        assertEquals(end, way.lastNode());
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node start = node(0.0, 0.0);

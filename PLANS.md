@@ -14,6 +14,7 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
 - More advanced longitudinal reasoning:
   - Implemented for 0.18.0: complementary intermittent tracks can form an all-pairs-compatible sparse parent with direct-union coverage and bounded interpolation, while elementary children and persistent parallel interpretations remain available.
   - Implemented for 0.18.0: weak unsupported motion uses an additional robust physical-distance reference, while sustained low-intensity turns and switchbacks retain local geometry.
+  - Reviewed and hardened for 0.18.1: predicted sparse geometry no longer counts as observed signal or turn support; interpolation-only parent windows remain physically bounded; persistent parallel separation requires independent longitudinal proof.
   - Endpoint approaches derive their entry direction from a reliable interior anchor on the selected branch; sparse parents require direct, non-multimodal evidence.
   - Continue calibration on rated real bundles before considering it a replacement for the legacy tracker.
 - Adaptive smoothing and blur experiments:
@@ -24,8 +25,9 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Managed source tiles can aggregate all base color schemes and can show/export a diagnostic aggregate intensity visualization layer.
   - Manual visible-layer fallback has only the selected rendered source; true all-color aggregation there would require managed source access or another way to obtain all color rasters.
 - Broader topology safety:
-  - Current cleanup prunes endpoint clusters and self-intersection loops in precise previews, while corridor-aware physical gates reject foldbacks, unsupported short excursions, and unsafe terminal approaches.
-  - Add explicit checks against crossing connected or nearby existing OSM ways before junction points.
+  - Current cleanup prunes endpoint clusters and self-intersection loops in precise previews, while corridor-aware physical gates reject foldbacks, unsupported short excursions, unsafe terminal approaches, vertex contacts, and collinear overlaps.
+  - Connected-way segments adjacent to a shared junction are checked for crossings or remote contacts outside the junction tolerance.
+  - Add explicit checks against crossing other nearby existing OSM ways that are not connected at the selected junction.
 - Rough sketch workflow improvements:
   - Rough 2-5 node selections are recognized in metadata.
   - Add an explicit wide-search rough sketch workflow/setting instead of silently widening search.

@@ -61,6 +61,10 @@ class SparseCorridorDebugReplayTest {
             assertTrue(candidate.evidence().corridorQuality().nonSustainedHighFrequencyP95SourcePx() <= 0.40,
                 "Sparse parent ripple="
                     + candidate.evidence().corridorQuality().nonSustainedHighFrequencyP95SourcePx()
+                    + ", candidate=" + candidate.id()
+                    + ", bundles=" + result.sparseBundles().stream()
+                        .map(bundle -> bundle.id() + ':' + bundle.classification() + ':'
+                            + bundle.directUnionProfileCount() + ':' + bundle.childTrackIds()).toList()
                     + ", tubeResidualP95=" + candidate.evidence().corridorQuality().tubeResidualP95SourcePx()
                     + ", localization=" + candidate.evidence().localizationConfidence()
                     + ", prominence=" + result.tracks().stream()

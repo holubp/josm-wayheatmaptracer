@@ -78,6 +78,52 @@ class LongitudinalCorridorTubeTest {
         assertTrue(tube.at(5).motionSupportReason().startsWith("supported-apex"));
     }
 
+    @Test
+    void interpolationOnlyMotionCannotAuthorizeATurn() {
+        Scenario scenario = scenario(index -> index, 9);
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        for (CorridorTrackPoint point : scenario.track().points().values()) {
+            CorridorPointSupport support = point.profileIndex() == 0 || point.profileIndex() == 8
+                ? CorridorPointSupport.DIRECT_UNION : CorridorPointSupport.BOUNDED_INTERPOLATION;
+            points.put(point.profileIndex(), new CorridorTrackPoint(
+                point.profileIndex(), point.band(), support == CorridorPointSupport.BOUNDED_INTERPOLATION, support));
+        }
+        CorridorTrack sparseParent = new CorridorTrack(
+            "bundle-1", points, 2.0, 2.0 / 9.0, true, List.of("left", "right"), "combined");
+
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            sparseParent, scenario.profiles(), 1.0, Map.of());
+
+        assertEquals(0.0, tube.at(4).motionSupport(), 1e-9,
+            "Predicted centers cannot supply the raw longitudinal evidence needed to relax smoothing");
+    }
+
+    @Test
+    void physicalWindowsDoNotImportEvidenceAcrossAnUnboundedHole() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        for (int index = 0; index < 3; index++) {
+            double distance = index * 50.0;
+            CorridorBand band = new CorridorBand("band-" + index, 10.0, 9.0, 11.0, 9.5, 10.5,
+                List.of(10.0), 0.25, 0.02, 1.0, 0.35, 0.75, 0.5, false, List.of());
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(distance, 0.0), distance, 0.0, distance),
+                new Point2D.Double(0.0, 1.0), List.of(), true, List.of());
+            profiles.add(new CorridorProfile(index, source, List.of(band), 0.25, 0.02, 0.23, true));
+            if (index != 1) {
+                points.put(index, new CorridorTrackPoint(index, band, false));
+            }
+        }
+        CorridorTrack track = new CorridorTrack("bundle-1", points, 2.0, 2.0 / 3.0,
+            true, List.of("left", "right"), "combined");
+
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(track, profiles, 1.0, Map.of());
+
+        assertEquals(0.0, tube.at(1).confidence(), 1e-9);
+        assertEquals(0.0, tube.at(1).centerOffsetPx(), 1e-9,
+            "A 100m unsupported gap must not borrow a center from outside the 32m physical window");
+    }
+
     private Scenario scenario(java.util.function.IntToDoubleFunction centers, int count) {
         return scenario(centers, count, 6.0);
     }

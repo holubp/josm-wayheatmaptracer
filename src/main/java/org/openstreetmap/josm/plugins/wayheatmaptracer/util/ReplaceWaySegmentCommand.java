@@ -78,7 +78,8 @@ public final class ReplaceWaySegmentCommand extends Command {
         this.way = way;
         this.selection = selection;
         this.previewPolyline = List.copyOf(previewPolyline);
-        this.proposedNodePositions = proposedNodePositions == null ? null : Map.copyOf(proposedNodePositions);
+        this.proposedNodePositions = proposedNodePositions == null || proposedNodePositions.isEmpty()
+            ? null : Map.copyOf(proposedNodePositions);
         this.description = description;
     }
 
@@ -200,7 +201,7 @@ public final class ReplaceWaySegmentCommand extends Command {
                 softCursor++;
             }
             if (!segmentReplacement.isEmpty()
-                && segmentReplacement.get(segmentReplacement.size() - 1).getEastNorth(ProjectionRegistry.getProjection()).distance(target)
+                && plannedPosition(segmentReplacement.get(segmentReplacement.size() - 1)).distance(target)
                     < ANCHOR_MATCH_EPSILON_METERS) {
                 continue;
             }
@@ -408,10 +409,13 @@ public final class ReplaceWaySegmentCommand extends Command {
         }
         if (!selection.fixedNodes().contains(node)) {
             targetNodePositions.put(node, target);
-            node.setEastNorth(target);
-            node.setModified(true);
         }
         segmentReplacement.add(node);
+    }
+
+    private EastNorth plannedPosition(Node node) {
+        EastNorth target = targetNodePositions.get(node);
+        return target == null ? node.getEastNorth(ProjectionRegistry.getProjection()) : target;
     }
 
     private List<SoftAnchor> softAnchors(List<PreviewNodeAssignmentPlanner.NodeAssignment> assignments) {

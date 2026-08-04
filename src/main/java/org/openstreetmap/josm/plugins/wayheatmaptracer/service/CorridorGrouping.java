@@ -127,10 +127,7 @@ public final class CorridorGrouping {
     }
 
     private boolean strongSeparation(PairEvidence evidence, double sourcePixel) {
-        boolean densePersistentValley = evidence.commonProfiles() >= MIN_PERSISTENT_PROFILES
-            && evidence.commonSupportRatio() >= MIN_COMMON_SUPPORT_RATIO
-            && evidence.meanValleyRatio() <= SEPARATE_VALLEY_RATIO;
-        return densePersistentValley || independentlySeparate(evidence, sourcePixel);
+        return independentlySeparate(evidence, sourcePixel);
     }
 
     private PairEvidence evidenceFor(
@@ -206,6 +203,9 @@ public final class CorridorGrouping {
     }
 
     private String classify(PairEvidence evidence, double sourcePixel) {
+        if (independentlySeparate(evidence, sourcePixel)) {
+            return "separate";
+        }
         boolean denseCommonEnvelope = evidence.commonProfiles() >= MIN_PERSISTENT_PROFILES
             && evidence.commonSupportRatio() >= MIN_COMMON_SUPPORT_RATIO
             && evidence.commonEnvelopeRatio() >= MIN_COMMON_SUPPORT_RATIO;
@@ -216,11 +216,7 @@ public final class CorridorGrouping {
             if (evidence.meanValleyRatio() > SEPARATE_VALLEY_RATIO) {
                 return "ambiguous";
             }
-            return "separate";
-        }
-        boolean independentlySeparate = independentlySeparate(evidence, sourcePixel);
-        if (independentlySeparate) {
-            return "separate";
+            return evidence.unionSupportRatio() >= MIN_BUNDLE_UNION_SUPPORT ? "ambiguous" : "separate";
         }
         boolean coherentUnion = evidence.unionSupportRatio() >= MIN_BUNDLE_UNION_SUPPORT
             && evidence.tangentDifferenceDegrees() <= MAX_BUNDLE_TANGENT_DIFFERENCE_DEGREES;
@@ -352,14 +348,15 @@ public final class CorridorGrouping {
         SparseCorridorBundlePoint point,
         String decision
     ) {
-        double peak = contributors.stream().mapToDouble(value -> value.band().peakIntensity()).max().orElse(0.0);
-        double noise = contributors.stream().mapToDouble(value -> value.band().noiseFloor()).average().orElse(0.0);
-        double gradient = contributors.stream().mapToDouble(value -> value.band().gradientStrength()).average().orElse(0.0);
-        double balance = contributors.stream().mapToDouble(value -> value.band().gradientBalance()).average().orElse(0.0);
-        double scale = contributors.stream().mapToDouble(value -> value.band().scaleAgreement()).average().orElse(0.0);
-        double existence = contributors.stream().mapToDouble(value -> value.band().signalExistenceConfidence())
+        List<Contributor> direct = contributors.stream().filter(Contributor::direct).toList();
+        double peak = direct.stream().mapToDouble(value -> value.band().peakIntensity()).max().orElse(0.0);
+        double noise = direct.stream().mapToDouble(value -> value.band().noiseFloor()).average().orElse(0.0);
+        double gradient = direct.stream().mapToDouble(value -> value.band().gradientStrength()).average().orElse(0.0);
+        double balance = direct.stream().mapToDouble(value -> value.band().gradientBalance()).average().orElse(0.0);
+        double scale = direct.stream().mapToDouble(value -> value.band().scaleAgreement()).average().orElse(0.0);
+        double existence = direct.stream().mapToDouble(value -> value.band().signalExistenceConfidence())
             .average().orElse(0.0);
-        double localization = contributors.stream().mapToDouble(value -> value.band().localizationConfidence())
+        double localization = direct.stream().mapToDouble(value -> value.band().localizationConfidence())
             .average().orElse(0.0) * point.contributorAgreement();
         return new CorridorBand(id + "-profile-" + profileIndex, point.centerOffsetPx(),
             point.shoulderMinPx(), point.shoulderMaxPx(), point.coreMinPx(), point.coreMaxPx(),

@@ -57,6 +57,45 @@ class CorridorGroupingTest {
     }
 
     @Test
+    void retainsSparseParentWhenDeepValleyOverlapIsTooShortForSeparationProof() {
+        Scenario base = longScenario(0.20, 20);
+        List<CorridorTrack> intermittent = base.tracks().stream().map(track -> {
+            boolean left = track.id().equals("left");
+            Map<Integer, CorridorTrackPoint> points = track.points().entrySet().stream()
+                .filter(entry -> left ? entry.getKey() <= 7 : entry.getKey() >= 3)
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                    (first, second) -> first, LinkedHashMap::new));
+            return new CorridorTrack(track.id(), points, track.score(), points.size() / 20.0,
+                false, List.of(), "");
+        }).toList();
+
+        CorridorGrouping.GroupingResult result = new CorridorGrouping().group(intermittent, base.profiles());
+
+        CorridorTrack parent = result.tracks().stream().filter(CorridorTrack::parent).findFirst().orElseThrow();
+        assertEquals("ambiguous", parent.groupingDecision(),
+            "Five joint profiles are not enough to prove two persistent parallel roads across a long union");
+    }
+
+    @Test
+    void predictedChildrenDoNotFabricateObservedParentSignal() {
+        Scenario scenario = predictionSignalScenario();
+
+        CorridorGrouping.GroupingResult result = new CorridorGrouping().group(
+            scenario.tracks(), scenario.profiles());
+
+        CorridorTrack parent = result.tracks().stream().filter(CorridorTrack::parent).findFirst().orElseThrow();
+        CorridorTrackPoint direct = parent.points().get(1);
+        CorridorTrackPoint interpolated = parent.points().get(2);
+        assertEquals(CorridorPointSupport.DIRECT_UNION, direct.support());
+        assertEquals(0.20, direct.band().peakIntensity(), 1e-9,
+            "A bright predicted child must not inflate direct heatmap evidence");
+        assertEquals(CorridorPointSupport.BOUNDED_INTERPOLATION, interpolated.support());
+        assertEquals(0.0, interpolated.band().peakIntensity(), 1e-9);
+        assertEquals(0.0, interpolated.band().signalExistenceConfidence(), 1e-9,
+            "Interpolation is geometry support, not observed signal");
+    }
+
+    @Test
     void combinesComplementarySparseStrandsAcrossCrossSectionHoles() {
         Scenario scenario = complementarySparseScenario();
 
@@ -197,10 +236,14 @@ class CorridorGroupingTest {
     }
 
     private Scenario scenario(double valley) {
+        return longScenario(valley, 10);
+    }
+
+    private Scenario longScenario(double valley, int count) {
         List<CorridorProfile> profiles = new ArrayList<>();
         Map<Integer, CorridorTrackPoint> leftPoints = new LinkedHashMap<>();
         Map<Integer, CorridorTrackPoint> rightPoints = new LinkedHashMap<>();
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < count; i++) {
             CorridorBand left = band("left", -3.0, -5.0, 0.0);
             CorridorBand right = band("right", 3.0, 0.0, 5.0);
             leftPoints.put(i, new CorridorTrackPoint(i, left, false));
@@ -215,9 +258,48 @@ class CorridorGroupingTest {
                 new Point2D.Double(0.0, 1.0), List.of(), true, samples);
             profiles.add(new CorridorProfile(i, source, List.of(left, right), 1.0, 0.0, 1.0, true));
         }
-        CorridorTrack left = new CorridorTrack("left", leftPoints, 10.0, 1.0, false, List.of(), "");
-        CorridorTrack right = new CorridorTrack("right", rightPoints, 10.0, 1.0, false, List.of(), "");
+        CorridorTrack left = new CorridorTrack("left", leftPoints, count, 1.0, false, List.of(), "");
+        CorridorTrack right = new CorridorTrack("right", rightPoints, count, 1.0, false, List.of(), "");
         return new Scenario(List.of(left, right), profiles);
+    }
+
+    private Scenario predictionSignalScenario() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        Map<Integer, CorridorTrackPoint> leftPoints = new LinkedHashMap<>();
+        Map<Integer, CorridorTrackPoint> rightPoints = new LinkedHashMap<>();
+        for (int index = 0; index < 5; index++) {
+            CorridorBand left = evidenceBand("left-" + index, -2.0, 0.20);
+            CorridorBand right = evidenceBand("right-" + index, 2.0, 0.90);
+            List<CorridorBand> observed = new ArrayList<>();
+            if (index != 2) {
+                leftPoints.put(index, new CorridorTrackPoint(index, left, false));
+                observed.add(left);
+            }
+            if (index == 0 || index == 3 || index == 4) {
+                rightPoints.put(index, new CorridorTrackPoint(index, right, false));
+                observed.add(right);
+            }
+            List<IntensitySample> samples = new ArrayList<>();
+            for (int offset = -5; offset <= 5; offset++) {
+                double intensity = index == 2 ? 0.0
+                    : offset == -2 ? 0.20 : offset == 2 ? 0.90 : 0.15;
+                samples.add(new IntensitySample(offset, intensity, intensity, intensity, true));
+            }
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(index * 2.5, 0.0), index * 15.0, 0.0,
+                    index * 2.5),
+                new Point2D.Double(0.0, 1.0), List.of(), true, samples);
+            profiles.add(new CorridorProfile(index, source, observed, 0.90, 0.0, 0.90, true));
+        }
+        return new Scenario(List.of(
+            new CorridorTrack("left", leftPoints, 4.0, 0.8, false, List.of(), ""),
+            new CorridorTrack("right", rightPoints, 3.0, 0.6, false, List.of(), "")), profiles);
+    }
+
+    private CorridorBand evidenceBand(String id, double center, double peak) {
+        return new CorridorBand(id, center, center - 1.0, center + 1.0,
+            center - 0.5, center + 0.5, List.of(center), peak, 0.0, 0.8,
+            0.8, 0.8, 0.5, false, List.of());
     }
 
     private CorridorBand band(String id, double center, double shoulderMin, double shoulderMax) {

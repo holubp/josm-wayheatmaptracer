@@ -1915,8 +1915,8 @@ public final class AlignmentService {
                     && geometry.get(0).distance(geometry.get(geometry.size() - 1)) < 1e-9) {
                     continue;
                 }
-                if (segmentIntersection(geometry.get(first), geometry.get(first + 1),
-                    geometry.get(second), geometry.get(second + 1)) != null) {
+                if (!segmentIntersections(geometry.get(first), geometry.get(first + 1),
+                    geometry.get(second), geometry.get(second + 1)).isEmpty()) {
                     return true;
                 }
             }
@@ -1962,11 +1962,15 @@ public final class AlignmentService {
                         if (connectedStart == null || connectedEnd == null) {
                             continue;
                         }
-                        EastNorth intersection = segmentIntersection(
+                        List<EastNorth> intersections = segmentIntersections(
                             geometry.get(candidateIndex), geometry.get(candidateIndex + 1),
                             connectedStart, connectedEnd);
-                        double intersectionDistanceMeters = intersection == null
-                            ? Double.NaN : groundDistanceMeters(intersection, junctionPoint);
+                        EastNorth intersection = intersections.stream()
+                            .max(java.util.Comparator.comparingDouble(point ->
+                                groundDistanceMeters(point, junctionPoint)))
+                            .orElse(null);
+                        double intersectionDistanceMeters = intersection == null ? Double.NaN
+                            : groundDistanceMeters(intersection, junctionPoint);
                         if (intersection != null && intersectionDistanceMeters > junctionToleranceMeters) {
                             findings.add(new JunctionSafetyFinding(
                                 "connected-way-crossing",
@@ -2042,21 +2046,63 @@ public final class AlignmentService {
         return bestIndex;
     }
 
-    private EastNorth segmentIntersection(EastNorth a, EastNorth b, EastNorth c, EastNorth d) {
-        double denominator = (b.east() - a.east()) * (d.north() - c.north())
-            - (b.north() - a.north()) * (d.east() - c.east());
-        if (Math.abs(denominator) < 1e-9) {
-            return null;
+    private List<EastNorth> segmentIntersections(EastNorth a, EastNorth b, EastNorth c, EastNorth d) {
+        double firstEast = b.east() - a.east();
+        double firstNorth = b.north() - a.north();
+        double secondEast = d.east() - c.east();
+        double secondNorth = d.north() - c.north();
+        double denominator = cross(firstEast, firstNorth, secondEast, secondNorth);
+        double denominatorTolerance = 1e-10 * Math.max(1.0,
+            Math.hypot(firstEast, firstNorth) * Math.hypot(secondEast, secondNorth));
+        if (Math.abs(denominator) > denominatorTolerance) {
+            double fromAToCEast = c.east() - a.east();
+            double fromAToCNorth = c.north() - a.north();
+            double firstFraction = cross(fromAToCEast, fromAToCNorth, secondEast, secondNorth)
+                / denominator;
+            double secondFraction = cross(fromAToCEast, fromAToCNorth, firstEast, firstNorth)
+                / denominator;
+            if (firstFraction < -1e-9 || firstFraction > 1.0 + 1e-9
+                || secondFraction < -1e-9 || secondFraction > 1.0 + 1e-9) {
+                return List.of();
+            }
+            return List.of(new EastNorth(a.east() + firstFraction * firstEast,
+                a.north() + firstFraction * firstNorth));
         }
-        double ua = ((d.east() - c.east()) * (a.north() - c.north())
-            - (d.north() - c.north()) * (a.east() - c.east())) / denominator;
-        double ub = ((b.east() - a.east()) * (a.north() - c.north())
-            - (b.north() - a.north()) * (a.east() - c.east())) / denominator;
-        if (ua <= 1e-9 || ua >= 1.0 - 1e-9 || ub <= 1e-9 || ub >= 1.0 - 1e-9) {
-            return null;
+        if (!pointOnSegment(a, c, d) && !pointOnSegment(b, c, d)
+            && !pointOnSegment(c, a, b) && !pointOnSegment(d, a, b)) {
+            return List.of();
         }
-        return new EastNorth(a.east() + ua * (b.east() - a.east()),
-            a.north() + ua * (b.north() - a.north()));
+        List<EastNorth> intersections = new ArrayList<>();
+        for (EastNorth point : List.of(a, b, c, d)) {
+            if (pointOnSegment(point, a, b) && pointOnSegment(point, c, d)
+                && intersections.stream().noneMatch(existing -> existing.distance(point) <= 1e-7)) {
+                intersections.add(point);
+            }
+        }
+        return List.copyOf(intersections);
+    }
+
+    private boolean pointOnSegment(EastNorth point, EastNorth start, EastNorth end) {
+        double segmentEast = end.east() - start.east();
+        double segmentNorth = end.north() - start.north();
+        double pointEast = point.east() - start.east();
+        double pointNorth = point.north() - start.north();
+        double squaredLength = segmentEast * segmentEast + segmentNorth * segmentNorth;
+        if (squaredLength <= 1e-18) {
+            return point.distance(start) <= 1e-7;
+        }
+        double cross = cross(segmentEast, segmentNorth, pointEast, pointNorth);
+        double tolerance = 1e-9 * Math.max(1.0,
+            Math.hypot(segmentEast, segmentNorth) * Math.hypot(pointEast, pointNorth));
+        if (Math.abs(cross) > tolerance) {
+            return false;
+        }
+        double dot = pointEast * segmentEast + pointNorth * segmentNorth;
+        return dot >= -1e-9 && dot <= squaredLength + 1e-9;
+    }
+
+    private double cross(double firstEast, double firstNorth, double secondEast, double secondNorth) {
+        return firstEast * secondNorth - firstNorth * secondEast;
     }
 
     private List<EastNorth> toEastNorth(List<Node> nodes) {
