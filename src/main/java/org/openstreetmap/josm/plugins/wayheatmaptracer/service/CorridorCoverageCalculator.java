@@ -27,11 +27,36 @@ public final class CorridorCoverageCalculator {
         List<CorridorProfile> profiles,
         EndpointApproachModel endpointApproaches
     ) {
+        return calculate(track, profiles, endpointApproaches, null);
+    }
+
+    /**
+     * Measures coverage using direct child-union support for a sparse parent.
+     *
+     * @param track selected elementary or sparse-parent track
+     * @param profiles extracted profile evidence
+     * @param endpointApproaches endpoint support used by the optimizer
+     * @param bundle sparse bundle metadata, or {@code null} for an elementary track
+     * @return immutable coverage summary that never counts interpolation as direct support
+     */
+    public CorridorCoverage calculate(
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        EndpointApproachModel endpointApproaches,
+        SparseCorridorBundle bundle
+    ) {
         if (profiles.isEmpty() || track.points().isEmpty()) {
             return new CorridorCoverage(true, false, 0, informativeCount(profiles), 0.0,
                 -1, -1, 0.0, 0.0, 0, 0.0, 0, !profiles.isEmpty(), "no-observed-corridor");
         }
-        List<Integer> observed = track.points().keySet().stream().sorted().toList();
+        List<Integer> observed = bundle == null ? track.points().keySet().stream().sorted().toList()
+            : bundle.points().values().stream()
+                .filter(point -> point.support() == CorridorPointSupport.DIRECT_UNION)
+                .map(SparseCorridorBundlePoint::profileIndex).sorted().toList();
+        if (observed.isEmpty()) {
+            return new CorridorCoverage(true, false, 0, informativeCount(profiles), 0.0,
+                -1, -1, 0.0, 0.0, 0, 0.0, 0, !profiles.isEmpty(), "no-direct-union-corridor");
+        }
         int first = observed.get(0);
         int last = observed.get(observed.size() - 1);
         int informative = informativeCount(profiles);
@@ -56,7 +81,8 @@ public final class CorridorCoverageCalculator {
                 continue;
             }
             double metres = distance(profiles, left, right);
-            boolean trackerApproved = track.points().get(right).bridged()
+            boolean trackerApproved = (bundle == null ? track.points().get(right).bridged()
+                : boundedBundleGap(bundle, left, right))
                 && missing <= MAX_BRIDGE_PROFILES && metres <= MAX_BRIDGE_METERS + 1e-9;
             gaps.add(new Gap(left, right, missing, metres, trackerApproved));
             maximumGapProfiles = Math.max(maximumGapProfiles, missing);
@@ -70,7 +96,7 @@ public final class CorridorCoverageCalculator {
 
         boolean evidenceBeyond = false;
         for (int index = 0; index < profiles.size(); index++) {
-            if (!informative(profiles.get(index)) || track.points().containsKey(index)) {
+            if (!informative(profiles.get(index)) || observed.contains(index)) {
                 continue;
             }
             int profileIndex = index;
@@ -88,6 +114,16 @@ public final class CorridorCoverageCalculator {
         return new CorridorCoverage(true, complete, observed.size(), informative, informativeRatio,
             first, last, leading, trailing, maximumGapProfiles, maximumGapMeters, approvedBridges,
             evidenceBeyond, reason);
+    }
+
+    private boolean boundedBundleGap(SparseCorridorBundle bundle, int left, int right) {
+        for (int index = left + 1; index < right; index++) {
+            SparseCorridorBundlePoint point = bundle.points().get(index);
+            if (point == null || point.support() != CorridorPointSupport.BOUNDED_INTERPOLATION) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean supportedBoundary(

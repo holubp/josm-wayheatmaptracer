@@ -71,6 +71,36 @@ class CorridorCoverageCalculatorTest {
         assertEquals("unapproved-internal-gap", tooFar.reason());
     }
 
+    @Test
+    void countsSparseBundleUnionAsDirectAndBoundedPredictionsOnlyAsBridge() {
+        List<CorridorProfile> profiles = profiles(10, 2.5);
+        Map<Integer, CorridorTrackPoint> parentPoints = new LinkedHashMap<>();
+        Map<Integer, SparseCorridorBundlePoint> bundlePoints = new LinkedHashMap<>();
+        for (int index = 0; index < profiles.size(); index++) {
+            boolean interpolated = index >= 2 && index <= 4;
+            CorridorPointSupport support = interpolated
+                ? CorridorPointSupport.BOUNDED_INTERPOLATION : CorridorPointSupport.DIRECT_UNION;
+            parentPoints.put(index, new CorridorTrackPoint(index, profiles.get(index).bands().get(0),
+                interpolated, support));
+            bundlePoints.put(index, new SparseCorridorBundlePoint(index, support,
+                interpolated ? List.of() : List.of("left"), interpolated ? List.of("left", "right") : List.of(),
+                0.0, 1.0, -2.0, 2.0, -0.5, 0.5, 1.0, 0.8));
+        }
+        CorridorTrack parent = new CorridorTrack("bundle-1", parentPoints, 1.0, 0.7,
+            true, List.of("left", "right"), "combined");
+        SparseCorridorBundle bundle = new SparseCorridorBundle("bundle-1", List.of("left", "right"),
+            "combined", bundlePoints, 0.7, 0.0, 0.0, 1.0, 1.0, 4.0,
+            "complementary-child-union");
+
+        CorridorCoverage coverage = new CorridorCoverageCalculator().calculate(
+            parent, profiles, new EndpointApproachModel(List.of()), bundle);
+
+        assertTrue(coverage.complete());
+        assertEquals(7, coverage.observedProfiles(), "Interpolation must not inflate direct-union support");
+        assertEquals(1, coverage.approvedBridgeCount());
+        assertEquals(3, coverage.maximumInternalUnsupportedProfiles());
+    }
+
     private CorridorCoverage coverageAcrossGap(
         List<CorridorProfile> profiles,
         int left,

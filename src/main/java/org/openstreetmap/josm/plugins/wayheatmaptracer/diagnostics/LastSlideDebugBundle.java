@@ -48,6 +48,8 @@ public final class LastSlideDebugBundle {
     private final String profileIntensityCsv;
     private final String corridorBandsCsv;
     private final String corridorTracksCsv;
+    private final String corridorBundlesCsv;
+    private final String bundlePointsCsv;
     private final String optimizerCostsCsv;
     private final String scaleSpaceCsv;
     private final String corridorTubeCsv;
@@ -79,6 +81,8 @@ public final class LastSlideDebugBundle {
         String profileIntensityCsv,
         String corridorBandsCsv,
         String corridorTracksCsv,
+        String corridorBundlesCsv,
+        String bundlePointsCsv,
         String optimizerCostsCsv,
         String scaleSpaceCsv,
         String corridorTubeCsv,
@@ -109,6 +113,8 @@ public final class LastSlideDebugBundle {
         this.profileIntensityCsv = profileIntensityCsv;
         this.corridorBandsCsv = corridorBandsCsv;
         this.corridorTracksCsv = corridorTracksCsv;
+        this.corridorBundlesCsv = corridorBundlesCsv;
+        this.bundlePointsCsv = bundlePointsCsv;
         this.optimizerCostsCsv = optimizerCostsCsv;
         this.scaleSpaceCsv = scaleSpaceCsv;
         this.corridorTubeCsv = corridorTubeCsv;
@@ -207,6 +213,8 @@ public final class LastSlideDebugBundle {
             result.diagnostics().profileIntensityCsv(),
             result.diagnostics().corridorBandsCsv(),
             result.diagnostics().corridorTracksCsv(),
+            result.diagnostics().corridorBundlesCsv(),
+            result.diagnostics().bundlePointsCsv(),
             result.diagnostics().optimizerCostsCsv(),
             result.diagnostics().scaleSpaceCsv(),
             result.diagnostics().corridorTubeCsv(),
@@ -249,6 +257,8 @@ public final class LastSlideDebugBundle {
             writeText(zip, "profile-intensity.csv", profileIntensityCsv);
             writeText(zip, "corridor-bands.csv", corridorBandsCsv);
             writeText(zip, "corridor-tracks.csv", corridorTracksCsv);
+            writeText(zip, "corridor-bundles.csv", corridorBundlesCsv);
+            writeText(zip, "bundle-points.csv", bundlePointsCsv);
             writeText(zip, "optimizer-costs.csv", optimizerCostsCsv);
             writeText(zip, "scale-space.csv", scaleSpaceCsv);
             writeText(zip, "corridor-tube.csv", corridorTubeCsv);
@@ -271,11 +281,11 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":7,"
+            + "\"formatVersion\":8,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 

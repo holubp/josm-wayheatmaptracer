@@ -26,6 +26,8 @@ import java.util.HexFormat;
  * @param profileIntensityCsv complete scalar profile CSV for corridor-aware tracking
  * @param corridorBandsCsv extracted corridor-band CSV
  * @param corridorTracksCsv longitudinal association and grouping CSV
+ * @param corridorBundlesCsv sparse longitudinal bundle summary CSV
+ * @param bundlePointsCsv profile-aligned sparse bundle evidence CSV
  * @param optimizerCostsCsv decomposed corridor optimizer CSV
  * @param scaleSpaceCsv per-profile Gaussian-level corridor evidence CSV
  * @param corridorTubeCsv robust longitudinal corridor tube CSV
@@ -53,6 +55,8 @@ public record AlignmentDiagnostics(
     String profileIntensityCsv,
     String corridorBandsCsv,
     String corridorTracksCsv,
+    String corridorBundlesCsv,
+    String bundlePointsCsv,
     String optimizerCostsCsv,
     String scaleSpaceCsv,
     String corridorTubeCsv,
@@ -96,7 +100,8 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv, "", "", "", "", "",
+            profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, "", "", optimizerCostsCsv,
+            "", "", "", "", "",
             parallelContextJson);
     }
 
@@ -139,7 +144,7 @@ public record AlignmentDiagnostics(
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis,
             optimizationMillis, configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson,
             profileDiagnosticsJson, candidateMetricsCsv, profilePeaksCsv, paletteSamplesCsv,
-            "", "", "", "", "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "", "", "", "{}");
     }
 
     /**
@@ -174,7 +179,7 @@ public record AlignmentDiagnostics(
     ) {
         this(layerName, candidateCount, movableNodeCount, rasterCaptureMillis, ridgeTrackingMillis, optimizationMillis,
             configJson, selectionJson, samplingJson, colorSchemesJson, candidatesJson, profileDiagnosticsJson,
-            "", "", "", "", "", "", "", "", "", "", "", "", "{}");
+            "", "", "", "", "", "", "", "", "", "", "", "", "", "", "{}");
     }
 
     /**
@@ -207,6 +212,8 @@ public record AlignmentDiagnostics(
             + artifactJson("profile-intensity.csv", profileIntensityCsv) + ','
             + artifactJson("corridor-bands.csv", corridorBandsCsv) + ','
             + artifactJson("corridor-tracks.csv", corridorTracksCsv) + ','
+            + artifactJson("corridor-bundles.csv", corridorBundlesCsv) + ','
+            + artifactJson("bundle-points.csv", bundlePointsCsv) + ','
             + artifactJson("optimizer-costs.csv", optimizerCostsCsv) + ','
             + artifactJson("scale-space.csv", scaleSpaceCsv) + ','
             + artifactJson("corridor-tube.csv", corridorTubeCsv) + ','

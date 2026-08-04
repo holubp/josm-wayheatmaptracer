@@ -16,6 +16,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
  */
 public final class CorridorCenterlineOptimizer {
     private static final double NON_SUSTAINED_ACCELERATION_MULTIPLIER = 1.15;
+    private static final double WEAK_UNSUPPORTED_TUBE_MULTIPLIER = 800.0;
     private static final Comparator<PairState> PAIR_STATE_COMPARATOR = Comparator
         .comparingDouble(PairState::cost)
         .thenComparingDouble(PairState::currentOffset)
@@ -517,6 +518,13 @@ public final class CorridorCenterlineOptimizer {
             : clamp((scaleIntensity - band.noiseFloor()) / (band.peakIntensity() - band.noiseFloor()));
         double intensityCost = (equivalentPeak ? 0.0 : 1.0 - normalizedIntensity)
             * (0.55 + 0.45 * band.signalExistenceConfidence());
+        boolean parentCorridor = track.parent() && band.parentHypothesis();
+        if (parentCorridor) {
+            // A sparse parent models the center of a longitudinal recording envelope. Its children can be
+            // bright on alternating profiles, so raw per-profile intensity is supporting evidence rather
+            // than a target that may pull the centerline onto one envelope shoulder.
+            intensityCost *= 0.20;
+        }
         double coreDistance = distanceOutside(offset, band.coreMinPx(), band.coreMaxPx()) / sourcePixel;
         double shoulderDistance = distanceOutside(offset, band.shoulderMinPx(), band.shoulderMaxPx()) / sourcePixel;
         double robustCoreCenter = (band.coreMinPx() + band.coreMaxPx()) / 2.0;
@@ -527,6 +535,13 @@ public final class CorridorCenterlineOptimizer {
         double centerDistance = Math.max(0.0, Math.abs(offset - centerTarget) - stabilityDeadband)
             / Math.max(sourcePixel, band.uncertaintyPx());
         double centerCost = square(centerDistance) * (0.12 + 0.38 * band.localizationConfidence());
+        if (parentCorridor) {
+            double parentUncertainty = Math.max(sourcePixel,
+                Math.min(1.5 * sourcePixel, band.uncertaintyPx()));
+            double parentCenterDistance = Math.abs(offset - band.centerOffsetPx()) / parentUncertainty;
+            double parentWeight = track.groupingDecision().equals("combined") ? 0.90 : 0.45;
+            centerCost += parentWeight * square(parentCenterDistance);
+        }
         BandScaleEvidence evidence = scaleEvidence.get(scaleEvidenceKey(profileIndex, band.id()));
         double coarsePrior = evidence == null || !evidence.hasCoarseCenterPrior()
             ? 0.0
@@ -538,6 +553,10 @@ public final class CorridorCenterlineOptimizer {
             / Math.max(sourcePixel * 0.5, tubeSlice.uncertaintyPx());
         double tubeCost = parameters.tubeCenterWeight() * tubeSlice.confidence()
             * (0.25 + 0.75 * (1.0 - band.localizationConfidence())) * square(tubeDistance);
+        double prominence = Math.max(0.0, band.peakIntensity() - band.noiseFloor());
+        double weakSignal = clamp((0.35 - prominence) / 0.30);
+        double unsupportedMotion = 1.0 - clamp(tubeSlice.motionSupport());
+        tubeCost *= 1.0 + WEAK_UNSUPPORTED_TUBE_MULTIPLIER * weakSignal * unsupportedMotion;
         if (tubeSlice.scaleConflict() || tubeSlice.parentMerge()) {
             tubeCost *= 0.35;
         }

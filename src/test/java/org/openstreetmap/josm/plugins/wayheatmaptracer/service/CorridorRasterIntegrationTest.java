@@ -63,6 +63,20 @@ class CorridorRasterIntegrationTest {
     }
 
     @Test
+    void keepsCenterContinuousAcrossSparseToDenseIntensity() {
+        List<Double> means = new ArrayList<>();
+        for (double peak : List.of(0.10, 0.16, 0.24, 0.45, 0.72, 0.92)) {
+            CenterlineCandidate candidate = track(raster((x) -> 2.0, peak, false, false)).get(0);
+            means.add(mean(candidate.offsetsPx()));
+            assertEquals(2.0, means.get(means.size() - 1), 0.75,
+                "Center must not jump at an intensity threshold; peak=" + peak);
+        }
+        double range = means.stream().mapToDouble(Double::doubleValue).max().orElseThrow()
+            - means.stream().mapToDouble(Double::doubleValue).min().orElseThrow();
+        assertTrue(range <= 0.50, "Sparse-to-dense center discontinuity=" + range + ", means=" + means);
+    }
+
+    @Test
     void centersWeakOffGridCorridorWithoutLongitudinalRipple() {
         double sourcePixelPitch = 4.0;
         List<Point2D.Double> scaledSource = sourcePolyline().stream()
@@ -119,6 +133,35 @@ class CorridorRasterIntegrationTest {
     }
 
     @Test
+    void preservesLowIntensitySustainedSineAmplitude() {
+        IntToDoubleFunction center = profile -> 8.0 * Math.sin(profile * 2.0 * Math.PI / (PROFILE_COUNT - 1));
+        BufferedImage raster = raster(center, 0.16, false, false);
+
+        CenterlineCandidate candidate = track(raster).get(0);
+
+        double amplitude = (candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).max().orElseThrow()
+            - candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).min().orElseThrow()) / 2.0;
+        assertTrue(amplitude >= 7.2, "Retained weak raster sine amplitude was " + amplitude);
+    }
+
+    @Test
+    void preservesLowIntensitySustainedSwitchbacks() {
+        IntToDoubleFunction center = profile -> {
+            int phase = profile % 20;
+            double rising = -8.0 + 16.0 * phase / 20.0;
+            return (profile / 20) % 2 == 0 ? rising : -rising;
+        };
+        CenterlineCandidate candidate = track(raster(center, 0.16, false, false)).get(0);
+
+        double amplitude = (candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).max().orElseThrow()
+            - candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).min().orElseThrow()) / 2.0;
+        assertTrue(amplitude >= 7.2, "Retained weak switchback amplitude was " + amplitude);
+        assertTrue(candidate.offsetsPx().get(20) >= 6.5 && candidate.offsetsPx().get(40) <= -6.5,
+            "Weak switchback apices must not be flattened: "
+                + List.of(candidate.offsetsPx().get(20), candidate.offsetsPx().get(40)));
+    }
+
+    @Test
     void tracesPersistentSparseStrandAcrossShortGapsButIgnoresIsolatedOutlier() {
         BufferedImage raster = raster((x) -> -3.0, 0.13, false, true);
         setIntensity(raster, START_X + 30 * STEP_X, SOURCE_Y + 14, 0.95);
@@ -141,6 +184,34 @@ class CorridorRasterIntegrationTest {
         assertTrue(lanes.tracks().stream().filter(track -> !track.parent()).count() >= 2);
         assertTrue(carriageways.tracks().stream().noneMatch(CorridorTrack::parent));
         assertTrue(carriageways.tracks().stream().filter(track -> !track.parent()).count() >= 2);
+    }
+
+    @Test
+    void centersComplementarySparseTracesAcrossBoundedZeroHoles() {
+        JunctionContext fixedEndpoints = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, true, false, 0.0, 0.0, 6),
+            new EndpointConstraint(PROFILE_COUNT - 1, 2L, true, false, 0.0, 0.0, 6)
+        ));
+        CorridorAwareTracker.TrackingResult result = detailed(
+            complementarySparseRaster(), sourcePolyline(), fixedEndpoints);
+
+        assertFalse(result.sparseBundles().isEmpty(), "Complementary intermittent tracks need a bundle hypothesis");
+        SparseCorridorBundle bundle = result.sparseBundles().stream()
+            .max(java.util.Comparator.comparingDouble(SparseCorridorBundle::unionSupportRatio)).orElseThrow();
+        CenterlineCandidate candidate = result.candidates().stream()
+            .filter(value -> value.id().equals(bundle.id())).findFirst().orElseThrow();
+        assertEquals(PROFILE_COUNT - 3, bundle.directUnionProfileCount(),
+            "The two empty profiles and isolated bright outlier should not count as direct corridor support");
+        assertEquals(3, bundle.interpolatedProfileCount());
+        assertTrue(candidate.evidence().corridorCoverage().complete(),
+            "A bounded 5m hole with bracketing compatible traces should remain complete");
+        double interiorMean = candidate.offsetsPx().subList(2, PROFILE_COUNT - 2).stream()
+            .mapToDouble(Double::doubleValue).average().orElseThrow();
+        assertEquals(0.0, interiorMean, 0.75,
+            "Sparse bundle should center the whole recording envelope instead of following one child");
+        assertTrue(candidate.evidence().corridorQuality().nonSustainedHighFrequencyP95SourcePx() <= 0.40,
+            "Sparse bundle ripple p95="
+                + candidate.evidence().corridorQuality().nonSustainedHighFrequencyP95SourcePx());
     }
 
     @Test
@@ -231,6 +302,24 @@ class CorridorRasterIntegrationTest {
                 }
             }
         }
+        return raster;
+    }
+
+    private BufferedImage complementarySparseRaster() {
+        BufferedImage raster = background();
+        for (int profile = 0; profile < PROFILE_COUNT; profile++) {
+            if (profile == 30 || profile == 31) {
+                continue;
+            }
+            int x = START_X + profile * STEP_X;
+            int center = SOURCE_Y + (profile % 2 == 0 ? -4 : 4);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    setIntensity(raster, x + dx, center + dy, 0.18 - 0.04 * Math.abs(dy));
+                }
+            }
+        }
+        setIntensity(raster, START_X + 18 * STEP_X, SOURCE_Y + 14, 0.80);
         return raster;
     }
 

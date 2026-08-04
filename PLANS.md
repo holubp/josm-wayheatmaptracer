@@ -12,8 +12,9 @@ This file preserves the post-0.11 planning backlog so items can be implemented g
   - Ratings and detector metrics are exported.
   - Add automation that consumes many rated bundles and proposes calibrated detector weights/priors.
 - More advanced longitudinal reasoning:
-  - The experimental corridor-aware tracker now keeps elementary longitudinal strand identities and parent/child corridor hypotheses, rejects temporary scale-conflict strand switches, fits a robust physical-distance tube, and uses one exact second-order optimizer with subpixel evidence.
-  - Endpoint approaches now derive their entry direction from a reliable interior anchor on the selected branch; unsupported approaches are inspectable but not applicable.
+  - Implemented for 0.18.0: complementary intermittent tracks can form an all-pairs-compatible sparse parent with direct-union coverage and bounded interpolation, while elementary children and persistent parallel interpretations remain available.
+  - Implemented for 0.18.0: weak unsupported motion uses an additional robust physical-distance reference, while sustained low-intensity turns and switchbacks retain local geometry.
+  - Endpoint approaches derive their entry direction from a reliable interior anchor on the selected branch; sparse parents require direct, non-multimodal evidence.
   - Continue calibration on rated real bundles before considering it a replacement for the legacy tracker.
 - Adaptive smoothing and blur experiments:
   - Current filtering uses signal-gated B3/B5 one-dimensional profile filters.

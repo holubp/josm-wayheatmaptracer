@@ -66,6 +66,8 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("profile-intensity.csv"));
             assertNotNull(zip.getEntry("corridor-bands.csv"));
             assertNotNull(zip.getEntry("corridor-tracks.csv"));
+            assertNotNull(zip.getEntry("corridor-bundles.csv"));
+            assertNotNull(zip.getEntry("bundle-points.csv"));
             assertNotNull(zip.getEntry("optimizer-costs.csv"));
             assertNotNull(zip.getEntry("corridor-tube.csv"));
             assertNotNull(zip.getEntry("association-decisions.csv"));
@@ -82,10 +84,11 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":7"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":8"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
             assertTrue(text(zip, "diagnostics.json").contains("profile-intensity.csv"));
+            assertTrue(text(zip, "diagnostics.json").contains("corridor-bundles.csv"));
             assertTrue(text(zip, "verbose-log.txt").contains("Plugin-Build:"));
         }
     }

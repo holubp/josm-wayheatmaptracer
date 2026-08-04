@@ -60,10 +60,16 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     plugin_version = str(manifest.get("pluginVersion") or diagnostics.get("pluginVersion") or "")
     physical_warning = physical_distance_warning(bundle, bundle_format, diagnostics)
     metrics = read_zip_csv(bundle, "candidate-metrics.csv")
-    optimizer = optimizer_summaries(read_zip_csv(bundle, "optimizer-costs.csv"))
+    optimizer_rows = read_zip_csv(bundle, "optimizer-costs.csv")
+    optimizer = optimizer_summaries(optimizer_rows)
     tubes = tube_summaries(read_zip_csv(bundle, "corridor-tube.csv"))
     performance = performance_summaries(read_zip_csv(bundle, "detector-performance.csv"))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
+    sparse_bundles = sparse_bundle_summaries(
+        read_zip_csv(bundle, "corridor-bundles.csv"),
+        read_zip_csv(bundle, "bundle-points.csv"),
+        optimizer_rows,
+    )
     bridge_directions = bridge_direction_summaries(read_zip_csv(bundle, "corridor-tracks.csv"))
     scale_space = scale_space_summaries(read_zip_csv(bundle, "scale-space.csv"))
     proposed_positions = read_zip_csv(bundle, "proposed-node-positions.csv")
@@ -91,6 +97,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         performance_summary = performance.get(detector, {})
         bridge_summary = bridge_directions.get((detector, track_id), {})
         scale_summary = scale_space.get(detector, {})
+        sparse_summary = sparse_bundles.get((detector, track_id), {})
         rating = ratings.get(candidate_id, {})
         numeric = rating_score(str(rating.get("rating", ""))) if isinstance(rating, dict) else None
         negative = ",".join(rating.get("negativeFeatures", [])) if isinstance(rating, dict) else ""
@@ -149,6 +156,16 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "tube_local_stability_residual_p95_px": tube_summary.get("local_stability_residual_p95_px"),
             "tube_motion_support_reasons": tube_summary.get("motion_support_reasons", ""),
             "grouping_decision": grouping.get((detector, track_id), ""),
+            "sparse_bundle_classification": sparse_summary.get("classification", "unavailable"),
+            "sparse_bundle_reason": sparse_summary.get("reason", ""),
+            "sparse_bundle_child_count": sparse_summary.get("child_count"),
+            "sparse_bundle_direct_union_profiles": sparse_summary.get("direct_union_profiles"),
+            "sparse_bundle_interpolated_profiles": sparse_summary.get("interpolated_profiles"),
+            "sparse_bundle_union_support_ratio": sparse_summary.get("union_support_ratio"),
+            "sparse_bundle_interpolation_ratio": sparse_summary.get("interpolation_ratio"),
+            "sparse_bundle_contributor_agreement": sparse_summary.get("contributor_agreement"),
+            "sparse_bundle_center_residual_p95_px": sparse_summary.get("center_residual_p95_px"),
+            "sparse_bundle_diagnoses": sparse_bundle_diagnoses(sparse_summary, row),
             "detector_attempt_status": attempt_status.get(detector, ""),
             "scale_persistence": float_or_none(row.get("scale_persistence"))
             if row.get("scale_persistence", "") != "" else scale_summary.get("median_persistence"),
@@ -364,6 +381,78 @@ def track_grouping(rows: list[dict[str, str]]) -> dict[tuple[str, str], str]:
         if track_id:
             result[(row.get("detector", ""), track_id)] = row.get("grouping_decision", "")
     return result
+
+
+def sparse_bundle_summaries(
+    bundle_rows_data: list[dict[str, str]],
+    point_rows: list[dict[str, str]],
+    optimizer_rows: list[dict[str, str]],
+) -> dict[tuple[str, str], dict[str, object]]:
+    """Summarize optional format-8 sparse-bundle evidence without treating absence as zero."""
+    points_by_key: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    chosen_by_profile: dict[tuple[str, str, int], float] = {}
+    for point in point_rows:
+        points_by_key[(point.get("detector", ""), point.get("bundle_id", ""))].append(point)
+    for row in optimizer_rows:
+        profile = int(row.get("profile_index", "0") or 0)
+        chosen = float_or_none(row.get("chosen_offset_px"))
+        if chosen is not None:
+            chosen_by_profile[(row.get("detector", ""), row.get("track_id", ""), profile)] = chosen
+    result: dict[tuple[str, str], dict[str, object]] = {}
+    for row in bundle_rows_data:
+        key = (row.get("detector", ""), row.get("bundle_id", ""))
+        points = points_by_key.get(key, [])
+        agreements = compact_numbers(float_or_none(point.get("contributor_agreement")) for point in points)
+        residuals: list[float] = []
+        for point in points:
+            profile = int(point.get("profile_index", "0") or 0)
+            chosen = chosen_by_profile.get((key[0], key[1], profile))
+            center = float_or_none(point.get("center_px"))
+            if chosen is not None and center is not None:
+                residuals.append(abs(chosen - center))
+        direct = float_or_none(row.get("direct_union_profiles"))
+        interpolated = float_or_none(row.get("interpolated_profiles"))
+        total = (direct or 0.0) + (interpolated or 0.0)
+        child_ids = [value for value in row.get("child_track_ids", "").split(";") if value]
+        result[key] = {
+            "classification": row.get("classification", ""),
+            "reason": row.get("reason", ""),
+            "child_count": len(child_ids),
+            "direct_union_profiles": direct,
+            "interpolated_profiles": interpolated,
+            "union_support_ratio": float_or_none(row.get("union_support_ratio")),
+            "joint_support_ratio": float_or_none(row.get("joint_support_ratio")),
+            "valley_persistence": float_or_none(row.get("valley_persistence")),
+            "order_stability": float_or_none(row.get("order_stability")),
+            "interpolation_ratio": (interpolated or 0.0) / total if total > 0.0 else None,
+            "contributor_agreement": statistics.median(agreements) if agreements else None,
+            "center_residual_p95_px": percentile(residuals, 0.95) if residuals else None,
+        }
+    return result
+
+
+def sparse_bundle_diagnoses(summary: dict[str, object], candidate_row: dict[str, str]) -> str:
+    """Return deterministic format-8 sparse-corridor diagnostic labels for one candidate."""
+    if not summary:
+        return "unavailable"
+    diagnoses: list[str] = []
+    support = summary.get("union_support_ratio")
+    interpolation = summary.get("interpolation_ratio")
+    residual = summary.get("center_residual_p95_px")
+    valley = summary.get("valley_persistence")
+    order = summary.get("order_stability")
+    ripple = float_or_none(candidate_row.get("non_sustained_hf_p95_source_px"))
+    if isinstance(support, float) and support < 0.70:
+        diagnoses.append("sparse-bundle-fragmentation")
+    if isinstance(residual, float) and residual > 0.75:
+        diagnoses.append("dominant-child-bias")
+    if isinstance(interpolation, float) and interpolation > 0.30:
+        diagnoses.append("interpolation-heavy")
+    if isinstance(valley, float) and isinstance(order, float) and valley >= 0.60 and order >= 0.90:
+        diagnoses.append("persistent-parallel-modes")
+    if ripple is not None and ripple > 0.40:
+        diagnoses.append("bundle-ripple")
+    return ";".join(diagnoses) if diagnoses else "none"
 
 
 def bridge_direction_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, int]]:

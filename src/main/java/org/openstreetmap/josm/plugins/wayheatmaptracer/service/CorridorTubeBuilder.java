@@ -17,6 +17,9 @@ public final class CorridorTubeBuilder {
     private static final double STABILITY_HALF_WINDOW_METERS = 12.0;
     private static final int STABILITY_MIN_WINDOW_PROFILES = 9;
     private static final int STABILITY_MAX_WINDOW_PROFILES = 17;
+    private static final double WEAK_STABILITY_HALF_WINDOW_METERS = 32.0;
+    private static final int WEAK_STABILITY_MIN_WINDOW_PROFILES = 17;
+    private static final int WEAK_STABILITY_MAX_WINDOW_PROFILES = 33;
     private static final int HUBER_ITERATIONS = 2;
 
     /** Creates a stateless tube builder. */
@@ -56,21 +59,37 @@ public final class CorridorTubeBuilder {
                 LOCAL_HALF_WINDOW_METERS, LOCAL_MIN_WINDOW_PROFILES, LOCAL_MAX_WINDOW_PROFILES);
             List<Observation> stabilityWindow = supportWindow(observations, distanceMeters[profileIndex],
                 STABILITY_HALF_WINDOW_METERS, STABILITY_MIN_WINDOW_PROFILES, STABILITY_MAX_WINDOW_PROFILES);
+            List<Observation> weakStabilityWindow = supportWindow(observations, distanceMeters[profileIndex],
+                WEAK_STABILITY_HALF_WINDOW_METERS, WEAK_STABILITY_MIN_WINDOW_PROFILES,
+                WEAK_STABILITY_MAX_WINDOW_PROFILES);
             Regression local = robustRegression(localWindow, distanceMeters[profileIndex], sourcePixel);
             Regression stability = robustRegression(stabilityWindow, distanceMeters[profileIndex], sourcePixel);
+            Regression weakStability = robustRegression(
+                weakStabilityWindow, distanceMeters[profileIndex], sourcePixel);
             MotionEvidence motion = motionSupport(stabilityWindow, sourcePixel);
             double motionSupport = motion.support();
-            double effectiveCenter = blend(stability.centerOffsetPx(), local.centerOffsetPx(), motionSupport);
-            double effectiveTangent = blend(stability.tangentOffsetPerMeter(), local.tangentOffsetPerMeter(),
-                motionSupport);
             CorridorBand band = point == null ? null : point.band();
+            double prominence = band == null ? 0.0 : Math.max(0.0, band.peakIntensity() - band.noiseFloor());
+            double weakSignal = clamp((0.35 - prominence) / 0.30);
+            double weakStabilityWeight = weakSignal * (1.0 - motionSupport);
+            double stabilityCenter = blend(stability.centerOffsetPx(), weakStability.centerOffsetPx(),
+                weakStabilityWeight);
+            double stabilityTangent = blend(stability.tangentOffsetPerMeter(),
+                weakStability.tangentOffsetPerMeter(), weakStabilityWeight);
+            double stabilityResidual = blend(stability.residualScalePx(), weakStability.residualScalePx(),
+                weakStabilityWeight);
+            double stabilityConfidence = blend(stability.confidence(), weakStability.confidence(),
+                weakStabilityWeight);
+            double effectiveCenter = blend(stabilityCenter, local.centerOffsetPx(), motionSupport);
+            double effectiveTangent = blend(stabilityTangent, local.tangentOffsetPerMeter(),
+                motionSupport);
             BandScaleEvidence evidence = band == null ? null : scaleEvidence.get(
                 CorridorCenterlineOptimizer.scaleEvidenceKey(profileIndex, band.id()));
             CenterEvidence centers = band == null
                 ? CenterEvidence.missing(effectiveCenter)
                 : centers(profiles.get(profileIndex), band);
             double uncertainty = Math.max(sourcePixel * 0.5,
-                blend(stability.residualScalePx(), local.residualScalePx(), motionSupport));
+                blend(stabilityResidual, local.residualScalePx(), motionSupport));
             if (band != null) {
                 uncertainty = Math.max(uncertainty, band.uncertaintyPx());
             }
@@ -81,9 +100,9 @@ public final class CorridorTubeBuilder {
                 effectiveTangent,
                 local.centerOffsetPx(),
                 local.tangentOffsetPerMeter(),
-                stability.centerOffsetPx(),
-                stability.tangentOffsetPerMeter(),
-                stability.residualScalePx(),
+                stabilityCenter,
+                stabilityTangent,
+                stabilityResidual,
                 motionSupport,
                 motion.reason(),
                 0.0,
@@ -92,7 +111,7 @@ public final class CorridorTubeBuilder {
                 band == null ? Double.NaN : band.shoulderMinPx(),
                 band == null ? Double.NaN : band.shoulderMaxPx(),
                 uncertainty,
-                blend(stability.confidence(), local.confidence(), motionSupport),
+                blend(stabilityConfidence, local.confidence(), motionSupport),
                 evidence != null && evidence.scaleConflict(),
                 evidence != null && evidence.parentMerge(),
                 centers.rawCenterPx(),
@@ -118,6 +137,9 @@ public final class CorridorTubeBuilder {
         double weight = band.signalExistenceConfidence()
             * (0.25 + 0.75 * band.localizationConfidence())
             * (0.50 + 0.50 * evidence.scalePersistence());
+        if (point.support() == CorridorPointSupport.BOUNDED_INTERPOLATION) {
+            weight *= 0.45;
+        }
         CenterEvidence centers = centers(profile, band);
         double centerSpread = Math.max(Math.abs(centers.rawCenterPx() - centers.lightCenterPx()),
             Math.max(Math.abs(centers.rawCenterPx() - centers.standardCenterPx()),

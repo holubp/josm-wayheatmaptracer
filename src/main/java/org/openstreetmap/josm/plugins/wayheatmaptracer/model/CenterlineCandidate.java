@@ -262,7 +262,7 @@ public record CenterlineCandidate(
             index++;
         }
         if (index < parts.length && parts[index].startsWith("ridge-") && label.toString().startsWith("Consensus")) {
-            label.append(parts[index].replace('-', ' '));
+            label.append(readableCandidatePart(parts[index]));
             index++;
         } else if (index < parts.length) {
             label.append(capitalize(parts[index])).append(" detector");
@@ -276,7 +276,7 @@ public record CenterlineCandidate(
             index++;
         }
         while (index < parts.length) {
-            label.append(" - ").append(parts[index].replace('-', ' '));
+            label.append(" - ").append(readableCandidatePart(parts[index]));
             index++;
         }
         label.append(" - ").append(confidenceLabel());
@@ -314,6 +314,11 @@ public record CenterlineCandidate(
             return "weak";
         }
         return "very weak";
+    }
+
+    private String readableCandidatePart(String part) {
+        return part.startsWith("bundle-") ? "sparse corridor " + part.substring("bundle-".length())
+            : part.replace('-', ' ');
     }
 
     private static double clamp01(double value) {

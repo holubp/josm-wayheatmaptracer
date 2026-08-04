@@ -423,6 +423,8 @@ public final class AlignmentService {
             "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids\n");
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
+        StringBuilder corridorBundlesCsv = new StringBuilder(corridorBundlesCsvHeader());
+        StringBuilder bundlePointsCsv = new StringBuilder(bundlePointsCsvHeader());
         StringBuilder optimizerCostsCsv = new StringBuilder(
             optimizerCostsCsvHeader());
         StringBuilder scaleSpaceCsv = new StringBuilder(scaleSpaceCsvHeader());
@@ -465,6 +467,8 @@ public final class AlignmentService {
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
+            corridorBundlesCsv.append(tracking.corridorBundlesCsv());
+            bundlePointsCsv.append(tracking.bundlePointsCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
             scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             corridorTubeCsv.append(tracking.corridorTubeCsv());
@@ -501,6 +505,7 @@ public final class AlignmentService {
         return new DetectionResult(sorted, "[]",
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
+            corridorBundlesCsv.toString(), bundlePointsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
             endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
             outsideRasterProfiles, totalProfiles, profileSpacing);
@@ -526,6 +531,8 @@ public final class AlignmentService {
             "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids\n");
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
+        StringBuilder corridorBundlesCsv = new StringBuilder(corridorBundlesCsvHeader());
+        StringBuilder bundlePointsCsv = new StringBuilder(bundlePointsCsvHeader());
         StringBuilder optimizerCostsCsv = new StringBuilder(
             optimizerCostsCsvHeader());
         StringBuilder scaleSpaceCsv = new StringBuilder(scaleSpaceCsvHeader());
@@ -561,6 +568,8 @@ public final class AlignmentService {
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
+            corridorBundlesCsv.append(tracking.corridorBundlesCsv());
+            bundlePointsCsv.append(tracking.bundlePointsCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
             scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             corridorTubeCsv.append(tracking.corridorTubeCsv());
@@ -614,6 +623,8 @@ public final class AlignmentService {
             profileIntensityCsv.append(tracking.profileIntensityCsv());
             corridorBandsCsv.append(tracking.corridorBandsCsv());
             corridorTracksCsv.append(tracking.corridorTracksCsv());
+            corridorBundlesCsv.append(tracking.corridorBundlesCsv());
+            bundlePointsCsv.append(tracking.bundlePointsCsv());
             optimizerCostsCsv.append(tracking.optimizerCostsCsv());
             scaleSpaceCsv.append(tracking.scaleSpaceCsv());
             corridorTubeCsv.append(tracking.corridorTubeCsv());
@@ -650,6 +661,7 @@ public final class AlignmentService {
         return new DetectionResult(sorted, "[]",
             profilePeaksCsv.toString(), paletteSamplesCsv.toString(), profileIntensityCsv.toString(),
             corridorBandsCsv.toString(), corridorTracksCsv.toString(), optimizerCostsCsv.toString(),
+            corridorBundlesCsv.toString(), bundlePointsCsv.toString(),
             scaleSpaceCsv.toString(), corridorTubeCsv.toString(), associationDecisionsCsv.toString(),
             endpointApproachesCsv.toString(), detectorPerformanceCsv.toString(),
             outsideRasterProfiles, totalProfiles, profileSpacing);
@@ -694,7 +706,7 @@ public final class AlignmentService {
         long trackingNanos = System.nanoTime() - start;
         DetectorPerformance performance = new DetectorPerformance(0L, 0L, 0L, trackingNanos,
             0L, 0L, 0L, 0L, profiles.size(), 0, 0, candidates.size(), 0, 0L, 0L, 0L, 0);
-        return new TrackerOutput(candidates, "", "", "", "", "", "", "", "", performance);
+        return new TrackerOutput(candidates, "", "", "", "", "", "", "", "", "", "", performance);
     }
 
     private TrackerOutput trackProfiles(
@@ -725,6 +737,8 @@ public final class AlignmentService {
         StringBuilder intensities = new StringBuilder();
         StringBuilder bands = new StringBuilder();
         StringBuilder tracks = new StringBuilder();
+        StringBuilder bundleRows = new StringBuilder();
+        StringBuilder bundlePointRows = new StringBuilder();
         StringBuilder costs = new StringBuilder();
         StringBuilder scaleSpace = new StringBuilder();
         StringBuilder tubeRows = new StringBuilder();
@@ -795,6 +809,28 @@ public final class AlignmentService {
                 .append(csv(decision.leftTrackId())).append(',').append(csv(decision.rightTrackId())).append(',')
                 .append(decision.commonProfiles()).append(',').append(decision.commonSupportRatio()).append(',')
                 .append(decision.meanValleyRatio()).append(',').append(decision.commonEnvelopeRatio()).append('\n');
+        }
+        for (SparseCorridorBundle bundle : result.sparseBundles()) {
+            bundleRows.append(csv(detector)).append(',').append(csv(bundle.id())).append(',')
+                .append(csv(bundle.classification())).append(',')
+                .append(csv(String.join(";", bundle.childTrackIds()))).append(',')
+                .append(bundle.directUnionProfileCount()).append(',')
+                .append(bundle.interpolatedProfileCount()).append(',')
+                .append(bundle.unionSupportRatio()).append(',').append(bundle.jointSupportRatio()).append(',')
+                .append(bundle.valleyPersistence()).append(',').append(bundle.tangentAgreement()).append(',')
+                .append(bundle.orderStability()).append(',').append(bundle.robustSeparationPx()).append(',')
+                .append(csv(bundle.reason())).append('\n');
+            bundle.points().values().stream()
+                .sorted(java.util.Comparator.comparingInt(SparseCorridorBundlePoint::profileIndex))
+                .forEach(point -> bundlePointRows.append(csv(detector)).append(',')
+                    .append(csv(bundle.id())).append(',').append(point.profileIndex()).append(',')
+                    .append(point.support()).append(',')
+                    .append(csv(String.join(";", point.directContributorTrackIds()))).append(',')
+                    .append(csv(String.join(";", point.predictedContributorTrackIds()))).append(',')
+                    .append(point.centerOffsetPx()).append(',').append(point.uncertaintyPx()).append(',')
+                    .append(point.shoulderMinPx()).append(',').append(point.shoulderMaxPx()).append(',')
+                    .append(point.coreMinPx()).append(',').append(point.coreMaxPx()).append(',')
+                    .append(point.occupancy()).append(',').append(point.contributorAgreement()).append('\n'));
         }
         result.optimizations().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
             double totalCost = entry.getValue().totalCost();
@@ -886,7 +922,8 @@ public final class AlignmentService {
         long retainedStates = result.optimizations().values().stream()
             .mapToLong(CorridorCenterlineOptimizer.OptimizationResult::retainedPairStateAllocations).sum();
         int allowedStates = Math.toIntExact(Math.min(Integer.MAX_VALUE, profileCostEvaluations));
-        int diagnosticCharacters = intensities.length() + bands.length() + tracks.length() + costs.length()
+        int diagnosticCharacters = intensities.length() + bands.length() + tracks.length()
+            + bundleRows.length() + bundlePointRows.length() + costs.length()
             + scaleSpace.length() + tubeRows.length() + associationRows.length() + endpointRows.length();
         CorridorAwareTracker.TrackingTiming timing = result.timing();
         DetectorPerformance performance = new DetectorPerformance(0L, timing.extractionNanos(),
@@ -896,7 +933,8 @@ public final class AlignmentService {
             result.candidates().size(), allowedStates, transitions, profileCostEvaluations, retainedStates,
             diagnosticCharacters);
         return new TrackerOutput(result.candidates(), intensities.toString(), bands.toString(),
-            tracks.toString(), costs.toString(), scaleSpace.toString(), tubeRows.toString(),
+            tracks.toString(), bundleRows.toString(), bundlePointRows.toString(), costs.toString(),
+            scaleSpace.toString(), tubeRows.toString(),
             associationRows.toString(), endpointRows.toString(), performance);
     }
 
@@ -927,6 +965,14 @@ public final class AlignmentService {
 
     private String optimizerCostsCsvHeader() {
         return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,plateau_center_cost,coarse_prior_cost,tube_center_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost,maximum_offset_states,maximum_pair_states,transition_evaluations,profile_cost_evaluations,point_table_entries,adjacent_geometry_entries,retained_pair_state_allocations\n";
+    }
+
+    private String corridorBundlesCsvHeader() {
+        return "detector,bundle_id,classification,child_track_ids,direct_union_profiles,interpolated_profiles,union_support_ratio,joint_support_ratio,valley_persistence,tangent_agreement,order_stability,robust_separation_px,reason\n";
+    }
+
+    private String bundlePointsCsvHeader() {
+        return "detector,bundle_id,profile_index,support,direct_contributor_track_ids,predicted_contributor_track_ids,center_px,uncertainty_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,occupancy,contributor_agreement\n";
     }
 
     private String corridorTubeCsvHeader() {
@@ -2708,6 +2754,8 @@ public final class AlignmentService {
             detection.profileIntensityCsv(),
             detection.corridorBandsCsv(),
             detection.corridorTracksCsv(),
+            detection.corridorBundlesCsv(),
+            detection.bundlePointsCsv(),
             detection.optimizerCostsCsv(),
             detection.scaleSpaceCsv(),
             detection.corridorTubeCsv(),
@@ -2755,6 +2803,8 @@ public final class AlignmentService {
             detection.profileIntensityCsv(),
             detection.corridorBandsCsv(),
             detection.corridorTracksCsv(),
+            detection.corridorBundlesCsv(),
+            detection.bundlePointsCsv(),
             detection.optimizerCostsCsv(),
             detection.scaleSpaceCsv(),
             detection.corridorTubeCsv(),
@@ -3598,6 +3648,8 @@ public final class AlignmentService {
         String corridorBandsCsv,
         String corridorTracksCsv,
         String optimizerCostsCsv,
+        String corridorBundlesCsv,
+        String bundlePointsCsv,
         String scaleSpaceCsv,
         String corridorTubeCsv,
         String associationDecisionsCsv,
@@ -3654,6 +3706,8 @@ public final class AlignmentService {
         String profileIntensityCsv,
         String corridorBandsCsv,
         String corridorTracksCsv,
+        String corridorBundlesCsv,
+        String bundlePointsCsv,
         String optimizerCostsCsv,
         String scaleSpaceCsv,
         String corridorTubeCsv,
@@ -3666,13 +3720,16 @@ public final class AlignmentService {
             String profileIntensityCsv,
             String corridorBandsCsv,
             String corridorTracksCsv,
+            String corridorBundlesCsv,
+            String bundlePointsCsv,
             String optimizerCostsCsv,
             String scaleSpaceCsv,
             String corridorTubeCsv,
             String associationDecisionsCsv,
             String endpointApproachesCsv
         ) {
-            this(candidates, profileIntensityCsv, corridorBandsCsv, corridorTracksCsv, optimizerCostsCsv,
+            this(candidates, profileIntensityCsv, corridorBandsCsv, corridorTracksCsv,
+                corridorBundlesCsv, bundlePointsCsv, optimizerCostsCsv,
                 scaleSpaceCsv, corridorTubeCsv, associationDecisionsCsv, endpointApproachesCsv,
                 DetectorPerformance.empty(candidates.size()));
         }

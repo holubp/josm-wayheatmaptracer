@@ -128,7 +128,12 @@ public final class EndpointApproachBuilder {
         Map<String, BandScaleEvidence> scaleEvidence
     ) {
         CorridorTrackPoint point = track.points().get(profile.index());
-        if (point == null || point.band().parentHypothesis() || ambiguousProfile(profile)) {
+        if (point == null || ambiguousProfile(profile)) {
+            return false;
+        }
+        if (point.band().parentHypothesis()
+            && (!track.parent() || !"combined".equals(track.groupingDecision())
+                || point.support() != CorridorPointSupport.DIRECT_UNION)) {
             return false;
         }
         BandScaleEvidence evidence = scaleEvidence.get(

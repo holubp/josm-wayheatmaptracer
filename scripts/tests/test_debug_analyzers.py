@@ -84,6 +84,17 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("available", undulations[0]["proposed_topology_state"])
         self.assertEqual("1", undulations[0]["proposed_node_count"])
 
+    def test_format_eight_exposes_sparse_bundle_provenance(self) -> None:
+        """Format 8 correlates parent candidates with direct, interpolated, and center evidence."""
+        rows, _ = run_analyzers(debug_bundle(8, "0.18.0", "preview-open"))
+
+        self.assertEqual("combined", rows[0]["sparse_bundle_classification"])
+        self.assertEqual("2", rows[0]["sparse_bundle_child_count"])
+        self.assertEqual("2.0", rows[0]["sparse_bundle_direct_union_profiles"])
+        self.assertEqual("1.0", rows[0]["sparse_bundle_interpolated_profiles"])
+        self.assertEqual("0.3333333333333333", rows[0]["sparse_bundle_interpolation_ratio"])
+        self.assertIn("interpolation-heavy", rows[0]["sparse_bundle_diagnoses"])
+
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
         outer = io.BytesIO()
@@ -144,6 +155,7 @@ def debug_bundle(
         "pluginVersion": plugin_version,
         "buildIdentity": "sha256:test" if format_version >= 5 else "",
     }
+    candidate_id = "hot/bundle-1" if format_version >= 8 else "hot/strand-1"
     diagnostics = {
         "pluginVersion": plugin_version,
         "config": {},
@@ -153,7 +165,7 @@ def debug_bundle(
             "longitudinalProfileSpacingMeters": {"median": 2.0},
             "rasterMetersPerPixel": 1.0,
         },
-        "candidates": [{"id": "hot/strand-1", "offsetsPx": [0.0, 0.0, 0.0]}],
+        "candidates": [{"id": candidate_id, "offsetsPx": [0.0, 0.0, 0.0]}],
     }
     if format_version >= 5:
         diagnostics["sampling"]["type"] = sampling_type
@@ -175,12 +187,12 @@ def debug_bundle(
     metrics = (
         "rank,candidate_id,detector,calibrated_score,raw_score,support_ratio,"
         "mean_intensity,mean_gradient_strength,signal_to_noise\n"
-        "1,hot/strand-1,hot,1.0,1.0,1.0,1.0,1.0,1.0\n"
+        f"1,{candidate_id},hot,1.0,1.0,1.0,1.0,1.0,1.0\n"
     )
     with zipfile.ZipFile(result, "w") as archive:
         archive.writestr("manifest.json", json.dumps(manifest))
         archive.writestr("diagnostics.json", json.dumps(diagnostics))
-        archive.writestr("status.json", json.dumps({"status": status, "selectedCandidate": "hot/strand-1"}))
+        archive.writestr("status.json", json.dumps({"status": status, "selectedCandidate": candidate_id}))
         archive.writestr("candidate-metrics.csv", metrics)
         archive.writestr("original-segment.osm", geometry)
         archive.writestr("preview-segment.osm", geometry)
@@ -206,7 +218,31 @@ def debug_bundle(
             archive.writestr(
                 "proposed-node-positions.csv",
                 "candidate_id,node_id,original_east,original_north,proposed_east,proposed_north\n"
-                "hot/strand-1,123,0.0,0.0,1.0,1.0\n",
+                f"{candidate_id},123,0.0,0.0,1.0,1.0\n",
+            )
+        if format_version >= 8:
+            archive.writestr(
+                "corridor-bundles.csv",
+                "detector,bundle_id,classification,child_track_ids,direct_union_profiles,"
+                "interpolated_profiles,union_support_ratio,joint_support_ratio,valley_persistence,"
+                "tangent_agreement,order_stability,robust_separation_px,reason\n"
+                "hot,bundle-1,combined,left;right,2,1,0.8,0.1,0.2,0.95,1.0,4.0,"
+                "complementary-child-union\n",
+            )
+            archive.writestr(
+                "bundle-points.csv",
+                "detector,bundle_id,profile_index,support,direct_contributor_track_ids,"
+                "predicted_contributor_track_ids,center_px,uncertainty_px,shoulder_min_px,"
+                "shoulder_max_px,core_min_px,core_max_px,occupancy,contributor_agreement\n"
+                "hot,bundle-1,0,DIRECT_UNION,left,right,0.0,1.0,-2.0,2.0,-1.0,1.0,1.0,0.9\n"
+                "hot,bundle-1,1,BOUNDED_INTERPOLATION,,left;right,0.0,1.5,-2.0,2.0,"
+                "-1.0,1.0,1.0,0.8\n"
+                "hot,bundle-1,2,DIRECT_UNION,right,left,0.0,1.0,-2.0,2.0,-1.0,1.0,1.0,0.9\n",
+            )
+            archive.writestr(
+                "optimizer-costs.csv",
+                "detector,track_id,profile_index,chosen_offset_px\n"
+                "hot,bundle-1,0,0.0\nhot,bundle-1,1,0.0\nhot,bundle-1,2,0.0\n",
             )
     return result.getvalue()
 

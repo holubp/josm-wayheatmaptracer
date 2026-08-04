@@ -169,31 +169,35 @@ public final class CorridorAwareTracker {
     ) {
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
-        CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles);
+        CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
         long trackingNanos = System.nanoTime() - trackingStart;
         long optimizationStart = System.nanoTime();
         List<CenterlineCandidate> candidates = new ArrayList<>();
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations = new LinkedHashMap<>();
         Map<String, LongitudinalCorridorTube> tubes = new LinkedHashMap<>();
+        Map<String, BandScaleEvidence> effectiveScaleEvidence = parentScaleEvidence(grouped.tracks(), scaleEvidence);
+        Map<String, SparseCorridorBundle> bundlesById = grouped.bundles().stream()
+            .collect(java.util.stream.Collectors.toMap(SparseCorridorBundle::id, value -> value));
         for (CorridorTrack track : grouped.tracks()) {
             LongitudinalCorridorTube tube = tubeBuilder.build(
-                track, corridorProfiles, sourcePixelSizePx, scaleEvidence);
+                track, corridorProfiles, sourcePixelSizePx, effectiveScaleEvidence);
             CorridorCenterlineOptimizer.OptimizationResult optimized = optimizer.optimize(
-                track, corridorProfiles, sourcePixelSizePx, junctionContext, scaleEvidence, tube);
+                track, corridorProfiles, sourcePixelSizePx, junctionContext, effectiveScaleEvidence, tube);
             if (optimized.offsetsPx().isEmpty()) {
                 continue;
             }
+            SparseCorridorBundle bundle = bundlesById.get(track.id());
             CorridorCoverage coverage = coverageCalculator.calculate(
-                track, corridorProfiles, optimized.endpointApproaches());
-            CandidateEvidence evidence = evidence(track, corridorProfiles, optimized, scaleEvidence, coverage);
+                track, corridorProfiles, optimized.endpointApproaches(), bundle);
+            CandidateEvidence evidence = evidence(track, corridorProfiles, optimized, effectiveScaleEvidence, coverage,
+                bundle);
             double normalizedCost = optimized.totalCost() / Math.max(1, corridorProfiles.size());
             double score = 2.0 * evidence.signalExistenceConfidence()
                 + evidence.localizationConfidence()
                 + evidence.supportRatio()
                 + optimized.longitudinalStability()
                 + optimized.inCorridorFraction()
-                - normalizedCost * 0.25
-                + (track.parent() && "combined".equals(track.groupingDecision()) ? 0.15 : 0.0);
+                - normalizedCost * 0.25;
             candidates.add(new CenterlineCandidate(track.id(), score, optimized.screenPoints(), optimized.offsetsPx())
                 .withEvidence(evidence));
             optimizations.put(track.id(), optimized);
@@ -203,9 +207,40 @@ public final class CorridorAwareTracker {
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
         long optimizationNanos = System.nanoTime() - optimizationStart;
-        return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), optimizations,
-            tubes, multiScaleProfiles, scaleEvidence, sourcePixelSizePx,
+        return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), grouped.bundles(), optimizations,
+            tubes, multiScaleProfiles, effectiveScaleEvidence, sourcePixelSizePx,
             new TrackingTiming(extractionNanos, scaleAssociationNanos, trackingNanos, optimizationNanos));
+    }
+
+    private Map<String, BandScaleEvidence> parentScaleEvidence(
+        List<CorridorTrack> tracks,
+        Map<String, BandScaleEvidence> childEvidence
+    ) {
+        Map<String, BandScaleEvidence> result = new LinkedHashMap<>(childEvidence);
+        for (CorridorTrack track : tracks) {
+            if (!track.parent()) {
+                continue;
+            }
+            for (CorridorTrackPoint point : track.points().values()) {
+                List<BandScaleEvidence> contributors = point.band().childIds().stream()
+                    .map(id -> childEvidence.get(CorridorCenterlineOptimizer.scaleEvidenceKey(
+                        point.profileIndex(), id)))
+                    .filter(java.util.Objects::nonNull).toList();
+                if (contributors.isEmpty()) {
+                    continue;
+                }
+                double persistence = contributors.stream().mapToDouble(BandScaleEvidence::scalePersistence)
+                    .average().orElse(0.0);
+                List<Integer> levels = contributors.stream().flatMap(value -> value.participatingLevels().stream())
+                    .distinct().sorted().toList();
+                boolean conflict = contributors.stream().anyMatch(BandScaleEvidence::scaleConflict);
+                boolean parentMerge = contributors.stream().anyMatch(BandScaleEvidence::parentMerge);
+                result.put(CorridorCenterlineOptimizer.scaleEvidenceKey(
+                    point.profileIndex(), point.band().id()),
+                    new BandScaleEvidence(persistence, Double.NaN, Double.NaN, levels, conflict, parentMerge));
+            }
+        }
+        return Map.copyOf(result);
     }
 
     private CandidateEvidence evidence(
@@ -213,35 +248,38 @@ public final class CorridorAwareTracker {
         List<CorridorProfile> profiles,
         CorridorCenterlineOptimizer.OptimizationResult optimized,
         Map<String, BandScaleEvidence> scaleEvidence,
-        CorridorCoverage coverage
+        CorridorCoverage coverage,
+        SparseCorridorBundle bundle
     ) {
-        int supported = track.points().size();
+        int supported = bundle == null ? track.points().size() : bundle.directUnionProfileCount();
         int empty = Math.max(0, profiles.size() - supported);
-        int maxEmpty = maximumEmptyRun(track, profiles.size());
-        double totalIntensity = track.points().values().stream()
+        int maxEmpty = maximumEmptyRun(track, bundle, profiles.size());
+        List<CorridorTrackPoint> evidencePoints = track.points().values().stream()
+            .filter(point -> bundle == null || point.support() == CorridorPointSupport.DIRECT_UNION).toList();
+        double totalIntensity = evidencePoints.stream()
             .mapToDouble(point -> point.band().peakIntensity())
             .sum();
         double meanIntensity = supported == 0 ? 0.0 : totalIntensity / supported;
-        double meanExistence = track.points().values().stream()
+        double meanExistence = evidencePoints.stream()
             .mapToDouble(point -> point.band().signalExistenceConfidence())
             .average().orElse(0.0);
-        double meanLocalization = track.points().values().stream()
+        double meanLocalization = evidencePoints.stream()
             .mapToDouble(point -> point.band().localizationConfidence())
             .average().orElse(0.0);
-        double meanGradient = track.points().values().stream()
+        double meanGradient = evidencePoints.stream()
             .mapToDouble(point -> point.band().gradientStrength())
             .average().orElse(0.0);
-        double meanSnr = track.points().values().stream()
+        double meanSnr = evidencePoints.stream()
             .mapToDouble(point -> Math.max(0.0, point.band().peakIntensity() - point.band().noiseFloor()))
             .average().orElse(0.0);
-        double ambiguity = track.parent() && "ambiguous".equals(track.groupingDecision()) ? 1.0 : 0.0;
-        double meanPersistence = track.points().values().stream()
+        double ambiguity = bundle != null && "ambiguous".equals(bundle.classification()) ? 1.0 : 0.0;
+        double meanPersistence = evidencePoints.stream()
             .map(point -> scaleEvidence.get(CorridorCenterlineOptimizer.scaleEvidenceKey(
                 point.profileIndex(), point.band().id())))
             .filter(java.util.Objects::nonNull)
             .mapToDouble(BandScaleEvidence::scalePersistence)
             .average().orElse(0.0);
-        double conflictFraction = supported == 0 ? 0.0 : track.points().values().stream()
+        double conflictFraction = supported == 0 ? 0.0 : evidencePoints.stream()
             .map(point -> scaleEvidence.get(CorridorCenterlineOptimizer.scaleEvidenceKey(
                 point.profileIndex(), point.band().id())))
             .filter(java.util.Objects::nonNull)
@@ -350,11 +388,12 @@ public final class CorridorAwareTracker {
             || Math.abs(fine.centerOffsetPx() - coarse.centerOffsetPx()) <= centerLimit;
     }
 
-    private int maximumEmptyRun(CorridorTrack track, int profileCount) {
+    private int maximumEmptyRun(CorridorTrack track, SparseCorridorBundle bundle, int profileCount) {
         int maximum = 0;
         int current = 0;
         for (int i = 0; i < profileCount; i++) {
-            if (track.points().containsKey(i)) {
+            CorridorTrackPoint point = track.points().get(i);
+            if (point != null && (bundle == null || point.support() == CorridorPointSupport.DIRECT_UNION)) {
                 current = 0;
             } else {
                 maximum = Math.max(maximum, ++current);
@@ -370,6 +409,7 @@ public final class CorridorAwareTracker {
      * @param profiles extracted corridor profiles
      * @param tracks elementary and parent tracks
      * @param groupingDecisions pairwise lane/carriageway interpretation evidence
+     * @param sparseBundles explicit sparse parent evidence
      * @param optimizations optimizer output keyed by track id
      * @param tubes robust longitudinal evidence keyed by track id
      * @param multiScaleProfiles extracted L0/L1/L2 observations
@@ -382,6 +422,7 @@ public final class CorridorAwareTracker {
         List<CorridorProfile> profiles,
         List<CorridorTrack> tracks,
         List<CorridorGrouping.GroupingDecision> groupingDecisions,
+        List<SparseCorridorBundle> sparseBundles,
         Map<String, CorridorCenterlineOptimizer.OptimizationResult> optimizations,
         Map<String, LongitudinalCorridorTube> tubes,
         List<MultiScaleCorridorProfile> multiScaleProfiles,
@@ -395,6 +436,7 @@ public final class CorridorAwareTracker {
             profiles = List.copyOf(profiles);
             tracks = List.copyOf(tracks);
             groupingDecisions = List.copyOf(groupingDecisions);
+            sparseBundles = List.copyOf(sparseBundles);
             optimizations = Map.copyOf(optimizations);
             tubes = Map.copyOf(tubes);
             multiScaleProfiles = List.copyOf(multiScaleProfiles);

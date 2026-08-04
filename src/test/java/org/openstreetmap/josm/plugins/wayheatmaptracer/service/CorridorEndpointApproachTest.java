@@ -69,6 +69,32 @@ class CorridorEndpointApproachTest {
             second.approaches().get(0).interiorAnchorProfileIndex());
     }
 
+    @Test
+    void supportsCombinedParentOnlyFromDirectUnambiguousInteriorEvidence() {
+        Scenario base = scenario(4.0, 16, true);
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        for (Map.Entry<Integer, CorridorTrackPoint> entry : base.track().points().entrySet()) {
+            CorridorBand source = entry.getValue().band();
+            CorridorBand parent = new CorridorBand("parent-" + entry.getKey(), source.centerOffsetPx(),
+                source.shoulderMinPx(), source.shoulderMaxPx(), source.coreMinPx(), source.coreMaxPx(),
+                source.nestedCentersPx(), source.peakIntensity(), source.noiseFloor(), 1.0,
+                source.signalExistenceConfidence(), source.localizationConfidence(), source.uncertaintyPx(),
+                true, List.of(source.id()));
+            points.put(entry.getKey(), new CorridorTrackPoint(entry.getKey(), parent, false,
+                CorridorPointSupport.DIRECT_UNION));
+        }
+        CorridorTrack parentTrack = new CorridorTrack("bundle-1", points, 1.0, 1.0,
+            true, List.of("left", "right"), "combined");
+        JunctionContext context = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, false, true, 8.0, 1.0, 6)
+        ));
+
+        EndpointApproachModel model = new EndpointApproachBuilder().build(parentTrack, base.profiles(),
+            new CorridorTubeBuilder().build(parentTrack, base.profiles(), 1.0, Map.of()), context, Map.of());
+
+        assertTrue(model.supportsConstraint(0));
+    }
+
     private Scenario scenario(double center, int count, boolean withEvidence) {
         return scenario(center, count, withEvidence, 5.0);
     }
