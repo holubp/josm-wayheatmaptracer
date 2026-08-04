@@ -66,6 +66,10 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
     bridge_directions = bridge_direction_summaries(read_zip_csv(bundle, "corridor-tracks.csv"))
     scale_space = scale_space_summaries(read_zip_csv(bundle, "scale-space.csv"))
+    proposed_positions = read_zip_csv(bundle, "proposed-node-positions.csv")
+    proposed_counts: dict[str, int] = defaultdict(int)
+    for position in proposed_positions:
+        proposed_counts[str(position.get("candidate_id", ""))] += 1
     try:
         attempts = json.loads(read_zip_text(bundle, "detector-attempts.json") or "[]")
     except json.JSONDecodeError:
@@ -96,6 +100,8 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "plugin_version": plugin_version,
             "build_identity": str(manifest.get("buildIdentity") or diagnostics.get("buildIdentity") or ""),
             "original_geometry_trust": "immutable" if bundle_format >= 5 else "unreliable-after-apply",
+            "proposed_topology_state": "available" if bundle_format >= 7 and proposed_positions else "unavailable",
+            "proposed_node_count": proposed_counts.get(candidate_id, 0),
             "physical_distance_warning": physical_warning,
             "candidate_id": candidate_id,
             "detector": row.get("detector", ""),

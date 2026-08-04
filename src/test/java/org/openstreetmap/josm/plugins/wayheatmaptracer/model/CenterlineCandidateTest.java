@@ -2,12 +2,15 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Point2D;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.coor.EastNorth;
 
 class CenterlineCandidateTest {
     @Test
@@ -75,5 +78,24 @@ class CenterlineCandidateTest {
 
         assertTrue(candidate.displayName().contains("low support"));
         assertTrue(candidate.displayName().contains("weak z13 validation"));
+    }
+
+    @Test
+    void preservesImmutableProposedNodePositionsAcrossCandidateCopies() {
+        Map<Long, EastNorth> mutable = new java.util.LinkedHashMap<>();
+        mutable.put(123L, new EastNorth(4.0, 5.0));
+        CenterlineCandidate candidate = new CenterlineCandidate(
+            "blue/ridge-1", 3.0, List.of(), List.of())
+            .withFinalPreviewGeometry(List.of(new EastNorth(0.0, 0.0), new EastNorth(4.0, 5.0)), mutable);
+        mutable.clear();
+
+        CenterlineCandidate copy = candidate.withScore(4.0).withSafetyWarnings(List.of("test"));
+
+        assertEquals(Map.of(123L, new EastNorth(4.0, 5.0)), copy.proposedNodePositions());
+        assertThrows(UnsupportedOperationException.class,
+            () -> copy.proposedNodePositions().put(456L, new EastNorth(1.0, 1.0)));
+        assertThrows(IllegalArgumentException.class,
+            () -> candidate.withFinalPreviewGeometry(candidate.finalPreviewPoints(),
+                Map.of(123L, new EastNorth(Double.NaN, 1.0))));
     }
 }

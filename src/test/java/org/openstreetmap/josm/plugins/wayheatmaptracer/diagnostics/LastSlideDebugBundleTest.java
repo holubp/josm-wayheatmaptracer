@@ -9,6 +9,7 @@ import java.awt.image.BufferedImage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.zip.ZipFile;
 
@@ -44,7 +45,8 @@ class LastSlideDebugBundleTest {
         CenterlineCandidate candidate = new CenterlineCandidate("hot/strand-1", 1.0,
             List.of(new Point2D.Double(0, 0), new Point2D.Double(10, 0)), List.of(0.0, 0.0))
             .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)))
-            .withFinalPreviewPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)));
+            .withFinalPreviewGeometry(List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
+                Map.of(first.getUniqueId(), new EastNorth(0, 0), last.getUniqueId(), new EastNorth(10, 0)));
         AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
             "Strava", 1, 0, 1, 2, 3,
             "{\"trackerMode\":\"CORRIDOR_AWARE\"}", "{}", "{}", "[\"hot\"]", "[]", "[]",
@@ -73,13 +75,15 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("candidate-previews.osm"));
             assertNotNull(zip.getEntry("applied-segment.osm"));
             assertNotNull(zip.getEntry("junction-safety.csv"));
+            assertNotNull(zip.getEntry("proposed-node-positions.csv"));
             assertNotNull(zip.getEntry("junction-context.osm"));
             assertEquals("intensity\n", text(zip, "profile-intensity.csv"));
             assertTrue(text(zip, "diagnostics.json").contains("CORRIDOR_AWARE"));
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":6"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":7"));
+            assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
             assertTrue(text(zip, "diagnostics.json").contains("profile-intensity.csv"));
             assertTrue(text(zip, "verbose-log.txt").contains("Plugin-Build:"));

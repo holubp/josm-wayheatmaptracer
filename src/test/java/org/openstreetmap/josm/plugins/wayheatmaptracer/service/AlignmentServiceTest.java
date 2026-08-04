@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.openstreetmap.josm.data.osm.DataSet;
 
@@ -83,6 +84,60 @@ class AlignmentServiceTest {
         assertFalse(service.crossesConnectedWayBeforeJunction(correct, selected));
         assertFalse(service.crossesConnectedWayBeforeJunction(repairedPreview, selected));
         assertTrue(service.crossesConnectedWayBeforeJunction(brokenPreview, selected));
+    }
+
+    @Test
+    void evaluatesIncidentWayAtMovableJunctionProposedByFinalPreview() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchEnd = nodeAt(8, 10);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of());
+        CenterlineCandidate movedJunction = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(12, 5)))
+            .withFinalPreviewGeometry(
+                List.of(new EastNorth(0, 0), new EastNorth(12, 5)),
+                Map.of(junction.getUniqueId(), new EastNorth(12, 5)));
+
+        assertFalse(new AlignmentService().crossesConnectedWayBeforeJunction(movedJunction, selected),
+            "The connected segment must terminate at the candidate's proposed shared-node position");
+    }
+
+    @Test
+    void stillRejectsRealIncidentWayCrossingInProposedJunctionState() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAt(0, 0);
+        Node junction = nodeAt(10, 0);
+        Node branchEnd = nodeAt(0, 10);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selectedWay);
+        Way connectedWay = new Way();
+        connectedWay.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connectedWay);
+        SelectionContext selected = new SelectionContext(selectedWay, 0, 1,
+            List.of(start, junction), Set.of());
+        CenterlineCandidate crossing = new CenterlineCandidate("strand", 1.0, List.of(), List.of())
+            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(6, 8), new EastNorth(12, 5)))
+            .withFinalPreviewGeometry(
+                List.of(new EastNorth(0, 0), new EastNorth(6, 8), new EastNorth(12, 5)),
+                Map.of(junction.getUniqueId(), new EastNorth(12, 5)));
+
+        assertTrue(new AlignmentService().crossesConnectedWayBeforeJunction(crossing, selected),
+            "A crossing away from the consistently moved shared endpoint must remain unsafe");
     }
 
     @Test

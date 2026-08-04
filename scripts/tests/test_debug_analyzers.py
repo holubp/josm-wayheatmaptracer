@@ -64,7 +64,9 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("25.0", rows[0]["transition_to_profile_cost_ratio"])
         self.assertEqual("optimization", rows[0]["timing_dominant_phase"])
         self.assertEqual("", rows[0]["timing_warning"])
+        self.assertEqual("unavailable", rows[0]["proposed_topology_state"])
         self.assertEqual("immutable", undulations[0]["original_geometry_trust"])
+        self.assertEqual("unavailable", undulations[0]["proposed_topology_state"])
 
     def test_format_six_missing_performance_row_is_reported(self) -> None:
         """A damaged format-6 bundle cannot look like a measured fast detector."""
@@ -72,6 +74,15 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
             6, "0.16.3", "applied", include_performance=False))
 
         self.assertIn("performance row missing", rows[0]["timing_warning"])
+
+    def test_format_seven_exposes_proposed_topology_state(self) -> None:
+        """Format 7 reports candidate-owned existing-node assignments to both analyzers."""
+        rows, undulations = run_analyzers(debug_bundle(7, "0.17.1", "applied"))
+
+        self.assertEqual("available", rows[0]["proposed_topology_state"])
+        self.assertEqual("1", rows[0]["proposed_node_count"])
+        self.assertEqual("available", undulations[0]["proposed_topology_state"])
+        self.assertEqual("1", undulations[0]["proposed_node_count"])
 
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
@@ -190,6 +201,12 @@ def debug_bundle(
                 "profile_cost_evaluations,retained_pair_state_allocations,diagnostic_characters\n"
                 "hot,1000000,500000,500000,1000000,8000000,500000,250000,12000000,250000,"
                 "3,3,1,1,40,1000,40,200,1000\n",
+            )
+        if format_version >= 7:
+            archive.writestr(
+                "proposed-node-positions.csv",
+                "candidate_id,node_id,original_east,original_north,proposed_east,proposed_north\n"
+                "hot/strand-1,123,0.0,0.0,1.0,1.0\n",
             )
     return result.getvalue()
 

@@ -38,6 +38,7 @@ public final class LastSlideDebugBundle {
     private final String candidateOsm;
     private final String candidatePreviewOsm;
     private final String junctionSafetyCsv;
+    private final String proposedNodePositionsCsv;
     private final String junctionContextOsm;
     private final String statusJson;
     private final String candidateRatingsJson;
@@ -68,6 +69,7 @@ public final class LastSlideDebugBundle {
         String candidateOsm,
         String candidatePreviewOsm,
         String junctionSafetyCsv,
+        String proposedNodePositionsCsv,
         String junctionContextOsm,
         String statusJson,
         String candidateRatingsJson,
@@ -97,6 +99,7 @@ public final class LastSlideDebugBundle {
         this.candidateOsm = candidateOsm;
         this.candidatePreviewOsm = candidatePreviewOsm;
         this.junctionSafetyCsv = junctionSafetyCsv;
+        this.proposedNodePositionsCsv = proposedNodePositionsCsv;
         this.junctionContextOsm = junctionContextOsm;
         this.statusJson = statusJson;
         this.candidateRatingsJson = candidateRatingsJson;
@@ -194,6 +197,7 @@ public final class LastSlideDebugBundle {
             candidateOsm(result),
             candidatePreviewOsm(result),
             junctionSafetyCsv(result),
+            proposedNodePositionsCsv(result),
             junctionContextOsm(result),
             statusJson,
             ratingsJson,
@@ -236,6 +240,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "candidate-ridges.osm", candidateOsm);
             writeText(zip, "candidate-previews.osm", candidatePreviewOsm);
             writeText(zip, "junction-safety.csv", junctionSafetyCsv);
+            writeText(zip, "proposed-node-positions.csv", proposedNodePositionsCsv);
             writeText(zip, "junction-context.osm", junctionContextOsm);
             writeText(zip, "candidate-ratings.json", candidateRatingsJson);
             writeText(zip, "candidate-metrics.csv", candidateMetricsCsv);
@@ -266,11 +271,11 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":6,"
+            + "\"formatVersion\":7,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 
@@ -438,16 +443,44 @@ public final class LastSlideDebugBundle {
 
     private static String junctionSafetyCsv(AlignmentResult result) {
         StringBuilder builder = new StringBuilder(
-            "candidate_id,reason_code,geometry_stage,junction_node_id,connected_way_id,connected_start_node_id,connected_end_node_id,candidate_segment_index,intersection_east,intersection_north,distance_from_junction_m,tolerance_m\n");
+            "candidate_id,reason_code,geometry_stage,junction_node_id,connected_way_id,connected_start_node_id,connected_end_node_id,candidate_segment_index,original_junction_east,original_junction_north,proposed_junction_east,proposed_junction_north,candidate_start_east,candidate_start_north,candidate_end_east,candidate_end_north,connected_start_east,connected_start_north,connected_end_east,connected_end_north,intersection_east,intersection_north,distance_from_junction_m,tolerance_m\n");
         for (CenterlineCandidate candidate : result.candidates()) {
             for (var finding : candidate.junctionSafetyFindings()) {
                 builder.append(csv(candidate.id())).append(',').append(csv(finding.reasonCode())).append(',')
                     .append(csv(finding.geometryStage())).append(',').append(finding.junctionNodeId()).append(',')
                     .append(finding.connectedWayId()).append(',').append(finding.connectedStartNodeId()).append(',')
                     .append(finding.connectedEndNodeId()).append(',').append(finding.candidateSegmentIndex()).append(',')
+                    .append(finding.originalJunctionPoint().east()).append(',')
+                    .append(finding.originalJunctionPoint().north()).append(',')
+                    .append(finding.junctionPoint().east()).append(',').append(finding.junctionPoint().north()).append(',')
+                    .append(finding.candidateStart().east()).append(',').append(finding.candidateStart().north()).append(',')
+                    .append(finding.candidateEnd().east()).append(',').append(finding.candidateEnd().north()).append(',')
+                    .append(finding.connectedStart().east()).append(',').append(finding.connectedStart().north()).append(',')
+                    .append(finding.connectedEnd().east()).append(',').append(finding.connectedEnd().north()).append(',')
                     .append(finding.intersection().east()).append(',').append(finding.intersection().north()).append(',')
                     .append(finding.distanceFromJunctionMeters()).append(',').append(finding.toleranceMeters())
                     .append('\n');
+            }
+        }
+        return builder.toString();
+    }
+
+    private static String proposedNodePositionsCsv(AlignmentResult result) {
+        Map<Long, EastNorth> original = new LinkedHashMap<>();
+        for (int index = 0; index < result.selection().segmentNodes().size(); index++) {
+            original.put(result.selection().segmentNodes().get(index).getUniqueId(), result.sourcePolyline().get(index));
+        }
+        StringBuilder builder = new StringBuilder(
+            "candidate_id,node_id,original_east,original_north,proposed_east,proposed_north\n");
+        for (CenterlineCandidate candidate : result.candidates()) {
+            for (Map.Entry<Long, EastNorth> entry : candidate.proposedNodePositions().entrySet()) {
+                EastNorth source = original.get(entry.getKey());
+                if (source == null) {
+                    continue;
+                }
+                builder.append(csv(candidate.id())).append(',').append(entry.getKey()).append(',')
+                    .append(source.east()).append(',').append(source.north()).append(',')
+                    .append(entry.getValue().east()).append(',').append(entry.getValue().north()).append('\n');
             }
         }
         return builder.toString();

@@ -101,6 +101,7 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
         applied = geometry_metrics(read_text(archive, "applied-segment.osm"))
         original_points = way_coordinates(read_text(archive, "original-segment.osm"))
         applied_points = way_coordinates(read_text(archive, "applied-segment.osm"))
+        proposed_positions = read_csv(archive, "proposed-node-positions.csv")
 
     bundle_format = int(manifest.get("formatVersion", 0) or 0)
     original_trust = "immutable" if bundle_format >= 5 else (
@@ -127,6 +128,9 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "plugin_version": manifest.get("pluginVersion", diagnostics.get("pluginVersion", "")),
             "build_identity": manifest.get("buildIdentity", diagnostics.get("buildIdentity", "")),
             "original_geometry_trust": original_trust,
+            "proposed_topology_state": "available" if bundle_format >= 7 and proposed_positions else "unavailable",
+            "proposed_node_count": sum(
+                row.get("candidate_id", "") == candidate_id for row in proposed_positions),
             "rank": int(float(metric.get("rank") or 9999)),
             "selected": candidate_id == selected,
             "candidate_id": candidate_id,

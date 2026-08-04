@@ -3,9 +3,11 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -182,6 +184,67 @@ class ReplaceWaySegmentCommandTest {
             "A reusable node from before a fixed anchor must remain before it");
         assertTrue(way.getNodes().indexOf(afterAnchor) > way.getNodes().indexOf(anchor),
             "A reusable node from after a fixed anchor must remain after it");
+    }
+
+    @Test
+    void appliesCandidateOwnedSharedJunctionTargetExactlyAcrossUndoAndRedo() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0.0, 0.0);
+        Node junction = nodeAtEastNorth(10.0, 0.0);
+        Node branchEnd = nodeAtEastNorth(10.0, 20.0);
+        for (Node node : List.of(start, junction, branchEnd)) {
+            dataSet.addPrimitive(node);
+        }
+        Way selected = new Way();
+        selected.setNodes(List.of(start, junction));
+        dataSet.addPrimitive(selected);
+        Way connected = new Way();
+        connected.setNodes(List.of(junction, branchEnd));
+        dataSet.addPrimitive(connected);
+        SelectionContext selection = new SelectionContext(selected, 0, 1, selected.getNodes(), Set.of(start));
+        List<EastNorth> preview = List.of(new EastNorth(0.0, 0.0), new EastNorth(12.0, 5.0));
+        Map<Long, EastNorth> targets = PreviewNodeAssignmentPlanner.targetMap(
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection,
+                List.of(new EastNorth(0.0, 0.0), new EastNorth(10.0, 0.0)), preview));
+        EastNorth junctionTarget = targets.get(junction.getUniqueId());
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(
+            dataSet, selected, selection, preview, targets, "test");
+
+        command.executeCommand();
+        assertEquals(junctionTarget, eastNorth(junction));
+        assertEquals(junction, connected.firstNode(), "The incident way must retain the same shared node object");
+        assertEquals(new EastNorth(10.0, 20.0), eastNorth(branchEnd));
+
+        command.undoCommand();
+        assertEquals(10.0, eastNorth(junction).east(), 1e-6);
+        assertEquals(0.0, eastNorth(junction).north(), 1e-6);
+        assertEquals(new EastNorth(10.0, 20.0), eastNorth(branchEnd));
+
+        command.executeCommand();
+        assertEquals(junctionTarget, eastNorth(junction));
+        assertEquals(junction, connected.firstNode());
+    }
+
+    @Test
+    void rejectsCandidatePlanMismatchBeforeMutatingDataset() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0.0, 0.0);
+        Node end = nodeAtEastNorth(10.0, 0.0);
+        dataSet.addPrimitive(start);
+        dataSet.addPrimitive(end);
+        Way way = new Way();
+        way.setNodes(List.of(start, end));
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 0, 1, way.getNodes(), Set.of(start));
+        List<EastNorth> preview = List.of(new EastNorth(0.0, 0.0), new EastNorth(12.0, 5.0));
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(dataSet, way, selection, preview,
+            Map.of(start.getUniqueId(), new EastNorth(0.0, 0.0),
+                end.getUniqueId(), new EastNorth(100.0, 100.0)), "test");
+
+        assertThrows(IllegalStateException.class, command::executeCommand);
+        assertEquals(List.of(start, end), way.getNodes());
+        assertEquals(new EastNorth(0.0, 0.0), eastNorth(start));
+        assertEquals(new EastNorth(10.0, 0.0), eastNorth(end));
     }
 
     private static Fixture fixture() {

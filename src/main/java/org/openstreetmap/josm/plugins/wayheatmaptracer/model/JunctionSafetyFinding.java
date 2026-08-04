@@ -12,7 +12,10 @@ import org.openstreetmap.josm.data.coor.EastNorth;
  * @param connectedStartNodeId first adjacent connected-segment node id
  * @param connectedEndNodeId second adjacent connected-segment node id
  * @param candidateSegmentIndex intersecting final-preview segment index
- * @param junctionPoint projected junction coordinate
+ * @param originalJunctionPoint source-state projected junction coordinate
+ * @param junctionPoint proposed projected junction coordinate
+ * @param candidateStart proposed candidate-segment start
+ * @param candidateEnd proposed candidate-segment end
  * @param connectedStart projected connected-segment start
  * @param connectedEnd projected connected-segment end
  * @param intersection projected intersection coordinate
@@ -27,7 +30,10 @@ public record JunctionSafetyFinding(
     long connectedStartNodeId,
     long connectedEndNodeId,
     int candidateSegmentIndex,
+    EastNorth originalJunctionPoint,
     EastNorth junctionPoint,
+    EastNorth candidateStart,
+    EastNorth candidateEnd,
     EastNorth connectedStart,
     EastNorth connectedEnd,
     EastNorth intersection,

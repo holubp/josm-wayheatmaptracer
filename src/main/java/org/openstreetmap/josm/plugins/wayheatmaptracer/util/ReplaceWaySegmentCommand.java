@@ -21,7 +21,6 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath.ProjectionOnPolyline;
 import org.openstreetmap.josm.tools.ImageProvider;
 
 /**
@@ -29,12 +28,12 @@ import org.openstreetmap.josm.tools.ImageProvider;
  */
 public final class ReplaceWaySegmentCommand extends Command {
     private static final double ANCHOR_MATCH_EPSILON_METERS = 0.01;
-    private static final double SOFT_ANCHOR_SEARCH_FRACTION = 0.08;
-    private static final double SOFT_ANCHOR_SEARCH_METERS = 35.0;
+    private static final double PROVIDED_TARGET_EPSILON = 1e-7;
 
     private final Way way;
     private final SelectionContext selection;
     private final List<EastNorth> previewPolyline;
+    private final Map<Long, EastNorth> proposedNodePositions;
     private final String description;
 
     private List<Node> originalWayNodes;
@@ -54,10 +53,32 @@ public final class ReplaceWaySegmentCommand extends Command {
      * @param description undo/redo menu description
      */
     public ReplaceWaySegmentCommand(DataSet dataSet, Way way, SelectionContext selection, List<EastNorth> previewPolyline, String description) {
+        this(dataSet, way, selection, previewPolyline, null, description);
+    }
+
+    /**
+     * Creates a command using the exact existing-node plan evaluated by preview safety.
+     *
+     * @param dataSet target OSM dataset
+     * @param way way whose selected segment will be replaced
+     * @param selection validated selected segment metadata
+     * @param previewPolyline replacement geometry in projected coordinates
+     * @param proposedNodePositions candidate-owned existing-node targets keyed by stable node id
+     * @param description undo/redo menu description
+     */
+    public ReplaceWaySegmentCommand(
+        DataSet dataSet,
+        Way way,
+        SelectionContext selection,
+        List<EastNorth> previewPolyline,
+        Map<Long, EastNorth> proposedNodePositions,
+        String description
+    ) {
         super(dataSet);
         this.way = way;
         this.selection = selection;
         this.previewPolyline = List.copyOf(previewPolyline);
+        this.proposedNodePositions = proposedNodePositions == null ? null : Map.copyOf(proposedNodePositions);
         this.description = description;
     }
 
@@ -114,7 +135,16 @@ public final class ReplaceWaySegmentCommand extends Command {
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
         List<Double> previewFractions = PolylineMath.fractionsForSegment(previewPolyline);
-        List<SoftAnchor> softAnchors = softAnchors(sourcePolyline, sourceFractions, previewFractions);
+        List<PreviewNodeAssignmentPlanner.NodeAssignment> plannedAssignments =
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, previewPolyline);
+        validateProposedNodePositions(plannedAssignments);
+        for (PreviewNodeAssignmentPlanner.NodeAssignment assignment : plannedAssignments) {
+            PluginLog.verbose(
+                "Precise protected node assignment node=%d fixed=%s source=(%.3f,%.3f) target=(%.3f,%.3f).",
+                assignment.node().getUniqueId(), assignment.fixed(), assignment.source().east(),
+                assignment.source().north(), assignment.target().east(), assignment.target().north());
+        }
+        List<SoftAnchor> softAnchors = softAnchors(plannedAssignments);
         Set<Node> softAnchorNodes = new HashSet<>();
         for (SoftAnchor anchor : softAnchors) {
             softAnchorNodes.add(anchor.node());
@@ -384,41 +414,38 @@ public final class ReplaceWaySegmentCommand extends Command {
         segmentReplacement.add(node);
     }
 
-    private List<SoftAnchor> softAnchors(
-        List<EastNorth> sourcePolyline,
-        List<Double> sourceFractions,
-        List<Double> previewFractions
-    ) {
-        if (previewPolyline.size() < 2) {
-            return List.of();
-        }
+    private List<SoftAnchor> softAnchors(List<PreviewNodeAssignmentPlanner.NodeAssignment> assignments) {
         List<SoftAnchor> anchors = new ArrayList<>();
-        int last = selection.segmentNodes().size() - 1;
-        double previewLength = PolylineMath.length(previewPolyline);
-        double window = Math.max(SOFT_ANCHOR_SEARCH_FRACTION, SOFT_ANCHOR_SEARCH_METERS / Math.max(1.0, previewLength));
-        for (int i = 0; i < selection.segmentNodes().size(); i++) {
-            Node node = selection.segmentNodes().get(i);
-            if (selection.fixedNodes().contains(node) || !isSoftAnchor(node, i, last)) {
-                continue;
+        for (PreviewNodeAssignmentPlanner.NodeAssignment assignment : assignments) {
+            if (!assignment.fixed()) {
+                EastNorth target = proposedNodePositions == null
+                    ? assignment.target() : proposedNodePositions.get(assignment.node().getUniqueId());
+                anchors.add(new SoftAnchor(assignment.node(), target, assignment.previewFraction(),
+                    assignment.sourceFraction()));
             }
-            ProjectionOnPolyline projection = PolylineMath.closestPointNearFraction(
-                previewPolyline,
-                previewFractions,
-                sourcePolyline.get(i),
-                sourceFractions.get(i),
-                window
-            );
-            anchors.add(new SoftAnchor(node, projection.point(), projection.fraction(), sourceFractions.get(i)));
         }
         anchors.sort(Comparator.comparingDouble(SoftAnchor::fraction));
-        return anchors;
+        return List.copyOf(anchors);
     }
 
-    private boolean isSoftAnchor(Node node, int index, int last) {
-        if (index == 0 || index == last || node.hasKeys()) {
-            return true;
+    private void validateProposedNodePositions(
+        List<PreviewNodeAssignmentPlanner.NodeAssignment> assignments
+    ) {
+        if (proposedNodePositions == null) {
+            return;
         }
-        return node.getReferrers().stream().anyMatch(referrer -> referrer != way);
+        Map<Long, EastNorth> expected = PreviewNodeAssignmentPlanner.targetMap(assignments);
+        if (!proposedNodePositions.keySet().equals(expected.keySet())) {
+            throw new IllegalStateException("Candidate existing-node assignments do not match the selected topology");
+        }
+        for (Map.Entry<Long, EastNorth> entry : expected.entrySet()) {
+            EastNorth provided = proposedNodePositions.get(entry.getKey());
+            if (provided == null || !Double.isFinite(provided.east()) || !Double.isFinite(provided.north())
+                || provided.distance(entry.getValue()) > PROVIDED_TARGET_EPSILON) {
+                throw new IllegalStateException(
+                    "Candidate existing-node assignment differs from the final preview plan for node " + entry.getKey());
+            }
+        }
     }
 
     private List<EastNorth> toEastNorth(List<Node> nodes) {

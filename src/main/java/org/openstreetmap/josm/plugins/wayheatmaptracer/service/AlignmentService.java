@@ -36,6 +36,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreviewNodeAssignmentPlanner;
 
 /**
  * Coordinates heatmap capture, ridge detection, preview construction, safety checks, and debug export data.
@@ -75,8 +76,6 @@ public final class AlignmentService {
     private static final int MAX_EFFECTIVE_HALF_WIDTH_PX = 120;
     private static final int MIN_EFFECTIVE_STEP_PX = 1;
     private static final int MAX_EFFECTIVE_STEP_PX = 32;
-    private static final double LOCAL_NODE_SEARCH_FRACTION = 0.08;
-    private static final double LOCAL_NODE_SEARCH_METERS = 35.0;
     private static final int MAX_CAPTURE_VIEW_DIMENSION_PX = 5000;
     private static final int MAX_CAPTURE_VIEW_AREA_PX = 3_300_000;
     private static final int MIN_APPLY_SUPPORTED_PROFILES = 2;
@@ -1682,8 +1681,27 @@ public final class AlignmentService {
         if (mode != TrackerMode.CORRIDOR_AWARE) {
             return candidates;
         }
-        return candidates.stream().map(candidate -> candidate.withFinalPreviewPoints(
-            optimize(selection, sourcePolyline, candidate, config, mapView))).toList();
+        return candidates.stream().map(candidate -> {
+            List<EastNorth> preview = optimize(selection, sourcePolyline, candidate, config, mapView);
+            AlignmentMode alignmentMode = effectiveAlignmentMode(selection, config);
+            if (alignmentMode == AlignmentMode.PRECISE_SHAPE) {
+                preview = PreviewNodeAssignmentPlanner.constrainPreciseTopology(
+                    selection, sourcePolyline, preview);
+            }
+            return candidate.withFinalPreviewGeometry(preview,
+                proposedNodePositions(selection, sourcePolyline, preview, alignmentMode));
+        }).toList();
+    }
+
+    private Map<Long, EastNorth> proposedNodePositions(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> preview,
+        AlignmentMode mode
+    ) {
+        return PreviewNodeAssignmentPlanner.targetMap(mode == AlignmentMode.PRECISE_SHAPE
+            ? PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, preview)
+            : PreviewNodeAssignmentPlanner.moveExistingAssignments(selection, sourcePolyline, preview));
     }
 
     private List<EastNorth> finalPreviewGeometry(
@@ -1726,6 +1744,10 @@ public final class AlignmentService {
         }
         TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
         if (trackerMode == TrackerMode.CORRIDOR_AWARE) {
+            String topologyIssue = proposedJunctionAssignmentIssue(candidate, selection);
+            if (topologyIssue != null) {
+                warnings.add("inconsistent proposed junction topology");
+            }
             if (candidate.evidence().corridorCoverage().measured()
                 && !candidate.evidence().corridorCoverage().complete()) {
                 warnings.add("incomplete longitudinal corridor");
@@ -1800,6 +1822,7 @@ public final class AlignmentService {
         if (hasFinalPreviewSelfIntersection(candidate)) {
             throw new IllegalStateException("The final heatmap preview intersects itself. Choose another ridge.");
         }
+        requireProposedJunctionAssignments(candidate, selection);
         double tolerance = Double.isFinite(candidate.junctionSafetyToleranceMeters())
             && candidate.junctionSafetyToleranceMeters() > 0.0
             ? candidate.junctionSafetyToleranceMeters() : 2.5;
@@ -1807,6 +1830,34 @@ public final class AlignmentService {
             throw new IllegalStateException(
                 "A connected way changed or now crosses the preview before its junction. Run the slide again.");
         }
+    }
+
+    private void requireProposedJunctionAssignments(CenterlineCandidate candidate, SelectionContext selection) {
+        String issue = proposedJunctionAssignmentIssue(candidate, selection);
+        if (issue != null) {
+            throw new IllegalStateException(issue + " Run the slide again.");
+        }
+    }
+
+    private String proposedJunctionAssignmentIssue(CenterlineCandidate candidate, SelectionContext selection) {
+        List<EastNorth> geometry = candidate.finalPreviewPoints().isEmpty()
+            ? candidate.eastNorthPoints() : candidate.finalPreviewPoints();
+        for (Node node : selection.segmentNodes()) {
+            boolean shared = node.referrers(Way.class)
+                .anyMatch(referrer -> referrer != selection.way() && !referrer.isDeleted());
+            if (!shared) {
+                continue;
+            }
+            EastNorth target = candidate.proposedNodePositions().get(node.getUniqueId());
+            if (target == null || !Double.isFinite(target.east()) || !Double.isFinite(target.north())) {
+                return "The preview has no proposed coordinate for a shared selected node.";
+            }
+            long occurrences = geometry.stream().filter(point -> point.distance(target) <= 1e-7).count();
+            if (occurrences != 1) {
+                return "The proposed shared-node coordinate is missing or duplicated in the preview.";
+            }
+        }
+        return null;
     }
 
     private boolean hasFinalPreviewSelfIntersection(CenterlineCandidate candidate) {
@@ -1846,8 +1897,12 @@ public final class AlignmentService {
             if (connected.isEmpty()) {
                 continue;
             }
-            EastNorth junctionPoint = junction.getEastNorth(ProjectionRegistry.getProjection());
-            int nearest = nearestPointIndex(geometry, junctionPoint);
+            EastNorth junctionPoint = proposedNodePosition(candidate, junction);
+            int nearest = candidate.proposedNodePositions().containsKey(junction.getUniqueId())
+                ? exactPointIndex(geometry, junctionPoint) : nearestPointIndex(geometry, junctionPoint);
+            if (nearest < 0) {
+                continue;
+            }
             int start = Math.max(0, nearest - 6);
             int end = Math.min(geometry.size() - 2, nearest + 5);
             for (Way way : connected) {
@@ -1856,10 +1911,8 @@ public final class AlignmentService {
                         if (way.getNode(wayIndex) != junction && way.getNode(wayIndex + 1) != junction) {
                             continue;
                         }
-                        EastNorth connectedStart = way.getNode(wayIndex).getEastNorth(
-                            ProjectionRegistry.getProjection());
-                        EastNorth connectedEnd = way.getNode(wayIndex + 1).getEastNorth(
-                            ProjectionRegistry.getProjection());
+                        EastNorth connectedStart = proposedNodePosition(candidate, way.getNode(wayIndex));
+                        EastNorth connectedEnd = proposedNodePosition(candidate, way.getNode(wayIndex + 1));
                         if (connectedStart == null || connectedEnd == null) {
                             continue;
                         }
@@ -1877,7 +1930,10 @@ public final class AlignmentService {
                                 way.getNode(wayIndex).getUniqueId(),
                                 way.getNode(wayIndex + 1).getUniqueId(),
                                 candidateIndex,
+                                junction.getEastNorth(ProjectionRegistry.getProjection()),
                                 junctionPoint,
+                                geometry.get(candidateIndex),
+                                geometry.get(candidateIndex + 1),
                                 connectedStart,
                                 connectedEnd,
                                 intersection,
@@ -1890,6 +1946,27 @@ public final class AlignmentService {
             }
         }
         return List.copyOf(findings);
+    }
+
+    private int exactPointIndex(List<EastNorth> geometry, EastNorth target) {
+        int match = -1;
+        for (int index = 0; index < geometry.size(); index++) {
+            if (geometry.get(index).distance(target) <= 1e-7) {
+                if (match >= 0) {
+                    return -1;
+                }
+                match = index;
+            }
+        }
+        return match;
+    }
+
+    private EastNorth proposedNodePosition(CenterlineCandidate candidate, Node node) {
+        EastNorth proposed = candidate.proposedNodePositions().get(node.getUniqueId());
+        if (proposed != null) {
+            return proposed;
+        }
+        return node.getEastNorth(ProjectionRegistry.getProjection());
     }
 
     private double groundDistanceMeters(EastNorth left, EastNorth right) {
@@ -1951,36 +2028,11 @@ public final class AlignmentService {
         }
 
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
-        List<EastNorth> samples;
-        if (preview.size() == selection.segmentNodes().size()) {
-            samples = preview;
-            PluginLog.debug("Applying node moves directly from preview points without resampling.");
-        } else {
-            List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
-            List<Double> previewFractions = PolylineMath.fractionsForSegment(preview);
-            double previewLength = PolylineMath.length(preview);
-            double window = Math.max(LOCAL_NODE_SEARCH_FRACTION, LOCAL_NODE_SEARCH_METERS / Math.max(1.0, previewLength));
-            samples = new ArrayList<>(selection.segmentNodes().size());
-            for (int i = 0; i < selection.segmentNodes().size(); i++) {
-                samples.add(PolylineMath.closestPointNearFraction(
-                    preview,
-                    previewFractions,
-                    sourcePolyline.get(i),
-                    sourceFractions.get(i),
-                    window
-                ).point());
+        for (PreviewNodeAssignmentPlanner.NodeAssignment assignment
+            : PreviewNodeAssignmentPlanner.moveExistingAssignments(selection, sourcePolyline, preview)) {
+            if (!assignment.fixed()) {
+                moves.add(new NodeMove(assignment.node(), assignment.target()));
             }
-            PluginLog.debug("Mapped %d source nodes to local preview projections from %d preview points for node move diagnostics.",
-                selection.segmentNodes().size(), preview.size());
-        }
-        List<Node> segmentNodes = selection.segmentNodes();
-
-        for (int i = 0; i < segmentNodes.size(); i++) {
-            Node node = segmentNodes.get(i);
-            if (selection.fixedNodes().contains(node)) {
-                continue;
-            }
-            moves.add(new NodeMove(node, samples.get(i)));
         }
         return moves;
     }
@@ -3308,6 +3360,8 @@ public final class AlignmentService {
                 .append("\"screenPoints\":").append(screenPointArray(candidate.screenPoints())).append(',')
                 .append("\"eastNorthPoints\":").append(eastNorthArray(candidate.eastNorthPoints())).append(',')
                 .append("\"finalPreviewPoints\":").append(eastNorthArray(candidate.finalPreviewPoints())).append(',')
+                .append("\"proposedNodePositions\":")
+                .append(proposedNodePositionsJson(candidate.proposedNodePositions())).append(',')
                 .append("\"junctionSafetyToleranceMeters\":")
                 .append(jsonDouble(candidate.junctionSafetyToleranceMeters())).append(',')
                 .append("\"topologyReasonCodes\":").append(stringArray(candidate.junctionSafetyFindings().stream()
@@ -3315,6 +3369,20 @@ public final class AlignmentService {
                 .append("\"safetyWarnings\":").append(stringArray(candidate.safetyWarnings())).append(',')
                 .append("\"evidence\":").append(candidate.evidence().toJson())
                 .append('}');
+        }
+        return builder.append(']').toString();
+    }
+
+    private String proposedNodePositionsJson(Map<Long, EastNorth> positions) {
+        StringBuilder builder = new StringBuilder("[");
+        int index = 0;
+        for (Map.Entry<Long, EastNorth> entry : positions.entrySet()) {
+            if (index++ > 0) {
+                builder.append(',');
+            }
+            builder.append("{\"nodeId\":").append(entry.getKey())
+                .append(",\"east\":").append(jsonDouble(entry.getValue().east()))
+                .append(",\"north\":").append(jsonDouble(entry.getValue().north())).append('}');
         }
         return builder.append(']').toString();
     }

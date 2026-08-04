@@ -498,6 +498,7 @@ public class AlignWayAction extends JosmAction {
                 selection.way(),
                 selection,
                 chosenResult.previewPolyline(),
+                chosen.proposedNodePositions(),
                 tr("Align way to heatmap precisely")
             ));
         }
