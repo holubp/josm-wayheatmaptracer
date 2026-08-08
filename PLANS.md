@@ -9,9 +9,9 @@ The checkpointable implementation plan is
 
 - CP1-9: complete, including configuration/migration, the dedicated settings dialog, retained cleanup evidence, ripple regularization, constrained smoothing and reduction, final-preview integration, and additive format-9 diagnostics.
 - CP10: complete; calibration, physical-scale controls, performance evidence, documentation, Javadoc, Java tests, and Python tests are green.
-- CP11: independent review, commit, publication, and release are in progress.
+- CP11: complete; independent review blockers were fixed and `v0.19.0` was published from commit `ee0edb0` with a remotely verified jar digest.
 
-The cleanup settings are intentionally future-slide-only and disabled by default. The raw candidate must remain available whenever optional cleanup is skipped or rejected. Do not mark this roadmap complete until the implementation, diagnostics, documentation, tests, and release gates all pass.
+The cleanup settings are intentionally future-slide-only and disabled by default. The raw candidate remains available whenever optional cleanup is skipped or rejected. This roadmap is complete because the implementation, diagnostics, documentation, test, review, and release gates passed.
 
 ## Remaining Detector And Alignment Work
 
