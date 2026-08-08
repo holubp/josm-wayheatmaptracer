@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 import org.openstreetmap.josm.data.osm.DataSet;
 
@@ -22,10 +23,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostic
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -48,6 +53,71 @@ class AlignmentServiceTest {
 
         assertTrue(AlignmentService.isSketchLikeSelection(sketch));
         assertEquals(AlignmentMode.MOVE_EXISTING_NODES, AlignmentService.effectiveAlignmentMode(sketch, config));
+    }
+
+    @Test
+    void snapshotsCleanupEvidenceWithoutDuplicatingProfileArrays() {
+        String json = new AlignmentService().cleanupEvidenceSummaryJson(
+            new CenterlineCandidate("hot/ridge-1", 1.0, List.of(), List.of()));
+
+        assertTrue(json.contains("\"status\":\"LEGACY_NOT_AVAILABLE\""));
+        assertTrue(json.contains("\"samplingProfiles\":0"));
+        assertTrue(json.contains("\"sharedEstimatedBytes\":0"));
+        assertFalse(json.contains("nativeIntensity"));
+    }
+
+    @Test
+    void newCleanupOwnsReductionWithoutRunningDowngradeCompatibilitySimplificationFirst() {
+        SelectionContext selection = selection(5);
+        DataSet dataSet = new DataSet();
+        selection.segmentNodes().forEach(dataSet::addPrimitive);
+        dataSet.addPrimitive(selection.way());
+        List<EastNorth> source = selection.segmentNodes().stream()
+            .map(node -> node.getEastNorth(ProjectionRegistry.getProjection()))
+            .toList();
+        EastNorth start = source.get(0);
+        EastNorth end = source.get(source.size() - 1);
+        List<EastNorth> ridge = new java.util.ArrayList<>();
+        for (int index = 0; index < 7; index++) {
+            double fraction = index / 6.0;
+            ridge.add(new EastNorth(
+                start.east() + fraction * (end.east() - start.east()),
+                start.north() + fraction * (end.north() - start.north())
+                    + (index == 0 || index == 6 ? 0.0 : (index % 2 == 0 ? 0.2 : -0.2))));
+        }
+        CenterlineCandidate candidate = new CenterlineCandidate("hot/ridge-1", 1.0, List.of(), List.of())
+            .withEastNorthPoints(ridge);
+        ManagedHeatmapConfig compatibility = corridorPreciseConfigWithLegacySimplification();
+        AlignmentService service = new AlignmentService();
+
+        CenterlineCandidate legacy = service.attachFinalPreviewGeometry(
+            List.of(candidate), selection, source, compatibility, GeometryCleanupConfig.disabled(), null).get(0);
+        CenterlineCandidate modern = service.attachFinalPreviewGeometry(
+            List.of(candidate), selection, source, compatibility,
+            GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY), null).get(0);
+
+        assertTrue(legacy.finalPreviewPoints().size() < ridge.size());
+        assertEquals(ridge, modern.finalPreviewPoints());
+    }
+
+    @Test
+    void groupsRawAndCleanedSiblingsAtTheirBestRankWithoutAnImplicitCleanupBonus() {
+        CandidateGeometryCleanup rawReport = cleanupReport(
+            "hot/ridge-raw", CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE);
+        CandidateGeometryCleanup cleanedReport = cleanupReport(
+            "hot/ridge-raw", CandidateGeometryCleanup.Outcome.CLEANED);
+        CenterlineCandidate raw = new CenterlineCandidate(
+            "hot/ridge-raw", 1.0, List.of(), List.of()).withGeometryCleanup(rawReport);
+        CenterlineCandidate cleaned = new CenterlineCandidate(
+            "hot/ridge-raw#cleaned", 100.0, List.of(), List.of()).withGeometryCleanup(cleanedReport);
+        CenterlineCandidate unrelated = new CenterlineCandidate(
+            "hot/ridge-other", 50.0, List.of(), List.of());
+
+        List<CenterlineCandidate> ranked = new AlignmentService().rankCandidatesForTesting(
+            List.of(unrelated, cleaned, raw), config(AlignmentMode.PRECISE_SHAPE));
+
+        assertEquals(List.of(raw.id(), cleaned.id(), unrelated.id()),
+            ranked.stream().map(CenterlineCandidate::id).toList());
     }
 
     @Test
@@ -775,6 +845,15 @@ class AlignmentServiceTest {
         return new CandidateEvidence("hot", 3, 3, 0, 0, 2.4, 0.8, 0.2, 1.0, 0.4, 0.0, List.of());
     }
 
+    private CandidateGeometryCleanup cleanupReport(
+        String parentId,
+        CandidateGeometryCleanup.Outcome outcome
+    ) {
+        return new CandidateGeometryCleanup(parentId, outcome, "test", List.of(),
+            5, 5, 3, 1, 0, 2, 1, 0, 1.0, 1.0, 0.0,
+            OptionalDouble.of(0.1), OptionalDouble.of(1.0));
+    }
+
     private ManagedHeatmapConfig corridorConfig() {
         ManagedHeatmapConfig legacy = config(AlignmentMode.MOVE_EXISTING_NODES);
         return new ManagedHeatmapConfig(
@@ -787,6 +866,19 @@ class AlignmentServiceTest {
             legacy.crossSectionStepPx(), legacy.simplifyTolerancePx(), legacy.inferenceMode(),
             legacy.inferenceZoom(), legacy.validationZoom(), legacy.searchHalfWidthMeters(),
             legacy.sampleStepMeters(), legacy.intensitySamplingMode(), legacy.cacheBuster());
+    }
+
+    private ManagedHeatmapConfig corridorPreciseConfigWithLegacySimplification() {
+        ManagedHeatmapConfig base = config(AlignmentMode.PRECISE_SHAPE);
+        return new ManagedHeatmapConfig(
+            base.keyPairId(), base.policy(), base.signature(), base.sessionToken(),
+            base.activity(), base.color(), base.manualLayerName(), base.layerRegex(),
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, base.verbose(), base.debug(),
+            base.multiColorDetection(), base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
+            base.candidateRatingEnabled(), base.parallelWayAwareness(), base.allowUndownloadedAlignment(),
+            base.adjustJunctionNodes(), true, base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), 3.0,
+            base.inferenceMode(), base.inferenceZoom(), base.validationZoom(), base.searchHalfWidthMeters(),
+            base.sampleStepMeters(), base.intensitySamplingMode(), base.cacheBuster());
     }
 
     private CenterlineCandidate candidate(String id, CandidateEvidence evidence) {

@@ -1,0 +1,302 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
+
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.OptionalDouble;
+
+import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalPreviewCleanupContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.HeatmapConstrainedLaplacianResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.HeatmapConstrainedSimplificationResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreviewNodeAssignmentPlanner;
+
+/**
+ * Produces at most one heatmap-constrained cleaned sibling for a raw final-preview candidate.
+ *
+ * <p>This service is pure. It never mutates JOSM data and never re-runs ridge tracking. Every
+ * skipped, rejected, or unchanged request returns the raw candidate with a typed immutable
+ * report. A cleaned sibling is created only after final-preview/profile reconciliation, protected
+ * anchor preservation, constrained geometry processing, and fresh candidate-owned assignments.</p>
+ */
+public final class GeometryCleanupService {
+    private final HeatmapConstrainedLaplacianSmoother smoother;
+    private final HeatmapConstrainedSimplifier simplifier;
+
+    /** Creates the default stateless cleanup pipeline. */
+    public GeometryCleanupService() {
+        this(new HeatmapConstrainedLaplacianSmoother(), new HeatmapConstrainedSimplifier());
+    }
+
+    /**
+     * Creates a pipeline with explicit pure processing services, primarily for focused tests.
+     *
+     * @param smoother constrained Laplacian smoother
+     * @param simplifier heatmap-constrained point reducer
+     */
+    public GeometryCleanupService(
+        HeatmapConstrainedLaplacianSmoother smoother,
+        HeatmapConstrainedSimplifier simplifier
+    ) {
+        this.smoother = Objects.requireNonNull(smoother, "smoother");
+        this.simplifier = Objects.requireNonNull(simplifier, "simplifier");
+    }
+
+    /**
+     * Expands one raw candidate into itself plus zero or one cleaned sibling.
+     *
+     * @param raw candidate after final-preview topology reconstruction
+     * @param selection selected source segment
+     * @param sourcePolyline immutable selected source geometry in node order
+     * @param alignmentMode slide-time geometry application mode
+     * @param trackerMode slide-time ridge tracker implementation
+     * @param config slide-time cleanup configuration
+     * @return raw candidate with an attempt report, followed only by a valid cleaned sibling
+     */
+    public List<CenterlineCandidate> expand(
+        CenterlineCandidate raw,
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        AlignmentMode alignmentMode,
+        TrackerMode trackerMode,
+        GeometryCleanupConfig config
+    ) {
+        Objects.requireNonNull(raw, "raw");
+        Objects.requireNonNull(config, "config");
+        if (config.isDisabled() || !config.cleanedAlternativeRequested()) {
+            return List.of(raw.withGeometryCleanup(report("", CandidateGeometryCleanup.Outcome.NOT_REQUESTED,
+                "cleanup-disabled", List.of("cleanup-disabled"), raw.finalPreviewPoints().size(),
+                raw.finalPreviewPoints().size(), raw.finalPreviewPoints().size(), null, null)));
+        }
+        if (alignmentMode != AlignmentMode.PRECISE_SHAPE) {
+            return skipped(raw, "alignment-mode-ineligible", List.of("alignment-mode-ineligible"));
+        }
+        if (trackerMode != TrackerMode.CORRIDOR_AWARE) {
+            return skipped(raw, "tracker-mode-ineligible", List.of("tracker-mode-ineligible"));
+        }
+        if (raw.geometryCleanup().cleanedCandidate()) {
+            return skipped(raw, "already-cleaned", List.of("already-cleaned"));
+        }
+
+        FinalPreviewCleanupContext context = FinalPreviewCleanupContext.create(raw, selection, sourcePolyline);
+        if (!context.complete()) {
+            return skipped(raw, "context-" + context.status().name().toLowerCase(java.util.Locale.ROOT),
+                List.of(context.status().name()));
+        }
+
+        HeatmapConstrainedLaplacianResult smoothing = smooth(context, config);
+        if (smoothing.status() == HeatmapConstrainedLaplacianResult.Status.REJECTED) {
+            return rejected(raw, smoothing, null, "smoothing-rejected");
+        }
+        HeatmapConstrainedSimplificationResult reduction = simplify(smoothing.geometry(), context, config);
+        if (reduction.status() == HeatmapConstrainedSimplificationResult.Status.REJECTED) {
+            return rejected(raw, smoothing, reduction, "reduction-rejected");
+        }
+        if (sameGeometry(raw.finalPreviewPoints(), reduction.geometry())) {
+            return List.of(raw.withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.UNCHANGED,
+                "cleanup-unchanged", reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
+                smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction)));
+        }
+
+        try {
+            Map<Long, EastNorth> freshAssignments = freezeExistingTopologyTargets(raw, selection, sourcePolyline,
+                reduction.geometry(), PreviewNodeAssignmentPlanner.targetMap(
+                    PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, reduction.geometry())));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence cleanedEvidence =
+                reducedEvidence(context, reduction.retainedSourceIndexes());
+            CenterlineCandidate reportedRaw = raw.withGeometryCleanup(report(raw.id(),
+                CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE, "cleaned-sibling-created",
+                reasons(smoothing, reduction),
+                raw.finalPreviewPoints().size(), smoothing.geometry().size(), reduction.geometry().size(),
+                smoothing, reduction));
+            CenterlineCandidate cleaned = raw.withId(raw.id() + "#cleaned")
+                .withProjectedGeometryAndOffsets(
+                    reduction.geometry(), projectedOffsets(reduction.geometry(), cleanedEvidence))
+                .withFinalPreviewGeometry(reduction.geometry(), freshAssignments)
+                .withCleanupEvidence(cleanedEvidence)
+                .withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.CLEANED,
+                    "cleanup-applied", reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
+                    smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction));
+            return List.of(reportedRaw, cleaned);
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return rejected(raw, smoothing, reduction, "fresh-assignment-rejected");
+        }
+    }
+
+    private HeatmapConstrainedLaplacianResult smooth(
+        FinalPreviewCleanupContext context,
+        GeometryCleanupConfig config
+    ) {
+        return smoother.smooth(context.geometry(), smoothingIntervals(context), context.protectedIndexes(),
+            context.evidence(), config);
+    }
+
+    private HeatmapConstrainedSimplificationResult simplify(
+        List<EastNorth> geometry,
+        FinalPreviewCleanupContext context,
+        GeometryCleanupConfig config
+    ) {
+        return simplifier.simplify(geometry, simplifierIntervals(context), context.protectedIndexes(),
+            context.evidence(), config);
+    }
+
+    private static List<HeatmapConstrainedLaplacianSmoother.ProtectedInterval> smoothingIntervals(
+        FinalPreviewCleanupContext context
+    ) {
+        return context.protectedIntervals().stream()
+            .map(interval -> new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(
+                interval.startIndex(), interval.endIndex()))
+            .toList();
+    }
+
+    private static List<HeatmapConstrainedSimplifier.ProtectedInterval> simplifierIntervals(
+        FinalPreviewCleanupContext context
+    ) {
+        return context.protectedIntervals().stream()
+            .map(interval -> new HeatmapConstrainedSimplifier.ProtectedInterval(
+                interval.startIndex(), interval.endIndex()))
+            .toList();
+    }
+
+    private static List<CenterlineCandidate> skipped(CenterlineCandidate raw, String reason, List<String> reasons) {
+        int points = raw.finalPreviewPoints().size();
+        return List.of(raw.withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.SKIPPED,
+            reason, reasons, points, points, points, null, null)));
+    }
+
+    private static List<CenterlineCandidate> rejected(
+        CenterlineCandidate raw,
+        HeatmapConstrainedLaplacianResult smoothing,
+        HeatmapConstrainedSimplificationResult reduction,
+        String reason
+    ) {
+        int smoothedCount = smoothing == null ? raw.finalPreviewPoints().size() : smoothing.geometry().size();
+        int finalCount = reduction == null ? smoothedCount : reduction.geometry().size();
+        return List.of(raw.withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.REJECTED,
+            reason, reasons(smoothing, reduction), raw.finalPreviewPoints().size(), smoothedCount, finalCount,
+            smoothing, reduction)));
+    }
+
+    private static CandidateGeometryCleanup report(
+        String parentId,
+        CandidateGeometryCleanup.Outcome outcome,
+        String reason,
+        List<String> reasons,
+        int before,
+        int smoothed,
+        int after,
+        HeatmapConstrainedLaplacianResult smoothing,
+        HeatmapConstrainedSimplificationResult reduction
+    ) {
+        HeatmapConstrainedLaplacianResult.Metrics smoothingMetrics = smoothing == null ? null : smoothing.metrics();
+        HeatmapConstrainedSimplificationResult.Metrics reductionMetrics = reduction == null ? null : reduction.metrics();
+        return new CandidateGeometryCleanup(parentId, outcome, reason, reasons, before, smoothed, after,
+            smoothingMetrics == null ? 0 : smoothingMetrics.acceptedPassCount(),
+            smoothingMetrics == null ? 0 : smoothingMetrics.backtrackCount(),
+            reductionMetrics == null ? 0 : reductionMetrics.attemptedChordCount(),
+            reductionMetrics == null ? 0 : reductionMetrics.acceptedChordCount(),
+            (smoothingMetrics == null ? 0 : smoothingMetrics.containmentFailureCount())
+                + (reductionMetrics == null ? 0 : reductionMetrics.containmentFailureCount()),
+            smoothingMetrics == null ? 1.0 : smoothingMetrics.fitBefore(),
+            smoothingMetrics == null ? 1.0 : smoothingMetrics.fitAfter(),
+            smoothingMetrics == null ? 0.0 : smoothingMetrics.maximumDisplacementProjectionUnits(),
+            reductionMetrics == null ? OptionalDouble.empty() : reductionMetrics.maximumRemovedPointDeviationMeters(),
+            reductionMetrics == null ? OptionalDouble.empty() : reductionMetrics.worstFitRetention());
+    }
+
+    private static List<String> reasons(
+        HeatmapConstrainedLaplacianResult smoothing,
+        HeatmapConstrainedSimplificationResult reduction
+    ) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        if (smoothing != null) {
+            smoothing.failureReasons().forEach(reason -> result.add("smoothing-" + reason.name()));
+        }
+        if (reduction != null) {
+            reduction.failureReasons().forEach(reason -> result.add("reduction-" + reason.name()));
+        }
+        return List.copyOf(result);
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence reducedEvidence(
+        FinalPreviewCleanupContext context,
+        List<Integer> retainedContextIndexes
+    ) {
+        return context.retainedEvidence(retainedContextIndexes);
+    }
+
+    private static List<Double> projectedOffsets(
+        List<EastNorth> geometry,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence evidence
+    ) {
+        if (geometry.size() != evidence.samplingFrame().profiles().size()) {
+            throw new IllegalArgumentException("Cleaned geometry and retained evidence must align");
+        }
+        java.util.ArrayList<Double> offsets = new java.util.ArrayList<>(geometry.size());
+        for (int index = 0; index < geometry.size(); index++) {
+            ProjectedLateralTransform transform = evidence.samplingFrame().profiles().get(index)
+                .projectedLateralTransform();
+            double east = transform.eastPerRasterPixel();
+            double north = transform.northPerRasterPixel();
+            double denominator = east * east + north * north;
+            if (!(denominator > 0.0) || !Double.isFinite(denominator)) {
+                throw new IllegalArgumentException("Cleaned evidence contains an invalid projected transform");
+            }
+            EastNorth point = geometry.get(index);
+            offsets.add(((point.east() - transform.zeroOffset().east()) * east
+                + (point.north() - transform.zeroOffset().north()) * north) / denominator);
+        }
+        return List.copyOf(offsets);
+    }
+
+    private static Map<Long, EastNorth> freezeExistingTopologyTargets(
+        CenterlineCandidate raw,
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> cleanedPreview,
+        Map<Long, EastNorth> freshAssignments
+    ) {
+        Map<Long, EastNorth> result = new LinkedHashMap<>(freshAssignments);
+        int last = selection.segmentNodes().size() - 1;
+        for (int index = 0; index <= last; index++) {
+            org.openstreetmap.josm.data.osm.Node node = selection.segmentNodes().get(index);
+            boolean topologyAnchor = index == 0 || index == last || node.hasKeys()
+                || node.getReferrers().stream().anyMatch(referrer -> referrer != selection.way());
+            if (!topologyAnchor || selection.fixedNodes().contains(node)) {
+                continue;
+            }
+            EastNorth target = raw.proposedNodePositions().get(node.getUniqueId());
+            if (target == null || !containsExact(cleanedPreview, target)) {
+                throw new IllegalStateException("Cleaned preview does not preserve a proposed topology target");
+            }
+            result.put(node.getUniqueId(), target);
+        }
+        return Map.copyOf(result);
+    }
+
+    private static boolean containsExact(List<EastNorth> geometry, EastNorth target) {
+        return geometry.stream().anyMatch(point -> point.distance(target) <= 1e-7);
+    }
+
+    private static boolean sameGeometry(List<EastNorth> left, List<EastNorth> right) {
+        if (left.size() != right.size()) {
+            return false;
+        }
+        for (int index = 0; index < left.size(); index++) {
+            if (left.get(index).distance(right.get(index)) > 1e-9) {
+                return false;
+            }
+        }
+        return true;
+    }
+}

@@ -53,6 +53,175 @@ The validator covers zooms 10-16, 256/512-pixel tiles, representative latitudes,
 
 One slide constructs one immutable `SamplingScale` and shares it across every mapping and aggregate candidate. Preview pan/zoom must not recompute it.
 
+## Geometry Cleanup Contract
+
+Geometry cleanup is an independent, configuration-only candidate stage. The
+settings are captured in the immutable slide configuration and are disabled by
+default. Accepting the settings dialog does not read, move, simplify, retag, or
+delete any JOSM primitive. A later slide may retain the raw final-preview
+candidate and add at most one cleaned sibling. Candidate selection and the
+existing `ReplaceWaySegmentCommand` remain the only route that can mutate OSM
+data, so undo and redo replay the same stored proposed-node coordinates.
+
+The user-facing modes are:
+
+- `None`: preserve the raw candidate and do not request cleanup.
+- `Reduce points only`: run constrained Douglas-Peucker-style chord reduction.
+- `Constrained smoothing + reduce points`: apply supported-ripple
+  regularization and a normal-only constrained Laplacian pass before the same
+  chord reduction.
+
+The presets are complete physical parameter sets: Conservative uses a 6 m
+unsupported-ripple scale, Balanced 10 m, and Strong 20 m. Numeric settings also
+include dimensionless ripple and Laplacian strengths, pass count, maximum
+reduction deviation in metres, and minimum heatmap-fit retention. A point-count
+reduction is never a ranking bonus: the cleaned sibling must compete on the
+same evidence and safety metrics as the raw candidate.
+
+### Cleanup Equations And Units
+
+All cleanup geometry is in projected `EastNorth`, but corridor distances and
+configured tolerances are ground metres. Let `c_i` be the robust corridor
+center offset at profile `i`, `d_i` its cumulative ground chainage, and `R` the
+configured ripple scale. In a contiguous directly observed window, changes
+smaller than `0.12` source pixels are ignored when counting reversals. If the
+window contains repeated direction reversals, unsupported exposure is:
+
+```text
+exposure_i = clamp((R - median_reversal_spacing_i) / R, 0, 1)
+unsupportedWeight_i = exposure_i * (1 - clamp(motionSupport_i, 0, 1))
+```
+
+This regularizes short unsupported oscillations, while sustained longitudinal
+motion, supported apices, sparse-parent evidence, and real switchbacks retain
+support. The physical window is bounded by the configured metre scale and the
+available direct observations; predicted-only or unsupported profiles do not
+authorize a move.
+
+For normal-only Laplacian smoothing, `x_i` is the current projected point,
+`n_i` the slide-time lateral unit normal, and `q_i` the chainage-weighted
+interpolation of neighboring points at `d_i`. The proposed scalar lateral move
+is:
+
+```text
+laplacianOffset_i = (q_i - x_i) dot n_i
+delta_i = lambda * (1 - 0.75 * motionSupport_i) * laplacianOffset_i
+```
+
+`delta_i` is clamped to at most `0.75` native source pixels per accepted pass,
+then reduced by backtracking if corridor containment, raw/B3/B5 fit retention,
+supported-turn preservation, or topology validation fails. Only the normal
+component is applied; longitudinal position and tangent are not freely
+averaged. Protected endpoints, junctions, shared/tagged nodes, and inserted
+topology anchors split smoothing intervals and remain exact.
+
+Point reduction evaluates a chord between retained points using cumulative
+ground-distance fraction, not raster-pixel fraction:
+
+```text
+f_i = (d_i - d_start) / (d_end - d_start)
+q_i = (1 - f_i) * x_start + f_i * x_end
+deviation_i = abs((q_i - x_i) dot n_i) * groundMetresPerRasterPixel
+```
+
+A chord is accepted only when its interior samples are in raster, have signal,
+have directly observed authorization somewhere in the span, stay inside the
+selected corridor shoulder, retain the configured minimum fit in each of the
+raw, light B3 `[1,2,1]/4`, and standard B5 `[1,4,6,4,1]/16` scalar bands, and
+stay within the configured metre deviation. Unsupported, no-signal, off-raster,
+non-monotonic, or topology-contaminated spans fail closed instead of being
+bridged by invented evidence.
+
+The raw, B3, and B5 bands are computed after the selected palette or direct
+intensity source has been converted to scalar intensity. B3 is the light
+stability comparison and B5 is the broader denoised fit band; filtering RGB
+channels before semantic color-to-intensity conversion is not equivalent and
+must not be introduced. Cleanup compares the three bands and does not replace
+the detector's cross-scale centerline optimization.
+
+### Evidence, Provenance, And Safety
+
+Cleanup evidence is candidate-owned but shares one immutable detector sampling
+frame. Each movable final-preview point must map monotonically and one-to-one to
+one slide-time profile with a projected lateral transform, cumulative ground
+chainage, raster support, and provenance. Inserted fixed/shared/tagged/junction
+anchors are represented as protected boundaries; the adapter must not fabricate
+heatmap evidence for them. Duplicated, interpolated-only, unmapped,
+non-monotonic, off-raster, no-signal, or stale mappings skip cleanup or reject
+the proposed sibling. A failed cleanup never hides or disables the raw
+candidate merely because cleanup was requested.
+
+Before a cleaned candidate is shown as applicable, the service must rebuild a
+fresh immutable proposed-node assignment map from the cleaned preview. It must
+then rerun self-intersection, foldback, terminal-approach, connected-way
+crossing, vertex-touch, collinear-overlap, and protected-anchor checks on that
+stored final geometry. The raw candidate's map must never be copied after point
+reduction. Preview and apply must continue to use slide-time projected geometry
+and stale-source validation; cleanup must not mutate the dataset outside the
+existing apply command.
+
+### Configuration And Migration
+
+Cleanup preferences have their own schema marker and namespaced fields for
+mode, preset, ripple scale/strength, Laplacian strength/pass count, reduction
+deviation, fit retention, and cleaned-candidate request. The first read of the
+legacy `simplifyEnabled` and `simplifyTolerancePx` keys migrates an enabled
+legacy setting to `Reduce points only`, copies its numeric value into the new
+ground-metre deviation field, and writes schema version 1. New installations
+load disabled cleanup. Saving the new settings keeps the old keys synchronized
+only for downgrade compatibility; runtime behavior reads the new schema.
+
+### Cleanup Diagnostics And Compatibility
+
+The exporter uses additive format 9 while preserving formats 1-8. It adds dedicated,
+checksummed `geometry-cleanup.csv` and `geometry-cleanup-anchors.csv` artifacts.
+The first records the raw parent, cleaned sibling, mode/preset, outcome, point
+counts, accepted passes/chords, fit/deviation metrics, rejection reasons, and
+physical units. The anchor artifact records occurrence identity, protected
+status, source profile mapping, cumulative metres, provenance, raster support,
+and fresh assignment status. Parent/child identity is an explicit field, not
+parsed from a candidate label. Existing analyzers must treat missing format-9
+artifacts as unavailable rather than zero and must continue reading older
+bundles; the analyzers validate exact CSV checksums and CSV escaping.
+
+Cleanup diagnostics must also record the full redacted cleanup configuration,
+source tier, raw and cleaned geometry separately, retained indexes, protected
+anchors, evidence status, failure reason, and final safety findings. No cookie,
+signed header, or signed URL may enter the bundle.
+
+### Performance And Failure Semantics
+
+Retained cleanup evidence is bounded by the configured memory cap and is shared
+across candidates where possible. Primitive arrays and precomputed profile
+values are preferred so the optional stage does not duplicate complete rasters.
+The exact corridor optimizer remains the authoritative tracker; cleanup must
+not add a hidden second slide, global beam pruning, or completed-geometry
+consensus. A missing ground scale, excessive memory request, misaligned
+evidence, invalid topology, or insufficient direct authorization is an explicit
+skipped/rejected result with diagnostics, not a silent fallback to projected
+units or a forced geometry move.
+
+The v0.19.0 calibration gate is reproducible through
+`GeometryCleanupCalibrationTest` and `GeometryCleanupPerformanceTest`. The
+acceptance harness runs the complete final-preview cleanup path with retained
+projected transforms and independently shaped raw/B3/B5 bands. It requires at
+least 40% RMS suppression for unsupported 5, 10, and 20 m ripples, at most 0.25
+source-pixel center bias across 0.5/1.0/2.0 m-per-raster-pixel controls, at least
+90% sine/switchback amplitude retention, and the configured per-band fit floor.
+Sparse/no-signal and outlier controls must fail closed; selected parallel,
+protected endpoint, and protected junction controls must retain identity and
+coordinates.
+
+The performance fixture uses 128, 256, and 512 ordinary profiles. Retained
+evidence estimates are 172160, 344320, and 688640 bytes respectively. It records
+warm median evidence-construction, constrained-Laplacian, and reduction times
+separately, bounds each doubled-input ratio with scheduler/GC slack, and keeps
+simplification attempts below four per profile. Exact-optimizer transition and
+profile-cost counts remain unchanged when ripple regularization is enabled;
+cleanup does not invoke a second optimizer. Format-9 diagnostic serialization
+retains one linear candidate/anchor row set with checksums, covered separately
+by `LastSlideDebugBundleTest`.
+
 Rendered palette samples can be collected from debug bundles, calibration tile bundles, extracted JOSM cache tiles, or plain image directories with:
 
 ```bash
@@ -136,10 +305,10 @@ Current scope:
 13. Endpoint approaches search 8-15 metres inward for a reliable strand anchor, falling back to the farthest nearer reliable profile. A combined sparse parent may contribute only direct-union, non-multimodal, conflict-free interior evidence; bounded interpolation and ambiguous parent evidence cannot authorize endpoint movement. A cubic Hermite guide joins the constrained endpoint to the selected branch's effective stability/local tube. Fixed endpoints stay exact; movable endpoints remain opt-in and clamped. Precise preview cleanup may remove only a short endpoint-adjacent hook inside the bounded 3-12 m terminal window when a direct shortcut materially reduces the turn; supported turns outside that condition survive. Geometry-dependent safety is then recomputed on the stored final preview.
 14. Corridor confidence is continuous. Signal existence combines prominence, boundary gradients, and raw/B3/B5 agreement. Localization confidence combines edge balance, nested-center agreement, core definition, and uncertainty. A weak isolated observation is provisional; longitudinal persistence is required to create a useful track. A persistent fine weak strand remains valid when coarse levels lose it. Do not reintroduce the legacy absolute `0.14`, `0.20`, or `0.30` gates into the corridor-aware path.
 15. Elementary strands remain unchanged through longitudinal association. `CorridorGrouping` evaluates all track pairs and forms only all-pairs-compatible groups, preventing transitive A-B-C merging when A-C is incompatible. A sparse parent requires at least 70% direct child-union support and at most 20 degrees tangent difference; interpolation requires evidence on both sides and remains bounded to 16 profiles/20 metres. Strong separation requires both children to cover at least 70% over 20 metres, stable order at least 90%, a deep valley (`<=0.40`) in at least 60% of joint observations, and at least 1.5 source-pixel separation. Dense shallow-valley behavior retains the `>=0.65` parent rule. Parent and child candidates remain visible; heatmap evidence never silently declares lane semantics.
-16. Candidates carry diagnostic evidence metadata and projected `EastNorth` geometry for preview/export. Corridor-aware candidates additionally carry unweighted physical metrics: effective-tube residual, overall and non-sustained high-frequency residual, unsupported alternating reversal count/ratio, first/second lateral differences in source pixels, turns and curvature changes in degrees, forward-progress violations, physical gap length, endpoint turn, and true longitudinal persistence. Blocking ripple requires non-sustained p95 above `0.60` source pixel, at least four reversals, and ratio above `0.08`; the sparse quality target is `<=0.40` source pixel. Coverage for a sparse parent counts only direct child-union profiles as observed; approved interpolation is a bridge, never direct support. Debug format 8 adds `corridor-bundles.csv` and `bundle-points.csv` with contributor provenance, uncertainty, occupancy, grouping evidence, and checksums. Formats 1-7 remain readable as unavailable rather than zero-valued sparse evidence.
+16. Candidates carry diagnostic evidence metadata and projected `EastNorth` geometry for preview/export. Corridor-aware candidates additionally carry unweighted physical metrics: effective-tube residual, overall and non-sustained high-frequency residual, unsupported alternating reversal count/ratio, first/second lateral differences in source pixels, turns and curvature changes in degrees, forward-progress violations, physical gap length, endpoint turn, and true longitudinal persistence. Blocking ripple requires non-sustained p95 above `0.60` source pixel, at least four reversals, and ratio above `0.08`; the sparse quality target is `<=0.40` source pixel. Coverage for a sparse parent counts only direct child-union profiles as observed; approved interpolation is a bridge, never direct support. Debug format 8 adds `corridor-bundles.csv` and `bundle-points.csv` with contributor provenance, uncertainty, occupancy, grouping evidence, and checksums. Formats 1-7 remain readable as unavailable rather than zero-valued sparse evidence. Format 9 adds cleanup-specific checksummed artifacts without changing the meaning of earlier fields.
 17. The current-source detector option and the managed all-color aggregate option are independent. When current-source alternative mappings are enabled, detector variants are applied to the selected rendered/manual source or the selected managed color source. In this codebase, detector variant names mean scalar intensity mappings; after intensity conversion, the selected tracker mode runs on that scalar field. When managed all-color aggregation is enabled, source-tile sampling downloads and caches the base Strava colors and adds `all-colors-combined`: each color is converted through its native semantic intensity mapping, the scalar intensity fields are fused with the calibrated weighted power mean (`p=1.25`), and only then are corridors/ridges extracted. The aggregate candidate requires complete matching `hot`, `blue`, `bluered`, `purple`, and `gray` source mosaics; partial aggregates must fail clearly. Finished candidate geometries are never merged across detectors.
 18. `ParallelWayContextResolver` and `CorridorAssignmentService` run only when both corridor-aware tracking and the existing opt-in context setting are enabled. They inspect downloaded nearby `highway=*` geometry and limited relevant tags, adjust candidate ranking, and never edit contextual primitives.
-19. `AlignmentService` projects every candidate back into map coordinates and stores both the raw tracker ridge and its final candidate-specific preview after fixed-anchor reconstruction and permitted simplification. Corridor-aware candidates also own an immutable stable-node-id to proposed-`EastNorth` map. `PreviewNodeAssignmentPlanner` derives that map without dataset mutation; precise preview safety and `ReplaceWaySegmentCommand` must consume the same assignments. Movable topology endpoints clip the final preview to their bounded local projection, and protected interior nodes are inserted explicitly. Self-intersection, foldback, terminal-turn, and connected-way crossing checks use this final proposed topology. Connected-way findings retain original/proposed junctions, resolved adjacent way and candidate segments, intersection, distance, and tolerance. The chosen candidate prepares either:
+19. `AlignmentService` projects every candidate back into map coordinates and stores both the raw tracker ridge and its final candidate-specific preview after fixed-anchor reconstruction and permitted cleanup. Corridor-aware candidates also own an immutable stable-node-id to proposed-`EastNorth` map. `PreviewNodeAssignmentPlanner` derives that map without dataset mutation; precise preview safety and `ReplaceWaySegmentCommand` must consume the same assignments. Movable topology endpoints clip the final preview to their bounded local projection, and protected interior nodes are inserted explicitly. Self-intersection, foldback, terminal-turn, and connected-way crossing checks use this final proposed topology. Connected-way findings retain original/proposed junctions, resolved adjacent way and candidate segments, intersection, distance, and tolerance. The chosen candidate prepares either:
    `Move Existing Nodes` preview geometry
    `Precise Shape` preview geometry
 20. `AlignWayAction` refuses candidate switching or apply if the modeless preview source way, segment node identities, dataset membership, or source coordinates changed after the slide was computed.

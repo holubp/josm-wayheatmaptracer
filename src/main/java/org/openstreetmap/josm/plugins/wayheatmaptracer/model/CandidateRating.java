@@ -9,6 +9,7 @@ import java.util.List;
  * @param negativeFeatures user-selected failure tags such as off-line or unnecessary kinks
  */
 public record CandidateRating(String rating, List<String> negativeFeatures) {
+    /** Normalizes absent rating values and copies feature tags. */
     public CandidateRating {
         rating = rating == null ? "" : rating;
         negativeFeatures = negativeFeatures == null ? List.of() : List.copyOf(negativeFeatures);

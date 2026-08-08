@@ -22,6 +22,7 @@ import org.openstreetmap.josm.tools.Shortcut;
  * Selects the longest way segment bounded by endpoints or junction nodes for targeted heatmap alignment.
  */
 public final class SelectLongestSegmentAction extends JosmAction {
+    /** Pure selector for the junction-bounded segment under the click. */
     private final JunctionSegmentSelector selector = new JunctionSegmentSelector();
 
     /**

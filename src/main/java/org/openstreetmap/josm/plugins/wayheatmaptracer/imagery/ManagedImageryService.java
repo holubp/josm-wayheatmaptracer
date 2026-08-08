@@ -12,7 +12,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
  * Creates and locates the plugin-managed Strava heatmap TMS layer.
  */
 public final class ManagedImageryService {
+    /** Stable JOSM imagery id of the plugin-managed Strava layer. */
     public static final String MANAGED_LAYER_ID = "wayheatmaptracer.managed.heatmap";
+    /** User-facing base name of the plugin-managed Strava layer. */
     public static final String MANAGED_LAYER_NAME = "WayHeatmapTracer Heatmap";
     private static final String HEATMAP_URL_TEMPLATE = "tms[15]:https://content-a.strava.com/identified/globalheat/%s/%s/{zoom}/{x}/{y}.png%s";
 

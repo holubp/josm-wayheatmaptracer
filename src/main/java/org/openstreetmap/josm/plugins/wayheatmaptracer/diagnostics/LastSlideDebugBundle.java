@@ -9,7 +9,9 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -22,6 +24,7 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
@@ -43,6 +46,8 @@ public final class LastSlideDebugBundle {
     private final String statusJson;
     private final String candidateRatingsJson;
     private final String candidateMetricsCsv;
+    private final String geometryCleanupCsv;
+    private final String geometryCleanupAnchorsCsv;
     private final String profilePeaksCsv;
     private final String paletteSamplesCsv;
     private final String profileIntensityCsv;
@@ -76,6 +81,8 @@ public final class LastSlideDebugBundle {
         String statusJson,
         String candidateRatingsJson,
         String candidateMetricsCsv,
+        String geometryCleanupCsv,
+        String geometryCleanupAnchorsCsv,
         String profilePeaksCsv,
         String paletteSamplesCsv,
         String profileIntensityCsv,
@@ -108,6 +115,8 @@ public final class LastSlideDebugBundle {
         this.statusJson = statusJson;
         this.candidateRatingsJson = candidateRatingsJson;
         this.candidateMetricsCsv = candidateMetricsCsv;
+        this.geometryCleanupCsv = geometryCleanupCsv;
+        this.geometryCleanupAnchorsCsv = geometryCleanupAnchorsCsv;
         this.profilePeaksCsv = profilePeaksCsv;
         this.paletteSamplesCsv = paletteSamplesCsv;
         this.profileIntensityCsv = profileIntensityCsv;
@@ -178,13 +187,15 @@ public final class LastSlideDebugBundle {
                     aggregateMetadata = visualization.metadataJson();
                 }
             } catch (RuntimeException ex) {
-                aggregateMetadata = "{\"error\":\"" + escape(ex.getMessage()) + "\"}";
+                aggregateMetadata = "{\"error\":\"" + escape(redactSensitiveValues(ex.getMessage())) + "\"}";
             }
         } else if (result.capturedHeatmap() != null) {
             images.put("rendered-layer-capture.png", result.capturedHeatmap());
         }
-        String ratingsJson = ratingsJson(candidateRatings);
-        String attemptsJson = detectorAttemptsJson(result);
+        String ratingsJson = redactSensitiveValues(ratingsJson(candidateRatings));
+        String attemptsJson = redactSensitiveValues(detectorAttemptsJson(result));
+        String cleanupCsv = geometryCleanupCsv(result);
+        String cleanupAnchorsCsv = geometryCleanupAnchorsCsv(result);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
             + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
@@ -194,9 +205,10 @@ public final class LastSlideDebugBundle {
         String version = pluginVersion();
         String build = buildIdentity();
         return new LastSlideDebugBundle(
-            addBuildIdentity(result.diagnostics().toJson(), version, build),
+            redactSensitiveValues(addGeometryCleanupSummary(
+                addBuildIdentity(result.diagnostics().toJson(), version, build), cleanupCsv, cleanupAnchorsCsv)),
             "Plugin-Version: " + version + '\n' + "Plugin-Build: " + build + '\n'
-                + (verboseLog == null ? "" : verboseLog),
+                + redactSensitiveValues(verboseLog),
             originalOsm(result),
             previewOsm(result),
             "applied".equals(status) ? appliedOsm(result) : "",
@@ -208,6 +220,8 @@ public final class LastSlideDebugBundle {
             statusJson,
             ratingsJson,
             result.diagnostics().candidateMetricsCsv(),
+            cleanupCsv,
+            cleanupAnchorsCsv,
             result.diagnostics().profilePeaksCsv(),
             result.diagnostics().paletteSamplesCsv(),
             result.diagnostics().profileIntensityCsv(),
@@ -221,9 +235,9 @@ public final class LastSlideDebugBundle {
             result.diagnostics().associationDecisionsCsv(),
             result.diagnostics().endpointApproachesCsv(),
             result.diagnostics().detectorPerformanceCsv(),
-            result.diagnostics().parallelContextJson(),
-            tileManifest,
-            aggregateMetadata,
+            redactSensitiveValues(result.diagnostics().parallelContextJson()),
+            redactSensitiveValues(tileManifest),
+            redactSensitiveValues(aggregateMetadata),
             attemptsJson,
             images
         );
@@ -252,6 +266,8 @@ public final class LastSlideDebugBundle {
             writeText(zip, "junction-context.osm", junctionContextOsm);
             writeText(zip, "candidate-ratings.json", candidateRatingsJson);
             writeText(zip, "candidate-metrics.csv", candidateMetricsCsv);
+            writeText(zip, "geometry-cleanup.csv", geometryCleanupCsv);
+            writeText(zip, "geometry-cleanup-anchors.csv", geometryCleanupAnchorsCsv);
             writeText(zip, "profile-peaks.csv", profilePeaksCsv);
             writeText(zip, "palette-samples.csv", paletteSamplesCsv);
             writeText(zip, "profile-intensity.csv", profileIntensityCsv);
@@ -281,12 +297,184 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":8,"
+            + "\"formatVersion\":9,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
+    }
+
+    /**
+     * Serializes cleanup attempts without altering the established candidate-metrics schema.
+     *
+     * <p>Projection-unit displacements deliberately remain labelled as JOSM projection units.
+     * They are not ground-metre values and must not be treated as such by analysis tools.</p>
+     *
+     * @param result completed alignment result
+     * @return complete geometry-cleanup CSV, including an explicit row for every candidate
+     */
+    private static String geometryCleanupCsv(AlignmentResult result) {
+        StringBuilder builder = new StringBuilder(
+            "candidate_id,parent_candidate_id,outcome,reason_code,reasons,before_point_count,"
+                + "smoothed_point_count,after_point_count,accepted_smoothing_passes,"
+                + "smoothing_backtrack_count,attempted_chord_count,accepted_chord_count,"
+                + "containment_failure_count,fit_before,fit_after,"
+                + "maximum_displacement_projection_units,projection_unit_name,"
+                + "maximum_removed_deviation_meters,worst_fit_retention\n");
+        for (CenterlineCandidate candidate : result.candidates()) {
+            CandidateGeometryCleanup cleanup = candidate.geometryCleanup();
+            builder.append(csv(candidate.id())).append(',')
+                .append(csv(cleanup.parentCandidateId())).append(',')
+                .append(csv(cleanup.outcome().name())).append(',')
+                .append(csv(cleanup.reasonCode())).append(',')
+                .append(csv(String.join(";", cleanup.reasons()))).append(',')
+                .append(cleanup.beforePointCount()).append(',')
+                .append(cleanup.smoothedPointCount()).append(',')
+                .append(cleanup.afterPointCount()).append(',')
+                .append(cleanup.acceptedSmoothingPasses()).append(',')
+                .append(cleanup.smoothingBacktrackCount()).append(',')
+                .append(cleanup.attemptedChordCount()).append(',')
+                .append(cleanup.acceptedChordCount()).append(',')
+                .append(cleanup.containmentFailureCount()).append(',')
+                .append(cleanup.fitBefore()).append(',')
+                .append(cleanup.fitAfter()).append(',')
+                .append(cleanup.maximumDisplacementProjectionUnits()).append(',')
+                .append(csv("JOSM-projection-units")).append(',')
+                .append(optionalDoubleCsv(cleanup.maximumRemovedDeviationMeters())).append(',')
+                .append(optionalDoubleCsv(cleanup.worstFitRetention())).append('\n');
+        }
+        return builder.toString();
+    }
+
+    /**
+     * Serializes candidate-owned protected-node targets without inventing profile provenance.
+     *
+     * <p>Existing-node identity and source/proposed coordinates come from the immutable slide
+     * result. The heatmap profile index remains blank because candidates do not retain that
+     * anchor-to-profile relation after final-preview reconstruction.</p>
+     *
+     * @param result completed alignment result
+     * @return anchor CSV with one row per proposed existing-node target, or an unavailable row
+     */
+    private static String geometryCleanupAnchorsCsv(AlignmentResult result) {
+        StringBuilder builder = new StringBuilder(
+            "candidate_id,parent_candidate_id,cleanup_outcome,anchor_data_state,reason_code,"
+                + "profile_index,final_preview_index,protected,reused_node_id,"
+                + "source_east,source_north,proposed_east,proposed_north\n");
+        for (CenterlineCandidate candidate : result.candidates()) {
+            CandidateGeometryCleanup cleanup = candidate.geometryCleanup();
+            if (candidate.proposedNodePositions().isEmpty()) {
+                builder.append(csv(candidate.id())).append(',')
+                    .append(csv(cleanup.parentCandidateId())).append(',')
+                    .append(csv(cleanup.outcome().name())).append(',')
+                    .append(csv("unavailable")).append(',')
+                    .append(csv("no-candidate-owned-node-targets"))
+                    .append(",,,,,,,,")
+                    .append('\n');
+                continue;
+            }
+            for (Map.Entry<Long, EastNorth> entry : candidate.proposedNodePositions().entrySet()) {
+                int sourceIndex = selectedNodeIndex(result, entry.getKey());
+                EastNorth source = sourceIndex >= 0 && sourceIndex < result.sourcePolyline().size()
+                    ? result.sourcePolyline().get(sourceIndex) : null;
+                int previewIndex = matchingPointIndex(candidate.finalPreviewPoints(), entry.getValue());
+                builder.append(csv(candidate.id())).append(',')
+                    .append(csv(cleanup.parentCandidateId())).append(',')
+                    .append(csv(cleanup.outcome().name())).append(',')
+                    .append(csv("available")).append(',')
+                    .append(csv("candidate-owned-proposed-node"))
+                    .append(',')
+                    .append(',').append(previewIndex < 0 ? "" : Integer.toString(previewIndex))
+                    .append(',').append("true")
+                    .append(',').append(entry.getKey())
+                    .append(',').append(source == null ? "" : Double.toString(source.east()))
+                    .append(',').append(source == null ? "" : Double.toString(source.north()))
+                    .append(',').append(entry.getValue().east())
+                    .append(',').append(entry.getValue().north())
+                    .append('\n');
+            }
+        }
+        return builder.toString();
+    }
+
+    private static int selectedNodeIndex(AlignmentResult result, long nodeId) {
+        for (int index = 0; index < result.selection().segmentNodes().size(); index++) {
+            if (result.selection().segmentNodes().get(index).getUniqueId() == nodeId) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static int matchingPointIndex(List<EastNorth> geometry, EastNorth target) {
+        for (int index = 0; index < geometry.size(); index++) {
+            if (geometry.get(index).distance(target) <= 1e-7) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static String optionalDoubleCsv(OptionalDouble value) {
+        return value.isPresent() ? Double.toString(value.orElseThrow()) : "";
+    }
+
+    private static String addGeometryCleanupSummary(String diagnosticsJson, String cleanupCsv, String anchorsCsv) {
+        String summary = "{\"storage\":\"dedicated-csv-artifacts\","
+            + "\"anchorEvidence\":\"candidate-owned-node-targets\",\"artifacts\":["
+            + artifactJson("geometry-cleanup.csv", cleanupCsv) + ','
+            + artifactJson("geometry-cleanup-anchors.csv", anchorsCsv) + "]}";
+        return addJsonField(diagnosticsJson, "geometryCleanup", summary);
+    }
+
+    private static String artifactJson(String file, String contents) {
+        String value = contents == null ? "" : contents;
+        long lineCount = value.lines().count();
+        long rowCount = Math.max(0L, lineCount - (value.isBlank() ? 0L : 1L));
+        return "{\"file\":\"" + escape(file) + "\",\"rows\":" + rowCount
+            + ",\"bytes\":" + value.getBytes(StandardCharsets.UTF_8).length
+            + ",\"sha256\":\"" + sha256(value) + "\"}";
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception ex) {
+            throw new IllegalStateException("SHA-256 is required for debug artifact summaries", ex);
+        }
+    }
+
+    private static String addJsonField(String json, String fieldName, String fieldJson) {
+        String value = json == null || json.isBlank() ? "{}" : json.trim();
+        if (!value.startsWith("{") || !value.endsWith("}")) {
+            return value;
+        }
+        String body = value.substring(1, value.length() - 1).trim();
+        return "{\"" + escape(fieldName) + "\":" + fieldJson + (body.isEmpty() ? "" : "," + body) + "}";
+    }
+
+    /**
+     * Removes common Strava credential forms from diagnostic text before archive writing.
+     *
+     * @param value potentially sensitive text
+     * @return text with credential values replaced by {@code <redacted>}
+     */
+    private static String redactSensitiveValues(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        String redacted = value.replaceAll(
+            "(?i)(\\\"?(?:CloudFront-(?:Key-Pair-Id|Policy|Signature)|_strava_idcf)\\\"?\\s*[:=]\\s*\\\"?)([^,;\\s\\\"&}]+)",
+            "$1<redacted>");
+        redacted = redacted.replaceAll(
+            "(?i)([?&](?:Policy|Signature|Key-Pair-Id|X-Amz-Signature|X-Amz-Credential)=)([^&\\s\\\"']+)",
+            "$1<redacted>");
+        return redacted.replaceAll(
+            "(?im)^([\\t ]*(?:cookie|authorization|x-amz-[a-z0-9-]+)\\s*:\\s*).*$",
+            "$1<redacted>");
     }
 
     private static String detectorAttemptsJson(AlignmentResult result) {

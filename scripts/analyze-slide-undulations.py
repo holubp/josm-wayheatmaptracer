@@ -23,7 +23,12 @@ from xml.etree import ElementTree
 
 @dataclass(frozen=True)
 class Bundle:
-    """In-memory debug bundle discovered from a path or nested archive."""
+    """In-memory debug bundle discovered from a path or nested archive.
+
+    Attributes:
+        name: Stable display name including any outer-archive path.
+        data: Complete zip bytes for the nested debug bundle.
+    """
     name: str
     data: bytes
 
@@ -43,6 +48,7 @@ def main() -> None:
         rows.extend(analyze_bundle(bundle))
 
     annotate_repeat_relationships(rows)
+    annotate_cleanup_relationships(rows)
     rows.sort(key=lambda row: (str(row["bundle"]), int(row["rank"])))
     public_rows = [{key: value for key, value in row.items() if not key.startswith("_")} for row in rows]
     if args.csv:
@@ -102,6 +108,8 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
         original_points = way_coordinates(read_text(archive, "original-segment.osm"))
         applied_points = way_coordinates(read_text(archive, "applied-segment.osm"))
         proposed_positions = read_csv(archive, "proposed-node-positions.csv")
+        cleanup_by_candidate = cleanup_rows_by_candidate(read_csv(archive, "geometry-cleanup.csv"))
+        cleanup_anchors = cleanup_anchors_by_candidate(read_csv(archive, "geometry-cleanup-anchors.csv"))
 
     bundle_format = int(manifest.get("formatVersion", 0) or 0)
     original_trust = "immutable" if bundle_format >= 5 else (
@@ -202,8 +210,112 @@ def analyze_bundle(bundle: Bundle) -> list[dict[str, object]]:
             "_original_points": original_points,
             "_applied_points": applied_points,
             "_selected_warning_count": len(candidate.get("safetyWarnings", []) or []),
+            **cleanup_columns(
+                cleanup_by_candidate.get(candidate_id),
+                cleanup_anchors.get(candidate_id, []),
+            ),
         })
     return rows
+
+
+def cleanup_rows_by_candidate(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Index optional format-9 cleanup rows by their literal candidate identifiers."""
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        candidate_id = row.get("candidate_id", "")
+        if candidate_id and candidate_id not in result:
+            result[candidate_id] = row
+    return result
+
+
+def cleanup_anchors_by_candidate(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """Group optional format-9 anchor rows by their literal candidate identifiers."""
+    result: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        candidate_id = row.get("candidate_id", "")
+        if candidate_id:
+            result.setdefault(candidate_id, []).append(row)
+    return result
+
+
+def cleanup_columns(
+    cleanup: dict[str, str] | None,
+    anchors: list[dict[str, str]],
+) -> dict[str, object]:
+    """Return normalized cleanup and parent-comparison columns.
+
+    Args:
+        cleanup: One format-9 cleanup CSV row, or ``None`` for an older bundle.
+        anchors: Candidate-owned format-9 protected-anchor rows.
+
+    Returns:
+        Stable roughness-analysis columns. Missing cleanup data remains ``None`` or
+        ``"unavailable"`` and is never interpreted as a measured zero.
+    """
+    if cleanup is None:
+        return {
+            "cleanup_state": "unavailable",
+            "cleanup_parent_candidate_id": "",
+            "cleanup_outcome": "unavailable",
+            "cleanup_reason_code": "unavailable",
+            "cleanup_reasons": "",
+            "cleanup_before_point_count": None,
+            "cleanup_smoothed_point_count": None,
+            "cleanup_after_point_count": None,
+            "cleanup_accepted_smoothing_passes": None,
+            "cleanup_smoothing_backtrack_count": None,
+            "cleanup_attempted_chord_count": None,
+            "cleanup_accepted_chord_count": None,
+            "cleanup_containment_failure_count": None,
+            "cleanup_fit_before": None,
+            "cleanup_fit_after": None,
+            "cleanup_maximum_displacement_projection_units": None,
+            "cleanup_projection_unit_name": "unavailable",
+            "cleanup_maximum_removed_deviation_meters": None,
+            "cleanup_worst_fit_retention": None,
+            "cleanup_anchor_data_state": "unavailable",
+            "cleanup_anchor_count": None,
+            "cleanup_anchor_reason_codes": "unavailable",
+            "cleanup_parent_relation_state": "unavailable",
+            "cleanup_parent_offset_hf_p95_px": None,
+            "cleanup_offset_hf_p95_delta_px": None,
+            "cleanup_parent_warning_count": None,
+            "cleanup_warning_count_delta": None,
+        }
+    anchor_states = sorted({row.get("anchor_data_state", "") for row in anchors if row.get("anchor_data_state", "")})
+    anchor_reasons = sorted({row.get("reason_code", "") for row in anchors if row.get("reason_code", "")})
+    available_anchor_count = sum(row.get("anchor_data_state", "") == "available" for row in anchors)
+    return {
+        "cleanup_state": "available",
+        "cleanup_parent_candidate_id": cleanup.get("parent_candidate_id", ""),
+        "cleanup_outcome": cleanup.get("outcome", "unavailable") or "unavailable",
+        "cleanup_reason_code": cleanup.get("reason_code", "unavailable") or "unavailable",
+        "cleanup_reasons": cleanup.get("reasons", ""),
+        "cleanup_before_point_count": optional_int(cleanup.get("before_point_count")),
+        "cleanup_smoothed_point_count": optional_int(cleanup.get("smoothed_point_count")),
+        "cleanup_after_point_count": optional_int(cleanup.get("after_point_count")),
+        "cleanup_accepted_smoothing_passes": optional_int(cleanup.get("accepted_smoothing_passes")),
+        "cleanup_smoothing_backtrack_count": optional_int(cleanup.get("smoothing_backtrack_count")),
+        "cleanup_attempted_chord_count": optional_int(cleanup.get("attempted_chord_count")),
+        "cleanup_accepted_chord_count": optional_int(cleanup.get("accepted_chord_count")),
+        "cleanup_containment_failure_count": optional_int(cleanup.get("containment_failure_count")),
+        "cleanup_fit_before": optional_fnum(cleanup.get("fit_before")),
+        "cleanup_fit_after": optional_fnum(cleanup.get("fit_after")),
+        "cleanup_maximum_displacement_projection_units": optional_fnum(
+            cleanup.get("maximum_displacement_projection_units")),
+        "cleanup_projection_unit_name": cleanup.get("projection_unit_name", "unavailable") or "unavailable",
+        "cleanup_maximum_removed_deviation_meters": optional_fnum(
+            cleanup.get("maximum_removed_deviation_meters")),
+        "cleanup_worst_fit_retention": optional_fnum(cleanup.get("worst_fit_retention")),
+        "cleanup_anchor_data_state": ";".join(anchor_states) if anchor_states else "unavailable",
+        "cleanup_anchor_count": available_anchor_count if anchors else None,
+        "cleanup_anchor_reason_codes": ";".join(anchor_reasons) if anchor_reasons else "unavailable",
+        "cleanup_parent_relation_state": "no-parent" if not cleanup.get("parent_candidate_id", "") else "unresolved",
+        "cleanup_parent_offset_hf_p95_px": None,
+        "cleanup_offset_hf_p95_delta_px": None,
+        "cleanup_parent_warning_count": None,
+        "cleanup_warning_count_delta": None,
+    }
 
 
 def read_json(archive: zipfile.ZipFile, name: str) -> dict[str, object]:
@@ -315,6 +427,36 @@ def annotate_repeat_relationships(rows: list[dict[str, object]], match_tolerance
             row["repeat_bidirectional_max_drift_m"] = output_drift["maximum"]
             row["repeat_warning_delta"] = int(current.get("_selected_warning_count", 0)) \
                 - int(previous.get("_selected_warning_count", 0))
+
+
+def annotate_cleanup_relationships(rows: list[dict[str, object]]) -> None:
+    """Compare cleaned variants with their explicit raw parent without parsing candidate ids."""
+    by_bundle_and_id = {
+        (str(row.get("bundle", "")), str(row.get("candidate_id", ""))): row for row in rows
+    }
+    for row in rows:
+        if row.get("cleanup_state") != "available":
+            continue
+        parent_id = str(row.get("cleanup_parent_candidate_id", ""))
+        if not parent_id:
+            row["cleanup_parent_relation_state"] = "no-parent"
+            continue
+        parent = by_bundle_and_id.get((str(row.get("bundle", "")), parent_id))
+        if parent is None:
+            row["cleanup_parent_relation_state"] = "parent-not-exported"
+            continue
+        row["cleanup_parent_relation_state"] = "available"
+        parent_hf = optional_fnum(parent.get("offset_hf_p95_px"))
+        child_hf = optional_fnum(row.get("offset_hf_p95_px"))
+        row["cleanup_parent_offset_hf_p95_px"] = parent_hf
+        row["cleanup_offset_hf_p95_delta_px"] = (
+            child_hf - parent_hf if child_hf is not None and parent_hf is not None else None)
+        parent_warnings = optional_int(parent.get("_selected_warning_count"))
+        child_warnings = optional_int(row.get("_selected_warning_count"))
+        row["cleanup_parent_warning_count"] = parent_warnings
+        row["cleanup_warning_count_delta"] = (
+            child_warnings - parent_warnings
+            if child_warnings is not None and parent_warnings is not None else None)
 
 
 def bidirectional_polyline_drift(
@@ -495,6 +637,14 @@ def optional_fnum(value) -> float | None:
     """Parse an optional float without turning unavailable physical metadata into zero."""
     try:
         return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def optional_int(value) -> int | None:
+    """Parse an optional integer without converting unavailable diagnostics to zero."""
+    try:
+        return int(value) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
 

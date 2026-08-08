@@ -55,15 +55,15 @@ public final class HeatmapSettingsDialog {
     private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
     private final JCheckBox adjustJunctionNodes = new JCheckBox(tr("Adjust junction and endpoint nodes"));
-    private final JCheckBox simplify = new JCheckBox(tr("Enable simplification"));
     private final JTextField halfWidth = new JTextField(8);
     private final JTextField step = new JTextField(8);
-    private final JTextField tolerance = new JTextField(8);
     private final JTextField inferenceZoom = new JTextField(8);
     private final JTextField validationZoom = new JTextField(8);
     private final JTextField searchHalfWidthMeters = new JTextField(8);
     private final JTextField sampleStepMeters = new JTextField(8);
     private final Window parent;
+    private final boolean simplifyEnabled;
+    private final double simplifyTolerancePx;
     private long cacheBuster;
 
     /**
@@ -94,10 +94,10 @@ public final class HeatmapSettingsDialog {
         parallelWayAwareness.setSelected(config.parallelWayAwareness());
         allowUndownloadedAlignment.setSelected(config.allowUndownloadedAlignment());
         adjustJunctionNodes.setSelected(config.adjustJunctionNodes());
-        simplify.setSelected(config.simplifyEnabled());
+        simplifyEnabled = config.simplifyEnabled();
+        simplifyTolerancePx = config.simplifyTolerancePx();
         halfWidth.setText(Integer.toString(config.crossSectionHalfWidthPx()));
         step.setText(Integer.toString(config.crossSectionStepPx()));
-        tolerance.setText(Double.toString(config.simplifyTolerancePx()));
         inferenceZoom.setText(Integer.toString(config.inferenceZoom()));
         validationZoom.setText(Integer.toString(config.validationZoom()));
         searchHalfWidthMeters.setText(Double.toString(config.searchHalfWidthMeters()));
@@ -154,8 +154,17 @@ public final class HeatmapSettingsDialog {
         panel.add(halfWidth, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Cross-section step px")), GBC.std());
         panel.add(step, GBC.eol().fill(GBC.HORIZONTAL));
-        panel.add(new JLabel(tr("Simplify tolerance")), GBC.std());
-        panel.add(tolerance, GBC.eol().fill(GBC.HORIZONTAL));
+        JLabel cleanupSummary = new JLabel(GeometryCleanupSettingsDialog.summary(
+            PluginPreferences.loadGeometryCleanup()));
+        JButton geometryCleanup = new JButton(tr("Geometry cleanup..."));
+        geometryCleanup.addActionListener(event -> {
+            if (new GeometryCleanupSettingsDialog(parent).showDialog()) {
+                cleanupSummary.setText(GeometryCleanupSettingsDialog.summary(
+                    PluginPreferences.loadGeometryCleanup()));
+            }
+        });
+        panel.add(geometryCleanup, GBC.std());
+        panel.add(cleanupSummary, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Inference zoom")), GBC.std());
         panel.add(inferenceZoom, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Validation zoom")), GBC.std());
@@ -173,7 +182,6 @@ public final class HeatmapSettingsDialog {
         panel.add(parallelWayAwareness, GBC.eol());
         panel.add(allowUndownloadedAlignment, GBC.eol());
         panel.add(adjustJunctionNodes, GBC.eol());
-        panel.add(simplify, GBC.eol());
 
         int answer = JOptionPane.showConfirmDialog(
             parent,
@@ -206,10 +214,10 @@ public final class HeatmapSettingsDialog {
             parallelWayAwareness.isSelected(),
             allowUndownloadedAlignment.isSelected(),
             adjustJunctionNodes.isSelected(),
-            simplify.isSelected(),
+            simplifyEnabled,
             parseInt(halfWidth.getText(), 18),
             parseInt(step.getText(), 4),
-            parseDouble(tolerance.getText(), 3.0),
+            simplifyTolerancePx,
             (InferenceMode) inferenceMode.getSelectedItem(),
             parseInt(inferenceZoom.getText(), 15),
             parseInt(validationZoom.getText(), 13),

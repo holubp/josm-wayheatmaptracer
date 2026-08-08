@@ -19,6 +19,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
  * straight lines.</p>
  */
 public final class RidgeTracker {
+    /** Creates a legacy ridge tracker with no retained mutable state. */
+    public RidgeTracker() {
+        // Stateless service.
+    }
+
     /**
      * Tracks ridge candidates using a one-raster-pixel source-pixel fallback.
      *

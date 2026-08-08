@@ -18,7 +18,12 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class BundleSource:
-    """One direct or nested debug bundle held entirely in memory."""
+    """One direct or nested debug bundle held entirely in memory.
+
+    Attributes:
+        name: Stable display name including any outer-archive path.
+        data: Complete zip bytes for the nested debug bundle.
+    """
 
     name: str
     data: bytes
@@ -73,6 +78,9 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     bridge_directions = bridge_direction_summaries(read_zip_csv(bundle, "corridor-tracks.csv"))
     scale_space = scale_space_summaries(read_zip_csv(bundle, "scale-space.csv"))
     proposed_positions = read_zip_csv(bundle, "proposed-node-positions.csv")
+    cleanup_by_candidate = cleanup_rows_by_candidate(read_zip_csv(bundle, "geometry-cleanup.csv"))
+    cleanup_anchors = cleanup_anchors_by_candidate(
+        read_zip_csv(bundle, "geometry-cleanup-anchors.csv"))
     proposed_counts: dict[str, int] = defaultdict(int)
     for position in proposed_positions:
         proposed_counts[str(position.get("candidate_id", ""))] += 1
@@ -204,8 +212,102 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "transition_to_profile_cost_ratio": performance_summary.get("transition_to_profile_cost_ratio"),
             "canonical_bridge_count": bridge_summary.get("canonical", 0),
             "backward_marker_bridge_count": bridge_summary.get("backward_marker", 0),
+            **cleanup_columns(
+                cleanup_by_candidate.get(candidate_id),
+                cleanup_anchors.get(candidate_id, []),
+            ),
         })
     return rows
+
+
+def cleanup_rows_by_candidate(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Index optional format-9 cleanup rows by their literal candidate identifiers."""
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        candidate_id = row.get("candidate_id", "")
+        if candidate_id and candidate_id not in result:
+            result[candidate_id] = row
+    return result
+
+
+def cleanup_anchors_by_candidate(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    """Group optional format-9 anchor rows by literal candidate identifier."""
+    result: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        candidate_id = row.get("candidate_id", "")
+        if candidate_id:
+            result[candidate_id].append(row)
+    return result
+
+
+def cleanup_columns(
+    cleanup: dict[str, str] | None,
+    anchors: list[dict[str, str]],
+) -> dict[str, object]:
+    """Return normalized optional cleanup diagnostics.
+
+    Args:
+        cleanup: One format-9 cleanup CSV row, or ``None`` for an older bundle.
+        anchors: Candidate-owned format-9 protected-anchor rows.
+
+    Returns:
+        A stable analysis column mapping. Missing format-9 values are represented as
+        ``None`` or ``"unavailable"`` rather than numeric zero.
+    """
+    if cleanup is None:
+        return {
+            "cleanup_state": "unavailable",
+            "cleanup_parent_candidate_id": "",
+            "cleanup_outcome": "unavailable",
+            "cleanup_reason_code": "unavailable",
+            "cleanup_reasons": "",
+            "cleanup_before_point_count": None,
+            "cleanup_smoothed_point_count": None,
+            "cleanup_after_point_count": None,
+            "cleanup_accepted_smoothing_passes": None,
+            "cleanup_smoothing_backtrack_count": None,
+            "cleanup_attempted_chord_count": None,
+            "cleanup_accepted_chord_count": None,
+            "cleanup_containment_failure_count": None,
+            "cleanup_fit_before": None,
+            "cleanup_fit_after": None,
+            "cleanup_maximum_displacement_projection_units": None,
+            "cleanup_projection_unit_name": "unavailable",
+            "cleanup_maximum_removed_deviation_meters": None,
+            "cleanup_worst_fit_retention": None,
+            "cleanup_anchor_data_state": "unavailable",
+            "cleanup_anchor_count": None,
+            "cleanup_anchor_reason_codes": "unavailable",
+        }
+    anchor_states = sorted({row.get("anchor_data_state", "") for row in anchors if row.get("anchor_data_state", "")})
+    anchor_reasons = sorted({row.get("reason_code", "") for row in anchors if row.get("reason_code", "")})
+    available_anchor_count = sum(row.get("anchor_data_state", "") == "available" for row in anchors)
+    return {
+        "cleanup_state": "available",
+        "cleanup_parent_candidate_id": cleanup.get("parent_candidate_id", ""),
+        "cleanup_outcome": cleanup.get("outcome", "unavailable") or "unavailable",
+        "cleanup_reason_code": cleanup.get("reason_code", "unavailable") or "unavailable",
+        "cleanup_reasons": cleanup.get("reasons", ""),
+        "cleanup_before_point_count": int_or_none(cleanup.get("before_point_count")),
+        "cleanup_smoothed_point_count": int_or_none(cleanup.get("smoothed_point_count")),
+        "cleanup_after_point_count": int_or_none(cleanup.get("after_point_count")),
+        "cleanup_accepted_smoothing_passes": int_or_none(cleanup.get("accepted_smoothing_passes")),
+        "cleanup_smoothing_backtrack_count": int_or_none(cleanup.get("smoothing_backtrack_count")),
+        "cleanup_attempted_chord_count": int_or_none(cleanup.get("attempted_chord_count")),
+        "cleanup_accepted_chord_count": int_or_none(cleanup.get("accepted_chord_count")),
+        "cleanup_containment_failure_count": int_or_none(cleanup.get("containment_failure_count")),
+        "cleanup_fit_before": float_or_none(cleanup.get("fit_before")),
+        "cleanup_fit_after": float_or_none(cleanup.get("fit_after")),
+        "cleanup_maximum_displacement_projection_units": float_or_none(
+            cleanup.get("maximum_displacement_projection_units")),
+        "cleanup_projection_unit_name": cleanup.get("projection_unit_name", "unavailable") or "unavailable",
+        "cleanup_maximum_removed_deviation_meters": float_or_none(
+            cleanup.get("maximum_removed_deviation_meters")),
+        "cleanup_worst_fit_retention": float_or_none(cleanup.get("worst_fit_retention")),
+        "cleanup_anchor_data_state": ";".join(anchor_states) if anchor_states else "unavailable",
+        "cleanup_anchor_count": available_anchor_count if anchors else None,
+        "cleanup_anchor_reason_codes": ";".join(anchor_reasons) if anchor_reasons else "unavailable",
+    }
 
 
 def json_object(text: str) -> dict[str, object]:
@@ -507,6 +609,14 @@ def float_or_none(value: str | None) -> float | None:
     """Parse a float, returning ``None`` for blank or invalid values."""
     try:
         return float(value) if value not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def int_or_none(value: str | None) -> int | None:
+    """Parse an integer, returning ``None`` for blank or invalid optional CSV fields."""
+    try:
+        return int(value) if value not in (None, "") else None
     except ValueError:
         return None
 

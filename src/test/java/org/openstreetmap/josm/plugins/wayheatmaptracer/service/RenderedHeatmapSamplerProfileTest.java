@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Point2D;
@@ -9,6 +10,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeAll;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -87,11 +89,77 @@ class RenderedHeatmapSamplerProfileTest {
 
         assertEquals(2, profiles.size());
         assertEquals(7, profiles.get(0).intensitySamples().size());
+        assertFalse(profiles.get(0).projectedLateralTransform().isPresent());
         RenderedHeatmapSampler.IntensitySample center = profiles.get(0).intensitySamples().get(3);
         assertEquals(0.0, center.offsetPx(), 1e-9);
         assertEquals(1.0, center.nativeIntensity(), 1e-9);
         assertTrue(center.lightFilteredIntensity() > 0.5);
         assertTrue(center.standardFilteredIntensity() > 0.5);
         assertTrue(center.insideRaster());
+    }
+
+    @Test
+    void capturesExactSlideTimeProjectedLateralOffsetTransform() {
+        BufferedImage image = new BufferedImage(40, 40, BufferedImage.TYPE_INT_ARGB);
+        List<ProfileSamplingAnchor> anchors = ProfileSamplingAnchor.pair(
+            List.of(new EastNorth(500.0, 700.0), new EastNorth(500.0, 710.0)),
+            List.of(new Point2D.Double(10.0, 5.0), new Point2D.Double(10.0, 25.0)));
+
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new RenderedHeatmapSampler()
+            .sampleProfilesOnAnchors(
+                image,
+                anchors,
+                3,
+                1,
+                "hot",
+                1.0,
+                1.0,
+                IntensitySamplingMode.DIRECT_VALUE,
+                (rasterX, rasterY) -> new EastNorth(100.0 + 2.0 * rasterX, 200.0 - 3.0 * rasterY)
+            );
+
+        var transform = profiles.get(0).projectedLateralTransform().orElseThrow();
+        assertEquals(new EastNorth(120.0, 185.0), transform.atOffset(0.0));
+        assertEquals(new EastNorth(115.0, 185.0), transform.atOffset(2.5));
+        assertEquals(new EastNorth(124.0, 185.0), transform.atOffset(-2.0));
+    }
+
+    @Test
+    void compatibilityProfilesExposeUnavailableProjectedTransform() {
+        var profile = new RenderedHeatmapSampler.CrossSectionProfile(
+            new EastNorth(1.0, 2.0),
+            new Point2D.Double(3.0, 4.0),
+            new Point2D.Double(0.0, 1.0),
+            List.of()
+        );
+
+        assertFalse(profile.projectedLateralTransform().isPresent());
+    }
+
+    @Test
+    void multiScaleProfilesReuseTheSameCapturedProjectionTransform() {
+        BufferedImage image = new BufferedImage(80, 50, BufferedImage.TYPE_INT_ARGB);
+        List<ProfileSamplingAnchor> anchors = ProfileSamplingAnchor.pair(
+            List.of(new EastNorth(0.0, 0.0), new EastNorth(20.0, 0.0)),
+            List.of(new Point2D.Double(15.0, 20.0), new Point2D.Double(65.0, 20.0)));
+
+        MultiScaleProfileSet profileSet = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAnchors(
+            image,
+            anchors,
+            4,
+            1,
+            "hot",
+            1.0,
+            1.0,
+            IntensitySamplingMode.DIRECT_VALUE,
+            1.0,
+            (rasterX, rasterY) -> new EastNorth(10.0 + 0.5 * rasterX, 30.0 - 0.25 * rasterY)
+        );
+
+        for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
+            var transform = level.profiles().get(0).projectedLateralTransform().orElseThrow();
+            assertEquals(new EastNorth(17.5, 25.0), transform.atOffset(0.0));
+            assertEquals(new EastNorth(17.5, 24.5), transform.atOffset(2.0));
+        }
     }
 }

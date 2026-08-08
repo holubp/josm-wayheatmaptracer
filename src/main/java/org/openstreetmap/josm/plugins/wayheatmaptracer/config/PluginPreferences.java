@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.config;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -45,6 +48,18 @@ public final class PluginPreferences {
     private static final String SAMPLE_STEP_METERS = PREFIX + "sampleStepMeters";
     private static final String INTENSITY_SAMPLING_MODE = PREFIX + "intensitySamplingMode";
     private static final String CACHE_BUSTER = PREFIX + "cacheBuster";
+    private static final String CLEANUP_SCHEMA_VERSION = PREFIX + "cleanup.schemaVersion";
+    private static final String CLEANUP_MODE = PREFIX + "cleanup.mode";
+    private static final String CLEANUP_PRESET = PREFIX + "cleanup.preset";
+    private static final String CLEANUP_RIPPLE_SCALE_METERS = PREFIX + "cleanup.rippleScaleMeters";
+    private static final String CLEANUP_RIPPLE_STRENGTH = PREFIX + "cleanup.rippleStrength";
+    private static final String CLEANUP_LAPLACIAN_STRENGTH = PREFIX + "cleanup.laplacianStrength";
+    private static final String CLEANUP_LAPLACIAN_PASS_COUNT = PREFIX + "cleanup.laplacianPassCount";
+    private static final String CLEANUP_SIMPLIFICATION_DEVIATION_METERS =
+        PREFIX + "cleanup.simplificationDeviationMeters";
+    private static final String CLEANUP_MINIMUM_FIT_RETENTION = PREFIX + "cleanup.minimumFitRetention";
+    private static final String CLEANUP_ALTERNATIVE_REQUESTED = PREFIX + "cleanup.cleanedAlternativeRequested";
+    private static final int CURRENT_CLEANUP_SCHEMA_VERSION = 1;
 
     private PluginPreferences() {
     }
@@ -79,7 +94,7 @@ public final class PluginPreferences {
             pref.getBoolean(PARALLEL_WAY_AWARENESS, false),
             pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
             pref.getBoolean(ADJUST_JUNCTION_NODES, false),
-            pref.getBoolean(SIMPLIFY_ENABLED, false),
+            cleanupSchemaPresent(pref) ? false : pref.getBoolean(SIMPLIFY_ENABLED, false),
             pref.getInt(CROSS_SECTION_HALF_WIDTH, 18),
             pref.getInt(CROSS_SECTION_STEP, 4),
             pref.getDouble(SIMPLIFY_TOLERANCE, 3.0),
@@ -122,10 +137,12 @@ public final class PluginPreferences {
         Config.getPref().putBoolean(PARALLEL_WAY_AWARENESS, config.parallelWayAwareness());
         Config.getPref().putBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, config.allowUndownloadedAlignment());
         Config.getPref().putBoolean(ADJUST_JUNCTION_NODES, config.adjustJunctionNodes());
-        Config.getPref().putBoolean(SIMPLIFY_ENABLED, config.simplifyEnabled());
+        if (!cleanupSchemaPresent(Config.getPref())) {
+            Config.getPref().putBoolean(SIMPLIFY_ENABLED, config.simplifyEnabled());
+            Config.getPref().putDouble(SIMPLIFY_TOLERANCE, config.simplifyTolerancePx());
+        }
         Config.getPref().putInt(CROSS_SECTION_HALF_WIDTH, config.crossSectionHalfWidthPx());
         Config.getPref().putInt(CROSS_SECTION_STEP, config.crossSectionStepPx());
-        Config.getPref().putDouble(SIMPLIFY_TOLERANCE, config.simplifyTolerancePx());
         Config.getPref().put(INFERENCE_MODE, (config.inferenceMode() == null
             ? InferenceMode.STABLE_FIXED_SCALE
             : config.inferenceMode()).name());
@@ -137,6 +154,78 @@ public final class PluginPreferences {
             ? IntensitySamplingMode.COLOR_MAPPING
             : config.intensitySamplingMode()).name());
         Config.getPref().putLong(CACHE_BUSTER, Math.max(0L, config.cacheBuster()));
+    }
+
+    /**
+     * Loads cleanup settings independently from heatmap source settings.
+     *
+     * <p>The first read of legacy simplification preferences migrates an enabled value to
+     * {@link GeometryCleanupMode#REDUCE_POINTS_ONLY}. The old numeric value is copied explicitly
+     * into the new ground-metre field and a schema marker prevents a second migration.</p>
+     *
+     * @return validated immutable cleanup settings
+     * @throws IllegalArgumentException when stored numeric settings are invalid
+     */
+    public static GeometryCleanupConfig loadGeometryCleanup() {
+        IPreferences pref = Config.getPref();
+        if (pref == null) {
+            return GeometryCleanupConfig.disabled();
+        }
+        if (!cleanupSchemaPresent(pref)) {
+            if (!pref.getKeySet().contains(SIMPLIFY_ENABLED)
+                && !pref.getKeySet().contains(SIMPLIFY_TOLERANCE)) {
+                return GeometryCleanupConfig.disabled();
+            }
+            GeometryCleanupMode migratedMode = pref.getBoolean(SIMPLIFY_ENABLED, false)
+                ? GeometryCleanupMode.REDUCE_POINTS_ONLY : GeometryCleanupMode.NONE;
+            GeometryCleanupConfig migrated = GeometryCleanupPreset.BALANCED.apply(migratedMode)
+                .withSimplificationDeviationMeters(pref.getDouble(SIMPLIFY_TOLERANCE, 3.0));
+            saveGeometryCleanup(migrated);
+            return migrated;
+        }
+        GeometryCleanupMode mode = GeometryCleanupMode.fromPreference(
+            pref.get(CLEANUP_MODE, GeometryCleanupMode.NONE.name()));
+        GeometryCleanupPreset preset = GeometryCleanupPreset.fromPreference(
+            pref.get(CLEANUP_PRESET, GeometryCleanupPreset.BALANCED.name()));
+        GeometryCleanupConfig defaults = preset.apply(mode);
+        boolean requested = mode != GeometryCleanupMode.NONE
+            && pref.getBoolean(CLEANUP_ALTERNATIVE_REQUESTED, true);
+        return new GeometryCleanupConfig(
+            mode,
+            preset,
+            pref.getDouble(CLEANUP_RIPPLE_SCALE_METERS, defaults.rippleScaleMeters()),
+            pref.getDouble(CLEANUP_RIPPLE_STRENGTH, defaults.rippleStrength()),
+            pref.getDouble(CLEANUP_LAPLACIAN_STRENGTH, defaults.laplacianStrength()),
+            pref.getInt(CLEANUP_LAPLACIAN_PASS_COUNT, defaults.laplacianPassCount()),
+            pref.getDouble(CLEANUP_SIMPLIFICATION_DEVIATION_METERS,
+                defaults.simplificationDeviationMeters()),
+            pref.getDouble(CLEANUP_MINIMUM_FIT_RETENTION, defaults.minimumFitRetention()),
+            requested
+        );
+    }
+
+    /**
+     * Saves cleanup settings and keeps the legacy simplification keys synchronized for downgrade compatibility.
+     *
+     * @param config validated cleanup settings
+     * @throws NullPointerException if {@code config} is {@code null}
+     */
+    public static void saveGeometryCleanup(GeometryCleanupConfig config) {
+        Objects.requireNonNull(config, "config");
+        IPreferences pref = Config.getPref();
+        pref.putInt(CLEANUP_SCHEMA_VERSION, CURRENT_CLEANUP_SCHEMA_VERSION);
+        pref.put(CLEANUP_MODE, config.mode().name());
+        pref.put(CLEANUP_PRESET, config.preset().name());
+        pref.putDouble(CLEANUP_RIPPLE_SCALE_METERS, config.rippleScaleMeters());
+        pref.putDouble(CLEANUP_RIPPLE_STRENGTH, config.rippleStrength());
+        pref.putDouble(CLEANUP_LAPLACIAN_STRENGTH, config.laplacianStrength());
+        pref.putInt(CLEANUP_LAPLACIAN_PASS_COUNT, config.laplacianPassCount());
+        pref.putDouble(CLEANUP_SIMPLIFICATION_DEVIATION_METERS,
+            config.simplificationDeviationMeters());
+        pref.putDouble(CLEANUP_MINIMUM_FIT_RETENTION, config.minimumFitRetention());
+        pref.putBoolean(CLEANUP_ALTERNATIVE_REQUESTED, config.cleanedAlternativeRequested());
+        pref.putBoolean(SIMPLIFY_ENABLED, !config.isDisabled());
+        pref.putDouble(SIMPLIFY_TOLERANCE, config.simplificationDeviationMeters());
     }
 
     /**
@@ -174,6 +263,11 @@ public final class PluginPreferences {
 
     private static int clampZoom(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static boolean cleanupSchemaPresent(IPreferences preferences) {
+        return preferences != null
+            && preferences.getInt(CLEANUP_SCHEMA_VERSION, 0) >= CURRENT_CLEANUP_SCHEMA_VERSION;
     }
 
     private static ManagedHeatmapConfig defaultConfig() {

@@ -26,6 +26,7 @@ import org.openstreetmap.josm.plugins.PluginInformation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportCalibrationTilesAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnosticsAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.GeometryCleanupSettingsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.HeatmapLayerSettingsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegmentAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -65,6 +66,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
             alignMoveNodesAction,
             new SelectLongestSegmentAction(),
             new HeatmapLayerSettingsAction(),
+            new GeometryCleanupSettingsAction(),
             new ExportCalibrationTilesAction(),
             new ExportDiagnosticsAction()
         );

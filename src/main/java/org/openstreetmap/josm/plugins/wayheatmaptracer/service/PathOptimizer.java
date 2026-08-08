@@ -15,6 +15,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Converts ridge candidates into projected target polylines and lightly relaxes interior points.
  */
 public final class PathOptimizer {
+    /** Creates a stateless candidate projection and legacy relaxation service. */
+    public PathOptimizer() {
+        // Stateless service.
+    }
+
     /**
      * Builds an optimized polyline from the source geometry toward a selected candidate.
      *

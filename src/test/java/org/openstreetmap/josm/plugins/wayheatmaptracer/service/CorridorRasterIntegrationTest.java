@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Line2D;
@@ -13,7 +14,11 @@ import java.util.function.IntToDoubleFunction;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTransform;
+import org.openstreetmap.josm.data.coor.EastNorth;
 
 class CorridorRasterIntegrationTest {
     private static final int PROFILE_COUNT = 61;
@@ -48,6 +53,41 @@ class CorridorRasterIntegrationTest {
         assertTrue(candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx() <= 0.25,
             "Broad-corridor high-frequency p95 was "
                 + candidates.get(0).evidence().corridorQuality().highFrequencyP95SourcePx());
+    }
+
+    @Test
+    void retainsOneSharedCleanupFrameAndFailsClosedWithoutProjectedTransforms() {
+        BufferedImage raster = raster((x) -> 0.0, 0.92, true, false);
+        List<RenderedHeatmapSampler.CrossSectionProfile> compatibilityProfiles = new RenderedHeatmapSampler()
+            .sampleProfilesOnScaledRaster(raster, sourcePolyline(), 18, 1, "hot", 1.0, 1.0,
+                IntensitySamplingMode.DIRECT_VALUE);
+        CorridorAwareTracker.TrackingResult unavailable = new CorridorAwareTracker()
+            .trackDetailed(compatibilityProfiles, 1.0, JunctionContext.empty(), "hot");
+        assertFalse(unavailable.candidates().isEmpty());
+        assertTrue(unavailable.candidates().stream().allMatch(candidate ->
+            candidate.cleanupEvidence().status() == CleanupEvidenceStatus.MISSING_PROJECTED_TRANSFORM));
+
+        List<RenderedHeatmapSampler.CrossSectionProfile> projectedProfiles = compatibilityProfiles.stream()
+            .map(profile -> new RenderedHeatmapSampler.CrossSectionProfile(
+                profile.samplingAnchor(), profile.normalScreen(), profile.peaks(), profile.anchorWithinRaster(),
+                profile.intensitySamples(), java.util.Optional.of(new ProjectedLateralTransform(
+                    new EastNorth(profile.anchorScreen().x, profile.anchorScreen().y),
+                    profile.normalScreen().x, profile.normalScreen().y))))
+            .toList();
+        CorridorAwareTracker.TrackingResult available = new CorridorAwareTracker()
+            .trackDetailed(projectedProfiles, 1.0, JunctionContext.empty(), "hot",
+                GeometryCleanupConfig.disabled(), 0.42);
+        List<CenterlineCandidate> complete = available.candidates().stream()
+            .filter(candidate -> candidate.evidence().corridorCoverage().complete()).toList();
+
+        assertFalse(complete.isEmpty());
+        assertTrue(complete.stream().allMatch(candidate -> candidate.cleanupEvidence().eligible()));
+        Object sharedFrame = complete.get(0).cleanupEvidence().samplingFrame();
+        complete.forEach(candidate -> assertSame(sharedFrame, candidate.cleanupEvidence().samplingFrame()));
+        assertEquals("hot", complete.get(0).cleanupEvidence().samplingFrame().detectorMode());
+        assertEquals(0.42,
+            complete.get(0).cleanupEvidence().samplingFrame().groundMetersPerRasterPixel(), 0.0);
+        assertTrue(complete.get(0).cleanupEvidence().samplingFrame().hasGroundScale());
     }
 
     @Test

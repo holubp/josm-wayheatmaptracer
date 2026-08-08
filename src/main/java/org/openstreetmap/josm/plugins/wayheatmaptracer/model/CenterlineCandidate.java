@@ -19,6 +19,8 @@ import org.openstreetmap.josm.data.coor.EastNorth;
  * @param junctionSafetyFindings structured final-preview connected-way findings
  * @param junctionSafetyToleranceMeters slide-time tolerance used to evaluate connected-way junction crossings
  * @param evidence aggregate heatmap and longitudinal evidence for the candidate
+ * @param cleanupEvidence candidate-specific evidence for optional geometry cleanup
+ * @param geometryCleanup compact cleanup attempt and raw-parent metadata
  * @param safetyWarnings structural warnings that should prevent unsafe apply operations
  */
 public record CenterlineCandidate(
@@ -32,6 +34,8 @@ public record CenterlineCandidate(
     List<JunctionSafetyFinding> junctionSafetyFindings,
     double junctionSafetyToleranceMeters,
     CandidateEvidence evidence,
+    CandidateCleanupEvidence cleanupEvidence,
+    CandidateGeometryCleanup geometryCleanup,
     List<String> safetyWarnings
 ) {
     /** Normalizes optional collections and evidence to immutable non-null values. */
@@ -50,7 +54,44 @@ public record CenterlineCandidate(
         }
         junctionSafetyFindings = junctionSafetyFindings == null ? List.of() : List.copyOf(junctionSafetyFindings);
         evidence = evidence == null ? CandidateEvidence.empty() : evidence;
+        cleanupEvidence = cleanupEvidence == null ? CandidateCleanupEvidence.empty() : cleanupEvidence;
+        geometryCleanup = geometryCleanup == null ? CandidateGeometryCleanup.notRequested() : geometryCleanup;
         safetyWarnings = safetyWarnings == null ? List.of() : List.copyOf(safetyWarnings);
+    }
+
+    /**
+     * Creates a candidate using the pre-geometry-cleanup-report canonical contract.
+     *
+     * @param id stable candidate identifier
+     * @param score detector ranking score
+     * @param screenPoints slide-time raster geometry
+     * @param offsetsPx lateral sampled-raster offsets
+     * @param eastNorthPoints projected raw candidate geometry
+     * @param finalPreviewPoints reconstructed final preview geometry
+     * @param proposedNodePositions candidate-owned existing-node targets
+     * @param junctionSafetyFindings connected-way safety findings
+     * @param junctionSafetyToleranceMeters physical crossing tolerance in ground metres
+     * @param evidence aggregate detector evidence
+     * @param cleanupEvidence candidate-specific retained cleanup evidence
+     * @param safetyWarnings blocking structural warnings
+     */
+    public CenterlineCandidate(
+        String id,
+        double score,
+        List<Point2D.Double> screenPoints,
+        List<Double> offsetsPx,
+        List<EastNorth> eastNorthPoints,
+        List<EastNorth> finalPreviewPoints,
+        Map<Long, EastNorth> proposedNodePositions,
+        List<JunctionSafetyFinding> junctionSafetyFindings,
+        double junctionSafetyToleranceMeters,
+        CandidateEvidence evidence,
+        CandidateCleanupEvidence cleanupEvidence,
+        List<String> safetyWarnings
+    ) {
+        this(id, score, screenPoints, offsetsPx, eastNorthPoints, finalPreviewPoints,
+            proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
+            evidence, cleanupEvidence, CandidateGeometryCleanup.notRequested(), safetyWarnings);
     }
 
     /**
@@ -63,7 +104,7 @@ public record CenterlineCandidate(
      */
     public CenterlineCandidate(String id, double score, List<Point2D.Double> screenPoints, List<Double> offsetsPx) {
         this(id, score, screenPoints, offsetsPx, List.of(), List.of(), Map.of(), List.of(), Double.NaN,
-            CandidateEvidence.empty(), List.of());
+            CandidateEvidence.empty(), CandidateCleanupEvidence.empty(), List.of());
     }
 
     /**
@@ -93,7 +134,41 @@ public record CenterlineCandidate(
         List<String> safetyWarnings
     ) {
         this(id, score, screenPoints, offsetsPx, eastNorthPoints, finalPreviewPoints, Map.of(),
-            junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
+            junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, CandidateCleanupEvidence.empty(),
+            safetyWarnings);
+    }
+
+    /**
+     * Creates a candidate using the pre-cleanup-evidence canonical contract.
+     *
+     * @param id candidate identifier
+     * @param score ranking score
+     * @param screenPoints sampled-raster geometry
+     * @param offsetsPx lateral profile offsets
+     * @param eastNorthPoints projected raw geometry
+     * @param finalPreviewPoints reconstructed preview geometry
+     * @param proposedNodePositions candidate-owned existing-node targets
+     * @param junctionSafetyFindings connected-way findings
+     * @param junctionSafetyToleranceMeters physical crossing tolerance
+     * @param evidence aggregate candidate evidence
+     * @param safetyWarnings blocking warnings
+     */
+    public CenterlineCandidate(
+        String id,
+        double score,
+        List<Point2D.Double> screenPoints,
+        List<Double> offsetsPx,
+        List<EastNorth> eastNorthPoints,
+        List<EastNorth> finalPreviewPoints,
+        Map<Long, EastNorth> proposedNodePositions,
+        List<JunctionSafetyFinding> junctionSafetyFindings,
+        double junctionSafetyToleranceMeters,
+        CandidateEvidence evidence,
+        List<String> safetyWarnings
+    ) {
+        this(id, score, screenPoints, offsetsPx, eastNorthPoints, finalPreviewPoints, proposedNodePositions,
+            junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, CandidateCleanupEvidence.empty(),
+            safetyWarnings);
     }
 
     /**
@@ -117,7 +192,7 @@ public record CenterlineCandidate(
         List<String> safetyWarnings
     ) {
         this(id, score, screenPoints, offsetsPx, eastNorthPoints, List.of(), Map.of(), List.of(), Double.NaN,
-            evidence, safetyWarnings);
+            evidence, CandidateCleanupEvidence.empty(), safetyWarnings);
     }
 
     /**
@@ -129,7 +204,7 @@ public record CenterlineCandidate(
     public CenterlineCandidate withId(String newId) {
         return new CenterlineCandidate(newId, score, screenPoints, offsetsPx, eastNorthPoints,
             finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            evidence, safetyWarnings);
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -141,7 +216,7 @@ public record CenterlineCandidate(
     public CenterlineCandidate withScore(double newScore) {
         return new CenterlineCandidate(id, newScore, screenPoints, offsetsPx, eastNorthPoints,
             finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            evidence, safetyWarnings);
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -153,7 +228,27 @@ public record CenterlineCandidate(
     public CenterlineCandidate withEastNorthPoints(List<EastNorth> points) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, points,
             finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            evidence, safetyWarnings);
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with projected geometry and its recomputed lateral offsets.
+     *
+     * @param points projected candidate geometry
+     * @param offsets lateral offsets aligned one-to-one with {@code points}
+     * @return candidate copy using the supplied geometry and offsets
+     * @throws IllegalArgumentException when geometry and offsets have different sizes
+     */
+    public CenterlineCandidate withProjectedGeometryAndOffsets(
+        List<EastNorth> points,
+        List<Double> offsets
+    ) {
+        if (points == null || offsets == null || points.size() != offsets.size()) {
+            throw new IllegalArgumentException("Projected candidate geometry and offsets must align");
+        }
+        return new CenterlineCandidate(id, score, List.of(), offsets, points,
+            finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -165,7 +260,7 @@ public record CenterlineCandidate(
     public CenterlineCandidate withFinalPreviewPoints(List<EastNorth> points) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
             points, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            evidence, safetyWarnings);
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -180,7 +275,8 @@ public record CenterlineCandidate(
         Map<Long, EastNorth> nodePositions
     ) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
-            points, nodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence, safetyWarnings);
+            points, nodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters, evidence,
+            cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -192,7 +288,7 @@ public record CenterlineCandidate(
     public CenterlineCandidate withJunctionSafetyFindings(List<JunctionSafetyFinding> findings) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
             finalPreviewPoints, proposedNodePositions, findings, junctionSafetyToleranceMeters,
-            evidence, safetyWarnings);
+            evidence, cleanupEvidence, geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -207,7 +303,8 @@ public record CenterlineCandidate(
         double toleranceMeters
     ) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
-            finalPreviewPoints, proposedNodePositions, findings, toleranceMeters, evidence, safetyWarnings);
+            finalPreviewPoints, proposedNodePositions, findings, toleranceMeters, evidence, cleanupEvidence,
+            geometryCleanup, safetyWarnings);
     }
 
     /**
@@ -219,7 +316,31 @@ public record CenterlineCandidate(
     public CenterlineCandidate withEvidence(CandidateEvidence newEvidence) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
             finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            newEvidence, safetyWarnings);
+            newEvidence, cleanupEvidence, geometryCleanup, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with candidate-specific geometry-cleanup evidence.
+     *
+     * @param newCleanupEvidence immutable cleanup evidence to attach
+     * @return candidate copy sharing the supplied detector sampling frame
+     */
+    public CenterlineCandidate withCleanupEvidence(CandidateCleanupEvidence newCleanupEvidence) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
+            evidence, newCleanupEvidence, geometryCleanup, safetyWarnings);
+    }
+
+    /**
+     * Returns a copy with compact cleanup attempt and raw-parent metadata.
+     *
+     * @param report immutable cleanup report
+     * @return candidate copy using {@code report}
+     */
+    public CenterlineCandidate withGeometryCleanup(CandidateGeometryCleanup report) {
+        return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
+            finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
+            evidence, cleanupEvidence, report, safetyWarnings);
     }
 
     /**
@@ -231,7 +352,7 @@ public record CenterlineCandidate(
     public CenterlineCandidate withSafetyWarnings(List<String> warnings) {
         return new CenterlineCandidate(id, score, screenPoints, offsetsPx, eastNorthPoints,
             finalPreviewPoints, proposedNodePositions, junctionSafetyFindings, junctionSafetyToleranceMeters,
-            evidence, warnings);
+            evidence, cleanupEvidence, geometryCleanup, warnings);
     }
 
     /**
@@ -240,7 +361,8 @@ public record CenterlineCandidate(
      * @return readable detector name, confidence label, and safety warning summary
      */
     public String displayName() {
-        String normalized = id.replace("-mapped-parallel", " mapped parallel");
+        String normalized = id.replace("#cleaned", "")
+            .replace("-mapped-parallel", " mapped parallel");
         String[] parts = normalized.split("/");
         StringBuilder label = new StringBuilder();
         int index = 0;
@@ -280,6 +402,10 @@ public record CenterlineCandidate(
             index++;
         }
         label.append(" - ").append(confidenceLabel());
+        if (geometryCleanup.cleanedCandidate()) {
+            label.append(" - cleaned (").append(geometryCleanup.beforePointCount()).append(" -> ")
+                .append(geometryCleanup.afterPointCount()).append(" points)");
+        }
         if (!safetyWarnings.isEmpty()) {
             label.append(" - ").append(String.join(", ", safetyWarnings));
         }

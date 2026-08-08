@@ -4,7 +4,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * Geometry application strategy used after a ridge candidate is selected.
  */
 public enum AlignmentMode {
+    /** Repositions the selected way's existing nodes without replacing its node sequence. */
     MOVE_EXISTING_NODES("Move Existing Nodes"),
+    /** Rebuilds the selected segment from the traced centerline while preserving protected nodes. */
     PRECISE_SHAPE("Precise Shape");
 
     private final String displayName;

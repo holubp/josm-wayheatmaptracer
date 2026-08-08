@@ -78,6 +78,17 @@ class TileHeatmapSamplerTest {
                     "sample y at z" + zoom + " lat " + latitude);
                 assertEquals(0.0, projected.distance(first), 1e-3,
                     "projection at z" + zoom + " lat " + latitude);
+                double offsetPx = 2.5;
+                Point2D.Double normal = profiles.get(0).normalScreen();
+                Point2D.Double shifted = new Point2D.Double(
+                    profiles.get(0).anchorScreen().x + normal.x * offsetPx,
+                    profiles.get(0).anchorScreen().y + normal.y * offsetPx);
+                EastNorth expectedShifted = new TileHeatmapSampler()
+                    .projectCandidate(mosaic, List.of(shifted)).get(0);
+                EastNorth retainedShifted = profiles.get(0).projectedLateralTransform().orElseThrow()
+                    .atOffset(offsetPx);
+                assertEquals(0.0, retainedShifted.distance(expectedShifted), 1e-3,
+                    "retained lateral projection at z" + zoom + " lat " + latitude);
             }
         }
     }

@@ -11,6 +11,11 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 public final class GeometryPostProcessor {
     private static final double CORNER_KEEP_DEGREES = 55.0;
 
+    /** Creates a stateless legacy preview-topology post-processor. */
+    public GeometryPostProcessor() {
+        // Stateless service.
+    }
+
     /**
      * Simplifies a polyline with a Douglas-Peucker pass that keeps sharp corners.
      *

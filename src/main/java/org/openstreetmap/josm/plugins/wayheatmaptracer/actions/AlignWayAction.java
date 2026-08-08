@@ -36,6 +36,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
@@ -64,9 +65,13 @@ public class AlignWayAction extends JosmAction {
     private static final String FEATURE_UNNECESSARY_KINKS = "unnecessary-kinks";
     private static final String FEATURE_BAD_JUNCTION_SHAPES = "bad-junction-shapes";
 
+    /** Stateless alignment orchestrator shared by action invocations. */
     private final AlignmentService alignmentService = new AlignmentService();
+    /** Map overlay used for candidate preview. */
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
+    /** Optional shortcut-specific mode override, or null for configured behavior. */
     private final AlignmentMode forcedAlignmentMode;
+    /** Current modeless preview dialog, if one is open. */
     private JDialog activePreviewDialog;
 
     /**
@@ -134,9 +139,11 @@ public class AlignWayAction extends JosmAction {
                 : HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
-            AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, config);
+            AlignmentConfig slideConfig = new AlignmentConfig(config, PluginPreferences.loadGeometryCleanup());
+            AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
             updateAggregateIntensityLayer(result, config);
-            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(result, result.candidates().get(0), "preview-open", PluginLog.currentSlideLog()));
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                result, initialCandidate(result), "preview-open", PluginLog.currentSlideLog()));
 
             showCandidatePreview(dataSet, selection, result, config);
         } catch (AlignmentService.AlignmentFailureException ex) {
@@ -236,7 +243,7 @@ public class AlignWayAction extends JosmAction {
         if (result.candidates().isEmpty()) {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
         }
-        CenterlineCandidate initial = result.candidates().get(0);
+        CenterlineCandidate initial = initialCandidate(result);
         Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
@@ -354,6 +361,23 @@ public class AlignWayAction extends JosmAction {
             dialog.dispose();
         });
         dialog.setVisible(true);
+    }
+
+    /**
+     * Selects the candidate initially shown by preview and recorded by diagnostics.
+     *
+     * @param result completed alignment result
+     * @return first applicable candidate, or the first inspection-only candidate when none apply
+     * @throws IllegalStateException when the result contains no candidates
+     */
+    static CenterlineCandidate initialCandidate(AlignmentResult result) {
+        if (!result.applicableCandidates().isEmpty()) {
+            return result.applicableCandidates().get(0);
+        }
+        if (!result.candidates().isEmpty()) {
+            return result.candidates().get(0);
+        }
+        throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
     }
 
     private PreviewSelection buildPreviewSelection(

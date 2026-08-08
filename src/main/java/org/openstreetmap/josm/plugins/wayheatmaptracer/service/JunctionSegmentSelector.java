@@ -13,6 +13,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.WaySegmentRange;
  * Finds junction-bounded way segments for the plugin-specific segment selection mode.
  */
 public final class JunctionSegmentSelector {
+    /** Creates a stateless junction-bounded segment selector. */
+    public JunctionSegmentSelector() {
+        // Stateless service.
+    }
+
     /**
      * Finds the longest contiguous part of a way bounded by endpoints or shared-node junctions.
      *

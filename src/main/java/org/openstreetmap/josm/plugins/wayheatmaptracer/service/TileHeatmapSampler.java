@@ -32,12 +32,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Downloads managed Strava source tiles, builds mosaics, and samples cross-sections at fixed tile zooms.
  */
 public final class TileHeatmapSampler {
+    /** Native managed Strava tile width and height in pixels. */
     public static final int TILE_SIZE = 512;
     private static final double IMAGE_SAMPLE_CENTER_WORLD_PX = 0.5;
+    /** Default managed source-tile zoom used for fixed-scale inference. */
     public static final int DEFAULT_INFERENCE_ZOOM = 15;
+    /** Default lower zoom used only where explicit validation is configured. */
     public static final int DEFAULT_VALIDATION_ZOOM = 13;
+    /** Calibrated reference ground scale in metres per JOSM view pixel. */
     public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
+    /** Legacy-compatible rendered-raster oversampling factor. */
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
+
+    /** Creates the stateless managed-tile sampler. */
+    public TileHeatmapSampler() {
+        // Stateless service.
+    }
     private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png%s";
     private static final List<String> BASE_AGGREGATE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 
@@ -141,7 +151,8 @@ public final class TileHeatmapSampler {
             detectorMode,
             REFERENCE_RASTER_SCALE,
             mosaic.virtualRasterScale(),
-            config.intensitySamplingMode()
+            config.intensitySamplingMode(),
+            mosaicProjector(mosaic)
         );
     }
 
@@ -172,7 +183,8 @@ public final class TileHeatmapSampler {
             (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAnchors(
             mosaic.image(), ProfileSamplingAnchor.pair(dense, local), referenceHalfWidthPx, referenceStepPx, detectorMode,
-            REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), config.intensitySamplingMode(), 1.0);
+            REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), config.intensitySamplingMode(), 1.0,
+            mosaicProjector(mosaic));
     }
 
     /**
@@ -209,7 +221,8 @@ public final class TileHeatmapSampler {
             referenceHalfWidthPx,
             referenceStepPx,
             REFERENCE_RASTER_SCALE,
-            reference.virtualRasterScale()
+            reference.virtualRasterScale(),
+            mosaicProjector(reference)
         );
     }
 
@@ -243,7 +256,7 @@ public final class TileHeatmapSampler {
             (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
         return new RenderedHeatmapSampler().sampleMultiScaleProfilesOnAggregatedAnchors(
             frame.images(), ProfileSamplingAnchor.pair(dense, local), referenceHalfWidthPx, referenceStepPx, REFERENCE_RASTER_SCALE,
-            reference.virtualRasterScale());
+            reference.virtualRasterScale(), mosaicProjector(reference));
     }
 
     private List<Point2D.Double> localPolyline(TileMosaic mosaic, List<EastNorth> dense) {
@@ -311,11 +324,19 @@ public final class TileHeatmapSampler {
      */
     public List<EastNorth> projectCandidate(TileMosaic mosaic, List<Point2D.Double> localPoints) {
         return localPoints.stream()
-            .map(point -> toEastNorth(
-                point.x / mosaic.virtualRasterScale() + mosaic.originWorldPxX() + IMAGE_SAMPLE_CENTER_WORLD_PX,
-                point.y / mosaic.virtualRasterScale() + mosaic.originWorldPxY() + IMAGE_SAMPLE_CENTER_WORLD_PX,
-                mosaic.zoom()))
+            .map(point -> projectMosaicPoint(mosaic, point.x, point.y))
             .toList();
+    }
+
+    private RenderedHeatmapSampler.RasterCoordinateProjector mosaicProjector(TileMosaic mosaic) {
+        return (rasterX, rasterY) -> projectMosaicPoint(mosaic, rasterX, rasterY);
+    }
+
+    private EastNorth projectMosaicPoint(TileMosaic mosaic, double rasterX, double rasterY) {
+        return toEastNorth(
+            rasterX / mosaic.virtualRasterScale() + mosaic.originWorldPxX() + IMAGE_SAMPLE_CENTER_WORLD_PX,
+            rasterY / mosaic.virtualRasterScale() + mosaic.originWorldPxY() + IMAGE_SAMPLE_CENTER_WORLD_PX,
+            mosaic.zoom());
     }
 
     private TileMosaic loadMosaic(

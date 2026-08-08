@@ -4,9 +4,13 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * Converts rendered or source-tile pixels into scalar intensity before ridge extraction.
  */
 public enum IntensitySamplingMode {
+    /** Maps the selected Strava palette semantically to scalar intensity. */
     COLOR_MAPPING("Color mapping"),
+    /** Uses rendered-pixel luminance directly as scalar intensity. */
     DIRECT_LUMINANCE("Direct luminance"),
+    /** Uses the maximum rendered color channel directly as scalar intensity. */
     DIRECT_VALUE("Direct max channel"),
+    /** Uses rendered-pixel alpha directly as scalar intensity. */
     DIRECT_ALPHA("Direct alpha");
 
     private final String label;

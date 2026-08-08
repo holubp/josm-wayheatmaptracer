@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
 /**
@@ -115,6 +116,31 @@ public final class CorridorCenterlineOptimizer {
         Map<String, BandScaleEvidence> scaleEvidence,
         LongitudinalCorridorTube tube
     ) {
+        return optimize(track, profiles, sourcePixelSizePx, junctionContext, scaleEvidence, tube,
+            GeometryCleanupConfig.disabled());
+    }
+
+    /**
+     * Optimizes one track with configured unsupported-ripple regularization in the same exact DP.
+     *
+     * @param track selected corridor identity
+     * @param profiles fine L0 corridor profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction constraints
+     * @param scaleEvidence cross-scale evidence keyed by profile index and fine band id
+     * @param tube profile-aligned robust longitudinal reference
+     * @param cleanupConfig slide-time cleanup settings controlling ripple costs
+     * @return optimized fine-coordinate geometry
+     */
+    public OptimizationResult optimize(
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence,
+        LongitudinalCorridorTube tube,
+        GeometryCleanupConfig cleanupConfig
+    ) {
         if (profiles.isEmpty() || track.points().isEmpty()) {
             return OptimizationResult.empty();
         }
@@ -124,13 +150,16 @@ public final class CorridorCenterlineOptimizer {
         EndpointApproachModel endpointApproaches = new EndpointApproachBuilder().build(
             track, profiles, tube, junctionContext, scaleEvidence);
         double sourcePixel = validSourcePixel(sourcePixelSizePx);
+        double rippleStrength = cleanupConfig.isDisabled() ? 0.0 : cleanupConfig.rippleStrength();
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport = new UnsupportedRippleEvaluator().evaluate(
+            track, tube, sourcePixel, cleanupConfig.rippleScaleMeters(), rippleStrength > 0.0);
         List<List<Double>> allowed = new ArrayList<>(profiles.size());
         for (int i = 0; i < profiles.size(); i++) {
             allowed.add(allowedOffsets(track, profiles, i, sourcePixel, junctionContext, scaleEvidence, tube.at(i),
                 endpointApproaches));
         }
         ExactSolution exactSolution = solveExact(track, profiles, allowed, sourcePixel, junctionContext,
-            scaleEvidence, tube, endpointApproaches);
+            scaleEvidence, tube, endpointApproaches, rippleSupport, rippleStrength);
         List<Double> optimizedOffsets = exactSolution.offsetsPx();
         List<Point2D.Double> points = new ArrayList<>(profiles.size());
         List<CostRow> costs = new ArrayList<>(profiles.size());
@@ -150,20 +179,35 @@ public final class CorridorCenterlineOptimizer {
                 inCorridor++;
             }
             DataCost dataComponents = dataCostComponents(track, profile, i, offset, sourcePixel, scaleEvidence,
-                tube.at(i), heatmapWeight(endpointApproaches, i));
+                tube.at(i), heatmapWeight(endpointApproaches, i), rippleSupport.get(i), rippleStrength);
             double data = dataComponents.total();
-            double continuity = i == 0 ? 0.0 : continuityWeight(track, i)
+            double baseContinuityWeight = i == 0 ? 0.0 : continuityWeight(track, i);
+            double continuityWeight = effectiveContinuityWeight(
+                baseContinuityWeight, rippleSupport.get(i), rippleStrength);
+            double continuity = i == 0 ? 0.0 : continuityWeight
                 * square((offset - optimizedOffsets.get(i - 1)) / profileSpacing(profiles, i, sourcePixel));
-            double acceleration = i < 2 ? 0.0 : accelerationWeight(track, i, tube)
+            double baseAccelerationWeight = i < 2 ? 0.0 : accelerationWeight(track, i, tube);
+            double accelerationWeight = effectiveAccelerationWeight(
+                baseAccelerationWeight, rippleSupport.get(i), rippleStrength);
+            double acceleration = i < 2 ? 0.0 : accelerationWeight
                 * geometricCurvatureCost(profiles, optimizedOffsets, tube, i, sourcePixel);
             accelerationEnergy += acceleration;
             double endpoint = constraintCost(i, offset, junctionContext, endpointApproaches, sourcePixel);
             double spacing = i == 0 && profiles.size() > 1
                 ? profileSpacing(profiles, 1, sourcePixel)
                 : (i == 0 ? sourcePixel : profileSpacing(profiles, i, sourcePixel));
+            double rippleAdditional = dataComponents.rippleAdditionalCost()
+                + Math.max(0.0, continuity - (i == 0 ? 0.0 : baseContinuityWeight
+                    * square((offset - optimizedOffsets.get(i - 1)) / profileSpacing(profiles, i, sourcePixel))))
+                + Math.max(0.0, acceleration - (i < 2 ? 0.0 : baseAccelerationWeight
+                    * geometricCurvatureCost(profiles, optimizedOffsets, tube, i, sourcePixel)));
             costs.add(new CostRow(i, offset, spacing, data, continuity, acceleration,
                 dataComponents.plateauCenterCost(), dataComponents.coarsePriorCost(),
                 dataComponents.tubeCenterCost(), endpoint,
+                rippleStrength > 0.0 ? cleanupConfig.rippleScaleMeters() : 0.0, rippleStrength,
+                rippleSupport.get(i).support(),
+                rippleSupport.get(i).unsupportedWeight(), rippleSupport.get(i).reversalSpacingMeters(),
+                rippleSupport.get(i).reason(), rippleAdditional,
                 data + continuity + acceleration + endpoint, insideCore, contained));
         }
         double inCorridorFraction = (double) inCorridor / profiles.size();
@@ -186,10 +230,12 @@ public final class CorridorCenterlineOptimizer {
         JunctionContext junctionContext,
         Map<String, BandScaleEvidence> scaleEvidence,
         LongitudinalCorridorTube tube,
-        EndpointApproachModel endpointApproaches
+        EndpointApproachModel endpointApproaches,
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double rippleStrength
     ) {
         List<List<OffsetState>> stateTables = buildStateTables(track, profiles, allowed, sourcePixel,
-            junctionContext, scaleEvidence, tube, endpointApproaches);
+            junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport, rippleStrength);
         long profileCostEvaluations = stateTables.stream().mapToLong(List::size).sum();
         long pointTableEntries = profileCostEvaluations;
         if (profiles.size() == 1) {
@@ -209,7 +255,8 @@ public final class CorridorCenterlineOptimizer {
         double spacing = profileSpacing(profiles, 1, sourcePixel);
         double spacingSourcePixels = spacing / sourcePixel;
         AdjacentGeometry firstGeometry = adjacentGeometry(
-            stateTables.get(0), stateTables.get(1), profiles, tube, track, 1, spacing);
+            stateTables.get(0), stateTables.get(1), profiles, tube, track, 1, spacing,
+            rippleSupport.get(1), rippleStrength);
         adjacentGeometryEntries += firstGeometry.entryCount();
         for (int firstIndex = 0; firstIndex < stateTables.get(0).size(); firstIndex++) {
             OffsetState first = stateTables.get(0).get(firstIndex);
@@ -234,9 +281,10 @@ public final class CorridorCenterlineOptimizer {
             spacing = profileSpacing(profiles, profileIndex, sourcePixel);
             spacingSourcePixels = spacing / sourcePixel;
             AdjacentGeometry geometry = adjacentGeometry(previousOffsets, currentOffsets,
-                profiles, tube, track, profileIndex, spacing);
+                profiles, tube, track, profileIndex, spacing, rippleSupport.get(profileIndex), rippleStrength);
             adjacentGeometryEntries += geometry.entryCount();
-            double profileAccelerationWeight = accelerationWeight(track, profileIndex, tube);
+            double profileAccelerationWeight = effectiveAccelerationWeight(
+                accelerationWeight(track, profileIndex, tube), rippleSupport.get(profileIndex), rippleStrength);
             for (int beforeIndex = 0; beforeIndex < states.length; beforeIndex++) {
                 for (int previousIndex = 0; previousIndex < states[beforeIndex].length; previousIndex++) {
                     PairState previous = states[beforeIndex][previousIndex];
@@ -288,14 +336,17 @@ public final class CorridorCenterlineOptimizer {
         JunctionContext junctionContext,
         Map<String, BandScaleEvidence> scaleEvidence,
         LongitudinalCorridorTube tube,
-        EndpointApproachModel endpointApproaches
+        EndpointApproachModel endpointApproaches,
+        List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double rippleStrength
     ) {
         List<List<OffsetState>> tables = new ArrayList<>(profiles.size());
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
             List<OffsetState> states = new ArrayList<>(allowed.get(profileIndex).size());
             for (double offset : allowed.get(profileIndex)) {
                 double cost = profileCost(track, profiles, profileIndex, offset, sourcePixel,
-                    junctionContext, scaleEvidence, tube, endpointApproaches);
+                    junctionContext, scaleEvidence, tube, endpointApproaches,
+                    rippleSupport.get(profileIndex), rippleStrength);
                 requireFiniteCost(cost, profileIndex);
                 states.add(new OffsetState(offset, pointFor(profiles.get(profileIndex), offset), cost));
             }
@@ -318,11 +369,14 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,
         CorridorTrack track,
         int profileIndex,
-        double spacing
+        double spacing,
+        UnsupportedRippleEvaluator.RippleSupport rippleSupport,
+        double rippleStrength
     ) {
         double[][] headings = new double[previous.size()][current.size()];
         double[][] continuityCosts = new double[previous.size()][current.size()];
-        double continuityWeight = continuityWeight(track, profileIndex);
+        double continuityWeight = effectiveContinuityWeight(
+            continuityWeight(track, profileIndex), rippleSupport, rippleStrength);
         for (int previousIndex = 0; previousIndex < previous.size(); previousIndex++) {
             for (int currentIndex = 0; currentIndex < current.size(); currentIndex++) {
                 headings[previousIndex][currentIndex] = heading(
@@ -371,10 +425,12 @@ public final class CorridorCenterlineOptimizer {
         JunctionContext junctionContext,
         Map<String, BandScaleEvidence> scaleEvidence,
         LongitudinalCorridorTube tube,
-        EndpointApproachModel endpointApproaches
+        EndpointApproachModel endpointApproaches,
+        UnsupportedRippleEvaluator.RippleSupport rippleSupport,
+        double rippleStrength
     ) {
         return dataCost(track, profiles.get(profileIndex), profileIndex, offset, sourcePixel, scaleEvidence,
-            tube.at(profileIndex), heatmapWeight(endpointApproaches, profileIndex))
+            tube.at(profileIndex), heatmapWeight(endpointApproaches, profileIndex), rippleSupport, rippleStrength)
             + constraintCost(profileIndex, offset, junctionContext, endpointApproaches, sourcePixel);
     }
 
@@ -478,10 +534,12 @@ public final class CorridorCenterlineOptimizer {
         double sourcePixel,
         Map<String, BandScaleEvidence> scaleEvidence,
         CorridorTubeSlice tubeSlice,
-        double heatmapWeight
+        double heatmapWeight,
+        UnsupportedRippleEvaluator.RippleSupport rippleSupport,
+        double rippleStrength
     ) {
         return dataCostComponents(track, profile, profileIndex, offset, sourcePixel, scaleEvidence,
-            tubeSlice, heatmapWeight).total();
+            tubeSlice, heatmapWeight, rippleSupport, rippleStrength).total();
     }
 
     private DataCost dataCostComponents(
@@ -492,15 +550,19 @@ public final class CorridorCenterlineOptimizer {
         double sourcePixel,
         Map<String, BandScaleEvidence> scaleEvidence,
         CorridorTubeSlice tubeSlice,
-        double heatmapWeight
+        double heatmapWeight,
+        UnsupportedRippleEvaluator.RippleSupport rippleSupport,
+        double rippleStrength
     ) {
         CorridorBand band = bandAt(track, profileIndex);
         if (band == null) {
             double tubeDistance = Math.abs(offset - tubeSlice.centerOffsetPx())
                 / Math.max(sourcePixel, tubeSlice.uncertaintyPx());
             double tubeCost = parameters.tubeCenterWeight() * tubeSlice.confidence() * square(tubeDistance);
-            return new DataCost(0.35 + heatmapWeight * tubeCost, 0.0, 0.0,
-                heatmapWeight * tubeCost);
+            double rippleCost = rippleTubeCost(offset, sourcePixel, tubeSlice, rippleSupport, rippleStrength,
+                heatmapWeight);
+            return new DataCost(0.35 + heatmapWeight * tubeCost + rippleCost, 0.0, 0.0,
+                heatmapWeight * tubeCost, rippleCost);
         }
         ProfileIntensityInterpolator.InterpolatedIntensity interpolated = ProfileIntensityInterpolator
             .interpolate(profile.source(), offset).orElse(null);
@@ -563,9 +625,45 @@ public final class CorridorCenterlineOptimizer {
         double weightedCenterEvidence = heatmapWeight * (intensityCost
             + parameters.coreDistanceWeight() * square(coreDistance) + centerCost + coarsePrior + tubeCost);
         double shoulderCost = parameters.shoulderDistanceWeight() * square(shoulderDistance);
-        double total = weightedCenterEvidence + shoulderCost;
+        double rippleCost = rippleTubeCost(offset, sourcePixel, tubeSlice, rippleSupport, rippleStrength,
+            heatmapWeight);
+        double total = weightedCenterEvidence + shoulderCost + rippleCost;
         return new DataCost(total, equivalentPeak ? heatmapWeight * centerCost : 0.0,
-            heatmapWeight * coarsePrior, heatmapWeight * tubeCost);
+            heatmapWeight * coarsePrior, heatmapWeight * tubeCost, rippleCost);
+    }
+
+    private double rippleTubeCost(
+        double offset,
+        double sourcePixel,
+        CorridorTubeSlice tubeSlice,
+        UnsupportedRippleEvaluator.RippleSupport rippleSupport,
+        double rippleStrength,
+        double heatmapWeight
+    ) {
+        if (rippleStrength <= 0.0 || rippleSupport.unsupportedWeight() <= 0.0) {
+            return 0.0;
+        }
+        double distance = (offset - tubeSlice.stabilityCenterOffsetPx())
+            / Math.max(sourcePixel, tubeSlice.stabilityUncertaintyPx());
+        return heatmapWeight * 1.5 * rippleStrength * rippleSupport.unsupportedWeight() * square(distance);
+    }
+
+    private double effectiveContinuityWeight(
+        double base,
+        UnsupportedRippleEvaluator.RippleSupport support,
+        double strength
+    ) {
+        return strength <= 0.0 || support.unsupportedWeight() <= 0.0
+            ? base : base * (1.0 + 2.0 * strength * support.unsupportedWeight());
+    }
+
+    private double effectiveAccelerationWeight(
+        double base,
+        UnsupportedRippleEvaluator.RippleSupport support,
+        double strength
+    ) {
+        return strength <= 0.0 || support.unsupportedWeight() <= 0.0
+            ? base : base * (1.0 + 8.0 * strength * support.unsupportedWeight());
     }
 
     static String scaleEvidenceKey(int profileIndex, String bandId) {
@@ -817,6 +915,13 @@ public final class CorridorCenterlineOptimizer {
      * @param plateauCenterCost robust center cost applied within an intensity plateau
      * @param coarsePriorCost compatible coarse-scale localization prior
      * @param tubeCenterCost confidence-weighted longitudinal tube-center prior
+     * @param effectiveRippleScaleMeters active unsupported-ripple scale, or zero when disabled
+     * @param effectiveRippleStrength active unsupported-ripple strength, or zero when disabled
+     * @param rippleSupport sustained motion/turn support
+     * @param unsupportedRippleFactor physical-window unsupported-ripple factor
+     * @param reversalSpacingMeters median reversal spacing, or NaN
+     * @param rippleDecision machine-readable support decision
+     * @param rippleAdditionalCost additional configured cost in this row
      * @param weightedTotal exact sum of this row's weighted objective terms
      * @param insideCore whether the point is inside its selected high-level core
      * @param insideCorridor whether the point is inside its selected shoulder envelope
@@ -832,6 +937,13 @@ public final class CorridorCenterlineOptimizer {
         double coarsePriorCost,
         double tubeCenterCost,
         double endpointCost,
+        double effectiveRippleScaleMeters,
+        double effectiveRippleStrength,
+        double rippleSupport,
+        double unsupportedRippleFactor,
+        double reversalSpacingMeters,
+        String rippleDecision,
+        double rippleAdditionalCost,
         double weightedTotal,
         boolean insideCore,
         boolean insideCorridor
@@ -887,7 +999,8 @@ public final class CorridorCenterlineOptimizer {
         double total,
         double plateauCenterCost,
         double coarsePriorCost,
-        double tubeCenterCost
+        double tubeCenterCost,
+        double rippleAdditionalCost
     ) {
     }
 }

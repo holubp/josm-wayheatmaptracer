@@ -4,6 +4,8 @@
 
 The plugin is meant for mappers who already inspect imagery manually, but want help turning a clear heatmap corridor into editable OSM geometry. With managed Strava access configured, it samples fixed-resolution source tiles. Without managed access, it asks JOSM to render the heatmap layer over the selected segment at the required working resolution. The default tracker preserves the proven `0.2.0` behavior; an opt-in experimental corridor-aware tracker retains full cross-section intensity profiles, checks corridor stability in a local Gaussian scale space, follows broad or sparse corridors longitudinally, and presents ambiguous parallel interpretations for review. Both paths preview candidates and apply nothing until the mapper confirms.
 
+Geometry cleanup is a separate, opt-in stage for future slide candidates. It is configured independently from heatmap sampling and never changes existing OSM geometry merely because its settings dialog was opened or accepted.
+
 ## Why This Exists
 
 Heatmaps are useful in places where normal imagery is ambiguous, outdated, obscured by vegetation, or unavailable. They can reveal:
@@ -78,7 +80,7 @@ The current implementation is designed for private development:
 - Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
 - Select the longest segment of a selected way bounded by endpoints or junction nodes
-- Optionally simplify the traced centerline in `Precise Shape`; simplification is applied per fixed-anchor interval after anchors are restored so one part of a multi-leg segment is not collapsed by another part
+- Configure optional future-slide geometry cleanup, which can reduce heatmap-traced points and, in its combined mode, apply constrained smoothing before reduction while preserving fixed anchors
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
 - Refuse to apply a preview if the selected way or source node coordinates changed while the modeless preview was open
 - Refuse unsafe repeated-node selections where a selected node also occurs elsewhere in the way
@@ -142,6 +144,9 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` uses the calibrated fixed-scale sampling parameters and avoids broad z15 heat dilation; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
 - Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. Increase this setting deliberately only when the rough source geometry is genuinely far from the intended heatmap trace.
 - `Cross-section half-width px` and `Cross-section step px`: used by the legacy visible-layer fallback. Fixed source-tile alignment uses the meter-based fields above and converts them to the same 0.389 m/px reference view scale reported in the preview.
+- `Geometry cleanup...`: opens the dedicated cleanup dialog. The same dialog is available directly as `More tools -> Geometry Cleanup Settings...`. Cleanup is disabled by default and affects only candidates produced by later slides; it is never an immediate edit operation.
+- `Geometry cleanup mode`: choose `None`, `Reduce points only`, or `Constrained smoothing + reduce points`. The last mode first suppresses short, unsupported lateral ripples with a constrained normal-only Laplacian step and then performs heatmap-constrained point reduction. An enabled mode may add one separate cleaned candidate when eligibility, safety, and geometry-change checks pass; the raw candidate remains available for comparison or fallback.
+- `Geometry cleanup preset`: `Conservative` uses a 6 m ripple scale, `Balanced` uses 10 m, and `Strong` uses 20 m. The preset also supplies associated smoothing, pass-count, reduction-deviation, and fit-retention defaults. Custom numeric values remain available in the dialog.
 - `Intensity source`: `Color mapping` is the default and should be used for normal Strava heatmap color schemes. Direct modes bypass palette semantics and use rendered pixel luminance, max channel, or alpha as scalar intensity; when a direct mode is selected, multi-color detection collapses to one direct detector because color-scheme alternatives no longer apply.
 - `Run alternative detector mappings on current source`: applies the detector variants to the currently sampled source. With a manual visible layer, this means the single rendered heatmap layer on screen. With managed source-tile alignment, this means the selected managed color source. Calibration variants include `hot-corridor`, `bluered-cool`, `bluered-corridor`, `dual-corridor`, `gray-magenta`, `gray-corridor`, `gray-strict`, and `purple-strict`. Experimental `bluered-combined`, `gray-combined`, and `multi-combined` modes first fuse named color-to-intensity mappings into one intensity field, then run the same ridge tracker on that fused field.
 - Candidate ordering first separates genuine source evidence from alternative mappings. A complete managed `all-colors-combined` field and mappings native to the configured source palette rank ahead of cross-palette mappings when applicable; quality metrics determine ordering within that tier. Every requested mapping remains listed with its outcome.
@@ -149,7 +154,6 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Show aggregate intensity layer`: adds a non-editable `WayHeatmapTracer aggregate intensity` layer after the settings dialog is accepted, even if the aggregate detector candidate itself is disabled. The layer sits immediately above the managed Strava layer, fetches the same managed base colors for the visible map area, and visualizes the scalar aggregate field as white on transparent at 80% opacity. Aggregation uses weighted native semantic intensities with a conservative power-mean emphasis on high-intensity evidence, so very strong traces are more visible without letting one color shoulder dominate the fused detector. It is diagnostic only and does not change alignment.
 - `Enable preview candidate rating mode`: default off. Enable only when collecting calibration examples; the preview dialog adds `++`, `+`, `0`, `-`, `--` ratings and negative tags for `off-the-line`, `jumping`, `unnecessary kinks`, and `bad junction shapes`.
 - `Use nearby parallel ways as alignment context`: default off. In `Experimental corridor-aware` mode, downloaded nearby parallel `highway=*` ways provide soft tag, distance, lateral-order, and topology context for candidate ranking. The plugin does not move or retag contextual ways. This setting has no effect on the legacy tracker.
-- `Enable simplification`: useful mainly with `Precise Shape`; practical values are usually around `0.3` to `1.0`.
 - `Allow aligning without downloaded OSM area`: default off. Enable only for intentional local heatmap-only drawing when no OSM server area is downloaded.
 - `Adjust junction and endpoint nodes`: default off. Enable only when you intentionally want selected junction or endpoint nodes to move.
 - `Verbose logging` and `Debug overlay`: leave off for routine editing; enable before reproducing a bad slide for diagnostics.
@@ -173,7 +177,8 @@ Shortcuts:
 8. When preview candidate rating mode is enabled in settings, rate candidates with `++`, `+`, `0`, `-`, or `--` and tag negative features. Ratings are exported with the last-slide debug bundle for detector calibration.
 9. While the preview is open, pan/zoom the map and toggle layer visibility in the layer list as needed. The preview dialog is modeless, and candidate switching/rating uses the geometry captured at slide time rather than reprojecting through the later viewport.
 10. Avoid editing the selected way while the preview is open. If the way nodes or source coordinates change, the plugin refuses to switch/apply the stale preview and asks you to run the slide again.
-11. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
+11. If geometry cleanup is enabled, compare the raw candidate with its separately labeled cleaned candidate. The cleaned candidate is applicable only when its retained heatmap evidence, protected anchors, assignments, and topology checks all pass.
+12. Press `Apply` only when the proposed geometry is justified. Press `Cancel` to leave the OSM data unchanged.
 
 The plugin also refuses repeated-node selections where a node in the selected segment appears more than once in the same way, because the same OSM node cannot safely represent two independent slide positions. Split the way or select a simpler segment before aligning.
 
@@ -185,6 +190,7 @@ All actions are under JOSM `More tools`:
 
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
+- `Geometry Cleanup Settings`: no default shortcut
 - `Select Longest Heatmap Segment`: no default shortcut
 - `Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
 - `Export Last Slide Debug Bundle`: `Alt+Ctrl+Shift+D`
@@ -259,7 +265,7 @@ The script also accepts image directories and extracted JOSM cache tiles. It wri
 4. Start JOSM, then open `More tools` and configure the heatmap layer access values.
 5. In the settings dialog, enter the exact cookie values named `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`, or use `Paste cookie header...` to split a copied cookie header into those fields.
 6. Select the desired Strava activity and color for the managed layer.
-7. Choose either `Move Existing Nodes` or `Precise Shape`. Enable simplification only when testing `Precise Shape`.
+7. Choose either `Move Existing Nodes` or `Precise Shape`. Configure future cleanup through `Geometry cleanup...`; leave the mode at `None` when the raw slide candidate is required.
 8. Use `Select Longest Heatmap Segment` after selecting a way when you want the plugin to choose the longest endpoint/junction-bounded segment before aligning.
 9. Test `Align Way to Heatmap`.
 10. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.

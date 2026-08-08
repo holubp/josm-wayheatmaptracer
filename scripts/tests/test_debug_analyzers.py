@@ -95,6 +95,35 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("0.3333333333333333", rows[0]["sparse_bundle_interpolation_ratio"])
         self.assertIn("interpolation-heavy", rows[0]["sparse_bundle_diagnoses"])
 
+    def test_nested_format_nine_keeps_literal_cleanup_parent_relation(self) -> None:
+        """Format 9 joins raw and cleaned variants through CSV fields, not identifier parsing."""
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as archive:
+            archive.writestr("nested/last-slide.zip", debug_bundle(
+                9, "0.19.0", "preview-open", include_cleanup=True))
+
+        rows, undulations = run_analyzers(outer.getvalue())
+
+        cleaned = next(row for row in rows if row["candidate_id"] == "hot/strand#cleaned")
+        self.assertEqual("available", cleaned["cleanup_state"])
+        self.assertEqual("hot/strand#raw", cleaned["cleanup_parent_candidate_id"])
+        self.assertEqual("CLEANED", cleaned["cleanup_outcome"])
+        self.assertEqual("0.42", cleaned["cleanup_maximum_removed_deviation_meters"])
+        self.assertEqual("unavailable", cleaned["cleanup_anchor_data_state"])
+        undulation = next(row for row in undulations if row["candidate_id"] == "hot/strand#cleaned")
+        self.assertEqual("available", undulation["cleanup_parent_relation_state"])
+        self.assertEqual("hot/strand#raw", undulation["cleanup_parent_candidate_id"])
+
+    def test_format_nine_missing_cleanup_files_are_unavailable(self) -> None:
+        """Partial format-9 archives do not turn unknown cleanup metrics into measured zeros."""
+        rows, undulations = run_analyzers(debug_bundle(9, "0.19.0", "preview-open"))
+
+        self.assertEqual("unavailable", rows[0]["cleanup_state"])
+        self.assertEqual("unavailable", rows[0]["cleanup_outcome"])
+        self.assertEqual("", rows[0]["cleanup_fit_after"])
+        self.assertEqual("unavailable", undulations[0]["cleanup_state"])
+        self.assertEqual("", undulations[0]["cleanup_maximum_removed_deviation_meters"])
+
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
         outer = io.BytesIO()
@@ -147,6 +176,7 @@ def debug_bundle(
     status: str,
     sampling_type: str = "managed-source-tiles",
     include_performance: bool = True,
+    include_cleanup: bool = False,
 ) -> bytes:
     """Build the smallest useful redacted debug bundle for analyzer compatibility checks."""
     result = io.BytesIO()
@@ -156,6 +186,10 @@ def debug_bundle(
         "buildIdentity": "sha256:test" if format_version >= 5 else "",
     }
     candidate_id = "hot/bundle-1" if format_version >= 8 else "hot/strand-1"
+    raw_candidate_id = "hot/strand#raw"
+    cleaned_candidate_id = "hot/strand#cleaned"
+    if format_version >= 9 and include_cleanup:
+        candidate_id = cleaned_candidate_id
     diagnostics = {
         "pluginVersion": plugin_version,
         "config": {},
@@ -189,6 +223,17 @@ def debug_bundle(
         "mean_intensity,mean_gradient_strength,signal_to_noise\n"
         f"1,{candidate_id},hot,1.0,1.0,1.0,1.0,1.0,1.0\n"
     )
+    if format_version >= 9 and include_cleanup:
+        diagnostics["candidates"] = [
+            {"id": raw_candidate_id, "offsetsPx": [0.0, 0.5, 0.0]},
+            {"id": cleaned_candidate_id, "offsetsPx": [0.0, 0.0, 0.0]},
+        ]
+        metrics = (
+            "rank,candidate_id,detector,calibrated_score,raw_score,support_ratio,"
+            "mean_intensity,mean_gradient_strength,signal_to_noise\n"
+            f"1,{raw_candidate_id},hot,1.0,1.0,1.0,1.0,1.0,1.0\n"
+            f"2,{cleaned_candidate_id},hot,0.9,0.9,1.0,1.0,1.0,1.0\n"
+        )
     with zipfile.ZipFile(result, "w") as archive:
         archive.writestr("manifest.json", json.dumps(manifest))
         archive.writestr("diagnostics.json", json.dumps(diagnostics))
@@ -243,6 +288,26 @@ def debug_bundle(
                 "optimizer-costs.csv",
                 "detector,track_id,profile_index,chosen_offset_px\n"
                 "hot,bundle-1,0,0.0\nhot,bundle-1,1,0.0\nhot,bundle-1,2,0.0\n",
+            )
+        if format_version >= 9 and include_cleanup:
+            archive.writestr(
+                "geometry-cleanup.csv",
+                "candidate_id,parent_candidate_id,outcome,reason_code,reasons,before_point_count,"
+                "smoothed_point_count,after_point_count,accepted_smoothing_passes,"
+                "smoothing_backtrack_count,attempted_chord_count,accepted_chord_count,"
+                "containment_failure_count,fit_before,fit_after,"
+                "maximum_displacement_projection_units,projection_unit_name,"
+                "maximum_removed_deviation_meters,worst_fit_retention\n"
+                f"{raw_candidate_id},,CLEANED_ALTERNATIVE_AVAILABLE,cleaned-sibling,raw-kept,12,12,12,2,1,8,4,0,0.88,0.88,0.0,JOSM-projection-units,,\n"
+                f"{cleaned_candidate_id},{raw_candidate_id},CLEANED,accepted,fit-retained,12,12,5,2,1,8,4,0,0.88,0.91,1.25,JOSM-projection-units,0.42,0.93\n",
+            )
+            archive.writestr(
+                "geometry-cleanup-anchors.csv",
+                "candidate_id,parent_candidate_id,cleanup_outcome,anchor_data_state,reason_code,"
+                "profile_index,final_preview_index,protected,reused_node_id,"
+                "source_east,source_north,proposed_east,proposed_north\n"
+                f"{raw_candidate_id},,CLEANED_ALTERNATIVE_AVAILABLE,unavailable,anchor-evidence-not-exported-by-model,,,,,,,,\n"
+                f"{cleaned_candidate_id},{raw_candidate_id},CLEANED,unavailable,anchor-evidence-not-exported-by-model,,,,,,,,\n",
             )
     return result.getvalue()
 

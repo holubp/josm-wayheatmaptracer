@@ -1,15 +1,19 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+import java.security.MessageDigest;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.zip.ZipFile;
 
@@ -23,6 +27,7 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -84,12 +89,68 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":8"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":9"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
             assertTrue(text(zip, "diagnostics.json").contains("profile-intensity.csv"));
             assertTrue(text(zip, "diagnostics.json").contains("corridor-bundles.csv"));
             assertTrue(text(zip, "verbose-log.txt").contains("Plugin-Build:"));
+        }
+    }
+
+    @Test
+    void exportsChecksummedCleanupArtifactsWithEscapingAndRedaction(@TempDir Path temporaryDirectory)
+        throws Exception {
+        Node first = node(new EastNorth(0, 0));
+        Node last = node(new EastNorth(10, 0));
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        SelectionContext selection = new SelectionContext(way, 0, 1, List.of(first, last), Set.of(first, last));
+        CenterlineCandidate raw = candidate("hot/strand#raw", first, last).withGeometryCleanup(
+            new CandidateGeometryCleanup("", CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE,
+                "cleaned-sibling", List.of("raw-kept"), 12, 12, 12, 2, 1, 8, 4, 0,
+                0.88, 0.88, 0.0, OptionalDouble.empty(), OptionalDouble.empty()));
+        CenterlineCandidate cleaned = candidate("hot/strand#cleaned,\"quoted\"", first, last).withGeometryCleanup(
+            new CandidateGeometryCleanup(raw.id(), CandidateGeometryCleanup.Outcome.CLEANED,
+                "accepted", List.of("fit-retained", "comma,quoted \"reason\""), 12, 12, 5, 2, 1, 8, 4, 0,
+                0.88, 0.91, 1.25, OptionalDouble.of(0.42), OptionalDouble.of(0.93)));
+        AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
+            "Strava", 2, 0, 1, 2, 3,
+            "{\"CloudFront-Signature\":\"test-secret\"}", "{}", "{}", "[\"hot\"]", "[]", "[]",
+            "candidate\n", "peaks\n", "palette\n", "intensity\n", "bands\n", "tracks\n", "costs\n",
+            "{\"enabled\":false}");
+        AlignmentResult result = new AlignmentResult(selection,
+            new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB), List.of(raw, cleaned),
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)), List.of(), diagnostics, null);
+        Path bundlePath = temporaryDirectory.resolve("cleanup.zip");
+
+        LastSlideDebugBundle.fromResult(result, cleaned, "preview-open",
+            "CloudFront-Signature=log-secret; _strava_idcf=another-secret\nCookie: private-cookie")
+            .writeTo(bundlePath.toFile());
+
+        try (ZipFile zip = new ZipFile(bundlePath.toFile())) {
+            String cleanup = text(zip, "geometry-cleanup.csv");
+            String anchors = text(zip, "geometry-cleanup-anchors.csv");
+            String diagnosticsJson = text(zip, "diagnostics.json");
+            String allText = cleanup + anchors + diagnosticsJson + text(zip, "verbose-log.txt");
+            assertNotNull(zip.getEntry("geometry-cleanup.csv"));
+            assertNotNull(zip.getEntry("geometry-cleanup-anchors.csv"));
+            assertTrue(cleanup.contains("CLEANED_ALTERNATIVE_AVAILABLE"));
+            assertTrue(cleanup.contains("CLEANED"));
+            assertTrue(cleanup.contains("\"hot/strand#cleaned,\"\"quoted\"\"\""));
+            assertTrue(cleanup.contains("JOSM-projection-units"));
+            assertTrue(anchors.contains("candidate-owned-proposed-node"));
+            assertTrue(anchors.contains(",\"available\","));
+            assertTrue(anchors.contains(Long.toString(first.getUniqueId())));
+            assertTrue(anchors.contains(",true,"));
+            assertTrue(diagnosticsJson.contains("\"geometryCleanup\""));
+            assertTrue(diagnosticsJson.contains("\"sha256\":\"" + sha256(cleanup) + "\""));
+            assertTrue(diagnosticsJson.contains("\"sha256\":\"" + sha256(anchors) + "\""));
+            assertFalse(allText.contains("test-secret"));
+            assertFalse(allText.contains("log-secret"));
+            assertFalse(allText.contains("another-secret"));
+            assertFalse(allText.contains("private-cookie"));
         }
     }
 
@@ -122,6 +183,19 @@ class LastSlideDebugBundleTest {
 
     private static Node node(EastNorth point) {
         return new Node(ProjectionRegistry.getProjection().eastNorth2latlon(point));
+    }
+
+    private static CenterlineCandidate candidate(String id, Node first, Node last) {
+        return new CenterlineCandidate(id, 1.0,
+            List.of(new Point2D.Double(0, 0), new Point2D.Double(10, 0)), List.of(0.0, 0.0))
+            .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)))
+            .withFinalPreviewGeometry(List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
+                Map.of(first.getUniqueId(), new EastNorth(0, 0), last.getUniqueId(), new EastNorth(10, 0)));
+    }
+
+    private static String sha256(String text) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+            .digest(text.getBytes(StandardCharsets.UTF_8)));
     }
 
     private static String text(ZipFile zip, String name) throws Exception {

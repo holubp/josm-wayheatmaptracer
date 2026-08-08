@@ -4,7 +4,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * Source-tile sampling scale strategy for managed heatmap inference.
  */
 public enum InferenceMode {
+    /** Samples managed source tiles at the configured stable inference zoom. */
     STABLE_FIXED_SCALE("Stable fixed scale"),
+    /** Uses the highest available managed source resolution. */
     RAW_HIGH_RESOLUTION("Raw high-resolution");
 
     private final String label;

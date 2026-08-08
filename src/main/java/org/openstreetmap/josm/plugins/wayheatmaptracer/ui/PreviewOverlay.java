@@ -29,6 +29,11 @@ public final class PreviewOverlay implements MapViewPaintable {
     private boolean debugEnabled;
     private boolean attached;
 
+    /** Creates the singleton temporary overlay. */
+    private PreviewOverlay() {
+        // Singleton.
+    }
+
     /**
      * Returns the singleton overlay instance used by the modeless preview dialog.
      *

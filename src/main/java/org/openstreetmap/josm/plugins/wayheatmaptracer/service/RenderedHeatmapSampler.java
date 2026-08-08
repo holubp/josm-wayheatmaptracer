@@ -6,12 +6,15 @@ import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
@@ -27,10 +30,16 @@ public final class RenderedHeatmapSampler {
      * Oversampling factor used when rendering JOSM imagery layers into an off-screen raster.
      */
     public static final double RASTER_SCALE = 6.0;
+    /** Power used by the calibrated all-color scalar-intensity aggregate. */
     public static final double AGGREGATE_POWER_MEAN = 1.25;
     private static final double[] LIGHT_BINOMIAL_KERNEL = {1.0, 2.0, 1.0};
     private static final double[] STANDARD_BINOMIAL_KERNEL = {1.0, 4.0, 6.0, 4.0, 1.0};
     private static final int FINE_LOCALIZATION_PHASES = 2;
+
+    /** Creates a stateless rendered-raster sampler. */
+    public RenderedHeatmapSampler() {
+        // Stateless service.
+    }
 
     /**
      * Renders an imagery layer into an off-screen ARGB raster using the current map view state.
@@ -60,6 +69,17 @@ public final class RenderedHeatmapSampler {
         return image;
     }
 
+    /**
+     * Samples palette-mapped cross-sections from a rendered heatmap.
+     *
+     * @param raster rendered heatmap image
+     * @param mapView slide-time map view used for projection
+     * @param sourcePolyline source way geometry in projected coordinates
+     * @param halfWidthPx search half-width in view pixels before oversampling
+     * @param stepPx longitudinal sample step in view pixels before oversampling
+     * @param colorMode Strava palette or detector mapping name
+     * @return immutable-order cross-section profiles with extracted peaks
+     */
     public List<CrossSectionProfile> sampleProfiles(
         BufferedImage raster,
         MapView mapView,
@@ -102,7 +122,11 @@ public final class RenderedHeatmapSampler {
         }
         PluginLog.verbose("Sampling %d cross-sections from %d source vertices (halfWidth=%d px, step=%d px).",
             dense.size(), sourcePolyline.size(), halfWidthPx, stepPx);
-        return sampleProfilesOnRaster(raster, denseScreen, halfWidthPx, stepPx, colorMode, RASTER_SCALE, intensitySamplingMode);
+        RasterCoordinateProjector projector = (rasterX, rasterY) -> mapView.getState()
+            .getForView(rasterX / RASTER_SCALE, rasterY / RASTER_SCALE)
+            .getEastNorth();
+        return sampleProfilesOnAnchors(raster, ProfileSamplingAnchor.rasterOnly(denseScreen),
+            halfWidthPx, stepPx, colorMode, RASTER_SCALE, 1.0, intensitySamplingMode, projector);
     }
 
     List<CrossSectionProfile> sampleProfilesOnRaster(
@@ -167,6 +191,39 @@ public final class RenderedHeatmapSampler {
         double sourceCoordinateScale,
         IntensitySamplingMode intensitySamplingMode
     ) {
+        return sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, colorMode, rasterScale,
+            sourceCoordinateScale, intensitySamplingMode, null);
+    }
+
+    /**
+     * Samples profiles and snapshots the slide-time projected mapping of every lateral profile axis.
+     *
+     * <p>The supplied projector is consulted synchronously while sampling. It is never retained. Each profile
+     * instead stores an immutable affine transform in projected JOSM coordinates. Passing {@code null} preserves
+     * the compatibility behavior and leaves the projected transform unavailable.</p>
+     *
+     * @param raster source raster
+     * @param anchors aligned profile sampling anchors
+     * @param halfWidthPx configured search half-width
+     * @param stepPx configured lateral step
+     * @param colorMode palette mapping
+     * @param rasterScale raster oversampling scale
+     * @param sourceCoordinateScale raster pixels per source-image pixel
+     * @param intensitySamplingMode scalar intensity source
+     * @param projectedCoordinateProjector slide-time raster-to-projected-coordinate mapping, or {@code null}
+     * @return sampled cross-section profiles
+     */
+    List<CrossSectionProfile> sampleProfilesOnAnchors(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector
+    ) {
         if (anchors.size() < 2) {
             return Collections.emptyList();
         }
@@ -206,7 +263,8 @@ public final class RenderedHeatmapSampler {
             }
 
             profiles.add(new CrossSectionProfile(samplingAnchor, normal,
-                samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
+                samples, anchorWithinRaster, intensitySamples(filters, insideRaster),
+                captureProjectedLateralTransform(samplingAnchor, normal, projectedCoordinateProjector)));
         }
         if (!profiles.isEmpty()) {
             int maxPeaks = profiles.stream().mapToInt(profile -> profile.peaks().size()).max().orElse(0);
@@ -290,6 +348,37 @@ public final class RenderedHeatmapSampler {
         IntensitySamplingMode intensitySamplingMode,
         double sourcePixelPitchInImagePixels
     ) {
+        return sampleMultiScaleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, colorMode, rasterScale,
+            sourceCoordinateScale, intensitySamplingMode, sourcePixelPitchInImagePixels, null);
+    }
+
+    /**
+     * Samples Gaussian levels and snapshots the same slide-time projected lateral transform at every level.
+     *
+     * @param raster source raster already acquired for this slide
+     * @param anchors aligned profile anchors
+     * @param halfWidthPx configured search half-width before oversampling
+     * @param stepPx configured cross-section step before oversampling
+     * @param colorMode detector palette mapping
+     * @param rasterScale sampled-raster oversampling factor
+     * @param sourceCoordinateScale sampled-raster coordinates per image pixel
+     * @param intensitySamplingMode scalar source mode
+     * @param sourcePixelPitchInImagePixels estimated native source-pixel pitch in image pixels
+     * @param projectedCoordinateProjector slide-time raster-to-projected-coordinate mapping, or {@code null}
+     * @return fine profiles plus source-aware coarse Gaussian levels
+     */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnAnchors(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        double sourcePixelPitchInImagePixels,
+        RasterCoordinateProjector projectedCoordinateProjector
+    ) {
         if (anchors.size() < 2) {
             return new MultiScaleProfileSet(List.of(), 0L, 0L);
         }
@@ -310,7 +399,8 @@ public final class RenderedHeatmapSampler {
         for (IntensityScaleLevel level : selectedAnalysisLevels(pyramid, sourcePitch)) {
             levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
                 level.effectiveSigmaL0(), sampleProfilesFromField(level, anchors,
-                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
+                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale,
+                    projectedCoordinateProjector)));
         }
         PluginLog.verbose("Built scalar Gaussian pyramid for '%s': levels=%s crop=%dx%d bytes=%d time=%.1fms.",
             colorMode, levels.stream().map(value -> "L" + value.level() + ":" + value.reduction() + "x").toList(),
@@ -362,6 +452,31 @@ public final class RenderedHeatmapSampler {
         double rasterScale,
         double sourceCoordinateScale
     ) {
+        return sampleMultiScaleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
+            rasterScale, sourceCoordinateScale, null);
+    }
+
+    /**
+     * Samples an all-color Gaussian field with an optional slide-time projected-coordinate mapping.
+     *
+     * @param rastersByColor complete aligned source rasters by managed color scheme
+     * @param anchors aligned profile anchors
+     * @param halfWidthPx configured search half-width before oversampling
+     * @param stepPx configured cross-section step before oversampling
+     * @param rasterScale sampled-raster oversampling factor
+     * @param sourceCoordinateScale sampled-raster coordinates per image pixel
+     * @param projectedCoordinateProjector slide-time raster-to-projected-coordinate mapping, or {@code null}
+     * @return aligned Gaussian-level profiles
+     */
+    MultiScaleProfileSet sampleMultiScaleProfilesOnAggregatedAnchors(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector
+    ) {
         if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return new MultiScaleProfileSet(List.of(), 0L, 0L);
         }
@@ -379,7 +494,8 @@ public final class RenderedHeatmapSampler {
         for (IntensityScaleLevel level : pyramid.levels()) {
             levels.add(new MultiScaleProfileSet.ScaleProfileLevel(level.level(), level.reduction(),
                 level.effectiveSigmaL0(), sampleProfilesFromField(level, anchors,
-                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale)));
+                    scaledHalfWidth, Math.max(1, (int) Math.round(stepPx * rasterScale)), coordinateScale,
+                    projectedCoordinateProjector)));
         }
         PluginLog.verbose("Built all-color scalar Gaussian pyramid: levels=%s crop=%dx%d bytes=%d time=%.1fms.",
             levels.stream().map(value -> "L" + value.level() + ":" + value.reduction() + "x").toList(),
@@ -392,7 +508,8 @@ public final class RenderedHeatmapSampler {
         List<ProfileSamplingAnchor> anchors,
         int scaledHalfWidth,
         int scaledStep,
-        double coordinateScale
+        double coordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector
     ) {
         List<CrossSectionProfile> profiles = new ArrayList<>(anchors.size());
         double physicalStep = Math.max(scaledStep, coordinateScale * level.reduction());
@@ -425,7 +542,8 @@ public final class RenderedHeatmapSampler {
             boolean anchorValid = Double.isFinite(level.field().sample(current.x / coordinateScale,
                 current.y / coordinateScale));
             profiles.add(new CrossSectionProfile(samplingAnchor, normal,
-                peaks, anchorValid, intensitySamples(filters, inside)));
+                peaks, anchorValid, intensitySamples(filters, inside),
+                captureProjectedLateralTransform(samplingAnchor, normal, projectedCoordinateProjector)));
         }
         return profiles;
     }
@@ -454,6 +572,25 @@ public final class RenderedHeatmapSampler {
         return sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale) ? sourceCoordinateScale : 1.0;
     }
 
+    private Optional<ProjectedLateralTransform> captureProjectedLateralTransform(
+        ProfileSamplingAnchor samplingAnchor,
+        Point2D.Double normal,
+        RasterCoordinateProjector projectedCoordinateProjector
+    ) {
+        if (projectedCoordinateProjector == null) {
+            return Optional.empty();
+        }
+        Point2D.Double rasterAnchor = samplingAnchor.rasterCoordinate();
+        EastNorth zeroOffset = projectedCoordinateProjector.project(rasterAnchor.x, rasterAnchor.y);
+        EastNorth onePixelOffset = projectedCoordinateProjector.project(
+            rasterAnchor.x + normal.x,
+            rasterAnchor.y + normal.y);
+        return Optional.of(new ProjectedLateralTransform(
+            zeroOffset,
+            onePixelOffset.east() - zeroOffset.east(),
+            onePixelOffset.north() - zeroOffset.north()));
+    }
+
     private record CropBounds(int minX, int minY, int maxX, int maxY) {
     }
 
@@ -478,6 +615,31 @@ public final class RenderedHeatmapSampler {
         int stepPx,
         double rasterScale,
         double sourceCoordinateScale
+    ) {
+        return sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
+            rasterScale, sourceCoordinateScale, null);
+    }
+
+    /**
+     * Samples an all-color scalar field and snapshots each profile's projected lateral transform.
+     *
+     * @param rastersByColor complete aligned source rasters by managed color scheme
+     * @param anchors aligned profile anchors
+     * @param halfWidthPx configured search half-width before oversampling
+     * @param stepPx configured cross-section step before oversampling
+     * @param rasterScale sampled-raster oversampling factor
+     * @param sourceCoordinateScale sampled-raster coordinates per image pixel
+     * @param projectedCoordinateProjector slide-time raster-to-projected-coordinate mapping, or {@code null}
+     * @return sampled aggregate cross-section profiles
+     */
+    List<CrossSectionProfile> sampleProfilesOnAggregatedAnchors(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector
     ) {
         if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return Collections.emptyList();
@@ -517,7 +679,8 @@ public final class RenderedHeatmapSampler {
                 samples.add(new CrossSectionPeak(0.0, strongest, 0.0, true, 0.0, 0.0, strongest, 0.0, 0.0, 0.0));
             }
             profiles.add(new CrossSectionProfile(samplingAnchor, normal,
-                samples, anchorWithinRaster, intensitySamples(filters, insideRaster)));
+                samples, anchorWithinRaster, intensitySamples(filters, insideRaster),
+                captureProjectedLateralTransform(samplingAnchor, normal, projectedCoordinateProjector)));
         }
         PluginLog.verbose("Aggregated heatmap sampling produced %d profiles from color sources %s.",
             profiles.size(), rastersByColor.keySet());
@@ -1002,6 +1165,12 @@ public final class RenderedHeatmapSampler {
         };
     }
 
+    /**
+     * Renders the calibrated all-color scalar aggregate as white on transparency.
+     *
+     * @param rastersByColor source palette rasters in one sampling frame
+     * @return aggregate visualization using the shared detection intensity transform
+     */
     public static BufferedImage renderAggregatedIntensityRaster(java.util.Map<String, BufferedImage> rastersByColor) {
         if (rastersByColor.isEmpty()) {
             return new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
@@ -1275,6 +1444,24 @@ public final class RenderedHeatmapSampler {
     }
 
     /**
+     * Projects a sampled-raster coordinate through the real slide-time capture transform.
+     *
+     * <p>The sampler invokes this interface only while profiles are being created. Implementations may refer to
+     * live capture state because only the resulting immutable {@link ProjectedLateralTransform} is retained.</p>
+     */
+    @FunctionalInterface
+    public interface RasterCoordinateProjector {
+        /**
+         * Projects one sampled-raster coordinate into the active JOSM projection.
+         *
+         * @param rasterX sampled-raster x coordinate in pixels
+         * @param rasterY sampled-raster y coordinate in pixels
+         * @return projected coordinate captured at slide time
+         */
+        EastNorth project(double rasterX, double rasterY);
+    }
+
+    /**
      * Sampled heatmap evidence at one point along the source way.
      *
      * @param samplingAnchor paired source, raster, and physical-distance position
@@ -1282,19 +1469,43 @@ public final class RenderedHeatmapSampler {
      * @param peaks candidate heatmap ridges found on this cross-section
      * @param anchorWithinRaster whether the source point was inside the sampled raster
      * @param intensitySamples complete raw and filtered cross-section evidence
+     * @param projectedLateralTransform slide-time raster-offset projection, or empty for compatibility profiles
      */
     public record CrossSectionProfile(
         ProfileSamplingAnchor samplingAnchor,
         Point2D.Double normalScreen,
         List<CrossSectionPeak> peaks,
         boolean anchorWithinRaster,
-        List<IntensitySample> intensitySamples
+        List<IntensitySample> intensitySamples,
+        Optional<ProjectedLateralTransform> projectedLateralTransform
     ) {
         /** Makes peak and full-profile evidence immutable. */
         public CrossSectionProfile {
-            java.util.Objects.requireNonNull(samplingAnchor, "samplingAnchor");
+            Objects.requireNonNull(samplingAnchor, "samplingAnchor");
+            Objects.requireNonNull(normalScreen, "normalScreen");
             peaks = List.copyOf(peaks);
             intensitySamples = List.copyOf(intensitySamples);
+            projectedLateralTransform = Objects.requireNonNull(
+                projectedLateralTransform, "projectedLateralTransform");
+        }
+
+        /**
+         * Compatibility constructor for profiles without a captured projected lateral transform.
+         *
+         * @param samplingAnchor paired source, raster, and physical-distance position
+         * @param normalScreen unit normal used for offset sampling
+         * @param peaks candidate heatmap ridges found on this cross-section
+         * @param anchorWithinRaster whether the source point was inside the sampled raster
+         * @param intensitySamples complete raw and filtered cross-section evidence
+         */
+        public CrossSectionProfile(
+            ProfileSamplingAnchor samplingAnchor,
+            Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks,
+            boolean anchorWithinRaster,
+            List<IntensitySample> intensitySamples
+        ) {
+            this(samplingAnchor, normalScreen, peaks, anchorWithinRaster, intensitySamples, Optional.empty());
         }
 
         /**
@@ -1449,15 +1660,43 @@ public final class RenderedHeatmapSampler {
         double scaleAgreement,
         double centerUncertaintyPx
     ) {
+        /**
+         * Creates a minimal peak with no explicit width or gradient diagnostics.
+         *
+         * @param offsetPx lateral peak offset in sampled-raster pixels
+         * @param intensity scalar peak intensity
+         */
         public CrossSectionPeak(double offsetPx, double intensity) {
             this(offsetPx, intensity, 0.0, false);
         }
 
+        /**
+         * Creates a peak with width and synthetic-center provenance.
+         *
+         * @param offsetPx lateral peak offset in sampled-raster pixels
+         * @param intensity scalar peak intensity
+         * @param supportWidthPx supported width in sampled-raster pixels
+         * @param syntheticCenter whether plateau analysis synthesized the center
+         */
         public CrossSectionPeak(double offsetPx, double intensity, double supportWidthPx, boolean syntheticCenter) {
             this(offsetPx, intensity, supportWidthPx, syntheticCenter, intensity, 0.0, intensity, 0.0, 0.0, 1.0,
                 offsetPx, offsetPx, offsetPx, 0.0, 1.0, 0.5);
         }
 
+        /**
+         * Creates a compatibility peak with scalar, gradient, and filter-agreement evidence.
+         *
+         * @param offsetPx lateral peak offset in sampled-raster pixels
+         * @param intensity scalar peak intensity
+         * @param supportWidthPx supported width in sampled-raster pixels
+         * @param syntheticCenter whether plateau analysis synthesized the center
+         * @param prominence peak prominence over local noise
+         * @param noiseFloor estimated local scalar noise floor
+         * @param maxProfileIntensity maximum scalar intensity on the profile
+         * @param gradientStrength normalized edge-gradient strength
+         * @param gradientBalance normalized left/right gradient balance
+         * @param nativeFilteredAgreement native/B3/B5 center agreement
+         */
         public CrossSectionPeak(
             double offsetPx,
             double intensity,

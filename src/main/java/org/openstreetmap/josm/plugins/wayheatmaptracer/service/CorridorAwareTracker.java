@@ -9,6 +9,8 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
  * Orchestrates extraction, longitudinal association, grouping, and stable corridor optimization.
@@ -85,11 +87,75 @@ public final class CorridorAwareTracker {
         double sourcePixelSizePx,
         JunctionContext junctionContext
     ) {
+        return trackDetailed(profiles, sourcePixelSizePx, junctionContext, "");
+    }
+
+    /**
+     * Runs constrained corridor tracking and labels its shared cleanup frame with the detector mode.
+     *
+     * @param profiles sampled heatmap profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @return candidates and intermediate corridor evidence
+     */
+    public TrackingResult trackDetailed(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode
+    ) {
+        return trackDetailed(profiles, sourcePixelSizePx, junctionContext, detectorMode,
+            GeometryCleanupConfig.disabled());
+    }
+
+    /**
+     * Runs constrained tracking with slide-time ripple regularization settings.
+     *
+     * @param profiles sampled heatmap profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @param cleanupConfig immutable slide-time cleanup settings
+     * @return candidates and intermediate corridor evidence
+     */
+    public TrackingResult trackDetailed(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig
+    ) {
+        return trackDetailed(profiles, sourcePixelSizePx, junctionContext, detectorMode,
+            cleanupConfig, Double.NaN);
+    }
+
+    /**
+     * Runs constrained tracking with a factual slide-time lateral ground scale.
+     *
+     * @param profiles sampled heatmap profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @param cleanupConfig immutable slide-time cleanup settings
+     * @param groundMetersPerRasterPixel factual ground metres per sampled-raster pixel
+     * @return candidates and intermediate corridor evidence
+     */
+    public TrackingResult trackDetailed(
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig,
+        double groundMetersPerRasterPixel
+    ) {
         validatePhysicalProfileSequence(profiles);
         long extractionStart = System.nanoTime();
         List<CorridorProfile> corridorProfiles = extractor.extract(profiles, sourcePixelSizePx);
         long extractionNanos = System.nanoTime() - extractionStart;
-        return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, Map.of(), List.of(),
+        return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, detectorMode, cleanupConfig,
+            groundMetersPerRasterPixel,
+            Map.of(), List.of(),
             extractionNanos, 0L);
     }
 
@@ -106,8 +172,71 @@ public final class CorridorAwareTracker {
         double sourcePixelSizePx,
         JunctionContext junctionContext
     ) {
+        return trackDetailed(profileSet, sourcePixelSizePx, junctionContext, "");
+    }
+
+    /**
+     * Tracks a multi-scale corridor and labels its shared cleanup frame with the detector mode.
+     *
+     * @param profileSet aligned L0/L1/L2 scalar profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @return candidates and complete multiscale diagnostics
+     */
+    public TrackingResult trackDetailed(
+        MultiScaleProfileSet profileSet,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode
+    ) {
+        return trackDetailed(profileSet, sourcePixelSizePx, junctionContext, detectorMode,
+            GeometryCleanupConfig.disabled());
+    }
+
+    /**
+     * Tracks multi-scale profiles with slide-time ripple regularization settings.
+     *
+     * @param profileSet aligned L0/L1/L2 scalar profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @param cleanupConfig immutable slide-time cleanup settings
+     * @return candidates and complete multiscale diagnostics
+     */
+    public TrackingResult trackDetailed(
+        MultiScaleProfileSet profileSet,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig
+    ) {
+        return trackDetailed(profileSet, sourcePixelSizePx, junctionContext, detectorMode,
+            cleanupConfig, Double.NaN);
+    }
+
+    /**
+     * Runs multi-scale constrained tracking with a factual slide-time lateral ground scale.
+     *
+     * @param profileSet aligned L0/L1/L2 scalar profiles
+     * @param sourcePixelSizePx source heatmap pixel size in sampled-raster pixels
+     * @param junctionContext endpoint and junction boundary conditions
+     * @param detectorMode detector or scalar mapping identifier
+     * @param cleanupConfig immutable slide-time cleanup settings
+     * @param groundMetersPerRasterPixel factual ground metres per sampled-raster pixel
+     * @return candidates and complete multiscale diagnostics
+     */
+    public TrackingResult trackDetailed(
+        MultiScaleProfileSet profileSet,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig,
+        double groundMetersPerRasterPixel
+    ) {
         if (profileSet.levels().isEmpty()) {
-            return trackDetailed(List.of(), sourcePixelSizePx, junctionContext);
+            return trackDetailed(List.of(), sourcePixelSizePx, junctionContext, detectorMode,
+                cleanupConfig, groundMetersPerRasterPixel);
         }
         for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
             validatePhysicalProfileSequence(level.profiles());
@@ -122,7 +251,8 @@ public final class CorridorAwareTracker {
         long associationStart = System.nanoTime();
         ScaleAssociation association = associateScales(profileSet, extractedLevels, sourcePixelSizePx);
         long associationNanos = System.nanoTime() - associationStart;
-        return trackExtracted(fine, sourcePixelSizePx, junctionContext,
+        return trackExtracted(fine, sourcePixelSizePx, junctionContext, detectorMode, cleanupConfig,
+            groundMetersPerRasterPixel,
             association.evidence(), association.profiles(), extractionNanos, associationNanos);
     }
 
@@ -162,6 +292,9 @@ public final class CorridorAwareTracker {
         List<CorridorProfile> corridorProfiles,
         double sourcePixelSizePx,
         JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig,
+        double groundMetersPerRasterPixel,
         Map<String, BandScaleEvidence> scaleEvidence,
         List<MultiScaleCorridorProfile> multiScaleProfiles,
         long extractionNanos,
@@ -178,11 +311,20 @@ public final class CorridorAwareTracker {
         Map<String, BandScaleEvidence> effectiveScaleEvidence = parentScaleEvidence(grouped.tracks(), scaleEvidence);
         Map<String, SparseCorridorBundle> bundlesById = grouped.bundles().stream()
             .collect(java.util.stream.Collectors.toMap(SparseCorridorBundle::id, value -> value));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame cleanupFrame =
+            CleanupEvidenceFactory.samplingFrame(
+                detectorMode, corridorProfiles, sourcePixelSizePx, groundMetersPerRasterPixel);
+        if (!CleanupEvidenceFactory.withinRetentionBudget(
+            cleanupFrame, grouped.tracks().size(), corridorProfiles.size())) {
+            cleanupFrame = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame(
+                detectorMode, List.of(), groundMetersPerRasterPixel);
+        }
         for (CorridorTrack track : grouped.tracks()) {
             LongitudinalCorridorTube tube = tubeBuilder.build(
                 track, corridorProfiles, sourcePixelSizePx, effectiveScaleEvidence);
             CorridorCenterlineOptimizer.OptimizationResult optimized = optimizer.optimize(
-                track, corridorProfiles, sourcePixelSizePx, junctionContext, effectiveScaleEvidence, tube);
+                track, corridorProfiles, sourcePixelSizePx, junctionContext, effectiveScaleEvidence, tube,
+                cleanupConfig);
             if (optimized.offsetsPx().isEmpty()) {
                 continue;
             }
@@ -199,13 +341,26 @@ public final class CorridorAwareTracker {
                 + optimized.inCorridorFraction()
                 - normalizedCost * 0.25;
             candidates.add(new CenterlineCandidate(track.id(), score, optimized.screenPoints(), optimized.offsetsPx())
-                .withEvidence(evidence));
+                .withEvidence(evidence)
+                .withCleanupEvidence(CleanupEvidenceFactory.candidateEvidence(
+                    cleanupFrame, track, tube, coverage.complete(), corridorProfiles.size())));
             optimizations.put(track.id(), optimized);
             tubes.put(track.id(), tube);
         }
         List<CenterlineCandidate> sorted = candidates.stream()
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+        long candidateCleanupBytes = sorted.stream()
+            .mapToLong(candidate -> candidate.cleanupEvidence().estimatedCandidateBytes()).sum();
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceStatus, Long> cleanupStatuses =
+            sorted.stream().collect(java.util.stream.Collectors.groupingBy(
+                candidate -> candidate.cleanupEvidence().status(), LinkedHashMap::new,
+                java.util.stream.Collectors.counting()));
+        PluginLog.verbose(
+            "Cleanup evidence detector='%s': shared=%d bytes, candidateRows=%d bytes, cap=%d bytes, statuses=%s.",
+            detectorMode, cleanupFrame.estimatedBytes(), candidateCleanupBytes,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame.MAX_ESTIMATED_BYTES,
+            cleanupStatuses);
         long optimizationNanos = System.nanoTime() - optimizationStart;
         return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), grouped.bundles(), optimizations,
             tubes, multiScaleProfiles, effectiveScaleEvidence, sourcePixelSizePx,

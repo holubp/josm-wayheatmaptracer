@@ -44,6 +44,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
  * Non-editable white-on-transparent map layer that visualizes the fused all-color managed heatmap intensity field.
  */
 public class AggregateIntensityLayer extends Layer {
+    /** Stable display name used to locate and replace the diagnostic aggregate layer. */
     public static final String LAYER_NAME = "WayHeatmapTracer aggregate intensity";
     private static final Icon ICON = createIcon();
     private static final int ZOOM = 15;
