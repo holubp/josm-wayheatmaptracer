@@ -376,6 +376,7 @@ Keep `LEGACY_V02` as the default until the maintainer explicitly approves promot
 - `bluered` is a dual-color semantic scheme: red/magenta high-activity center > purple transition > blue/cyan lower-activity shoulder. Hue and saturation must dominate raw blue/cyan vividness.
 - `gray` is dual-color in practice: weak/medium traces may be gray/blue-gray, while high-activity traces can become pink/magenta. The classifier should score both the neutral ramp and the magenta/violet center while still exporting raw scores for calibration.
 - `dual` is an internal rendered-layer classifier retained for palette regression tests and preview alternatives. It classifies the same visible rendered layer rather than fetching a separate source tile.
+- Every base detector mapping has a `-corridor` response variant. The response is applied after native palette-to-intensity conversion and before shared profile filtering, band extraction, and ridge/corridor tracking. Keep response curves separate from tracker behavior; a detector suffix must not select a different geometric tracker.
 - `bluered-combined`, `gray-combined`, and `multi-combined` are combined-intensity classifiers. Maintain them as weighted compositions of named single classifiers, not as separate ridge-tracker behavior.
 - Direct `luminance`, `value`, and `alpha` source modes bypass palette mappings entirely and should be tested against scalar/transparent fixtures rather than palette-ordering assertions.
 

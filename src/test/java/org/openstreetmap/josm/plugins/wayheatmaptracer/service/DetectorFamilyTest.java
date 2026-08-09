@@ -21,6 +21,8 @@ class DetectorFamilyTest {
     void semanticDualPaletteVariantsStayInTheirNativeFamilies() {
         assertTrue(DetectorFamily.isNative("bluered", "bluered-combined"));
         assertTrue(DetectorFamily.isNative("gray", "gray-magenta"));
+        assertTrue(DetectorFamily.isNative("blue", "blue-corridor"));
+        assertTrue(DetectorFamily.isNative("purple", "purple-corridor"));
         assertTrue(DetectorFamily.isNative("purple", "purple-strict"));
         assertEquals(1, DetectorFamily.sourceTier("hot", "all-colors-combined"));
     }

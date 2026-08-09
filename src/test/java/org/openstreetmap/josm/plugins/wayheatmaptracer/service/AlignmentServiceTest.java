@@ -505,6 +505,8 @@ class AlignmentServiceTest {
         ManagedHeatmapConfig visualizationOnly = config(AlignmentMode.MOVE_EXISTING_NODES, false, false, true);
 
         assertTrue(service.detectionColorModes(alternativesOnly).contains("bluered-combined"));
+        assertTrue(service.detectionColorModes(alternativesOnly).contains("blue-corridor"));
+        assertTrue(service.detectionColorModes(alternativesOnly).contains("purple-corridor"));
         assertEquals(List.of("hot"), service.sourceTileColors(alternativesOnly));
         assertEquals(List.of("hot"), service.detectionColorModes(aggregateOnly));
         assertTrue(service.sourceTileColors(aggregateOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
@@ -699,6 +701,8 @@ class AlignmentServiceTest {
     void purpleVisibleColorPrefersRecalibratedPurpleDetectorOverGenericHotDetector() {
         assertTrue(AlignmentService.detectorPrior("purple", "purple")
             > AlignmentService.detectorPrior("purple", "hot"));
+        assertTrue(AlignmentService.detectorPrior("purple", "purple-corridor")
+            > AlignmentService.detectorPrior("purple", "hot-corridor"));
         assertTrue(AlignmentService.detectorPrior("purple", "purple-strict")
             > AlignmentService.detectorPrior("purple", "gray"));
     }

@@ -192,10 +192,36 @@ class HeatmapFixtureArchiveTest {
         assertTrue(strictGrayViolet > strictGrayNeutral, "strict gray should still retain violet center evidence");
 
         double purpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple");
+        double purpleCorridorBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple-corridor");
         double strictPurpleBright = RenderedHeatmapSampler.colorIntensity(205, 120, 245, "purple-strict");
         double strictPurpleNeutral = RenderedHeatmapSampler.colorIntensity(180, 180, 180, "purple-strict");
+        double blueMedium = RenderedHeatmapSampler.colorIntensity(80, 170, 245, "blue");
+        double blueCorridorMedium = RenderedHeatmapSampler.colorIntensity(80, 170, 245, "blue-corridor");
+        assertEquals(Math.pow(purpleBright, 0.55), purpleCorridorBright, 1e-12,
+            "corridor purple should apply the shared response to native purple evidence");
+        assertTrue(purpleCorridorBright <= 1.0, "corridor purple remains normalized");
         assertTrue(strictPurpleBright > strictPurpleNeutral, "strict purple should require actual purple evidence");
         assertTrue(strictPurpleBright <= purpleBright, "strict purple should only gate the baseline purple detector");
+        assertEquals(Math.pow(blueMedium, 0.55), blueCorridorMedium, 1e-12,
+            "corridor blue should apply the shared response to native blue evidence");
+        assertTrue(blueCorridorMedium <= 1.0, "corridor blue remains normalized");
+    }
+
+    @Test
+    void everyBaseDetectorUsesTheSharedCorridorResponseAfterNativeMapping() {
+        assertCorridorResponse(210, 115, 35, "hot", "hot-corridor");
+        assertCorridorResponse(80, 170, 245, "blue", "blue-corridor");
+        assertCorridorResponse(70, 220, 255, "bluered-cool", "bluered-corridor");
+        assertCorridorResponse(205, 120, 245, "purple", "purple-corridor");
+        assertCorridorResponse(215, 65, 160, "gray", "gray-corridor");
+        assertCorridorResponse(245, 245, 245, "dual", "dual-corridor");
+    }
+
+    private static void assertCorridorResponse(int red, int green, int blue, String baseMode, String corridorMode) {
+        double base = RenderedHeatmapSampler.colorIntensity(red, green, blue, baseMode);
+        double corridor = RenderedHeatmapSampler.colorIntensity(red, green, blue, corridorMode);
+        assertEquals(Math.pow(base, 0.55), corridor, 1e-12,
+            corridorMode + " should apply the shared response after " + baseMode + " mapping");
     }
 
     @Test

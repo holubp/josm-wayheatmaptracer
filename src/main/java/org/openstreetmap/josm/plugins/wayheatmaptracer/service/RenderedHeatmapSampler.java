@@ -1254,20 +1254,56 @@ public final class RenderedHeatmapSampler {
         return switch (mode) {
             case "bluered" -> blueRedIntensity(red, blue, hue, saturation, luminance, value);
             case "bluered-cool" -> blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value);
-            case "bluered-corridor" -> corridorPresence(blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value));
+            case "bluered-corridor", "gray-corridor", "purple-corridor", "blue-corridor",
+                "dual-corridor", "hot-corridor" -> corridorPresence(corridorBaseIntensity(
+                    red, green, blue, hue, saturation, luminance, value, mode));
             case "gray" -> grayIntensity(hue, saturation, luminance, value);
             case "gray-magenta" -> grayMagentaIntensity(hue, saturation, value);
-            case "gray-corridor" -> corridorPresence(grayIntensity(hue, saturation, luminance, value));
             case "gray-strict" -> strictGrayIntensity(hue, saturation, luminance, value);
             case "purple" -> purpleIntensity(hue, saturation, luminance, value);
             case "purple-strict" -> strictPurpleIntensity(hue, saturation, luminance, value);
             case "blue" -> blueIntensity(red, green, blue, hue, saturation, luminance, value);
             case "dual" -> dualColorIntensity(red, green, blue, hue, saturation, luminance, value);
-            case "dual-corridor" -> corridorPresence(dualColorIntensity(red, green, blue, hue, saturation, luminance, value));
-            case "hot-corridor" -> corridorPresence(0.85 * luminance + 0.15 * value);
             case "hot-strict" -> Math.pow(0.85 * luminance + 0.15 * value, 1.35);
             case "hot" -> 0.85 * luminance + 0.15 * value;
             default -> 0.85 * luminance + 0.15 * value;
+        };
+    }
+
+    /**
+     * Computes the native palette intensity to which the shared corridor response is applied.
+     *
+     * <p>The bluered corridor intentionally retains its established cool-inclusive base mapping. Other
+     * corridor variants use the corresponding base detector mapping directly.</p>
+     *
+     * @param red red channel in the range 0-255
+     * @param green green channel in the range 0-255
+     * @param blue blue channel in the range 0-255
+     * @param hue HSV hue in degrees
+     * @param saturation HSV saturation in the range 0-1
+     * @param luminance relative luminance in the range 0-1
+     * @param value HSV value in the range 0-1
+     * @param mode corridor detector identifier
+     * @return native scalar intensity before corridor response compression
+     */
+    private static double corridorBaseIntensity(
+        int red,
+        int green,
+        int blue,
+        double hue,
+        double saturation,
+        double luminance,
+        double value,
+        String mode
+    ) {
+        return switch (mode) {
+            case "bluered-corridor" -> blueRedCoolIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "gray-corridor" -> grayIntensity(hue, saturation, luminance, value);
+            case "purple-corridor" -> purpleIntensity(hue, saturation, luminance, value);
+            case "blue-corridor" -> blueIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "dual-corridor" -> dualColorIntensity(red, green, blue, hue, saturation, luminance, value);
+            case "hot-corridor" -> 0.85 * luminance + 0.15 * value;
+            default -> throw new IllegalArgumentException("Unsupported corridor detector: " + mode);
         };
     }
 
@@ -1430,6 +1466,12 @@ public final class RenderedHeatmapSampler {
         return Math.max(warmCool, Math.max(brightCenter, blueCenter));
     }
 
+    /**
+     * Compresses a native palette's scalar dynamic range so corridor shoulders remain available to band extraction.
+     *
+     * @param intensity native scalar intensity in the range 0-1
+     * @return normalized corridor-presence intensity
+     */
     private static double corridorPresence(double intensity) {
         if (intensity <= 0.0) {
             return 0.0;

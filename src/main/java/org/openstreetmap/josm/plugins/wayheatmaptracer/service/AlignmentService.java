@@ -53,8 +53,10 @@ public final class AlignmentService {
     private static final List<String> ALL_COLOR_MODES = List.of(
         "hot",
         "blue",
+        "blue-corridor",
         "bluered",
         "purple",
+        "purple-corridor",
         "gray",
         "gray-magenta",
         "gray-corridor",
@@ -1358,7 +1360,7 @@ public final class AlignmentService {
                 case "hot" -> 0.65;
                 case "dual-corridor" -> 0.55;
                 case "dual", "bluered", "gray", "gray-corridor", "gray-magenta" -> 0.25;
-                case "blue", "purple", "purple-strict" -> -0.35;
+                case "blue", "blue-corridor", "purple", "purple-corridor", "purple-strict" -> -0.35;
                 case "hot-strict" -> 0.0;
                 default -> 0.0;
             };
@@ -1377,7 +1379,7 @@ public final class AlignmentService {
                 case "hot-corridor" -> -0.75;
                 case "hot" -> -1.10;
                 case "hot-strict" -> -1.25;
-                case "gray-strict", "purple", "purple-strict" -> -0.70;
+                case "gray-strict", "purple", "purple-corridor", "purple-strict" -> -0.70;
                 default -> -0.40;
             };
             case "blue" -> switch (detector) {
@@ -1385,9 +1387,10 @@ public final class AlignmentService {
                 case "dual-corridor" -> 1.00;
                 case "hot", "hot-corridor" -> 0.75;
                 case "bluered-cool", "bluered-corridor" -> 0.55;
+                case "blue-corridor" -> 0.18;
                 case "gray", "gray-corridor", "gray-magenta" -> 0.25;
                 case "blue" -> 0.20;
-                case "purple", "purple-strict" -> -0.35;
+                case "purple", "purple-corridor", "purple-strict" -> -0.35;
                 default -> 0.0;
             };
             case "gray" -> switch (detector) {
@@ -1400,12 +1403,13 @@ public final class AlignmentService {
                 case "gray-magenta" -> 0.55;
                 case "hot", "hot-corridor", "hot-strict", "dual" -> 0.50;
                 case "gray" -> 0.25;
-                case "gray-strict", "purple-strict" -> -0.25;
+                case "gray-strict", "purple-corridor", "purple-strict" -> -0.25;
                 default -> 0.0;
             };
             case "purple" -> switch (detector) {
                 case "all-colors-combined" -> 1.10;
                 case "purple" -> 1.05;
+                case "purple-corridor" -> 0.95;
                 case "purple-strict" -> 0.82;
                 case "dual-corridor" -> 0.78;
                 case "hot", "hot-corridor" -> 0.60;
@@ -1418,7 +1422,7 @@ public final class AlignmentService {
                 case "multi-combined" -> 0.72;
                 case "bluered-combined", "gray-combined" -> 0.62;
                 case "hot-corridor", "dual-corridor" -> 0.60;
-                case "bluered-corridor", "bluered-cool", "gray-corridor" -> 0.50;
+                case "bluered-corridor", "bluered-cool", "gray-corridor", "purple-corridor", "blue-corridor" -> 0.50;
                 case "gray-magenta" -> 0.35;
                 default -> 0.0;
             };

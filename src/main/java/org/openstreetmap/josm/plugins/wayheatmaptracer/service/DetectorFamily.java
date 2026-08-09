@@ -10,8 +10,8 @@ public final class DetectorFamily {
         "bluered", "bluered-cool", "bluered-corridor", "bluered-combined");
     private static final Set<String> GRAY = Set.of(
         "gray", "gray-magenta", "gray-corridor", "gray-strict", "gray-combined");
-    private static final Set<String> PURPLE = Set.of("purple", "purple-strict");
-    private static final Set<String> BLUE = Set.of("blue");
+    private static final Set<String> PURPLE = Set.of("purple", "purple-corridor", "purple-strict");
+    private static final Set<String> BLUE = Set.of("blue", "blue-corridor");
 
     private DetectorFamily() {
         // Utility class.
