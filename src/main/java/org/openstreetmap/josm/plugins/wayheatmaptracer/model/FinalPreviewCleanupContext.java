@@ -1,6 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -13,10 +15,12 @@ import org.openstreetmap.josm.data.osm.Node;
 /**
  * Immutable, fail-closed cleanup input built from a candidate's reconstructed final preview.
  *
- * <p>The context deliberately proves every non-protected preview point against exactly one
- * retained original cleanup profile. Topology anchors may split cleanup intervals, but an anchor
- * inserted by final-preview reconstruction without a matching retained profile is not assigned
- * invented heatmap evidence and therefore makes cleanup unavailable.</p>
+ * <p>The context deliberately proves every retained non-protected preview point against exactly
+ * one original cleanup profile. When final-preview reconstruction inserts a protected topology
+ * anchor, sequence reconciliation may replace one adjacent raw-profile point with that exact
+ * anchor in the cleanup-only geometry. The protected anchor consumes existing evidence only as an
+ * immutable interval boundary; no scalar profile or chainage is synthesized. The raw candidate is
+ * never changed.</p>
  *
  * @param geometry final-preview geometry aligned to {@code evidence}
  * @param protectedIndexes fixed, tagged, shared, endpoint, and junction point indexes
@@ -91,8 +95,13 @@ public record FinalPreviewCleanupContext(
         if (mapping.status() != Status.COMPLETE) {
             return rejected(mapping.status());
         }
-        List<Integer> mapped = mapping.indexes();
-        Status evidenceStatus = validateMovableEvidence(mapped, protectedIndexes, rawEvidence);
+        List<EastNorth> cleanupGeometry = mapping.previewIndexes().stream()
+            .map(finalPreview::get)
+            .toList();
+        Set<Integer> cleanupProtectedIndexes = remapProtectedIndexes(
+            mapping.previewIndexes(), protectedIndexes);
+        List<Integer> mapped = mapping.profileIndexes();
+        Status evidenceStatus = validateMovableEvidence(mapped, cleanupProtectedIndexes, rawEvidence);
         if (evidenceStatus != Status.COMPLETE) {
             return rejected(evidenceStatus);
         }
@@ -100,13 +109,14 @@ public record FinalPreviewCleanupContext(
             return rejected(Status.INCOMPLETE_EVIDENCE);
         }
         try {
-            CandidateCleanupEvidence aligned = reindexedEvidence(mapped, rawEvidence);
-            List<ProtectedInterval> intervals = intervals(finalPreview.size(), protectedIndexes);
+            CandidateCleanupEvidence aligned = reindexedEvidence(
+                mapped, cleanupGeometry, cleanupProtectedIndexes, rawProfiles, rawEvidence);
+            List<ProtectedInterval> intervals = intervals(cleanupGeometry.size(), cleanupProtectedIndexes);
             if (intervals.isEmpty()) {
                 return rejected(Status.INVALID_PROTECTED_INTERVALS);
             }
-            return new FinalPreviewCleanupContext(finalPreview, protectedIndexes, intervals, aligned, mapped,
-                Status.COMPLETE);
+            return new FinalPreviewCleanupContext(cleanupGeometry, cleanupProtectedIndexes, intervals,
+                aligned, mapped, Status.COMPLETE);
         } catch (IllegalArgumentException exception) {
             return rejected(Status.MISMATCHED_EVIDENCE);
         }
@@ -205,18 +215,17 @@ public record FinalPreviewCleanupContext(
         List<EastNorth> rawProfiles,
         Set<Integer> protectedIndexes
     ) {
-        if (finalPreview.size() > rawProfiles.size()) {
-            return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
+        if (finalPreview.size() <= rawProfiles.size()) {
+            return mapProfilesWithoutInsertedAnchors(finalPreview, rawProfiles, protectedIndexes);
         }
-        boolean[] consumed = new boolean[rawProfiles.size()];
-        List<Integer> result = new ArrayList<>(java.util.Collections.nCopies(finalPreview.size(), -1));
+        int previousExact = -1;
         for (int previewIndex = 0; previewIndex < finalPreview.size(); previewIndex++) {
-            if (protectedIndexes.contains(previewIndex)) {
-                continue;
-            }
             EastNorth point = finalPreview.get(previewIndex);
             if (!finite(point)) {
                 return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
+            }
+            if (protectedIndexes.contains(previewIndex)) {
+                continue;
             }
             int found = -1;
             for (int index = 0; index < rawProfiles.size(); index++) {
@@ -227,6 +236,38 @@ public record FinalPreviewCleanupContext(
                     found = index;
                 }
             }
+            if (found < 0) {
+                return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
+            }
+            if (found <= previousExact) {
+                return ProfileMapping.failed(Status.NON_MONOTONIC_PROFILE_MAPPING);
+            }
+            previousExact = found;
+        }
+
+        ProfileAlignment alignment = alignProfileSequences(finalPreview, rawProfiles, protectedIndexes);
+        if (alignment == null || alignment.previewIndexes().size() < 3) {
+            return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
+        }
+        return new ProfileMapping(alignment.previewIndexes(), alignment.profileIndexes(), Status.COMPLETE);
+    }
+
+    private static ProfileMapping mapProfilesWithoutInsertedAnchors(
+        List<EastNorth> finalPreview,
+        List<EastNorth> rawProfiles,
+        Set<Integer> protectedIndexes
+    ) {
+        boolean[] consumed = new boolean[rawProfiles.size()];
+        List<Integer> result = new ArrayList<>(Collections.nCopies(finalPreview.size(), -1));
+        for (int previewIndex = 0; previewIndex < finalPreview.size(); previewIndex++) {
+            if (protectedIndexes.contains(previewIndex)) {
+                continue;
+            }
+            EastNorth point = finalPreview.get(previewIndex);
+            if (!finite(point)) {
+                return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
+            }
+            int found = uniqueMatchingProfile(rawProfiles, point);
             if (found < 0) {
                 return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
             }
@@ -254,20 +295,34 @@ public record FinalPreviewCleanupContext(
             }
             previous = found;
         }
-        return new ProfileMapping(List.copyOf(result), Status.COMPLETE);
+        return new ProfileMapping(identityIndexes(finalPreview.size()), result, Status.COMPLETE);
     }
 
-    private record ProfileMapping(List<Integer> indexes, Status status) {
-        private ProfileMapping {
-            indexes = List.copyOf(indexes);
-            status = Objects.requireNonNull(status, "status");
+    /** Returns the unique raw profile at a coordinate, or {@code -1} for absent/ambiguous matches. */
+    private static int uniqueMatchingProfile(List<EastNorth> profiles, EastNorth point) {
+        int found = -1;
+        for (int index = 0; index < profiles.size(); index++) {
+            if (!samePoint(point, profiles.get(index))) {
+                continue;
+            }
+            if (found >= 0) {
+                return -1;
+            }
+            found = index;
         }
-
-        private static ProfileMapping failed(Status status) {
-            return new ProfileMapping(List.of(), status);
-        }
+        return found;
     }
 
+    /** Builds stable identity indexes for a preview that needs no point replacement. */
+    private static List<Integer> identityIndexes(int size) {
+        List<Integer> result = new ArrayList<>(size);
+        for (int index = 0; index < size; index++) {
+            result.add(index);
+        }
+        return List.copyOf(result);
+    }
+
+    /** Finds the next already-fixed raw profile mapping after a preview position. */
     private static int nextRequiredProfile(List<Integer> mappings, int start, int defaultValue) {
         for (int index = start; index < mappings.size(); index++) {
             int mapped = mappings.get(index);
@@ -278,6 +333,7 @@ public record FinalPreviewCleanupContext(
         return defaultValue;
     }
 
+    /** Selects an unused profile for a protected anchor within monotonic mapping bounds. */
     private static int nearestAvailableProfile(
         List<EastNorth> rawProfiles,
         EastNorth protectedPoint,
@@ -306,11 +362,174 @@ public record FinalPreviewCleanupContext(
         return exact >= 0 ? exact : fallback;
     }
 
+    /** Orders raw profile indexes by distance from a preferred longitudinal index. */
     private static boolean closerTo(int candidate, int current, int preferred) {
         int candidateDistance = Math.abs(candidate - preferred);
         int currentDistance = Math.abs(current - preferred);
         return candidateDistance < currentDistance
             || candidateDistance == currentDistance && candidate < current;
+    }
+
+    private record ProfileMapping(
+        List<Integer> previewIndexes,
+        List<Integer> profileIndexes,
+        Status status
+    ) {
+        private ProfileMapping {
+            previewIndexes = List.copyOf(previewIndexes);
+            profileIndexes = List.copyOf(profileIndexes);
+            status = Objects.requireNonNull(status, "status");
+        }
+
+        private static ProfileMapping failed(Status status) {
+            return new ProfileMapping(List.of(), List.of(), status);
+        }
+    }
+
+    /**
+     * Aligns an anchor-augmented preview to retained profiles without synthesizing evidence.
+     *
+     * <p>The dynamic program minimizes removed movable preview points first and protected-anchor
+     * distance second. Protected points cannot be removed; ordinary points can match only their
+     * exact raw coordinate.</p>
+     */
+    private static ProfileAlignment alignProfileSequences(
+        List<EastNorth> preview,
+        List<EastNorth> profiles,
+        Set<Integer> protectedIndexes
+    ) {
+        final int unreachable = Integer.MAX_VALUE / 4;
+        final byte match = 1;
+        final byte skipProfile = 2;
+        final byte dropPreview = 3;
+        int previewCount = preview.size();
+        int profileCount = profiles.size();
+        int[][] dropped = new int[previewCount + 1][profileCount + 1];
+        double[][] protectedDistance = new double[previewCount + 1][profileCount + 1];
+        byte[][] predecessor = new byte[previewCount + 1][profileCount + 1];
+        for (int index = 0; index <= previewCount; index++) {
+            Arrays.fill(dropped[index], unreachable);
+            Arrays.fill(protectedDistance[index], Double.POSITIVE_INFINITY);
+        }
+        dropped[0][0] = 0;
+        protectedDistance[0][0] = 0.0;
+        for (int previewIndex = 0; previewIndex <= previewCount; previewIndex++) {
+            for (int profileIndex = 0; profileIndex <= profileCount; profileIndex++) {
+                if (dropped[previewIndex][profileIndex] == unreachable) {
+                    continue;
+                }
+                if (profileIndex < profileCount) {
+                    updateAlignment(dropped, protectedDistance, predecessor,
+                        previewIndex, profileIndex + 1,
+                        dropped[previewIndex][profileIndex], protectedDistance[previewIndex][profileIndex],
+                        skipProfile);
+                }
+                if (previewIndex < previewCount && !protectedIndexes.contains(previewIndex)) {
+                    updateAlignment(dropped, protectedDistance, predecessor,
+                        previewIndex + 1, profileIndex,
+                        dropped[previewIndex][profileIndex] + 1,
+                        protectedDistance[previewIndex][profileIndex], dropPreview);
+                }
+                if (previewIndex < previewCount && profileIndex < profileCount
+                    && (protectedIndexes.contains(previewIndex)
+                        || samePoint(preview.get(previewIndex), profiles.get(profileIndex)))) {
+                    double distance = protectedIndexes.contains(previewIndex)
+                        ? preview.get(previewIndex).distance(profiles.get(profileIndex)) : 0.0;
+                    if (Double.isFinite(distance)) {
+                        double expected = previewCount <= 1 ? 0.0
+                            : (double) previewIndex * (profileCount - 1) / (previewCount - 1);
+                        double tieBreak = 1e-12 * Math.abs(profileIndex - expected);
+                        updateAlignment(dropped, protectedDistance, predecessor,
+                            previewIndex + 1, profileIndex + 1,
+                            dropped[previewIndex][profileIndex],
+                            protectedDistance[previewIndex][profileIndex] + distance * distance + tieBreak,
+                            match);
+                    }
+                }
+            }
+        }
+        if (dropped[previewCount][profileCount] == unreachable) {
+            return null;
+        }
+
+        List<Integer> retainedPreview = new ArrayList<>();
+        List<Integer> retainedProfiles = new ArrayList<>();
+        int previewIndex = previewCount;
+        int profileIndex = profileCount;
+        while (previewIndex > 0 || profileIndex > 0) {
+            byte operation = predecessor[previewIndex][profileIndex];
+            if (operation == match) {
+                retainedPreview.add(previewIndex - 1);
+                retainedProfiles.add(profileIndex - 1);
+                previewIndex--;
+                profileIndex--;
+            } else if (operation == skipProfile) {
+                profileIndex--;
+            } else if (operation == dropPreview) {
+                previewIndex--;
+            } else {
+                return null;
+            }
+        }
+        Collections.reverse(retainedPreview);
+        Collections.reverse(retainedProfiles);
+        return new ProfileAlignment(retainedPreview, retainedProfiles);
+    }
+
+    /** Retains the lexicographically best deterministic predecessor for one alignment state. */
+    private static void updateAlignment(
+        int[][] dropped,
+        double[][] protectedDistance,
+        byte[][] predecessor,
+        int previewIndex,
+        int profileIndex,
+        int candidateDropped,
+        double candidateDistance,
+        byte candidateOperation
+    ) {
+        int existingDropped = dropped[previewIndex][profileIndex];
+        double existingDistance = protectedDistance[previewIndex][profileIndex];
+        if (candidateDropped < existingDropped
+            || candidateDropped == existingDropped
+                && (candidateDistance < existingDistance - 1e-12
+                    || Math.abs(candidateDistance - existingDistance) <= 1e-12
+                        && operationPriority(candidateOperation)
+                            < operationPriority(predecessor[previewIndex][profileIndex]))) {
+            dropped[previewIndex][profileIndex] = candidateDropped;
+            protectedDistance[previewIndex][profileIndex] = candidateDistance;
+            predecessor[previewIndex][profileIndex] = candidateOperation;
+        }
+    }
+
+    /** Returns deterministic tie priority for a sequence-alignment operation. */
+    private static int operationPriority(byte operation) {
+        return switch (operation) {
+            case 1 -> 0;
+            case 2 -> 1;
+            case 3 -> 2;
+            default -> 3;
+        };
+    }
+
+    private record ProfileAlignment(List<Integer> previewIndexes, List<Integer> profileIndexes) {
+        private ProfileAlignment {
+            previewIndexes = List.copyOf(previewIndexes);
+            profileIndexes = List.copyOf(profileIndexes);
+        }
+    }
+
+    /** Reindexes original protected preview occurrences after cleanup-only point replacement. */
+    private static Set<Integer> remapProtectedIndexes(
+        List<Integer> retainedPreviewIndexes,
+        Set<Integer> originalProtectedIndexes
+    ) {
+        Set<Integer> result = new LinkedHashSet<>();
+        for (int index = 0; index < retainedPreviewIndexes.size(); index++) {
+            if (originalProtectedIndexes.contains(retainedPreviewIndexes.get(index))) {
+                result.add(index);
+            }
+        }
+        return Set.copyOf(result);
     }
 
     private static Status validateMovableEvidence(
@@ -343,6 +562,9 @@ public record FinalPreviewCleanupContext(
 
     private static CandidateCleanupEvidence reindexedEvidence(
         List<Integer> indexes,
+        List<EastNorth> geometry,
+        Set<Integer> protectedIndexes,
+        List<EastNorth> rawProfiles,
         CandidateCleanupEvidence source
     ) {
         List<CleanupSamplingProfile> samples = new ArrayList<>(indexes.size());
@@ -352,7 +574,9 @@ public record FinalPreviewCleanupContext(
             CleanupSamplingProfile profile = source.samplingFrame().profiles().get(sourceIndex);
             CandidateCleanupProfile row = source.profiles().get(sourceIndex);
             samples.add(copyProfile(resultIndex, profile));
-            rows.add(copyRow(resultIndex, row));
+            boolean boundaryOnly = protectedIndexes.contains(resultIndex)
+                && !samePoint(geometry.get(resultIndex), rawProfiles.get(sourceIndex));
+            rows.add(boundaryOnly ? boundaryOnlyRow(resultIndex, row) : copyRow(resultIndex, row));
         }
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame(source.samplingFrame().detectorMode(),
             samples, source.samplingFrame().groundMetersPerRasterPixel()), rows);
@@ -382,6 +606,13 @@ public record FinalPreviewCleanupContext(
             source.selectedShoulderMinPx(), source.selectedShoulderMaxPx(), source.tubeCenterOffsetPx(),
             source.tubeUncertaintyPx(), source.provenance(), source.motionSupport(), source.turnSupport(),
             source.scaleConflict());
+    }
+
+    /** Converts borrowed anchor evidence into a non-authorizing boundary-only row. */
+    private static CandidateCleanupProfile boundaryOnlyRow(int index, CandidateCleanupProfile source) {
+        return new CandidateCleanupProfile(index, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
+            source.tubeCenterOffsetPx(), source.tubeUncertaintyPx(), CleanupEvidenceProvenance.UNSUPPORTED,
+            0.0, 0.0, true);
     }
 
     private static List<ProtectedInterval> intervals(int pointCount, Set<Integer> protectedIndexes) {

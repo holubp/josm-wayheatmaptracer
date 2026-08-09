@@ -41,6 +41,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
@@ -139,13 +140,14 @@ public class AlignWayAction extends JosmAction {
                 : HeatmapLayerResolver.resolve();
             MapView mapView = MainApplication.getMap().mapView;
 
-            AlignmentConfig slideConfig = new AlignmentConfig(config, PluginPreferences.loadGeometryCleanup());
+            GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
+            AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
             updateAggregateIntensityLayer(result, config);
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
                 result, initialCandidate(result), "preview-open", PluginLog.currentSlideLog()));
 
-            showCandidatePreview(dataSet, selection, result, config);
+            showCandidatePreview(dataSet, selection, result, config, cleanupConfig);
         } catch (AlignmentService.AlignmentFailureException ex) {
             overlay.hide();
             if (config != null) {
@@ -238,7 +240,8 @@ public class AlignWayAction extends JosmAction {
         DataSet dataSet,
         SelectionContext selection,
         AlignmentResult result,
-        ManagedHeatmapConfig config
+        ManagedHeatmapConfig config,
+        GeometryCleanupConfig cleanupConfig
     ) {
         if (result.candidates().isEmpty()) {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
@@ -277,6 +280,7 @@ public class AlignWayAction extends JosmAction {
             current[0].result(),
             initial,
             config,
+            cleanupConfig,
             result.candidates().size() > 1 ? comboBox : null,
             ratingMode ? ratingBox : null,
             offTheLine,
@@ -539,6 +543,7 @@ public class AlignWayAction extends JosmAction {
         AlignmentResult result,
         CenterlineCandidate chosen,
         ManagedHeatmapConfig config,
+        GeometryCleanupConfig cleanupConfig,
         JComboBox<CenterlineCandidate> candidates,
         JComboBox<String> ratingBox,
         JCheckBox offTheLine,
@@ -569,7 +574,11 @@ public class AlignWayAction extends JosmAction {
             : tr("{0} (automatic for rough sketch)", effectiveMode.displayName());
         panel.add(new JLabel(tr("Mode: {0}", modeLabel)), GBC.eol());
         panel.add(new JLabel(tr("Junction/end nodes: {0}", config.adjustJunctionNodes() ? "adjustable" : "fixed")), GBC.eol());
-        panel.add(new JLabel(tr("Simplification: {0}", config.simplifyEnabled() ? "enabled" : "disabled")), GBC.eol());
+        panel.add(new JLabel(cleanupSummary(result, cleanupConfig)), GBC.eol());
+        panel.add(new JLabel(tr("Legacy post-slide simplification: {0}",
+            cleanupConfig.isDisabled()
+                ? (config.simplifyEnabled() ? "enabled" : "disabled")
+                : "inactive while geometry cleanup is enabled")), GBC.eol());
         panel.add(new JLabel(tr("Sampling: {0}", result.diagnostics().samplingSummary())), GBC.eol());
         panel.add(new JLabel(tr("Diagnostics file can be exported from More tools.")), GBC.eol());
         if (PluginPreferences.isDebugEnabled()) {
@@ -577,6 +586,18 @@ public class AlignWayAction extends JosmAction {
         }
         panel.add(new JLabel(tr("Preview legend: solid blue = selected result; orange dashed = original; dashed labeled lines = other detected ridges.")), GBC.eol());
         return panel;
+    }
+
+    /** Returns slide-time cleanup configuration and generated-sibling count for the preview. */
+    private String cleanupSummary(AlignmentResult result, GeometryCleanupConfig cleanupConfig) {
+        if (cleanupConfig.isDisabled()) {
+            return tr("Geometry cleanup: off");
+        }
+        long alternatives = result.candidates().stream()
+            .filter(candidate -> candidate.geometryCleanup().cleanedCandidate())
+            .count();
+        return tr("Geometry cleanup: {0}, {1} ({2} m); cleaned alternatives: {3}",
+            cleanupConfig.mode(), cleanupConfig.preset(), cleanupConfig.rippleScaleMeters(), alternatives);
     }
 
     private record PreviewSelection(CenterlineCandidate candidate, AlignmentResult result) {

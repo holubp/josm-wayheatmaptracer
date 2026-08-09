@@ -207,6 +207,58 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
+    void cleansPreviewWithInsertedProtectedJunctionAnchorWithoutInventingAProfile() {
+        List<EastNorth> rawRidge = points(0.0, 0.2, -0.2, 0.2, 0.0);
+        List<EastNorth> source = List.of(rawRidge.get(0), new EastNorth(3.0, 0.0), rawRidge.get(4));
+        List<Node> nodes = new ArrayList<>();
+        for (int index = 0; index < source.size(); index++) {
+            nodes.add(new Node(new LatLon(50.0 + index * 0.0001, 14.0)));
+        }
+        nodes.get(1).put("barrier", "yes");
+        DataSet dataSet = new DataSet();
+        nodes.forEach(dataSet::addPrimitive);
+        Way way = new Way();
+        way.setNodes(nodes);
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 0, 2, List.copyOf(nodes),
+            Set.of(nodes.get(0), nodes.get(2)));
+
+        EastNorth junctionTarget = source.get(1);
+        List<EastNorth> reconstructed = List.of(rawRidge.get(0), rawRidge.get(1), junctionTarget,
+            rawRidge.get(2), rawRidge.get(3), rawRidge.get(4));
+        Map<Long, EastNorth> targets = Map.of(
+            nodes.get(0).getUniqueId(), source.get(0),
+            nodes.get(1).getUniqueId(), junctionTarget,
+            nodes.get(2).getUniqueId(), source.get(2));
+        CenterlineCandidate raw = new CenterlineCandidate("hot/ridge-inserted-anchor", 0.73,
+            List.of(), List.of())
+            .withEastNorthPoints(rawRidge)
+            .withFinalPreviewGeometry(reconstructed, targets)
+            .withCleanupEvidence(evidence(rawRidge, Set.of(), Set.of(), null));
+
+        FinalPreviewCleanupContext context = FinalPreviewCleanupContext.create(raw, selection, source);
+        assertTrue(context.complete(), context.status().name());
+        assertEquals(rawRidge.size(), context.geometry().size());
+        assertTrue(context.geometry().contains(junctionTarget));
+        int protectedJunctionIndex = context.protectedIndexes().stream()
+            .filter(index -> context.geometry().get(index).equals(junctionTarget))
+            .findFirst().orElseThrow();
+        assertEquals(CleanupEvidenceProvenance.UNSUPPORTED,
+            context.evidence().profiles().get(protectedJunctionIndex).provenance());
+
+        List<CenterlineCandidate> result = service.expand(raw, selection, source,
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+        assertEquals(2, result.size(), result.get(0).geometryCleanup().toString());
+        assertEquals(reconstructed, result.get(0).finalPreviewPoints());
+        assertEquals(CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE,
+            result.get(0).geometryCleanup().outcome());
+        assertTrue(result.get(1).finalPreviewPoints().contains(junctionTarget));
+        assertEquals(junctionTarget,
+            result.get(1).proposedNodePositions().get(nodes.get(1).getUniqueId()));
+    }
+
+    @Test
     void reportsRejectedAndUnchangedWithoutHidingRawCandidate() {
         List<EastNorth> crossing = List.of(new EastNorth(0, 0), new EastNorth(2, 2), new EastNorth(0, 2),
             new EastNorth(2, 0), new EastNorth(4, 0));

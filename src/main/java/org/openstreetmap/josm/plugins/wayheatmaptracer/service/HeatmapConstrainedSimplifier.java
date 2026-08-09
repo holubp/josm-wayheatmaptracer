@@ -384,7 +384,8 @@ public final class HeatmapConstrainedSimplifier {
         ProtectedInterval interval,
         CandidateCleanupEvidence evidence
     ) {
-        for (int index = interval.startIndex(); index <= interval.endIndex(); index++) {
+        // Protected endpoints are immutable geometry boundaries and need no heatmap authorization.
+        for (int index = interval.startIndex() + 1; index < interval.endIndex(); index++) {
             CleanupSamplingProfile sample = evidence.samplingFrame().profiles().get(index);
             CandidateCleanupProfile row = evidence.profiles().get(index);
             if (!sample.anchorWithinRaster()) {

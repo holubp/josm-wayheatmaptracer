@@ -115,6 +115,13 @@ component is applied; longitudinal position and tangent are not freely
 averaged. Protected endpoints, junctions, shared/tagged nodes, and inserted
 topology anchors split smoothing intervals and remain exact.
 
+Final-preview reconstruction can insert a protected junction or endpoint target between two
+sampled ridge profiles. Cleanup reconciles that longer preview monotonically against the original
+profile sequence and, only in its private working geometry, replaces the nearest redundant raw
+point with the exact anchor. The borrowed profile row is marked unsupported: it supplies existing
+chainage/transform ordering at an immutable interval boundary, but contributes no direct signal,
+fit, motion, or turn authorization. The raw candidate remains byte-for-byte selectable.
+
 Point reduction evaluates a chord between retained points using cumulative
 ground-distance fraction, not raster-pixel fraction:
 
