@@ -512,7 +512,8 @@ class AlignmentServiceTest {
         assertTrue(service.sourceTileColors(aggregateOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
         assertFalse(service.detectionColorModes(aggregateOnly).contains("bluered-combined"));
         assertEquals(List.of("hot"), service.detectionColorModes(visualizationOnly));
-        assertTrue(service.sourceTileColors(visualizationOnly).containsAll(List.of("hot", "blue", "bluered", "purple", "gray")));
+        assertEquals(List.of("hot"), service.sourceTileColors(visualizationOnly),
+            "Diagnostic aggregate visibility must not expand alignment source acquisition");
     }
 
     @Test

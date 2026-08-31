@@ -116,6 +116,16 @@ public final class PluginPreferences {
      */
     public static void save(ManagedHeatmapConfig config) {
         Objects.requireNonNull(config, "config");
+        IPreferences preferences = Config.getPref();
+        long oldGeneration = Math.max(0L, preferences.getLong(CACHE_BUSTER, 0L));
+        boolean credentialChanged = !preferences.get(KEY_PAIR_ID, "").equals(nullToEmpty(config.keyPairId()))
+            || !preferences.get(POLICY, "").equals(nullToEmpty(config.policy()))
+            || !preferences.get(SIGNATURE, "").equals(nullToEmpty(config.signature()))
+            || !preferences.get(SESSION, "").equals(nullToEmpty(config.sessionToken()));
+        long requestedGeneration = Math.max(0L, config.cacheBuster());
+        long effectiveGeneration = credentialChanged
+            ? nextGeneration(Math.max(oldGeneration, requestedGeneration))
+            : Math.max(oldGeneration, requestedGeneration);
         Config.getPref().put(KEY_PAIR_ID, nullToEmpty(config.keyPairId()));
         putSensitive(POLICY, config.policy());
         putSensitive(SIGNATURE, config.signature());
@@ -151,7 +161,7 @@ public final class PluginPreferences {
         Config.getPref().put(INTENSITY_SAMPLING_MODE, (config.intensitySamplingMode() == null
             ? IntensitySamplingMode.COLOR_MAPPING
             : config.intensitySamplingMode()).name());
-        Config.getPref().putLong(CACHE_BUSTER, Math.max(0L, config.cacheBuster()));
+        Config.getPref().putLong(CACHE_BUSTER, effectiveGeneration);
     }
 
     /**
@@ -230,7 +240,18 @@ public final class PluginPreferences {
      * Advances the managed tile cache generation so later requests bypass stale cached tiles.
      */
     public static void bumpManagedTileCacheBuster() {
-        Config.getPref().putLong(CACHE_BUSTER, System.currentTimeMillis());
+        Config.getPref().putLong(CACHE_BUSTER,
+            nextManagedTileGeneration(Math.max(0L, Config.getPref().getLong(CACHE_BUSTER, 0L))));
+    }
+
+    /**
+     * Returns a monotonic cache generation greater than the supplied value where representable.
+     *
+     * @param current current generation
+     * @return monotonic next generation, saturated at {@link Long#MAX_VALUE}
+     */
+    public static long nextManagedTileGeneration(long current) {
+        return nextGeneration(Math.max(0L, current));
     }
 
     /**
@@ -261,6 +282,13 @@ public final class PluginPreferences {
 
     private static int clampZoom(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private static long nextGeneration(long current) {
+        if (current == Long.MAX_VALUE) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(System.currentTimeMillis(), current + 1L);
     }
 
     private static boolean cleanupSchemaPresent(IPreferences preferences) {

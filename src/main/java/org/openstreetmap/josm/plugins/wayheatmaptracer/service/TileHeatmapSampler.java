@@ -3,28 +3,28 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.awt.Graphics2D;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
-import javax.imageio.ImageIO;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileCachePolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
@@ -44,11 +44,21 @@ public final class TileHeatmapSampler {
     /** Legacy-compatible rendered-raster oversampling factor. */
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
 
-    /** Creates the stateless managed-tile sampler. */
+    private final TileFetchCoordinator tileCoordinator;
+
+    /** Creates a sampler backed by the plugin-owned shared tile coordinator. */
     public TileHeatmapSampler() {
-        // Stateless service.
+        this(ManagedTileRuntime.coordinator());
     }
-    private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png%s";
+
+    /**
+     * Creates a sampler with an explicit coordinator for deterministic tests and plugin wiring.
+     *
+     * @param tileCoordinator shared managed tile coordinator
+     */
+    public TileHeatmapSampler(TileFetchCoordinator tileCoordinator) {
+        this.tileCoordinator = java.util.Objects.requireNonNull(tileCoordinator, "tileCoordinator");
+    }
     private static final List<String> BASE_AGGREGATE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 
     /**
@@ -455,71 +465,27 @@ public final class TileHeatmapSampler {
     private FetchedTile fetchTile(ManagedHeatmapConfig config, String color, int zoom, int x, int y) {
         String activity = safe(config.activity(), "all");
         String tileColor = safe(color, "hot");
-        File cacheFile = managedTileCacheFile(config, activity, tileColor, zoom, x, y);
-        FetchedTile cached = readCachedTile(cacheFile, tileColor, zoom, x, y);
-        if (cached != null) {
-            return cached;
-        }
-        String url = HEATMAP_URL.formatted(activity, tileColor, zoom, x, y, "");
+        ManagedTileGeneration generation = new ManagedTileGeneration(Math.max(0L, config.cacheBuster()));
+        tileCoordinator.updateActiveGeneration(generation);
+        TileRequest request = new TileRequest(new ManagedTileAddress(activity, tileColor, zoom, x, y),
+            generation, tileColor.equals(safe(config.color(), "hot"))
+                ? TilePurpose.ALIGNMENT_REQUIRED : TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE,
+            TileCachePolicy.USE_CACHE,
+            Instant.now().plusSeconds(30), new CancellationToken());
+        TileFetchResult result;
         try {
-            HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
-            connection.setConnectTimeout(10_000);
-            connection.setReadTimeout(20_000);
-            connection.setRequestProperty("Cookie", config.toCookieHeader());
-            connection.setRequestProperty("User-Agent", "JOSM WayHeatmapTracer");
-            int response = connection.getResponseCode();
-            if (response < 200 || response >= 300) {
-                return failedTile(tileColor, zoom, x, y, response, "http-error", "HTTP " + response);
-            }
-            byte[] bytes = connection.getInputStream().readAllBytes();
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
-            if (image == null) {
-                return failedTile(tileColor, zoom, x, y, response, "decode-error", "tile was not an image");
-            }
-            TileRecord record = classifyTile(tileColor, zoom, x, y, response, bytes, image);
-            if (record.usable()) {
-                writeCachedTile(cacheFile, bytes, tileColor, zoom, x, y);
-            }
-            return new FetchedTile(image, record);
-        } catch (IOException ex) {
-            return failedTile(tileColor, zoom, x, y, -1, "network-error", ex.getMessage());
+            result = tileCoordinator.fetch(request, CredentialSnapshot.fromConfig(config))
+                .toCompletableFuture().get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return failedTile(tileColor, zoom, x, y, -1, "cancelled", "Tile acquisition was interrupted.");
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException ex) {
+            return failedTile(tileColor, zoom, x, y, -1, "network-error", "Tile acquisition did not complete.");
         }
-    }
-
-    private FetchedTile readCachedTile(File cacheFile, String color, int zoom, int x, int y) {
-        if (!cacheFile.isFile()) {
-            return null;
-        }
-        Path path = cacheFile.toPath();
-        try {
-            byte[] bytes = Files.readAllBytes(path);
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
-            if (image == null) {
-                Files.deleteIfExists(path);
-                return null;
-            }
-            TileRecord record = classifyTile(color, zoom, x, y, 200, bytes, image);
-            if (!record.usable()) {
-                Files.deleteIfExists(path);
-                return null;
-            }
-            return new FetchedTile(image, record);
-        } catch (IOException ex) {
-            return null;
-        }
-    }
-
-    private void writeCachedTile(File cacheFile, byte[] bytes, String color, int zoom, int x, int y) {
-        try {
-            File parent = cacheFile.getParentFile();
-            if (parent != null) {
-                parent.mkdirs();
-            }
-            Files.write(cacheFile.toPath(), bytes);
-        } catch (IOException ex) {
-            PluginLog.verbose("Unable to cache managed heatmap tile %s z%d x=%d y=%d: %s",
-                color, zoom, x, y, ex.getMessage());
-        }
+        TileRecord record = tileRecord(result);
+        BufferedImage image = result.image() == null
+            ? new BufferedImage(TILE_SIZE, TILE_SIZE, BufferedImage.TYPE_INT_ARGB) : result.image();
+        return new FetchedTile(image, record);
     }
 
     static File managedTileCacheFile(ManagedHeatmapConfig config, String activity, String color, int zoom, int x, int y) {
@@ -542,43 +508,13 @@ public final class TileHeatmapSampler {
         return new FetchedTile(new BufferedImage(TILE_SIZE, TILE_SIZE, BufferedImage.TYPE_INT_ARGB), record);
     }
 
-    private TileRecord classifyTile(String color, int zoom, int x, int y, int response, byte[] bytes, BufferedImage image) {
-        String hash = sha256(bytes);
-        int width = image.getWidth();
-        int height = image.getHeight();
-        if (width != TILE_SIZE || height != TILE_SIZE) {
-            return new TileRecord(color, zoom, x, y, false, response, bytes.length, width, height, hash,
-                "bad-dimensions", 0.0, 0.0, 0, "expected " + TILE_SIZE + "x" + TILE_SIZE);
-        }
-
-        int nonTransparent = 0;
-        int heatPixels = 0;
-        java.util.Set<Integer> sampledColors = new java.util.HashSet<>();
-        for (int py = 0; py < height; py += 8) {
-            for (int px = 0; px < width; px += 8) {
-                int argb = image.getRGB(px, py);
-                int alpha = (argb >>> 24) & 0xFF;
-                if (alpha > 16) {
-                    nonTransparent++;
-                }
-                int red = (argb >>> 16) & 0xFF;
-                int green = (argb >>> 8) & 0xFF;
-                int blue = argb & 0xFF;
-                if (RenderedHeatmapSampler.colorIntensity(red, green, blue, color) > 0.16) {
-                    heatPixels++;
-                }
-                sampledColors.add(argb);
-            }
-        }
-        int samples = Math.max(1, (width / 8) * (height / 8));
-        double opaqueRatio = (double) nonTransparent / samples;
-        double heatCoverage = (double) heatPixels / samples;
-        boolean placeholderSuspected = opaqueRatio > 0.92 && heatCoverage < 0.003 && sampledColors.size() <= 24;
-        String quality = placeholderSuspected ? "placeholder-suspected" : (heatCoverage == 0.0 ? "empty-valid" : "valid");
-        boolean usable = !placeholderSuspected;
-        String error = placeholderSuspected ? "tile looks like an authentication/error placeholder; clear cache or refresh cookies" : "";
-        return new TileRecord(color, zoom, x, y, usable, response, bytes.length, width, height, hash,
-            quality, opaqueRatio, heatCoverage, sampledColors.size(), error);
+    private TileRecord tileRecord(TileFetchResult result) {
+        var quality = result.quality();
+        return new TileRecord(result.address().color(), result.address().zoom(), result.address().x(),
+            result.address().y(), result.usable(), result.httpStatus(),
+            (int) Math.min(Integer.MAX_VALUE, result.responseBytes()), quality.width(), quality.height(),
+            quality.sha256(), quality.label(), quality.opaqueRatio(), quality.heatCoverage(),
+            quality.sampledColorCount(), result.safeMessage());
     }
 
     private SamplingParameters parametersFor(ManagedHeatmapConfig config, int zoom, double latitude, boolean sketchLikeSelection) {
@@ -747,14 +683,6 @@ public final class TileHeatmapSampler {
                 .append(RenderedHeatmapSampler.aggregateSourceWeight(color));
         }
         return builder.append("}}").toString();
-    }
-
-    private String sha256(byte[] bytes) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        } catch (NoSuchAlgorithmException ex) {
-            return "";
-        }
     }
 
     /**

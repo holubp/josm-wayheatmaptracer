@@ -28,6 +28,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
 /**
  * Redacted diagnostic archive for the latest alignment attempt.
@@ -65,6 +66,7 @@ public final class LastSlideDebugBundle {
     private final String tileManifestJson;
     private final String aggregateMetadataJson;
     private final String detectorAttemptsJson;
+    private final String tileAcquisitionJson;
     private final Map<String, BufferedImage> tileImages;
 
     private LastSlideDebugBundle(
@@ -100,6 +102,7 @@ public final class LastSlideDebugBundle {
         String tileManifestJson,
         String aggregateMetadataJson,
         String detectorAttemptsJson,
+        String tileAcquisitionJson,
         Map<String, BufferedImage> tileImages
     ) {
         this.diagnosticsJson = diagnosticsJson;
@@ -134,6 +137,7 @@ public final class LastSlideDebugBundle {
         this.tileManifestJson = tileManifestJson;
         this.aggregateMetadataJson = aggregateMetadataJson;
         this.detectorAttemptsJson = detectorAttemptsJson;
+        this.tileAcquisitionJson = tileAcquisitionJson;
         this.tileImages = tileImages;
     }
 
@@ -239,6 +243,7 @@ public final class LastSlideDebugBundle {
             redactSensitiveValues(tileManifest),
             redactSensitiveValues(aggregateMetadata),
             attemptsJson,
+            redactSensitiveValues(ManagedTileRuntime.diagnosticsJsonIfInitialized()),
             images
         );
     }
@@ -285,6 +290,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "tile-manifest.json", tileManifestJson);
             writeText(zip, "aggregate-intensity/metadata.json", aggregateMetadataJson);
             writeText(zip, "detector-attempts.json", detectorAttemptsJson);
+            writeText(zip, "tile-acquisition.json", tileAcquisitionJson);
             for (Map.Entry<String, BufferedImage> entry : tileImages.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 ImageIO.write(entry.getValue(), "png", zip);
@@ -297,11 +303,11 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":10,"
+            + "\"formatVersion\":11,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 

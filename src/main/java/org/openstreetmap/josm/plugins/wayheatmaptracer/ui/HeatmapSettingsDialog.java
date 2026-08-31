@@ -238,7 +238,7 @@ public final class HeatmapSettingsDialog {
             JOptionPane.WARNING_MESSAGE
         );
         if (answer == JOptionPane.OK_OPTION) {
-            cacheBuster = System.currentTimeMillis();
+            cacheBuster = PluginPreferences.nextManagedTileGeneration(cacheBuster);
             JOptionPane.showMessageDialog(parent, tr("Tile cache bypass will be applied when you press OK."), tr("WayHeatmapTracer"), JOptionPane.INFORMATION_MESSAGE);
         }
     }

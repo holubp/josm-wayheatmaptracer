@@ -8,22 +8,19 @@ import java.awt.RenderingHints;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.imageio.ImageIO;
 import javax.swing.Action;
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
+import javax.swing.SwingUtilities;
 
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.ProjectionBounds;
@@ -38,6 +35,17 @@ import org.openstreetmap.josm.gui.layer.Layer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileCachePolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
@@ -50,21 +58,24 @@ public class AggregateIntensityLayer extends Layer {
     private static final int ZOOM = 15;
     private static final int TILE_SIZE = TileHeatmapSampler.TILE_SIZE;
     private static final int MAX_VISIBLE_TILES = 256;
+    private static final int MAX_RENDERED_TILES = 64;
+    private static final int MAX_COMPOSITE_STATES = 2_048;
     private static final List<String> SOURCE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
-    private static final String HEATMAP_URL = "https://content-a.strava.com/identified/globalheat/%s/%s/%d/%d/%d.png";
-    private static final ExecutorService TILE_EXECUTOR = Executors.newFixedThreadPool(2, task -> {
-        Thread thread = new Thread(task, "WayHeatmapTracer aggregate tiles");
-        thread.setDaemon(true);
-        return thread;
-    });
-
     private final ManagedHeatmapConfig config;
-    private final Map<TileKey, BufferedImage> tileCache = new ConcurrentHashMap<>();
-    private final Set<TileKey> loading = ConcurrentHashMap.newKeySet();
+    private final TileFetchCoordinator coordinator;
+    private final CancellationToken lifecycle = new CancellationToken();
+    private final AtomicBoolean destroyed = new AtomicBoolean();
+    private final Map<TileKey, CompositeState> composites = new ConcurrentHashMap<>();
+    private volatile String layerStatus = "Waiting for visible aggregate tiles";
 
     private AggregateIntensityLayer(ManagedHeatmapConfig config) {
+        this(config, ManagedTileRuntime.initialize(config));
+    }
+
+    AggregateIntensityLayer(ManagedHeatmapConfig config, TileFetchCoordinator coordinator) {
         super(LAYER_NAME);
         this.config = config;
+        this.coordinator = coordinator;
         setOpacity(0.80);
     }
 
@@ -119,17 +130,20 @@ public class AggregateIntensityLayer extends Layer {
         }
         TileRange range = tileRange(bbox);
         if (range.tileCount() > MAX_VISIBLE_TILES) {
+            layerStatus = "Aggregate preview paused: zoom in to load at most 256 z15 tiles";
             return;
         }
         for (int x = range.minX(); x <= range.maxX(); x++) {
             for (int y = range.minY(); y <= range.maxY(); y++) {
                 TileKey key = new TileKey(x, y);
-                BufferedImage image = tileCache.get(key);
-                if (image == null) {
+                CompositeState state = composites.get(key);
+                if (state == null) {
                     requestTile(key, mv);
                     continue;
                 }
-                drawTile(g, mv, image, x, y);
+                if (state.status() == CompositeStatus.COMPLETE && state.image() != null) {
+                    drawTile(g, mv, state.image(), x, y);
+                }
             }
         }
     }
@@ -141,7 +155,7 @@ public class AggregateIntensityLayer extends Layer {
 
     @Override
     public String getToolTipText() {
-        return "WayHeatmapTracer all-color aggregate intensity visualization";
+        return "WayHeatmapTracer all-color aggregate intensity visualization - " + layerStatus;
     }
 
     @Override
@@ -163,6 +177,7 @@ public class AggregateIntensityLayer extends Layer {
     public Object getInfoComponent() {
         return "<html><b>" + getName() + "</b><br>"
             + "Colors: " + String.join(", ", SOURCE_COLORS) + "<br>"
+            + "Status: " + layerStatus + "<br>"
             + "Visualization only; not used as editable OSM data.</html>";
     }
 
@@ -181,65 +196,157 @@ public class AggregateIntensityLayer extends Layer {
         return null;
     }
 
-    private void requestTile(TileKey key, MapView mapView) {
-        if (!loading.add(key)) {
+    @Override
+    public void destroy() {
+        if (!destroyed.compareAndSet(false, true)) {
             return;
         }
-        TILE_EXECUTOR.submit(() -> {
-            try {
-                BufferedImage image = loadAggregateTile(key);
-                if (image != null) {
-                    tileCache.put(key, image);
-                }
-            } catch (RuntimeException ex) {
-                PluginLog.verbose("Aggregate intensity tile z%d x=%d y=%d failed: %s", ZOOM, key.x(), key.y(), ex.getMessage());
-            } finally {
-                loading.remove(key);
-                mapView.repaint();
+        lifecycle.cancel();
+        composites.clear();
+        super.destroy();
+    }
+
+    private void requestTile(TileKey key, MapView mapView) {
+        if (destroyed.get() || composites.size() >= MAX_COMPOSITE_STATES
+            || composites.putIfAbsent(key, CompositeState.loading()) != null) {
+            return;
+        }
+        ManagedTileGeneration generation = new ManagedTileGeneration(Math.max(0L, config.cacheBuster()));
+        coordinator.updateActiveGeneration(generation);
+        Map<String, CompletableFuture<TileFetchResult>> requests = new LinkedHashMap<>();
+        for (String color : SOURCE_COLORS) {
+            TileRequest request = new TileRequest(new ManagedTileAddress(config.activity(), color, ZOOM,
+                key.x(), key.y()), generation, TilePurpose.LIVE_AGGREGATE_VISUALIZATION,
+                TileCachePolicy.USE_CACHE, Instant.now().plusSeconds(30), lifecycle);
+            requests.put(color, coordinator.fetch(request, CredentialSnapshot.fromConfig(config))
+                .toCompletableFuture());
+        }
+        CompletableFuture.allOf(requests.values().toArray(CompletableFuture[]::new)).whenComplete((unused, error) -> {
+            if (destroyed.get() || lifecycle.isCancelled()) {
+                return;
+            }
+            if (!coordinator.dispatch(TilePurpose.LIVE_AGGREGATE_VISUALIZATION,
+                () -> completeTile(key, mapView, requests)) && !destroyed.get() && !lifecycle.isCancelled()) {
+                Instant retry = Instant.now().plusSeconds(1);
+                CompositeState delayed = new CompositeState(CompositeStatus.FAILED_UNTIL, null, 0,
+                    retry, "queue-full");
+                composites.put(key, delayed);
+                layerStatus = "Aggregate preview delayed - tile worker queue is full";
+                repaintOnEdt(mapView);
+                coordinator.schedule(retry, () -> {
+                    if (!destroyed.get() && composites.remove(key, delayed)) {
+                        repaintOnEdt(mapView);
+                    }
+                });
             }
         });
     }
 
-    private BufferedImage loadAggregateTile(TileKey key) {
+    private void completeTile(TileKey key, MapView mapView,
+        Map<String, CompletableFuture<TileFetchResult>> requests) {
+        if (destroyed.get() || lifecycle.isCancelled()) {
+            return;
+        }
         Map<String, BufferedImage> sources = new LinkedHashMap<>();
-        for (String color : SOURCE_COLORS) {
-            BufferedImage image = fetchSourceTile(color, key);
-            if (image == null) {
-                PluginLog.verbose("Aggregate intensity visualization skipped color '%s' for z%d x=%d y=%d.",
-                    color, ZOOM, key.x(), key.y());
-                continue;
+        TileFetchResult representativeFailure = null;
+        for (Map.Entry<String, CompletableFuture<TileFetchResult>> entry : requests.entrySet()) {
+            TileFetchResult result = completedResult(entry.getValue());
+            if (result != null && result.usable()) {
+                sources.put(entry.getKey(), result.image());
+            } else if (representativeFailure == null) {
+                representativeFailure = result;
             }
-            sources.put(color, image);
         }
-        if (sources.isEmpty()) {
-            return null;
+        CompositeState next;
+        if (sources.size() == SOURCE_COLORS.size()) {
+            BufferedImage aggregate = RenderedHeatmapSampler.renderAggregatedIntensityRaster(sources);
+            next = new CompositeState(CompositeStatus.COMPLETE, aggregate, sources.size(), null, "ready");
+            layerStatus = "Complete aggregate tiles available";
+        } else {
+            TileFetchStatus status = representativeFailure == null ? TileFetchStatus.NETWORK_ERROR
+                : representativeFailure.status();
+            Instant retry = representativeFailure == null ? null : representativeFailure.retryNotBefore();
+            if (retry == null && status != TileFetchStatus.AUTH_FAILURE) {
+                retry = Instant.now().plus(retryDelay(status));
+            }
+            next = new CompositeState(status == TileFetchStatus.AUTH_FAILURE
+                ? CompositeStatus.AUTH_BLOCKED : status == TileFetchStatus.RATE_LIMITED
+                    ? CompositeStatus.RATE_LIMITED : CompositeStatus.FAILED_UNTIL,
+                null, sources.size(), retry, status.name());
+            layerStatus = "Incomplete aggregate " + sources.size() + "/5 - " + status.name();
         }
-        return RenderedHeatmapSampler.renderAggregatedIntensityRaster(sources);
+        if (destroyed.get() || lifecycle.isCancelled()) {
+            return;
+        }
+        composites.put(key, next);
+        trimRenderedTiles(key);
+        repaintOnEdt(mapView);
+        if (next.retryNotBefore() != null) {
+            coordinator.schedule(next.retryNotBefore(), () -> {
+                if (!destroyed.get() && composites.remove(key, next)) {
+                    repaintOnEdt(mapView);
+                }
+            });
+        }
     }
 
-    private BufferedImage fetchSourceTile(String color, TileKey key) {
-        String activity = safe(config.activity(), "all");
-        String tileColor = safe(color, "hot");
-        String cacheQuery = config.cacheBuster() > 0 ? "?whtr-cache=" + config.cacheBuster() : "";
-        String url = HEATMAP_URL.formatted(activity, tileColor, ZOOM, key.x(), key.y()) + cacheQuery;
-        try {
-            HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
-            connection.setConnectTimeout(10_000);
-            connection.setReadTimeout(20_000);
-            connection.setRequestProperty("Cookie", config.toCookieHeader());
-            connection.setRequestProperty("User-Agent", "JOSM WayHeatmapTracer");
-            int response = connection.getResponseCode();
-            if (response < 200 || response >= 300) {
-                return null;
+    private void trimRenderedTiles(TileKey retained) {
+        long excess = composites.values().stream()
+            .filter(state -> state.status() == CompositeStatus.COMPLETE && state.image() != null)
+            .count() - MAX_RENDERED_TILES;
+        if (excess <= 0) {
+            return;
+        }
+        for (Map.Entry<TileKey, CompositeState> entry : composites.entrySet()) {
+            if (excess <= 0) break;
+            if (!entry.getKey().equals(retained) && entry.getValue().status() == CompositeStatus.COMPLETE
+                && composites.remove(entry.getKey(), entry.getValue())) {
+                excess--;
             }
-            byte[] bytes;
-            try (InputStream input = connection.getInputStream()) {
-                bytes = input.readAllBytes();
-            }
-            return ImageIO.read(new ByteArrayInputStream(bytes));
-        } catch (Exception ex) {
+        }
+    }
+
+    private TileFetchResult completedResult(CompletableFuture<TileFetchResult> future) {
+        if (future == null || future.isCancelled() || future.isCompletedExceptionally()) {
             return null;
         }
+        return future.getNow(null);
+    }
+
+    private Duration retryDelay(TileFetchStatus status) {
+        return switch (status) {
+            case NO_TILE, CONTENT_TYPE_ERROR, BODY_TOO_LARGE, DECODE_ERROR, BAD_DIMENSIONS,
+                PLACEHOLDER_SUSPECTED -> Duration.ofMinutes(5);
+            default -> Duration.ofSeconds(1);
+        };
+    }
+
+    private void repaintOnEdt(MapView mapView) {
+        if (destroyed.get() || mapView == null) {
+            return;
+        }
+        if (SwingUtilities.isEventDispatchThread()) {
+            mapView.repaint();
+        } else {
+            SwingUtilities.invokeLater(() -> {
+                if (!destroyed.get()) {
+                    mapView.repaint();
+                }
+            });
+        }
+    }
+
+    void requestTileForTesting(int x, int y) {
+        requestTile(new TileKey(x, y), null);
+    }
+
+    int compositeCountForTesting() {
+        return composites.size();
+    }
+
+    String compositeStatusForTesting(int x, int y) {
+        CompositeState state = composites.get(new TileKey(x, y));
+        return state == null ? "ABSENT" : state.status().name();
     }
 
     private void drawTile(Graphics2D g, MapView mapView, BufferedImage image, int x, int y) {
@@ -322,10 +429,6 @@ public class AggregateIntensityLayer extends Layer {
         }
     }
 
-    private static String safe(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value.trim().toLowerCase(java.util.Locale.ROOT);
-    }
-
     private static Icon createIcon() {
         java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(16, 16, java.awt.image.BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = image.createGraphics();
@@ -344,6 +447,15 @@ public class AggregateIntensityLayer extends Layer {
     }
 
     private record TileKey(int x, int y) {
+    }
+
+    private enum CompositeStatus { LOADING, COMPLETE, FAILED_UNTIL, AUTH_BLOCKED, RATE_LIMITED }
+
+    private record CompositeState(CompositeStatus status, BufferedImage image, int readySources,
+                                  Instant retryNotBefore, String reason) {
+        static CompositeState loading() {
+            return new CompositeState(CompositeStatus.LOADING, null, 0, null, "loading");
+        }
     }
 
     private record TileRange(int minX, int maxX, int minY, int maxY) {

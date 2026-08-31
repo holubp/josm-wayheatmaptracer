@@ -178,24 +178,16 @@ public record ManagedHeatmapConfig(
      * @return human-readable redacted access summary
      */
     public String redactedSummary() {
-        return "keyPairId=" + redact(keyPairId)
-            + ", policy=" + redact(policy)
-            + ", signature=" + redact(signature)
-            + ", session=" + redact(sessionToken);
+        return "managedAccessConfigured=" + hasManagedAccessValues();
+    }
+
+    @Override
+    public String toString() {
+        return "ManagedHeatmapConfig" + toRedactedJson();
     }
 
     private static boolean notBlank(String value) {
         return value != null && !value.isBlank();
-    }
-
-    private static String redact(String value) {
-        if (value == null || value.isBlank()) {
-            return "";
-        }
-        if (value.length() <= 8) {
-            return "****";
-        }
-        return value.substring(0, 4) + "..." + value.substring(value.length() - 4);
     }
 
     private static String escape(String value) {

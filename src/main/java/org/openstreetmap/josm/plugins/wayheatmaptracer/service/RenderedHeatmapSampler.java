@@ -1227,7 +1227,16 @@ public final class RenderedHeatmapSampler {
         };
     }
 
-    static double colorIntensity(int red, int green, int blue, String colorMode) {
+    /**
+     * Maps one rendered source pixel to semantic heat intensity for the named detector palette.
+     *
+     * @param red red channel in {@code [0,255]}
+     * @param green green channel in {@code [0,255]}
+     * @param blue blue channel in {@code [0,255]}
+     * @param colorMode detector palette name
+     * @return normalized semantic heat intensity
+     */
+    public static double colorIntensity(int red, int green, int blue, String colorMode) {
         double luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0;
         float[] hsv = java.awt.Color.RGBtoHSB(red, green, blue, null);
         double saturation = hsv[1];

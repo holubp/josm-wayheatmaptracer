@@ -168,6 +168,7 @@ public final class AlignmentService {
             config.alignmentMode(), config.simplifyEnabled(), config.simplifyTolerancePx(),
             config.multiColorDetection(), config.aggregateAllColorSchemes(), renderedZoomSummary(imageryLayer));
         PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
+        PluginLog.verbose("Alignment tile source plan: %s", AlignmentTileSourcePlan.from(config).toRedactedJson());
         PluginLog.verbose("Redacted geometry cleanup settings: %s", cleanupConfig.toRedactedJson());
 
         long t0 = System.nanoTime();
@@ -280,6 +281,7 @@ public final class AlignmentService {
             sourceColor,
             colorModes);
         PluginLog.verbose("Redacted alignment settings: %s", config.toRedactedJson());
+        PluginLog.verbose("Alignment tile source plan: %s", AlignmentTileSourcePlan.from(config).toRedactedJson());
         PluginLog.verbose("Redacted geometry cleanup settings: %s", cleanupConfig.toRedactedJson());
 
         long t0 = System.nanoTime();
@@ -1649,27 +1651,11 @@ public final class AlignmentService {
     }
 
     List<String> sourceTileColors(ManagedHeatmapConfig config) {
-        String selected = normalizedVisibleColor(config);
-        if (!shouldPrepareAggregateSourceColors(config)) {
-            return List.of(selected);
-        }
-        List<String> colors = new ArrayList<>();
-        colors.add(selected);
-        for (String color : BASE_SOURCE_COLORS) {
-            if (!colors.contains(color)) {
-                colors.add(color);
-            }
-        }
-        return colors;
+        return AlignmentTileSourcePlan.from(config).orderedColors();
     }
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config) {
         return config.aggregateAllColorSchemes() && intensitySamplingMode(config).usesColorMapping();
-    }
-
-    private boolean shouldPrepareAggregateSourceColors(ManagedHeatmapConfig config) {
-        return (config.aggregateAllColorSchemes() || config.showAggregateIntensityLayer())
-            && intensitySamplingMode(config).usesColorMapping();
     }
 
     private boolean shouldRunAggregatedSourceDetector(ManagedHeatmapConfig config, TileHeatmapSampler.TileMosaicSet mosaics) {
@@ -2910,6 +2896,12 @@ public final class AlignmentService {
         );
     }
 
+    private String configWithTileSourcePlan(ManagedHeatmapConfig config) {
+        String settings = config.toRedactedJson();
+        return settings.substring(0, settings.length() - 1)
+            + ",\"alignmentTileSourcePlan\":" + AlignmentTileSourcePlan.from(config).toRedactedJson() + '}';
+    }
+
     private AlignmentDiagnostics diagnostics(
         ImageryLayer imageryLayer,
         int candidateCount,
@@ -2935,7 +2927,7 @@ public final class AlignmentService {
             millisBetween(t0, t1),
             millisBetween(t1, t2),
             millisBetween(t2, t3),
-            config.toRedactedJson(),
+            configWithTileSourcePlan(config),
             selectionToJson(selection),
             withProfileSpacing(samplingJson(imageryLayer, raster, mapView, effectiveSampling, capture),
                 detection.profileSpacing()),
@@ -2985,7 +2977,7 @@ public final class AlignmentService {
             millisBetween(t0, t1),
             millisBetween(t1, t2),
             millisBetween(t2, t3),
-            config.toRedactedJson(),
+            configWithTileSourcePlan(config),
             selectionToJson(selection),
             withProfileSpacing(tileSamplingJson(mosaics, mosaic, effectiveSampling), detection.profileSpacing()),
             stringArray(colorModes),

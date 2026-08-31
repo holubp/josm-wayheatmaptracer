@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -122,5 +123,75 @@ class PluginPreferencesTest {
         Config.getPref().putDouble(PREFIX + "cleanup.rippleScaleMeters", Double.NaN);
 
         assertThrows(IllegalArgumentException.class, PluginPreferences::loadGeometryCleanup);
+    }
+
+    @Test
+    void credentialChangeAdvancesGenerationButUnrelatedSaveDoesNot() {
+        ManagedHeatmapConfig initial = withCredentials(PluginPreferences.load(), "key-a", "policy-a",
+            "signature-a", "session-a", 41L);
+        PluginPreferences.save(initial);
+        long firstGeneration = PluginPreferences.load().cacheBuster();
+        assertTrue(firstGeneration > 41L);
+
+        PluginPreferences.save(PluginPreferences.load());
+        assertEquals(firstGeneration, PluginPreferences.load().cacheBuster());
+
+        PluginPreferences.save(withCredentials(PluginPreferences.load(), "key-b", "policy-a",
+            "signature-a", "session-a", firstGeneration));
+        long keyGeneration = PluginPreferences.load().cacheBuster();
+        assertTrue(keyGeneration > firstGeneration);
+
+        PluginPreferences.save(withCredentials(PluginPreferences.load(), "key-b", "policy-b",
+            "signature-a", "session-a", keyGeneration));
+        long policyGeneration = PluginPreferences.load().cacheBuster();
+        assertTrue(policyGeneration > keyGeneration);
+
+        PluginPreferences.save(withCredentials(PluginPreferences.load(), "key-b", "policy-b",
+            "signature-b", "session-a", policyGeneration));
+        long signatureGeneration = PluginPreferences.load().cacheBuster();
+        assertTrue(signatureGeneration > policyGeneration);
+
+        PluginPreferences.save(withCredentials(PluginPreferences.load(), "key-b", "policy-b",
+            "signature-b", "session-b", signatureGeneration));
+        assertTrue(PluginPreferences.load().cacheBuster() > signatureGeneration);
+    }
+
+    @Test
+    void redactedSummaryContainsNoCredentialDerivedCharacters() {
+        String sentinel = "SENTINEL-credential-value-9f47";
+        ManagedHeatmapConfig config = withCredentials(PluginPreferences.load(), sentinel, sentinel,
+            sentinel, sentinel, 1L);
+
+        assertEquals("managedAccessConfigured=true", config.redactedSummary());
+        assertFalse(config.redactedSummary().contains("SENTINEL"));
+        assertFalse(config.toRedactedJson().contains("SENTINEL"));
+        assertFalse(config.toString().contains("SENTINEL"));
+    }
+
+    @Test
+    void manualCacheBypassAlwaysAdvancesMonotonically() {
+        Config.getPref().putLong(PREFIX + "cacheBuster", Long.MAX_VALUE - 2);
+
+        PluginPreferences.bumpManagedTileCacheBuster();
+
+        assertEquals(Long.MAX_VALUE - 1, Config.getPref().getLong(PREFIX + "cacheBuster", 0L));
+    }
+
+    private ManagedHeatmapConfig withCredentials(
+        ManagedHeatmapConfig base,
+        String key,
+        String policy,
+        String signature,
+        String session,
+        long generation
+    ) {
+        return new ManagedHeatmapConfig(key, policy, signature, session, base.activity(), base.color(),
+            base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(), base.verbose(),
+            base.debug(), base.multiColorDetection(), base.aggregateAllColorSchemes(),
+            base.showAggregateIntensityLayer(), base.candidateRatingEnabled(), base.parallelWayAwareness(),
+            base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+            base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+            base.inferenceMode(), base.inferenceZoom(), base.validationZoom(), base.searchHalfWidthMeters(),
+            base.sampleStepMeters(), base.intensitySamplingMode(), generation);
     }
 }

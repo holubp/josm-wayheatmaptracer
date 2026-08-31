@@ -7,6 +7,8 @@ import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileUrlBuilder;
 
 /**
  * Creates and locates the plugin-managed Strava heatmap TMS layer.
@@ -16,7 +18,7 @@ public final class ManagedImageryService {
     public static final String MANAGED_LAYER_ID = "wayheatmaptracer.managed.heatmap";
     /** User-facing base name of the plugin-managed Strava layer. */
     public static final String MANAGED_LAYER_NAME = "WayHeatmapTracer Heatmap";
-    private static final String HEATMAP_URL_TEMPLATE = "tms[15]:https://content-a.strava.com/identified/globalheat/%s/%s/{zoom}/{x}/{y}.png%s";
+    private static final ManagedTileUrlBuilder URL_BUILDER = new ManagedTileUrlBuilder();
 
     private ManagedImageryService() {
     }
@@ -37,10 +39,10 @@ public final class ManagedImageryService {
 
         String activity = sanitizeOption(config.activity(), "all");
         String color = sanitizeOption(config.color(), "hot");
-        String cacheQuery = config.cacheBuster() > 0 ? "?whtr-cache=" + config.cacheBuster() : "";
         ImageryInfo info = new ImageryInfo(
             MANAGED_LAYER_NAME + " (" + activity + "/" + color + ")",
-            HEATMAP_URL_TEMPLATE.formatted(activity, color, cacheQuery),
+            URL_BUILDER.buildJosmTemplate(activity, color,
+                new ManagedTileGeneration(Math.max(0L, config.cacheBuster()))),
             "tms",
             null,
             config.toCookieHeader(),

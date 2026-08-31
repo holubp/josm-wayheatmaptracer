@@ -308,6 +308,51 @@ Current scope:
 
 ## Core Runtime Flow
 
+### Managed Tile Reliability Contract
+
+Plugin-direct managed tile requests use one plugin-owned coordinator. The fixed
+sampler, live all-color diagnostic layer, and selected-source probe share strict
+address/generation identity, bounded transport reads, validated atomic positive
+cache writes, single-flight requests, a priority queue, bounded memory, negative
+failure eligibility, and generation-level authentication/rate-limit circuits.
+The managed visible TMS layer remains owned by JOSM.
+
+The coordinator accepts three foreground workers, at most 512 admitted queued
+requests, an 8 MiB encoded response, a 96 MiB source cache, and 512 scheduled
+eligibility callbacks. Required selected-source requests outrank optional
+aggregate and live visualization work. A required transient transport failure
+may be attempted once more before its deadline; live visualization failures are
+not immediately retried. Authentication remains blocked until generation
+change, while `Retry-After` controls rate-limit eligibility.
+
+`AlignmentTileSourcePlan` is the authority for alignment acquisition. The
+selected palette is required. Other palettes are acquired only when the
+all-color detector is explicitly enabled and color mapping is active. Showing
+the diagnostic aggregate layer and running alternative mappings on the current
+source never expand this plan. An explicitly requested all-color detector still
+requires complete matching `hot`, `blue`, `bluered`, `purple`, and `gray`
+mosaics at every required zoom in the patch-compatible 0.20.x behavior.
+
+The aggregate layer paint path may calculate visible keys, publish an idempotent
+schedule signal, and draw an already-complete image. It must not read disk,
+perform network I/O, decode PNGs, aggregate source rasters, block, or make a
+failed key immediately eligible. Layer destruction cancels its subscriptions
+and prevents late publication; plugin destruction closes the shared runtime.
+
+Credential changes and explicit bypass advance one monotonic numeric generation
+used by JOSM's managed URL and every plugin-direct URL/cache key. Do not persist
+or derive a credential fingerprint. `CredentialSnapshot`, configuration, parsed
+cookie values, exceptions, UI, logs, and format-11 `tile-acquisition.json` must
+never reveal credential-derived characters, Cookie headers, signed URLs, error
+bodies, or arbitrary server messages.
+
+The selected-source settings check is asynchronous and tests only one selected
+z15 tile near the current map center. It reports plugin-cache and fresh-network
+success separately. JOSM-visible fallback imagery is not evidence of direct
+source availability. Fixed sampler acquisition remains synchronously awaited by
+the current alignment action; moving mutable JOSM selection/data access to a
+worker remains a separately gated minor-version change.
+
 1. `AlignWayAction` resolves the editable way segment, validates downloaded-area coverage unless the opt-in local drawing bypass is enabled, and opens a per-slide diagnostic session.
 2. `AlignmentService` resolves managed Strava source tiles when complete access values are configured; otherwise it resolves a visible heatmap imagery layer.
 3. Managed mosaic origins and tile/crop corners are pixel boundaries. A decoded raster index `(i,j)` is the sample at world-pixel center `(i+0.5,j+0.5)`: world-to-sample conversion subtracts `0.5` before virtual oversampling, and candidate projection adds it back. Aggregate visualization corners remain boundary coordinates. For the visible-layer fallback, `RenderedHeatmapSampler` renders the imagery layer through JOSM into an oversampled raster and records the rendered tile zoom before restoring the user's viewport. The capture uses the required working view resolution over the selected segment extent; if one virtual viewport is too large, the service pans a virtual viewport over the extent and stitches the rendered chunks before sampling. JOSM's capture scale is projection units per view pixel. `ProjectionGroundScale` measures geographic ground scale at slide-time geometry quantiles, while `SamplingScale` separately records ground metres per view/raster pixel, optional native tile resolution, and the tracker normalization policy. The legacy tracker retains its historical six-raster-pixel compatibility normalization; corridor-aware tracking uses factual native resolution when known.

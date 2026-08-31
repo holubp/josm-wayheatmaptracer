@@ -29,7 +29,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.ExportDiagnostics
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.GeometryCleanupSettingsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.HeatmapLayerSettingsAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegmentAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
 /**
  * Plugin entry point that registers WayHeatmapTracer menu actions and global shortcuts in JOSM.
@@ -57,6 +60,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
      */
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
+        ManagedTileRuntime.initialize(PluginPreferences.load());
         this.alignWayAction = new AlignWayAction();
         this.alignPreciseAction = new AlignWayAction(AlignmentMode.PRECISE_SHAPE);
         this.alignMoveNodesAction = new AlignWayAction(AlignmentMode.MOVE_EXISTING_NODES);
@@ -81,6 +85,8 @@ public class WayHeatmapTracerPlugin extends Plugin {
      * Removes registered actions and shortcuts when JOSM unloads the plugin.
      */
     public void destroy() {
+        AggregateIntensityLayer.removeExisting();
+        ManagedTileRuntime.close();
         JMenu menu = MainApplication.getMenu().moreToolsMenu;
         Map<Action, Component> byAction = Arrays.stream(menu.getMenuComponents())
             .filter(JMenuItem.class::isInstance)

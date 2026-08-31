@@ -14,4 +14,8 @@ public record StravaCookieValues(
     String signature,
     String sessionToken
 ) {
+    @Override
+    public String toString() {
+        return "StravaCookieValues[REDACTED]";
+    }
 }

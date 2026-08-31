@@ -1,5 +1,17 @@
 # Implementation Backlog
 
+## Tile reliability hardening (v0.20.1 candidate)
+
+The checkpointed execution plan is
+[`superpowers/docs/plans/2026-08-31-v0.20.1-tile-reliability-execution.md`](superpowers/docs/plans/2026-08-31-v0.20.1-tile-reliability-execution.md).
+It introduces one bounded privacy-safe coordinator for plugin-direct managed
+tile requests, decouples diagnostic aggregate visibility from alignment source
+planning, makes cache generations consistent, adds an asynchronous selected-source
+check, and adds format-11 safe acquisition diagnostics. The 0.20.x candidate
+retains strict whole-slide failure for an explicitly requested incomplete
+all-color detector. Graceful selected-source continuation and background
+alignment remain separately gated minor-version work.
+
 ## Corridor-aware default promotion (v0.20.0 release authorized)
 
 The checkpointed promotion plan is
