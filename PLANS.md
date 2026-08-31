@@ -1,6 +1,15 @@
 # Implementation Backlog
 
-## Residual lateral stability (implemented locally; release pending)
+## Corridor-aware default promotion (v0.20.0 release authorized)
+
+The checkpointed promotion plan is
+[`superpowers/docs/plans/2026-08-31-v0.20.0-corridor-aware-default-promotion.md`](superpowers/docs/plans/2026-08-31-v0.20.0-corridor-aware-default-promotion.md).
+It promotes the regression-covered corridor-aware tracker to the public default,
+preserves explicit legacy selection, and leaves geometry cleanup disabled by
+default. It does not activate the deferred plateau experiment or change palettes,
+sampling, detector ordering, or topology gates.
+
+## Residual lateral stability (released in v0.19.3)
 
 The checkpointable execution plan is
 [`superpowers/docs/plans/2026-08-31-residual-lateral-stability-execution.md`](superpowers/docs/plans/2026-08-31-residual-lateral-stability-execution.md).
@@ -8,7 +17,8 @@ The patch-safe path strengthens only explicitly enabled geometry cleanup: robust
 trend-residual ripple attribution, a gated absolute short-wave turn cost in the
 existing exact DP, format-10 diagnostics, and bounded private-archive analysis.
 Plateau-target changes were not enabled because their evidence gate was not met.
-Version, commit, push, and release remain separate maintainer decisions.
+The implementation was released as `v0.19.3`; its raw/default behavior remained
+unchanged so that default promotion could be reviewed separately for `v0.20.0`.
 
 This file preserves the post-0.11 planning backlog so items can be implemented gradually.
 

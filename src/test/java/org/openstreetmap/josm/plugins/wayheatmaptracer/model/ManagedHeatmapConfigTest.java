@@ -39,9 +39,22 @@ class ManagedHeatmapConfigTest {
     }
 
     @Test
-    void trackerModePreferenceFallsBackToLegacy() {
+    void trackerModePreferenceFallsBackToPublicDefault() {
+        assertEquals(TrackerMode.CORRIDOR_AWARE, TrackerMode.defaultMode());
         assertEquals(TrackerMode.CORRIDOR_AWARE, TrackerMode.fromPreference("corridor_aware"));
-        assertEquals(TrackerMode.LEGACY_V02, TrackerMode.fromPreference(null));
-        assertEquals(TrackerMode.LEGACY_V02, TrackerMode.fromPreference("future-mode"));
+        assertEquals(TrackerMode.CORRIDOR_AWARE, TrackerMode.fromPreference(null));
+        assertEquals(TrackerMode.CORRIDOR_AWARE, TrackerMode.fromPreference("future-mode"));
+        assertEquals(TrackerMode.LEGACY_V02, TrackerMode.fromPreference("legacy_v02"));
+    }
+
+    @Test
+    void redactedDiagnosticsUseTheEffectivePublicDefault() {
+        ManagedHeatmapConfig config = new ManagedHeatmapConfig("", "", "", "", "all", "hot", "", ".*",
+            AlignmentMode.MOVE_EXISTING_NODES, null, false, false, false, false, false, false, false,
+            false, false, false, 18, 4, 3.0, InferenceMode.STABLE_FIXED_SCALE, 15, 13, 7.01,
+            1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
+
+        assertEquals(TrackerMode.CORRIDOR_AWARE, config.trackerMode());
+        assertTrue(config.toRedactedJson().contains("\"trackerMode\":\"CORRIDOR_AWARE\""));
     }
 }

@@ -84,7 +84,7 @@ public final class PluginPreferences {
             pref.get(MANUAL_LAYER, ""),
             pref.get(REGEX, ".*(Heatmap|Strava).*"),
             AlignmentMode.fromPreference(pref.get(ALIGNMENT_MODE, AlignmentMode.MOVE_EXISTING_NODES.name())),
-            TrackerMode.fromPreference(pref.get(TRACKER_MODE, TrackerMode.LEGACY_V02.name())),
+            TrackerMode.fromPreference(pref.get(TRACKER_MODE, TrackerMode.defaultMode().name())),
             pref.getBoolean(VERBOSE, false),
             pref.getBoolean(DEBUG, false),
             pref.getBoolean(MULTI_COLOR_DETECTION, true),
@@ -125,9 +125,7 @@ public final class PluginPreferences {
         Config.getPref().put(MANUAL_LAYER, nullToEmpty(config.manualLayerName()));
         Config.getPref().put(REGEX, nullToEmpty(config.layerRegex()));
         Config.getPref().put(ALIGNMENT_MODE, config.alignmentMode().name());
-        Config.getPref().put(TRACKER_MODE, (config.trackerMode() == null
-            ? TrackerMode.LEGACY_V02
-            : config.trackerMode()).name());
+        Config.getPref().put(TRACKER_MODE, config.trackerMode().name());
         Config.getPref().putBoolean(VERBOSE, config.verbose());
         Config.getPref().putBoolean(DEBUG, config.debug());
         Config.getPref().putBoolean(MULTI_COLOR_DETECTION, config.multiColorDetection());
@@ -278,7 +276,7 @@ public final class PluginPreferences {
             "",
             ".*(Heatmap|Strava).*",
             AlignmentMode.MOVE_EXISTING_NODES,
-            TrackerMode.LEGACY_V02,
+            TrackerMode.defaultMode(),
             false,
             false,
             true,

@@ -6,8 +6,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 public enum TrackerMode {
     /** Proven v0.2-compatible ridge tracking and fallback behavior. */
     LEGACY_V02("Legacy v0.2-compatible"),
-    /** Experimental full-profile corridor extraction and longitudinal optimization. */
-    CORRIDOR_AWARE("Experimental corridor-aware");
+    /** Full-profile corridor extraction and longitudinal optimization. */
+    CORRIDOR_AWARE("Corridor-aware (recommended)");
 
     private final String label;
 
@@ -16,10 +16,19 @@ public enum TrackerMode {
     }
 
     /**
+     * Returns the tracker selected when no explicit preference exists.
+     *
+     * @return public default tracker
+     */
+    public static TrackerMode defaultMode() {
+        return CORRIDOR_AWARE;
+    }
+
+    /**
      * Parses a persisted tracker mode.
      *
      * @param value enum name stored in preferences
-     * @return parsed mode, or {@link #LEGACY_V02} for blank or unknown values
+     * @return parsed mode, or {@link #defaultMode()} for blank or unknown values
      */
     public static TrackerMode fromPreference(String value) {
         if (value != null) {
@@ -29,7 +38,7 @@ public enum TrackerMode {
                 }
             }
         }
-        return LEGACY_V02;
+        return defaultMode();
     }
 
     @Override

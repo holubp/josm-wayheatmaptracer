@@ -67,6 +67,13 @@ public record ManagedHeatmapConfig(
     long cacheBuster
 ) {
     /**
+     * Normalizes the optional tracker input to the effective persisted-settings default.
+     */
+    public ManagedHeatmapConfig {
+        trackerMode = trackerMode == null ? TrackerMode.defaultMode() : trackerMode;
+    }
+
+    /**
      * Checks whether all managed Strava access fields are configured.
      *
      * @return {@code true} when signed managed tile URLs can be created
@@ -141,7 +148,7 @@ public record ManagedHeatmapConfig(
             + "\"manualLayerName\":\"" + escape(manualLayerName) + "\","
             + "\"layerRegex\":\"" + escape(layerRegex) + "\","
             + "\"alignmentMode\":\"" + alignmentMode.name() + "\","
-            + "\"trackerMode\":\"" + (trackerMode == null ? TrackerMode.LEGACY_V02 : trackerMode).name() + "\","
+            + "\"trackerMode\":\"" + trackerMode.name() + "\","
             + "\"verbose\":" + verbose + ','
             + "\"debug\":" + debug + ','
             + "\"multiColorDetection\":" + multiColorDetection + ','

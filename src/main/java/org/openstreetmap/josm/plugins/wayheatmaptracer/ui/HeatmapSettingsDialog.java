@@ -82,7 +82,7 @@ public final class HeatmapSettingsDialog {
         color.setSelectedItem(config.color());
         regex.setText(config.layerRegex());
         alignmentMode.setSelectedItem(config.alignmentMode());
-        trackerMode.setSelectedItem(config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode());
+        trackerMode.setSelectedItem(config.trackerMode());
         inferenceMode.setSelectedItem(config.inferenceMode());
         intensitySamplingMode.setSelectedItem(config.intensitySamplingMode());
         verbose.setSelected(config.verbose());

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -27,6 +28,30 @@ class PluginPreferencesTest {
 
         assertTrue(config.isDisabled());
         assertFalse(Config.getPref().getKeySet().contains(PREFIX + "cleanup.schemaVersion"));
+    }
+
+    @Test
+    void freshPreferencesUseCorridorAwareTrackerButKeepCleanupDisabled() {
+        assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.load().trackerMode());
+        assertTrue(PluginPreferences.loadGeometryCleanup().isDisabled());
+    }
+
+    @Test
+    void explicitLegacyTrackerPreferenceRoundTripsWithoutPromotion() {
+        Config.getPref().put(PREFIX + "trackerMode", TrackerMode.LEGACY_V02.name());
+
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
+
+        PluginPreferences.save(PluginPreferences.load());
+        assertEquals(TrackerMode.LEGACY_V02.name(),
+            Config.getPref().get(PREFIX + "trackerMode", ""));
+    }
+
+    @Test
+    void unknownTrackerPreferenceUsesPublicDefault() {
+        Config.getPref().put(PREFIX + "trackerMode", "removed-future-mode");
+
+        assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.load().trackerMode());
     }
 
     @Test

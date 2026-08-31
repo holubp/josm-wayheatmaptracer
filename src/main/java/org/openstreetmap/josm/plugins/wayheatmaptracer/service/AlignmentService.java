@@ -727,7 +727,7 @@ public final class AlignmentService {
         SelectionContext selection,
         String detector
     ) {
-        TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode trackerMode = config.trackerMode();
         PluginLog.verbose("Tracking %d profiles with %s.", profiles.size(), trackerMode.name());
         return switch (trackerMode) {
             case LEGACY_V02 -> legacyTrackerOutput(profiles, effectiveSampling.trackerNormalizationRasterPx());
@@ -768,7 +768,7 @@ public final class AlignmentService {
     }
 
     private TrackerMode trackerMode(ManagedHeatmapConfig config) {
-        return config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        return config.trackerMode();
     }
 
     private TrackerOutput corridorTrackerOutput(
@@ -1134,7 +1134,7 @@ public final class AlignmentService {
         List<EastNorth> sourcePolyline,
         ManagedHeatmapConfig config
     ) {
-        TrackerMode mode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode mode = config.trackerMode();
         if (mode != TrackerMode.CORRIDOR_AWARE || !config.parallelWayAwareness()) {
             return candidates;
         }
@@ -1219,7 +1219,7 @@ public final class AlignmentService {
                 java.util.Comparator.reverseOrder())
             .thenComparing(java.util.Comparator.comparingInt((CenterlineCandidate candidate) ->
                 DetectorFamily.sourceTier(source, detectorMode(candidate))).reversed());
-        TrackerMode mode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode mode = config.trackerMode();
         java.util.Comparator<CenterlineCandidate> qualityOrder = mode == TrackerMode.CORRIDOR_AWARE
             ? java.util.Comparator.comparingDouble((CenterlineCandidate candidate) ->
                 measurableCorridorRankingScore(candidate, effectiveSampling)).reversed()
@@ -1794,7 +1794,7 @@ public final class AlignmentService {
     ) {
         return candidates.stream()
             .map(candidate -> {
-                TrackerMode mode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+                TrackerMode mode = config.trackerMode();
                 List<JunctionSafetyFinding> findings = mode == TrackerMode.CORRIDOR_AWARE
                     ? connectedWayCrossings(candidate, selection,
                         junctionIntersectionToleranceMeters(effectiveSampling))
@@ -1817,7 +1817,7 @@ public final class AlignmentService {
         GeometryCleanupConfig cleanupConfig,
         MapView mapView
     ) {
-        TrackerMode mode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode mode = config.trackerMode();
         if (mode != TrackerMode.CORRIDOR_AWARE) {
             return candidates;
         }
@@ -1842,8 +1842,7 @@ public final class AlignmentService {
         GeometryCleanupConfig cleanupConfig
     ) {
         AlignmentMode alignmentMode = effectiveAlignmentMode(selection, config);
-        TrackerMode trackerMode = config.trackerMode() == null
-            ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode trackerMode = config.trackerMode();
         List<CenterlineCandidate> expanded = new ArrayList<>();
         for (CenterlineCandidate raw : rawCandidates) {
             expanded.addAll(geometryCleanupService.expand(
@@ -1907,7 +1906,7 @@ public final class AlignmentService {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "too many samples near search edge %.0f%%", metrics.edgeRatio() * 100.0));
         }
-        TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode trackerMode = config.trackerMode();
         if (trackerMode == TrackerMode.CORRIDOR_AWARE) {
             String topologyIssue = proposedJunctionAssignmentIssue(candidate, selection);
             if (topologyIssue != null) {
@@ -3015,7 +3014,7 @@ public final class AlignmentService {
         List<CenterlineCandidate> candidates,
         ManagedHeatmapConfig config
     ) {
-        TrackerMode trackerMode = config.trackerMode() == null ? TrackerMode.LEGACY_V02 : config.trackerMode();
+        TrackerMode trackerMode = config.trackerMode();
         if (trackerMode != TrackerMode.CORRIDOR_AWARE || !config.parallelWayAwareness()) {
             return "{\"enabled\":false,\"ways\":[],\"assignments\":[]}";
         }

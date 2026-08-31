@@ -26,7 +26,7 @@ public record DetectorAttempt(
     public DetectorAttempt {
         sourcePalette = sourcePalette == null ? "" : sourcePalette;
         mappingName = mappingName == null ? "" : mappingName;
-        trackerMode = trackerMode == null ? TrackerMode.LEGACY_V02 : trackerMode;
+        trackerMode = trackerMode == null ? TrackerMode.defaultMode() : trackerMode;
         candidateIds = candidateIds == null ? List.of() : List.copyOf(candidateIds);
         reasonCode = reasonCode == null ? "" : reasonCode;
         reason = reason == null ? "" : reason;
