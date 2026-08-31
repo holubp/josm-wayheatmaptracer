@@ -881,7 +881,8 @@ public final class AlignmentService {
                 costs.append(csv(detector)).append(',').append(csv(entry.getKey())).append(',')
                     .append(row.profileIndex()).append(',').append(row.chosenOffsetPx()).append(',')
                     .append(row.profileSpacingPx()).append(',').append(row.dataCost()).append(',').append(row.continuityCost()).append(',')
-                    .append(row.accelerationCost()).append(',').append(row.plateauCenterCost()).append(',')
+                    .append(row.accelerationCost()).append(',').append(row.absoluteShortWaveTurnCost()).append(',')
+                    .append(row.plateauCenterCost()).append(',')
                     .append(row.coarsePriorCost()).append(',').append(row.tubeCenterCost()).append(',')
                     .append(row.endpointCost()).append(',')
                     .append(row.weightedTotal()).append(',')
@@ -896,6 +897,11 @@ public final class AlignmentService {
                     .append(row.effectiveRippleScaleMeters()).append(',')
                     .append(row.effectiveRippleStrength()).append(',')
                     .append(row.rippleSupport()).append(',')
+                    .append(row.supportedTurnWeight()).append(',').append(row.shortScaleExposure()).append(',')
+                    .append(row.residualAmplitudeSourcePixels()).append(',')
+                    .append(row.maximumResidualSourcePixels()).append(',').append(row.directCoverage()).append(',')
+                    .append(row.trendCenterOffsetPx()).append(',').append(row.trendSlopePxPerMeter()).append(',')
+                    .append(row.trendUncertaintyPx()).append(',').append(row.trendAuthorization()).append(',')
                     .append(row.unsupportedRippleFactor()).append(',')
                     .append(row.reversalSpacingMeters()).append(',')
                     .append(csv(row.rippleDecision())).append(',')
@@ -1014,7 +1020,7 @@ public final class AlignmentService {
     }
 
     private String optimizerCostsCsvHeader() {
-        return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,plateau_center_cost,coarse_prior_cost,tube_center_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost,maximum_offset_states,maximum_pair_states,transition_evaluations,profile_cost_evaluations,point_table_entries,adjacent_geometry_entries,retained_pair_state_allocations,effective_ripple_scale_m,effective_ripple_strength,ripple_support,unsupported_ripple_factor,reversal_spacing_m,ripple_decision,ripple_additional_cost\n";
+        return "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,data_cost,continuity_cost,acceleration_cost,absolute_short_wave_turn_cost,plateau_center_cost,coarse_prior_cost,tube_center_cost,endpoint_cost,weighted_row_total,inside_core,inside_corridor,total_cost,maximum_offset_states,maximum_pair_states,transition_evaluations,profile_cost_evaluations,point_table_entries,adjacent_geometry_entries,retained_pair_state_allocations,effective_ripple_scale_m,effective_ripple_strength,ripple_support,supported_turn_weight,short_scale_exposure,residual_amplitude_source_px,maximum_residual_source_px,direct_coverage,trend_center_offset_px,trend_slope_px_per_meter,trend_uncertainty_px,trend_authorization,unsupported_ripple_factor,reversal_spacing_m,ripple_decision,ripple_additional_cost\n";
     }
 
     private String corridorBundlesCsvHeader() {

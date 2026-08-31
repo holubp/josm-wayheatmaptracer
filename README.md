@@ -235,7 +235,7 @@ The debug bundle is focused on the latest slide attempt. It includes:
 - verbose/debug log lines captured for that slide
 - rendered heatmap layer capture used by visible-layer sampling
 
-Format-6 exports include the runtime plugin version, a short SHA-256 jar identity when available, unit-explicit sampling scale, canonical bridge ownership, checksummed detailed CSV artifacts, and per-detector performance. The summary JSON no longer duplicates the complete profile arrays. Format-5 bundles remain analyzable, but visible-rendered metre fields are marked untrusted because JOSM projection units were labeled as metres. Older format-4 bundles additionally have mutable post-Apply original geometry and raster-space-distance risks. The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
+Format-10 keeps all earlier artifacts and adds robust ripple trend/residual evidence plus a separate cleanup-only absolute short-wave turn cost. Older formats remain readable and missing newer fields are unavailable rather than false zeros. Format-6 introduced runtime/build identity, unit-explicit sampling scale, bridge ownership, checksummed detailed CSV artifacts, and per-detector performance. Format-5 visible-rendered metre fields remain untrusted, and format 4 also has mutable post-Apply original-geometry risks. The export intentionally avoids Strava cookies, signed headers, and full signed URLs.
 
 For local numerical analysis of nested bundles and repeated slides:
 
@@ -244,6 +244,16 @@ python3 scripts/analyze-debug-bundles.py problems.zip --raw-csv build/debug-cand
 python3 scripts/analyze-slide-undulations.py problems.zip --csv build/undulations.csv --json build/undulations.json
 python3 scripts/validate-sampling-scale.py --pretty
 ```
+
+For a bounded privacy scan and deterministic manifest of many local archives,
+run `scripts/calibrate-lateral-stability.py` with an explicit `--archive-root`,
+include patterns, an ignored `build/` output directory, and
+`--manifest-only --strict`. The shared reader takes one immutable snapshot of each
+non-symlink outer file, validates nested depth, paths, entry types, CRCs, bounded
+stored/deflated/BZIP2/LZMA content, compression ratios, encryption, and duplicate
+contents without extraction. It scans the validated text inventory and ZIP comments
+for credential-like material without echoing values. Quarantined archives are
+excluded from the training/validation/holdout split lock.
 
 ## Palette Calibration Workflow
 

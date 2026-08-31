@@ -1,5 +1,15 @@
 # Implementation Backlog
 
+## Residual lateral stability (implemented locally; release pending)
+
+The checkpointable execution plan is
+[`superpowers/docs/plans/2026-08-31-residual-lateral-stability-execution.md`](superpowers/docs/plans/2026-08-31-residual-lateral-stability-execution.md).
+The patch-safe path strengthens only explicitly enabled geometry cleanup: robust
+trend-residual ripple attribution, a gated absolute short-wave turn cost in the
+existing exact DP, format-10 diagnostics, and bounded private-archive analysis.
+Plateau-target changes were not enabled because their evidence gate was not met.
+Version, commit, push, and release remain separate maintainer decisions.
+
 This file preserves the post-0.11 planning backlog so items can be implemented gradually.
 
 ## v0.19.0 Geometry Cleanup Status

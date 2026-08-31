@@ -36,6 +36,24 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertIn("raster-space", rows[0]["physical_distance_warning"])
         self.assertEqual("unreliable-after-apply", undulations[0]["original_geometry_trust"])
 
+    def test_formats_one_through_three_remain_readable(self) -> None:
+        """The oldest additive schemas remain analyzable with unavailable newer evidence."""
+        for format_version in (1, 2, 3):
+            with self.subTest(format_version=format_version):
+                rows, undulations = run_analyzers(debug_bundle(format_version, "", "preview-open"))
+                self.assertEqual(str(format_version), rows[0]["bundle_format"])
+                self.assertEqual("unreliable-after-apply", rows[0]["original_geometry_trust"])
+                self.assertEqual("pre-apply-snapshot", undulations[0]["original_geometry_trust"])
+
+    def test_bzip2_and_lzma_bundles_run_through_both_analyzer_clis(self) -> None:
+        """Legacy Python-supported ZIP codecs remain end-to-end compatible."""
+        for codec in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
+            with self.subTest(codec=codec):
+                rows, undulations = run_analyzers(recode_bundle(debug_bundle(
+                    6, "0.16.3", "preview-open"), codec))
+                self.assertEqual("6", rows[0]["bundle_format"])
+                self.assertEqual("immutable", undulations[0]["original_geometry_trust"])
+
     def test_format_five_preserves_version_and_physical_contract(self) -> None:
         """Managed format 5 exposes immutable geometry, version, and coherent physical spacing."""
         rows, undulations = run_analyzers(debug_bundle(5, "0.16.2", "applied"))
@@ -124,6 +142,14 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("unavailable", undulations[0]["cleanup_state"])
         self.assertEqual("", undulations[0]["cleanup_maximum_removed_deviation_meters"])
 
+    def test_format_ten_exposes_residual_authorization_and_absolute_turn_cost(self) -> None:
+        """Format 10 optimizer additions remain separate and readable."""
+        rows, _ = run_analyzers(debug_bundle(10, "0.19.3", "preview-open"))
+        self.assertAlmostEqual(1.0 / 12.0, float(rows[0]["absolute_short_wave_turn_cost"]))
+        self.assertEqual("0.4", rows[0]["residual_amplitude_source_px"])
+        self.assertEqual("0.75", rows[0]["trend_authorization"])
+        self.assertEqual("0.5", rows[0]["unsupported_ripple_factor"])
+
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
         outer = io.BytesIO()
@@ -168,6 +194,15 @@ def read_csv(path: Path) -> list[dict[str, str]]:
     """Read one generated analyzer CSV."""
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def recode_bundle(data: bytes, codec: int) -> bytes:
+    """Rewrite a generated bundle with one legacy compression codec."""
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(output, "w", codec) as target:
+        for info in source.infolist():
+            target.writestr(info.filename, source.read(info))
+    return output.getvalue()
 
 
 def debug_bundle(
@@ -284,11 +319,17 @@ def debug_bundle(
                 "-1.0,1.0,1.0,0.8\n"
                 "hot,bundle-1,2,DIRECT_UNION,right,left,0.0,1.0,-2.0,2.0,-1.0,1.0,1.0,0.9\n",
             )
-            archive.writestr(
-                "optimizer-costs.csv",
-                "detector,track_id,profile_index,chosen_offset_px\n"
-                "hot,bundle-1,0,0.0\nhot,bundle-1,1,0.0\nhot,bundle-1,2,0.0\n",
-            )
+            optimizer = ("detector,track_id,profile_index,chosen_offset_px\n"
+                         "hot,bundle-1,0,0.0\nhot,bundle-1,1,0.0\nhot,bundle-1,2,0.0\n")
+            if format_version >= 10:
+                optimizer = (
+                    "detector,track_id,profile_index,chosen_offset_px,profile_spacing_px,"
+                    "acceleration_cost,absolute_short_wave_turn_cost,residual_amplitude_source_px,"
+                    "trend_authorization,unsupported_ripple_factor,inside_core,inside_corridor\n"
+                    "hot,bundle-1,0,0.0,2.0,0.0,0.0,0.4,0.75,0.5,true,true\n"
+                    "hot,bundle-1,1,0.0,2.0,0.0,0.125,0.4,0.75,0.5,true,true\n"
+                    "hot,bundle-1,2,0.0,2.0,0.0,0.125,0.4,0.75,0.5,true,true\n")
+            archive.writestr("optimizer-costs.csv", optimizer)
         if format_version >= 9 and include_cleanup:
             archive.writestr(
                 "geometry-cleanup.csv",

@@ -10,6 +10,8 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
 /** Verifies that corridor optimization is invariant to sampled-raster scale. */
@@ -62,6 +64,69 @@ class CorridorScaleInvarianceTest {
             assertTrue(highFrequencyRms(crossTrack) <= 0.15,
                 "scale=" + scale + " geometric high-frequency RMS=" + highFrequencyRms(crossTrack));
         }
+    }
+
+    @Test
+    void cleanupEnabledAbsoluteTurnObjectiveIsSourceScaleInvariant() {
+        List<List<Double>> normalizedOffsets = new ArrayList<>();
+        List<Double> normalizedTurnCosts = new ArrayList<>();
+        var cleanup = GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+        for (double scale : List.of(1.0, 6.0, 24.0)) {
+            Scenario scenario = forcedShortRipple(scale);
+            LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+                scenario.track(), scenario.profiles(), scale, Map.of());
+            var result = new CorridorCenterlineOptimizer().optimize(scenario.track(), scenario.profiles(), scale,
+                JunctionContext.empty(), Map.of(), tube, cleanup);
+            normalizedOffsets.add(result.offsetsPx().stream().map(value -> value / scale).toList());
+            normalizedTurnCosts.add(result.costs().stream()
+                .mapToDouble(CorridorCenterlineOptimizer.CostRow::absoluteShortWaveTurnCost).sum());
+            assertTrue(normalizedTurnCosts.get(normalizedTurnCosts.size() - 1) > 0.0,
+                "scale=" + scale + " did not exercise the absolute-turn objective");
+        }
+
+        List<Double> reference = normalizedOffsets.get(0);
+        for (int scaleIndex = 1; scaleIndex < normalizedOffsets.size(); scaleIndex++) {
+            double maximumDifference = 0.0;
+            for (int i = 0; i < reference.size(); i++) {
+                maximumDifference = Math.max(maximumDifference,
+                    Math.abs(reference.get(i) - normalizedOffsets.get(scaleIndex).get(i)));
+            }
+            assertTrue(maximumDifference <= 0.25,
+                "cleanup-enabled normalized result changed by " + maximumDifference + " source pixels");
+            assertTrue(Math.abs(normalizedTurnCosts.get(scaleIndex) - normalizedTurnCosts.get(0)) <= 1e-9,
+                "absolute turn cost changed with source scale: " + normalizedTurnCosts);
+        }
+    }
+
+    private Scenario forcedShortRipple(double scale) {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        Point2D.Double tangent = new Point2D.Double(0.8, 0.6);
+        Point2D.Double normal = new Point2D.Double(-0.6, 0.8);
+        for (int i = 0; i < PROFILE_COUNT; i++) {
+            double centerSourcePixels = (i & 1) == 0 ? -3.0 : 3.0;
+            double center = centerSourcePixels * scale;
+            CorridorBand band = new CorridorBand("band", center,
+                center - 1.2 * scale, center + 1.2 * scale,
+                center - 0.5 * scale, center + 0.5 * scale, List.of(center), 1.0, 0.02, 0.98,
+                0.98, 0.92, 0.4 * scale, false, List.of());
+            List<IntensitySample> samples = new ArrayList<>();
+            for (int sourceOffset = -5; sourceOffset <= 5; sourceOffset++) {
+                double distance = Math.abs(sourceOffset - centerSourcePixels);
+                double intensity = distance <= 0.5 ? 1.0 : distance <= 1.5 ? 0.72 : 0.02;
+                samples.add(new IntensitySample(sourceOffset * scale, intensity, intensity, intensity, true));
+            }
+            Point2D.Double anchor = new Point2D.Double(
+                tangent.x * i * 4.0 * scale, tangent.y * i * 4.0 * scale);
+            EastNorth coordinate = new EastNorth(tangent.x * i * 4.0, tangent.y * i * 4.0);
+            var source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(coordinate, anchor.x, anchor.y, i * 4.0),
+                normal, List.of(), true, samples);
+            profiles.add(new CorridorProfile(i, source, List.of(band), 1.0, 0.02, 0.98, true));
+            points.put(i, new CorridorTrackPoint(i, band, false));
+        }
+        return new Scenario(new CorridorTrack("track", points, PROFILE_COUNT, 1.0,
+            false, List.of(), ""), profiles);
     }
 
     private Scenario broadDiagonalPlateau(double scale) {

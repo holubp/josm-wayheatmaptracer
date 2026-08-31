@@ -89,7 +89,7 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":9"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":10"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
             assertTrue(text(zip, "diagnostics.json").contains("profile-intensity.csv"));

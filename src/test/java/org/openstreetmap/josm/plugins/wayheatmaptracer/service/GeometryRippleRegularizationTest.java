@@ -27,6 +27,9 @@ class GeometryRippleRegularizationTest {
             explicitDisabled.optimizations().values().stream().map(value -> value.totalCost()).toList());
         assertEquals(legacyCall.optimizations().values().stream().map(value -> value.transitionEvaluations()).toList(),
             explicitDisabled.optimizations().values().stream().map(value -> value.transitionEvaluations()).toList());
+        assertTrue(explicitDisabled.optimizations().values().stream()
+            .flatMap(value -> value.costs().stream())
+            .allMatch(value -> value.absoluteShortWaveTurnCost() == 0.0));
     }
 
     @Test

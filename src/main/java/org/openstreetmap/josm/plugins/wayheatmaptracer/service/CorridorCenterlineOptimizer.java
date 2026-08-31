@@ -24,6 +24,7 @@ public final class CorridorCenterlineOptimizer {
         .thenComparingDouble(PairState::previousOffset);
 
     private final CorridorOptimizationParameters parameters;
+    private final RippleRegularizationParameters rippleParameters;
 
     /**
      * Creates a stateless centerline optimizer.
@@ -38,7 +39,13 @@ public final class CorridorCenterlineOptimizer {
      * @param parameters immutable corridor-aware optimization parameters
      */
     public CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters) {
+        this(parameters, RippleRegularizationParameters.defaults());
+    }
+
+    CorridorCenterlineOptimizer(CorridorOptimizationParameters parameters,
+        RippleRegularizationParameters rippleParameters) {
         this.parameters = java.util.Objects.requireNonNull(parameters);
+        this.rippleParameters = java.util.Objects.requireNonNull(rippleParameters);
     }
 
     /**
@@ -149,6 +156,7 @@ public final class CorridorCenterlineOptimizer {
         }
         EndpointApproachModel endpointApproaches = new EndpointApproachBuilder().build(
             track, profiles, tube, junctionContext, scaleEvidence);
+        double[] rippleEndpointGates = rippleEndpointGates(profiles.size(), endpointApproaches);
         double sourcePixel = validSourcePixel(sourcePixelSizePx);
         double rippleStrength = cleanupConfig.isDisabled() ? 0.0 : cleanupConfig.rippleStrength();
         List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport = new UnsupportedRippleEvaluator().evaluate(
@@ -159,7 +167,7 @@ public final class CorridorCenterlineOptimizer {
                 endpointApproaches));
         }
         ExactSolution exactSolution = solveExact(track, profiles, allowed, sourcePixel, junctionContext,
-            scaleEvidence, tube, endpointApproaches, rippleSupport, rippleStrength);
+            scaleEvidence, tube, endpointApproaches, rippleSupport, rippleEndpointGates, rippleStrength);
         List<Double> optimizedOffsets = exactSolution.offsetsPx();
         List<Point2D.Double> points = new ArrayList<>(profiles.size());
         List<CostRow> costs = new ArrayList<>(profiles.size());
@@ -179,18 +187,22 @@ public final class CorridorCenterlineOptimizer {
                 inCorridor++;
             }
             DataCost dataComponents = dataCostComponents(track, profile, i, offset, sourcePixel, scaleEvidence,
-                tube.at(i), heatmapWeight(endpointApproaches, i), rippleSupport.get(i), rippleStrength);
+                tube.at(i), heatmapWeight(endpointApproaches, i), rippleSupport.get(i), rippleStrength,
+                rippleEndpointGates[i]);
             double data = dataComponents.total();
             double baseContinuityWeight = i == 0 ? 0.0 : continuityWeight(track, i);
             double continuityWeight = effectiveContinuityWeight(
-                baseContinuityWeight, rippleSupport.get(i), rippleStrength);
+                baseContinuityWeight, rippleSupport.get(i), rippleStrength, rippleEndpointGates[i]);
             double continuity = i == 0 ? 0.0 : continuityWeight
                 * square((offset - optimizedOffsets.get(i - 1)) / profileSpacing(profiles, i, sourcePixel));
             double baseAccelerationWeight = i < 2 ? 0.0 : accelerationWeight(track, i, tube);
             double accelerationWeight = effectiveAccelerationWeight(
-                baseAccelerationWeight, rippleSupport.get(i), rippleStrength);
+                baseAccelerationWeight, rippleSupport.get(i), rippleStrength, rippleEndpointGates[i]);
             double acceleration = i < 2 ? 0.0 : accelerationWeight
                 * geometricCurvatureCost(profiles, optimizedOffsets, tube, i, sourcePixel);
+            double absoluteTurn = i < 2 ? 0.0 : absoluteShortWaveTurnCost(profiles,
+                optimizedOffsets, i, sourcePixel, rippleSupport.get(i), rippleStrength,
+                rippleEndpointGates[i]);
             accelerationEnergy += acceleration;
             double endpoint = constraintCost(i, offset, junctionContext, endpointApproaches, sourcePixel);
             double spacing = i == 0 && profiles.size() > 1
@@ -200,15 +212,20 @@ public final class CorridorCenterlineOptimizer {
                 + Math.max(0.0, continuity - (i == 0 ? 0.0 : baseContinuityWeight
                     * square((offset - optimizedOffsets.get(i - 1)) / profileSpacing(profiles, i, sourcePixel))))
                 + Math.max(0.0, acceleration - (i < 2 ? 0.0 : baseAccelerationWeight
-                    * geometricCurvatureCost(profiles, optimizedOffsets, tube, i, sourcePixel)));
-            costs.add(new CostRow(i, offset, spacing, data, continuity, acceleration,
+                    * geometricCurvatureCost(profiles, optimizedOffsets, tube, i, sourcePixel))) + absoluteTurn;
+            costs.add(new CostRow(i, offset, spacing, data, continuity, acceleration, absoluteTurn,
                 dataComponents.plateauCenterCost(), dataComponents.coarsePriorCost(),
                 dataComponents.tubeCenterCost(), endpoint,
                 rippleStrength > 0.0 ? cleanupConfig.rippleScaleMeters() : 0.0, rippleStrength,
                 rippleSupport.get(i).support(),
+                rippleSupport.get(i).supportedTurnWeight(), rippleSupport.get(i).shortScaleExposure(),
+                rippleSupport.get(i).residualAmplitudeSourcePixels(),
+                rippleSupport.get(i).maximumResidualSourcePixels(), rippleSupport.get(i).directCoverage(),
+                rippleSupport.get(i).trendCenterOffsetPx(), rippleSupport.get(i).trendSlopePxPerMeter(),
+                rippleSupport.get(i).trendUncertaintyPx(), rippleSupport.get(i).trendAuthorization(),
                 rippleSupport.get(i).unsupportedWeight(), rippleSupport.get(i).reversalSpacingMeters(),
                 rippleSupport.get(i).reason(), rippleAdditional,
-                data + continuity + acceleration + endpoint, insideCore, contained));
+                data + continuity + acceleration + absoluteTurn + endpoint, insideCore, contained));
         }
         double inCorridorFraction = (double) inCorridor / profiles.size();
         double stability = 1.0 / (1.0 + accelerationEnergy / Math.max(1, profiles.size() - 2));
@@ -232,10 +249,12 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,
         EndpointApproachModel endpointApproaches,
         List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates,
         double rippleStrength
     ) {
         List<List<OffsetState>> stateTables = buildStateTables(track, profiles, allowed, sourcePixel,
-            junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport, rippleStrength);
+            junctionContext, scaleEvidence, tube, endpointApproaches, rippleSupport,
+            rippleEndpointGates, rippleStrength);
         long profileCostEvaluations = stateTables.stream().mapToLong(List::size).sum();
         long pointTableEntries = profileCostEvaluations;
         if (profiles.size() == 1) {
@@ -256,7 +275,7 @@ public final class CorridorCenterlineOptimizer {
         double spacingSourcePixels = spacing / sourcePixel;
         AdjacentGeometry firstGeometry = adjacentGeometry(
             stateTables.get(0), stateTables.get(1), profiles, tube, track, 1, spacing,
-            rippleSupport.get(1), rippleStrength);
+            rippleSupport.get(1), rippleStrength, rippleEndpointGates[1]);
         adjacentGeometryEntries += firstGeometry.entryCount();
         for (int firstIndex = 0; firstIndex < stateTables.get(0).size(); firstIndex++) {
             OffsetState first = stateTables.get(0).get(firstIndex);
@@ -281,10 +300,12 @@ public final class CorridorCenterlineOptimizer {
             spacing = profileSpacing(profiles, profileIndex, sourcePixel);
             spacingSourcePixels = spacing / sourcePixel;
             AdjacentGeometry geometry = adjacentGeometry(previousOffsets, currentOffsets,
-                profiles, tube, track, profileIndex, spacing, rippleSupport.get(profileIndex), rippleStrength);
+                profiles, tube, track, profileIndex, spacing, rippleSupport.get(profileIndex), rippleStrength,
+                rippleEndpointGates[profileIndex]);
             adjacentGeometryEntries += geometry.entryCount();
             double profileAccelerationWeight = effectiveAccelerationWeight(
-                accelerationWeight(track, profileIndex, tube), rippleSupport.get(profileIndex), rippleStrength);
+                accelerationWeight(track, profileIndex, tube), rippleSupport.get(profileIndex), rippleStrength,
+                rippleEndpointGates[profileIndex]);
             for (int beforeIndex = 0; beforeIndex < states.length; beforeIndex++) {
                 for (int previousIndex = 0; previousIndex < states[beforeIndex].length; previousIndex++) {
                     PairState previous = states[beforeIndex][previousIndex];
@@ -298,9 +319,12 @@ public final class CorridorCenterlineOptimizer {
                         double acceleration = profileAccelerationWeight
                             * geometricCurvatureCost(candidateHeading, geometry.referenceHeading(),
                                 previous, spacingSourcePixels);
+                        double absoluteTurn = absoluteShortWaveTurnCost(candidateHeading, previous,
+                            spacingSourcePixels, rippleSupport.get(profileIndex), rippleStrength,
+                            rippleEndpointGates[profileIndex]);
                         double cost = previous.cost()
                             + current.profileCost()
-                            + geometry.continuityCost(previousIndex, currentIndex) + acceleration;
+                            + geometry.continuityCost(previousIndex, currentIndex) + acceleration + absoluteTurn;
                         requireFiniteCost(cost, profileIndex);
                         PairState existing = next[previousIndex][currentIndex];
                         if (existing == null || cost < existing.cost()) {
@@ -338,6 +362,7 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,
         EndpointApproachModel endpointApproaches,
         List<UnsupportedRippleEvaluator.RippleSupport> rippleSupport,
+        double[] rippleEndpointGates,
         double rippleStrength
     ) {
         List<List<OffsetState>> tables = new ArrayList<>(profiles.size());
@@ -346,7 +371,7 @@ public final class CorridorCenterlineOptimizer {
             for (double offset : allowed.get(profileIndex)) {
                 double cost = profileCost(track, profiles, profileIndex, offset, sourcePixel,
                     junctionContext, scaleEvidence, tube, endpointApproaches,
-                    rippleSupport.get(profileIndex), rippleStrength);
+                    rippleSupport.get(profileIndex), rippleStrength, rippleEndpointGates[profileIndex]);
                 requireFiniteCost(cost, profileIndex);
                 states.add(new OffsetState(offset, pointFor(profiles.get(profileIndex), offset), cost));
             }
@@ -371,12 +396,13 @@ public final class CorridorCenterlineOptimizer {
         int profileIndex,
         double spacing,
         UnsupportedRippleEvaluator.RippleSupport rippleSupport,
-        double rippleStrength
+        double rippleStrength,
+        double rippleEndpointGate
     ) {
         double[][] headings = new double[previous.size()][current.size()];
         double[][] continuityCosts = new double[previous.size()][current.size()];
         double continuityWeight = effectiveContinuityWeight(
-            continuityWeight(track, profileIndex), rippleSupport, rippleStrength);
+            continuityWeight(track, profileIndex), rippleSupport, rippleStrength, rippleEndpointGate);
         for (int previousIndex = 0; previousIndex < previous.size(); previousIndex++) {
             for (int currentIndex = 0; currentIndex < current.size(); currentIndex++) {
                 headings[previousIndex][currentIndex] = heading(
@@ -427,10 +453,12 @@ public final class CorridorCenterlineOptimizer {
         LongitudinalCorridorTube tube,
         EndpointApproachModel endpointApproaches,
         UnsupportedRippleEvaluator.RippleSupport rippleSupport,
-        double rippleStrength
+        double rippleStrength,
+        double rippleEndpointGate
     ) {
         return dataCost(track, profiles.get(profileIndex), profileIndex, offset, sourcePixel, scaleEvidence,
-            tube.at(profileIndex), heatmapWeight(endpointApproaches, profileIndex), rippleSupport, rippleStrength)
+            tube.at(profileIndex), heatmapWeight(endpointApproaches, profileIndex), rippleSupport, rippleStrength,
+            rippleEndpointGate)
             + constraintCost(profileIndex, offset, junctionContext, endpointApproaches, sourcePixel);
     }
 
@@ -536,10 +564,11 @@ public final class CorridorCenterlineOptimizer {
         CorridorTubeSlice tubeSlice,
         double heatmapWeight,
         UnsupportedRippleEvaluator.RippleSupport rippleSupport,
-        double rippleStrength
+        double rippleStrength,
+        double rippleEndpointGate
     ) {
         return dataCostComponents(track, profile, profileIndex, offset, sourcePixel, scaleEvidence,
-            tubeSlice, heatmapWeight, rippleSupport, rippleStrength).total();
+            tubeSlice, heatmapWeight, rippleSupport, rippleStrength, rippleEndpointGate).total();
     }
 
     private DataCost dataCostComponents(
@@ -552,7 +581,8 @@ public final class CorridorCenterlineOptimizer {
         CorridorTubeSlice tubeSlice,
         double heatmapWeight,
         UnsupportedRippleEvaluator.RippleSupport rippleSupport,
-        double rippleStrength
+        double rippleStrength,
+        double rippleEndpointGate
     ) {
         CorridorBand band = bandAt(track, profileIndex);
         if (band == null) {
@@ -560,7 +590,7 @@ public final class CorridorCenterlineOptimizer {
                 / Math.max(sourcePixel, tubeSlice.uncertaintyPx());
             double tubeCost = parameters.tubeCenterWeight() * tubeSlice.confidence() * square(tubeDistance);
             double rippleCost = rippleTubeCost(offset, sourcePixel, tubeSlice, rippleSupport, rippleStrength,
-                heatmapWeight);
+                heatmapWeight, rippleEndpointGate);
             return new DataCost(0.35 + heatmapWeight * tubeCost + rippleCost, 0.0, 0.0,
                 heatmapWeight * tubeCost, rippleCost);
         }
@@ -626,7 +656,7 @@ public final class CorridorCenterlineOptimizer {
             + parameters.coreDistanceWeight() * square(coreDistance) + centerCost + coarsePrior + tubeCost);
         double shoulderCost = parameters.shoulderDistanceWeight() * square(shoulderDistance);
         double rippleCost = rippleTubeCost(offset, sourcePixel, tubeSlice, rippleSupport, rippleStrength,
-            heatmapWeight);
+            heatmapWeight, rippleEndpointGate);
         double total = weightedCenterEvidence + shoulderCost + rippleCost;
         return new DataCost(total, equivalentPeak ? heatmapWeight * centerCost : 0.0,
             heatmapWeight * coarsePrior, heatmapWeight * tubeCost, rippleCost);
@@ -638,32 +668,45 @@ public final class CorridorCenterlineOptimizer {
         CorridorTubeSlice tubeSlice,
         UnsupportedRippleEvaluator.RippleSupport rippleSupport,
         double rippleStrength,
-        double heatmapWeight
+        double heatmapWeight,
+        double rippleEndpointGate
     ) {
-        if (rippleStrength <= 0.0 || rippleSupport.unsupportedWeight() <= 0.0) {
+        double intervention = rippleInterventionWeight(rippleSupport, rippleEndpointGate);
+        if (rippleStrength <= 0.0 || intervention <= 0.0) {
             return 0.0;
         }
         double distance = (offset - tubeSlice.stabilityCenterOffsetPx())
             / Math.max(sourcePixel, tubeSlice.stabilityUncertaintyPx());
-        return heatmapWeight * 1.5 * rippleStrength * rippleSupport.unsupportedWeight() * square(distance);
+        return heatmapWeight * 1.5 * rippleStrength * intervention * square(distance);
     }
 
     private double effectiveContinuityWeight(
         double base,
         UnsupportedRippleEvaluator.RippleSupport support,
-        double strength
+        double strength,
+        double endpointGate
     ) {
-        return strength <= 0.0 || support.unsupportedWeight() <= 0.0
-            ? base : base * (1.0 + 2.0 * strength * support.unsupportedWeight());
+        double intervention = rippleInterventionWeight(support, endpointGate);
+        return strength <= 0.0 || intervention <= 0.0
+            ? base : base * (1.0 + 2.0 * strength * intervention);
     }
 
     private double effectiveAccelerationWeight(
         double base,
         UnsupportedRippleEvaluator.RippleSupport support,
-        double strength
+        double strength,
+        double endpointGate
     ) {
-        return strength <= 0.0 || support.unsupportedWeight() <= 0.0
-            ? base : base * (1.0 + 8.0 * strength * support.unsupportedWeight());
+        double intervention = rippleInterventionWeight(support, endpointGate);
+        return strength <= 0.0 || intervention <= 0.0
+            ? base : base * (1.0 + 8.0 * strength * intervention);
+    }
+
+    private double rippleInterventionWeight(
+        UnsupportedRippleEvaluator.RippleSupport support,
+        double endpointGate
+    ) {
+        return support.unsupportedWeight() * support.trendAuthorization() * clamp(endpointGate);
     }
 
     static String scaleEvidenceKey(int profileIndex, String bandId) {
@@ -818,6 +861,47 @@ public final class CorridorCenterlineOptimizer {
         return square(angleDifference(candidateTurn, referenceTurn) / Math.max(1.0, spacing));
     }
 
+    private double absoluteShortWaveTurnCost(double heading, PairState previous,
+        double spacingSourcePixels, UnsupportedRippleEvaluator.RippleSupport support,
+        double rippleStrength, double endpointGate) {
+        double gate = rippleStrength * rippleInterventionWeight(support, endpointGate);
+        if (gate <= 0.0 || rippleParameters.absoluteTurnWeight() <= 0.0) return 0.0;
+        double spacing = Math.max(1.0,
+            (spacingSourcePixels + previous.spacingSourcePixels()) / 2.0);
+        double curvature = Math.abs(angleDifference(heading, previous.segmentHeading())) / spacing;
+        double normalized = Math.max(0.0,
+            curvature - rippleParameters.curvatureDeadbandRadiansPerSourcePixel())
+            / rippleParameters.curvatureScaleRadiansPerSourcePixel();
+        return rippleParameters.absoluteTurnWeight() * gate
+            * rippleParameters.huber(normalized) * spacing;
+    }
+
+    private double absoluteShortWaveTurnCost(List<CorridorProfile> profiles,
+        List<Double> offsets, int index, double sourcePixel,
+        UnsupportedRippleEvaluator.RippleSupport support, double rippleStrength,
+        double endpointGate) {
+        Point2D.Double a = pointFor(profiles.get(index - 2), offsets.get(index - 2));
+        Point2D.Double b = pointFor(profiles.get(index - 1), offsets.get(index - 1));
+        Point2D.Double c = pointFor(profiles.get(index), offsets.get(index));
+        PairState prior = new PairState(index - 1, offsets.get(index - 2), offsets.get(index - 1),
+            heading(a, b), 0.0, profileSpacing(profiles, index - 1, sourcePixel) / sourcePixel,
+            0.0, null);
+        return absoluteShortWaveTurnCost(heading(b, c), prior,
+            profileSpacing(profiles, index, sourcePixel) / sourcePixel,
+            support, rippleStrength, endpointGate);
+    }
+
+    private double[] rippleEndpointGates(int profileCount, EndpointApproachModel approaches) {
+        double[] result = new double[profileCount];
+        java.util.Arrays.fill(result, 1.0);
+        for (int index = 0; index < profileCount; index++) {
+            double owner = approaches.targetsAt(index).stream()
+                .mapToDouble(EndpointApproachModel.GuideTarget::positionWeight).max().orElse(0.0);
+            result[index] = 1.0 - clamp(owner / 2.5);
+        }
+        return result;
+    }
+
     private double angleDifference(double angle, double reference) {
         double difference = angle - reference;
         while (difference > Math.PI) {
@@ -911,6 +995,7 @@ public final class CorridorCenterlineOptimizer {
      * @param dataCost heatmap and corridor-fit cost
      * @param continuityCost first-difference diagnostic
      * @param accelerationCost second-difference diagnostic
+     * @param absoluteShortWaveTurnCost cleanup-only absolute turn-rate cost
      * @param endpointCost endpoint prior cost
      * @param plateauCenterCost robust center cost applied within an intensity plateau
      * @param coarsePriorCost compatible coarse-scale localization prior
@@ -918,6 +1003,15 @@ public final class CorridorCenterlineOptimizer {
      * @param effectiveRippleScaleMeters active unsupported-ripple scale, or zero when disabled
      * @param effectiveRippleStrength active unsupported-ripple strength, or zero when disabled
      * @param rippleSupport sustained motion/turn support
+     * @param supportedTurnWeight bounded supported-turn evidence
+     * @param shortScaleExposure bounded short-reversal exposure
+     * @param residualAmplitudeSourcePixels robust residual amplitude in source pixels
+     * @param maximumResidualSourcePixels maximum residual amplitude in source pixels
+     * @param directCoverage bounded physical direct-evidence coverage
+     * @param trendCenterOffsetPx robust trend center at this profile in sampled-raster pixels
+     * @param trendSlopePxPerMeter robust trend slope in sampled-raster pixels per ground metre
+     * @param trendUncertaintyPx robust trend uncertainty in sampled-raster pixels
+     * @param trendAuthorization bounded authorization for trend-owned cleanup costs
      * @param unsupportedRippleFactor physical-window unsupported-ripple factor
      * @param reversalSpacingMeters median reversal spacing, or NaN
      * @param rippleDecision machine-readable support decision
@@ -933,6 +1027,7 @@ public final class CorridorCenterlineOptimizer {
         double dataCost,
         double continuityCost,
         double accelerationCost,
+        double absoluteShortWaveTurnCost,
         double plateauCenterCost,
         double coarsePriorCost,
         double tubeCenterCost,
@@ -940,6 +1035,15 @@ public final class CorridorCenterlineOptimizer {
         double effectiveRippleScaleMeters,
         double effectiveRippleStrength,
         double rippleSupport,
+        double supportedTurnWeight,
+        double shortScaleExposure,
+        double residualAmplitudeSourcePixels,
+        double maximumResidualSourcePixels,
+        double directCoverage,
+        double trendCenterOffsetPx,
+        double trendSlopePxPerMeter,
+        double trendUncertaintyPx,
+        double trendAuthorization,
         double unsupportedRippleFactor,
         double reversalSpacingMeters,
         String rippleDecision,

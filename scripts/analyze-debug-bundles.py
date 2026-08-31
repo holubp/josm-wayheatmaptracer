@@ -12,21 +12,9 @@ import statistics
 import sys
 import zipfile
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 
-
-@dataclass(frozen=True)
-class BundleSource:
-    """One direct or nested debug bundle held entirely in memory.
-
-    Attributes:
-        name: Stable display name including any outer-archive path.
-        data: Complete zip bytes for the nested debug bundle.
-    """
-
-    name: str
-    data: bytes
+from wayheatmap_analysis.safe_zip import ArchiveLimits, BundleSource, SafeArchiveReader
 
 
 def read_zip_text(bundle: BundleSource, name: str) -> str:
@@ -157,6 +145,10 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "edge_ratio": float_or_none(row.get("edge_ratio")),
             "corridor_center_wander_px": optimizer_summary.get("center_wander_px"),
             "corridor_lateral_acceleration": optimizer_summary.get("lateral_acceleration"),
+            "absolute_short_wave_turn_cost": optimizer_summary.get("absolute_short_wave_turn_cost"),
+            "residual_amplitude_source_px": optimizer_summary.get("residual_amplitude_source_px"),
+            "trend_authorization": optimizer_summary.get("trend_authorization"),
+            "unsupported_ripple_factor": optimizer_summary.get("unsupported_ripple_factor"),
             "in_core_or_shoulder_fraction": optimizer_summary.get("in_corridor_fraction"),
             "in_core_fraction": optimizer_summary.get("in_core_fraction"),
             "endpoint_approach_angle_degrees": optimizer_summary.get("endpoint_approach_angle_degrees"),
@@ -377,6 +369,14 @@ def optimizer_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dic
         offsets = compact_numbers(float_or_none(row.get("chosen_offset_px")) for row in ordered)
         spacings = compact_numbers(float_or_none(row.get("profile_spacing_px")) for row in ordered)
         accelerations = compact_numbers(float_or_none(row.get("acceleration_cost")) for row in ordered)
+        absolute_turns = compact_numbers(
+            float_or_none(row.get("absolute_short_wave_turn_cost")) for row in ordered)
+        residual_amplitudes = compact_numbers(
+            float_or_none(row.get("residual_amplitude_source_px")) for row in ordered)
+        authorizations = compact_numbers(
+            float_or_none(row.get("trend_authorization")) for row in ordered)
+        unsupported = compact_numbers(
+            float_or_none(row.get("unsupported_ripple_factor")) for row in ordered)
         in_core = [str(row.get("inside_core", "")).lower() == "true" for row in ordered]
         contained = [str(row.get("inside_corridor", "")).lower() == "true" for row in ordered]
         if not offsets:
@@ -397,6 +397,11 @@ def optimizer_summaries(rows: list[dict[str, str]]) -> dict[tuple[str, str], dic
         summaries[key] = {
             "center_wander_px": statistics.pstdev(residuals) if len(residuals) > 1 else 0.0,
             "lateral_acceleration": statistics.mean(accelerations) if accelerations else 0.0,
+            "absolute_short_wave_turn_cost": statistics.mean(absolute_turns) if absolute_turns else None,
+            "residual_amplitude_source_px": statistics.median(residual_amplitudes)
+            if residual_amplitudes else None,
+            "trend_authorization": statistics.median(authorizations) if authorizations else None,
+            "unsupported_ripple_factor": statistics.median(unsupported) if unsupported else None,
             "in_corridor_fraction": sum(contained) / len(contained) if contained else 0.0,
             "in_core_fraction": sum(in_core) / len(in_core) if in_core else 0.0,
             "endpoint_approach_angle_degrees": math.degrees(math.atan(endpoint_slope)),
@@ -754,24 +759,14 @@ def print_table(rows: list[dict[str, object]]) -> None:
 
 def debug_bundles(path: Path) -> list[BundleSource]:
     """Return direct and recursively nested WayHeatmapTracer debug bundles from one zip path."""
-    return nested_debug_bundles(path.name, path.read_bytes(), 0)
+    return SafeArchiveReader().discover(path)
 
 
 def nested_debug_bundles(name: str, data: bytes, depth: int) -> list[BundleSource]:
     """Discover debug bundles in a possibly nested zip without extracting user data to disk."""
-    if depth > 8:
-        raise ValueError(f"Nested zip depth exceeds safety limit: {name}")
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            names = set(archive.namelist())
-            if "candidate-metrics.csv" in names:
-                return [BundleSource(name, data)]
-            result: list[BundleSource] = []
-            for member in sorted(value for value in names if value.lower().endswith(".zip")):
-                result.extend(nested_debug_bundles(f"{name}!{member}", archive.read(member), depth + 1))
-            return result
-    except zipfile.BadZipFile as error:
-        raise ValueError(f"Not a readable zip bundle: {name}") from error
+    if depth < 0 or depth > 8:
+        raise ValueError("nested traversal depth must be in [0, 8]")
+    return SafeArchiveReader(ArchiveLimits(max_depth=8 - depth)).discover_bytes(name, data)
 
 
 def main() -> None:

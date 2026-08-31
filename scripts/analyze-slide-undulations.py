@@ -16,21 +16,10 @@ import math
 import statistics
 import sys
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
-
-@dataclass(frozen=True)
-class Bundle:
-    """In-memory debug bundle discovered from a path or nested archive.
-
-    Attributes:
-        name: Stable display name including any outer-archive path.
-        data: Complete zip bytes for the nested debug bundle.
-    """
-    name: str
-    data: bytes
+from wayheatmap_analysis.safe_zip import ArchiveLimits, BundleSource as Bundle, SafeArchiveReader
 
 
 def main() -> None:
@@ -66,31 +55,22 @@ def discover_bundles(paths: list[Path]) -> list[Bundle]:
             for child in sorted(path.glob("*.zip")):
                 bundles.extend(discover_bundles([child]))
             continue
-        data = path.read_bytes()
-        bundles.extend(discover_nested_bundle(path.name, data, 0))
+        bundles.extend(SafeArchiveReader().discover(path))
     return bundles
 
 
 def discover_nested_bundle(name: str, data: bytes, depth: int) -> list[Bundle]:
     """Recursively discover debug bundles without extracting their contents to disk."""
-    if depth > 8:
-        raise ValueError(f"Nested zip depth exceeds safety limit: {name}")
-    if is_debug_bundle(data):
-        return [Bundle(name, data)]
-    result: list[Bundle] = []
-    with zipfile.ZipFile(io.BytesIO(data)) as outer:
-        for member in sorted(value for value in outer.namelist() if value.lower().endswith(".zip")):
-            result.extend(discover_nested_bundle(f"{name}!{member}", outer.read(member), depth + 1))
-    return result
+    if depth < 0 or depth > 8:
+        raise ValueError("nested traversal depth must be in [0, 8]")
+    return SafeArchiveReader(ArchiveLimits(max_depth=8 - depth)).discover_bytes(name, data)
 
 
 def is_debug_bundle(data: bytes) -> bool:
     """Return whether bytes look like a WayHeatmapTracer last-slide debug bundle."""
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            names = set(archive.namelist())
-            return "diagnostics.json" in names and "candidate-metrics.csv" in names
-    except zipfile.BadZipFile:
+        return bool(SafeArchiveReader().discover_bytes("bundle.zip", data))
+    except ValueError:
         return False
 
 

@@ -297,7 +297,7 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":9,"
+            + "\"formatVersion\":10,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"

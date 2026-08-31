@@ -180,7 +180,7 @@ only for downgrade compatibility; runtime behavior reads the new schema.
 
 ### Cleanup Diagnostics And Compatibility
 
-The exporter uses additive format 9 while preserving formats 1-8. It adds dedicated,
+The exporter uses additive format 10 while preserving formats 1-9. Format 9 added dedicated,
 checksummed `geometry-cleanup.csv` and `geometry-cleanup-anchors.csv` artifacts.
 The first records the raw parent, cleaned sibling, mode/preset, outcome, point
 counts, accepted passes/chords, fit/deviation metrics, rejection reasons, and
@@ -190,6 +190,17 @@ and fresh assignment status. Parent/child identity is an explicit field, not
 parsed from a candidate label. Existing analyzers must treat missing format-9
 artifacts as unavailable rather than zero and must continue reading older
 bundles; the analyzers validate exact CSV checksums and CSV escaping.
+
+Format 10 extends `optimizer-costs.csv` without changing older columns. Ripple
+classification removes a confidence/uncertainty-weighted robust affine trend
+inside a contiguous direct-evidence window, requires sufficient physical span,
+and measures residual amplitude in native source pixels. The unsupported factor
+describes attribution; trend authorization separately prevents uncertain,
+scale-conflicted, parent-merged, or incomplete evidence from moving geometry.
+Cleanup-enabled optimization adds a weak Huber absolute short-wave turn cost to
+the existing exact second-order DP. It remains distinct from tube-relative
+curvature, uses source-pixel spacing, is attenuated by endpoint guidance, and is
+exactly zero when cleanup/ripple regularization is disabled.
 
 Cleanup diagnostics must also record the full redacted cleanup configuration,
 source tier, raw and cleaned geometry separately, retained indexes, protected
@@ -344,6 +355,24 @@ For external regression bundles, both analyzers discover nested debug ZIPs recur
 python3 scripts/analyze-debug-bundles.py problems-3.zip --raw-csv build/candidates.csv
 python3 scripts/analyze-slide-undulations.py problems-3.zip --csv build/undulations.csv
 ```
+
+Bulk private-corpus inventory must use the bounded shared reader and an explicit root:
+
+```bash
+python3 scripts/calibrate-lateral-stability.py \
+  --archive-root /path/to/local/repository \
+  --include 'last-slide-debug*.zip' --include 'problems-*.zip' \
+  --output-dir build/calibration-results --manifest-only --strict
+```
+
+The manifest contains relative paths and snapshot hashes only. Outer filesystem
+symlinks, unsafe ZIP metadata, resource-limit violations, or credential-like text
+quarantine an archive without echoing the matched value. Validation and hashing use
+the same immutable in-memory snapshot to avoid time-of-check/time-of-use drift.
+Stored, deflated, BZIP2, and LZMA members remain readable within explicit compressed,
+uncompressed, member, materialization, depth, and entry-count limits. Privacy scanning
+covers the deduplicated validated member-name inventory, bounded text-like contents,
+and ZIP comments. Quarantined hashes never enter `split-lock.json`.
 
 Old bundles remain readable. The analyzers preserve old raw values but flag format-4 physical columns and post-Apply original geometry as untrusted. These commands analyze exported outcomes and do not replay a new tracker implementation against old imagery.
 

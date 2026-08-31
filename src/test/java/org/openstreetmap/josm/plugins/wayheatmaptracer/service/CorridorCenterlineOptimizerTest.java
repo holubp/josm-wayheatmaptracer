@@ -11,6 +11,8 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
 class CorridorCenterlineOptimizerTest {
@@ -166,11 +168,80 @@ class CorridorCenterlineOptimizerTest {
             .optimize(scenario.track(), scenario.profiles(), 1.0);
 
         for (CorridorCenterlineOptimizer.CostRow row : result.costs()) {
-            assertEquals(row.dataCost() + row.continuityCost() + row.accelerationCost() + row.endpointCost(),
+            assertEquals(row.dataCost() + row.continuityCost() + row.accelerationCost()
+                    + row.absoluteShortWaveTurnCost() + row.endpointCost(),
                 row.weightedTotal(), 1e-12);
         }
         assertEquals(result.totalCost(), result.costs().stream()
             .mapToDouble(CorridorCenterlineOptimizer.CostRow::weightedTotal).sum(), 1e-9);
+    }
+
+    @Test
+    void enabledRippleDiagnosticsReconcileWithTheExactObjective() {
+        Scenario scenario = scenario(index -> (index & 1) == 0 ? -5.0 : 5.0, false, 2.0);
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            scenario.track(), scenario.profiles(), 1.0, Map.of());
+        var cleanup = GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+
+        var result = new CorridorCenterlineOptimizer().optimize(scenario.track(), scenario.profiles(), 1.0,
+            JunctionContext.empty(), Map.of(), tube, cleanup);
+
+        assertTrue(result.costs().stream().anyMatch(row -> row.absoluteShortWaveTurnCost() > 0.0));
+        assertTrue(result.costs().stream().anyMatch(row -> row.rippleAdditionalCost() > 0.0));
+        for (var row : result.costs()) {
+            assertEquals(row.dataCost() + row.continuityCost() + row.accelerationCost()
+                    + row.absoluteShortWaveTurnCost() + row.endpointCost(),
+                row.weightedTotal(), 1e-12);
+        }
+        assertEquals(result.totalCost(), result.costs().stream()
+            .mapToDouble(CorridorCenterlineOptimizer.CostRow::weightedTotal).sum(), 1e-9);
+    }
+
+    @Test
+    void endpointOwnedRowsReceiveNoCleanupOnlyCost() {
+        Scenario scenario = scenario(index -> (index & 1) == 0 ? -2.0 : 2.0, false, 2.0);
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            scenario.track(), scenario.profiles(), 1.0, Map.of());
+        var cleanup = GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+        JunctionContext constraints = new JunctionContext(List.of(
+            new EndpointConstraint(0, 1L, true, true, 0.0, 0.0, 6),
+            new EndpointConstraint(29, 2L, true, true, 0.0, 0.0, 6)
+        ));
+
+        var result = new CorridorCenterlineOptimizer().optimize(scenario.track(), scenario.profiles(), 1.0,
+            constraints, Map.of(), tube, cleanup);
+
+        assertEquals(0.0, result.costs().get(0).rippleAdditionalCost(), 1e-12);
+        assertEquals(0.0, result.costs().get(29).rippleAdditionalCost(), 1e-12);
+        assertEquals(0.0, result.offsetsPx().get(0), 1e-12);
+        assertEquals(0.0, result.offsetsPx().get(29), 1e-12);
+    }
+
+    @Test
+    void absoluteTurnCostReducesRippleWithoutChangingExactStateSpace() {
+        var cleanup = GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+        CorridorCenterlineOptimizer withoutAbsolute = new CorridorCenterlineOptimizer(
+            CorridorOptimizationParameters.defaults(), new RippleRegularizationParameters(0.0, 0.02, 0.05, 1.0));
+        List<Double> beforeRms = new ArrayList<>();
+        List<Double> afterRms = new ArrayList<>();
+        for (double amplitude : List.of(0.5, 1.0, 1.5, 2.0, 2.5, 3.0)) {
+            Scenario scenario = scenario(index -> (index & 1) == 0 ? -amplitude : amplitude, false, 2.0);
+            LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+                scenario.track(), scenario.profiles(), 1.0, Map.of());
+            var before = withoutAbsolute.optimize(scenario.track(), scenario.profiles(), 1.0,
+                JunctionContext.empty(), Map.of(), tube, cleanup);
+            var after = new CorridorCenterlineOptimizer().optimize(scenario.track(), scenario.profiles(), 1.0,
+                JunctionContext.empty(), Map.of(), tube, cleanup);
+            beforeRms.add(secondDifferenceRms(before.offsetsPx()));
+            afterRms.add(secondDifferenceRms(after.offsetsPx()));
+            assertEquals(before.maximumOffsetStates(), after.maximumOffsetStates());
+            assertEquals(before.maximumPairStates(), after.maximumPairStates());
+            assertEquals(before.transitionEvaluations(), after.transitionEvaluations());
+            assertEquals(before.profileCostEvaluations(), after.profileCostEvaluations());
+        }
+        assertTrue(afterRms.stream().mapToDouble(Double::doubleValue).sum()
+                < beforeRms.stream().mapToDouble(Double::doubleValue).sum(),
+            "absolute before=" + beforeRms + ", after=" + afterRms);
     }
 
     private double secondDifferenceRms(List<Double> values) {
