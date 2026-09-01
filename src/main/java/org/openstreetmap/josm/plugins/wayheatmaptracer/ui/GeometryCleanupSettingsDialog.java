@@ -14,16 +14,14 @@ import javax.swing.SpinnerNumberModel;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.tools.GBC;
 
 /** Modal configuration-only editor for future geometry cleanup candidates. */
 public final class GeometryCleanupSettingsDialog {
     private final Window parent;
     private final GeometryCleanupSettingsModel model;
-    private final JComboBox<GeometryCleanupMode> mode = new JComboBox<>(GeometryCleanupMode.values());
-    private final JComboBox<GeometryCleanupPreset> preset = new JComboBox<>(GeometryCleanupPreset.values());
+    private final JComboBox<GeometryCleanupChoice> choice = new JComboBox<>(GeometryCleanupChoice.values());
     private final JSpinner rippleScaleMeters = spinner(10.0, 0.5, 100.0, 0.5);
     private final JSpinner rippleStrength = spinner(0.55, 0.0, 1.0, 0.05);
     private final JSpinner laplacianStrength = spinner(0.25, 0.0, 1.0, 0.05);
@@ -50,15 +48,9 @@ public final class GeometryCleanupSettingsDialog {
     GeometryCleanupSettingsDialog(Window parent, GeometryCleanupSettingsModel model) {
         this.parent = parent;
         this.model = model;
-        mode.addActionListener(event -> {
+        choice.addActionListener(event -> {
             if (!binding) {
-                model.selectMode((GeometryCleanupMode) mode.getSelectedItem());
-                bindModel();
-            }
-        });
-        preset.addActionListener(event -> {
-            if (!binding) {
-                model.selectPreset((GeometryCleanupPreset) preset.getSelectedItem());
+                model.selectChoice((GeometryCleanupChoice) choice.getSelectedItem());
                 bindModel();
             }
         });
@@ -100,24 +92,25 @@ public final class GeometryCleanupSettingsDialog {
      */
     public static String summary(GeometryCleanupConfig config) {
         if (config.isDisabled()) {
-            return tr("Disabled");
+            return tr("Off");
         }
-        return tr("{0}: {1} m", config.preset(), config.rippleScaleMeters());
+        if (config.choice() == GeometryCleanupChoice.REDUCE_POINTS_ONLY) {
+            return tr("Reduce points only (Precise Shape only)");
+        }
+        return tr("Enabled: {0} (Precise Shape only)", config.choice());
     }
 
     private JPanel createPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
-        panel.add(new JLabel(tr("Mode")), GBC.std());
-        panel.add(mode, GBC.eol().fill(GBC.HORIZONTAL));
-        panel.add(new JLabel(tr("Preset")), GBC.std());
-        panel.add(preset, GBC.eol().fill(GBC.HORIZONTAL));
-        add(panel, tr("Ripple scale (m)"), rippleScaleMeters, tr("Maximum scale of unsupported lateral reversals."));
+        panel.add(new JLabel(tr("Geometry cleanup")), GBC.std());
+        panel.add(choice, GBC.eol().fill(GBC.HORIZONTAL));
         add(panel, tr("Ripple strength"), rippleStrength, tr("Penalty applied to unsupported ripple motion."));
         add(panel, tr("Laplacian strength"), laplacianStrength, tr("Normal-only smoothing strength."));
         add(panel, tr("Laplacian passes"), laplacianPassCount, tr("Maximum deterministic smoothing passes."));
         add(panel, tr("Reduction deviation (m)"), simplificationDeviationMeters,
             tr("Maximum ground deviation allowed while reducing points."));
         add(panel, tr("Fit retention"), minimumFitRetention, tr("Minimum retained heatmap-fit ratio."));
+        panel.add(new JLabel(tr("Applies to future Corridor Aware + Precise Shape slides.")), GBC.eol());
         return panel;
     }
 
@@ -130,8 +123,7 @@ public final class GeometryCleanupSettingsDialog {
     private void bindModel() {
         binding = true;
         GeometryCleanupConfig config = model.config();
-        mode.setSelectedItem(config.mode());
-        preset.setSelectedItem(config.preset());
+        choice.setSelectedItem(config.choice());
         rippleScaleMeters.setValue(config.rippleScaleMeters());
         rippleStrength.setValue(config.rippleStrength());
         laplacianStrength.setValue(config.laplacianStrength());

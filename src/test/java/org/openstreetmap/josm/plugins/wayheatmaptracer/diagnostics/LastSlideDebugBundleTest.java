@@ -27,6 +27,10 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceProvenance;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -89,7 +93,7 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":11"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":12"));
             assertNotNull(zip.getEntry("tile-acquisition.json"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
@@ -111,7 +115,13 @@ class LastSlideDebugBundleTest {
             new CandidateGeometryCleanup("", CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE,
                 "cleaned-sibling", List.of("raw-kept"), 12, 12, 12, 2, 1, 8, 4, 0,
                 0.88, 0.88, 0.0, OptionalDouble.empty(), OptionalDouble.empty()));
-        CenterlineCandidate cleaned = candidate("hot/strand#cleaned,\"quoted\"", first, last).withGeometryCleanup(
+        CenterlineCandidate cleaned = candidate("hot/strand#cleaned,\"quoted\"", first, last)
+            .withCleanupEvidence(CandidateCleanupEvidence.skipped(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame.empty(),
+                List.of(new CandidateCleanupProfile(0, -0.5, 0.5, -1.0, 1.0, 0.0, 0.5,
+                    CleanupEvidenceProvenance.DIRECT, 0.6, 0.2, false, 0.8, 0.1, 0.15)),
+                CleanupEvidenceStatus.INCOMPLETE_LONGITUDINAL_EVIDENCE))
+            .withGeometryCleanup(
             new CandidateGeometryCleanup(raw.id(), CandidateGeometryCleanup.Outcome.CLEANED,
                 "accepted", List.of("fit-retained", "comma,quoted \"reason\""), 12, 12, 5, 2, 1, 8, 4, 0,
                 0.88, 0.91, 1.25, OptionalDouble.of(0.42), OptionalDouble.of(0.93)));
@@ -123,20 +133,24 @@ class LastSlideDebugBundleTest {
         AlignmentResult result = new AlignmentResult(selection,
             new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB), List.of(raw, cleaned),
             List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
-            List.of(new EastNorth(0, 0), new EastNorth(10, 0)), List.of(), diagnostics, null);
+            List.of(new EastNorth(0, 0), new EastNorth(10, 0)), List.of(), diagnostics, null, List.of(),
+            List.of(raw, cleaned));
         Path bundlePath = temporaryDirectory.resolve("cleanup.zip");
 
-        LastSlideDebugBundle.fromResult(result, cleaned, "preview-open",
-            "CloudFront-Signature=log-secret; _strava_idcf=another-secret\nCookie: private-cookie")
+        LastSlideDebugBundle.fromResult(result, raw, cleaned, "preview-open",
+            "CloudFront-Signature=log-secret; _strava_idcf=another-secret\nCookie: private-cookie", Map.of())
             .writeTo(bundlePath.toFile());
 
         try (ZipFile zip = new ZipFile(bundlePath.toFile())) {
             String cleanup = text(zip, "geometry-cleanup.csv");
             String anchors = text(zip, "geometry-cleanup-anchors.csv");
+            String localShape = text(zip, "geometry-cleanup-local-shape.csv");
             String diagnosticsJson = text(zip, "diagnostics.json");
-            String allText = cleanup + anchors + diagnosticsJson + text(zip, "verbose-log.txt");
+            String statusJson = text(zip, "status.json");
+            String allText = cleanup + anchors + localShape + diagnosticsJson + text(zip, "verbose-log.txt");
             assertNotNull(zip.getEntry("geometry-cleanup.csv"));
             assertNotNull(zip.getEntry("geometry-cleanup-anchors.csv"));
+            assertNotNull(zip.getEntry("geometry-cleanup-local-shape.csv"));
             assertTrue(cleanup.contains("CLEANED_ALTERNATIVE_AVAILABLE"));
             assertTrue(cleanup.contains("CLEANED"));
             assertTrue(cleanup.contains("\"hot/strand#cleaned,\"\"quoted\"\"\""));
@@ -148,6 +162,16 @@ class LastSlideDebugBundleTest {
             assertTrue(diagnosticsJson.contains("\"geometryCleanup\""));
             assertTrue(diagnosticsJson.contains("\"sha256\":\"" + sha256(cleanup) + "\""));
             assertTrue(diagnosticsJson.contains("\"sha256\":\"" + sha256(anchors) + "\""));
+            assertTrue(diagnosticsJson.contains("\"sha256\":\"" + sha256(localShape) + "\""));
+            assertTrue(localShape.startsWith("candidate_id,parent_candidate_id,cleanup_evidence_status,profile_index,"));
+            assertTrue(localShape.contains("DIRECT"));
+            assertTrue(localShape.contains(",0.8,0.1,0.15"));
+            assertFalse(localShape.contains("east"));
+            assertTrue(statusJson.contains("\"selectedCandidate\":\"hot/strand#raw\""));
+            assertTrue(statusJson.contains("\"highestRankedApplicableBase\":\"hot/strand#raw\""));
+            assertTrue(statusJson.contains("\"initialPreviewCandidate\":\"hot/strand#cleaned,\\\"quoted\\\"\""));
+            assertTrue(diagnosticsJson.contains("\"highestRankedApplicableBase\":\"hot/strand#raw\""));
+            assertTrue(diagnosticsJson.contains("\"initialPreviewCandidate\":\"hot/strand#cleaned,\\\"quoted\\\"\""));
             assertFalse(allText.contains("test-secret"));
             assertFalse(allText.contains("log-secret"));
             assertFalse(allText.contains("another-secret"));

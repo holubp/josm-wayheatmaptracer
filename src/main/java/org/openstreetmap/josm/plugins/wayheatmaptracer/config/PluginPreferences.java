@@ -4,6 +4,7 @@ import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
@@ -50,6 +51,7 @@ public final class PluginPreferences {
     private static final String CACHE_BUSTER = PREFIX + "cacheBuster";
     private static final String CLEANUP_SCHEMA_VERSION = PREFIX + "cleanup.schemaVersion";
     private static final String CLEANUP_MODE = PREFIX + "cleanup.mode";
+    private static final String CLEANUP_CHOICE = PREFIX + "cleanup.choice";
     private static final String CLEANUP_PRESET = PREFIX + "cleanup.preset";
     private static final String CLEANUP_RIPPLE_SCALE_METERS = PREFIX + "cleanup.rippleScaleMeters";
     private static final String CLEANUP_RIPPLE_STRENGTH = PREFIX + "cleanup.rippleStrength";
@@ -59,7 +61,7 @@ public final class PluginPreferences {
         PREFIX + "cleanup.simplificationDeviationMeters";
     private static final String CLEANUP_MINIMUM_FIT_RETENTION = PREFIX + "cleanup.minimumFitRetention";
     private static final String CLEANUP_ALTERNATIVE_REQUESTED = PREFIX + "cleanup.cleanedAlternativeRequested";
-    private static final int CURRENT_CLEANUP_SCHEMA_VERSION = 1;
+    private static final int CURRENT_CLEANUP_SCHEMA_VERSION = 2;
 
     private PluginPreferences() {
     }
@@ -94,7 +96,7 @@ public final class PluginPreferences {
             pref.getBoolean(PARALLEL_WAY_AWARENESS, false),
             pref.getBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, false),
             pref.getBoolean(ADJUST_JUNCTION_NODES, false),
-            cleanupSchemaPresent(pref) ? false : pref.getBoolean(SIMPLIFY_ENABLED, false),
+            hasCleanupSchema(pref) ? false : pref.getBoolean(SIMPLIFY_ENABLED, false),
             pref.getInt(CROSS_SECTION_HALF_WIDTH, 18),
             pref.getInt(CROSS_SECTION_STEP, 4),
             pref.getDouble(SIMPLIFY_TOLERANCE, 3.0),
@@ -145,7 +147,7 @@ public final class PluginPreferences {
         Config.getPref().putBoolean(PARALLEL_WAY_AWARENESS, config.parallelWayAwareness());
         Config.getPref().putBoolean(ALLOW_UNDOWNLOADED_ALIGNMENT, config.allowUndownloadedAlignment());
         Config.getPref().putBoolean(ADJUST_JUNCTION_NODES, config.adjustJunctionNodes());
-        if (!cleanupSchemaPresent(Config.getPref())) {
+        if (!hasCleanupSchema(Config.getPref())) {
             Config.getPref().putBoolean(SIMPLIFY_ENABLED, config.simplifyEnabled());
             Config.getPref().putDouble(SIMPLIFY_TOLERANCE, config.simplifyTolerancePx());
         }
@@ -179,7 +181,8 @@ public final class PluginPreferences {
         if (pref == null) {
             return GeometryCleanupConfig.disabled();
         }
-        if (!cleanupSchemaPresent(pref)) {
+        int schemaVersion = cleanupSchemaVersion(pref);
+        if (schemaVersion <= 0) {
             if (!pref.getKeySet().contains(SIMPLIFY_ENABLED)
                 && !pref.getKeySet().contains(SIMPLIFY_TOLERANCE)) {
                 return GeometryCleanupConfig.disabled();
@@ -191,6 +194,14 @@ public final class PluginPreferences {
             saveGeometryCleanup(migrated);
             return migrated;
         }
+        GeometryCleanupConfig stored = loadStoredCleanup(pref);
+        if (schemaVersion == 1) {
+            saveGeometryCleanup(stored);
+        }
+        return stored;
+    }
+
+    private static GeometryCleanupConfig loadStoredCleanup(IPreferences pref) {
         GeometryCleanupMode mode = GeometryCleanupMode.fromPreference(
             pref.get(CLEANUP_MODE, GeometryCleanupMode.NONE.name()));
         GeometryCleanupPreset preset = GeometryCleanupPreset.fromPreference(
@@ -198,18 +209,33 @@ public final class PluginPreferences {
         GeometryCleanupConfig defaults = preset.apply(mode);
         boolean requested = mode != GeometryCleanupMode.NONE
             && pref.getBoolean(CLEANUP_ALTERNATIVE_REQUESTED, true);
-        return new GeometryCleanupConfig(
-            mode,
-            preset,
-            pref.getDouble(CLEANUP_RIPPLE_SCALE_METERS, defaults.rippleScaleMeters()),
-            pref.getDouble(CLEANUP_RIPPLE_STRENGTH, defaults.rippleStrength()),
-            pref.getDouble(CLEANUP_LAPLACIAN_STRENGTH, defaults.laplacianStrength()),
-            pref.getInt(CLEANUP_LAPLACIAN_PASS_COUNT, defaults.laplacianPassCount()),
-            pref.getDouble(CLEANUP_SIMPLIFICATION_DEVIATION_METERS,
-                defaults.simplificationDeviationMeters()),
-            pref.getDouble(CLEANUP_MINIMUM_FIT_RETENTION, defaults.minimumFitRetention()),
-            requested
-        );
+        try {
+            GeometryCleanupConfig stored = new GeometryCleanupConfig(
+                mode,
+                preset,
+                pref.getDouble(CLEANUP_RIPPLE_SCALE_METERS, defaults.rippleScaleMeters()),
+                pref.getDouble(CLEANUP_RIPPLE_STRENGTH, defaults.rippleStrength()),
+                pref.getDouble(CLEANUP_LAPLACIAN_STRENGTH, defaults.laplacianStrength()),
+                pref.getInt(CLEANUP_LAPLACIAN_PASS_COUNT, defaults.laplacianPassCount()),
+                pref.getDouble(CLEANUP_SIMPLIFICATION_DEVIATION_METERS,
+                    defaults.simplificationDeviationMeters()),
+                pref.getDouble(CLEANUP_MINIMUM_FIT_RETENTION, defaults.minimumFitRetention()),
+                requested
+            );
+            if (cleanupSchemaVersion(pref) >= 2) {
+                GeometryCleanupChoice choice = GeometryCleanupChoice.fromPreference(
+                    pref.get(CLEANUP_CHOICE, GeometryCleanupChoice.OFF.name()));
+                if (choice == GeometryCleanupChoice.OFF || choice == GeometryCleanupChoice.REDUCE_POINTS_ONLY) {
+                    return stored.withChoice(choice);
+                }
+                if (choice != GeometryCleanupChoice.CUSTOM && stored.choice() != choice) {
+                    return stored.withChoice(choice);
+                }
+            }
+            return stored;
+        } catch (IllegalArgumentException exception) {
+            return GeometryCleanupConfig.disabled();
+        }
     }
 
     /**
@@ -222,6 +248,7 @@ public final class PluginPreferences {
         Objects.requireNonNull(config, "config");
         IPreferences pref = Config.getPref();
         pref.putInt(CLEANUP_SCHEMA_VERSION, CURRENT_CLEANUP_SCHEMA_VERSION);
+        pref.put(CLEANUP_CHOICE, config.choice().name());
         pref.put(CLEANUP_MODE, config.mode().name());
         pref.put(CLEANUP_PRESET, config.preset().name());
         pref.putDouble(CLEANUP_RIPPLE_SCALE_METERS, config.rippleScaleMeters());
@@ -291,9 +318,12 @@ public final class PluginPreferences {
         return Math.max(System.currentTimeMillis(), current + 1L);
     }
 
-    private static boolean cleanupSchemaPresent(IPreferences preferences) {
-        return preferences != null
-            && preferences.getInt(CLEANUP_SCHEMA_VERSION, 0) >= CURRENT_CLEANUP_SCHEMA_VERSION;
+    private static boolean hasCleanupSchema(IPreferences preferences) {
+        return cleanupSchemaVersion(preferences) >= 1;
+    }
+
+    private static int cleanupSchemaVersion(IPreferences preferences) {
+        return preferences == null ? 0 : Math.max(0, preferences.getInt(CLEANUP_SCHEMA_VERSION, 0));
     }
 
     private static ManagedHeatmapConfig defaultConfig() {

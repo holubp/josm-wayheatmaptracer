@@ -178,6 +178,26 @@ class CenterlineCandidateTest {
     }
 
     @Test
+    void labelsBothRawAndCleanedSiblingsExplicitly() {
+        CandidateGeometryCleanup rawReport = new CandidateGeometryCleanup(
+            "hot/ridge-1", CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE,
+            "cleaned-sibling-created", List.of(), 8, 8, 8, 0, 0, 1, 0, 0,
+            1.0, 1.0, 0.0, OptionalDouble.empty(), OptionalDouble.empty());
+        CandidateGeometryCleanup cleanedReport = new CandidateGeometryCleanup(
+            "hot/ridge-1", CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+            "cleanup-partially-applied", List.of(), 8, 8, 5, 1, 0, 2, 1, 0,
+            1.0, 1.0, 0.0, OptionalDouble.empty(), OptionalDouble.empty());
+
+        CenterlineCandidate raw = new CenterlineCandidate(
+            "hot/ridge-1", 1.0, List.of(), List.of()).withGeometryCleanup(rawReport);
+        CenterlineCandidate cleaned = raw.withId("hot/ridge-1#cleaned")
+            .withGeometryCleanup(cleanedReport);
+
+        assertTrue(raw.displayName().contains(" - raw"));
+        assertTrue(cleaned.displayName().contains(" - cleaned (8 -> 5 points)"));
+    }
+
+    @Test
     void unsupportedCleanupRowsCannotAuthorizeMovement() {
         assertThrows(IllegalArgumentException.class, () -> new CandidateCleanupProfile(
             0, Double.NaN, Double.NaN, Double.NaN, Double.NaN,

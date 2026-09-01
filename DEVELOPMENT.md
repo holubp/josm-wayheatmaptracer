@@ -63,40 +63,44 @@ candidate and add at most one cleaned sibling. Candidate selection and the
 existing `ReplaceWaySegmentCommand` remain the only route that can mutate OSM
 data, so undo and redo replay the same stored proposed-node coordinates.
 
-The user-facing modes are:
+The schema-2 UI exposes one effective choice rather than independent mode and
+preset selectors:
 
-- `None`: preserve the raw candidate and do not request cleanup.
+- `Off`: preserve the raw candidate and do not request cleanup.
 - `Reduce points only`: run constrained Douglas-Peucker-style chord reduction.
-- `Constrained smoothing + reduce points`: apply supported-ripple
-  regularization and a normal-only constrained Laplacian pass before the same
-  chord reduction.
+- `Conservative`, `Balanced`, or `Strong`: enable constrained ripple
+  regularization, normal-only Laplacian smoothing, and point reduction with one
+  complete named parameter set.
+- `Custom`: use edited constrained-cleanup strengths and limits.
 
-The presets are complete physical parameter sets: Conservative uses a 6 m
-unsupported-ripple scale, Balanced 10 m, and Strong 20 m. Numeric settings also
-include dimensionless ripple and Laplacian strengths, pass count, maximum
-reduction deviation in metres, and minimum heatmap-fit retention. A point-count
-reduction is never a ranking bonus: the cleaned sibling must compete on the
-same evidence and safety metrics as the raw candidate.
+All constrained choices use the same deterministic physical half-window bank
+of 6, 10, and 20 metres. Presets vary intervention strength, Laplacian strength,
+pass count, maximum reduction deviation, and minimum heatmap-fit retention; a
+larger preset does not lose evidence merely because it has a larger historical
+ripple-scale value. A point-count reduction is never a ranking bonus: the
+cleaned sibling must compete on the same evidence and safety metrics as the raw
+candidate.
 
 ### Cleanup Equations And Units
 
 All cleanup geometry is in projected `EastNorth`, but corridor distances and
-configured tolerances are ground metres. Let `c_i` be the robust corridor
-center offset at profile `i`, `d_i` its cumulative ground chainage, and `R` the
-configured ripple scale. In a contiguous directly observed window, changes
-smaller than `0.12` source pixels are ignored when counting reversals. If the
-window contains repeated direction reversals, unsupported exposure is:
+configured tolerances are ground metres. For each profile, the common shape
+classifier examines contiguous direct evidence in fixed 6/10/20 m half-windows.
+It normalizes lateral values by native source-pixel pitch, performs exactly
+three Huber-IRLS iterations for affine and conditionally quadratic trends, and
+measures robust residual amplitude, reversal spacing, raw/B3/B5/core agreement,
+physical coverage, and uncertainty. The resulting bounded values are separate:
 
 ```text
-exposure_i = clamp((R - median_reversal_spacing_i) / R, 0, 1)
-unsupportedWeight_i = exposure_i * (1 - clamp(motionSupport_i, 0, 1))
+wrinkle_i = shortReversalExposure * residualAmplitude * reliability * (1 - bend_i)
+intervention_i = wrinkle_i * (1 - bend_i)^2 * (1 - ambiguity_i) * reliability
 ```
 
-This regularizes short unsupported oscillations, while sustained longitudinal
-motion, supported apices, sparse-parent evidence, and real switchbacks retain
-support. The physical window is bounded by the configured metre scale and the
-available direct observations; predicted-only or unsupported profiles do not
-authorize a move.
+Wrinkle attribution remains diagnostic even when authorization is zero. Scale
+conflicts, predicted-only rows, insufficient two-sided span, boundaries, and
+unsupported profiles cannot authorize intervention. Directly supported bends,
+apices, S-curves, and switchbacks receive bend protection and do not acquire a
+negative reward or a new center target.
 
 For normal-only Laplacian smoothing, `x_i` is the current projected point,
 `n_i` the slide-time lateral unit normal, and `q_i` the chainage-weighted
@@ -105,15 +109,18 @@ is:
 
 ```text
 laplacianOffset_i = (q_i - x_i) dot n_i
-delta_i = lambda * (1 - 0.75 * motionSupport_i) * laplacianOffset_i
+delta_i = lambda * intervention_i * (1 - bendProtection_i)
+          * (1 - ambiguity_i) * laplacianOffset_i
 ```
 
 `delta_i` is clamped to at most `0.75` native source pixels per accepted pass,
 then reduced by backtracking if corridor containment, raw/B3/B5 fit retention,
 supported-turn preservation, or topology validation fails. Only the normal
 component is applied; longitudinal position and tangent are not freely
-averaged. Protected endpoints, junctions, shared/tagged nodes, and inserted
-topology anchors split smoothing intervals and remain exact.
+averaged. Protected endpoints, junctions, shared/tagged nodes, inserted
+topology anchors, and locally frozen evidence split smoothing intervals and
+remain exact. Each eligible interval backtracks and accepts or reverts
+independently, followed by one whole-geometry safety check.
 
 Final-preview reconstruction can insert a protected junction or endpoint target between two
 sampled ridge profiles. Cleanup reconciles that longer preview monotonically against the original
@@ -137,7 +144,9 @@ selected corridor shoulder, retain the configured minimum fit in each of the
 raw, light B3 `[1,2,1]/4`, and standard B5 `[1,4,6,4,1]/16` scalar bands, and
 stay within the configured metre deviation. Unsupported, no-signal, off-raster,
 non-monotonic, or topology-contaminated spans fail closed instead of being
-bridged by invented evidence.
+bridged by invented evidence. Frozen, highly ambiguous, and bend-supported
+profiles become mandatory retained points; valid spans on either side may
+still reduce independently.
 
 The raw, B3, and B5 bands are computed after the selected palette or direct
 intensity source has been converted to scalar intensity. B3 is the light
@@ -153,9 +162,13 @@ frame. Each movable final-preview point must map monotonically and one-to-one to
 one slide-time profile with a projected lateral transform, cumulative ground
 chainage, raster support, and provenance. Inserted fixed/shared/tagged/junction
 anchors are represented as protected boundaries; the adapter must not fabricate
-heatmap evidence for them. Duplicated, interpolated-only, unmapped,
-non-monotonic, off-raster, no-signal, or stale mappings skip cleanup or reject
-the proposed sibling. A failed cleanup never hides or disables the raw
+heatmap evidence for them. An inserted anchor may replace only one immediately
+adjacent raw-profile occurrence; borrowing a remote chainage/transform fails
+closed. Duplicated, unmapped, non-monotonic, or stale global
+mappings skip cleanup or reject the proposed sibling. Interpolated,
+unsupported, off-raster, no-signal, and scale-conflicted local profiles are
+immutable boundaries. Safe independent intervals may still produce one
+`PARTIALLY_CLEANED` sibling. A failed cleanup never hides or disables the raw
 candidate merely because cleanup was requested.
 
 Before a cleaned candidate is shown as applicable, the service must rebuild a
@@ -167,20 +180,26 @@ reduction. Preview and apply must continue to use slide-time projected geometry
 and stale-source validation; cleanup must not mutate the dataset outside the
 existing apply command.
 
+Cleanup-conditioned optimizer costs and the suppression of compatibility
+simplification are active only for `CORRIDOR_AWARE` + `PRECISE_SHAPE`. In Move
+Existing Nodes or legacy tracking, the raw ridge is computed with an effective
+disabled cleanup configuration; the originally requested setting is retained
+only so the later sibling stage can report that cleanup was ineligible.
+
 ### Configuration And Migration
 
-Cleanup preferences have their own schema marker and namespaced fields for
-mode, preset, ripple scale/strength, Laplacian strength/pass count, reduction
-deviation, fit retention, and cleaned-candidate request. The first read of the
+Cleanup preferences have schema version 2 and one stored effective choice plus
+the compatibility mode/preset and numeric fields. The first read of the
 legacy `simplifyEnabled` and `simplifyTolerancePx` keys migrates an enabled
 legacy setting to `Reduce points only`, copies its numeric value into the new
-ground-metre deviation field, and writes schema version 1. New installations
-load disabled cleanup. Saving the new settings keeps the old keys synchronized
-only for downgrade compatibility; runtime behavior reads the new schema.
+ground-metre deviation field, and writes the current schema. Schema-1 `NONE`
+stays `Off`; malformed numeric settings also fail closed to `Off`. New
+installations load disabled cleanup. Saving keeps old keys synchronized only
+for downgrade compatibility; runtime behavior reads the new schema.
 
 ### Cleanup Diagnostics And Compatibility
 
-The exporter uses additive format 10 while preserving formats 1-9. Format 9 added dedicated,
+The exporter uses additive format 12 while preserving formats 1-11. Format 9 added dedicated,
 checksummed `geometry-cleanup.csv` and `geometry-cleanup-anchors.csv` artifacts.
 The first records the raw parent, cleaned sibling, mode/preset, outcome, point
 counts, accepted passes/chords, fit/deviation metrics, rejection reasons, and
@@ -201,6 +220,13 @@ Cleanup-enabled optimization adds a weak Huber absolute short-wave turn cost to
 the existing exact second-order DP. It remains distinct from tube-relative
 curvature, uses source-pixel spacing, is attenuated by endpoint guidance, and is
 exactly zero when cleanup/ripple regularization is disabled.
+
+Format 12 adds checksummed `geometry-cleanup-local-shape.csv` with
+coordinate-free provenance and wrinkle/bend/ambiguity authorization values.
+`status.json` and `diagnostics.json` record the highest-ranked applicable base
+candidate, the candidate initially shown, and the current selection separately.
+Older bundles remain readable and missing shape evidence is unavailable, never
+measured zero.
 
 Cleanup diagnostics must also record the full redacted cleanup configuration,
 source tier, raw and cleaned geometry separately, retained indexes, protected
@@ -404,11 +430,19 @@ python3 scripts/analyze-slide-undulations.py problems-3.zip --csv build/undulati
 Bulk private-corpus inventory must use the bounded shared reader and an explicit root:
 
 ```bash
-python3 scripts/calibrate-lateral-stability.py \
+python3 scripts/calibrate-geometry-fidelity.py \
   --archive-root /path/to/local/repository \
   --include 'last-slide-debug*.zip' --include 'problems-*.zip' \
-  --output-dir build/calibration-results --manifest-only --strict
+  --discover-osm --output-dir build/geometry-fidelity-input --manifest-only --strict
 ```
+
+The script does not extract archives. It enforces nested-ZIP, byte, ratio,
+entry, XML, gzip, and path limits; emits only redacted labels, hashes,
+coordinate-free way signatures, replayability metadata, and conservative
+pairing decisions; and writes local output below ignored `build/`. The reusable
+`scripts/wayheatmap_analysis/shape_evidence.py` module provides the same bounded
+6/10/20 m affine/quadratic classifier for offline synthetic or exported scalar
+analysis without accepting or emitting geographic coordinates.
 
 The manifest contains relative paths and snapshot hashes only. Outer filesystem
 symlinks, unsafe ZIP metadata, resource-limit violations, or credential-like text

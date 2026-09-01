@@ -2,12 +2,12 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -68,7 +68,9 @@ class PluginPreferencesTest {
         PluginPreferences.saveGeometryCleanup(expected);
 
         assertEquals(expected, PluginPreferences.loadGeometryCleanup());
-        assertEquals(1, Config.getPref().getInt(PREFIX + "cleanup.schemaVersion", 0));
+        assertEquals(2, Config.getPref().getInt(PREFIX + "cleanup.schemaVersion", 0));
+        assertEquals(GeometryCleanupChoice.CUSTOM.name(),
+            Config.getPref().get(PREFIX + "cleanup.choice", ""));
     }
 
     @Test
@@ -81,7 +83,7 @@ class PluginPreferencesTest {
         assertEquals(GeometryCleanupMode.REDUCE_POINTS_ONLY, migrated.mode());
         assertEquals(GeometryCleanupPreset.CUSTOM, migrated.preset());
         assertEquals(4.5, migrated.simplificationDeviationMeters());
-        assertEquals(1, Config.getPref().getInt(PREFIX + "cleanup.schemaVersion", 0));
+        assertEquals(2, Config.getPref().getInt(PREFIX + "cleanup.schemaVersion", 0));
 
         Config.getPref().putDouble(PREFIX + "simplifyTolerancePx", 12.0);
         assertEquals(migrated, PluginPreferences.loadGeometryCleanup(),
@@ -116,13 +118,26 @@ class PluginPreferencesTest {
     }
 
     @Test
-    void malformedNumericCleanupPreferencesFailExplicitly() {
+    void malformedNumericCleanupPreferencesFallBackToOff() {
         Config.getPref().putInt(PREFIX + "cleanup.schemaVersion", 1);
         Config.getPref().put(PREFIX + "cleanup.mode", GeometryCleanupMode.REDUCE_POINTS_ONLY.name());
         Config.getPref().put(PREFIX + "cleanup.preset", GeometryCleanupPreset.CUSTOM.name());
         Config.getPref().putDouble(PREFIX + "cleanup.rippleScaleMeters", Double.NaN);
 
-        assertThrows(IllegalArgumentException.class, PluginPreferences::loadGeometryCleanup);
+        assertEquals(GeometryCleanupConfig.disabled(), PluginPreferences.loadGeometryCleanup());
+    }
+
+    @Test
+    void schemaOneDisabledModeMigratesToOffWithoutActivatingDormantPreset() {
+        Config.getPref().putInt(PREFIX + "cleanup.schemaVersion", 1);
+        Config.getPref().put(PREFIX + "cleanup.mode", GeometryCleanupMode.NONE.name());
+        Config.getPref().put(PREFIX + "cleanup.preset", GeometryCleanupPreset.STRONG.name());
+
+        GeometryCleanupConfig migrated = PluginPreferences.loadGeometryCleanup();
+
+        assertEquals(GeometryCleanupChoice.OFF, migrated.choice());
+        assertFalse(migrated.cleanedAlternativeRequested());
+        assertEquals(2, Config.getPref().getInt(PREFIX + "cleanup.schemaVersion", 0));
     }
 
     @Test

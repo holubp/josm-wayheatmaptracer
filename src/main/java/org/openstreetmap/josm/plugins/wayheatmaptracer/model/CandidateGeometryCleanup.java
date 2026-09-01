@@ -83,7 +83,7 @@ public record CandidateGeometryCleanup(
      * @return true for cleaned output
      */
     public boolean cleanedCandidate() {
-        return outcome == Outcome.CLEANED;
+        return outcome == Outcome.CLEANED || outcome == Outcome.PARTIALLY_CLEANED;
     }
 
     private static boolean nonNegative(double value) {
@@ -106,6 +106,8 @@ public record CandidateGeometryCleanup(
         CLEANED_ALTERNATIVE_AVAILABLE,
         /** This candidate contains the successful cleaned geometry. */
         CLEANED,
+        /** This candidate contains safe changes from only the locally eligible intervals. */
+        PARTIALLY_CLEANED,
         /** Cleanup input or proposed geometry failed closed. */
         REJECTED
     }

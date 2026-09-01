@@ -4,11 +4,11 @@ import java.util.Locale;
 
 /** Provides complete, unit-explicit geometry cleanup parameter sets. */
 public enum GeometryCleanupPreset {
-    /** Uses a 6 metre unsupported-ripple scale. */
+    /** Conservative strengths with the historical 6 metre compatibility value. */
     CONSERVATIVE(6.0, 0.35, 0.15, 2, 1.0, 0.95),
-    /** Uses a 10 metre unsupported-ripple scale. */
+    /** Balanced strengths with the historical 10 metre compatibility value. */
     BALANCED(10.0, 0.55, 0.25, 3, 2.0, 0.90),
-    /** Uses a 20 metre unsupported-ripple scale. */
+    /** Strong strengths with the historical 20 metre compatibility value. */
     STRONG(20.0, 0.75, 0.35, 4, 3.0, 0.85),
     /** Represents user-edited values; its defaults match Balanced until edited. */
     CUSTOM(10.0, 0.55, 0.25, 3, 2.0, 0.90);
@@ -56,6 +56,23 @@ public enum GeometryCleanupPreset {
         return new GeometryCleanupConfig(effectiveMode, this, rippleScaleMeters, rippleStrength,
             laplacianStrength, laplacianPassCount, simplificationDeviationMeters,
             minimumFitRetention, effectiveMode != GeometryCleanupMode.NONE);
+    }
+
+    /**
+     * Checks whether all numeric values in a configuration still match this named preset.
+     *
+     * @param config configuration to compare
+     * @return true when every preset-owned value matches exactly
+     */
+    public boolean matches(GeometryCleanupConfig config) {
+        return config != null
+            && Double.compare(rippleScaleMeters, config.rippleScaleMeters()) == 0
+            && Double.compare(rippleStrength, config.rippleStrength()) == 0
+            && Double.compare(laplacianStrength, config.laplacianStrength()) == 0
+            && laplacianPassCount == config.laplacianPassCount()
+            && Double.compare(simplificationDeviationMeters,
+                config.simplificationDeviationMeters()) == 0
+            && Double.compare(minimumFitRetention, config.minimumFitRetention()) == 0;
     }
 
     /**

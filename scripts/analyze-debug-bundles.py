@@ -69,6 +69,8 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     cleanup_by_candidate = cleanup_rows_by_candidate(read_zip_csv(bundle, "geometry-cleanup.csv"))
     cleanup_anchors = cleanup_anchors_by_candidate(
         read_zip_csv(bundle, "geometry-cleanup-anchors.csv"))
+    cleanup_shape = cleanup_shape_summaries(
+        read_zip_csv(bundle, "geometry-cleanup-local-shape.csv"))
     proposed_counts: dict[str, int] = defaultdict(int)
     for position in proposed_positions:
         proposed_counts[str(position.get("candidate_id", ""))] += 1
@@ -208,6 +210,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
                 cleanup_by_candidate.get(candidate_id),
                 cleanup_anchors.get(candidate_id, []),
             ),
+            **cleanup_shape.get(candidate_id, unavailable_cleanup_shape()),
         })
     return rows
 
@@ -229,6 +232,51 @@ def cleanup_anchors_by_candidate(rows: list[dict[str, str]]) -> dict[str, list[d
         candidate_id = row.get("candidate_id", "")
         if candidate_id:
             result[candidate_id].append(row)
+    return result
+
+
+def unavailable_cleanup_shape() -> dict[str, object]:
+    """Return unavailable rather than zero-valued format-12 shape fields."""
+
+    return {
+        "cleanup_shape_state": "unavailable",
+        "cleanup_shape_direct_profile_count": None,
+        "cleanup_shape_wrinkle_mean": None,
+        "cleanup_shape_wrinkle_max": None,
+        "cleanup_shape_bend_mean": None,
+        "cleanup_shape_bend_max": None,
+        "cleanup_shape_ambiguity_mean": None,
+        "cleanup_shape_ambiguity_max": None,
+    }
+
+
+def cleanup_shape_summaries(rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
+    """Summarize coordinate-free format-12 local-shape evidence by candidate."""
+
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        candidate_id = row.get("candidate_id", "")
+        if candidate_id:
+            grouped[candidate_id].append(row)
+    result: dict[str, dict[str, object]] = {}
+    for candidate_id, candidate_rows in grouped.items():
+        direct = [row for row in candidate_rows if row.get("provenance") == "DIRECT"]
+        wrinkles = [value for row in direct
+                    if (value := float_or_none(row.get("wrinkle_intervention"))) is not None]
+        bends = [value for row in direct
+                 if (value := float_or_none(row.get("bend_protection"))) is not None]
+        ambiguities = [value for row in direct
+                       if (value := float_or_none(row.get("shape_ambiguity"))) is not None]
+        result[candidate_id] = {
+            "cleanup_shape_state": "available",
+            "cleanup_shape_direct_profile_count": len(direct),
+            "cleanup_shape_wrinkle_mean": statistics.fmean(wrinkles) if wrinkles else None,
+            "cleanup_shape_wrinkle_max": max(wrinkles) if wrinkles else None,
+            "cleanup_shape_bend_mean": statistics.fmean(bends) if bends else None,
+            "cleanup_shape_bend_max": max(bends) if bends else None,
+            "cleanup_shape_ambiguity_mean": statistics.fmean(ambiguities) if ambiguities else None,
+            "cleanup_shape_ambiguity_max": max(ambiguities) if ambiguities else None,
+        }
     return result
 
 

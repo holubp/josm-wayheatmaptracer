@@ -49,6 +49,7 @@ public final class LastSlideDebugBundle {
     private final String candidateMetricsCsv;
     private final String geometryCleanupCsv;
     private final String geometryCleanupAnchorsCsv;
+    private final String geometryCleanupLocalShapeCsv;
     private final String profilePeaksCsv;
     private final String paletteSamplesCsv;
     private final String profileIntensityCsv;
@@ -85,6 +86,7 @@ public final class LastSlideDebugBundle {
         String candidateMetricsCsv,
         String geometryCleanupCsv,
         String geometryCleanupAnchorsCsv,
+        String geometryCleanupLocalShapeCsv,
         String profilePeaksCsv,
         String paletteSamplesCsv,
         String profileIntensityCsv,
@@ -120,6 +122,7 @@ public final class LastSlideDebugBundle {
         this.candidateMetricsCsv = candidateMetricsCsv;
         this.geometryCleanupCsv = geometryCleanupCsv;
         this.geometryCleanupAnchorsCsv = geometryCleanupAnchorsCsv;
+        this.geometryCleanupLocalShapeCsv = geometryCleanupLocalShapeCsv;
         this.profilePeaksCsv = profilePeaksCsv;
         this.paletteSamplesCsv = paletteSamplesCsv;
         this.profileIntensityCsv = profileIntensityCsv;
@@ -151,7 +154,7 @@ public final class LastSlideDebugBundle {
      * @return debug bundle ready to write
      */
     public static LastSlideDebugBundle fromResult(AlignmentResult result, CenterlineCandidate selected, String status, String verboseLog) {
-        return fromResult(result, selected, status, verboseLog, Map.of());
+        return fromResult(result, selected, selected, status, verboseLog, Map.of());
     }
 
     /**
@@ -167,6 +170,29 @@ public final class LastSlideDebugBundle {
     public static LastSlideDebugBundle fromResult(
         AlignmentResult result,
         CenterlineCandidate selected,
+        String status,
+        String verboseLog,
+        Map<String, CandidateRating> candidateRatings
+    ) {
+        return fromResult(result, selected, selected, status, verboseLog, candidateRatings);
+    }
+
+    /**
+     * Creates a bundle while preserving the candidate initially shown when the modeless preview
+     * opened, even if the user subsequently chooses another candidate.
+     *
+     * @param result alignment result to export
+     * @param selected currently selected preview candidate
+     * @param initialPreviewCandidate candidate first shown for this preview session
+     * @param status slide status such as {@code preview-open}, {@code applied}, or {@code failed}
+     * @param verboseLog per-slide verbose log text
+     * @param candidateRatings preview ratings keyed by candidate id
+     * @return debug bundle ready to write
+     */
+    public static LastSlideDebugBundle fromResult(
+        AlignmentResult result,
+        CenterlineCandidate selected,
+        CenterlineCandidate initialPreviewCandidate,
         String status,
         String verboseLog,
         Map<String, CandidateRating> candidateRatings
@@ -200,9 +226,14 @@ public final class LastSlideDebugBundle {
         String attemptsJson = redactSensitiveValues(detectorAttemptsJson(result));
         String cleanupCsv = geometryCleanupCsv(result);
         String cleanupAnchorsCsv = geometryCleanupAnchorsCsv(result);
+        String cleanupLocalShapeCsv = geometryCleanupLocalShapeCsv(result);
+        String highestRankedApplicableBase = highestRankedApplicableBaseId(result);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
             + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
+            + "\"highestRankedApplicableBase\":\"" + escape(highestRankedApplicableBase) + "\","
+            + "\"initialPreviewCandidate\":\""
+                + escape(initialPreviewCandidate == null ? "" : initialPreviewCandidate.id()) + "\","
             + "\"detectorAttempts\":" + attemptsJson + ','
             + "\"candidateRatings\":" + ratingsJson
             + "}";
@@ -210,7 +241,9 @@ public final class LastSlideDebugBundle {
         String build = buildIdentity();
         return new LastSlideDebugBundle(
             redactSensitiveValues(addGeometryCleanupSummary(
-                addBuildIdentity(result.diagnostics().toJson(), version, build), cleanupCsv, cleanupAnchorsCsv)),
+                addCandidateSelectionSummary(addBuildIdentity(result.diagnostics().toJson(), version, build),
+                    highestRankedApplicableBase, initialPreviewCandidate),
+                cleanupCsv, cleanupAnchorsCsv, cleanupLocalShapeCsv)),
             "Plugin-Version: " + version + '\n' + "Plugin-Build: " + build + '\n'
                 + redactSensitiveValues(verboseLog),
             originalOsm(result),
@@ -226,6 +259,7 @@ public final class LastSlideDebugBundle {
             result.diagnostics().candidateMetricsCsv(),
             cleanupCsv,
             cleanupAnchorsCsv,
+            cleanupLocalShapeCsv,
             result.diagnostics().profilePeaksCsv(),
             result.diagnostics().paletteSamplesCsv(),
             result.diagnostics().profileIntensityCsv(),
@@ -273,6 +307,7 @@ public final class LastSlideDebugBundle {
             writeText(zip, "candidate-metrics.csv", candidateMetricsCsv);
             writeText(zip, "geometry-cleanup.csv", geometryCleanupCsv);
             writeText(zip, "geometry-cleanup-anchors.csv", geometryCleanupAnchorsCsv);
+            writeText(zip, "geometry-cleanup-local-shape.csv", geometryCleanupLocalShapeCsv);
             writeText(zip, "profile-peaks.csv", profilePeaksCsv);
             writeText(zip, "palette-samples.csv", paletteSamplesCsv);
             writeText(zip, "profile-intensity.csv", profileIntensityCsv);
@@ -303,11 +338,11 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":11,"
+            + "\"formatVersion\":12,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
-            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
+            + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"geometry-cleanup-local-shape.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
 
@@ -404,6 +439,48 @@ public final class LastSlideDebugBundle {
         return builder.toString();
     }
 
+    /**
+     * Serializes scalar, profile-aligned local shape evidence without exported geometry.
+     *
+     * <p>The values are candidate-owned authorization inputs. Coordinates, raster samples,
+     * projected transforms, URLs, and credentials are intentionally omitted.</p>
+     *
+     * @param result completed alignment result
+     * @return coordinate-free local shape evidence CSV
+     */
+    private static String geometryCleanupLocalShapeCsv(AlignmentResult result) {
+        StringBuilder builder = new StringBuilder(
+            "candidate_id,parent_candidate_id,cleanup_evidence_status,profile_index,provenance,"
+                + "scale_conflict,motion_support,turn_support,wrinkle_intervention,"
+                + "bend_protection,shape_ambiguity\n");
+        for (CenterlineCandidate candidate : result.candidates()) {
+            CandidateGeometryCleanup cleanup = candidate.geometryCleanup();
+            var evidence = candidate.cleanupEvidence();
+            if (evidence.profiles().isEmpty()) {
+                builder.append(csv(candidate.id())).append(',')
+                    .append(csv(cleanup.parentCandidateId())).append(',')
+                    .append(csv(evidence.status().name()))
+                    .append(",,,,,,,,")
+                    .append('\n');
+                continue;
+            }
+            for (var profile : evidence.profiles()) {
+                builder.append(csv(candidate.id())).append(',')
+                    .append(csv(cleanup.parentCandidateId())).append(',')
+                    .append(csv(evidence.status().name())).append(',')
+                    .append(profile.profileIndex()).append(',')
+                    .append(csv(profile.provenance().name())).append(',')
+                    .append(profile.scaleConflict()).append(',')
+                    .append(profile.motionSupport()).append(',')
+                    .append(profile.turnSupport()).append(',')
+                    .append(profile.wrinkleIntervention()).append(',')
+                    .append(profile.bendProtection()).append(',')
+                    .append(profile.shapeAmbiguity()).append('\n');
+            }
+        }
+        return builder.toString();
+    }
+
     private static int selectedNodeIndex(AlignmentResult result, long nodeId) {
         for (int index = 0; index < result.selection().segmentNodes().size(); index++) {
             if (result.selection().segmentNodes().get(index).getUniqueId() == nodeId) {
@@ -426,12 +503,39 @@ public final class LastSlideDebugBundle {
         return value.isPresent() ? Double.toString(value.orElseThrow()) : "";
     }
 
-    private static String addGeometryCleanupSummary(String diagnosticsJson, String cleanupCsv, String anchorsCsv) {
+    private static String addGeometryCleanupSummary(
+        String diagnosticsJson,
+        String cleanupCsv,
+        String anchorsCsv,
+        String localShapeCsv
+    ) {
         String summary = "{\"storage\":\"dedicated-csv-artifacts\","
             + "\"anchorEvidence\":\"candidate-owned-node-targets\",\"artifacts\":["
             + artifactJson("geometry-cleanup.csv", cleanupCsv) + ','
-            + artifactJson("geometry-cleanup-anchors.csv", anchorsCsv) + "]}";
+            + artifactJson("geometry-cleanup-anchors.csv", anchorsCsv) + ','
+            + artifactJson("geometry-cleanup-local-shape.csv", localShapeCsv) + "]}";
         return addJsonField(diagnosticsJson, "geometryCleanup", summary);
+    }
+
+    /** Returns the first applicable non-cleaned candidate in stable result order. */
+    private static String highestRankedApplicableBaseId(AlignmentResult result) {
+        return result.applicableCandidates().stream()
+            .filter(candidate -> !candidate.geometryCleanup().cleanedCandidate())
+            .map(CenterlineCandidate::id)
+            .findFirst()
+            .orElse("");
+    }
+
+    /** Adds candidate-selection facts independently from the mutable current selection. */
+    private static String addCandidateSelectionSummary(
+        String diagnosticsJson,
+        String highestRankedApplicableBase,
+        CenterlineCandidate initialPreviewCandidate
+    ) {
+        String summary = "{\"highestRankedApplicableBase\":\""
+            + escape(highestRankedApplicableBase) + "\",\"initialPreviewCandidate\":\""
+            + escape(initialPreviewCandidate == null ? "" : initialPreviewCandidate.id()) + "\"}";
+        return addJsonField(diagnosticsJson, "candidateSelection", summary);
     }
 
     private static String artifactJson(String file, String contents) {

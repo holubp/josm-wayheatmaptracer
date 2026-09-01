@@ -39,6 +39,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResol
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
@@ -145,7 +146,7 @@ public class AlignWayAction extends JosmAction {
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
             updateAggregateIntensityLayer(result, config);
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                result, initialCandidate(result), "preview-open", PluginLog.currentSlideLog()));
+                result, initialCandidate(result), initialCandidate(result), "preview-open", PluginLog.currentSlideLog(), Map.of()));
 
             showCandidatePreview(dataSet, selection, result, config, cleanupConfig);
         } catch (AlignmentService.AlignmentFailureException ex) {
@@ -250,7 +251,7 @@ public class AlignWayAction extends JosmAction {
         Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
-        PreviewSelection[] current = {buildPreviewSelection(dataSet, result, initial, config)};
+        PreviewSelection[] current = {buildPreviewSelection(dataSet, result, initial, initial, config)};
         overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
@@ -288,15 +289,18 @@ public class AlignWayAction extends JosmAction {
             unnecessaryKinks,
             badJunctionShapes
         );
+        JLabel selectedCandidateDetail = new JLabel(cleanupDetail(initial));
+        panel.add(selectedCandidateDetail, GBC.eol());
         comboBox.addActionListener(event -> {
             CenterlineCandidate selected = (CenterlineCandidate) comboBox.getSelectedItem();
             if (selected == null) {
                 return;
             }
             try {
-                current[0] = buildPreviewSelection(dataSet, result, selected, config);
+                current[0] = buildPreviewSelection(dataSet, result, current[0].initialCandidate(), selected, config);
                 overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
                 apply.setEnabled(candidateApplicable(result, selected));
+                selectedCandidateDetail.setText(cleanupDetail(selected));
                 loadingRating[0] = true;
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
@@ -350,6 +354,7 @@ public class AlignWayAction extends JosmAction {
                 DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
                     current[0].result(),
                     current[0].candidate(),
+                    current[0].initialCandidate(),
                     "apply-failed",
                     PluginLog.currentSlideLog(),
                     candidateRatings
@@ -375,11 +380,10 @@ public class AlignWayAction extends JosmAction {
      * @throws IllegalStateException when the result contains no candidates
      */
     static CenterlineCandidate initialCandidate(AlignmentResult result) {
-        if (!result.applicableCandidates().isEmpty()) {
-            return result.applicableCandidates().get(0);
-        }
-        if (!result.candidates().isEmpty()) {
-            return result.candidates().get(0);
+        CenterlineCandidate selected = InitialPreviewCandidatePolicy.select(
+            result.candidates(), result.applicableCandidates());
+        if (selected != null) {
+            return selected;
         }
         throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
     }
@@ -387,6 +391,7 @@ public class AlignWayAction extends JosmAction {
     private PreviewSelection buildPreviewSelection(
         DataSet dataSet,
         AlignmentResult base,
+        CenterlineCandidate initialCandidate,
         CenterlineCandidate candidate,
         ManagedHeatmapConfig config
     ) {
@@ -397,13 +402,13 @@ public class AlignWayAction extends JosmAction {
             AlignmentResult diagnostic = new AlignmentResult(base.selection(), base.capturedHeatmap(),
                 base.candidates(), base.sourcePolyline(), geometry, List.of(), base.diagnostics(), base.tileMosaics(),
                 base.detectorAttempts(), base.applicableCandidates());
-            return new PreviewSelection(candidate, diagnostic);
+            return new PreviewSelection(initialCandidate, candidate, diagnostic);
         }
         AlignmentResult candidateResult = alignmentService.applyCandidate(base, candidate, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(candidateResult.previewPolyline(), dataSet);
         }
-        return new PreviewSelection(candidate, candidateResult);
+        return new PreviewSelection(initialCandidate, candidate, candidateResult);
     }
 
     private boolean candidateApplicable(AlignmentResult result, CenterlineCandidate candidate) {
@@ -469,6 +474,7 @@ public class AlignWayAction extends JosmAction {
         DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
             preview.result(),
             preview.candidate(),
+            preview.initialCandidate(),
             status,
             PluginLog.currentSlideLog(),
             candidateRatings
@@ -480,6 +486,7 @@ public class AlignWayAction extends JosmAction {
         DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
             preview.result(),
             preview.candidate(),
+            preview.initialCandidate(),
             "cancelled",
             PluginLog.currentSlideLog(),
             candidateRatings
@@ -536,7 +543,8 @@ public class AlignWayAction extends JosmAction {
                 tr("Align way to heatmap precisely")
             ));
         }
-        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(chosenResult, chosen, "applied", PluginLog.currentSlideLog(), candidateRatings));
+        DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+            chosenResult, chosen, preview.initialCandidate(), "applied", PluginLog.currentSlideLog(), candidateRatings));
     }
 
     private JPanel buildSummaryPanel(
@@ -600,7 +608,45 @@ public class AlignWayAction extends JosmAction {
             cleanupConfig.mode(), cleanupConfig.preset(), cleanupConfig.rippleScaleMeters(), alternatives);
     }
 
-    private record PreviewSelection(CenterlineCandidate candidate, AlignmentResult result) {
+    /**
+     * Builds the cleanup status line for the candidate currently shown in the modeless preview.
+     *
+     * <p>The wording intentionally reports only candidate-owned cleanup facts. It does not infer
+     * a successful cleanup from the current settings, nor does it imply that an inspection-only
+     * candidate can be applied.</p>
+     *
+     * @param candidate selected preview candidate
+     * @return user-readable cleanup outcome, reason, and point/operation counts
+     */
+    static String cleanupDetail(CenterlineCandidate candidate) {
+        var cleanup = candidate.geometryCleanup();
+        return tr("Selected cleanup: {0}; reason: {1}; points: before {2}, smoothed {3}, after {4}; "
+                + "smoothing: accepted {5}, backtracks {6}; reduction: accepted {7}/{8}; containment failures: {9}",
+            cleanupOutcomeLabel(cleanup.outcome()), cleanup.reasonCode(), cleanup.beforePointCount(),
+            cleanup.smoothedPointCount(),
+            cleanup.afterPointCount(), cleanup.acceptedSmoothingPasses(), cleanup.smoothingBacktrackCount(),
+            cleanup.acceptedChordCount(), cleanup.attemptedChordCount(), cleanup.containmentFailureCount());
+    }
+
+    private static String cleanupOutcomeLabel(
+        CandidateGeometryCleanup.Outcome outcome
+    ) {
+        return switch (outcome) {
+            case NOT_REQUESTED -> tr("not requested");
+            case SKIPPED -> tr("skipped");
+            case UNCHANGED -> tr("unchanged");
+            case CLEANED_ALTERNATIVE_AVAILABLE -> tr("cleaned alternative available");
+            case CLEANED -> tr("fully applied");
+            case PARTIALLY_CLEANED -> tr("partially applied");
+            case REJECTED -> tr("rejected");
+        };
+    }
+
+    private record PreviewSelection(
+        CenterlineCandidate initialCandidate,
+        CenterlineCandidate candidate,
+        AlignmentResult result
+    ) {
     }
 
     private void showError(String message) {

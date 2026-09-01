@@ -1000,7 +1000,8 @@ public final class CorridorCenterlineOptimizer {
      * @param plateauCenterCost robust center cost applied within an intensity plateau
      * @param coarsePriorCost compatible coarse-scale localization prior
      * @param tubeCenterCost confidence-weighted longitudinal tube-center prior
-     * @param effectiveRippleScaleMeters active unsupported-ripple scale, or zero when disabled
+     * @param effectiveRippleScaleMeters legacy configured scale exported for format-10 compatibility,
+     *     or zero when disabled; shape analysis uses the fixed 6/10/20 m bank
      * @param effectiveRippleStrength active unsupported-ripple strength, or zero when disabled
      * @param rippleSupport sustained motion/turn support
      * @param supportedTurnWeight bounded supported-turn evidence

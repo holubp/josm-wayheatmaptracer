@@ -10,6 +10,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import org.openstreetmap.josm.data.Bounds;
@@ -150,8 +151,16 @@ public final class AlignmentService {
     ) {
         ManagedHeatmapConfig config = slideConfig.heatmap();
         GeometryCleanupConfig cleanupConfig = slideConfig.cleanup();
+        GeometryCleanupConfig trackingCleanupConfig = effectiveTrackingCleanupConfig(
+            selection, config, cleanupConfig);
+        if (!trackingCleanupConfig.equals(cleanupConfig)) {
+            PluginLog.verbose(
+                "Geometry cleanup is inactive during tracking because the effective mode is %s with tracker %s.",
+                effectiveAlignmentMode(selection, config), config.trackerMode());
+        }
         if (useManagedTileAlignment(config)) {
-            return alignFromManagedTiles(selection, imageryLayer, mapView, config, cleanupConfig);
+            return alignFromManagedTiles(selection, imageryLayer, mapView, config,
+                cleanupConfig, trackingCleanupConfig);
         }
         if (imageryLayer == null) {
             throw new IllegalStateException("No visible heatmap imagery layer was resolved.");
@@ -192,11 +201,11 @@ public final class AlignmentService {
             effectiveSampling.samplingScale().trackerNormalizationMethod()
         );
         DetectionResult detection = detectCandidates(raster, sourcePolyline, capture.sourceRasterPolyline(), capture, selection,
-            config, cleanupConfig, colorModes, effectiveSampling);
+            config, trackingCleanupConfig, colorModes, effectiveSampling);
         List<CenterlineCandidate> contextualCandidates = applyParallelContext(
             detection.candidates(), selection, sourcePolyline, config);
         contextualCandidates = attachFinalPreviewGeometry(
-            contextualCandidates, selection, sourcePolyline, config, cleanupConfig, null);
+            contextualCandidates, selection, sourcePolyline, config, trackingCleanupConfig, null);
         contextualCandidates = expandGeometryCleanupCandidates(
             contextualCandidates, selection, sourcePolyline, config, cleanupConfig);
         List<CenterlineCandidate> candidates = rankCandidates(annotateCandidateSafety(
@@ -267,7 +276,8 @@ public final class AlignmentService {
         ImageryLayer imageryLayer,
         MapView mapView,
         ManagedHeatmapConfig config,
-        GeometryCleanupConfig cleanupConfig
+        GeometryCleanupConfig cleanupConfig,
+        GeometryCleanupConfig trackingCleanupConfig
     ) {
         List<EastNorth> sourcePolyline = toEastNorth(selection.segmentNodes());
         List<String> colorModes = detectionColorModes(config);
@@ -290,12 +300,12 @@ public final class AlignmentService {
         long t1 = System.nanoTime();
         EffectiveSampling effectiveSampling = fixedTileEffectiveSampling(mosaic);
         DetectionResult detection = detectTileCandidates(mosaics, mosaic, sourcePolyline, selection,
-            config, cleanupConfig, colorModes, effectiveSampling);
+            config, trackingCleanupConfig, colorModes, effectiveSampling);
         List<String> reportedColorModes = reportedTileColorModes(config, mosaics, colorModes);
         List<CenterlineCandidate> contextualCandidates = applyParallelContext(
             detection.candidates(), selection, sourcePolyline, config);
         contextualCandidates = attachFinalPreviewGeometry(
-            contextualCandidates, selection, sourcePolyline, config, cleanupConfig, mapView);
+            contextualCandidates, selection, sourcePolyline, config, trackingCleanupConfig, mapView);
         contextualCandidates = expandGeometryCleanupCandidates(
             contextualCandidates, selection, sourcePolyline, config, cleanupConfig);
         List<CenterlineCandidate> candidates = rankCandidates(annotateCandidateSafety(
@@ -2332,6 +2342,32 @@ public final class AlignmentService {
      */
     public static AlignmentMode effectiveAlignmentMode(SelectionContext selection, ManagedHeatmapConfig config) {
         return config.alignmentMode();
+    }
+
+    /**
+     * Limits cleanup-conditioned ridge optimization to the mode that can produce a cleaned sibling.
+     *
+     * <p>The requested configuration is still passed to the sibling-expansion stage so an
+     * ineligible mode can report that cleanup was skipped. Detection and final-preview construction
+     * must use the disabled configuration in all other modes, otherwise merely enabling cleanup
+     * changes the raw candidate even though no cleaned sibling can be applied.</p>
+     *
+     * @param selection validated selected segment
+     * @param config slide-time heatmap and alignment configuration
+     * @param requested user-requested cleanup configuration
+     * @return requested configuration only for Corridor Aware + Precise Shape; disabled otherwise
+     */
+    static GeometryCleanupConfig effectiveTrackingCleanupConfig(
+        SelectionContext selection,
+        ManagedHeatmapConfig config,
+        GeometryCleanupConfig requested
+    ) {
+        Objects.requireNonNull(selection, "selection");
+        Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(requested, "requested");
+        return effectiveAlignmentMode(selection, config) == AlignmentMode.PRECISE_SHAPE
+            && config.trackerMode() == TrackerMode.CORRIDOR_AWARE
+            ? requested : GeometryCleanupConfig.disabled();
     }
 
     private List<EastNorth> moveExistingNodesPreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {

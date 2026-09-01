@@ -150,6 +150,17 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("0.75", rows[0]["trend_authorization"])
         self.assertEqual("0.5", rows[0]["unsupported_ripple_factor"])
 
+    def test_format_twelve_exposes_coordinate_free_cleanup_shape_evidence(self) -> None:
+        """Format 12 summarizes direct local-shape evidence without geometry samples."""
+        rows, _ = run_analyzers(debug_bundle(12, "0.20.2", "preview-open"))
+
+        self.assertEqual("available", rows[0]["cleanup_shape_state"])
+        self.assertEqual("2", rows[0]["cleanup_shape_direct_profile_count"])
+        self.assertEqual("0.5", rows[0]["cleanup_shape_wrinkle_mean"])
+        self.assertEqual("0.7", rows[0]["cleanup_shape_wrinkle_max"])
+        self.assertEqual("0.4", rows[0]["cleanup_shape_bend_max"])
+        self.assertEqual("0.3", rows[0]["cleanup_shape_ambiguity_max"])
+
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
         outer = io.BytesIO()
@@ -349,6 +360,16 @@ def debug_bundle(
                 "source_east,source_north,proposed_east,proposed_north\n"
                 f"{raw_candidate_id},,CLEANED_ALTERNATIVE_AVAILABLE,unavailable,anchor-evidence-not-exported-by-model,,,,,,,,\n"
                 f"{cleaned_candidate_id},{raw_candidate_id},CLEANED,unavailable,anchor-evidence-not-exported-by-model,,,,,,,,\n",
+            )
+        if format_version >= 12:
+            archive.writestr(
+                "geometry-cleanup-local-shape.csv",
+                "candidate_id,parent_candidate_id,cleanup_evidence_status,profile_index,provenance,"
+                "scale_conflict,motion_support,turn_support,wrinkle_intervention,"
+                "bend_protection,shape_ambiguity\n"
+                f"{candidate_id},,COMPLETE,0,DIRECT,false,0.8,0.0,0.3,0.1,0.2\n"
+                f"{candidate_id},,COMPLETE,1,DIRECT,false,0.7,0.2,0.7,0.4,0.3\n"
+                f"{candidate_id},,COMPLETE,2,INTERPOLATED,false,0.0,0.0,1.0,1.0,1.0\n",
             )
     return result.getvalue()
 

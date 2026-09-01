@@ -217,9 +217,13 @@ class SafeArchiveReader:
         return not name.lower().endswith(self.BINARY_SUFFIXES)
 
     def _metadata(self, info: zipfile.ZipInfo, budget: _Budget) -> None:
+        # ZipInfo keeps the pre-NUL input in orig_filename on supported Python versions.
+        # Validate both forms because filename itself is deliberately truncated at NUL.
+        original_name = getattr(info, "orig_filename", info.filename)
         name = info.filename
         normalized = name.replace("\\", "/")
-        if ("\x00" in name or len(name.encode("utf-8", "surrogatepass")) > self.limits.max_name_bytes
+        if ("\x00" in original_name
+            or len(original_name.encode("utf-8", "surrogatepass")) > self.limits.max_name_bytes
             or normalized.startswith("/") or normalized.startswith("//")
             or re.match(r"^[A-Za-z]:", normalized)
             or ".." in PurePosixPath(normalized).parts):

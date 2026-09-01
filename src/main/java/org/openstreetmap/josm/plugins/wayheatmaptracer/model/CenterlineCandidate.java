@@ -402,7 +402,9 @@ public record CenterlineCandidate(
             index++;
         }
         label.append(" - ").append(confidenceLabel());
-        if (geometryCleanup.cleanedCandidate()) {
+        if (geometryCleanup.outcome() == CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE) {
+            label.append(" - raw");
+        } else if (geometryCleanup.cleanedCandidate()) {
             label.append(" - cleaned (").append(geometryCleanup.beforePointCount()).append(" -> ")
                 .append(geometryCleanup.afterPointCount()).append(" points)");
         }

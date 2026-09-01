@@ -76,9 +76,7 @@ public record CandidateCleanupEvidence(
         }
         for (int index = 0; index < immutableRows.size(); index++) {
             CandidateCleanupProfile row = immutableRows.get(index);
-            if (row.profileIndex() != index
-                || (row.provenance() != CleanupEvidenceProvenance.UNSUPPORTED
-                    && !frame.profiles().get(index).anchorWithinRaster())) {
+            if (row.profileIndex() != index) {
                 return new CandidateCleanupEvidence(frame, immutableRows,
                     CleanupEvidenceStatus.MISALIGNED_CANDIDATE_ROWS);
             }
@@ -119,6 +117,6 @@ public record CandidateCleanupEvidence(
      * @return candidate-specific byte estimate
      */
     public long estimatedCandidateBytes() {
-        return 96L * profiles.size();
+        return 120L * profiles.size();
     }
 }

@@ -33,6 +33,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTra
 public final class HeatmapConstrainedLaplacianSmoother {
     private static final double EPSILON = 1e-9;
     private static final double MIN_AUTHORIZING_SIGNAL = 1e-6;
+    private static final double MIN_WRINKLE_INTERVENTION = 1e-6;
+    private static final double MAX_BEND_PROTECTION_FOR_SMOOTHING = 0.35;
+    private static final double MAX_SHAPE_AMBIGUITY_FOR_SMOOTHING = 0.35;
     private static final double OFFSET_LINE_TOLERANCE = 1e-6;
     private static final double MAX_STEP_SOURCE_PIXELS = 0.75;
     private static final int MAX_BACKTRACKS_PER_PASS = 10;
@@ -132,41 +135,66 @@ public final class HeatmapConstrainedLaplacianSmoother {
         }
 
         List<EastNorth> current = source;
+        Set<ProtectedInterval> rejectedIntervals = new LinkedHashSet<>();
+        Set<Integer> movedIndexes = new LinkedHashSet<>();
         int acceptedPasses = 0;
         int backtracks = 0;
         int containmentFailures = 0;
         int fitFailures = 0;
         for (int pass = 0; pass < config.laplacianPassCount(); pass++) {
-            double strength = config.laplacianStrength();
-            boolean accepted = false;
-            boolean hadMovementProposal = false;
-            for (int attempt = 0; attempt <= MAX_BACKTRACKS_PER_PASS; attempt++) {
-                Proposal proposal = proposePass(
-                    source, current, effectiveIntervals, authorized, evidenceView, strength);
-                hadMovementProposal |= proposal.changed();
-                if (!proposal.changed()) {
-                    break;
+            boolean acceptedThisPass = false;
+            for (ProtectedInterval interval : effectiveIntervals) {
+                if (rejectedIntervals.contains(interval)) {
+                    continue;
                 }
-                Validation validation = validateProposal(
-                    source, proposal.geometry(), proposal.movedIndexes(), evidenceView,
-                    config.minimumFitRetention(), effectiveIntervals);
-                containmentFailures += validation.containmentFailures();
-                fitFailures += validation.fitFailures();
-                if (validation.accepted()) {
-                    current = proposal.geometry();
-                    acceptedPasses++;
-                    accepted = true;
-                    break;
+                double strength = config.laplacianStrength();
+                boolean accepted = false;
+                boolean hadMovementProposal = false;
+                for (int attempt = 0; attempt <= MAX_BACKTRACKS_PER_PASS; attempt++) {
+                    Proposal proposal = proposePass(
+                        source, current, List.of(interval), authorized, evidenceView, strength);
+                    hadMovementProposal |= proposal.changed();
+                    if (!proposal.changed()) {
+                        break;
+                    }
+                    Validation validation = validateProposal(
+                        source, proposal.geometry(), proposal.movedIndexes(), evidenceView,
+                        config.minimumFitRetention(), effectiveIntervals);
+                    containmentFailures += validation.containmentFailures();
+                    fitFailures += validation.fitFailures();
+                    if (validation.accepted()) {
+                        current = proposal.geometry();
+                        movedIndexes.addAll(proposal.movedIndexes());
+                        accepted = true;
+                        acceptedThisPass = true;
+                        break;
+                    }
+                    reasons.addAll(validation.reasons());
+                    backtracks++;
+                    strength *= 0.5;
                 }
-                reasons.addAll(validation.reasons());
-                backtracks++;
-                strength *= 0.5;
-            }
-            if (!accepted) {
-                if (hadMovementProposal) {
+                if (!accepted && hadMovementProposal) {
                     reasons.add(FailureReason.BACKTRACK_LIMIT_REACHED);
+                    rejectedIntervals.add(interval);
                 }
+            }
+            if (!acceptedThisPass) {
                 break;
+            }
+            acceptedPasses++;
+        }
+
+        if (!movedIndexes.isEmpty()) {
+            Validation finalValidation = validateProposal(
+                source, current, movedIndexes, evidenceView, config.minimumFitRetention(), effectiveIntervals);
+            containmentFailures += finalValidation.containmentFailures();
+            fitFailures += finalValidation.fitFailures();
+            if (!finalValidation.accepted()) {
+                reasons.addAll(finalValidation.reasons());
+                return result(source, Status.REJECTED, reasons,
+                    metrics(source, source, acceptedPasses, backtracks, protectedIndexes.size(),
+                        authorizedCount, containmentFailures, fitFailures, fitBefore, fitBefore,
+                        evidenceView, effectiveIntervals));
             }
         }
 
@@ -302,11 +330,15 @@ public final class HeatmapConstrainedLaplacianSmoother {
                 && currentFit.hasSignal();
         }
         for (int index = 1; index < source.size() - 1; index++) {
+            CandidateCleanupProfile row = evidence.rows().get(index);
             authorized[index] = intervalInterior[index]
                 && !protectedIndexes.contains(index)
                 && directUsableSupport[index - 1]
                 && directUsableSupport[index]
-                && directUsableSupport[index + 1];
+                && directUsableSupport[index + 1]
+                && row.wrinkleIntervention() > MIN_WRINKLE_INTERVENTION
+                && row.bendProtection() <= MAX_BEND_PROTECTION_FOR_SMOOTHING
+                && row.shapeAmbiguity() <= MAX_SHAPE_AMBIGUITY_FOR_SMOOTHING;
         }
         return authorized;
     }
@@ -341,8 +373,10 @@ public final class HeatmapConstrainedLaplacianSmoother {
                 if (!Double.isFinite(currentOffset) || !Double.isFinite(laplacianNormalOffset)) {
                     continue;
                 }
-                double supportDamping = 1.0 - 0.75 * row.motionSupport();
-                double delta = strength * supportDamping * laplacianNormalOffset;
+                double endpointGate = endpointGate(index, interval);
+                double delta = strength * row.wrinkleIntervention()
+                    * (1.0 - row.bendProtection()) * (1.0 - row.shapeAmbiguity())
+                    * endpointGate * laplacianNormalOffset;
                 double maximumStep = MAX_STEP_SOURCE_PIXELS * sample.sourcePixelPitchRasterPx();
                 delta = clamp(delta, -maximumStep, maximumStep);
                 delta = retainSupportedTurn(
@@ -356,6 +390,13 @@ public final class HeatmapConstrainedLaplacianSmoother {
             }
         }
         return new Proposal(List.copyOf(proposed), Set.copyOf(moved), !moved.isEmpty());
+    }
+
+    private double endpointGate(int index, ProtectedInterval interval) {
+        // Interval endpoints are hard fixed anchors. Every strictly interior direct-evidence
+        // profile is therefore equally eligible; no invented distance prior may flatten an
+        // evidence-backed bend near a fixed endpoint.
+        return index > interval.startIndex() && index < interval.endIndex() ? 1.0 : 0.0;
     }
 
     private double retainSupportedTurn(

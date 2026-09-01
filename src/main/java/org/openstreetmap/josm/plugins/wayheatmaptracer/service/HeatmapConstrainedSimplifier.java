@@ -36,6 +36,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTra
 public final class HeatmapConstrainedSimplifier {
     private static final double EPSILON = 1e-9;
     private static final double MIN_AUTHORIZING_SIGNAL = 1e-6;
+    private static final double MIN_BEND_PROTECTION = 0.45;
+    private static final double MIN_AMBIGUITY_PROTECTION = 0.65;
 
     /** Creates a stateless constrained simplifier. */
     public HeatmapConstrainedSimplifier() {
@@ -134,14 +136,6 @@ public final class HeatmapConstrainedSimplifier {
 
         ReductionState state = new ReductionState(source.size());
         for (ProtectedInterval interval : intervalValidation.orderedIntervals()) {
-            UnusableProfile unusable = firstUnusableProfile(interval, evidence);
-            if (unusable != null) {
-                state.attemptedChordCount++;
-                state.reasons.add(unusable.reason());
-                state.rejections.add(new ChordRejection(
-                    interval.startIndex(), interval.endIndex(), unusable.index(), unusable.reason()));
-                continue;
-            }
             for (ProtectedInterval span : splitAtMandatory(List.of(interval), mandatory)) {
                 reduceSpan(source, span, evidence, config, groundScale, state);
             }
@@ -380,27 +374,6 @@ public final class HeatmapConstrainedSimplifier {
         return false;
     }
 
-    private UnusableProfile firstUnusableProfile(
-        ProtectedInterval interval,
-        CandidateCleanupEvidence evidence
-    ) {
-        // Protected endpoints are immutable geometry boundaries and need no heatmap authorization.
-        for (int index = interval.startIndex() + 1; index < interval.endIndex(); index++) {
-            CleanupSamplingProfile sample = evidence.samplingFrame().profiles().get(index);
-            CandidateCleanupProfile row = evidence.profiles().get(index);
-            if (!sample.anchorWithinRaster()) {
-                return new UnusableProfile(index, FailureReason.OFF_RASTER_GAP);
-            }
-            if (row.provenance() == CleanupEvidenceProvenance.UNSUPPORTED) {
-                return new UnusableProfile(index, FailureReason.UNSUPPORTED_GAP);
-            }
-            if (!hasSignal(sample)) {
-                return new UnusableProfile(index, FailureReason.NO_SIGNAL_GAP);
-            }
-        }
-        return null;
-    }
-
     private int significantInteriorIndex(
         List<EastNorth> source,
         ProtectedInterval span,
@@ -439,7 +412,8 @@ public final class HeatmapConstrainedSimplifier {
         if (row.provenance() == CleanupEvidenceProvenance.UNSUPPORTED) {
             return 1_000_000.0;
         }
-        return 1000.0 * row.turnSupport() + 100.0 * row.motionSupport();
+        return 10_000.0 * row.bendProtection() + 1_000.0 * row.turnSupport()
+            + 100.0 * row.shapeAmbiguity() + 10.0 * row.motionSupport();
     }
 
     private boolean alignedEvidence(List<EastNorth> source, CandidateCleanupEvidence evidence) {
@@ -481,9 +455,12 @@ public final class HeatmapConstrainedSimplifier {
         CandidateCleanupEvidence evidence
     ) {
         LinkedHashSet<Integer> mandatory = new LinkedHashSet<>(protectedIndexes);
-        for (CandidateCleanupProfile row : evidence.profiles()) {
-            if (row.provenance() == CleanupEvidenceProvenance.DIRECT && row.turnSupport() > 0.0) {
-                mandatory.add(row.profileIndex());
+        List<CleanupSamplingProfile> samples = evidence.samplingFrame().profiles();
+        for (int index = 0; index < evidence.profiles().size(); index++) {
+            CandidateCleanupProfile row = evidence.profiles().get(index);
+            CleanupSamplingProfile sample = samples.get(index);
+            if (isFrozen(row, sample) || isSupportedShapeAnchor(row)) {
+                mandatory.add(index);
             }
         }
         return Set.copyOf(mandatory);
@@ -492,11 +469,35 @@ public final class HeatmapConstrainedSimplifier {
     private int countSupportedAnchors(CandidateCleanupEvidence evidence) {
         int count = 0;
         for (CandidateCleanupProfile row : evidence.profiles()) {
-            if (row.provenance() == CleanupEvidenceProvenance.DIRECT && row.turnSupport() > 0.0) {
+            if (isSupportedShapeAnchor(row)) {
                 count++;
             }
         }
         return count;
+    }
+
+    /**
+     * Returns whether this profile must delimit a reduction span because its evidence cannot
+     * authorize a replacement chord. The point remains exact while adjacent usable spans may
+     * still be simplified independently.
+     */
+    private boolean isFrozen(CandidateCleanupProfile row, CleanupSamplingProfile sample) {
+        return row.provenance() != CleanupEvidenceProvenance.DIRECT
+            || !sample.anchorWithinRaster()
+            || !hasSignal(sample)
+            || row.scaleConflict();
+    }
+
+    /**
+     * Returns whether direct multiscale shape evidence requires the exact existing coordinate.
+     * Ambiguous evidence is retained conservatively because it cannot safely be classified as a
+     * removable wrinkle; supported bends and legacy turn anchors retain their full amplitude.
+     */
+    private boolean isSupportedShapeAnchor(CandidateCleanupProfile row) {
+        return row.provenance() == CleanupEvidenceProvenance.DIRECT
+            && (row.turnSupport() > 0.0
+                || row.bendProtection() >= MIN_BEND_PROTECTION
+                || row.shapeAmbiguity() >= MIN_AMBIGUITY_PROTECTION);
     }
 
     private List<ProtectedInterval> splitAtMandatory(
@@ -716,9 +717,6 @@ public final class HeatmapConstrainedSimplifier {
         private static ChordEvaluation rejected(int blockingIndex, FailureReason reason) {
             return new ChordEvaluation(false, blockingIndex, Objects.requireNonNull(reason), 0.0, 1.0);
         }
-    }
-
-    private record UnusableProfile(int index, FailureReason reason) {
     }
 
     private record IntervalValidation(

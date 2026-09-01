@@ -109,6 +109,66 @@ class HeatmapConstrainedLaplacianSmootherTest {
     }
 
     @Test
+    void directRowsWithoutPositiveWrinkleEvidenceCannotAuthorizeMovement() {
+        List<EastNorth> geometry = geometry(0.0, 1.2, -1.2, 1.2, 0.0);
+        CandidateCleanupEvidence evidence = withShapeEvidence(
+            evidence(geometry, allDirect(geometry.size()), zeros(geometry.size()), Set.of(), Set.of()),
+            Set.of(), Set.of(), Set.of());
+
+        HeatmapConstrainedLaplacianResult result = SMOOTHER.smooth(
+            geometry,
+            List.of(new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(0, 4)),
+            Set.of(), evidence, GeometryCleanupPreset.STRONG.apply());
+
+        assertEquals(HeatmapConstrainedLaplacianResult.Status.UNCHANGED, result.status());
+        assertEquals(geometry, result.geometry());
+        assertTrue(result.failureReasons().contains(
+            HeatmapConstrainedLaplacianResult.FailureReason.NO_AUTHORIZED_MOVEMENT));
+    }
+
+    @Test
+    void bendProtectedAndAmbiguousRowsRemainFrozenWhileWrinkleRowsCanMove() {
+        List<EastNorth> geometry = geometry(0.0, 1.2, -1.2, 1.2, -1.2, 1.2, 0.0);
+        CandidateCleanupEvidence evidence = withShapeEvidence(
+            evidence(geometry, allDirect(geometry.size()), zeros(geometry.size()), Set.of(), Set.of()),
+            Set.of(1, 2, 3, 4, 5), Set.of(2), Set.of(4));
+
+        HeatmapConstrainedLaplacianResult result = SMOOTHER.smooth(
+            geometry,
+            List.of(new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(0, 6)),
+            Set.of(), evidence, GeometryCleanupPreset.STRONG.apply());
+
+        assertEquals(geometry.get(2), result.geometry().get(2), "bend-protected row");
+        assertEquals(geometry.get(4), result.geometry().get(4), "ambiguous row");
+        assertTrue(result.geometry().stream().anyMatch(point -> !geometry.contains(point)),
+            () -> "no wrinkle-authorized row moved: " + result);
+    }
+
+    @Test
+    void rejectedIntervalDoesNotDiscardAnIndependentlySafeInterval() {
+        List<EastNorth> geometry = geometry(0.0, 1.2, -1.2, 0.0, 1.2, -1.2, 0.0);
+        CandidateCleanupEvidence evidence = withShapeEvidence(
+            evidence(geometry, allDirect(geometry.size()), zeros(geometry.size()), Set.of(), Set.of()),
+            Set.of(1, 2, 4, 5), Set.of(), Set.of());
+        evidence = withExactCoreAndShoulder(evidence, 1, geometry.get(1).north());
+
+        HeatmapConstrainedLaplacianResult result = SMOOTHER.smooth(
+            geometry,
+            List.of(new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(0, 3),
+                new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(3, 6)),
+            Set.of(3), evidence, GeometryCleanupPreset.STRONG.apply()
+                .withMinimumFitRetention(0.0));
+
+        assertEquals(geometry.get(1), result.geometry().get(1), "rejected interval stayed exact");
+        assertEquals(geometry.get(2), result.geometry().get(2), "rejected interval stayed exact");
+        assertTrue(!geometry.get(4).equals(result.geometry().get(4))
+                || !geometry.get(5).equals(result.geometry().get(5)),
+            () -> "safe interval was discarded: " + result);
+        assertTrue(result.failureReasons().contains(
+            HeatmapConstrainedLaplacianResult.FailureReason.CORRIDOR_CONTAINMENT));
+    }
+
+    @Test
     void retainsRawB3B5FitAndBacktracksWithinShoulder() {
         List<EastNorth> geometry = geometry(0.0, 1.5, -1.5, 1.5, 0.0);
         CandidateCleanupEvidence evidence = evidence(geometry, allDirect(geometry.size()),
@@ -481,7 +541,10 @@ class HeatmapConstrainedLaplacianSmootherTest {
                     center, sourcePixelPitchRasterPx, source,
                     turnSupport.contains(index) ? 1.0 : 0.0,
                     turnSupport.contains(index) ? 1.0 : 0.0,
-                    scaleConflict.contains(index)));
+                    scaleConflict.contains(index),
+                    scaleConflict.contains(index) ? 0.0 : 1.0,
+                    turnSupport.contains(index) ? 1.0 : 0.0,
+                    scaleConflict.contains(index) ? 1.0 : 0.0));
         }
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame("test", samples), rows);
     }
@@ -498,9 +561,44 @@ class HeatmapConstrainedLaplacianSmootherTest {
                 new ProjectedLateralTransform(new EastNorth(point.east(), 0.0), 0.0, 1.0),
                 offsets, intensity, intensity, intensity, valid));
             rows.add(new CandidateCleanupProfile(index, -1.0, 1.0, -2.0, 2.0,
-                0.0, 1.0, CleanupEvidenceProvenance.DIRECT, 0.0, 0.0, false));
+                0.0, 1.0, CleanupEvidenceProvenance.DIRECT, 0.0, 0.0, false,
+                0.0, 0.0, 0.0));
         }
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame("no-signal", samples), rows);
+    }
+
+    private static CandidateCleanupEvidence withShapeEvidence(
+        CandidateCleanupEvidence evidence,
+        Set<Integer> wrinkleIndexes,
+        Set<Integer> bendIndexes,
+        Set<Integer> ambiguityIndexes
+    ) {
+        List<CandidateCleanupProfile> rows = evidence.profiles().stream().map(row ->
+            new CandidateCleanupProfile(row.profileIndex(), row.selectedCoreMinPx(),
+                row.selectedCoreMaxPx(), row.selectedShoulderMinPx(), row.selectedShoulderMaxPx(),
+                row.tubeCenterOffsetPx(), row.tubeUncertaintyPx(), row.provenance(),
+                row.motionSupport(), row.turnSupport(), row.scaleConflict(),
+                wrinkleIndexes.contains(row.profileIndex()) ? 1.0 : 0.0,
+                bendIndexes.contains(row.profileIndex()) ? 1.0 : 0.0,
+                ambiguityIndexes.contains(row.profileIndex()) ? 1.0 : 0.0)).toList();
+        return CandidateCleanupEvidence.complete(evidence.samplingFrame(), rows);
+    }
+
+    private static CandidateCleanupEvidence withExactCoreAndShoulder(
+        CandidateCleanupEvidence evidence,
+        int profileIndex,
+        double offset
+    ) {
+        List<CandidateCleanupProfile> rows = evidence.profiles().stream().map(row -> {
+            if (row.profileIndex() != profileIndex) {
+                return row;
+            }
+            return new CandidateCleanupProfile(row.profileIndex(), offset, offset, offset, offset,
+                row.tubeCenterOffsetPx(), row.tubeUncertaintyPx(), row.provenance(),
+                row.motionSupport(), row.turnSupport(), row.scaleConflict(),
+                row.wrinkleIntervention(), row.bendProtection(), row.shapeAmbiguity());
+        }).toList();
+        return CandidateCleanupEvidence.complete(evidence.samplingFrame(), rows);
     }
 
     private static CandidateCleanupEvidence evidenceWithNormals(
@@ -530,7 +628,10 @@ class HeatmapConstrainedLaplacianSmootherTest {
                 0.0, 1.0, CleanupEvidenceProvenance.DIRECT,
                 turnSupport.contains(index) ? 1.0 : 0.0,
                 turnSupport.contains(index) ? 1.0 : 0.0,
-                scaleConflict.contains(index)));
+                scaleConflict.contains(index),
+                scaleConflict.contains(index) ? 0.0 : 1.0,
+                turnSupport.contains(index) ? 1.0 : 0.0,
+                scaleConflict.contains(index) ? 1.0 : 0.0));
         }
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame("curved", samples), rows);
     }
@@ -558,7 +659,8 @@ class HeatmapConstrainedLaplacianSmootherTest {
                 ? new CandidateCleanupProfile(index, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
                     0.0, 1.0, provenance, 0.0, 0.0, false)
                 : new CandidateCleanupProfile(index, -2.0, 2.0, -3.0, 3.0,
-                    0.0, 1.0, provenance, 0.0, 0.0, false));
+                    0.0, 1.0, provenance, 0.0, 0.0, false,
+                    1.0, 0.0, 0.0));
         }
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame("neighbor", samples), rows);
     }

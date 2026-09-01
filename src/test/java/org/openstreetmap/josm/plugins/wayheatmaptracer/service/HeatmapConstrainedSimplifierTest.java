@@ -104,6 +104,68 @@ class HeatmapConstrainedSimplifierTest {
     }
 
     @Test
+    void aDirectSupportedBendIsRetainedEvenWithoutLegacyTurnSupport() {
+        List<EastNorth> geometry = geometry(0.0, 0.1, 0.2, 0.1, 0.0);
+
+        HeatmapConstrainedSimplificationResult result = SIMPLIFIER.simplify(
+            geometry, List.of(new HeatmapConstrainedSimplifier.ProtectedInterval(0, 4)), Set.of(),
+            evidenceWithShape(geometry, 2, 0.0, 1.0, 0.0),
+            GeometryCleanupPreset.STRONG.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+        HeatmapConstrainedSimplificationResult repeated = SIMPLIFIER.simplify(
+            geometry, List.of(new HeatmapConstrainedSimplifier.ProtectedInterval(0, 4)), Set.of(),
+            evidenceWithShape(geometry, 2, 0.0, 1.0, 0.0),
+            GeometryCleanupPreset.STRONG.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(List.of(0, 2, 4), result.retainedSourceIndexes());
+        assertEquals(geometry.get(2), result.geometry().get(1));
+        assertEquals(1, result.metrics().retainedSupportedAnchorCount());
+        assertEquals(result, repeated);
+    }
+
+    @Test
+    void ambiguousDirectShapeEvidenceIsRetainedConservatively() {
+        List<EastNorth> geometry = geometry(0.0, 0.1, 0.2, 0.1, 0.0);
+
+        HeatmapConstrainedSimplificationResult result = SIMPLIFIER.simplify(
+            geometry, List.of(new HeatmapConstrainedSimplifier.ProtectedInterval(0, 4)), Set.of(),
+            evidenceWithShape(geometry, 2, 0.0, 0.0, 0.75),
+            GeometryCleanupPreset.STRONG.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(List.of(0, 2, 4), result.retainedSourceIndexes());
+        assertEquals(geometry.get(2), result.geometry().get(1));
+    }
+
+    @Test
+    void frozenProfileSplitsReductionSoUsableNeighbouringSpansStillSimplify() {
+        List<EastNorth> geometry = geometry(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        List<CleanupEvidenceProvenance> provenance = direct(geometry.size());
+        provenance.set(3, CleanupEvidenceProvenance.BOUNDED_INTERPOLATION);
+
+        HeatmapConstrainedSimplificationResult result = SIMPLIFIER.simplify(
+            geometry, List.of(new HeatmapConstrainedSimplifier.ProtectedInterval(0, 6)), Set.of(),
+            evidence(geometry, provenance, Set.of(), Set.of()),
+            GeometryCleanupPreset.CONSERVATIVE.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(List.of(0, 3, 6), result.retainedSourceIndexes());
+        assertEquals(List.of(geometry.get(0), geometry.get(3), geometry.get(6)), result.geometry());
+        assertEquals(2, result.metrics().acceptedChordCount());
+    }
+
+    @Test
+    void scaleConflictIsFrozenWhileUsableNeighbouringSpansStillSimplify() {
+        List<EastNorth> geometry = geometry(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+
+        HeatmapConstrainedSimplificationResult result = SIMPLIFIER.simplify(
+            geometry, List.of(new HeatmapConstrainedSimplifier.ProtectedInterval(0, 6)), Set.of(),
+            evidenceWithScaleConflict(geometry, 3),
+            GeometryCleanupPreset.CONSERVATIVE.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(List.of(0, 3, 6), result.retainedSourceIndexes());
+        assertEquals(List.of(geometry.get(0), geometry.get(3), geometry.get(6)), result.geometry());
+        assertEquals(2, result.metrics().acceptedChordCount());
+    }
+
+    @Test
     void rejectsAChordThatLosesRawB3OrB5Fit() {
         List<EastNorth> geometry = geometry(0.0, 0.0, 2.0, 0.0, 0.0);
         List<Double> centers = geometry.stream().map(EastNorth::north).toList();
@@ -205,7 +267,7 @@ class HeatmapConstrainedSimplifierTest {
     }
 
     @Test
-    void unsupportedGapFailsClosedBeforeAnyRemoval() {
+    void unsupportedGapIsFrozenWhileUsableNeighbouringSpansMayReduce() {
         List<EastNorth> geometry = geometry(0.0, 0.1, 0.0, -0.1, 0.0);
         List<CleanupEvidenceProvenance> provenance = direct(geometry.size());
         provenance.set(2, CleanupEvidenceProvenance.UNSUPPORTED);
@@ -216,16 +278,12 @@ class HeatmapConstrainedSimplifierTest {
             Set.of(), evidence(geometry, provenance, Set.of(), Set.of()),
             GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertTrue(result.retainedSourceIndexes().contains(2));
-        assertTrue(result.failureReasons().contains(
-            HeatmapConstrainedSimplificationResult.FailureReason.UNSUPPORTED_GAP));
-        assertTrue(result.chordRejections().stream().anyMatch(rejection ->
-            rejection.reason() == HeatmapConstrainedSimplificationResult.FailureReason.UNSUPPORTED_GAP
-                && rejection.blockingProfileIndex() == 2));
+        assertEquals(List.of(0, 2, 4), result.retainedSourceIndexes());
+        assertEquals(2, result.metrics().acceptedChordCount());
     }
 
     @Test
-    void offRasterUnsupportedGapIsDiagnosedSeparately() {
+    void offRasterProfileIsFrozenWhileUsableNeighbouringSpansMayReduce() {
         List<EastNorth> geometry = geometry(0.0, 0.1, 0.0, -0.1, 0.0);
         List<CleanupEvidenceProvenance> provenance = direct(geometry.size());
         provenance.set(2, CleanupEvidenceProvenance.UNSUPPORTED);
@@ -236,13 +294,12 @@ class HeatmapConstrainedSimplifierTest {
             Set.of(), evidence(geometry, provenance, Set.of(2), Set.of()),
             GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertTrue(result.failureReasons().contains(
-            HeatmapConstrainedSimplificationResult.FailureReason.OFF_RASTER_GAP));
-        assertTrue(result.retainedSourceIndexes().contains(2));
+        assertEquals(List.of(0, 2, 4), result.retainedSourceIndexes());
+        assertEquals(2, result.metrics().acceptedChordCount());
     }
 
     @Test
-    void noSignalDirectGapCannotAuthorizeAnInventedChord() {
+    void noSignalDirectProfileIsFrozenWhileUsableNeighbouringSpansMayReduce() {
         List<EastNorth> geometry = geometry(0.0, 0.1, 0.0, -0.1, 0.0);
 
         HeatmapConstrainedSimplificationResult result = SIMPLIFIER.simplify(
@@ -251,13 +308,12 @@ class HeatmapConstrainedSimplifierTest {
             Set.of(), evidence(geometry, direct(geometry.size()), Set.of(), Set.of(2)),
             GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertTrue(result.failureReasons().contains(
-            HeatmapConstrainedSimplificationResult.FailureReason.NO_SIGNAL_GAP));
-        assertTrue(result.retainedSourceIndexes().contains(2));
+        assertEquals(List.of(0, 2, 4), result.retainedSourceIndexes());
+        assertEquals(2, result.metrics().acceptedChordCount());
     }
 
     @Test
-    void boundedInterpolationConstrainsButDoesNotAuthorizeAWholeInterval() {
+    void boundedInterpolationProfilesAreAllFrozenAndRemainExact() {
         List<EastNorth> geometry = geometry(0.0, 0.1, 0.0, -0.1, 0.0);
         List<CleanupEvidenceProvenance> provenance = new ArrayList<>(Collections.nCopies(
             geometry.size(), CleanupEvidenceProvenance.BOUNDED_INTERPOLATION));
@@ -268,8 +324,7 @@ class HeatmapConstrainedSimplifierTest {
             Set.of(), evidence(geometry, provenance, Set.of(), Set.of()),
             GeometryCleanupPreset.BALANCED.apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertTrue(result.failureReasons().contains(
-            HeatmapConstrainedSimplificationResult.FailureReason.NO_DIRECT_AUTHORIZATION));
+        assertEquals(0, result.metrics().acceptedChordCount());
         assertEquals(geometry, result.geometry());
     }
 
@@ -494,5 +549,45 @@ class HeatmapConstrainedSimplifierTest {
             geometry, provenance, offRaster, noSignal, Set.of(), 1.0);
         return CandidateCleanupEvidence.complete(new CleanupSamplingFrame(
             explicit.samplingFrame().detectorMode(), explicit.samplingFrame().profiles()), explicit.profiles());
+    }
+
+    private static CandidateCleanupEvidence evidenceWithShape(
+        List<EastNorth> geometry,
+        int shapedIndex,
+        double wrinkleIntervention,
+        double bendProtection,
+        double shapeAmbiguity
+    ) {
+        CandidateCleanupEvidence base = evidence(
+            geometry, direct(geometry.size()), Set.of(), Set.of());
+        List<CandidateCleanupProfile> shaped = new ArrayList<>();
+        for (CandidateCleanupProfile row : base.profiles()) {
+            boolean selected = row.profileIndex() == shapedIndex;
+            shaped.add(new CandidateCleanupProfile(
+                row.profileIndex(), row.selectedCoreMinPx(), row.selectedCoreMaxPx(),
+                row.selectedShoulderMinPx(), row.selectedShoulderMaxPx(), row.tubeCenterOffsetPx(),
+                row.tubeUncertaintyPx(), row.provenance(), row.motionSupport(), row.turnSupport(),
+                row.scaleConflict(), selected ? wrinkleIntervention : 0.0,
+                selected ? bendProtection : 0.0, selected ? shapeAmbiguity : 0.0));
+        }
+        return CandidateCleanupEvidence.complete(base.samplingFrame(), shaped);
+    }
+
+    private static CandidateCleanupEvidence evidenceWithScaleConflict(
+        List<EastNorth> geometry,
+        int conflictIndex
+    ) {
+        CandidateCleanupEvidence base = evidence(
+            geometry, direct(geometry.size()), Set.of(), Set.of());
+        List<CandidateCleanupProfile> conflicted = new ArrayList<>();
+        for (CandidateCleanupProfile row : base.profiles()) {
+            conflicted.add(new CandidateCleanupProfile(
+                row.profileIndex(), row.selectedCoreMinPx(), row.selectedCoreMaxPx(),
+                row.selectedShoulderMinPx(), row.selectedShoulderMaxPx(), row.tubeCenterOffsetPx(),
+                row.tubeUncertaintyPx(), row.provenance(), row.motionSupport(), row.turnSupport(),
+                row.profileIndex() == conflictIndex, row.wrinkleIntervention(), row.bendProtection(),
+                row.shapeAmbiguity()));
+        }
+        return CandidateCleanupEvidence.complete(base.samplingFrame(), conflicted);
     }
 }

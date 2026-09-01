@@ -5,7 +5,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  *
  * @param mode cleanup operation
  * @param preset origin of the numeric values
- * @param rippleScaleMeters maximum physical scale of unsupported lateral reversals
+ * @param rippleScaleMeters legacy configured scale retained for preferences and format-10 compatibility;
+ *     classification always uses the fixed 6/10/20 m bank
  * @param rippleStrength dimensionless unsupported-ripple penalty strength in {@code [0,1]}
  * @param laplacianStrength dimensionless normal-only smoothing strength in {@code [0,1]}
  * @param laplacianPassCount maximum deterministic smoothing passes
@@ -66,6 +67,37 @@ public record GeometryCleanupConfig(
     }
 
     /**
+     * Returns the one effective user-facing operation represented by this configuration.
+     *
+     * @return effective cleanup choice
+     */
+    public GeometryCleanupChoice choice() {
+        return GeometryCleanupChoice.fromConfig(this);
+    }
+
+    /**
+     * Applies one effective user choice without leaving mode and preset inconsistent.
+     *
+     * @param choice requested effective operation
+     * @return validated choice-derived configuration
+     */
+    public GeometryCleanupConfig withChoice(GeometryCleanupChoice choice) {
+        if (choice == null) {
+            throw new IllegalArgumentException("Cleanup choice must not be null");
+        }
+        return switch (choice) {
+            case OFF -> withMode(GeometryCleanupMode.NONE);
+            case REDUCE_POINTS_ONLY -> withMode(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+            case CONSERVATIVE -> GeometryCleanupPreset.CONSERVATIVE.apply();
+            case BALANCED -> GeometryCleanupPreset.BALANCED.apply();
+            case STRONG -> GeometryCleanupPreset.STRONG.apply();
+            case CUSTOM -> custom(rippleScaleMeters, rippleStrength, laplacianStrength,
+                laplacianPassCount, simplificationDeviationMeters, minimumFitRetention)
+                .withMode(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE);
+        };
+    }
+
+    /**
      * Returns a copy using a different mode and a consistent candidate-request flag.
      *
      * @param newMode cleanup mode to use
@@ -79,7 +111,7 @@ public record GeometryCleanupConfig(
     }
 
     /**
-     * Applies a complete preset while preserving the current mode.
+     * Applies a complete named preset and enables constrained cleanup.
      *
      * @param newPreset preset to apply
      * @return preset-derived configuration
@@ -88,7 +120,8 @@ public record GeometryCleanupConfig(
         if (newPreset == null) {
             throw new IllegalArgumentException("Cleanup preset must not be null");
         }
-        return newPreset.apply(mode);
+        return newPreset == GeometryCleanupPreset.CUSTOM
+            ? withChoice(GeometryCleanupChoice.CUSTOM) : newPreset.apply();
     }
 
     /**
@@ -169,7 +202,8 @@ public record GeometryCleanupConfig(
      * @return redacted JSON object suitable for logs and debug exports
      */
     public String toRedactedJson() {
-        return "{\"mode\":\"" + mode + "\",\"preset\":\"" + preset
+        return "{\"schemaVersion\":2,\"choice\":\"" + choice()
+            + "\",\"mode\":\"" + mode + "\",\"preset\":\"" + preset
             + "\",\"rippleScaleMeters\":" + rippleScaleMeters
             + ",\"rippleStrength\":" + rippleStrength
             + ",\"laplacianStrength\":" + laplacianStrength

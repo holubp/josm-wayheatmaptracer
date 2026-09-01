@@ -56,6 +56,19 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void cleanupCannotConditionTrackingOutsideCorridorAwarePreciseShape() {
+        SelectionContext selection = selection(5);
+        GeometryCleanupConfig requested = GeometryCleanupPreset.BALANCED.apply();
+
+        assertTrue(AlignmentService.effectiveTrackingCleanupConfig(
+            selection, corridorConfig(), requested).isDisabled());
+        assertTrue(AlignmentService.effectiveTrackingCleanupConfig(
+            selection, config(AlignmentMode.PRECISE_SHAPE), requested).isDisabled());
+        assertEquals(requested, AlignmentService.effectiveTrackingCleanupConfig(
+            selection, corridorPreciseConfigWithLegacySimplification(), requested));
+    }
+
+    @Test
     void snapshotsCleanupEvidenceWithoutDuplicatingProfileArrays() {
         String json = new AlignmentService().cleanupEvidenceSummaryJson(
             new CenterlineCandidate("hot/ridge-1", 1.0, List.of(), List.of()));

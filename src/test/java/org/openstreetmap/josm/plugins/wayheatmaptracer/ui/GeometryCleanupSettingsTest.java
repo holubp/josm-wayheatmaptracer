@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -34,6 +35,18 @@ class GeometryCleanupSettingsTest {
     }
 
     @Test
+    void selectingNamedChoiceFromOffEnablesConstrainedCleanup() {
+        GeometryCleanupSettingsModel model = new GeometryCleanupSettingsModel(
+            GeometryCleanupConfig.disabled());
+
+        model.selectChoice(GeometryCleanupChoice.BALANCED);
+
+        assertEquals(GeometryCleanupChoice.BALANCED, model.choice());
+        assertEquals(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, model.config().mode());
+        assertTrue(model.config().cleanedAlternativeRequested());
+    }
+
+    @Test
     void modeControlsEnableOnlyApplicableSettings() {
         GeometryCleanupSettingsModel model = new GeometryCleanupSettingsModel(
             GeometryCleanupConfig.disabled());
@@ -46,7 +59,7 @@ class GeometryCleanupSettingsTest {
 
         model.selectMode(GeometryCleanupMode.REDUCE_POINTS_ONLY);
         GeometryCleanupSettingsModel.ControlState reduceOnly = model.controlState();
-        assertTrue(reduceOnly.ripple());
+        assertFalse(reduceOnly.ripple());
         assertFalse(reduceOnly.laplacian());
         assertTrue(reduceOnly.reduction());
         assertTrue(reduceOnly.fitRetention());

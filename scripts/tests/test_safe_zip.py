@@ -138,3 +138,52 @@ def test_rejects_encryption_codec_and_crc_metadata_tampering():
     with pytest.raises(ArchiveError) as caught:
         discover(bytes(corrupted))
     assert caught.value.code == "MALFORMED_ZIP"
+
+
+def test_inspection_is_deterministic_for_flat_and_nested_bundles(tmp_path):
+    nested = make([("nested.zip", bundle()), ("notes.txt", b"safe")])
+    path = tmp_path / "outer.zip"
+    path.write_bytes(nested)
+
+    first = SafeArchiveReader().inspect(path)
+    second = SafeArchiveReader().inspect(path)
+
+    assert first.sha256 == second.sha256
+    assert [item.name for item in first.bundles] == [item.name for item in second.bundles]
+    assert [item.name for item in first.scannable_members] == [
+        item.name for item in second.scannable_members
+    ]
+
+
+def test_rejects_total_compressed_and_uncompressed_budgets():
+    data = make([("a.txt", b"a" * 32), ("b.txt", b"b" * 32)])
+    with pytest.raises(ArchiveError) as caught:
+        discover(data, ArchiveLimits(max_total_entries=1))
+    assert caught.value.code == "TOTAL_ENTRY_LIMIT"
+
+    with pytest.raises(ArchiveError) as caught:
+        discover(data, ArchiveLimits(max_compressed_bytes=1))
+    assert caught.value.code == "COMPRESSED_SIZE"
+
+    with pytest.raises(ArchiveError) as caught:
+        discover(data, ArchiveLimits(max_uncompressed_bytes=63))
+    assert caught.value.code == "UNCOMPRESSED_SIZE"
+
+
+def test_rejects_raw_nul_member_name():
+    data = bytearray(make([("badXname", b"value")]))
+    position = 0
+    replacements = 0
+    while True:
+        position = data.find(b"badXname", position)
+        if position < 0:
+            break
+        data[position + 3] = 0
+        position += 1
+        replacements += 1
+    assert replacements == 2
+
+    with pytest.raises(ArchiveError) as caught:
+        discover(bytes(data))
+
+    assert caught.value.code == "UNSAFE_PATH"

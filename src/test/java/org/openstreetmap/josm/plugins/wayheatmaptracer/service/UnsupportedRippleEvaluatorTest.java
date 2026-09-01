@@ -20,10 +20,11 @@ class UnsupportedRippleEvaluatorTest {
         var apex = evaluator.evaluate(tube(index -> index <= 10 ? index : 20 - index, 0.8),
             1.0, 10.0, true);
 
-        assertTrue(alternating.get(10).unsupportedWeight() > 0.5);
+        assertTrue(alternating.get(10).unsupportedWeight() > 0.25);
+        assertTrue(effectiveIntervention(alternating.get(10)) > 0.10);
         assertEquals(2.0, alternating.get(10).reversalSpacingMeters(), 1e-9);
-        assertEquals(0.0, coherent.get(10).unsupportedWeight(), 1e-9);
-        assertEquals(0.0, apex.get(10).unsupportedWeight(), 1e-9);
+        assertEquals(0.0, effectiveIntervention(coherent.get(10)), 1e-9);
+        assertEquals(0.0, effectiveIntervention(apex.get(10)), 1e-9);
     }
 
     @Test
@@ -44,7 +45,7 @@ class UnsupportedRippleEvaluatorTest {
                 index -> triangle(index, profilesPerLeg), 1.0);
             var decisions = evaluator.evaluate(supported, 1.0, 20.0, true);
 
-            assertTrue(decisions.stream().allMatch(value -> value.unsupportedWeight() == 0.0),
+            assertTrue(decisions.stream().allMatch(value -> effectiveIntervention(value) == 0.0),
                 "supported spacing=" + spacingMeters + " decisions=" + decisions);
         }
     }
@@ -66,7 +67,7 @@ class UnsupportedRippleEvaluatorTest {
             index -> (index & 1) == 0 ? -3.0 : 3.0, 0.0, index -> index * 0.1, false),
             1.0, 10.0, true);
         assertEquals(0.0, decisions.get(10).unsupportedWeight(), 1e-9);
-        assertEquals("insufficient-physical-span", decisions.get(10).reason());
+        assertEquals("insufficient-window", decisions.get(10).reason());
     }
 
     @Test
@@ -88,9 +89,10 @@ class UnsupportedRippleEvaluatorTest {
         var conflict = new UnsupportedRippleEvaluator().evaluate(tube(
             index -> (index & 1) == 0 ? -0.5 : 0.5, 0.0, index -> index * 2.0, true),
             1.0, 10.0, true);
-        assertTrue(conflict.get(10).unsupportedWeight() > 0.0);
+        assertTrue(conflict.get(10).unsupportedWeight() > 0.0,
+            "Attribution remains available even when authorization is revoked");
         assertEquals(0.0, conflict.get(10).trendAuthorization(), 1e-9);
-        assertEquals("trend-unauthorized-scale-conflict", conflict.get(10).reason());
+        assertEquals("scale-conflict", conflict.get(10).reason());
     }
 
     @Test
@@ -98,17 +100,32 @@ class UnsupportedRippleEvaluatorTest {
         var decisions = new UnsupportedRippleEvaluator().evaluate(
             tube(index -> (index & 1) == 0 ? -0.5 : 0.5, 0.0), 1.0, 10.0, true);
 
-        assertEquals("boundary-censored-window", decisions.get(0).reason());
-        assertEquals(0.5, decisions.get(0).directCoverage(), 1e-9);
+        assertEquals("boundary-censored", decisions.get(0).reason());
+        assertEquals(0.0, decisions.get(0).directCoverage(), 1e-9);
         assertEquals(0.0, decisions.get(0).trendAuthorization(), 1e-9);
         assertEquals(0.0, decisions.get(0).unsupportedWeight(), 1e-9);
         assertTrue(decisions.get(10).directCoverage() > decisions.get(0).directCoverage());
+    }
+
+    @Test
+    void presetScaleDoesNotChangeTheCommonAnalysisEvidence() {
+        UnsupportedRippleEvaluator evaluator = new UnsupportedRippleEvaluator();
+        LongitudinalCorridorTube input = tube(index -> (index & 1) == 0 ? -0.6 : 0.6, 0.0);
+
+        var conservative = evaluator.evaluate(input, 1.0, 6.0, true);
+        var strong = evaluator.evaluate(input, 1.0, 20.0, true);
+
+        assertEquals(conservative, strong);
     }
 
     private double triangle(int index, int profilesPerLeg) {
         int period = profilesPerLeg * 2;
         int phase = index % period;
         return phase <= profilesPerLeg ? phase : period - phase;
+    }
+
+    private static double effectiveIntervention(UnsupportedRippleEvaluator.RippleSupport value) {
+        return value.unsupportedWeight() * value.trendAuthorization();
     }
 
     private LongitudinalCorridorTube tube(IntToDoubleFunction center, double motionSupport) {

@@ -1,5 +1,17 @@
 # Implementation Backlog
 
+## Geometry cleanup and corridor fidelity (v0.20.2)
+
+The checkpointed execution plan is
+[`superpowers/docs/plans/2026-09-01-geometry-cleanup-corridor-fidelity-execution.md`](superpowers/docs/plans/2026-09-01-geometry-cleanup-corridor-fidelity-execution.md).
+This patch repairs cleanup activation and initial-preview behavior, partitions
+unsafe evidence locally, uses one deterministic 6/10/20 m wrinkle-versus-bend
+classifier across the exact optimizer, smoother, and simplifier, and adds
+format-12 diagnostics plus bounded private-corpus tooling. Cleanup remains
+disabled by default; legacy tracking and cleanup-disabled corridor-aware output
+remain unchanged. The conditional cleanup-off objective change was not justified
+and is not part of this release.
+
 ## Tile reliability hardening (v0.20.1 candidate)
 
 The checkpointed execution plan is

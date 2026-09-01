@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -11,6 +12,8 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupInterval;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupPointDisposition;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalPreviewCleanupContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
@@ -94,11 +97,15 @@ public final class GeometryCleanupService {
                 List.of(context.status().name()));
         }
 
-        HeatmapConstrainedLaplacianResult smoothing = smooth(context, config);
+        CleanupEligibilityPartitioner.Partition partition =
+            new CleanupEligibilityPartitioner().partition(context);
+
+        HeatmapConstrainedLaplacianResult smoothing = smooth(context, partition, config);
         if (smoothing.status() == HeatmapConstrainedLaplacianResult.Status.REJECTED) {
             return rejected(raw, smoothing, null, "smoothing-rejected");
         }
-        HeatmapConstrainedSimplificationResult reduction = simplify(smoothing.geometry(), context, config);
+        HeatmapConstrainedSimplificationResult reduction = simplify(
+            smoothing.geometry(), context, partition, config);
         if (reduction.status() == HeatmapConstrainedSimplificationResult.Status.REJECTED) {
             return rejected(raw, smoothing, reduction, "reduction-rejected");
         }
@@ -114,6 +121,7 @@ public final class GeometryCleanupService {
                     PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, reduction.geometry())));
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence cleanedEvidence =
                 reducedEvidence(context, reduction.retainedSourceIndexes());
+            boolean partial = partiallyApplied(partition, smoothing, reduction);
             CenterlineCandidate reportedRaw = raw.withGeometryCleanup(report(raw.id(),
                 CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE, "cleaned-sibling-created",
                 reasons(smoothing, reduction),
@@ -124,8 +132,11 @@ public final class GeometryCleanupService {
                     reduction.geometry(), projectedOffsets(reduction.geometry(), cleanedEvidence))
                 .withFinalPreviewGeometry(reduction.geometry(), freshAssignments)
                 .withCleanupEvidence(cleanedEvidence)
-                .withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.CLEANED,
-                    "cleanup-applied", reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
+                .withGeometryCleanup(report(raw.id(), partial
+                        ? CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED
+                        : CandidateGeometryCleanup.Outcome.CLEANED,
+                    partial ? "cleanup-partially-applied" : "cleanup-applied",
+                    reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
                     smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction));
             return List.of(reportedRaw, cleaned);
         } catch (IllegalArgumentException | IllegalStateException exception) {
@@ -133,39 +144,127 @@ public final class GeometryCleanupService {
         }
     }
 
+    private static boolean partiallyApplied(
+        CleanupEligibilityPartitioner.Partition partition,
+        HeatmapConstrainedLaplacianResult smoothing,
+        HeatmapConstrainedSimplificationResult reduction
+    ) {
+        boolean frozenEvidence = partition.dispositions().stream().anyMatch(disposition ->
+            disposition != CleanupPointDisposition.DIRECT_USABLE
+                && disposition != CleanupPointDisposition.PROTECTED_ANCHOR);
+        return frozenEvidence || smoothing.failureReasons().stream().anyMatch(reason ->
+            reason == HeatmapConstrainedLaplacianResult.FailureReason.BACKTRACK_LIMIT_REACHED
+                || reason == HeatmapConstrainedLaplacianResult.FailureReason.NO_AUTHORIZED_MOVEMENT)
+            || reductionPartiallyApplied(partition, reduction);
+    }
+
+    /** Returns whether one eligible interval reduced while another rejected interval stayed exact. */
+    private static boolean reductionPartiallyApplied(
+        CleanupEligibilityPartitioner.Partition partition,
+        HeatmapConstrainedSimplificationResult reduction
+    ) {
+        boolean changedInterval = false;
+        boolean rejectedUnchangedInterval = false;
+        for (CleanupInterval interval : partition.intervals()) {
+            if (!interval.simplificationEligible()) {
+                continue;
+            }
+            boolean removed = false;
+            for (int index = interval.startIndex() + 1; index < interval.endIndex(); index++) {
+                if (!reduction.retainedSourceIndexes().contains(index)) {
+                    removed = true;
+                    break;
+                }
+            }
+            boolean rejected = reduction.chordRejections().stream().anyMatch(rejection ->
+                rejection.startSourceIndex() >= interval.startIndex()
+                    && rejection.endSourceIndex() <= interval.endIndex());
+            changedInterval |= removed;
+            rejectedUnchangedInterval |= rejected && !removed;
+        }
+        return changedInterval && rejectedUnchangedInterval;
+    }
+
     private HeatmapConstrainedLaplacianResult smooth(
         FinalPreviewCleanupContext context,
+        CleanupEligibilityPartitioner.Partition partition,
         GeometryCleanupConfig config
     ) {
-        return smoother.smooth(context.geometry(), smoothingIntervals(context), context.protectedIndexes(),
-            context.evidence(), config);
+        if (config.mode() != GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE) {
+            return unchangedSmoothing(context.geometry(), partition.immutableIndexes().size(),
+                HeatmapConstrainedLaplacianResult.FailureReason.MODE_DISABLED);
+        }
+        List<HeatmapConstrainedLaplacianSmoother.ProtectedInterval> intervals = smoothingIntervals(partition);
+        if (intervals.isEmpty()) {
+            return unchangedSmoothing(context.geometry(), partition.immutableIndexes().size(),
+                HeatmapConstrainedLaplacianResult.FailureReason.NO_AUTHORIZED_MOVEMENT);
+        }
+        return smoother.smooth(context.geometry(), intervals, partition.immutableIndexes(), context.evidence(), config);
     }
 
     private HeatmapConstrainedSimplificationResult simplify(
         List<EastNorth> geometry,
         FinalPreviewCleanupContext context,
+        CleanupEligibilityPartitioner.Partition partition,
         GeometryCleanupConfig config
     ) {
-        return simplifier.simplify(geometry, simplifierIntervals(context), context.protectedIndexes(),
-            context.evidence(), config);
+        List<HeatmapConstrainedSimplifier.ProtectedInterval> intervals = simplifierIntervals(partition);
+        if (intervals.isEmpty()) {
+            return unchangedSimplification(geometry, partition.immutableIndexes().size());
+        }
+        return simplifier.simplify(geometry, intervals, partition.immutableIndexes(), context.evidence(), config);
     }
 
     private static List<HeatmapConstrainedLaplacianSmoother.ProtectedInterval> smoothingIntervals(
-        FinalPreviewCleanupContext context
+        CleanupEligibilityPartitioner.Partition partition
     ) {
-        return context.protectedIntervals().stream()
+        List<CleanupInterval> eligible = partition.intervals().stream()
+            .filter(CleanupInterval::smoothingEligible)
+            .toList();
+        return eligible.stream()
             .map(interval -> new HeatmapConstrainedLaplacianSmoother.ProtectedInterval(
                 interval.startIndex(), interval.endIndex()))
             .toList();
     }
 
     private static List<HeatmapConstrainedSimplifier.ProtectedInterval> simplifierIntervals(
-        FinalPreviewCleanupContext context
+        CleanupEligibilityPartitioner.Partition partition
     ) {
-        return context.protectedIntervals().stream()
+        List<CleanupInterval> eligible = partition.intervals().stream()
+            .filter(CleanupInterval::simplificationEligible)
+            .toList();
+        return eligible.stream()
             .map(interval -> new HeatmapConstrainedSimplifier.ProtectedInterval(
                 interval.startIndex(), interval.endIndex()))
             .toList();
+    }
+
+    private static HeatmapConstrainedLaplacianResult unchangedSmoothing(
+        List<EastNorth> geometry,
+        int protectedPointCount,
+        HeatmapConstrainedLaplacianResult.FailureReason reason
+    ) {
+        return new HeatmapConstrainedLaplacianResult(geometry,
+            HeatmapConstrainedLaplacianResult.Status.UNCHANGED,
+            List.of(reason),
+            new HeatmapConstrainedLaplacianResult.Metrics(geometry.size(), 0, 0,
+                protectedPointCount, 0, 0, 0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0));
+    }
+
+    private static HeatmapConstrainedSimplificationResult unchangedSimplification(
+        List<EastNorth> geometry,
+        int protectedPointCount
+    ) {
+        List<Integer> retained = new ArrayList<>(geometry.size());
+        for (int index = 0; index < geometry.size(); index++) {
+            retained.add(index);
+        }
+        return new HeatmapConstrainedSimplificationResult(geometry, retained,
+            HeatmapConstrainedSimplificationResult.Status.UNCHANGED,
+            List.of(HeatmapConstrainedSimplificationResult.FailureReason.NO_DIRECT_AUTHORIZATION),
+            List.of(), new HeatmapConstrainedSimplificationResult.Metrics(
+                geometry.size(), geometry.size(), protectedPointCount, 0, 0, 0, 0,
+                OptionalDouble.empty(), OptionalDouble.empty(), 1.0));
     }
 
     private static List<CenterlineCandidate> skipped(CenterlineCandidate raw, String reason, List<String> reasons) {
@@ -279,7 +378,11 @@ public final class GeometryCleanupService {
             if (target == null || !containsExact(cleanedPreview, target)) {
                 throw new IllegalStateException("Cleaned preview does not preserve a proposed topology target");
             }
-            result.put(node.getUniqueId(), target);
+            EastNorth commandTarget = result.get(node.getUniqueId());
+            if (commandTarget == null || commandTarget.distance(target) > 1e-7) {
+                throw new IllegalStateException(
+                    "Cleaned preview changes the command-owned topology target");
+            }
         }
         return Map.copyOf(result);
     }

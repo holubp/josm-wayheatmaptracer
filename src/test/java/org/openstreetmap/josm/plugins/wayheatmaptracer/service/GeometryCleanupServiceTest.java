@@ -17,6 +17,8 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupProfile;
@@ -33,6 +35,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTra
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PreviewNodeAssignmentPlanner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ReplaceWaySegmentCommand;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -42,6 +45,7 @@ class GeometryCleanupServiceTest {
     @BeforeAll
     static void setPreferences() {
         Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
     @Test
@@ -91,6 +95,20 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
+    void noEligibleReductionIntervalIsAnExplicitUnchangedResult() {
+        Fixture fixture = fixture(points(0.0, 0.0, 0.0), Set.of(), Set.of(1), false);
+
+        List<CenterlineCandidate> result = service.expand(
+            fixture.candidate(), fixture.selection(), fixture.geometry(),
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertOutcome(result, CandidateGeometryCleanup.Outcome.UNCHANGED, "cleanup-unchanged");
+        assertEquals(fixture.geometry(), result.get(0).finalPreviewPoints());
+        assertTrue(result.get(0).geometryCleanup().reasons().contains("reduction-NO_DIRECT_AUTHORIZATION"));
+    }
+
+    @Test
     void rejectsIncompleteAndUnmappedOrDuplicatedFinalPreviewEvidence() {
         Fixture incomplete = fixture(points(0.0, 0.2, -0.2, 0.2, 0.0), Set.of(), Set.of(), false);
         CenterlineCandidate withoutEvidence = incomplete.candidate().withCleanupEvidence(CandidateCleanupEvidence.empty());
@@ -118,27 +136,17 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
-    void rejectsInterpolatedOffRasterNoSignalAndNonMonotonicMovableProfiles() {
+    void freezesLocalEvidenceDefectsButStillRejectsNonMonotonicMapping() {
         for (CleanupEvidenceProvenance provenance : List.of(
             CleanupEvidenceProvenance.BOUNDED_INTERPOLATION, CleanupEvidenceProvenance.UNSUPPORTED)) {
-            Fixture fixture = fixture(points(0.0, 0.1, -0.1, 0.1, 0.0), Set.of(2), Set.of(), false,
+            Fixture fixture = fixture(points(0.0, 0.1, -0.1, 0.1, 0.0), Set.of(), Set.of(), false,
                 provenance, false);
-            assertOutcome(service.expand(fixture.candidate(), fixture.selection(), fixture.geometry(),
-                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
-                config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
-                provenance == CleanupEvidenceProvenance.BOUNDED_INTERPOLATION
-                    ? "context-interpolated_movable_point" : "context-unsupported_movable_point");
+            assertLocalDefectPreserved(fixture, 2);
         }
         Fixture offRaster = fixture(points(0.0, 0.1, -0.1, 0.1, 0.0), Set.of(1), Set.of(), false);
-        assertOutcome(service.expand(offRaster.candidate(), offRaster.selection(), offRaster.geometry(),
-            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
-            config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
-            "context-off_raster_movable_point");
+        assertLocalDefectPreserved(offRaster, 1);
         Fixture noSignal = fixture(points(0.0, 0.1, -0.1, 0.1, 0.0), Set.of(), Set.of(3), false);
-        assertOutcome(service.expand(noSignal.candidate(), noSignal.selection(), noSignal.geometry(),
-            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
-            config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
-            "context-no_signal_movable_point");
+        assertLocalDefectPreserved(noSignal, 3);
 
         Fixture monotonic = fixture(points(0.0, 0.1, -0.1, 0.1, 0.0), Set.of(), Set.of(), false);
         List<EastNorth> reordered = List.of(monotonic.geometry().get(0), monotonic.geometry().get(2),
@@ -147,6 +155,18 @@ class GeometryCleanupServiceTest {
             monotonic.geometry(), AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
             config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
             "context-non_monotonic_profile_mapping");
+    }
+
+    private void assertLocalDefectPreserved(Fixture fixture, int defectIndex) {
+        List<CenterlineCandidate> result = service.expand(
+            fixture.candidate(), fixture.selection(), fixture.geometry(),
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(2, result.size(), result.get(0).geometryCleanup().toString());
+        assertTrue(result.get(1).finalPreviewPoints().contains(fixture.geometry().get(defectIndex)));
+        assertEquals(CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+            result.get(1).geometryCleanup().outcome());
     }
 
     @Test
@@ -167,19 +187,36 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
-    void freezesExistingMovableTopologyTargetInsteadOfRetargetingItDuringCleanup() {
+    void reportsPartialWhenOneReductionSpanSucceedsAfterAnotherChordIsRejected() {
+        Fixture fixture = fixture(points(0.0, 0.0, 0.0, 3.0, 0.0),
+            Set.of(), Set.of(), true);
+
+        List<CenterlineCandidate> result = service.expand(
+            fixture.candidate(), fixture.selection(), fixture.geometry(),
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(2, result.size(), result.get(0).geometryCleanup().toString());
+        assertEquals(CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+            result.get(1).geometryCleanup().outcome());
+        assertTrue(result.get(1).geometryCleanup().acceptedChordCount() > 0);
+        assertTrue(result.get(1).geometryCleanup().attemptedChordCount()
+            > result.get(1).geometryCleanup().acceptedChordCount());
+    }
+
+    @Test
+    void rejectsCleanupInsteadOfRetargetingExistingMovableTopologyTarget() {
         Fixture fixture = fixture(points(0.0, 0.1, 0.2, -0.1, 0.0), Set.of(), Set.of(), true);
         List<EastNorth> originalSource = points(0.0, 0.0, 0.0, 0.0, 0.0);
         Node taggedInterior = fixture.selection().segmentNodes().get(2);
-        EastNorth proposedTarget = fixture.candidate().proposedNodePositions().get(taggedInterior.getUniqueId());
+        assertTrue(fixture.candidate().proposedNodePositions().containsKey(taggedInterior.getUniqueId()));
 
         List<CenterlineCandidate> result = service.expand(fixture.candidate(), fixture.selection(), originalSource,
             AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
             config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertEquals(2, result.size(), result.get(0).geometryCleanup().toString());
-        assertEquals(proposedTarget, result.get(1).proposedNodePositions().get(taggedInterior.getUniqueId()));
-        assertTrue(result.get(1).finalPreviewPoints().contains(proposedTarget));
+        assertOutcome(result, CandidateGeometryCleanup.Outcome.REJECTED,
+            "fresh-assignment-rejected");
     }
 
     @Test
@@ -259,6 +296,44 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
+    void rejectsProtectedAnchorThatWouldBorrowANonadjacentProfile() {
+        List<EastNorth> rawRidge = points(0.0, 0.2, -0.2, 0.2, -0.2, 0.2, 0.0);
+        EastNorth junctionTarget = new EastNorth(3.0, 0.0);
+        List<EastNorth> source = List.of(rawRidge.get(0), junctionTarget, rawRidge.get(6));
+        List<Node> nodes = new ArrayList<>();
+        for (int index = 0; index < source.size(); index++) {
+            nodes.add(new Node(new LatLon(50.0 + index * 0.0001, 14.0)));
+        }
+        nodes.get(1).put("barrier", "yes");
+        DataSet dataSet = new DataSet();
+        nodes.forEach(dataSet::addPrimitive);
+        Way way = new Way();
+        way.setNodes(nodes);
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 0, 2, List.copyOf(nodes),
+            Set.of(nodes.get(0), nodes.get(2)));
+        List<EastNorth> reconstructed = List.of(rawRidge.get(0), rawRidge.get(1), junctionTarget,
+            rawRidge.get(4), rawRidge.get(5), rawRidge.get(6));
+        CenterlineCandidate raw = new CenterlineCandidate("hot/nonadjacent-anchor", 0.73,
+            List.of(), List.of())
+            .withEastNorthPoints(rawRidge)
+            .withFinalPreviewGeometry(reconstructed, Map.of(
+                nodes.get(0).getUniqueId(), source.get(0),
+                nodes.get(1).getUniqueId(), junctionTarget,
+                nodes.get(2).getUniqueId(), source.get(2)))
+            .withCleanupEvidence(evidence(rawRidge, Set.of(), Set.of(), null));
+
+        FinalPreviewCleanupContext context = FinalPreviewCleanupContext.create(raw, selection, source);
+
+        assertEquals(FinalPreviewCleanupContext.Status.NONADJACENT_PROTECTED_ANCHOR,
+            context.status());
+        assertOutcome(service.expand(raw, selection, source, AlignmentMode.PRECISE_SHAPE,
+            TrackerMode.CORRIDOR_AWARE, config(GeometryCleanupMode.REDUCE_POINTS_ONLY)),
+            CandidateGeometryCleanup.Outcome.SKIPPED,
+            "context-nonadjacent_protected_anchor");
+    }
+
+    @Test
     void reportsRejectedAndUnchangedWithoutHidingRawCandidate() {
         List<EastNorth> crossing = List.of(new EastNorth(0, 0), new EastNorth(2, 2), new EastNorth(0, 2),
             new EastNorth(2, 0), new EastNorth(4, 0));
@@ -293,6 +368,105 @@ class GeometryCleanupServiceTest {
         assertEquals(smooth.get(1).id(), repeat.get(1).id());
         assertEquals(smooth.get(1).finalPreviewPoints(), repeat.get(1).finalPreviewPoints());
         assertEquals(smooth.get(1).proposedNodePositions(), repeat.get(1).proposedNodePositions());
+    }
+
+    @Test
+    void generatedCleanedSiblingAppliesAndReplaysExactTopologyAcrossUndoRedo() {
+        List<EastNorth> source = List.of(new EastNorth(0.0, 0.0), new EastNorth(10.0, 0.0),
+            new EastNorth(20.0, 0.0), new EastNorth(30.0, 0.0), new EastNorth(40.0, 0.0));
+        List<Node> nodes = source.stream()
+            .map(point -> new Node(ProjectionRegistry.getProjection().eastNorth2latlon(point)))
+            .toList();
+        Node sideEnd = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(
+            new EastNorth(20.0, 20.0)));
+        DataSet dataSet = new DataSet();
+        nodes.forEach(dataSet::addPrimitive);
+        dataSet.addPrimitive(sideEnd);
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        dataSet.addPrimitive(selected);
+        Way connected = new Way();
+        connected.setNodes(List.of(nodes.get(2), sideEnd));
+        dataSet.addPrimitive(connected);
+        SelectionContext selection = new SelectionContext(selected, 0, 4, nodes,
+            Set.of(nodes.get(0), nodes.get(4)));
+        List<EastNorth> ridge = List.of(source.get(0), new EastNorth(10.0, 0.4),
+            source.get(2), new EastNorth(30.0, -0.4), source.get(4));
+        List<EastNorth> reconstructed = PreviewNodeAssignmentPlanner.constrainPreciseTopology(
+            selection, source, ridge);
+        Map<Long, EastNorth> targets = PreviewNodeAssignmentPlanner.targetMap(
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection, source, reconstructed));
+        CenterlineCandidate raw = new CenterlineCandidate("hot/apply-cleaned", 0.8,
+            List.of(), List.of())
+            .withEastNorthPoints(ridge)
+            .withFinalPreviewGeometry(reconstructed, targets)
+            .withCleanupEvidence(evidence(ridge, Set.of(), Set.of(), null));
+
+        List<CenterlineCandidate> expanded = service.expand(raw, selection, source,
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+        assertEquals(2, expanded.size(), expanded.get(0).geometryCleanup().toString());
+        CenterlineCandidate cleaned = expanded.get(1);
+        EastNorth junctionTarget = cleaned.proposedNodePositions().get(nodes.get(2).getUniqueId());
+        List<LatLon> originalCoordinates = nodes.stream().map(Node::getCoor).toList();
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(dataSet, selected, selection,
+            cleaned.finalPreviewPoints(), cleaned.proposedNodePositions(), "apply cleaned test");
+
+        command.executeCommand();
+        List<Node> appliedNodes = List.copyOf(selected.getNodes());
+        assertEquals(junctionTarget, nodes.get(2).getEastNorth(ProjectionRegistry.getProjection()));
+        assertEquals(nodes.get(2), connected.firstNode());
+        assertTrue(appliedNodes.size() < nodes.size());
+
+        command.undoCommand();
+        assertEquals(nodes, selected.getNodes());
+        for (int index = 0; index < nodes.size(); index++) {
+            assertEquals(originalCoordinates.get(index), nodes.get(index).getCoor());
+            assertEquals(dataSet, nodes.get(index).getDataSet());
+        }
+        assertEquals(nodes.get(2), connected.firstNode());
+
+        command.executeCommand();
+        assertEquals(appliedNodes, selected.getNodes());
+        assertEquals(junctionTarget, nodes.get(2).getEastNorth(ProjectionRegistry.getProjection()));
+        assertEquals(nodes.get(2), connected.firstNode());
+    }
+
+    @Test
+    void rejectsCleanedSiblingWhenReductionWouldChangeMovableJunctionCommandTarget() {
+        List<EastNorth> source = List.of(new EastNorth(0.0, 0.0), new EastNorth(10.0, 0.0),
+            new EastNorth(20.0, 0.0), new EastNorth(30.0, 0.0), new EastNorth(40.0, 0.0));
+        List<Node> nodes = source.stream()
+            .map(point -> new Node(ProjectionRegistry.getProjection().eastNorth2latlon(point)))
+            .toList();
+        Node sideEnd = new Node(ProjectionRegistry.getProjection().eastNorth2latlon(
+            new EastNorth(20.0, 20.0)));
+        DataSet dataSet = new DataSet();
+        nodes.forEach(dataSet::addPrimitive);
+        dataSet.addPrimitive(sideEnd);
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        dataSet.addPrimitive(selected);
+        Way connected = new Way();
+        connected.setNodes(List.of(nodes.get(2), sideEnd));
+        dataSet.addPrimitive(connected);
+        SelectionContext selection = new SelectionContext(selected, 0, 4, nodes,
+            Set.of(nodes.get(0), nodes.get(4)));
+        List<EastNorth> ridge = List.of(source.get(0), new EastNorth(10.0, 0.4),
+            new EastNorth(20.0, 1.0), new EastNorth(30.0, -0.4), source.get(4));
+        List<EastNorth> reconstructed = PreviewNodeAssignmentPlanner.constrainPreciseTopology(
+            selection, source, ridge);
+        Map<Long, EastNorth> targets = PreviewNodeAssignmentPlanner.targetMap(
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection, source, reconstructed));
+        CenterlineCandidate raw = new CenterlineCandidate("hot/reject-command-mismatch", 0.8,
+            List.of(), List.of())
+            .withEastNorthPoints(ridge)
+            .withFinalPreviewGeometry(reconstructed, targets)
+            .withCleanupEvidence(evidence(ridge, Set.of(), Set.of(), null));
+
+        assertOutcome(service.expand(raw, selection, source, AlignmentMode.PRECISE_SHAPE,
+            TrackerMode.CORRIDOR_AWARE, config(GeometryCleanupMode.REDUCE_POINTS_ONLY)),
+            CandidateGeometryCleanup.Outcome.REJECTED, "fresh-assignment-rejected");
     }
 
     private static void assertOutcome(

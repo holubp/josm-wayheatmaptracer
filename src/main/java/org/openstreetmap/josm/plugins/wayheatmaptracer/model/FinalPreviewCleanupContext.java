@@ -101,10 +101,6 @@ public record FinalPreviewCleanupContext(
         Set<Integer> cleanupProtectedIndexes = remapProtectedIndexes(
             mapping.previewIndexes(), protectedIndexes);
         List<Integer> mapped = mapping.profileIndexes();
-        Status evidenceStatus = validateMovableEvidence(mapped, cleanupProtectedIndexes, rawEvidence);
-        if (evidenceStatus != Status.COMPLETE) {
-            return rejected(evidenceStatus);
-        }
         if (!rawEvidence.eligible()) {
             return rejected(Status.INCOMPLETE_EVIDENCE);
         }
@@ -249,6 +245,10 @@ public record FinalPreviewCleanupContext(
         if (alignment == null || alignment.previewIndexes().size() < 3) {
             return ProfileMapping.failed(Status.UNMAPPED_OR_DUPLICATE_PROFILE);
         }
+        if (!validProtectedAnchorMappings(finalPreview, rawProfiles, protectedIndexes,
+            alignment.previewIndexes(), alignment.profileIndexes())) {
+            return ProfileMapping.failed(Status.NONADJACENT_PROTECTED_ANCHOR);
+        }
         return new ProfileMapping(alignment.previewIndexes(), alignment.profileIndexes(), Status.COMPLETE);
     }
 
@@ -295,7 +295,72 @@ public record FinalPreviewCleanupContext(
             }
             previous = found;
         }
-        return new ProfileMapping(identityIndexes(finalPreview.size()), result, Status.COMPLETE);
+        List<Integer> previewIndexes = identityIndexes(finalPreview.size());
+        if (!validProtectedAnchorMappings(
+            finalPreview, rawProfiles, protectedIndexes, previewIndexes, result)) {
+            return ProfileMapping.failed(Status.NONADJACENT_PROTECTED_ANCHOR);
+        }
+        return new ProfileMapping(previewIndexes, result, Status.COMPLETE);
+    }
+
+    /**
+     * Requires every protected point that borrows profile evidence to consume only the profile
+     * immediately adjacent to both retained longitudinal neighbors.
+     *
+     * <p>An inserted protected point may replace one adjacent ordinary preview occurrence. The
+     * borrowed row is boundary-only later, but its chainage and transform still delimit cleanup
+     * intervals, so a remote row must never be accepted merely because it is monotonically
+     * available.</p>
+     */
+    private static boolean validProtectedAnchorMappings(
+        List<EastNorth> preview,
+        List<EastNorth> profiles,
+        Set<Integer> protectedIndexes,
+        List<Integer> retainedPreviewIndexes,
+        List<Integer> retainedProfileIndexes
+    ) {
+        if (retainedPreviewIndexes.size() != retainedProfileIndexes.size()) {
+            return false;
+        }
+        Set<Integer> retainedPreviewSet = Set.copyOf(retainedPreviewIndexes);
+        for (int position = 0; position < retainedPreviewIndexes.size(); position++) {
+            int previewIndex = retainedPreviewIndexes.get(position);
+            if (!protectedIndexes.contains(previewIndex)) {
+                continue;
+            }
+            int profileIndex = retainedProfileIndexes.get(position);
+            if (samePoint(preview.get(previewIndex), profiles.get(profileIndex))) {
+                continue;
+            }
+            if ((position > 0 && profileIndex != retainedProfileIndexes.get(position - 1) + 1)
+                || (position + 1 < retainedProfileIndexes.size()
+                    && profileIndex != retainedProfileIndexes.get(position + 1) - 1)) {
+                return false;
+            }
+            if (preview.size() > profiles.size()
+                && !adjacentDroppedPreviewMatchesProfile(
+                    preview, profiles.get(profileIndex), protectedIndexes, retainedPreviewSet, previewIndex)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Returns whether one immediately adjacent ordinary preview occurrence supplies the borrowed row. */
+    private static boolean adjacentDroppedPreviewMatchesProfile(
+        List<EastNorth> preview,
+        EastNorth profile,
+        Set<Integer> protectedIndexes,
+        Set<Integer> retainedPreviewIndexes,
+        int anchorIndex
+    ) {
+        for (int index : new int[] {anchorIndex - 1, anchorIndex + 1}) {
+            if (index >= 0 && index < preview.size() && !protectedIndexes.contains(index)
+                && !retainedPreviewIndexes.contains(index) && samePoint(preview.get(index), profile)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Returns the unique raw profile at a coordinate, or {@code -1} for absent/ambiguous matches. */
@@ -532,34 +597,6 @@ public record FinalPreviewCleanupContext(
         return Set.copyOf(result);
     }
 
-    private static Status validateMovableEvidence(
-        List<Integer> mapped,
-        Set<Integer> protectedIndexes,
-        CandidateCleanupEvidence evidence
-    ) {
-        for (int previewIndex = 0; previewIndex < mapped.size(); previewIndex++) {
-            if (protectedIndexes.contains(previewIndex)) {
-                continue;
-            }
-            int sourceIndex = mapped.get(previewIndex);
-            CandidateCleanupProfile row = evidence.profiles().get(sourceIndex);
-            CleanupSamplingProfile sample = evidence.samplingFrame().profiles().get(sourceIndex);
-            if (row.provenance() == CleanupEvidenceProvenance.BOUNDED_INTERPOLATION) {
-                return Status.INTERPOLATED_MOVABLE_POINT;
-            }
-            if (row.provenance() != CleanupEvidenceProvenance.DIRECT) {
-                return Status.UNSUPPORTED_MOVABLE_POINT;
-            }
-            if (!sample.anchorWithinRaster()) {
-                return Status.OFF_RASTER_MOVABLE_POINT;
-            }
-            if (!hasSignal(sample)) {
-                return Status.NO_SIGNAL_MOVABLE_POINT;
-            }
-        }
-        return Status.COMPLETE;
-    }
-
     private static CandidateCleanupEvidence reindexedEvidence(
         List<Integer> indexes,
         List<EastNorth> geometry,
@@ -578,8 +615,8 @@ public record FinalPreviewCleanupContext(
                 && !samePoint(geometry.get(resultIndex), rawProfiles.get(sourceIndex));
             rows.add(boundaryOnly ? boundaryOnlyRow(resultIndex, row) : copyRow(resultIndex, row));
         }
-        return CandidateCleanupEvidence.complete(new CleanupSamplingFrame(source.samplingFrame().detectorMode(),
-            samples, source.samplingFrame().groundMetersPerRasterPixel()), rows);
+        return new CandidateCleanupEvidence(new CleanupSamplingFrame(source.samplingFrame().detectorMode(),
+            samples, source.samplingFrame().groundMetersPerRasterPixel()), rows, source.status());
     }
 
     private static CleanupSamplingProfile copyProfile(int index, CleanupSamplingProfile source) {
@@ -605,7 +642,8 @@ public record FinalPreviewCleanupContext(
         return new CandidateCleanupProfile(index, source.selectedCoreMinPx(), source.selectedCoreMaxPx(),
             source.selectedShoulderMinPx(), source.selectedShoulderMaxPx(), source.tubeCenterOffsetPx(),
             source.tubeUncertaintyPx(), source.provenance(), source.motionSupport(), source.turnSupport(),
-            source.scaleConflict());
+            source.scaleConflict(), source.wrinkleIntervention(), source.bendProtection(),
+            source.shapeAmbiguity());
     }
 
     /** Converts borrowed anchor evidence into a non-authorizing boundary-only row. */
@@ -665,7 +703,7 @@ public record FinalPreviewCleanupContext(
 
     /** Typed final-preview reconciliation result. */
     public enum Status {
-        /** Every movable preview point has complete direct retained evidence. */
+        /** Geometry and rows reconcile globally; local evidence defects remain immutable boundaries. */
         COMPLETE,
         /** Candidate, selection, or source arguments were invalid. */
         INVALID_INPUT,
@@ -679,6 +717,8 @@ public record FinalPreviewCleanupContext(
         UNMAPPED_OR_DUPLICATE_PROFILE,
         /** Reconciled profile indexes did not progress strictly along the preview. */
         NON_MONOTONIC_PROFILE_MAPPING,
+        /** A protected anchor would borrow evidence from a nonadjacent longitudinal profile. */
+        NONADJACENT_PROTECTED_ANCHOR,
         /** A movable point relies on bounded interpolation rather than direct evidence. */
         INTERPOLATED_MOVABLE_POINT,
         /** A movable point has no selected-corridor evidence. */

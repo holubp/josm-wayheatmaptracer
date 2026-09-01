@@ -9,6 +9,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceProv
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupSamplingProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalShapeEvidence;
 
 /** Builds compact shared and candidate-specific evidence for optional geometry cleanup. */
 final class CleanupEvidenceFactory {
@@ -95,6 +96,10 @@ final class CleanupEvidenceFactory {
                 frame, List.of(), CleanupEvidenceStatus.MEMORY_LIMIT_EXCEEDED);
         }
         List<CandidateCleanupProfile> rows = new ArrayList<>(tube.slices().size());
+        double sourcePixel = frame.profiles().isEmpty() ? 1.0
+            : frame.profiles().get(0).sourcePixelPitchRasterPx();
+        List<LocalShapeEvidence> shapeEvidence = new LocalShapeEvidenceEvaluator()
+            .evaluate(track, tube, sourcePixel);
         for (CorridorTubeSlice slice : tube.slices()) {
             CorridorTrackPoint point = track.points().get(slice.profileIndex());
             CleanupEvidenceProvenance provenance = point == null
@@ -109,6 +114,7 @@ final class CleanupEvidenceFactory {
                 ? slice.motionSupport() : 0.0;
             double authorizedTurnSupport = provenance == CleanupEvidenceProvenance.DIRECT
                 ? turnSupport : 0.0;
+            LocalShapeEvidence shape = shapeEvidence.get(slice.profileIndex());
             rows.add(new CandidateCleanupProfile(
                 slice.profileIndex(),
                 supported ? slice.coreMinPx() : Double.NaN,
@@ -120,7 +126,10 @@ final class CleanupEvidenceFactory {
                 provenance,
                 authorizedMotionSupport,
                 authorizedTurnSupport,
-                slice.scaleConflict()));
+                slice.scaleConflict(),
+                provenance == CleanupEvidenceProvenance.DIRECT ? shape.cleanupIntervention() : 0.0,
+                provenance == CleanupEvidenceProvenance.DIRECT ? shape.bendProtection() : 0.0,
+                shape.ambiguityScore()));
         }
         if (!completeLongitudinalEvidence) {
             return CandidateCleanupEvidence.skipped(
@@ -147,7 +156,7 @@ final class CleanupEvidenceFactory {
         }
         long candidateBytes;
         try {
-            candidateBytes = Math.multiplyExact(96L, Math.multiplyExact((long) candidateCount, profileCount));
+            candidateBytes = Math.multiplyExact(120L, Math.multiplyExact((long) candidateCount, profileCount));
         } catch (ArithmeticException ex) {
             return false;
         }

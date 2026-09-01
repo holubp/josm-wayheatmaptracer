@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.ui;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 
@@ -35,6 +36,15 @@ public final class GeometryCleanupSettingsModel {
     }
 
     /**
+     * Returns the effective primary choice represented by the proposed configuration.
+     *
+     * @return effective cleanup choice
+     */
+    public GeometryCleanupChoice choice() {
+        return config.choice();
+    }
+
+    /**
      * Returns which groups of numeric controls apply to the selected cleanup mode.
      *
      * @return immutable enablement state for the dialog controls
@@ -42,7 +52,16 @@ public final class GeometryCleanupSettingsModel {
     public ControlState controlState() {
         boolean smoothing = config.mode() == GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE;
         boolean reduction = config.mode() != GeometryCleanupMode.NONE;
-        return new ControlState(reduction, smoothing, reduction, reduction);
+        return new ControlState(smoothing, smoothing, reduction, reduction);
+    }
+
+    /**
+     * Selects one effective cleanup operation.
+     *
+     * @param choice selected operation
+     */
+    public void selectChoice(GeometryCleanupChoice choice) {
+        config = config.withChoice(Objects.requireNonNull(choice, "choice"));
     }
 
     /**

@@ -138,10 +138,11 @@ class GeometryCleanupCalibrationTest {
                 index -> 0.30, 1.0, Set.of(), Set.of(), Set.of(30), Set.of())
         )) {
             CenterlineCandidate result = terminalCandidate(fixture, STRONG);
-            assertEquals(fixture.candidate().finalPreviewPoints(), result.finalPreviewPoints(), fixture.name());
-            assertTrue(result.geometryCleanup().outcome() == CandidateGeometryCleanup.Outcome.SKIPPED
-                    || result.geometryCleanup().outcome() == CandidateGeometryCleanup.Outcome.REJECTED,
-                fixture.name() + " must fail closed: " + result.geometryCleanup());
+            int frozenIndex = fixture.name().equals("sparse-holes") ? 20 : 30;
+            assertTrue(result.finalPreviewPoints().contains(
+                fixture.candidate().finalPreviewPoints().get(frozenIndex)), fixture.name());
+            assertEquals(CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+                result.geometryCleanup().outcome(), fixture.name());
         }
     }
 
@@ -225,10 +226,13 @@ class GeometryCleanupCalibrationTest {
                 rows.add(new CandidateCleanupProfile(index, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
                     0.0, 1.0, CleanupEvidenceProvenance.UNSUPPORTED, 0.0, 0.0, false));
             } else {
+                double residual = Math.abs(geometryOffsetsPx.applyAsDouble(index) - center);
+                boolean supportedTurn = turnSupport.contains(index);
                 rows.add(new CandidateCleanupProfile(index, center - 0.80, center + 0.80,
                     center - 4.0, center + 4.0, center, 1.0, CleanupEvidenceProvenance.DIRECT,
-                    turnSupport.contains(index) ? 1.0 : 0.0,
-                    turnSupport.contains(index) ? 1.0 : 0.0, false));
+                    supportedTurn ? 1.0 : 0.0, supportedTurn ? 1.0 : 0.0, false,
+                    !supportedTurn && residual >= 0.15 ? 1.0 : 0.0,
+                    supportedTurn ? 1.0 : 0.0, 0.0));
             }
         }
         DataSet dataSet = new DataSet();
