@@ -43,6 +43,8 @@ public final class TileHeatmapSampler {
     public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
     /** Legacy-compatible rendered-raster oversampling factor. */
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
+    /** Maximum managed native source-pixel radius that one explicit retry may request. */
+    public static final int MAX_MANAGED_SEARCH_HALF_WIDTH_NATIVE_PIXELS = 96;
 
     private final TileFetchCoordinator tileCoordinator;
 
@@ -528,6 +530,28 @@ public final class TileHeatmapSampler {
 
     static double effectiveSearchHalfWidthMeters(ManagedHeatmapConfig config, boolean sketchLikeSelection) {
         return Math.max(2.0, config.searchHalfWidthMeters());
+    }
+
+    /**
+     * Returns the largest physical search half-width representable by the managed inference mosaic.
+     *
+     * @param config slide-time managed source configuration
+     * @param sourcePolyline selected segment in projected coordinates
+     * @return physical search cap equivalent to 96 native inference pixels
+     */
+    public static double maximumSearchHalfWidthMeters(
+        ManagedHeatmapConfig config,
+        List<EastNorth> sourcePolyline
+    ) {
+        if (config == null || sourcePolyline == null || sourcePolyline.isEmpty()) {
+            throw new IllegalArgumentException("Managed retry bounds require configuration and source geometry");
+        }
+        double latitude = sourcePolyline.stream()
+            .map(ProjectionRegistry.getProjection()::eastNorth2latlon)
+            .mapToDouble(LatLon::lat)
+            .average().orElseThrow();
+        return MAX_MANAGED_SEARCH_HALF_WIDTH_NATIVE_PIXELS
+            * metersPerPixel(effectiveInferenceZoom(config), latitude);
     }
 
     private double representativeLatitude(List<EastNorth> points) {

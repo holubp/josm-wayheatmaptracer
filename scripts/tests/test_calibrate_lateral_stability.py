@@ -32,6 +32,8 @@ def test_manifest_is_relative_split_locked_and_privacy_redacted():
         assert "AUTHORIZATION" in manifest
         assert "never-echo" not in manifest + result.stdout
         assert str(root) not in manifest + result.stdout
+        payload = json.loads(manifest)
+        assert [archive["nestedBundleCount"] for archive in payload["archives"]] == [1, 1]
         split = json.loads((output / "split-lock.json").read_text())
         assert len(split["groups"]) == 1
         assert split["quarantinedArchiveCount"] == 1

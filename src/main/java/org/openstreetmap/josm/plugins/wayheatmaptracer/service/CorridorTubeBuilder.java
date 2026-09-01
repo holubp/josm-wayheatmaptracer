@@ -150,11 +150,37 @@ public final class CorridorTubeBuilder {
             weight *= 0.45;
         }
         CenterEvidence centers = centers(profile, band);
-        double centerSpread = Math.max(Math.abs(centers.rawCenterPx() - centers.lightCenterPx()),
+        List<Double> semanticCenters = new ArrayList<>(band.nestedCentersPx());
+        double coreCenter = (band.coreMinPx() + band.coreMaxPx()) / 2.0;
+        semanticCenters.add(coreCenter);
+        if (!profile.source().peaks().isEmpty()) {
+            semanticCenters.add(centers.rawCenterPx());
+            semanticCenters.add(centers.lightCenterPx());
+            semanticCenters.add(centers.standardCenterPx());
+        }
+        semanticCenters.sort(Comparator.naturalOrder());
+        int middle = semanticCenters.size() / 2;
+        double semanticCenter = semanticCenters.size() % 2 == 0
+            ? 0.5 * (semanticCenters.get(middle - 1) + semanticCenters.get(middle))
+            : semanticCenters.get(middle);
+        double semanticSpread = semanticCenters.get(semanticCenters.size() - 1) - semanticCenters.get(0);
+        double normalizedSpread = semanticSpread / sourcePixel;
+        double channelCenterSpread = Math.max(Math.abs(centers.rawCenterPx() - centers.lightCenterPx()),
             Math.max(Math.abs(centers.rawCenterPx() - centers.standardCenterPx()),
                 Math.abs(centers.lightCenterPx() - centers.standardCenterPx())));
-        return new Observation(point.profileIndex(), distanceMeters[point.profileIndex()], band.centerOffsetPx(),
-            Math.max(1e-6, weight), band.uncertaintyPx(), centerSpread / sourcePixel,
+        double centerAgreement = Math.exp(-normalizedSpread * normalizedSpread);
+        double prominence = Math.max(0.0, band.peakIntensity() - band.noiseFloor());
+        double semanticCenterStrength = clamp((prominence - 0.25) / 0.30);
+        double centerIdentifiability = band.hasMeasuredCenter() && !band.parentHypothesis()
+            ? semanticCenterStrength
+                * clamp(0.75 * centerAgreement + 0.25 * band.localizationConfidence()) : 0.0;
+        if (evidence.scaleConflict() || evidence.parentMerge()) {
+            centerIdentifiability *= 0.25;
+        }
+        double positionCenter = band.centerOffsetPx()
+            + centerIdentifiability * (semanticCenter - band.centerOffsetPx());
+        return new Observation(point.profileIndex(), distanceMeters[point.profileIndex()], positionCenter,
+            Math.max(1e-6, weight), band.uncertaintyPx(), channelCenterSpread / sourcePixel,
             evidence.scaleConflict(), evidence.parentMerge(), point.support());
     }
 

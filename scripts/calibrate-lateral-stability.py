@@ -48,15 +48,21 @@ def main() -> None:
         relative = path.relative_to(root).as_posix()
         path_findings = scan_label(relative)
         try:
-            inspection = SafeArchiveReader().inspect(path)
-            findings = merge_findings(path_findings, scan_members(inspection.scannable_members))
+            bundle_names: list[str] = []
+            member_findings = []
+            inspection = SafeArchiveReader().inspect(
+                path,
+                on_bundle=lambda bundle: bundle_names.append(bundle.name),
+                on_member=lambda member: member_findings.extend(scan_members((member,))),
+            )
+            findings = merge_findings(path_findings, member_findings)
             status = "quarantined" if findings else "validated"
             failed |= bool(findings)
             public_relative, public_basename = public_names(relative, path.name,
                 inspection.sha256, bool(path_findings))
             records.append({"relativePath": public_relative, "basename": public_basename,
                 "byteSize": inspection.byte_size, "sha256": inspection.sha256, "status": status,
-                "nestedBundleCount": len(inspection.bundles), "privacyFindings": findings,
+                "nestedBundleCount": len(bundle_names), "privacyFindings": findings,
                 "warnings": ["PRIVACY"] if findings else []})
         except ArchiveError as error:
             failed = True

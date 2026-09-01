@@ -90,6 +90,9 @@ public final class CorridorTracker {
         if (profiles == null || profiles.isEmpty() || seedProfile < 0 || seedProfile >= profiles.size()) {
             throw new IllegalArgumentException("Explicit corridor seed must identify a profile in a non-empty list");
         }
+        if (!seed.hasMeasuredCenter()) {
+            throw new IllegalArgumentException("A boundary-censored core cannot seed a positional corridor track");
+        }
         PathState state = solveSeed(profiles, seedProfile, seed, validSourcePixel(sourcePixelSizePx), Map.of());
         return new CorridorTrack("seed-track", state.points(), state.score(),
             state.points().size() / (double) profiles.size(), false, List.of(), "");
@@ -188,6 +191,11 @@ public final class CorridorTracker {
             CorridorCenterlineOptimizer.scaleEvidenceKey(profileIndex, observation.id()));
         boolean unreliableScale = observationScale != null
             && (observationScale.scaleConflict() || observationScale.parentMerge());
+        if (state.gapCount() > 0 && !censoredGapContinuationCompatible(
+            state, profiles, state.lastProfileIndex(), profileIndex, observation, direction,
+            sourcePixel, scaleEvidence)) {
+            return null;
+        }
         boolean sustainedMotion = hasSustainedMotion(
             profiles, state, profileIndex, observation, direction, sourcePixel);
         if (predictionResidual > LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS
@@ -260,6 +268,112 @@ public final class CorridorTracker {
         return state.band().centerOffsetPx() + slope * currentDistance;
     }
 
+
+    private boolean censoredGapContinuationCompatible(
+        PathState state,
+        List<CorridorProfile> profiles,
+        int observedBoundary,
+        int candidateBoundary,
+        CorridorBand candidate,
+        int direction,
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
+        int first = Math.min(observedBoundary, candidateBoundary) + 1;
+        int last = Math.max(observedBoundary, candidateBoundary) - 1;
+        double envelope = LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS * sourcePixel;
+        boolean censoredEvidence = false;
+        for (int index = first; index <= last; index++) {
+            double expected = predictedOffset(state, profiles, index);
+            if (!Double.isFinite(expected)) {
+                return false;
+            }
+            List<CorridorBand> censored = profiles.get(index).bands().stream()
+                .filter(band -> !band.parentHypothesis() && !band.hasMeasuredCenter())
+                .toList();
+            censoredEvidence |= !censored.isEmpty();
+            List<CorridorBand> relevant = censored.stream()
+                .filter(band -> distanceToInterval(expected, band.shoulderMinPx(),
+                    band.shoulderMaxPx()) <= envelope + 1e-9)
+                .toList();
+            if (relevant.isEmpty()) {
+                continue;
+            }
+            censoredEvidence = true;
+            if (relevant.size() != 1
+                || unreliableScale(scaleEvidence, index, relevant.get(0))) {
+                return false;
+            }
+        }
+        return !censoredEvidence || bridgeContinuationCompatible(
+            state, profiles, candidateBoundary, profiles.get(candidateBoundary), candidate,
+            direction, sourcePixel, scaleEvidence);
+    }
+
+    private double distanceToInterval(double value, double minimum, double maximum) {
+        if (value < minimum) {
+            return minimum - value;
+        }
+        if (value > maximum) {
+            return value - maximum;
+        }
+        return 0.0;
+    }
+
+    private boolean bridgeContinuationCompatible(
+        PathState state,
+        List<CorridorProfile> profiles,
+        int profileIndex,
+        CorridorProfile profile,
+        CorridorBand observation,
+        int direction,
+        double sourcePixel,
+        Map<String, BandScaleEvidence> scaleEvidence
+    ) {
+        double envelope = LARGE_PREDICTION_RESIDUAL_SOURCE_PIXELS * sourcePixel;
+        double expected = predictedOffset(state, profiles, profileIndex);
+        if (!Double.isFinite(expected)) {
+            return false;
+        }
+        List<CorridorBand> compatible = elementaryBands(profile).stream()
+            .filter(band -> Math.abs(band.centerOffsetPx() - expected) <= envelope + 1e-9)
+            .toList();
+        if (compatible.size() != 1 || compatible.get(0) != observation
+            || unreliableScale(scaleEvidence, profileIndex, observation)) {
+            return false;
+        }
+        int examined = 0;
+        for (int lookahead = 1; lookahead <= 3; lookahead++) {
+            int nextIndex = profileIndex + direction * lookahead;
+            if (nextIndex < 0 || nextIndex >= profiles.size()) {
+                break;
+            }
+            double nextExpected = predictedOffset(state, profiles, nextIndex);
+            List<CorridorBand> nextCompatible = elementaryBands(profiles.get(nextIndex)).stream()
+                .filter(band -> Math.abs(band.centerOffsetPx() - nextExpected) <= envelope + 1e-9)
+                .toList();
+            if (nextCompatible.isEmpty()) {
+                continue;
+            }
+            if (nextCompatible.size() != 1
+                || unreliableScale(scaleEvidence, nextIndex, nextCompatible.get(0))) {
+                return false;
+            }
+            examined++;
+        }
+        return examined >= 1;
+    }
+
+    private boolean unreliableScale(
+        Map<String, BandScaleEvidence> scaleEvidence,
+        int profileIndex,
+        CorridorBand band
+    ) {
+        BandScaleEvidence evidence = scaleEvidence.get(
+            CorridorCenterlineOptimizer.scaleEvidenceKey(profileIndex, band.id()));
+        return evidence != null && (evidence.scaleConflict() || evidence.parentMerge());
+    }
+
     private boolean hasSustainedMotion(
         List<CorridorProfile> profiles,
         PathState state,
@@ -314,7 +428,10 @@ public final class CorridorTracker {
     }
 
     private List<CorridorBand> elementaryBands(CorridorProfile profile) {
-        return profile.bands().stream().filter(band -> !band.parentHypothesis()).toList();
+        return profile.bands().stream()
+            .filter(band -> !band.parentHypothesis())
+            .filter(CorridorBand::hasMeasuredCenter)
+            .toList();
     }
 
     private List<Seed> collectSeeds(List<CorridorProfile> profiles) {

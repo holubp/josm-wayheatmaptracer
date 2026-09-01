@@ -553,7 +553,8 @@ public final class CorridorGrouping {
             List.of(center), source.peakIntensity(), source.noiseFloor(), source.valleyRatio(),
             source.gradientStrength(), source.gradientBalance(), source.scaleAgreement(),
             source.signalExistenceConfidence(), source.localizationConfidence(), source.uncertaintyPx(),
-            source.parentHypothesis(), source.childIds());
+            source.parentHypothesis(), source.childIds(), source.boundaryCompleteness(),
+            source.boundarySide());
     }
 
     private double contributorWeight(CorridorBand band) {

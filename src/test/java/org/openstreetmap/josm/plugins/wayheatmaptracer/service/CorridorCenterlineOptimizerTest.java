@@ -12,6 +12,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
@@ -195,6 +196,39 @@ class CorridorCenterlineOptimizerTest {
         }
         assertEquals(result.totalCost(), result.costs().stream()
             .mapToDouble(CorridorCenterlineOptimizer.CostRow::weightedTotal).sum(), 1e-9);
+    }
+
+    @Test
+    void completeBroadCoreUsesTwoSidedChannelCenterInsteadOfBiasedStabilityTube() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        for (int index = 0; index < 30; index++) {
+            CorridorBand band = new CorridorBand("band", 1.0, -4.0, 4.0, -2.0, 2.0,
+                List.of(0.0, 0.0, 0.0), 1.0, 0.0, 1.0,
+                0.9, 0.9, 1.0, 0.95, 0.95, 0.5, false, List.of());
+            List<IntensitySample> samples = new ArrayList<>();
+            for (int offset = -5; offset <= 5; offset++) {
+                double intensity = Math.abs(offset) <= 2 ? 1.0 : Math.abs(offset) <= 4 ? 0.55 : 0.0;
+                samples.add(new IntensitySample(offset, intensity, intensity, intensity, true));
+            }
+            RenderedHeatmapSampler.CrossSectionProfile source = new RenderedHeatmapSampler.CrossSectionProfile(
+                new ProfileSamplingAnchor(new EastNorth(index * 2.0, 0.0), index * 2.0, 0.0, index * 2.0),
+                new Point2D.Double(0.0, 1.0), List.of(), true, samples);
+            profiles.add(new CorridorProfile(index, source, List.of(band), 1.0, 0.0, 1.0, true));
+            points.put(index, new CorridorTrackPoint(index, band, false));
+        }
+        CorridorTrack track = new CorridorTrack("track", points, 30.0, 1.0, false, List.of(), "");
+        LongitudinalCorridorTube tube = new CorridorTubeBuilder().build(
+            track, profiles, 1.0, Map.of());
+
+        var result = new CorridorCenterlineOptimizer().optimize(
+            track, profiles, 1.0, JunctionContext.empty(), Map.of(),
+            tube, GeometryCleanupConfig.disabled());
+
+        double meanAbsoluteCenterError = result.offsetsPx().subList(3, 27).stream()
+            .mapToDouble(Math::abs).average().orElseThrow();
+        assertTrue(meanAbsoluteCenterError <= 0.25,
+            "complete broad-core center error=" + meanAbsoluteCenterError + " offsets=" + result.offsetsPx());
     }
 
     @Test

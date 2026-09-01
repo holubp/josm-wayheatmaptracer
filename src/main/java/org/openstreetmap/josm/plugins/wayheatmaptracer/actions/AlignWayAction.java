@@ -7,6 +7,7 @@ import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 
@@ -48,6 +49,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
@@ -148,7 +150,7 @@ public class AlignWayAction extends JosmAction {
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
                 result, initialCandidate(result), initialCandidate(result), "preview-open", PluginLog.currentSlideLog(), Map.of()));
 
-            showCandidatePreview(dataSet, selection, result, config, cleanupConfig);
+            showCandidatePreview(dataSet, selection, result, slideConfig, imageryLayer, mapView, new LinkedHashMap<>());
         } catch (AlignmentService.AlignmentFailureException ex) {
             overlay.hide();
             if (config != null) {
@@ -241,14 +243,17 @@ public class AlignWayAction extends JosmAction {
         DataSet dataSet,
         SelectionContext selection,
         AlignmentResult result,
-        ManagedHeatmapConfig config,
-        GeometryCleanupConfig cleanupConfig
+        AlignmentConfig slideConfig,
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        Map<String, CandidateRating> candidateRatings
     ) {
+        ManagedHeatmapConfig config = slideConfig.heatmap();
+        GeometryCleanupConfig cleanupConfig = slideConfig.cleanup();
         if (result.candidates().isEmpty()) {
             throw new IllegalStateException(tr("No centerline candidate could be extracted from the heatmap."));
         }
         CenterlineCandidate initial = initialCandidate(result);
-        Map<String, CandidateRating> candidateRatings = new LinkedHashMap<>();
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
         PreviewSelection[] current = {buildPreviewSelection(dataSet, result, initial, initial, config)};
@@ -263,8 +268,7 @@ public class AlignWayAction extends JosmAction {
             ) {
                 super.getListCellRendererComponent(list, value, index, selected, focused);
                 if (value instanceof CenterlineCandidate candidate) {
-                    setText(candidate.displayName() + (candidateApplicable(result, candidate)
-                        ? " - applicable" : " - inspection only"));
+                    setText(candidateListLabel(candidate, candidateApplicable(result, candidate)));
                 }
                 return this;
             }
@@ -276,6 +280,8 @@ public class AlignWayAction extends JosmAction {
         JCheckBox badJunctionShapes = new JCheckBox(tr("bad junction shapes"));
         JButton apply = new JButton(tr("Apply"));
         apply.setEnabled(candidateApplicable(result, initial));
+        JButton retry = new JButton(tr("Retry with wider search..."));
+        configureRetryButton(retry, initial, slideConfig, result);
 
         JPanel panel = buildSummaryPanel(
             current[0].result(),
@@ -289,6 +295,12 @@ public class AlignWayAction extends JosmAction {
             unnecessaryKinks,
             badJunctionShapes
         );
+        double currentSearchHalfWidth = retrySearchBounds(slideConfig, result).currentMeters();
+        JLabel selectedCoverageStatus = new JLabel(coverageStatus(
+            initial, currentSearchHalfWidth, candidateApplicable(result, initial)));
+        panel.add(selectedCoverageStatus, GBC.eol());
+        JLabel selectedCleanupStatus = new JLabel(cleanupStatus(initial));
+        panel.add(selectedCleanupStatus, GBC.eol());
         JLabel selectedCandidateDetail = new JLabel(cleanupDetail(initial));
         panel.add(selectedCandidateDetail, GBC.eol());
         comboBox.addActionListener(event -> {
@@ -299,8 +311,12 @@ public class AlignWayAction extends JosmAction {
             try {
                 current[0] = buildPreviewSelection(dataSet, result, current[0].initialCandidate(), selected, config);
                 overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+                selectedCoverageStatus.setText(coverageStatus(
+                    selected, currentSearchHalfWidth, candidateApplicable(result, selected)));
+                selectedCleanupStatus.setText(cleanupStatus(selected));
                 apply.setEnabled(candidateApplicable(result, selected));
                 selectedCandidateDetail.setText(cleanupDetail(selected));
+                configureRetryButton(retry, selected, slideConfig, result);
                 loadingRating[0] = true;
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
@@ -324,6 +340,7 @@ public class AlignWayAction extends JosmAction {
         JButton cancel = new JButton(tr("Cancel"));
         JPanel buttons = new JPanel();
         buttons.add(apply);
+        buttons.add(retry);
         buttons.add(cancel);
         panel.add(buttons, GBC.eol());
 
@@ -333,6 +350,9 @@ public class AlignWayAction extends JosmAction {
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.pack();
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        retry.addActionListener(event -> retryWithWiderSearch(
+            dialog, dataSet, selection, current[0], slideConfig, imageryLayer, mapView, candidateRatings
+        ));
         dialog.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
@@ -415,6 +435,227 @@ public class AlignWayAction extends JosmAction {
         return result.applicableCandidates().stream().anyMatch(value -> value.id().equals(candidate.id()));
     }
 
+    /**
+     * Builds the compact human-readable candidate label used by the ridge selector.
+     *
+     * @param candidate candidate represented by the list row
+     * @param applicable whether the candidate may be applied
+     * @return label distinguishing complete, bridged, and unresolved search-edge evidence
+     */
+    static String candidateListLabel(CenterlineCandidate candidate, boolean applicable) {
+        String applicability = applicable ? tr("applicable") : tr("inspection only");
+        String reason = candidate.evidence().corridorCoverage().reason();
+        if ("complete-with-search-edge-bridge".equals(reason)) {
+            return tr("{0} - {1} - search-edge gaps bridged", candidate.displayName(), applicability);
+        }
+        if ("unresolved-search-edge-censoring".equals(reason)) {
+            return tr("{0} - {1} - heatmap center leaves search corridor",
+                candidate.displayName(), applicability);
+        }
+        return tr("{0} - {1}", candidate.displayName(), applicability);
+    }
+
+    /**
+     * Builds the prominent selected-candidate corridor coverage notification.
+     *
+     * @param candidate selected preview candidate
+     * @param searchHalfWidthMeters factual half-width used by this slide
+     * @param applicable whether all candidate safety checks permit Apply
+     * @return concise human-readable coverage status
+     */
+    static String coverageStatus(
+        CenterlineCandidate candidate,
+        double searchHalfWidthMeters,
+        boolean applicable
+    ) {
+        var coverage = candidate.evidence().corridorCoverage();
+        if (!coverage.measured()) {
+            return tr("Corridor coverage: not measured for this detector.");
+        }
+        if ("complete-with-search-edge-bridge".equals(coverage.reason())) {
+            String message = tr("Search-edge gaps were interpolated from surrounding evidence.");
+            return applicable ? message
+                : tr("{0} This candidate remains inspection-only because of another safety finding.", message);
+        }
+        if ("unresolved-search-edge-censoring".equals(coverage.reason())) {
+            return tr("The heatmap center leaves the configured {0} m search corridor; "
+                    + "this candidate is inspection-only.",
+                String.format(Locale.ROOT, "%.1f", searchHalfWidthMeters));
+        }
+        if (coverage.complete()) {
+            return applicable
+                ? tr("Corridor coverage: complete.")
+                : tr("Corridor coverage is complete, but another safety finding makes this candidate inspection-only.");
+        }
+        return tr("Corridor coverage is incomplete; this candidate is inspection-only.");
+    }
+
+    /**
+     * Returns whether a candidate has bridge or unresolved search-edge coverage that warrants an
+     * explicit larger acquisition. This deliberately excludes generic no-signal failures.
+     *
+     * @param candidate selected preview candidate
+     * @return whether the preview should offer wider-search retry
+     */
+    static boolean canRetryWithWiderSearch(CenterlineCandidate candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        var coverage = candidate.evidence().corridorCoverage();
+        return coverage.measured() && ("complete-with-search-edge-bridge".equals(coverage.reason())
+            || "unresolved-search-edge-censoring".equals(coverage.reason()));
+    }
+
+    private void configureRetryButton(
+        JButton retry,
+        CenterlineCandidate candidate,
+        AlignmentConfig slideConfig,
+        AlignmentResult result
+    ) {
+        boolean offer = canRetryWithWiderSearch(candidate);
+        retry.setVisible(offer);
+        if (!offer) {
+            return;
+        }
+        RetrySearchBounds bounds = retrySearchBounds(slideConfig, result);
+        boolean canExpand = bounds.maximumMeters() > bounds.currentMeters() + 1e-6;
+        retry.setEnabled(canExpand);
+        retry.setToolTipText(canExpand
+            ? tr("Re-run the complete selected segment with a larger search width")
+            : tr("No larger search can be captured within the current sampler limits"));
+    }
+
+    private RetrySearchBounds retrySearchBounds(AlignmentConfig slideConfig, AlignmentResult result) {
+        ManagedHeatmapConfig source = slideConfig.effectiveHeatmap();
+        if (source.hasManagedAccessValues()) {
+            return new RetrySearchBounds(source.searchHalfWidthMeters(),
+                TileHeatmapSampler.maximumSearchHalfWidthMeters(source, result.sourcePolyline()));
+        }
+        return new RetrySearchBounds(
+            AlignmentService.visibleSearchHalfWidthMeters(slideConfig, result.sourcePolyline()),
+            AlignmentService.maximumVisibleSearchHalfWidthMeters(result.sourcePolyline())
+        );
+    }
+
+    private void retryWithWiderSearch(
+        JDialog dialog,
+        DataSet dataSet,
+        SelectionContext selection,
+        PreviewSelection current,
+        AlignmentConfig slideConfig,
+        ImageryLayer imageryLayer,
+        MapView mapView,
+        Map<String, CandidateRating> candidateRatings
+    ) {
+        if (!canRetryWithWiderSearch(current.candidate())) {
+            return;
+        }
+        RetrySearchBounds bounds = retrySearchBounds(slideConfig, current.result());
+        Double requested = promptRetryWidth(dialog, bounds);
+        if (requested == null) {
+            return;
+        }
+        try {
+            SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, current.result().sourcePolyline());
+            requireRetrySourceUnchanged(slideConfig.heatmap(), imageryLayer);
+            AlignmentConfig retryConfig = slideConfig.withSearchHalfWidthMetersOverride(requested);
+            PluginLog.verbose("Wider-search retry requested: priorHalfWidth=%.3f m, newHalfWidth=%.3f m, "
+                + "candidate=%s, coverageReason=%s.", bounds.currentMeters(), requested,
+                current.candidate().id(), current.candidate().evidence().corridorCoverage().reason());
+            AlignmentResult retried = alignmentService.align(selection, imageryLayer, mapView, retryConfig);
+            updateAggregateIntensityLayer(retried, retryConfig.effectiveHeatmap());
+            CenterlineCandidate retryInitial = initialCandidate(retried);
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                retried, retryInitial, retryInitial, "preview-open", PluginLog.currentSlideLog(), candidateRatings));
+            overlay.hide();
+            activePreviewDialog = null;
+            dialog.dispose();
+            showCandidatePreview(dataSet, selection, retried, retryConfig, imageryLayer, mapView, candidateRatings);
+        } catch (AlignmentService.AlignmentFailureException exception) {
+            AlignmentResult failed = exception.partialResult();
+            CenterlineCandidate failedCandidate = failed.candidates().isEmpty()
+                ? null : failed.candidates().get(0);
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                failed, failedCandidate, failedCandidate, "wider-search-failed",
+                PluginLog.currentSlideLog(), candidateRatings));
+            PluginLog.verbose("Wider-search retry failed without changing the current preview: %s", exception.getMessage());
+            showError(tr("Wider-search retry failed: {0}. The existing preview and ratings were kept.",
+                exception.getMessage()));
+        } catch (Exception exception) {
+            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                current.result(), current.candidate(), current.candidate(), "wider-search-rejected",
+                PluginLog.currentSlideLog(), candidateRatings));
+            PluginLog.verbose("Wider-search retry was rejected without changing the current preview: %s",
+                exception.getMessage());
+            showError(tr("Wider-search retry was not run: {0}. The existing preview and ratings were kept.",
+                exception.getMessage()));
+        }
+    }
+
+    private Double promptRetryWidth(JDialog dialog, RetrySearchBounds bounds) {
+        if (bounds.maximumMeters() <= bounds.currentMeters() + 1e-6) {
+            showError(tr("No larger search can be captured within the current sampler limits."));
+            return null;
+        }
+        double defaultWidth = Math.min(bounds.maximumMeters(), bounds.currentMeters() * 2.0);
+        String answer = JOptionPane.showInputDialog(
+            dialog,
+            tr("Search half-width in metres ({0} to {1})",
+                String.format(Locale.ROOT, "%.2f", bounds.currentMeters()),
+                String.format(Locale.ROOT, "%.2f", bounds.maximumMeters())),
+            String.format(Locale.ROOT, "%.2f", defaultWidth)
+        );
+        if (answer == null) {
+            return null;
+        }
+        try {
+            double requested = Double.parseDouble(answer.trim().replace(",", "."));
+            if (!Double.isFinite(requested) || requested <= bounds.currentMeters() + 1e-6
+                || requested > bounds.maximumMeters() + 1e-6) {
+                throw new IllegalArgumentException(tr("Enter a width larger than {0} and no greater than {1} metres.",
+                    String.format(Locale.ROOT, "%.2f", bounds.currentMeters()),
+                    String.format(Locale.ROOT, "%.2f", bounds.maximumMeters())));
+            }
+            return requested;
+        } catch (NumberFormatException exception) {
+            showError(tr("Enter a finite number of metres."));
+            return null;
+        } catch (IllegalArgumentException exception) {
+            showError(exception.getMessage());
+            return null;
+        }
+    }
+
+    private void requireRetrySourceUnchanged(ManagedHeatmapConfig sourceConfig, ImageryLayer sourceLayer) {
+        ManagedHeatmapConfig currentConfig = effectiveConfig(PluginPreferences.load());
+        if (HeatmapLayerResolver.resolveOptional().orElse(null) != sourceLayer) {
+            throw new IllegalStateException(
+                "The heatmap layer changed after the preview opened. Run a new slide.");
+        }
+        if (sourceConfig.hasManagedAccessValues()) {
+            if (!sourceConfig.hasSameManagedSource(currentConfig)) {
+                throw new IllegalStateException("Heatmap source settings changed after the preview opened. Run a new slide.");
+            }
+            return;
+        }
+        if (currentConfig.hasManagedAccessValues()
+            || !java.util.Objects.equals(sourceConfig.color(), currentConfig.color())
+            || !java.util.Objects.equals(sourceConfig.manualLayerName(), currentConfig.manualLayerName())
+            || !java.util.Objects.equals(sourceConfig.layerRegex(), currentConfig.layerRegex())
+            || HeatmapLayerResolver.resolve() != sourceLayer) {
+            throw new IllegalStateException("The rendered heatmap layer changed after the preview opened. Run a new slide.");
+        }
+    }
+
+    private record RetrySearchBounds(double currentMeters, double maximumMeters) {
+        private RetrySearchBounds {
+            if (!Double.isFinite(currentMeters) || !Double.isFinite(maximumMeters)
+                || currentMeters <= 0.0 || maximumMeters < 0.0) {
+                throw new IllegalArgumentException("Retry search bounds must be finite and non-negative");
+            }
+        }
+    }
+
     private void loadCandidateRating(
         CandidateRating rating,
         JComboBox<String> ratingBox,
@@ -480,6 +721,55 @@ public class AlignWayAction extends JosmAction {
             candidateRatings
         ));
     }
+    /**
+     * Builds the prominent candidate-specific cleanup notification shown above technical details.
+     *
+     * @param candidate selected preview candidate
+     * @return concise human-readable cleanup status
+     */
+    static String cleanupStatus(CenterlineCandidate candidate) {
+        CandidateGeometryCleanup cleanup = candidate.geometryCleanup();
+        return switch (cleanup.outcome()) {
+            case NOT_REQUESTED -> tr("Cleanup status: not requested.");
+            case SKIPPED -> tr("Cleanup status: skipped; no safe interval was changed ({0}).",
+                cleanupReasonLabel(cleanup.reasonCode()));
+            case UNCHANGED -> cleanup.frozenIntervalCount() > 0
+                ? tr("Cleanup status: {0} safe interval(s) were evaluated; {1} protected neighborhood(s) "
+                    + "stayed unchanged and no geometric change was accepted.",
+                    cleanup.eligibleIntervalCount(), cleanup.frozenIntervalCount())
+                : tr("Cleanup status: evaluated safely, but no geometric change was accepted.");
+            case CLEANED_ALTERNATIVE_AVAILABLE ->
+                tr("Cleanup status: a separate cleaned result is available in the candidate list.");
+            case CLEANED -> tr("Cleanup status: fully cleaned ({0} to {1} points).",
+                cleanup.beforePointCount(), cleanup.afterPointCount());
+            case PARTIALLY_CLEANED -> partialCleanupStatus(cleanup);
+            case REJECTED -> tr("Cleanup status: rejected for safety; the raw traced result is shown.");
+        };
+    }
+
+
+    private static String partialCleanupStatus(CandidateGeometryCleanup cleanup) {
+        if (cleanup.frozenIntervalCount() > 0) {
+            return tr(
+                "Cleanup status: partially cleaned in {0} interval(s); "
+                    + "{1} protected neighborhood(s) stayed unchanged.",
+                cleanup.changedIntervalCount(), cleanup.frozenIntervalCount());
+        }
+        return tr(
+            "Cleanup status: partially cleaned in {0} interval(s); "
+                + "other eligible geometry stayed unchanged for safety.",
+            cleanup.changedIntervalCount());
+    }
+    private static String cleanupReasonLabel(String reasonCode) {
+        return switch (reasonCode) {
+            case "no-eligible-cleanup-interval" ->
+                tr("no independently safe cleanup interval exists outside the protected neighborhood");
+            case "alignment-mode-ineligible" -> tr("cleanup requires Precise Shape mode");
+            case "tracker-mode-ineligible" -> tr("cleanup requires Corridor Aware tracking");
+            default -> reasonCode;
+        };
+    }
+
 
     private void cancelPreview(PreviewSelection preview, Map<String, CandidateRating> candidateRatings) {
         PluginLog.verbose("Alignment cancelled at preview dialog.");

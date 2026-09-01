@@ -71,6 +71,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         read_zip_csv(bundle, "geometry-cleanup-anchors.csv"))
     cleanup_shape = cleanup_shape_summaries(
         read_zip_csv(bundle, "geometry-cleanup-local-shape.csv"))
+    boundaries = boundary_summaries(read_zip_csv(bundle, "corridor-bands.csv"))
     proposed_counts: dict[str, int] = defaultdict(int)
     for position in proposed_positions:
         proposed_counts[str(position.get("candidate_id", ""))] += 1
@@ -95,6 +96,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
         performance_summary = performance.get(detector, {})
         bridge_summary = bridge_directions.get((detector, track_id), {})
         scale_summary = scale_space.get(detector, {})
+        boundary_summary = boundaries.get(detector, unavailable_boundary_summary())
         sparse_summary = sparse_bundles.get((detector, track_id), {})
         rating = ratings.get(candidate_id, {})
         numeric = rating_score(str(rating.get("rating", ""))) if isinstance(rating, dict) else None
@@ -204,6 +206,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "transition_evaluations": performance_summary.get("transition_evaluations"),
             "profile_cost_evaluations": performance_summary.get("profile_cost_evaluations"),
             "transition_to_profile_cost_ratio": performance_summary.get("transition_to_profile_cost_ratio"),
+            **boundary_summary,
             "canonical_bridge_count": bridge_summary.get("canonical", 0),
             "backward_marker_bridge_count": bridge_summary.get("backward_marker", 0),
             **cleanup_columns(
@@ -213,6 +216,49 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             **cleanup_shape.get(candidate_id, unavailable_cleanup_shape()),
         })
     return rows
+
+def unavailable_boundary_summary() -> dict[str, object]:
+    """Return unavailable rather than zero-valued format-13 boundary fields."""
+
+    return {
+        "boundary_state": "unavailable",
+        "boundary_complete_count": None,
+        "boundary_shoulder_censored_count": None,
+        "boundary_core_censored_count": None,
+        "boundary_fully_censored_count": None,
+        "boundary_measured_center_count": None,
+        "boundary_unmeasured_center_count": None,
+        "boundary_censored_sides": "unavailable",
+    }
+
+
+def boundary_summaries(rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
+    """Summarize format-13 band boundary completeness by detector."""
+
+    grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        detector = row.get("detector", "")
+        if detector:
+            grouped[detector].append(row)
+    result: dict[str, dict[str, object]] = {}
+    for detector, detector_rows in grouped.items():
+        completeness = [row.get("boundary_completeness", "") for row in detector_rows]
+        measured = [row.get("measured_center", "").lower() == "true" for row in detector_rows]
+        sides = sorted({row.get("boundary_side", "") for row in detector_rows
+                        if row.get("boundary_side", "") not in ("", "NONE")})
+        result[detector] = {
+            "boundary_state": "available",
+            "boundary_complete_count": completeness.count("COMPLETE"),
+            "boundary_shoulder_censored_count": completeness.count("SHOULDER_CENSORED"),
+            "boundary_core_censored_count": completeness.count("CORE_CENSORED"),
+            "boundary_fully_censored_count": completeness.count("FULLY_CENSORED"),
+            "boundary_measured_center_count": sum(measured),
+            "boundary_unmeasured_center_count": len(measured) - sum(measured),
+            "boundary_censored_sides": ";".join(sides),
+        }
+    return result
+
+
 
 
 def cleanup_rows_by_candidate(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -315,6 +361,9 @@ def cleanup_columns(
             "cleanup_projection_unit_name": "unavailable",
             "cleanup_maximum_removed_deviation_meters": None,
             "cleanup_worst_fit_retention": None,
+            "cleanup_eligible_interval_count": None,
+            "cleanup_changed_interval_count": None,
+            "cleanup_frozen_interval_count": None,
             "cleanup_anchor_data_state": "unavailable",
             "cleanup_anchor_count": None,
             "cleanup_anchor_reason_codes": "unavailable",
@@ -344,6 +393,9 @@ def cleanup_columns(
         "cleanup_maximum_removed_deviation_meters": float_or_none(
             cleanup.get("maximum_removed_deviation_meters")),
         "cleanup_worst_fit_retention": float_or_none(cleanup.get("worst_fit_retention")),
+        "cleanup_eligible_interval_count": int_or_none(cleanup.get("eligible_interval_count")),
+        "cleanup_changed_interval_count": int_or_none(cleanup.get("changed_interval_count")),
+        "cleanup_frozen_interval_count": int_or_none(cleanup.get("frozen_interval_count")),
         "cleanup_anchor_data_state": ";".join(anchor_states) if anchor_states else "unavailable",
         "cleanup_anchor_count": available_anchor_count if anchors else None,
         "cleanup_anchor_reason_codes": ";".join(anchor_reasons) if anchor_reasons else "unavailable",
@@ -830,12 +882,10 @@ def main() -> None:
             bundle_paths.extend(sorted(path.glob("*.zip")))
         else:
             bundle_paths.append(path)
-    bundles: list[BundleSource] = []
-    for path in bundle_paths:
-        bundles.extend(debug_bundles(path))
     rows: list[dict[str, object]] = []
-    for bundle in bundles:
-        rows.extend(bundle_rows(bundle))
+    reader = SafeArchiveReader()
+    for path in bundle_paths:
+        reader.for_each_bundle(path, lambda bundle: rows.extend(bundle_rows(bundle)))
 
     if args.raw_csv:
         with args.raw_csv.open("w", newline="", encoding="utf-8") as handle:

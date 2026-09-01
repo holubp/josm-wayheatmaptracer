@@ -404,6 +404,9 @@ public record CenterlineCandidate(
         label.append(" - ").append(confidenceLabel());
         if (geometryCleanup.outcome() == CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE) {
             label.append(" - raw");
+        } else if (geometryCleanup.outcome() == CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED) {
+            label.append(" - partially cleaned (").append(geometryCleanup.beforePointCount()).append(" -> ")
+                .append(geometryCleanup.afterPointCount()).append(" points)");
         } else if (geometryCleanup.cleanedCandidate()) {
             label.append(" - cleaned (").append(geometryCleanup.beforePointCount()).append(" -> ")
                 .append(geometryCleanup.afterPointCount()).append(" points)");

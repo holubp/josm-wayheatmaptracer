@@ -104,6 +104,79 @@ public final class AlignmentService {
     }
 
     /**
+     * Returns the physical half-width currently used by the visible rendered-layer sampler.
+     *
+     * @param slideConfig immutable slide attempt configuration
+     * @param sourcePolyline selected segment in projected coordinates
+     * @return factual slide-time ground half-width in metres
+     */
+    public static double visibleSearchHalfWidthMeters(
+        AlignmentConfig slideConfig,
+        List<EastNorth> sourcePolyline
+    ) {
+        if (slideConfig == null || sourcePolyline == null || sourcePolyline.isEmpty()) {
+            throw new IllegalArgumentException("Visible retry bounds require configuration and source geometry");
+        }
+        double metresPerViewPixel = visibleGroundMetersPerViewPixel(sourcePolyline);
+        return slideConfig.searchHalfWidthMetersOverride().isPresent()
+            ? slideConfig.searchHalfWidthMetersOverride().getAsDouble()
+            : slideConfig.heatmap().crossSectionHalfWidthPx() * metresPerViewPixel;
+    }
+
+    /**
+     * Returns the maximum physical visible-layer half-width supported by profile and capture limits.
+     *
+     * @param sourcePolyline selected segment in projected coordinates
+     * @return maximum retry width in factual ground metres
+     */
+    public static double maximumVisibleSearchHalfWidthMeters(List<EastNorth> sourcePolyline) {
+        if (sourcePolyline == null || sourcePolyline.isEmpty()) {
+            throw new IllegalArgumentException("Visible retry bounds require source geometry");
+        }
+        double metresPerProjectionUnit = ProjectionGroundScale.measure(
+            sourcePolyline, REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL)
+            .representativeMetersPerProjectionUnit();
+        double metresPerViewPixel = REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL
+            * metresPerProjectionUnit;
+        double minEast = sourcePolyline.stream().mapToDouble(EastNorth::east).min().orElseThrow();
+        double maxEast = sourcePolyline.stream().mapToDouble(EastNorth::east).max().orElseThrow();
+        double minNorth = sourcePolyline.stream().mapToDouble(EastNorth::north).min().orElseThrow();
+        double maxNorth = sourcePolyline.stream().mapToDouble(EastNorth::north).max().orElseThrow();
+        double width = maxEast - minEast;
+        double height = maxNorth - minNorth;
+        double areaLimit = MAX_CAPTURE_VIEW_AREA_PX
+            * REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL
+            * REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
+        double sum = width + height;
+        double discriminant = Math.max(0.0, sum * sum - 4.0 * (width * height - areaLimit));
+        double maximumMargin = Math.max(0.0, (-sum + Math.sqrt(discriminant)) / 4.0);
+        double captureHalfWidth = Math.max(0.0, Math.min(maximumMargin / 2.0, maximumMargin - 20.0));
+        return Math.min(MAX_EFFECTIVE_HALF_WIDTH_PX * metresPerViewPixel,
+            captureHalfWidth * metresPerProjectionUnit);
+    }
+
+    private static double visibleGroundMetersPerViewPixel(List<EastNorth> sourcePolyline) {
+        return REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL
+            * ProjectionGroundScale.measure(sourcePolyline, REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL)
+                .representativeMetersPerProjectionUnit();
+    }
+
+    private static int visibleSearchHalfWidthPixels(
+        AlignmentConfig slideConfig,
+        List<EastNorth> sourcePolyline
+    ) {
+        if (slideConfig.searchHalfWidthMetersOverride().isEmpty()) {
+            return slideConfig.heatmap().crossSectionHalfWidthPx();
+        }
+        int pixels = (int) Math.ceil(visibleSearchHalfWidthMeters(slideConfig, sourcePolyline)
+            / visibleGroundMetersPerViewPixel(sourcePolyline));
+        if (pixels > MAX_EFFECTIVE_HALF_WIDTH_PX) {
+            throw new IllegalArgumentException("Requested wider search exceeds the visible sampler profile limit");
+        }
+        return Math.max(MIN_EFFECTIVE_HALF_WIDTH_PX, pixels);
+    }
+
+    /**
      * Aligns a selected segment using the persisted plugin settings.
      *
      * @param selection validated selected way segment
@@ -149,7 +222,7 @@ public final class AlignmentService {
         MapView mapView,
         AlignmentConfig slideConfig
     ) {
-        ManagedHeatmapConfig config = slideConfig.heatmap();
+        ManagedHeatmapConfig config = slideConfig.effectiveHeatmap();
         GeometryCleanupConfig cleanupConfig = slideConfig.cleanup();
         GeometryCleanupConfig trackingCleanupConfig = effectiveTrackingCleanupConfig(
             selection, config, cleanupConfig);
@@ -181,17 +254,18 @@ public final class AlignmentService {
         PluginLog.verbose("Redacted geometry cleanup settings: %s", cleanupConfig.toRedactedJson());
 
         long t0 = System.nanoTime();
-        RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, sourcePolyline, config);
+        int visibleHalfWidthPx = visibleSearchHalfWidthPixels(slideConfig, sourcePolyline);
+        RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, sourcePolyline, visibleHalfWidthPx);
         BufferedImage raster = capture.raster();
         long t1 = System.nanoTime();
 
         List<String> colorModes = detectionColorModes(config);
-        EffectiveSampling effectiveSampling = effectiveSampling(config, capture, sourcePolyline);
+        EffectiveSampling effectiveSampling = effectiveSampling(config, capture, sourcePolyline, visibleHalfWidthPx);
         PluginLog.verbose(
             "Effective visible-layer sampling: configured halfWidth=%d px step=%d px; measured halfWidth=%.2f m "
                 + "step=%.2f m; projectionScale=%.3f units/view-px groundScale=%.3f m/view-px "
                 + "trackerNormalization=%.2f raster-px (%s).",
-            config.crossSectionHalfWidthPx(),
+            visibleHalfWidthPx,
             config.crossSectionStepPx(),
             effectiveSampling.effectiveHalfWidthGroundMeters(),
             effectiveSampling.effectiveStepGroundMeters(),
@@ -468,7 +542,7 @@ public final class AlignmentService {
         StringBuilder profileIntensityCsv = new StringBuilder(
             "detector,profile_index,offset_px,native_intensity,b3_intensity,b5_intensity,normalized_intensity,inside_raster\n");
         StringBuilder corridorBandsCsv = new StringBuilder(
-            "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids\n");
+            "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids,boundary_completeness,boundary_side,measured_center\n");
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
         StringBuilder corridorBundlesCsv = new StringBuilder(corridorBundlesCsvHeader());
@@ -579,7 +653,7 @@ public final class AlignmentService {
         StringBuilder profileIntensityCsv = new StringBuilder(
             "detector,profile_index,offset_px,native_intensity,b3_intensity,b5_intensity,normalized_intensity,inside_raster\n");
         StringBuilder corridorBandsCsv = new StringBuilder(
-            "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids\n");
+            "detector,profile_index,band_id,parent,center_px,shoulder_min_px,shoulder_max_px,core_min_px,core_max_px,peak_intensity,noise_floor,valley_ratio,gradient_strength,gradient_balance,scale_agreement,existence_confidence,localization_confidence,uncertainty_px,child_ids,boundary_completeness,boundary_side,measured_center\n");
         StringBuilder corridorTracksCsv = new StringBuilder(
             "detector,track_id,profile_index,band_id,bridged,parent,child_track_ids,grouping_decision,score,support_ratio,group_left,group_right,common_profiles,common_support_ratio,mean_valley_ratio,common_envelope_ratio\n");
         StringBuilder corridorBundlesCsv = new StringBuilder(corridorBundlesCsvHeader());
@@ -819,7 +893,10 @@ public final class AlignmentService {
                     .append(band.gradientBalance()).append(',').append(band.scaleAgreement()).append(',')
                     .append(band.signalExistenceConfidence()).append(',')
                     .append(band.localizationConfidence()).append(',').append(band.uncertaintyPx()).append(',')
-                    .append(csv(String.join(";", band.childIds()))).append('\n');
+                    .append(csv(String.join(";", band.childIds()))).append(',')
+                    .append(csv(band.boundaryCompleteness().name())).append(',')
+                    .append(csv(band.boundarySide().name())).append(',')
+                    .append(band.hasMeasuredCenter()).append('\n');
             }
         }
         for (CorridorTrack track : result.tracks()) {
@@ -2632,13 +2709,13 @@ public final class AlignmentService {
         ImageryLayer imageryLayer,
         MapView mapView,
         List<EastNorth> sourcePolyline,
-        ManagedHeatmapConfig config
+        int visibleHalfWidthPx
     ) {
         ProjectionBounds originalBounds = mapView.getProjectionBounds();
         EastNorth originalCenter = mapView.getCenter();
         double originalScale = mapView.getScale();
         Dimension originalSize = mapView.getSize();
-        ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginProjectionUnits(config));
+        ProjectionBounds requestedBounds = expandedBounds(sourcePolyline, visibleCaptureMarginProjectionUnits(visibleHalfWidthPx));
         double targetScale = REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
         Dimension captureSize = requiredCaptureSize(requestedBounds, targetScale);
         ProjectionBounds captureBounds = captureBoundsForSize(requestedBounds.getCenter(), captureSize, targetScale);
@@ -2743,8 +2820,8 @@ public final class AlignmentService {
         return new ProjectionBounds(minEast - margin, minNorth - margin, maxEast + margin, maxNorth + margin);
     }
 
-    private double visibleCaptureMarginProjectionUnits(ManagedHeatmapConfig config) {
-        double halfWidthProjectionUnits = config.crossSectionHalfWidthPx()
+    private double visibleCaptureMarginProjectionUnits(int visibleHalfWidthPx) {
+        double halfWidthProjectionUnits = visibleHalfWidthPx
             * REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL;
         return Math.max(halfWidthProjectionUnits * 2.0, halfWidthProjectionUnits + 20.0);
     }
@@ -2816,7 +2893,8 @@ public final class AlignmentService {
     private EffectiveSampling effectiveSampling(
         ManagedHeatmapConfig config,
         RenderedCapture capture,
-        List<EastNorth> sourcePolyline
+        List<EastNorth> sourcePolyline,
+        int visibleHalfWidthPx
     ) {
         double projectionUnitsPerViewPixel = capture.projectionUnitsPerViewPixel();
         ProjectionGroundScale ground = ProjectionGroundScale.measure(sourcePolyline, projectionUnitsPerViewPixel);
@@ -2849,15 +2927,15 @@ public final class AlignmentService {
         double decisionViewMetersPerPixel = decisionGroundMetersPerViewPixel(mode, groundMetersPerViewPixel);
         double decisionSourceMetersPerPixel = nativeCorridorScale
             ? sourceResolution.metersPerPixel().orElseThrow() : decisionViewMetersPerPixel;
-        double decisionHalfWidthUnits = config.crossSectionHalfWidthPx() * decisionViewMetersPerPixel;
+        double decisionHalfWidthUnits = visibleHalfWidthPx * decisionViewMetersPerPixel;
         double decisionStepUnits = config.crossSectionStepPx() * decisionViewMetersPerPixel;
         int effectiveHalfWidthPx = Math.max(MIN_EFFECTIVE_HALF_WIDTH_PX,
-            Math.min(MAX_EFFECTIVE_HALF_WIDTH_PX, config.crossSectionHalfWidthPx()));
+            Math.min(MAX_EFFECTIVE_HALF_WIDTH_PX, visibleHalfWidthPx));
         int effectiveStepPx = Math.max(MIN_EFFECTIVE_STEP_PX,
             Math.min(MAX_EFFECTIVE_STEP_PX, config.crossSectionStepPx()));
         effectiveStepPx = Math.max(1, Math.min(effectiveStepPx, Math.max(1, effectiveHalfWidthPx)));
         return new EffectiveSampling(
-            config.crossSectionHalfWidthPx(),
+            visibleHalfWidthPx,
             config.crossSectionStepPx(),
             effectiveHalfWidthPx,
             effectiveStepPx,

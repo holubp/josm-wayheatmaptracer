@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,9 +58,25 @@ class LocalShapeEvidenceEvaluatorTest {
 
         List<LocalShapeEvidence> evidence = evaluator.evaluate(conflict, 1.0);
 
+
         assertEquals(LocalShapeEvidence.Decision.UNAVAILABLE, evidence.get(0).decision());
         assertEquals(0.0, evidence.get(15).cleanupIntervention(), 0.0);
         assertTrue(evidence.get(15).ambiguityScore() > 0.0);
+    }
+
+    @Test
+    void isolatedMotionSupportCannotProtectAlternatingNoiseAsABend() {
+        List<CorridorTubeSlice> slices = new ArrayList<>();
+        for (int index = 0; index <= 30; index++) {
+            double local = (index & 1) == 0 ? -0.6 : 0.6;
+            double motion = index == 15 ? 1.0 : 0.0;
+            slices.add(slice(index, local, 0.0, 1.0, motion, false));
+        }
+
+        LocalShapeEvidence center = new LocalShapeEvidenceEvaluator()
+            .evaluate(new LongitudinalCorridorTube(slices), 1.0).get(15);
+
+        assertNotEquals(LocalShapeEvidence.Decision.SUPPORTED_BEND, center.decision());
     }
 
     private static LongitudinalCorridorTube tube(
@@ -82,14 +99,21 @@ class LocalShapeEvidenceEvaluatorTest {
         for (int index = 0; index <= 30; index++) {
             double localValue = local.applyAsDouble(index);
             double channelValue = channel.applyAsDouble(index);
-            slices.add(new CorridorTubeSlice(index, index * 2.0, localValue, 0.0,
-                localValue, 0.0, channelValue, 0.0, sourcePixel,
-                motionSupport, motionSupport > 0.0 ? "coherent-direction" : "reversing-noise",
-                0.0, channelValue - sourcePixel, channelValue + sourcePixel,
-                channelValue - 2.0 * sourcePixel, channelValue + 2.0 * sourcePixel,
-                sourcePixel, 1.0, scaleConflict, false,
-                channelValue, channelValue, channelValue, true));
+            slices.add(slice(index, localValue, channelValue, sourcePixel, motionSupport, scaleConflict));
         }
         return new LongitudinalCorridorTube(slices);
+    }
+
+    private static CorridorTubeSlice slice(
+        int index, double localValue, double channelValue, double sourcePixel,
+        double motionSupport, boolean scaleConflict
+    ) {
+        return new CorridorTubeSlice(index, index * 2.0, localValue, 0.0,
+            localValue, 0.0, channelValue, 0.0, sourcePixel,
+            motionSupport, motionSupport > 0.0 ? "coherent-direction" : "reversing-noise",
+            0.0, channelValue - sourcePixel, channelValue + sourcePixel,
+            channelValue - 2.0 * sourcePixel, channelValue + 2.0 * sourcePixel,
+            sourcePixel, 1.0, scaleConflict, false,
+            channelValue, channelValue, channelValue, true);
     }
 }

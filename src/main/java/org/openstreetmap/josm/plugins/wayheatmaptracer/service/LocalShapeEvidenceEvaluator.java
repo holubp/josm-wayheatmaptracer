@@ -87,13 +87,14 @@ public final class LocalShapeEvidenceEvaluator {
             return score != 0 ? score : Double.compare(right.radiusMeters(), left.radiusMeters());
         }).orElseThrow();
         double wrinkle = scales.stream().mapToDouble(ScaleResult::wrinkleScore).max().orElse(0.0);
-        double bend = Math.max(clamp(target.motionSupport()),
+        double sustainedMotion = sustainedMotionSupport(track, tube, target.profileIndex());
+        double bend = Math.max(sustainedMotion,
             scales.stream().mapToDouble(ScaleResult::bendScore).max().orElse(0.0));
         double reliability = scales.stream().mapToDouble(ScaleResult::reliability).max().orElse(0.0);
         double overlap = 2.0 * Math.min(wrinkle, bend);
         double ambiguity = clamp(overlap + 0.35 * (1.0 - reliability)
             + (scaleConflict ? 1.0 : 0.0));
-        double bendProtection = clamp(Math.max(bend, target.motionSupport()));
+        double bendProtection = clamp(Math.max(bend, sustainedMotion));
         double intervention = clamp(wrinkle * square(1.0 - bendProtection)
             * (1.0 - ambiguity) * reliability);
         Decision decision;
@@ -123,6 +124,27 @@ public final class LocalShapeEvidenceEvaluator {
             centers.local() - selected.trendCenterSourcePx(), selected.amplitudeSourcePx(),
             selected.reversalCount(), selected.reversalSpacingMeters(), selected.channelAgreement(), reliability,
             wrinkle, bend, ambiguity, intervention, bendProtection, decision, reason);
+    }
+
+    private double sustainedMotionSupport(
+        CorridorTrack track,
+        LongitudinalCorridorTube tube,
+        int targetIndex
+    ) {
+        List<CorridorTubeSlice> window = contiguousDirectWindow(
+            track, tube, targetIndex, ANALYSIS_RADII_METERS.get(0));
+        if (window.size() < 5) {
+            return 0.0;
+        }
+        CorridorTubeSlice target = tube.at(targetIndex);
+        double leftSpan = target.distanceMeters() - window.get(0).distanceMeters();
+        double rightSpan = window.get(window.size() - 1).distanceMeters() - target.distanceMeters();
+        if (leftSpan < 2.0 || rightSpan < 2.0) {
+            return 0.0;
+        }
+        double neighborhood = window.stream().mapToDouble(CorridorTubeSlice::motionSupport)
+            .average().orElse(0.0);
+        return clamp(Math.min(target.motionSupport(), neighborhood));
     }
 
     private ScaleResult evaluateScale(
@@ -201,9 +223,8 @@ public final class LocalShapeEvidenceEvaluator {
             .average().orElse(0.0);
         double localChannelSupport = observations.stream().mapToDouble(Observation::localChannelSupport)
             .average().orElse(0.0);
-        double bend = clamp(Math.max(
-            smoothStep(0.08, 0.45, curvatureAmplitude) * improvement,
-            target.motionSupport()) * channelAgreement * reliability);
+        double bend = clamp(smoothStep(0.08, 0.45, curvatureAmplitude) * improvement
+            * channelAgreement * reliability);
         double wrinkle = clamp(exposure * smoothStep(0.08, 0.35, amplitude)
             * reliability * (0.55 + 0.45 * (1.0 - localChannelSupport)) * (1.0 - bend));
         return new ScaleResult(radiusMeters, coverage, trend.intercept() / sourcePixel,

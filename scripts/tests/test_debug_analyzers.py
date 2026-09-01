@@ -161,6 +161,24 @@ class DebugAnalyzerCompatibilityTest(unittest.TestCase):
         self.assertEqual("0.4", rows[0]["cleanup_shape_bend_max"])
         self.assertEqual("0.3", rows[0]["cleanup_shape_ambiguity_max"])
 
+    def test_format_thirteen_exposes_boundary_and_partial_cleanup_counts(self) -> None:
+        """Format 13 reports edge censoring and local cleanup intervals without false zeros."""
+        rows, undulations = run_analyzers(debug_bundle(
+            13, "0.21.0", "preview-open", include_cleanup=True))
+
+        cleaned = next(row for row in rows if row["candidate_id"] == "hot/strand#cleaned")
+        self.assertEqual("2", cleaned["cleanup_eligible_interval_count"])
+        self.assertEqual("1", cleaned["cleanup_changed_interval_count"])
+        self.assertEqual("1", cleaned["cleanup_frozen_interval_count"])
+        self.assertEqual("1", cleaned["boundary_core_censored_count"])
+        self.assertEqual("2", cleaned["boundary_measured_center_count"])
+        self.assertEqual("1", cleaned["boundary_unmeasured_center_count"])
+        cleaned_undulation = next(row for row in undulations
+                                   if row["candidate_id"] == "hot/strand#cleaned")
+        self.assertEqual("2", cleaned_undulation["cleanup_eligible_interval_count"])
+        self.assertEqual("1", cleaned_undulation["cleanup_changed_interval_count"])
+        self.assertEqual("1", cleaned_undulation["cleanup_frozen_interval_count"])
+
     def test_consecutive_applied_and_original_geometries_are_reported_as_repeat(self) -> None:
         """The undulation analyzer correlates a repeated slide without exporting coordinates."""
         outer = io.BytesIO()
@@ -341,6 +359,12 @@ def debug_bundle(
                     "hot,bundle-1,1,0.0,2.0,0.0,0.125,0.4,0.75,0.5,true,true\n"
                     "hot,bundle-1,2,0.0,2.0,0.0,0.125,0.4,0.75,0.5,true,true\n")
             archive.writestr("optimizer-costs.csv", optimizer)
+        cleanup_interval_header = (
+            ",eligible_interval_count,changed_interval_count,frozen_interval_count\n"
+            if format_version >= 13 else "\n"
+        )
+        raw_cleanup_intervals = ",2,0,1\n" if format_version >= 13 else "\n"
+        cleaned_cleanup_intervals = ",2,1,1\n" if format_version >= 13 else "\n"
         if format_version >= 9 and include_cleanup:
             archive.writestr(
                 "geometry-cleanup.csv",
@@ -349,9 +373,12 @@ def debug_bundle(
                 "smoothing_backtrack_count,attempted_chord_count,accepted_chord_count,"
                 "containment_failure_count,fit_before,fit_after,"
                 "maximum_displacement_projection_units,projection_unit_name,"
-                "maximum_removed_deviation_meters,worst_fit_retention\n"
-                f"{raw_candidate_id},,CLEANED_ALTERNATIVE_AVAILABLE,cleaned-sibling,raw-kept,12,12,12,2,1,8,4,0,0.88,0.88,0.0,JOSM-projection-units,,\n"
-                f"{cleaned_candidate_id},{raw_candidate_id},CLEANED,accepted,fit-retained,12,12,5,2,1,8,4,0,0.88,0.91,1.25,JOSM-projection-units,0.42,0.93\n",
+                "maximum_removed_deviation_meters,worst_fit_retention"
+                + cleanup_interval_header
+                + f"{raw_candidate_id},,CLEANED_ALTERNATIVE_AVAILABLE,cleaned-sibling,raw-kept,12,12,12,2,1,8,4,0,0.88,0.88,0.0,JOSM-projection-units,,"
+                + raw_cleanup_intervals
+                + f"{cleaned_candidate_id},{raw_candidate_id},CLEANED,accepted,fit-retained,12,12,5,2,1,8,4,0,0.88,0.91,1.25,JOSM-projection-units,0.42,0.93"
+                + cleaned_cleanup_intervals,
             )
             archive.writestr(
                 "geometry-cleanup-anchors.csv",
@@ -370,6 +397,14 @@ def debug_bundle(
                 f"{candidate_id},,COMPLETE,0,DIRECT,false,0.8,0.0,0.3,0.1,0.2\n"
                 f"{candidate_id},,COMPLETE,1,DIRECT,false,0.7,0.2,0.7,0.4,0.3\n"
                 f"{candidate_id},,COMPLETE,2,INTERPOLATED,false,0.0,0.0,1.0,1.0,1.0\n",
+            )
+        if format_version >= 13:
+            archive.writestr(
+                "corridor-bands.csv",
+                "detector,profile_index,band_id,boundary_completeness,boundary_side,measured_center\n"
+                "hot,0,band-0,COMPLETE,NONE,true\n"
+                "hot,1,band-1,CORE_CENSORED,RIGHT,false\n"
+                "hot,2,band-2,SHOULDER_CENSORED,LEFT,true\n",
             )
     return result.getvalue()
 

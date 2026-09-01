@@ -338,7 +338,7 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":12,"
+            + "\"formatVersion\":13,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
@@ -362,7 +362,8 @@ public final class LastSlideDebugBundle {
                 + "smoothing_backtrack_count,attempted_chord_count,accepted_chord_count,"
                 + "containment_failure_count,fit_before,fit_after,"
                 + "maximum_displacement_projection_units,projection_unit_name,"
-                + "maximum_removed_deviation_meters,worst_fit_retention\n");
+                + "maximum_removed_deviation_meters,worst_fit_retention,"
+                + "eligible_interval_count,changed_interval_count,frozen_interval_count\n");
         for (CenterlineCandidate candidate : result.candidates()) {
             CandidateGeometryCleanup cleanup = candidate.geometryCleanup();
             builder.append(csv(candidate.id())).append(',')
@@ -383,7 +384,10 @@ public final class LastSlideDebugBundle {
                 .append(cleanup.maximumDisplacementProjectionUnits()).append(',')
                 .append(csv("JOSM-projection-units")).append(',')
                 .append(optionalDoubleCsv(cleanup.maximumRemovedDeviationMeters())).append(',')
-                .append(optionalDoubleCsv(cleanup.worstFitRetention())).append('\n');
+                .append(optionalDoubleCsv(cleanup.worstFitRetention())).append(',')
+                .append(cleanup.eligibleIntervalCount()).append(',')
+                .append(cleanup.changedIntervalCount()).append(',')
+                .append(cleanup.frozenIntervalCount()).append('\n');
         }
         return builder.toString();
     }

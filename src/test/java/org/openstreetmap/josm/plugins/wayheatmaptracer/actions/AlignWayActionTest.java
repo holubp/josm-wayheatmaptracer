@@ -12,6 +12,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
@@ -77,6 +79,62 @@ class AlignWayActionTest {
         assertTrue(cleanedDetail.contains("after 2"));
         assertTrue(!rawDetail.equals(cleanedDetail));
     }
+    @Test
+    void cleanupStatusMakesPartialAndSkippedProcessingVisible() {
+        CenterlineCandidate partial = candidate("hot/ridge-1#cleaned").withGeometryCleanup(cleanup(
+            CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED, "hot/ridge-1"));
+        CenterlineCandidate partialWithoutProtected = candidate("hot/ridge-3#cleaned").withGeometryCleanup(cleanup(
+            CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED, "hot/ridge-3")
+            .withIntervalSummary(2, 1, 0));
+        CenterlineCandidate unchangedAroundProtected = candidate("hot/ridge-4").withGeometryCleanup(cleanup(
+            CandidateGeometryCleanup.Outcome.UNCHANGED, "hot/ridge-4")
+            .withIntervalSummary(1, 0, 1));
+        CenterlineCandidate skipped = candidate("hot/ridge-2").withGeometryCleanup(cleanup(
+            CandidateGeometryCleanup.Outcome.SKIPPED, "hot/ridge-2"));
+
+        assertTrue(AlignWayAction.cleanupStatus(partial).contains("partially cleaned in 1 interval"));
+        assertTrue(AlignWayAction.cleanupStatus(partial).contains("1 protected neighborhood"));
+        assertTrue(AlignWayAction.cleanupStatus(partialWithoutProtected)
+            .contains("other eligible geometry stayed unchanged for safety"));
+        assertTrue(AlignWayAction.cleanupStatus(unchangedAroundProtected)
+            .contains("1 protected neighborhood"));
+        assertTrue(AlignWayAction.cleanupStatus(skipped).contains("skipped"));
+        assertTrue(partial.displayName().contains("partially cleaned"));
+    }
+
+
+    @Test
+    void offersWiderRetryForBridgedOrUnresolvedCorridorCoverageOnly() {
+        CenterlineCandidate bridged = candidate("hot/ridge-1").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, true, 1, "complete-with-search-edge-bridge")));
+        CenterlineCandidate unresolved = candidate("hot/ridge-2").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, false, 0, "unresolved-search-edge-censoring")));
+        CenterlineCandidate complete = candidate("hot/ridge-3").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, true, 0, "complete")));
+        CenterlineCandidate genericBridge = candidate("hot/ridge-4").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, true, 1, "complete")));
+
+        assertTrue(AlignWayAction.canRetryWithWiderSearch(bridged));
+        assertTrue(AlignWayAction.canRetryWithWiderSearch(unresolved));
+        assertTrue(!AlignWayAction.canRetryWithWiderSearch(complete));
+        assertTrue(!AlignWayAction.canRetryWithWiderSearch(genericBridge));
+    }
+
+
+    @Test
+    void candidateCoverageMessagesExplainSearchEdgeStateWithoutRawEnums() {
+        CenterlineCandidate bridged = candidate("hot/ridge-1").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, true, 2, "complete-with-search-edge-bridge")));
+        CenterlineCandidate unresolved = candidate("hot/ridge-2").withEvidence(CandidateEvidence.empty()
+            .withCorridorCoverage(coverage(true, false, 0, "unresolved-search-edge-censoring")));
+
+        assertTrue(AlignWayAction.candidateListLabel(bridged, true).contains("search-edge gaps bridged"));
+        assertTrue(AlignWayAction.candidateListLabel(unresolved, false).contains("leaves search corridor"));
+        assertTrue(AlignWayAction.coverageStatus(bridged, 7.0, true)
+            .contains("Search-edge gaps were interpolated"));
+        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, false).contains("7.0 m search corridor"));
+        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, false).contains("inspection-only"));
+    }
 
     private static CenterlineCandidate candidate(String id) {
         return new CenterlineCandidate(id, 0.8, List.of(), List.of());
@@ -86,13 +144,20 @@ class AlignWayActionTest {
         CandidateGeometryCleanup.Outcome outcome,
         String parentId
     ) {
-        return new CandidateGeometryCleanup(parentId, outcome, "test", List.of(),
+        CandidateGeometryCleanup report = new CandidateGeometryCleanup(parentId, outcome, "test", List.of(),
             3, 3, outcome == CandidateGeometryCleanup.Outcome.CLEANED
                 || outcome == CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED ? 2 : 3,
             0, 0, 0, 0, 0, 1.0, 1.0, 0.0,
             OptionalDouble.empty(), OptionalDouble.empty());
+        return outcome == CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED
+            ? report.withIntervalSummary(2, 1, 1) : report;
     }
 
+
+    private static CorridorCoverage coverage(boolean measured, boolean complete, int bridges, String reason) {
+        return new CorridorCoverage(measured, complete, 4, 4, 1.0, 0, 3,
+            0.0, 0.0, 0, 0.0, bridges, false, reason);
+    }
     private static AlignmentResult result(
         List<CenterlineCandidate> candidates,
         List<CenterlineCandidate> applicable

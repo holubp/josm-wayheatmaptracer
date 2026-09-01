@@ -194,7 +194,7 @@ class CenterlineCandidateTest {
             .withGeometryCleanup(cleanedReport);
 
         assertTrue(raw.displayName().contains(" - raw"));
-        assertTrue(cleaned.displayName().contains(" - cleaned (8 -> 5 points)"));
+        assertTrue(cleaned.displayName().contains(" - partially cleaned (8 -> 5 points)"));
     }
 
     @Test

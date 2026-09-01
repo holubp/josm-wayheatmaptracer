@@ -4,6 +4,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorBand.BoundaryCompleteness;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.CorridorBand.BoundarySide;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.CrossSectionProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
@@ -57,7 +59,15 @@ public final class CorridorExtractor {
         return extract(index, profile, Double.NaN);
     }
 
-    private CorridorProfile extract(int index, CrossSectionProfile profile, double sourcePixelSizePx) {
+    /**
+     * Extracts one profile with a factual native source-pixel localization scale.
+     *
+     * @param index longitudinal profile index
+     * @param profile complete scalar cross-section
+     * @param sourcePixelSizePx native source-pixel pitch in sampled-raster pixels
+     * @return corridor profile with explicit search-boundary evidence
+     */
+    public CorridorProfile extract(int index, CrossSectionProfile profile, double sourcePixelSizePx) {
         List<IntensitySample> samples = profile.intensitySamples().stream()
             .sorted(Comparator.comparingDouble(IntensitySample::offsetPx))
             .toList();
@@ -163,10 +173,36 @@ public final class CorridorExtractor {
         double localization = clamp(0.35 * gradientBalance + 0.40 * nestedAgreement + 0.25 * coreDefinition);
         double uncertainty = Math.max(localizationResolution / 2.0,
             centerSpread + (1.0 - localization) * shoulderWidth * 0.35);
+        BoundarySide coreCensoring = boundarySide(core, samples, sourcePixelSizePx);
+        BoundarySide shoulderCensoring = boundarySide(shoulder, samples, sourcePixelSizePx);
+        BoundaryCompleteness completeness = completeness(coreCensoring, shoulderCensoring);
+        BoundarySide boundarySide = coreCensoring != BoundarySide.NONE ? coreCensoring : shoulderCensoring;
+        localization = completeness.hasMeasuredCenter() ? localization : 0.0;
+        uncertainty = completeness.hasMeasuredCenter() ? uncertainty : Math.max(uncertainty, shoulderWidth);
         double valleyRatio = parent ? valleyRatio(samples, core) : 1.0;
         return new CorridorBand(id, center, shoulderMin, shoulderMax, coreMin, coreMax, nestedCenters,
             peak, stats.noiseFloor(), valleyRatio, gradientStrength, gradientBalance, scaleAgreement,
-            existence, localization, uncertainty, parent, childIds);
+            existence, localization, uncertainty, parent, childIds, completeness, boundarySide);
+    }
+
+    private BoundaryCompleteness completeness(BoundarySide core, BoundarySide shoulder) {
+        if (core == BoundarySide.BOTH) {
+            return BoundaryCompleteness.FULLY_CENSORED;
+        }
+        if (core != BoundarySide.NONE) {
+            return BoundaryCompleteness.CORE_CENSORED;
+        }
+        return shoulder == BoundarySide.NONE
+            ? BoundaryCompleteness.COMPLETE : BoundaryCompleteness.SHOULDER_CENSORED;
+    }
+
+    private BoundarySide boundarySide(Interval interval, List<IntensitySample> samples, double sourcePixelSizePx) {
+        double step = sampleStep(samples);
+        double margin = Double.isFinite(sourcePixelSizePx) && sourcePixelSizePx > 0.0
+            ? Math.max(step, 2.0 * sourcePixelSizePx) : 0.5 * step;
+        boolean left = interval.minimumOffsetPx() - samples.get(0).offsetPx() < margin - 1e-9;
+        boolean right = samples.get(samples.size() - 1).offsetPx() - interval.maximumOffsetPx() < margin - 1e-9;
+        return BoundarySide.of(left, right);
     }
 
     private ProfileStatistics statistics(List<IntensitySample> samples) {

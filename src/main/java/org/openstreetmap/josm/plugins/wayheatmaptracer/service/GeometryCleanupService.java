@@ -91,14 +91,24 @@ public final class GeometryCleanupService {
             return skipped(raw, "already-cleaned", List.of("already-cleaned"));
         }
 
-        FinalPreviewCleanupContext context = FinalPreviewCleanupContext.create(raw, selection, sourcePolyline);
-        if (!context.complete()) {
-            return skipped(raw, "context-" + context.status().name().toLowerCase(java.util.Locale.ROOT),
-                List.of(context.status().name()));
+        FinalPreviewCleanupContext.CleanupReconciliation reconciliation =
+            FinalPreviewCleanupContext.reconcile(raw, selection, sourcePolyline);
+        if (!reconciliation.cleanable()) {
+            String reason = reconciliation.status() == FinalPreviewCleanupContext.Status.NONADJACENT_PROTECTED_ANCHOR
+                ? "no-eligible-cleanup-interval"
+                : "context-" + reconciliation.status().name().toLowerCase(java.util.Locale.ROOT);
+            return skipped(raw, reason, List.of(reconciliation.status().name()));
         }
+        if (!reconciliation.globallyComplete()) {
+            return expandLocally(raw, selection, sourcePolyline, config, reconciliation);
+        }
+        FinalPreviewCleanupContext context = reconciliation.slices().get(0).context();
 
         CleanupEligibilityPartitioner.Partition partition =
             new CleanupEligibilityPartitioner().partition(context);
+        if (!hasEligibleInterval(partition, config.mode())) {
+            return skipped(raw, "no-eligible-cleanup-interval", List.of("NO_ELIGIBLE_INTERVAL"));
+        }
 
         HeatmapConstrainedLaplacianResult smoothing = smooth(context, partition, config);
         if (smoothing.status() == HeatmapConstrainedLaplacianResult.Status.REJECTED) {
@@ -110,9 +120,11 @@ public final class GeometryCleanupService {
             return rejected(raw, smoothing, reduction, "reduction-rejected");
         }
         if (sameGeometry(raw.finalPreviewPoints(), reduction.geometry())) {
-            return List.of(raw.withGeometryCleanup(report(raw.id(), CandidateGeometryCleanup.Outcome.UNCHANGED,
+            CandidateGeometryCleanup unchanged = report(raw.id(), CandidateGeometryCleanup.Outcome.UNCHANGED,
                 "cleanup-unchanged", reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
-                smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction)));
+                smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction);
+            return List.of(raw.withGeometryCleanup(withGlobalIntervalSummary(
+                unchanged, partition, context, config.mode(), reduction)));
         }
 
         try {
@@ -122,22 +134,25 @@ public final class GeometryCleanupService {
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence cleanedEvidence =
                 reducedEvidence(context, reduction.retainedSourceIndexes());
             boolean partial = partiallyApplied(partition, smoothing, reduction);
-            CenterlineCandidate reportedRaw = raw.withGeometryCleanup(report(raw.id(),
+            CandidateGeometryCleanup availableReport = withGlobalIntervalSummary(report(raw.id(),
                 CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE, "cleaned-sibling-created",
                 reasons(smoothing, reduction),
                 raw.finalPreviewPoints().size(), smoothing.geometry().size(), reduction.geometry().size(),
-                smoothing, reduction));
+                smoothing, reduction), partition, context, config.mode(), reduction);
+            CandidateGeometryCleanup cleanedReport = withGlobalIntervalSummary(report(raw.id(), partial
+                    ? CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED
+                    : CandidateGeometryCleanup.Outcome.CLEANED,
+                partial ? "cleanup-partially-applied" : "cleanup-applied",
+                reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
+                smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction),
+                partition, context, config.mode(), reduction);
+            CenterlineCandidate reportedRaw = raw.withGeometryCleanup(availableReport);
             CenterlineCandidate cleaned = raw.withId(raw.id() + "#cleaned")
                 .withProjectedGeometryAndOffsets(
                     reduction.geometry(), projectedOffsets(reduction.geometry(), cleanedEvidence))
                 .withFinalPreviewGeometry(reduction.geometry(), freshAssignments)
                 .withCleanupEvidence(cleanedEvidence)
-                .withGeometryCleanup(report(raw.id(), partial
-                        ? CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED
-                        : CandidateGeometryCleanup.Outcome.CLEANED,
-                    partial ? "cleanup-partially-applied" : "cleanup-applied",
-                    reasons(smoothing, reduction), raw.finalPreviewPoints().size(),
-                    smoothing.geometry().size(), reduction.geometry().size(), smoothing, reduction));
+                .withGeometryCleanup(cleanedReport);
             return List.of(reportedRaw, cleaned);
         } catch (IllegalArgumentException | IllegalStateException exception) {
             return rejected(raw, smoothing, reduction, "fresh-assignment-rejected");
@@ -183,6 +198,219 @@ public final class GeometryCleanupService {
             rejectedUnchangedInterval |= rejected && !removed;
         }
         return changedInterval && rejectedUnchangedInterval;
+    }
+
+    private static boolean hasEligibleInterval(
+        CleanupEligibilityPartitioner.Partition partition,
+        GeometryCleanupMode mode
+    ) {
+        return partition.intervals().stream().anyMatch(interval -> intervalEligible(interval, mode));
+    }
+
+
+    private static boolean intervalEligible(CleanupInterval interval, GeometryCleanupMode mode) {
+        return mode == GeometryCleanupMode.REDUCE_POINTS_ONLY
+            ? interval.simplificationEligible()
+            : interval.smoothingEligible() || interval.simplificationEligible();
+    }
+
+    private static CandidateGeometryCleanup withGlobalIntervalSummary(
+        CandidateGeometryCleanup report,
+        CleanupEligibilityPartitioner.Partition partition,
+        FinalPreviewCleanupContext context,
+        GeometryCleanupMode mode,
+        HeatmapConstrainedSimplificationResult reduction
+    ) {
+        int[] outputBySource = new int[context.geometry().size()];
+        java.util.Arrays.fill(outputBySource, -1);
+        for (int outputIndex = 0; outputIndex < reduction.retainedSourceIndexes().size(); outputIndex++) {
+            int sourceIndex = reduction.retainedSourceIndexes().get(outputIndex);
+            if (sourceIndex < 0 || sourceIndex >= outputBySource.length || outputBySource[sourceIndex] >= 0) {
+                throw new IllegalStateException("Cleanup result contains invalid retained source indexes");
+            }
+            outputBySource[sourceIndex] = outputIndex;
+        }
+        int eligibleIntervals = 0;
+        int changedIntervals = 0;
+        for (CleanupInterval interval : partition.intervals()) {
+            if (!intervalEligible(interval, mode)) {
+                continue;
+            }
+            eligibleIntervals++;
+            boolean changed = false;
+            for (int sourceIndex = interval.startIndex() + 1;
+                sourceIndex < interval.endIndex() && !changed; sourceIndex++) {
+                int outputIndex = outputBySource[sourceIndex];
+                changed = outputIndex < 0
+                    || context.geometry().get(sourceIndex).distance(reduction.geometry().get(outputIndex)) > 1e-9;
+            }
+            if (changed) {
+                changedIntervals++;
+            }
+        }
+        int frozenIntervals = contiguousInternalRuns(
+            partition.immutableIndexes(), context.geometry().size());
+        return report.withIntervalSummary(eligibleIntervals, changedIntervals, frozenIntervals);
+    }
+
+    private static int contiguousInternalRuns(java.util.Set<Integer> indexes, int geometrySize) {
+        int runs = 0;
+        int previous = Integer.MIN_VALUE;
+        for (int index : indexes.stream().filter(value -> value > 0 && value < geometrySize - 1)
+            .sorted().toList()) {
+            if (previous == Integer.MIN_VALUE || index != previous + 1) {
+                runs++;
+            }
+            previous = index;
+        }
+        return runs;
+    }
+    private List<CenterlineCandidate> expandLocally(
+        CenterlineCandidate raw,
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        GeometryCleanupConfig config,
+        FinalPreviewCleanupContext.CleanupReconciliation reconciliation
+    ) {
+        List<EastNorth> merged = new ArrayList<>(reconciliation.geometry());
+        boolean[] retained = new boolean[merged.size()];
+        java.util.Arrays.fill(retained, true);
+        List<SliceAttempt> attempts = new ArrayList<>();
+        boolean changed = false;
+        for (FinalPreviewCleanupContext.CleanupSlice slice : reconciliation.slices()) {
+            FinalPreviewCleanupContext context = slice.context();
+            CleanupEligibilityPartitioner.Partition partition = new CleanupEligibilityPartitioner().partition(context);
+            if (!hasEligibleInterval(partition, config.mode())) {
+                continue;
+            }
+            HeatmapConstrainedLaplacianResult smoothing = smooth(context, partition, config);
+            if (smoothing.status() == HeatmapConstrainedLaplacianResult.Status.REJECTED) {
+                attempts.add(SliceAttempt.rejected(slice, smoothing, null));
+                continue;
+            }
+            HeatmapConstrainedSimplificationResult reduction = simplify(
+                smoothing.geometry(), context, partition, config);
+            if (reduction.status() == HeatmapConstrainedSimplificationResult.Status.REJECTED) {
+                attempts.add(SliceAttempt.rejected(slice, smoothing, reduction));
+                continue;
+            }
+            attempts.add(SliceAttempt.accepted(slice, smoothing, reduction));
+            for (int outputIndex = 0; outputIndex < reduction.retainedSourceIndexes().size(); outputIndex++) {
+                int localIndex = reduction.retainedSourceIndexes().get(outputIndex);
+                int globalIndex = slice.geometryIndexes().get(localIndex);
+                merged.set(globalIndex, reduction.geometry().get(outputIndex));
+            }
+            for (int localIndex = 0; localIndex < slice.geometryIndexes().size(); localIndex++) {
+                if (!reduction.retainedSourceIndexes().contains(localIndex)) {
+                    retained[slice.geometryIndexes().get(localIndex)] = false;
+                    changed = true;
+                }
+            }
+            changed |= !sameGeometry(context.geometry(), reduction.geometry());
+        }
+        if (attempts.isEmpty()) {
+            CandidateGeometryCleanup report = report(raw.id(), CandidateGeometryCleanup.Outcome.SKIPPED,
+                "no-eligible-cleanup-interval", List.of("NO_ELIGIBLE_INTERVAL"),
+                raw.finalPreviewPoints().size(), raw.finalPreviewPoints().size(),
+                raw.finalPreviewPoints().size(), null, null);
+            return List.of(raw.withGeometryCleanup(
+                withLocalIntervalSummary(report, reconciliation, List.of())));
+        }
+        if (attempts.stream().noneMatch(SliceAttempt::accepted)) {
+            CandidateGeometryCleanup rejected = report(raw.id(), CandidateGeometryCleanup.Outcome.REJECTED,
+                "local-intervals-rejected", localReasons(attempts), raw.finalPreviewPoints().size(),
+                raw.finalPreviewPoints().size(), raw.finalPreviewPoints().size(), null, null);
+            return List.of(raw.withGeometryCleanup(
+                withLocalIntervalSummary(rejected, reconciliation, attempts)));
+        }
+        if (!changed) {
+            return List.of(raw.withGeometryCleanup(withLocalIntervalSummary(
+                report(raw.id(), CandidateGeometryCleanup.Outcome.UNCHANGED,
+                "cleanup-unchanged", localReasons(attempts), raw.finalPreviewPoints().size(),
+                raw.finalPreviewPoints().size(), raw.finalPreviewPoints().size(), null, null), reconciliation, attempts)));
+        }
+        List<EastNorth> cleanedGeometry = new ArrayList<>();
+        for (int index = 0; index < merged.size(); index++) {
+            if (retained[index]) {
+                cleanedGeometry.add(merged.get(index));
+            }
+        }
+        try {
+            Map<Long, EastNorth> freshAssignments = freezeExistingTopologyTargets(raw, selection, sourcePolyline,
+                cleanedGeometry, PreviewNodeAssignmentPlanner.targetMap(
+                    PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, cleanedGeometry)));
+            SliceAttempt representative = attempts.stream().filter(SliceAttempt::accepted).findFirst().orElseThrow();
+            CenterlineCandidate reportedRaw = raw.withGeometryCleanup(withLocalIntervalSummary(report(raw.id(),
+                CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE, "cleaned-sibling-created",
+                localReasons(attempts), raw.finalPreviewPoints().size(), raw.finalPreviewPoints().size(),
+                cleanedGeometry.size(), representative.smoothing(), representative.reduction()),
+                reconciliation, attempts));
+            CenterlineCandidate cleaned = raw.withId(raw.id() + "#cleaned")
+                .withFinalPreviewGeometry(cleanedGeometry, freshAssignments)
+                .withCleanupEvidence(org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence.empty())
+                .withGeometryCleanup(withLocalIntervalSummary(report(raw.id(), CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+                    "cleanup-partially-applied", localReasons(attempts), raw.finalPreviewPoints().size(),
+                    raw.finalPreviewPoints().size(), cleanedGeometry.size(), representative.smoothing(),
+                    representative.reduction()), reconciliation, attempts));
+            return List.of(reportedRaw, cleaned);
+        } catch (IllegalArgumentException | IllegalStateException exception) {
+            return rejected(raw, null, null, "fresh-assignment-rejected");
+        }
+    }
+
+    private static List<String> localReasons(List<SliceAttempt> attempts) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        result.add("NONADJACENT_PROTECTED_ANCHOR");
+        for (SliceAttempt attempt : attempts) {
+            result.addAll(reasons(attempt.smoothing(), attempt.reduction()));
+            if (!attempt.accepted()) {
+                result.add("local-interval-rejected");
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static CandidateGeometryCleanup withLocalIntervalSummary(
+        CandidateGeometryCleanup report,
+        FinalPreviewCleanupContext.CleanupReconciliation reconciliation,
+        List<SliceAttempt> attempts
+    ) {
+        int changedIntervals = (int) attempts.stream().filter(SliceAttempt::changed).count();
+        List<Integer> frozen = reconciliation.frozenIndexes().stream().sorted().toList();
+        int frozenIntervals = 0;
+        int previous = Integer.MIN_VALUE;
+        for (int index : frozen) {
+            if (previous == Integer.MIN_VALUE || index != previous + 1) {
+                frozenIntervals++;
+            }
+            previous = index;
+        }
+        return report.withIntervalSummary(attempts.size(), changedIntervals, frozenIntervals);
+    }
+
+    private record SliceAttempt(
+        FinalPreviewCleanupContext.CleanupSlice slice,
+        HeatmapConstrainedLaplacianResult smoothing,
+        HeatmapConstrainedSimplificationResult reduction,
+        boolean accepted,
+        boolean changed
+    ) {
+        private static SliceAttempt accepted(
+            FinalPreviewCleanupContext.CleanupSlice slice,
+            HeatmapConstrainedLaplacianResult smoothing,
+            HeatmapConstrainedSimplificationResult reduction
+        ) {
+            return new SliceAttempt(slice, smoothing, reduction, true,
+                !sameGeometry(slice.context().geometry(), reduction.geometry()));
+        }
+
+        private static SliceAttempt rejected(
+            FinalPreviewCleanupContext.CleanupSlice slice,
+            HeatmapConstrainedLaplacianResult smoothing,
+            HeatmapConstrainedSimplificationResult reduction
+        ) {
+            return new SliceAttempt(slice, smoothing, reduction, false, false);
+        }
     }
 
     private HeatmapConstrainedLaplacianResult smooth(

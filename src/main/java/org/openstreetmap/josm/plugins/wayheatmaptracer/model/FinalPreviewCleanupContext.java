@@ -154,6 +154,176 @@ public record FinalPreviewCleanupContext(
             samples, evidence.samplingFrame().groundMetersPerRasterPixel()), rows);
     }
 
+    /**
+     * Reconciles cleanup input into one globally mapped context or independent local contexts.
+     *
+     * <p>A nonadjacent protected anchor is never assigned borrowed evidence. Instead, the anchor
+     * and its nearest directly mapped neighbors become an immutable island; only disjoint mapped
+     * runs outside that island are returned as cleanup slices.</p>
+     *
+     * @param candidate raw corridor-aware candidate with final-preview geometry
+     * @param selection selected source segment
+     * @param sourcePolyline immutable selected source geometry in node order
+     * @return globally complete or locally reconciled cleanup input
+     */
+    public static CleanupReconciliation reconcile(
+        CenterlineCandidate candidate,
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline
+    ) {
+        FinalPreviewCleanupContext global = create(candidate, selection, sourcePolyline);
+        if (global.complete()) {
+            return CleanupReconciliation.complete(global);
+        }
+        if (global.status() != Status.NONADJACENT_PROTECTED_ANCHOR) {
+            return CleanupReconciliation.rejected(global.status());
+        }
+        List<EastNorth> preview = candidate.finalPreviewPoints();
+        List<EastNorth> rawProfiles = candidate.eastNorthPoints();
+        CandidateCleanupEvidence rawEvidence = candidate.cleanupEvidence();
+        Set<Integer> protectedIndexes = protectedIndexes(candidate, selection, sourcePolyline, preview);
+        if (protectedIndexes == null || !rawEvidence.eligible()) {
+            return CleanupReconciliation.rejected(Status.NONADJACENT_PROTECTED_ANCHOR);
+        }
+        ProfileMapping mapping = mapProfiles(preview, rawProfiles, protectedIndexes);
+        if (mapping.status() != Status.NONADJACENT_PROTECTED_ANCHOR) {
+            return CleanupReconciliation.rejected(mapping.status());
+        }
+        try {
+            List<EastNorth> geometry = mapping.previewIndexes().stream().map(preview::get).toList();
+            Set<Integer> remappedProtected = remapProtectedIndexes(mapping.previewIndexes(), protectedIndexes);
+            Set<Integer> frozen = nonadjacentFrozenIndexes(preview, rawProfiles, protectedIndexes, mapping);
+            List<CleanupSlice> slices = localSlices(geometry, remappedProtected, frozen,
+                mapping.profileIndexes(), rawProfiles, rawEvidence);
+            return slices.isEmpty()
+                ? CleanupReconciliation.rejected(Status.NONADJACENT_PROTECTED_ANCHOR)
+                : CleanupReconciliation.local(geometry, slices, frozen);
+        } catch (IllegalArgumentException exception) {
+            return CleanupReconciliation.rejected(Status.MISMATCHED_EVIDENCE);
+        }
+    }
+
+    private static Set<Integer> nonadjacentFrozenIndexes(
+        List<EastNorth> preview,
+        List<EastNorth> rawProfiles,
+        Set<Integer> protectedIndexes,
+        ProfileMapping mapping
+    ) {
+        Set<Integer> result = new LinkedHashSet<>();
+        Set<Integer> retainedPreview = Set.copyOf(mapping.previewIndexes());
+        for (int position = 0; position < mapping.previewIndexes().size(); position++) {
+            int previewIndex = mapping.previewIndexes().get(position);
+            if (!protectedIndexes.contains(previewIndex)) {
+                continue;
+            }
+            int profileIndex = mapping.profileIndexes().get(position);
+            if (protectedAnchorMappingIsAdjacent(preview, rawProfiles, protectedIndexes, retainedPreview,
+                mapping, position)) {
+                continue;
+            }
+            int left = nearestDirectMapping(preview, rawProfiles, protectedIndexes, mapping, position, -1);
+            int right = nearestDirectMapping(preview, rawProfiles, protectedIndexes, mapping, position, 1);
+            int start = left >= 0 ? left : 0;
+            int end = right >= 0 ? right : mapping.previewIndexes().size() - 1;
+            for (int index = start; index <= end; index++) {
+                result.add(index);
+            }
+        }
+        return Set.copyOf(result);
+    }
+
+    private static boolean protectedAnchorMappingIsAdjacent(
+        List<EastNorth> preview,
+        List<EastNorth> rawProfiles,
+        Set<Integer> protectedIndexes,
+        Set<Integer> retainedPreview,
+        ProfileMapping mapping,
+        int position
+    ) {
+        int previewIndex = mapping.previewIndexes().get(position);
+        int profileIndex = mapping.profileIndexes().get(position);
+        if (samePoint(preview.get(previewIndex), rawProfiles.get(profileIndex))) {
+            return true;
+        }
+        if ((position > 0 && profileIndex != mapping.profileIndexes().get(position - 1) + 1)
+            || (position + 1 < mapping.profileIndexes().size()
+                && profileIndex != mapping.profileIndexes().get(position + 1) - 1)) {
+            return false;
+        }
+        return preview.size() <= rawProfiles.size() || adjacentDroppedPreviewMatchesProfile(
+            preview, rawProfiles.get(profileIndex), protectedIndexes, retainedPreview, previewIndex);
+    }
+
+    private static int nearestDirectMapping(
+        List<EastNorth> preview,
+        List<EastNorth> rawProfiles,
+        Set<Integer> protectedIndexes,
+        ProfileMapping mapping,
+        int start,
+        int step
+    ) {
+        for (int position = start + step; position >= 0 && position < mapping.previewIndexes().size();
+            position += step) {
+            int previewIndex = mapping.previewIndexes().get(position);
+            int profileIndex = mapping.profileIndexes().get(position);
+            if (!protectedIndexes.contains(previewIndex)
+                && samePoint(preview.get(previewIndex), rawProfiles.get(profileIndex))) {
+                return position;
+            }
+        }
+        return -1;
+    }
+
+    private static List<CleanupSlice> localSlices(
+        List<EastNorth> geometry,
+        Set<Integer> protectedIndexes,
+        Set<Integer> frozenIndexes,
+        List<Integer> profileIndexes,
+        List<EastNorth> rawProfiles,
+        CandidateCleanupEvidence rawEvidence
+    ) {
+        boolean[] blocked = new boolean[geometry.size()];
+        for (int index : protectedIndexes) {
+            blocked[index] = true;
+        }
+        for (int index : frozenIndexes) {
+            blocked[index] = true;
+        }
+        List<Integer> boundaries = new ArrayList<>();
+        for (int index = 0; index < blocked.length; index++) {
+            if (blocked[index]) {
+                boundaries.add(index);
+            }
+        }
+        List<CleanupSlice> result = new ArrayList<>();
+        for (int boundary = 1; boundary < boundaries.size(); boundary++) {
+            int start = boundaries.get(boundary - 1);
+            int end = boundaries.get(boundary);
+            boolean directlyMappedInterior = false;
+            boolean crossesFrozenIsland = false;
+            for (int current = start + 1; current < end; current++) {
+                directlyMappedInterior |= !blocked[current];
+                crossesFrozenIsland |= frozenIndexes.contains(current);
+            }
+            if (!directlyMappedInterior || crossesFrozenIsland) {
+                continue;
+            }
+            List<Integer> localProfiles = profileIndexes.subList(start, end + 1);
+            List<EastNorth> localGeometry = geometry.subList(start, end + 1);
+            Set<Integer> localProtected = Set.of(0, localGeometry.size() - 1);
+            CandidateCleanupEvidence evidence = reindexedEvidence(localProfiles, localGeometry, localProtected,
+                rawProfiles, rawEvidence);
+            FinalPreviewCleanupContext context = new FinalPreviewCleanupContext(localGeometry, localProtected,
+                intervals(localGeometry.size(), localProtected), evidence, localProfiles, Status.COMPLETE);
+            List<Integer> geometryIndexes = new ArrayList<>();
+            for (int globalIndex = start; globalIndex <= end; globalIndex++) {
+                geometryIndexes.add(globalIndex);
+            }
+            result.add(new CleanupSlice(geometryIndexes, context));
+        }
+        return List.copyOf(result);
+    }
+
     private static FinalPreviewCleanupContext rejected(Status status) {
         return new FinalPreviewCleanupContext(List.of(), Set.of(), List.of(), CandidateCleanupEvidence.empty(),
             List.of(), status);
@@ -247,7 +417,7 @@ public record FinalPreviewCleanupContext(
         }
         if (!validProtectedAnchorMappings(finalPreview, rawProfiles, protectedIndexes,
             alignment.previewIndexes(), alignment.profileIndexes())) {
-            return ProfileMapping.failed(Status.NONADJACENT_PROTECTED_ANCHOR);
+            return new ProfileMapping(alignment.previewIndexes(), alignment.profileIndexes(), Status.NONADJACENT_PROTECTED_ANCHOR);
         }
         return new ProfileMapping(alignment.previewIndexes(), alignment.profileIndexes(), Status.COMPLETE);
     }
@@ -298,7 +468,7 @@ public record FinalPreviewCleanupContext(
         List<Integer> previewIndexes = identityIndexes(finalPreview.size());
         if (!validProtectedAnchorMappings(
             finalPreview, rawProfiles, protectedIndexes, previewIndexes, result)) {
-            return ProfileMapping.failed(Status.NONADJACENT_PROTECTED_ANCHOR);
+            return new ProfileMapping(previewIndexes, result, Status.NONADJACENT_PROTECTED_ANCHOR);
         }
         return new ProfileMapping(previewIndexes, result, Status.COMPLETE);
     }
@@ -698,6 +868,108 @@ public record FinalPreviewCleanupContext(
             if (startIndex < 0 || endIndex <= startIndex) {
                 throw new IllegalArgumentException("Protected cleanup interval is invalid");
             }
+        }
+    }
+
+    /**
+     * One independently mapped final-preview cleanup interval.
+     *
+     * @param geometryIndexes strictly increasing indexes owned by this interval
+     * @param context complete cleanup evidence aligned with those indexes
+     */
+    public record CleanupSlice(List<Integer> geometryIndexes, FinalPreviewCleanupContext context) {
+        /** Copies interval indexes and validates a complete local context. */
+        public CleanupSlice {
+            geometryIndexes = List.copyOf(geometryIndexes);
+            context = Objects.requireNonNull(context, "context");
+            if (geometryIndexes.size() != context.geometry().size() || !context.complete()) {
+                throw new IllegalArgumentException("Cleanup slice must own aligned complete context");
+            }
+            int previous = -1;
+            for (Integer index : geometryIndexes) {
+                if (index == null || index <= previous) {
+                    throw new IllegalArgumentException("Cleanup slice indexes must increase strictly");
+                }
+                previous = index;
+            }
+        }
+    }
+
+    /**
+     * Full preview plus globally complete or locally isolated cleanup contexts.
+     *
+     * @param geometry immutable complete final-preview geometry
+     * @param slices independently processable directly mapped intervals
+     * @param frozenIndexes preview indexes that cleanup must preserve exactly
+     * @param status typed global or local reconciliation outcome
+     */
+    public record CleanupReconciliation(
+        List<EastNorth> geometry,
+        List<CleanupSlice> slices,
+        Set<Integer> frozenIndexes,
+        Status status
+    ) {
+        /** Copies reconciliation state and validates locally processable slices. */
+        public CleanupReconciliation {
+            geometry = List.copyOf(geometry);
+            slices = List.copyOf(slices);
+            frozenIndexes = Set.copyOf(frozenIndexes);
+            status = Objects.requireNonNull(status, "status");
+            if (status == Status.COMPLETE && slices.size() != 1) {
+                throw new IllegalArgumentException("Complete cleanup reconciliation requires one full slice");
+            }
+            for (int index : frozenIndexes) {
+                if (index < 0 || index >= geometry.size()) {
+                    throw new IllegalArgumentException("Frozen cleanup indexes must be within preview geometry");
+                }
+            }
+            for (CleanupSlice slice : slices) {
+                for (int index : slice.geometryIndexes()) {
+                    if (index < 0 || index >= geometry.size()) {
+                        throw new IllegalArgumentException("Cleanup slice indexes must be within preview geometry");
+                    }
+                }
+            }
+        }
+
+        /** Returns a fully reconciled single-context input. */
+        private static CleanupReconciliation complete(FinalPreviewCleanupContext context) {
+            List<Integer> indexes = identityIndexes(context.geometry().size());
+            return new CleanupReconciliation(context.geometry(), List.of(new CleanupSlice(indexes, context)),
+                Set.of(), Status.COMPLETE);
+        }
+
+        /** Returns one locally reconciled input with frozen islands. */
+        private static CleanupReconciliation local(
+            List<EastNorth> geometry,
+            List<CleanupSlice> slices,
+            Set<Integer> frozenIndexes
+        ) {
+            return new CleanupReconciliation(geometry, slices, frozenIndexes,
+                Status.NONADJACENT_PROTECTED_ANCHOR);
+        }
+
+        /** Returns a non-processable reconciliation result. */
+        private static CleanupReconciliation rejected(Status status) {
+            return new CleanupReconciliation(List.of(), List.of(), Set.of(), status);
+        }
+
+        /**
+         * Returns whether all cleanup geometry and evidence reconcile globally.
+         *
+         * @return true when one complete full-geometry cleanup context is available
+         */
+        public boolean globallyComplete() {
+            return status == Status.COMPLETE;
+        }
+
+        /**
+         * Returns whether isolated directly mapped intervals may be processed.
+         *
+         * @return true when at least one safe complete or local cleanup interval exists
+         */
+        public boolean cleanable() {
+            return globallyComplete() || status == Status.NONADJACENT_PROTECTED_ANCHOR && !slices.isEmpty();
         }
     }
 

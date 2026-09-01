@@ -1,5 +1,17 @@
 # Implementation Backlog
 
+## Post-v0.20.3 reliability fixes (v0.21.0)
+
+The checkpointable implementation and verification plan is
+[`superpowers/docs/plans/2026-09-01-132740-01-plan-v0.21.0-edge-censoring-cleanup-and-source-ux.md`](superpowers/docs/plans/2026-09-01-132740-01-plan-v0.21.0-edge-censoring-cleanup-and-source-ux.md).
+It is based on the read-only `problems-7.zip` diagnosis. The implementation
+stops treating search-boundary-clipped corridor cores as measured centers,
+offers an explicit one-shot wider-search retry, isolates cleanup defects to local
+frozen neighborhoods, reports skipped/partial cleanup visibly, strengthens
+complete broad-core centering and direct-evidence bend authorization, and
+clarifies selected-source probe results. JOSM's own zoom warning remains behind a
+runtime-evidence gate rather than receiving a speculative layer change.
+
 ## Longest non-branching segment selection (v0.20.3 release authorized)
 
 The checkpointed execution record is
@@ -82,6 +94,14 @@ The cleanup settings are intentionally future-slide-only and disabled by default
   - Reviewed and hardened for 0.18.1: predicted sparse geometry no longer counts as observed signal or turn support; interpolation-only parent windows remain physically bounded; persistent parallel separation requires independent longitudinal proof.
   - Endpoint approaches derive their entry direction from a reliable interior anchor on the selected branch; sparse parents require direct, non-multimodal evidence.
   - Continue calibration on rated real bundles before considering it a replacement for the legacy tracker.
+  - Deferred multimodal semantic hierarchy: retain elementary longitudinal
+    strands and plausible grouped parents so a wide uncertain trail, a
+    double-track, separate parallel paths, lane-like strands, and divided
+    carriageways can remain distinguishable hypotheses. Edge completeness must
+    eventually be tracked per elementary mode, not per whole cross-section.
+    Heatmap-identical cases cannot be classified semantically without auxiliary
+    OSM context or user selection, so no forced interpretation is planned. This
+    work is intentionally outside the v0.21.0 A+B edge-censoring scope.
 - Adaptive smoothing and blur experiments:
   - Current filtering uses signal-gated B3/B5 one-dimensional profile filters.
   - Evaluate multi-blur or multi-filter ensembles where stable maxima across levels are trusted.

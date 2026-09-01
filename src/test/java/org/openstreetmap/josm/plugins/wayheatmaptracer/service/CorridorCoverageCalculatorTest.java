@@ -66,9 +66,72 @@ class CorridorCoverageCalculatorTest {
         assertFalse(unapproved.complete());
         assertFalse(tooManyProfiles.complete());
         assertFalse(tooFar.complete());
+
         assertEquals("unapproved-internal-gap", unapproved.reason());
         assertEquals("unapproved-internal-gap", tooManyProfiles.reason());
         assertEquals("unapproved-internal-gap", tooFar.reason());
+    }
+
+    @Test
+    void distinguishesBridgedAndUnresolvedSearchEdgeCensoring() {
+        List<CorridorProfile> profiles = new java.util.ArrayList<>(profiles(8, 2.0));
+        for (int index = 3; index <= 4; index++) {
+            CorridorProfile original = profiles.get(index);
+            CorridorBand band = original.bands().get(0);
+            CorridorBand censored = new CorridorBand(band.id(), 2.0, 0.0, 4.0, 1.5, 4.0,
+                List.of(2.0), 0.12, 0.05, 1.0, 0.0, 0.0, 0.0,
+                0.20, 0.0, 4.0, false, List.of(),
+                CorridorBand.BoundaryCompleteness.CORE_CENSORED, CorridorBand.BoundarySide.RIGHT);
+            profiles.set(index, new CorridorProfile(index, original.source(), List.of(censored),
+                0.12, 0.05, 0.07, true));
+        }
+
+        Map<Integer, CorridorTrackPoint> bridgedPoints = new LinkedHashMap<>();
+        Map<Integer, CorridorTrackPoint> unresolvedPoints = new LinkedHashMap<>();
+        for (int index : List.of(0, 1, 2, 5, 6, 7)) {
+            CorridorBand band = profiles.get(index).bands().get(0);
+            bridgedPoints.put(index, new CorridorTrackPoint(index, band, index == 5));
+            unresolvedPoints.put(index, new CorridorTrackPoint(index, band, false));
+        }
+        CorridorCoverage bridged = new CorridorCoverageCalculator().calculate(
+            new CorridorTrack("bridged", bridgedPoints, 1.0, 0.75, false, List.of(), ""), profiles,
+            new EndpointApproachModel(List.of()));
+        CorridorCoverage unresolved = new CorridorCoverageCalculator().calculate(
+            new CorridorTrack("unresolved", unresolvedPoints, 1.0, 0.75, false, List.of(), ""), profiles,
+            new EndpointApproachModel(List.of()));
+
+        assertTrue(bridged.complete());
+        assertEquals("complete-with-search-edge-bridge", bridged.reason());
+        assertEquals(6, bridged.informativeProfiles(),
+            "Unmeasured edge evidence must not enter the positional coverage denominator");
+        assertEquals(1.0, bridged.informativeCoverageRatio(), 1e-9);
+        assertFalse(unresolved.complete());
+        assertEquals("unresolved-search-edge-censoring", unresolved.reason());
+    }
+
+    @Test
+    void unrelatedClippedParallelBandDoesNotRelabelAnOrdinaryBridgeAsSearchEdge() {
+        List<CorridorProfile> profiles = new java.util.ArrayList<>(profiles(8, 2.0));
+        for (int index = 3; index <= 4; index++) {
+            CorridorProfile original = profiles.get(index);
+            CorridorBand censored = new CorridorBand("unrelated-edge", 15.0, 13.0, 17.0, 14.5, 17.0,
+                List.of(15.0), 0.12, 0.05, 1.0, 0.0, 0.0, 0.0,
+                0.20, 0.0, 4.0, false, List.of(),
+                CorridorBand.BoundaryCompleteness.CORE_CENSORED, CorridorBand.BoundarySide.RIGHT);
+            profiles.set(index, new CorridorProfile(index, original.source(), List.of(censored),
+                0.12, 0.05, 0.07, true));
+        }
+        Map<Integer, CorridorTrackPoint> points = new LinkedHashMap<>();
+        for (int index : List.of(0, 1, 2, 5, 6, 7)) {
+            points.put(index, new CorridorTrackPoint(index, profiles.get(index).bands().get(0), index == 5));
+        }
+
+        CorridorCoverage coverage = new CorridorCoverageCalculator().calculate(
+            new CorridorTrack("selected", points, 1.0, 0.75, false, List.of(), ""), profiles,
+            new EndpointApproachModel(List.of()));
+
+        assertTrue(coverage.complete());
+        assertEquals("complete", coverage.reason());
     }
 
     @Test

@@ -124,6 +124,49 @@ public record ManagedHeatmapConfig(
     }
 
     /**
+     * Returns an in-memory copy with a different physical managed-tile search width.
+     *
+     * <p>This helper is used only by a slide-time retry configuration. Callers must not persist
+     * the returned object unless they intentionally want to change the normal setting.</p>
+     *
+     * @param halfWidthMeters one-shot physical cross-section half-width
+     * @return copied configuration with the requested search width
+     */
+    public ManagedHeatmapConfig withSearchHalfWidthMeters(double halfWidthMeters) {
+        if (!Double.isFinite(halfWidthMeters) || halfWidthMeters <= 0.0) {
+            throw new IllegalArgumentException("Search half-width must be finite and positive");
+        }
+        return new ManagedHeatmapConfig(
+            keyPairId, policy, signature, sessionToken, activity, color, manualLayerName, layerRegex,
+            alignmentMode, trackerMode, verbose, debug, multiColorDetection, aggregateAllColorSchemes,
+            showAggregateIntensityLayer, candidateRatingEnabled, parallelWayAwareness,
+            allowUndownloadedAlignment, adjustJunctionNodes, simplifyEnabled, crossSectionHalfWidthPx,
+            crossSectionStepPx, simplifyTolerancePx, inferenceMode, inferenceZoom, validationZoom,
+            halfWidthMeters, sampleStepMeters, intensitySamplingMode, cacheBuster
+        );
+    }
+
+    /**
+     * Tests whether another configuration still identifies the same managed tile source generation.
+     *
+     * <p>The comparison intentionally includes sensitive values without exposing them. It is used
+     * only to reject a stale retry after the user has refreshed source settings.</p>
+     *
+     * @param other current configuration to compare
+     * @return true when managed credentials, generation, activity, and visible source agree
+     */
+    public boolean hasSameManagedSource(ManagedHeatmapConfig other) {
+        return other != null
+            && cacheBuster == other.cacheBuster
+            && java.util.Objects.equals(keyPairId, other.keyPairId)
+            && java.util.Objects.equals(policy, other.policy)
+            && java.util.Objects.equals(signature, other.signature)
+            && java.util.Objects.equals(sessionToken, other.sessionToken)
+            && java.util.Objects.equals(activity, other.activity)
+            && java.util.Objects.equals(color, other.color);
+    }
+
+    /**
      * Builds the cookie header needed for managed Strava heatmap tile requests.
      *
      * @return raw cookie header; callers must never write this value to debug exports

@@ -24,6 +24,9 @@ import java.util.OptionalDouble;
  * @param maximumDisplacementProjectionUnits greatest accepted smoothing displacement
  * @param maximumRemovedDeviationMeters greatest accepted point-removal deviation in ground metres
  * @param worstFitRetention worst accepted simplification fit ratio
+ * @param eligibleIntervalCount independently eligible cleanup intervals
+ * @param changedIntervalCount intervals that produced accepted geometric changes
+ * @param frozenIntervalCount local defect neighborhoods retained exactly
  */
 public record CandidateGeometryCleanup(
     String parentCandidateId,
@@ -42,8 +45,60 @@ public record CandidateGeometryCleanup(
     double fitAfter,
     double maximumDisplacementProjectionUnits,
     OptionalDouble maximumRemovedDeviationMeters,
-    OptionalDouble worstFitRetention
+    OptionalDouble worstFitRetention,
+    int eligibleIntervalCount,
+    int changedIntervalCount,
+    int frozenIntervalCount
 ) {
+    /**
+     * Creates a report without format-13 interval counters.
+     *
+     * <p>This compatibility constructor keeps older tests and bundle readers source compatible;
+     * unavailable interval counts remain zero rather than being inferred.</p>
+     *
+     * @param parentCandidateId stable raw candidate id
+     * @param outcome terminal cleanup outcome
+     * @param reasonCode primary reason code
+     * @param reasons detailed reason codes
+     * @param beforePointCount raw point count
+     * @param smoothedPointCount post-smoothing point count
+     * @param afterPointCount final point count
+     * @param acceptedSmoothingPasses accepted smoothing passes
+     * @param smoothingBacktrackCount smoothing backtracks
+     * @param attemptedChordCount attempted simplification chords
+     * @param acceptedChordCount accepted simplification chords
+     * @param containmentFailureCount containment failures
+     * @param fitBefore fit before cleanup
+     * @param fitAfter fit after cleanup
+     * @param maximumDisplacementProjectionUnits maximum projected displacement
+     * @param maximumRemovedDeviationMeters maximum removed-point deviation
+     * @param worstFitRetention worst accepted fit retention
+     */
+    public CandidateGeometryCleanup(
+        String parentCandidateId,
+        Outcome outcome,
+        String reasonCode,
+        List<String> reasons,
+        int beforePointCount,
+        int smoothedPointCount,
+        int afterPointCount,
+        int acceptedSmoothingPasses,
+        int smoothingBacktrackCount,
+        int attemptedChordCount,
+        int acceptedChordCount,
+        int containmentFailureCount,
+        double fitBefore,
+        double fitAfter,
+        double maximumDisplacementProjectionUnits,
+        OptionalDouble maximumRemovedDeviationMeters,
+        OptionalDouble worstFitRetention
+    ) {
+        this(parentCandidateId, outcome, reasonCode, reasons, beforePointCount, smoothedPointCount,
+            afterPointCount, acceptedSmoothingPasses, smoothingBacktrackCount, attemptedChordCount,
+            acceptedChordCount, containmentFailureCount, fitBefore, fitAfter,
+            maximumDisplacementProjectionUnits, maximumRemovedDeviationMeters, worstFitRetention,
+            0, 0, 0);
+    }
     /** Validates counts, ratios, optional metrics, and immutable reason data. */
     public CandidateGeometryCleanup {
         parentCandidateId = Objects.requireNonNull(parentCandidateId, "parentCandidateId");
@@ -57,6 +112,8 @@ public record CandidateGeometryCleanup(
             || acceptedSmoothingPasses < 0 || smoothingBacktrackCount < 0
             || attemptedChordCount < 0 || acceptedChordCount < 0
             || acceptedChordCount > attemptedChordCount || containmentFailureCount < 0
+            || eligibleIntervalCount < 0 || changedIntervalCount < 0 || frozenIntervalCount < 0
+            || changedIntervalCount > eligibleIntervalCount
             || !ratio(fitBefore) || !ratio(fitAfter)
             || !nonNegative(maximumDisplacementProjectionUnits)
             || maximumRemovedDeviationMeters.isPresent()
@@ -85,6 +142,29 @@ public record CandidateGeometryCleanup(
     public boolean cleanedCandidate() {
         return outcome == Outcome.CLEANED || outcome == Outcome.PARTIALLY_CLEANED;
     }
+
+
+    /**
+     * Returns a copy with factual format-13 interval processing counts.
+     *
+     * @param eligibleIntervals independently processable intervals
+     * @param changedIntervals intervals that produced accepted changes
+     * @param frozenIntervals protected or defective neighborhoods retained exactly
+     * @return report with the supplied interval summary
+     */
+    public CandidateGeometryCleanup withIntervalSummary(
+        int eligibleIntervals,
+        int changedIntervals,
+        int frozenIntervals
+    ) {
+        return new CandidateGeometryCleanup(parentCandidateId, outcome, reasonCode, reasons,
+            beforePointCount, smoothedPointCount, afterPointCount, acceptedSmoothingPasses,
+            smoothingBacktrackCount, attemptedChordCount, acceptedChordCount,
+            containmentFailureCount, fitBefore, fitAfter, maximumDisplacementProjectionUnits,
+            maximumRemovedDeviationMeters, worstFitRetention, eligibleIntervals, changedIntervals,
+            frozenIntervals);
+    }
+
 
     private static boolean nonNegative(double value) {
         return Double.isFinite(value) && value >= 0.0;

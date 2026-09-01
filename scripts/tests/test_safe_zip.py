@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import wayheatmap_analysis.safe_zip as safe_zip_module
 from wayheatmap_analysis.safe_zip import ArchiveError, ArchiveLimits, SafeArchiveReader
 
 
@@ -187,3 +188,150 @@ def test_rejects_raw_nul_member_name():
         discover(bytes(data))
 
     assert caught.value.code == "UNSAFE_PATH"
+
+def test_many_nested_bundles_are_processed_with_bounded_peak_materialization():
+    """Sibling debug bundles do not consume one cumulative materialization budget."""
+    nested = bundle()
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(24):
+            archive.writestr(f"bundle-{index}.zip", nested)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        bundle_names: list[str] = []
+        SafeArchiveReader(ArchiveLimits(
+            max_peak_materialized_bytes=len(output.getvalue()) + 2 * len(nested) + 128 * 1024,
+            max_uncompressed_bytes=100_000,
+        )).for_each_bundle(path, lambda found: bundle_names.append(found.name))
+    assert len(bundle_names) == 24
+
+def test_streaming_releases_finished_sibling_inner_expansion_metadata():
+    """The 384 MiB-style limit applies to one active nested branch, not past siblings."""
+    payload = bytes(range(100)) * 100
+    nested = make([
+        ("diagnostics.json", b"{}"),
+        ("candidate-metrics.csv", b"candidate_id\n" + payload),
+    ])
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(10):
+            archive.writestr(f"bundle-{index}.zip", nested)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        names: list[str] = []
+        SafeArchiveReader(ArchiveLimits(
+            max_cumulative_expansion_bytes=200_000,
+            max_peak_materialized_bytes=len(output.getvalue()) + 2 * len(nested) + 2 * len(payload) + 32 * 1024,
+        )).for_each_bundle(path, lambda found: names.append(found.name))
+
+    assert len(names) == 10
+
+
+def test_retained_scannable_text_is_bounded_or_streamed():
+    """Decoded member strings either count toward the peak or leave through a callback."""
+
+    payload = b"A" * 200_000
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(6):
+            archive.writestr(f"member-{index}.txt", payload)
+    limit = len(output.getvalue()) + 2 * len(payload) + 32 * 1024
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(ArchiveLimits(
+                max_peak_materialized_bytes=limit,
+                max_text_member_bytes=len(payload) + 1,
+            )).inspect(path)
+        streamed: list[str] = []
+        inspection = SafeArchiveReader(ArchiveLimits(
+            max_peak_materialized_bytes=limit,
+            max_text_member_bytes=len(payload) + 1,
+        )).inspect(path, on_member=lambda member: streamed.append(member.name))
+
+    assert caught.value.code == "MEMORY_LIMIT"
+    assert len(set(streamed)) == 6
+    assert len(streamed) >= 6
+    assert inspection.scannable_members == ()
+
+
+def test_retained_member_names_and_zip_inventory_are_peak_bounded(monkeypatch):
+    """Long member names cannot evade the peak-materialization limit."""
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(256):
+            name = f"{index:04d}-" + "n" * 780 + ".png"
+            archive.writestr(name, b"")
+    limit = len(output.getvalue()) + 64 * 1024
+    opened = False
+    original_zip_file = zipfile.ZipFile
+
+    def tracking_zip_file(*args, **kwargs):
+        nonlocal opened
+        opened = True
+        return original_zip_file(*args, **kwargs)
+
+    monkeypatch.setattr(safe_zip_module.zipfile, "ZipFile", tracking_zip_file)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(ArchiveLimits(
+                max_peak_materialized_bytes=limit,
+                max_entries_per_zip=512,
+                max_total_entries=512,
+            )).inspect(path)
+
+    assert caught.value.code == "MEMORY_LIMIT"
+    assert not opened
+
+
+def test_nonstreaming_discovery_charges_retained_bundle_payloads():
+    """List-returning compatibility API cannot retain siblings beyond the peak limit."""
+    nested = bundle()
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        for index in range(8):
+            archive.writestr(f"bundle-{index}.zip", nested)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(ArchiveLimits(
+                max_peak_materialized_bytes=len(output.getvalue()) + len(nested) * 2,
+                max_uncompressed_bytes=100_000,
+            )).discover(path)
+
+    assert caught.value.code == "MEMORY_LIMIT"
+
+
+def test_nested_expansion_budget_is_cumulative_within_active_branch():
+    """Nested descendants share one active 384 MiB-style expansion budget."""
+    inner = make([
+        ("diagnostics.json", b"{}"),
+        ("candidate-metrics.csv", b"candidate_id\\n" + b"A" * 10_000),
+    ])
+    middle = make([("inner.zip", inner)])
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("middle.zip", middle)
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "outer.zip"
+        path.write_bytes(output.getvalue())
+        with pytest.raises(ArchiveError) as caught:
+            SafeArchiveReader(ArchiveLimits(
+                max_peak_materialized_bytes=100_000,
+                max_cumulative_expansion_bytes=len(middle) + len(inner) + 5_000,
+                max_ratio=10_000.0,
+            )).for_each_bundle(path, lambda found: None)
+    assert caught.value.code == "UNCOMPRESSED_SIZE"

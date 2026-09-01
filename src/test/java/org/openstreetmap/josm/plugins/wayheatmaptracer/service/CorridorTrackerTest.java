@@ -71,6 +71,24 @@ class CorridorTrackerTest {
     }
 
     @Test
+    void coreCensoredBandsCannotBecomeDirectPositionEvidence() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 9; index++) {
+            CorridorBand observation = index == 4 || index == 5
+                ? censoredBand("edge", 20.0) : band("ridge", 2.0);
+            profiles.add(profile(index, List.of(observation), 2.5));
+        }
+
+        CorridorTrack track = new CorridorTracker().track(profiles, 1.0).stream()
+            .filter(candidate -> candidate.points().containsKey(0) && candidate.points().containsKey(8))
+            .findFirst().orElseThrow();
+
+        assertFalse(track.points().containsKey(4));
+        assertFalse(track.points().containsKey(5));
+        assertTrue(track.points().get(6).bridged());
+    }
+
+    @Test
     void gapsAcrossTemporaryNearbyStrandInsteadOfChangingIdentity() {
         List<CorridorProfile> profiles = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
@@ -88,6 +106,28 @@ class CorridorTrackerTest {
         assertTrue(main.points().values().stream()
             .allMatch(point -> Math.abs(point.band().centerOffsetPx()) <= 0.5));
         assertTrue(main.points().get(14).bridged());
+    }
+
+    @Test
+    void censoredGapCannotUseSustainedMotionToSwitchToAnotherStrand() {
+        List<CorridorProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 8; index++) {
+            List<CorridorBand> bands;
+            if (index <= 2) {
+                bands = List.of(band("main", 12.0 + 2.0 * index));
+            } else if (index <= 4) {
+                bands = List.of(censoredBand("edge", 18.0));
+            } else {
+                bands = List.of(band("competing", 19.0 + 2.0 * (index - 5)));
+            }
+            profiles.add(profile(index, bands, 2.0));
+        }
+
+        CorridorTrack track = new CorridorTracker().trackFromSeed(
+            profiles, 0, profiles.get(0).bands().get(0), 1.0);
+
+        assertFalse(track.points().containsKey(5),
+            "A censored gap must not use future same-side motion to switch strands");
     }
 
     @Test
@@ -180,5 +220,12 @@ class CorridorTrackerTest {
     private CorridorBand band(String id, double center) {
         return new CorridorBand(id, center, center - 2.0, center + 2.0, center - 0.5, center + 0.5,
             List.of(center, center), 1.0, 0.0, 1.0, 0.9, 0.85, 0.5, false, List.of());
+    }
+
+    private CorridorBand censoredBand(String id, double center) {
+        return new CorridorBand(id, center, center - 2.0, center + 2.0, center - 0.5, center + 0.5,
+            List.of(center, center), 1.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+            0.9, 0.0, 4.0, false, List.of(),
+            CorridorBand.BoundaryCompleteness.CORE_CENSORED, CorridorBand.BoundarySide.RIGHT);
     }
 }

@@ -16,6 +16,7 @@ import math
 import statistics
 import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -32,9 +33,7 @@ def main() -> None:
     args = parser.parse_args()
 
     rows: list[dict[str, object]] = []
-    bundles = list(discover_bundles(args.inputs))
-    for bundle in bundles:
-        rows.extend(analyze_bundle(bundle))
+    for_each_bundle(args.inputs, lambda bundle: rows.extend(analyze_bundle(bundle)))
 
     annotate_repeat_relationships(rows)
     annotate_cleanup_relationships(rows)
@@ -57,6 +56,17 @@ def discover_bundles(paths: list[Path]) -> list[Bundle]:
             continue
         bundles.extend(SafeArchiveReader().discover(path))
     return bundles
+
+
+def for_each_bundle(paths: list[Path], callback: Callable[[Bundle], None]) -> None:
+    """Analyze input archives one nested bundle at a time without retaining bytes."""
+    reader = SafeArchiveReader()
+    for path in paths:
+        if path.is_dir():
+            for child in sorted(path.glob("*.zip")):
+                for_each_bundle([child], callback)
+            continue
+        reader.for_each_bundle(path, callback)
 
 
 def discover_nested_bundle(name: str, data: bytes, depth: int) -> list[Bundle]:
@@ -253,6 +263,9 @@ def cleanup_columns(
             "cleanup_projection_unit_name": "unavailable",
             "cleanup_maximum_removed_deviation_meters": None,
             "cleanup_worst_fit_retention": None,
+            "cleanup_eligible_interval_count": None,
+            "cleanup_changed_interval_count": None,
+            "cleanup_frozen_interval_count": None,
             "cleanup_anchor_data_state": "unavailable",
             "cleanup_anchor_count": None,
             "cleanup_anchor_reason_codes": "unavailable",
@@ -287,6 +300,9 @@ def cleanup_columns(
         "cleanup_maximum_removed_deviation_meters": optional_fnum(
             cleanup.get("maximum_removed_deviation_meters")),
         "cleanup_worst_fit_retention": optional_fnum(cleanup.get("worst_fit_retention")),
+        "cleanup_eligible_interval_count": optional_int(cleanup.get("eligible_interval_count")),
+        "cleanup_changed_interval_count": optional_int(cleanup.get("changed_interval_count")),
+        "cleanup_frozen_interval_count": optional_int(cleanup.get("frozen_interval_count")),
         "cleanup_anchor_data_state": ";".join(anchor_states) if anchor_states else "unavailable",
         "cleanup_anchor_count": available_anchor_count if anchors else None,
         "cleanup_anchor_reason_codes": ";".join(anchor_reasons) if anchor_reasons else "unavailable",

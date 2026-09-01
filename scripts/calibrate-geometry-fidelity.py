@@ -50,10 +50,14 @@ def main() -> None:
         relative = path.relative_to(root).as_posix()
         label_findings = findings(relative)
         try:
-            inspection = reader.inspect(path)
-            member_findings = _member_findings(inspection.scannable_members)
+            analyses = []
+            member_findings = []
+            inspection = reader.inspect(
+                path,
+                on_bundle=lambda bundle: analyses.append(analyze_bundle(bundle)),
+                on_member=lambda member: member_findings.extend(_member_findings((member,))),
+            )
             privacy_findings = _merge_findings(label_findings, member_findings)
-            analyses = [analyze_bundle(bundle) for bundle in inspection.bundles]
             bundle_ways.extend(way for analysis in analyses for way in analysis.ways)
             public_relative = safe_label(relative, inspection.sha256)
             summaries = [analysis.metadata for analysis in analyses]

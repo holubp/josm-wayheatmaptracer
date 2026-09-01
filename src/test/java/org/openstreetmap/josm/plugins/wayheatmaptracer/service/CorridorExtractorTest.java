@@ -80,6 +80,50 @@ class CorridorExtractorTest {
     }
 
     @Test
+    void coreClippedAtSearchBoundaryIsNotMeasuredPositionEvidence() {
+        CrossSectionProfile profile = profile(
+            new double[] {0.0, 0.01, 0.03, 0.08, 0.20, 0.42, 0.70, 0.88, 1.0},
+            new double[] {0.0, 0.01, 0.03, 0.08, 0.20, 0.42, 0.70, 0.88, 1.0}
+        );
+
+        CorridorBand band = extractor.extract(0, profile, 1.0).bands().get(0);
+
+        assertEquals(CorridorBand.BoundaryCompleteness.CORE_CENSORED, band.boundaryCompleteness());
+        assertEquals(CorridorBand.BoundarySide.RIGHT, band.boundarySide());
+        assertFalse(band.hasMeasuredCenter());
+        assertTrue(band.signalExistenceConfidence() > 0.0);
+    }
+
+    @Test
+    void shoulderClipRetainsPositionWhenHighCoreIsEnclosed() {
+        CrossSectionProfile profile = profile(
+            new double[] {0.65, 0.66, 0.68, 0.75, 0.90, 1.0, 0.90, 0.70, 0.20, 0.0, 0.0, 0.0, 0.0},
+            new double[] {0.65, 0.66, 0.68, 0.75, 0.90, 1.0, 0.90, 0.70, 0.20, 0.0, 0.0, 0.0, 0.0}
+        );
+
+        CorridorBand band = extractor.extract(0, profile, 1.0).bands().get(0);
+
+        assertEquals(CorridorBand.BoundaryCompleteness.SHOULDER_CENSORED, band.boundaryCompleteness());
+        assertEquals(CorridorBand.BoundarySide.LEFT, band.boundarySide());
+        assertTrue(band.hasMeasuredCenter());
+        assertEquals(-1.0, band.centerOffsetPx(), 0.6);
+    }
+    @Test
+    void boundaryClassificationIsInvariantAcrossEquivalentSourcePixelPitches() {
+        double[] values = {0.0, 0.01, 0.03, 0.08, 0.20, 0.42, 0.70, 0.88, 1.0};
+        for (double sourcePixelPitch : List.of(1.0, 6.0, 24.0)) {
+            CorridorBand band = extractor.extract(
+                0, scaledProfile(values, sourcePixelPitch), sourcePixelPitch).bands().get(0);
+
+            assertEquals(CorridorBand.BoundaryCompleteness.CORE_CENSORED,
+                band.boundaryCompleteness(), "source pitch=" + sourcePixelPitch);
+            assertEquals(CorridorBand.BoundarySide.RIGHT, band.boundarySide());
+            assertFalse(band.hasMeasuredCenter());
+        }
+    }
+
+
+    @Test
     void distinguishesUnsupportedAndNumericallyEmptyProfiles() {
         CrossSectionProfile unsupported = new CrossSectionProfile(new EastNorth(0, 0), point(), normal(), List.of(), true, List.of());
         CrossSectionProfile empty = profile(new double[] {0.0, 0.0, 0.0}, new double[] {0.0, 0.0, 0.0});
@@ -131,6 +175,16 @@ class CorridorExtractorTest {
     private Point2D.Double point() {
         return new Point2D.Double(0.0, 0.0);
     }
+    private CrossSectionProfile scaledProfile(double[] values, double scale) {
+        List<IntensitySample> samples = new ArrayList<>();
+        double start = -(values.length - 1) / 2.0;
+        for (int index = 0; index < values.length; index++) {
+            double offset = (start + index) * scale;
+            samples.add(new IntensitySample(offset, values[index], values[index], values[index], true));
+        }
+        return new CrossSectionProfile(new EastNorth(0, 0), point(), normal(), List.of(), true, samples);
+    }
+
 
     private Point2D.Double normal() {
         return new Point2D.Double(0.0, 1.0);

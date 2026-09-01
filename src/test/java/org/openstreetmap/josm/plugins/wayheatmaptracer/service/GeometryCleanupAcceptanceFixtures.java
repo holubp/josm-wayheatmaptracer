@@ -86,7 +86,7 @@ final class GeometryCleanupAcceptanceFixtures {
                 && index > 2 && index < PROFILE_COUNT - 3;
             List<RenderedHeatmapSampler.IntensitySample> samples = hole
                 ? List.of()
-                : samples(centrePx, peakIntensity, parallel);
+                : samples(centrePx, peakIntensity, parallel, metresPerSourcePixel);
             List<RenderedHeatmapSampler.CrossSectionPeak> peaks = hole
                 ? List.of()
                 : parallel
@@ -102,9 +102,10 @@ final class GeometryCleanupAcceptanceFixtures {
     }
 
     private static List<RenderedHeatmapSampler.IntensitySample> samples(
-        double centrePx, double peakIntensity, boolean parallel) {
+        double centrePx, double peakIntensity, boolean parallel, double metresPerSourcePixel) {
         List<RenderedHeatmapSampler.IntensitySample> samples = new ArrayList<>();
-        for (int offset = -18; offset <= 18; offset++) {
+        int halfWidthPx = (int) Math.ceil(18.0 / metresPerSourcePixel);
+        for (int offset = -halfWidthPx; offset <= halfWidthPx; offset++) {
             double intensity = 0.02 + gaussian(offset, centrePx, peakIntensity);
             if (parallel) {
                 intensity = Math.max(intensity, 0.02 + gaussian(offset, -5.0, peakIntensity)

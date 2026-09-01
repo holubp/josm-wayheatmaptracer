@@ -93,7 +93,7 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":12"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":13"));
             assertNotNull(zip.getEntry("tile-acquisition.json"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
@@ -153,6 +153,8 @@ class LastSlideDebugBundleTest {
             assertNotNull(zip.getEntry("geometry-cleanup-local-shape.csv"));
             assertTrue(cleanup.contains("CLEANED_ALTERNATIVE_AVAILABLE"));
             assertTrue(cleanup.contains("CLEANED"));
+            assertTrue(cleanup.contains("eligible_interval_count,changed_interval_count,frozen_interval_count"));
+            assertTrue(cleanup.lines().allMatch(line -> line.split(",", -1).length >= 22));
             assertTrue(cleanup.contains("\"hot/strand#cleaned,\"\"quoted\"\"\""));
             assertTrue(cleanup.contains("JOSM-projection-units"));
             assertTrue(anchors.contains("candidate-owned-proposed-node"));

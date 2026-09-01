@@ -95,7 +95,7 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
-    void noEligibleReductionIntervalIsAnExplicitUnchangedResult() {
+    void noEligibleReductionIntervalIsExplicitlySkipped() {
         Fixture fixture = fixture(points(0.0, 0.0, 0.0), Set.of(), Set.of(1), false);
 
         List<CenterlineCandidate> result = service.expand(
@@ -103,9 +103,9 @@ class GeometryCleanupServiceTest {
             AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
             config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
 
-        assertOutcome(result, CandidateGeometryCleanup.Outcome.UNCHANGED, "cleanup-unchanged");
+        assertOutcome(result, CandidateGeometryCleanup.Outcome.SKIPPED, "no-eligible-cleanup-interval");
         assertEquals(fixture.geometry(), result.get(0).finalPreviewPoints());
-        assertTrue(result.get(0).geometryCleanup().reasons().contains("reduction-NO_DIRECT_AUTHORIZATION"));
+        assertTrue(result.get(0).geometryCleanup().reasons().contains("NO_ELIGIBLE_INTERVAL"));
     }
 
     @Test
@@ -200,6 +200,9 @@ class GeometryCleanupServiceTest {
         assertEquals(CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
             result.get(1).geometryCleanup().outcome());
         assertTrue(result.get(1).geometryCleanup().acceptedChordCount() > 0);
+        assertTrue(result.get(1).geometryCleanup().eligibleIntervalCount() > 0);
+        assertTrue(result.get(1).geometryCleanup().changedIntervalCount() > 0);
+        assertEquals(1, result.get(1).geometryCleanup().frozenIntervalCount());
         assertTrue(result.get(1).geometryCleanup().attemptedChordCount()
             > result.get(1).geometryCleanup().acceptedChordCount());
     }
@@ -296,7 +299,7 @@ class GeometryCleanupServiceTest {
     }
 
     @Test
-    void rejectsProtectedAnchorThatWouldBorrowANonadjacentProfile() {
+    void freezesNonadjacentProtectedAnchorAndCleansIndependentMappedInterval() {
         List<EastNorth> rawRidge = points(0.0, 0.2, -0.2, 0.2, -0.2, 0.2, 0.0);
         EastNorth junctionTarget = new EastNorth(3.0, 0.0);
         List<EastNorth> source = List.of(rawRidge.get(0), junctionTarget, rawRidge.get(6));
@@ -327,14 +330,34 @@ class GeometryCleanupServiceTest {
 
         assertEquals(FinalPreviewCleanupContext.Status.NONADJACENT_PROTECTED_ANCHOR,
             context.status());
-        assertOutcome(service.expand(raw, selection, source, AlignmentMode.PRECISE_SHAPE,
-            TrackerMode.CORRIDOR_AWARE, config(GeometryCleanupMode.REDUCE_POINTS_ONLY)),
-            CandidateGeometryCleanup.Outcome.SKIPPED,
-            "context-nonadjacent_protected_anchor");
+        FinalPreviewCleanupContext.CleanupReconciliation reconciliation =
+            FinalPreviewCleanupContext.reconcile(raw, selection, source);
+        assertTrue(reconciliation.cleanable());
+        assertFalse(reconciliation.globallyComplete());
+        assertEquals(Set.of(1, 2, 3), reconciliation.frozenIndexes());
+        assertEquals(List.of(List.of(3, 4, 5)),
+            reconciliation.slices().stream().map(FinalPreviewCleanupContext.CleanupSlice::geometryIndexes).toList());
+        List<CenterlineCandidate> result = service.expand(raw, selection, source, AlignmentMode.PRECISE_SHAPE,
+            TrackerMode.CORRIDOR_AWARE, config(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+
+        assertEquals(2, result.size(), result.get(0).geometryCleanup().toString());
+        assertEquals(CandidateGeometryCleanup.Outcome.CLEANED_ALTERNATIVE_AVAILABLE,
+            result.get(0).geometryCleanup().outcome());
+        CenterlineCandidate cleaned = result.get(1);
+        assertEquals(CandidateGeometryCleanup.Outcome.PARTIALLY_CLEANED,
+            cleaned.geometryCleanup().outcome());
+        assertEquals(1, cleaned.geometryCleanup().eligibleIntervalCount());
+        assertEquals(1, cleaned.geometryCleanup().changedIntervalCount());
+        assertEquals(1, cleaned.geometryCleanup().frozenIntervalCount());
+        assertTrue(cleaned.finalPreviewPoints().contains(junctionTarget));
+        assertEquals(junctionTarget,
+            cleaned.proposedNodePositions().get(nodes.get(1).getUniqueId()));
+        assertTrue(cleaned.cleanupEvidence().profiles().isEmpty());
+        assertTrue(cleaned.finalPreviewPoints().size() < reconstructed.size());
     }
 
     @Test
-    void reportsRejectedAndUnchangedWithoutHidingRawCandidate() {
+    void reportsRejectedAndSkippedWithoutHidingRawCandidate() {
         List<EastNorth> crossing = List.of(new EastNorth(0, 0), new EastNorth(2, 2), new EastNorth(0, 2),
             new EastNorth(2, 0), new EastNorth(4, 0));
         Fixture rejected = fixture(crossing, Set.of(), Set.of(), false);
@@ -346,8 +369,19 @@ class GeometryCleanupServiceTest {
         Fixture unchanged = fixture(points(0.0, 0.2, -0.2, 0.2, 0.0), Set.of(), Set.of(), false, null, true);
         assertOutcome(service.expand(unchanged.candidate(), unchanged.selection(), unchanged.geometry(),
             AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
-            config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.UNCHANGED,
-            "cleanup-unchanged");
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
+            "no-eligible-cleanup-interval");
+    }
+
+    @Test
+    void reportsSkippedWhenNoCleanupIntervalIsEligible() {
+        Fixture frozen = fixture(points(0.0, 0.2, -0.2, 0.2, 0.0),
+            Set.of(), Set.of(1, 2, 3), false);
+
+        assertOutcome(service.expand(frozen.candidate(), frozen.selection(), frozen.geometry(),
+            AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE,
+            config(GeometryCleanupMode.REDUCE_POINTS_ONLY)), CandidateGeometryCleanup.Outcome.SKIPPED,
+            "no-eligible-cleanup-interval");
     }
 
     @Test

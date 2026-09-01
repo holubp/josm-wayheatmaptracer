@@ -55,7 +55,10 @@ class SparseCorridorDebugReplayTest {
                     .filter(value -> value.id().equals(bundle.id())).findFirst())
                 .orElseGet(() -> result.candidates().get(0));
             assertTrue(candidate.evidence().supportRatio() >= 0.70,
-                "Sparse candidate support=" + candidate.evidence().supportRatio());
+                "Sparse candidate support=" + candidate.evidence().supportRatio()
+                    + ", candidates=" + result.candidates().stream().map(value -> value.id() + ":"
+                        + value.evidence().supportRatio() + ":"
+                        + value.evidence().corridorCoverage().reason()).toList());
             assertTrue(candidate.evidence().corridorCoverage().complete(),
                 "Sparse parent coverage=" + candidate.evidence().corridorCoverage().reason());
             assertTrue(candidate.evidence().corridorQuality().nonSustainedHighFrequencyP95SourcePx() <= 0.40,

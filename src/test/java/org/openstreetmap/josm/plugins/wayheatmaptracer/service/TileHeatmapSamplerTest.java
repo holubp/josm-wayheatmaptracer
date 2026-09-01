@@ -108,6 +108,20 @@ class TileHeatmapSamplerTest {
         assertEquals(28.0, TileHeatmapSampler.effectiveSearchHalfWidthMeters(config, true), 1e-9);
     }
 
+
+    @Test
+    void managedRetryWidthIsBoundedByNinetySixNativePixelsAtInferenceZoom() {
+        ManagedHeatmapConfig config = config(InferenceMode.STABLE_FIXED_SCALE, 15, 13);
+        List<EastNorth> polyline = List.of(
+            ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(49.44, 14.0)),
+            ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(49.44, 14.01))
+        );
+
+        double maximum = TileHeatmapSampler.maximumSearchHalfWidthMeters(config, polyline);
+        double expected = 96.0 * TileHeatmapSampler.metersPerPixel(15, 49.44);
+
+        assertEquals(expected, maximum, 1e-9);
+    }
     @Test
     void managedTileCacheKeySeparatesColorsAndCacheGenerationsWithoutSecrets() {
         ManagedHeatmapConfig config = config(InferenceMode.STABLE_FIXED_SCALE, 15, 13, 1234L);

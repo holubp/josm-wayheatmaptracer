@@ -458,12 +458,57 @@ Stored, deflated, BZIP2, and LZMA members remain readable within explicit compre
 uncompressed, member, materialization, depth, and entry-count limits. Privacy scanning
 covers the deduplicated validated member-name inventory, bounded text-like contents,
 and ZIP comments. Quarantined hashes never enter `split-lock.json`.
+Safe traversal validates hashes and duplicate members before invoking callbacks.
+Its peak-materialization budget includes active ZIP inventories, retained member
+objects and names, decoded text, and simultaneous mutable/immutable nested payload
+copies. Privacy consumers scan bounded decoded chunks and retain findings only;
+they must not accumulate all decoded member text outside the reader's budget.
 
 Old bundles remain readable. The analyzers preserve old raw values but flag format-4 physical columns and post-Apply original geometry as untrusted. These commands analyze exported outcomes and do not replay a new tracker implementation against old imagery.
 
 ## Corridor-Aware Promotion Contract
 
 The maintainer approved `CORRIDOR_AWARE` as the default for `0.20.0`. A missing, blank, or unknown tracker preference resolves to corridor-aware; an explicitly stored `LEGACY_V02` preference remains legacy and round-trips without migration. Geometry cleanup remains independently disabled by default. Promotion verification includes the full Gradle suite, `wayheatmaptracer-testing.zip`, palette fixtures for `hot`, `blue`, `bluered`, `purple`, `gray`, and `all-colors-combined`, plus the existing broad-corridor, sparse-corridor, sustained sine/switchback, endpoint/junction, topology, and parent/child ambiguity regressions. Future changes must preserve the explicit legacy fallback and must not weaken these gates.
+
+## v0.21 Search-Edge And Local-Cleanup Contract
+
+Corridor-aware extraction classifies every band as complete, shoulder-censored,
+core-censored, or fully censored, with the affected side. The physical safety
+margin is derived from the lateral sample step and native source-pixel pitch.
+A core-censored observation records only signal existence: it cannot seed a
+track, supply a center, count as direct coverage, authorize a bend or endpoint,
+or authorize cleanup. An internal censored run is applicable only when the
+existing tracker bridges compatible observations within 16 profiles and 20 m;
+otherwise coverage is incomplete and the preview is inspection-only. A search-edge
+label requires censored evidence intersecting that selected bridge projection; an
+unrelated clipped parallel mode does not relabel the bridge. A tested robust
+multi-point extrapolation was intentionally rejected because it fragmented the
+public complementary sparse corridor and private sparse replay; deeper semantic
+strand identity remains in the deferred multimodal plan. Legacy
+v0.2 tracking does not consume this classification.
+
+The modeless preview explains complete, bridged, and unresolved search-edge
+coverage. An explicit 'Retry with wider search...' performs a fresh full-segment
+run using a bounded physical half-width override. The override is not persisted,
+does not stitch old profiles, and revalidates source geometry, layer identity,
+and managed-source identity before acquisition.
+
+A nonadjacent protected cleanup anchor freezes its nearest safely bounded
+neighborhood rather than disabling unrelated intervals. Cleanup reports carry factual
+eligible, changed, and frozen interval counts; all-rejected local attempts are
+reported as rejected, not unchanged. Each remaining interval
+is processed independently, frozen geometry is exact, and at most one partial
+cleaned sibling is produced after fresh assignment and whole-preview safety
+checks. Preview status distinguishes skipped, unchanged, partial, full, and
+rejected outcomes. Format 13 adds band-boundary fields and cleanup interval
+counts; retry widths and reasons are retained in credential-safe slide logging.
+
+The selected-source access check bypasses cache reads and tests a deterministic
+stencil of at most five visible z15 coordinates. A cached tile proves only cached
+availability, and all-NO_TILE results are spatially inconclusive. JOSM's own
+'No tiles at this zoom level' message remains BOUNDED_UNRESOLVED: do not change
+managed-layer zoom/display behavior until requested/current/best/display zoom
+and tile-state evidence identify its emitter and mechanism.
 
 ## Guardrails
 

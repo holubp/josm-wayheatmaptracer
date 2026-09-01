@@ -242,7 +242,12 @@ class CorridorRasterIntegrationTest {
             .filter(value -> value.id().equals(bundle.id())).findFirst().orElseThrow();
         assertEquals(PROFILE_COUNT - 3, bundle.directUnionProfileCount(),
             "The two empty profiles and isolated bright outlier should not count as direct corridor support");
-        assertEquals(3, bundle.interpolatedProfileCount());
+        assertEquals(3, bundle.interpolatedProfileCount(),
+            "bundle points=" + bundle.points().values().stream()
+                .filter(point -> point.support() == CorridorPointSupport.BOUNDED_INTERPOLATION)
+                .map(SparseCorridorBundlePoint::profileIndex).toList()
+                + ", tracks=" + result.tracks().stream().map(track -> track.id() + ":"
+                    + track.points().keySet()).toList());
         assertTrue(candidate.evidence().corridorCoverage().complete(),
             "A bounded 5m hole with bracketing compatible traces should remain complete");
         double interiorMean = candidate.offsetsPx().subList(2, PROFILE_COUNT - 2).stream()
