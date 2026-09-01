@@ -2,8 +2,13 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.openstreetmap.josm.tools.I18n.tr;
 
+import java.awt.Point;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.BiConsumer;
 
 import javax.swing.JOptionPane;
 import javax.swing.SwingUtilities;
@@ -75,7 +80,7 @@ public class HeatmapLayerSettingsAction extends JosmAction {
             PluginLog.verbose("Managed heatmap layer refreshed.");
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),
-                tr("Heatmap layer settings saved and the managed layer has been refreshed. The selected source will now be checked near the map center."),
+                tr("Heatmap layer settings saved and the selected source will now be checked in the visible map area."),
                 tr("WayHeatmapTracer"),
                 JOptionPane.INFORMATION_MESSAGE
             );
@@ -96,11 +101,47 @@ public class HeatmapLayerSettingsAction extends JosmAction {
             return;
         }
         MapView mapView = MainApplication.getMap().mapView;
-        LatLon location = mapView.getLatLon(mapView.getWidth() / 2, mapView.getHeight() / 2);
+        List<LatLon> locations = new ArrayList<>();
+        for (Point point : probeStencilPixels(mapView.getWidth(), mapView.getHeight())) {
+            locations.add(mapView.getLatLon(point.x, point.y));
+        }
         CancellationToken cancellation = new CancellationToken();
         new SelectedSourceHealthProbe(ManagedTileRuntime.coordinator())
-            .probe(config, location, TileCachePolicy.USE_CACHE, cancellation)
-            .whenComplete((result, error) -> SwingUtilities.invokeLater(() -> showProbeResult(result, error)));
+            .probe(config, locations, settingsProbePolicy(), cancellation)
+            .whenComplete((result, error) -> dispatchProbeResult(result, error, this::showProbeResult));
+    }
+
+    static List<Point> probeStencilPixels(int width, int height) {
+        int centerX = Math.max(0, width / 2);
+        int centerY = Math.max(0, height / 2);
+        if (width <= 1 || height <= 1) {
+            return List.of(new Point(centerX, centerY));
+        }
+        int left = inset(width);
+        int right = Math.max(left, width - 1 - left);
+        int top = inset(height);
+        int bottom = Math.max(top, height - 1 - top);
+        return List.of(
+            new Point(centerX, centerY),
+            new Point(left, top),
+            new Point(right, top),
+            new Point(left, bottom),
+            new Point(right, bottom)
+        );
+    }
+
+    static TileCachePolicy settingsProbePolicy() {
+        return TileCachePolicy.BYPASS_READ_ALLOW_WRITE;
+    }
+
+    static void dispatchProbeResult(SelectedSourceProbeResult result, Throwable error,
+        BiConsumer<SelectedSourceProbeResult, Throwable> presenter) {
+        Objects.requireNonNull(presenter, "presenter");
+        SwingUtilities.invokeLater(() -> presenter.accept(result, error));
+    }
+
+    private static int inset(int size) {
+        return Math.min(size - 1, Math.max(1, Math.round((size - 1) * 0.25f)));
     }
 
     private void showProbeResult(SelectedSourceProbeResult result, Throwable error) {
