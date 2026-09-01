@@ -11,6 +11,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
  * Applies read-only nearby-way compatibility as a soft candidate-ranking prior.
  */
 public final class CorridorAssignmentService {
+    /** Calibrated physical reference that keeps contextual displacement costs width-independent. */
+    private static final double ASSIGNMENT_NORMALIZATION_METERS = 7.01;
     /**
      * Creates a stateless corridor assignment service.
      */
@@ -25,20 +27,18 @@ public final class CorridorAssignmentService {
      * @param selectedWay selected OSM way
      * @param selectedGeometry original selected-segment geometry
      * @param contexts nearby parallel OSM ways
-     * @param searchHalfWidthMeters normalization corridor width
      * @return adjusted candidates and assignment diagnostics
      */
     public AssignmentResult assign(
         List<CenterlineCandidate> candidates,
         Way selectedWay,
         List<EastNorth> selectedGeometry,
-        List<ParallelWayContext> contexts,
-        double searchHalfWidthMeters
+        List<ParallelWayContext> contexts
     ) {
         if (contexts.isEmpty()) {
             return new AssignmentResult(candidates, List.of());
         }
-        double scale = Math.max(2.0, searchHalfWidthMeters);
+        double scale = ASSIGNMENT_NORMALIZATION_METERS;
         List<CenterlineCandidate> adjusted = new ArrayList<>(candidates.size());
         List<AssignmentDecision> decisions = new ArrayList<>(candidates.size());
         for (CenterlineCandidate candidate : candidates) {

@@ -95,6 +95,36 @@ class CorridorExtractorTest {
     }
 
     @Test
+    void enclosedCoreRemainsMeasuredWhenNativePixelPitchExceedsNarrowWindowMargin() {
+        CrossSectionProfile profile = profile(
+            new double[] {0.0, 0.08, 0.42, 0.90, 1.0, 0.90, 0.42, 0.08, 0.0},
+            new double[] {0.0, 0.08, 0.42, 0.90, 1.0, 0.90, 0.42, 0.08, 0.0}
+        );
+
+        CorridorBand band = extractor.extract(0, profile, 4.0).bands().get(0);
+
+        assertEquals(CorridorBand.BoundaryCompleteness.COMPLETE, band.boundaryCompleteness());
+        assertEquals(CorridorBand.BoundarySide.NONE, band.boundarySide());
+        assertTrue(band.hasMeasuredCenter());
+        assertEquals(0.0, band.centerOffsetPx(), 1e-9);
+    }
+
+    @Test
+    void bracketsCenteredCoreAcrossCalibratedPhysicalHalfWidths() {
+        double rasterMetersPerPixel = 0.389;
+        double sourcePixelSizePx = 3.5 / rasterMetersPerPixel;
+        for (double halfWidthMeters : List.of(7.01, 10.0, 14.0)) {
+            CorridorBand band = extractor.extract(0, physicalCorridorProfile(
+                halfWidthMeters, 1.56, rasterMetersPerPixel), sourcePixelSizePx).bands().get(0);
+
+            assertEquals(CorridorBand.BoundaryCompleteness.COMPLETE,
+                band.boundaryCompleteness(), "half-width=" + halfWidthMeters);
+            assertTrue(band.hasMeasuredCenter());
+            assertEquals(0.0, band.centerOffsetPx(), 1e-9);
+        }
+    }
+
+    @Test
     void shoulderClipRetainsPositionWhenHighCoreIsEnclosed() {
         CrossSectionProfile profile = profile(
             new double[] {0.65, 0.66, 0.68, 0.75, 0.90, 1.0, 0.90, 0.70, 0.20, 0.0, 0.0, 0.0, 0.0},
@@ -168,6 +198,25 @@ class CorridorExtractorTest {
         double start = -(nativeValues.length - 1) / 2.0;
         for (int i = 0; i < nativeValues.length; i++) {
             samples.add(new IntensitySample(start + i, nativeValues[i], filteredValues[i], filteredValues[i], true));
+        }
+        return new CrossSectionProfile(new EastNorth(0, 0), point(), normal(), List.of(), true, samples);
+    }
+
+    private CrossSectionProfile physicalCorridorProfile(
+        double halfWidthMeters,
+        double targetStepMeters,
+        double rasterMetersPerPixel
+    ) {
+        int intervals = Math.max(2, (int) Math.floor(2.0 * halfWidthMeters / targetStepMeters));
+        if ((intervals & 1) != 0) {
+            intervals--;
+        }
+        List<IntensitySample> samples = new ArrayList<>();
+        for (int index = 0; index <= intervals; index++) {
+            double offsetMeters = -halfWidthMeters + 2.0 * halfWidthMeters * index / intervals;
+            double intensity = Math.exp(-0.5 * Math.pow(offsetMeters / 2.0, 2.0));
+            samples.add(new IntensitySample(offsetMeters / rasterMetersPerPixel,
+                intensity, intensity, intensity, true));
         }
         return new CrossSectionProfile(new EastNorth(0, 0), point(), normal(), List.of(), true, samples);
     }

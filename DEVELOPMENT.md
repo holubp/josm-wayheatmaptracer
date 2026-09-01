@@ -341,7 +341,12 @@ sampler, live all-color diagnostic layer, and selected-source probe share strict
 address/generation identity, bounded transport reads, validated atomic positive
 cache writes, single-flight requests, a priority queue, bounded memory, negative
 failure eligibility, and generation-level authentication/rate-limit circuits.
-The managed visible TMS layer remains owned by JOSM.
+The managed visible TMS layer remains owned by JOSM. Its custom display loader
+replaces only a successful HTTP 404 response that JOSM has already classified
+as `noTileAtZoom` with a transient transparent PNG. The original negative cache
+entry remains unchanged, and plugin-direct alignment, aggregate, and probe
+paths continue to receive `NO_TILE`. Authentication, rate-limit, transport, and
+decode failures are never converted to empty imagery.
 
 The coordinator accepts three foreground workers, at most 512 admitted queued
 requests, an 8 MiB encoded response, a 96 MiB source cache, and 512 scheduled
@@ -372,7 +377,7 @@ cookie values, exceptions, UI, logs, and format-11 `tile-acquisition.json` must
 never reveal credential-derived characters, Cookie headers, signed URLs, error
 bodies, or arbitrary server messages.
 
-The selected-source settings check is asynchronous and tests only one selected
+The selected-source settings check is asynchronous and tests a deterministic stencil of at most five selected
 z15 tile near the current map center. It reports plugin-cache and fresh-network
 success separately. JOSM-visible fallback imagery is not evidence of direct
 source availability. Fixed sampler acquisition remains synchronously awaited by
@@ -487,6 +492,8 @@ public complementary sparse corridor and private sparse replay; deeper semantic
 strand identity remains in the deferred multimodal plan. Legacy
 v0.2 tracking does not consume this classification.
 
+A corridor core is treated as laterally complete when both threshold crossings are bracketed by valid below-threshold samples inside the configured decision window. Native source-pixel pitch remains localization uncertainty and does not reserve a fixed margin at both edges. Profile filtering cannot import signal from outside that window. Ordinary operation and one-shot retry are bounded to the calibrated 7.01-14 m half-width range; optional nearby-way displacement scoring uses a fixed 7.01 m physical normalization, so widening does not make remote corridors cheaper.
+
 The modeless preview explains complete, bridged, and unresolved search-edge
 coverage. An explicit 'Retry with wider search...' performs a fresh full-segment
 run using a bounded physical half-width override. The override is not persisted,
@@ -505,10 +512,9 @@ counts; retry widths and reasons are retained in credential-safe slide logging.
 
 The selected-source access check bypasses cache reads and tests a deterministic
 stencil of at most five visible z15 coordinates. A cached tile proves only cached
-availability, and all-NO_TILE results are spatially inconclusive. JOSM's own
-'No tiles at this zoom level' message remains BOUNDED_UNRESOLVED: do not change
-managed-layer zoom/display behavior until requested/current/best/display zoom
-and tile-state evidence identify its emitter and mechanism.
+availability, and all-NO_TILE results are spatially inconclusive. JOSM's visual
+TMS path treats a confirmed spatial HTTP 404 as transparent, without changing
+plugin-direct source availability semantics.
 
 ## Guardrails
 

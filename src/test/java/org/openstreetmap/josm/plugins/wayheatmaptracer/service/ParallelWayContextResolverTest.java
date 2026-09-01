@@ -63,6 +63,17 @@ class ParallelWayContextResolverTest {
         assertEquals(1.0, contexts.get(0).overlapRatio(), 0.01);
     }
 
+    @Test
+    void widerHeatmapSearchDoesNotExpandNearbyWayContextBeyondNormalRange() {
+        DataSet dataSet = new DataSet();
+        Way selected = way(dataSet, "track", new EastNorth(0, 0), new EastNorth(100, 0));
+        way(dataSet, "track", new EastNorth(0, 20), new EastNorth(100, 20));
+        SelectionContext selection = new SelectionContext(
+            selected, 0, 1, selected.getNodes(), Set.copyOf(selected.getNodes()));
+
+        assertEquals(List.of(), new ParallelWayContextResolver().resolve(selection, true, 28.0));
+    }
+
     private Way way(DataSet dataSet, String highway, EastNorth... points) {
         Way way = new Way();
         way.put("highway", highway);

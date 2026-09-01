@@ -1230,7 +1230,7 @@ public final class AlignmentService {
         List<ParallelWayContext> contexts = parallelWayContextResolver.resolve(
             selection, true, config.searchHalfWidthMeters());
         CorridorAssignmentService.AssignmentResult assigned = corridorAssignmentService.assign(
-            candidates, selection.way(), sourcePolyline, contexts, config.searchHalfWidthMeters());
+            candidates, selection.way(), sourcePolyline, contexts);
         PluginLog.verbose("Parallel-way context resolved %d nearby ways and %d candidate assignment decisions.",
             contexts.size(), assigned.decisions().size());
         return assigned.candidates().stream()
@@ -3128,7 +3128,7 @@ public final class AlignmentService {
         List<ParallelWayContext> contexts = parallelWayContextResolver.resolve(
             selection, true, config.searchHalfWidthMeters());
         CorridorAssignmentService.AssignmentResult assignment = corridorAssignmentService.assign(
-            candidates, selection.way(), source, contexts, config.searchHalfWidthMeters());
+            candidates, selection.way(), source, contexts);
         StringBuilder builder = new StringBuilder("{\"enabled\":true,\"ways\":[");
         for (int i = 0; i < contexts.size(); i++) {
             if (i > 0) {

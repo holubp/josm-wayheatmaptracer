@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 public final class ParallelWayContextResolver {
     private static final double MIN_DIRECTION_AGREEMENT = 0.78;
     private static final double MIN_OVERLAP_RATIO = 0.35;
+    private static final double MAX_CONTEXT_HALF_WIDTH_METERS = 14.0;
     private static final List<String> RELEVANT_TAGS = List.of("highway", "oneway", "lanes", "foot", "bicycle");
 
     /**
@@ -48,7 +49,7 @@ public final class ParallelWayContextResolver {
         if (selected.size() < 2) {
             return List.of();
         }
-        double corridor = Math.max(2.0, searchHalfWidthMeters);
+        double corridor = Math.max(2.0, Math.min(MAX_CONTEXT_HALF_WIDTH_METERS, searchHalfWidthMeters));
         List<EastNorth> selectedSamples = samplePolyline(selected, Math.max(2.0, corridor * 0.5));
         List<ParallelWayContext> result = new ArrayList<>();
         for (Way way : dataSet.getWays()) {

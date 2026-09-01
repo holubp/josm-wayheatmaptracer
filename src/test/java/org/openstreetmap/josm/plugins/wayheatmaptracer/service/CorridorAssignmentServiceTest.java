@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.geom.Point2D;
@@ -32,12 +33,29 @@ class CorridorAssignmentServiceTest {
         CenterlineCandidate occupied = candidate("occupied", 1.0, 8.0);
 
         CorridorAssignmentService.AssignmentResult result = new CorridorAssignmentService().assign(
-            List.of(own, occupied), selected, source, List.of(neighbor), 10.0);
+            List.of(own, occupied), selected, source, List.of(neighbor));
 
         double ownScore = result.candidates().stream().filter(candidate -> candidate.id().startsWith("own")).findFirst().orElseThrow().score();
         double occupiedScore = result.candidates().stream().filter(candidate -> candidate.id().startsWith("occupied")).findFirst().orElseThrow().score();
         assertTrue(ownScore > occupiedScore);
         assertTrue(result.decisions().stream().anyMatch(decision -> decision.reservedByWayIds().contains(42L)));
+    }
+
+    @Test
+    void usesFixedPhysicalNormalizationForContextualDisplacementCost() {
+        Way selected = new Way();
+        selected.put("highway", "track");
+        List<EastNorth> source = List.of(new EastNorth(0, 0), new EastNorth(100, 0));
+        ParallelWayContext neighbor = new ParallelWayContext(42L,
+            List.of(new EastNorth(0, 8), new EastNorth(100, 8)), Map.of("highway", "track"),
+            8.0, 1.0, 1.0, 1.0);
+        CenterlineCandidate candidate = candidate("candidate", 1.0, 4.0);
+
+        var result = new CorridorAssignmentService().assign(
+            List.of(candidate), selected, source, List.of(neighbor));
+
+        assertEquals(4.0 / 7.01, result.decisions().get(0).normalizedCost(), 1e-12);
+        assertEquals(1.0 - (4.0 / 7.01) * 0.20, result.candidates().get(0).score(), 1e-12);
     }
 
     private CenterlineCandidate candidate(String id, double score, double north) {

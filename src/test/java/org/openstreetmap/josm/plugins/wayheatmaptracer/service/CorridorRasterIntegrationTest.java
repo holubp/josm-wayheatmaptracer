@@ -56,6 +56,40 @@ class CorridorRasterIntegrationTest {
     }
 
     @Test
+    void normalSearchWidthsRetainSupportedTurnWithoutSwitchingToNearbyLimb() {
+        double rasterMetersPerPixel = 0.389;
+        double sourcePixelPitch = 3.5 / rasterMetersPerPixel;
+        BufferedImage raster = switchbackWithNearbyLimbRaster(rasterMetersPerPixel);
+        List<Double> expected = expectedSwitchbackOffsets(rasterMetersPerPixel);
+
+        for (double halfWidthMeters : List.of(7.01, 10.0, 14.0)) {
+            int halfWidthPx = (int) Math.round(halfWidthMeters / rasterMetersPerPixel);
+            MultiScaleProfileSet profiles = new RenderedHeatmapSampler().sampleMultiScaleProfilesOnScaledRaster(
+                raster, sourcePolyline(), halfWidthPx, (int) Math.round(1.56 / rasterMetersPerPixel), "hot", 1.0, 1.0,
+                IntensitySamplingMode.DIRECT_VALUE, sourcePixelPitch);
+
+            CorridorAwareTracker.TrackingResult result = new CorridorAwareTracker()
+                .trackDetailed(profiles, sourcePixelPitch, JunctionContext.empty());
+
+            assertFalse(result.candidates().isEmpty(), "half-width=" + halfWidthMeters);
+            CenterlineCandidate candidate = result.candidates().get(0);
+            assertTrue(candidate.evidence().corridorCoverage().complete(),
+                "half-width=" + halfWidthMeters + ", coverage=" + candidate.evidence().corridorCoverage());
+            double meanError = 0.0;
+            for (int index = 0; index < expected.size(); index++) {
+                meanError += Math.abs(candidate.offsetsPx().get(index) - expected.get(index));
+            }
+            meanError /= expected.size();
+            double amplitude = candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).max().orElseThrow()
+                - candidate.offsetsPx().stream().mapToDouble(Double::doubleValue).min().orElseThrow();
+            assertTrue(meanError <= sourcePixelPitch * 0.35,
+                "half-width=" + halfWidthMeters + ", mean error=" + meanError);
+            assertTrue(amplitude >= 4.0 / rasterMetersPerPixel,
+                "half-width=" + halfWidthMeters + ", retained turn amplitude=" + amplitude);
+        }
+    }
+
+    @Test
     void retainsOneSharedCleanupFrameAndFailsClosedWithoutProjectedTransforms() {
         BufferedImage raster = raster((x) -> 0.0, 0.92, true, false);
         List<RenderedHeatmapSampler.CrossSectionProfile> compatibilityProfiles = new RenderedHeatmapSampler()
@@ -382,6 +416,40 @@ class CorridorRasterIntegrationTest {
             }
         }
         return raster;
+    }
+
+    private BufferedImage switchbackWithNearbyLimbRaster(double rasterMetersPerPixel) {
+        BufferedImage raster = background();
+        List<Double> intended = expectedSwitchbackOffsets(rasterMetersPerPixel);
+        double neighboringOffset = 10.0 / rasterMetersPerPixel;
+        for (int profile = 0; profile < PROFILE_COUNT; profile++) {
+            int x = START_X + profile * STEP_X;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -3; dy <= 3; dy++) {
+                    double intensity = Math.abs(dy) <= 1 ? 0.88 : 0.42;
+                    setIntensity(raster, x + dx, SOURCE_Y + (int) Math.round(intended.get(profile)) + dy, intensity);
+                    setIntensity(raster, x + dx,
+                        SOURCE_Y + (int) Math.round(intended.get(profile) + neighboringOffset) + dy, intensity);
+                }
+            }
+        }
+        return raster;
+    }
+
+    private List<Double> expectedSwitchbackOffsets(double rasterMetersPerPixel) {
+        List<Double> offsets = new ArrayList<>(PROFILE_COUNT);
+        for (int profile = 0; profile < PROFILE_COUNT; profile++) {
+            double offsetMeters;
+            if (profile < 18 || profile > 42) {
+                offsetMeters = 0.0;
+            } else if (profile <= 30) {
+                offsetMeters = 5.0 * (profile - 18) / 12.0;
+            } else {
+                offsetMeters = 5.0 * (42 - profile) / 12.0;
+            }
+            offsets.add(offsetMeters / rasterMetersPerPixel);
+        }
+        return offsets;
     }
 
     private BufferedImage background() {

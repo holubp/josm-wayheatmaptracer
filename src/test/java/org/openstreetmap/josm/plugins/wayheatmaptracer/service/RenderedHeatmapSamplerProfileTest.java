@@ -99,6 +99,32 @@ class RenderedHeatmapSamplerProfileTest {
     }
 
     @Test
+    void outsideSignalCannotExpandOrInfluenceDecisionProfile() {
+        BufferedImage image = new BufferedImage(25, 25, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < image.getHeight(); y++) {
+            image.setRGB(15, y, 0xFFFFFFFF);
+        }
+
+        List<RenderedHeatmapSampler.CrossSectionProfile> profiles = new RenderedHeatmapSampler()
+            .sampleProfilesOnScaledRaster(
+                image,
+                List.of(new Point2D.Double(10, 5), new Point2D.Double(10, 20)),
+                3,
+                1,
+                "hot",
+                1.0,
+                1.0,
+                IntensitySamplingMode.DIRECT_VALUE
+            );
+
+        List<RenderedHeatmapSampler.IntensitySample> samples = profiles.get(0).intensitySamples();
+        assertEquals(7, samples.size());
+        assertEquals(-3.0, samples.get(0).offsetPx(), 1e-9);
+        assertEquals(3.0, samples.get(samples.size() - 1).offsetPx(), 1e-9);
+        assertEquals(samples.get(0).nativeIntensity(), samples.get(0).standardFilteredIntensity(), 0.0);
+    }
+
+    @Test
     void capturesExactSlideTimeProjectedLateralOffsetTransform() {
         BufferedImage image = new BufferedImage(40, 40, BufferedImage.TYPE_INT_ARGB);
         List<ProfileSamplingAnchor> anchors = ProfileSamplingAnchor.pair(

@@ -49,7 +49,7 @@ public final class ManagedImageryService {
             MANAGED_LAYER_ID
         );
         info.setDefaultMaxZoom(15);
-        ImageryLayer layer = ImageryLayer.create(info);
+        ImageryLayer layer = new ManagedHeatmapLayer(info);
         MainApplication.getLayerManager().addLayer(layer);
         return layer;
     }

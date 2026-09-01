@@ -173,8 +173,8 @@ public final class CorridorExtractor {
         double localization = clamp(0.35 * gradientBalance + 0.40 * nestedAgreement + 0.25 * coreDefinition);
         double uncertainty = Math.max(localizationResolution / 2.0,
             centerSpread + (1.0 - localization) * shoulderWidth * 0.35);
-        BoundarySide coreCensoring = boundarySide(core, samples, sourcePixelSizePx);
-        BoundarySide shoulderCensoring = boundarySide(shoulder, samples, sourcePixelSizePx);
+        BoundarySide coreCensoring = boundarySide(core, samples);
+        BoundarySide shoulderCensoring = boundarySide(shoulder, samples);
         BoundaryCompleteness completeness = completeness(coreCensoring, shoulderCensoring);
         BoundarySide boundarySide = coreCensoring != BoundarySide.NONE ? coreCensoring : shoulderCensoring;
         localization = completeness.hasMeasuredCenter() ? localization : 0.0;
@@ -196,12 +196,10 @@ public final class CorridorExtractor {
             ? BoundaryCompleteness.COMPLETE : BoundaryCompleteness.SHOULDER_CENSORED;
     }
 
-    private BoundarySide boundarySide(Interval interval, List<IntensitySample> samples, double sourcePixelSizePx) {
-        double step = sampleStep(samples);
-        double margin = Double.isFinite(sourcePixelSizePx) && sourcePixelSizePx > 0.0
-            ? Math.max(step, 2.0 * sourcePixelSizePx) : 0.5 * step;
-        boolean left = interval.minimumOffsetPx() - samples.get(0).offsetPx() < margin - 1e-9;
-        boolean right = samples.get(samples.size() - 1).offsetPx() - interval.maximumOffsetPx() < margin - 1e-9;
+    private BoundarySide boundarySide(Interval interval, List<IntensitySample> samples) {
+        boolean left = interval.start() == 0 || !samples.get(interval.start() - 1).insideRaster();
+        boolean right = interval.end() == samples.size() - 1
+            || !samples.get(interval.end() + 1).insideRaster();
         return BoundarySide.of(left, right);
     }
 

@@ -64,6 +64,8 @@ import org.openstreetmap.josm.tools.Shortcut;
  */
 public class AlignWayAction extends JosmAction {
     private static final String[] RATING_VALUES = {"", "++", "+", "0", "-", "--"};
+    /** Largest half-width offered by ordinary search-edge recovery. */
+    private static final double MAX_ORDINARY_SEARCH_HALF_WIDTH_METERS = 14.0;
     private static final String FEATURE_OFF_THE_LINE = "off-the-line";
     private static final String FEATURE_JUMPING = "jumping";
     private static final String FEATURE_UNNECESSARY_KINKS = "unnecessary-kinks";
@@ -522,19 +524,19 @@ public class AlignWayAction extends JosmAction {
         retry.setEnabled(canExpand);
         retry.setToolTipText(canExpand
             ? tr("Re-run the complete selected segment with a larger search width")
-            : tr("No larger search can be captured within the current sampler limits"));
+            : tr("No wider ordinary retry is available within the 14 m and sampler limits"));
     }
 
     private RetrySearchBounds retrySearchBounds(AlignmentConfig slideConfig, AlignmentResult result) {
         ManagedHeatmapConfig source = slideConfig.effectiveHeatmap();
         if (source.hasManagedAccessValues()) {
-            return new RetrySearchBounds(source.searchHalfWidthMeters(),
-                TileHeatmapSampler.maximumSearchHalfWidthMeters(source, result.sourcePolyline()));
+            double current = source.searchHalfWidthMeters();
+            return new RetrySearchBounds(current, ordinaryRetryMaximumMeters(current,
+                TileHeatmapSampler.maximumSearchHalfWidthMeters(source, result.sourcePolyline())));
         }
-        return new RetrySearchBounds(
-            AlignmentService.visibleSearchHalfWidthMeters(slideConfig, result.sourcePolyline()),
-            AlignmentService.maximumVisibleSearchHalfWidthMeters(result.sourcePolyline())
-        );
+        double current = AlignmentService.visibleSearchHalfWidthMeters(slideConfig, result.sourcePolyline());
+        return new RetrySearchBounds(current, ordinaryRetryMaximumMeters(current,
+            AlignmentService.maximumVisibleSearchHalfWidthMeters(result.sourcePolyline())));
     }
 
     private void retryWithWiderSearch(
@@ -592,12 +594,23 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Returns the bounded ordinary retry limit without shrinking an explicit existing width. */
+    static double ordinaryRetryMaximumMeters(double currentMeters, double samplerMaximumMeters) {
+        return Math.max(currentMeters,
+            Math.min(MAX_ORDINARY_SEARCH_HALF_WIDTH_METERS, samplerMaximumMeters));
+    }
+
+    /** Returns the default one-shot retry width within the already bounded range. */
+    static double defaultRetryWidthMeters(double currentMeters, double maximumMeters) {
+        return Math.min(maximumMeters, currentMeters * 2.0);
+    }
+
     private Double promptRetryWidth(JDialog dialog, RetrySearchBounds bounds) {
         if (bounds.maximumMeters() <= bounds.currentMeters() + 1e-6) {
-            showError(tr("No larger search can be captured within the current sampler limits."));
+            showError(tr("No wider ordinary retry is available within the 14 m and sampler limits."));
             return null;
         }
-        double defaultWidth = Math.min(bounds.maximumMeters(), bounds.currentMeters() * 2.0);
+        double defaultWidth = defaultRetryWidthMeters(bounds.currentMeters(), bounds.maximumMeters());
         String answer = JOptionPane.showInputDialog(
             dialog,
             tr("Search half-width in metres ({0} to {1})",
