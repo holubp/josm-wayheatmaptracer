@@ -64,6 +64,7 @@ Repository-specific guardrails for future changes:
 - Candidates with abrupt lateral jumps or acceleration are structurally unsafe even when heatmap SNR is high. Keep candidate safety warnings exported and block preview/apply for those candidates rather than relying only on signal strength.
 - Precise-shape simplification must run after fixed anchors are restored and per fixed-anchor interval. Do not simplify the whole traced centerline before fixed-anchor interval reconstruction.
 - Precise-shape undo/redo must replay stored target coordinates for reused existing nodes on every command execute/redo, not only during first replacement-node construction.
+- Precise-shape replacement planning must finish before `Command.executeCommand()` snapshots modified primitives. The plan must remain dataset-side-effect-free, and undo must restore original primitive modified flags so a previously clean data layer becomes clean again.
 - Reusable mutable nodes in precise mode must be matched monotonically by original and preview path-length fraction. Never consume node identities in preview iteration order; fixed, tagged, shared, referenced, and endpoint anchors retain their existing protections.
 - Keep the fixture regression acceptance envelope and `acceptable-limits.osm` generation tied to the same configured metric radius. Visual limit changes must be reflected in the regression oracle too.
 - `acceptable-limits.osm` is a regression/visualization artifact only. Do not reuse its envelope logic inside the live alignment workflow.

@@ -77,6 +77,7 @@ The current implementation is designed for private development:
 - Offer two alignment modes:
   `Move Existing Nodes` keeps the node count and only moves non-fixed interior nodes
   `Precise Shape` rebuilds the selected segment from the traced heatmap centerline, reusing existing nodes where possible and adding or removing interior nodes as needed
+- Apply operations use JOSM undo/redo commands. Undoing a precise-shape slide restores its original topology, coordinates, and primitive modified flags, so a layer that was clean before the slide becomes clean again.
 - Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
 - Select the globally longest endpoint/junction-bounded segment, or use one selected node to target the longest eligible segment containing it

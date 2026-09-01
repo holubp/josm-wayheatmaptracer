@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -121,6 +122,39 @@ class ReplaceWaySegmentCommandTest {
         assertEquals(target.east(), moved.east(), 1e-6);
         assertEquals(target.north(), moved.north(), 1e-6);
         assertEquals(List.of(fixture.start, fixture.reused, fixture.end), fixture.way.getNodes());
+    }
+
+    @Test
+    void undoRestoresCleanDatasetModifiedState() {
+        DataSet dataSet = new DataSet();
+        Node start = existingNode(1, 0.0, 0.0);
+        Node middle = existingNode(2, 0.0, 0.001);
+        Node end = existingNode(3, 0.0, 0.002);
+        for (Node node : List.of(start, middle, end)) {
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(List.of(start, middle, end));
+        way.setOsmId(10, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(
+            way, 0, 2, way.getNodes(), Set.of(start, end));
+        EastNorth target = eastNorth(middle).add(10.0, 5.0);
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(
+            dataSet, way, selection, List.of(eastNorth(start), target, eastNorth(end)), "test");
+
+        assertFalse(dataSet.isModified());
+        command.executeCommand();
+        assertTrue(dataSet.isModified());
+
+        command.undoCommand();
+
+        assertFalse(dataSet.isModified());
+        assertFalse(start.isModified());
+        assertFalse(middle.isModified());
+        assertFalse(end.isModified());
+        assertFalse(way.isModified());
     }
 
     @Test
@@ -295,6 +329,13 @@ class ReplaceWaySegmentCommandTest {
 
     private static Node node(double lat, double lon) {
         return new Node(new LatLon(lat, lon));
+    }
+
+    private static Node existingNode(long id, double lat, double lon) {
+        Node node = node(lat, lon);
+        node.setOsmId(id, 1);
+        node.setModified(false);
+        return node;
     }
 
     private static Node nodeAtEastNorth(double east, double north) {

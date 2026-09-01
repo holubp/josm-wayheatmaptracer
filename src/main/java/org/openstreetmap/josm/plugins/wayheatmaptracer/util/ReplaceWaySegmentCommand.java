@@ -85,13 +85,13 @@ public final class ReplaceWaySegmentCommand extends Command {
 
     @Override
     public boolean executeCommand() {
-        super.executeCommand();
         if (originalWayNodes == null) {
             originalWayNodes = new ArrayList<>(way.getNodes());
         }
         if (replacementNodes == null) {
             replacementNodes = buildReplacementNodes();
         }
+        super.executeCommand();
         for (Node node : createdNodes) {
             if (node.getDataSet() == null) {
                 getAffectedDataSet().addPrimitive(node);
