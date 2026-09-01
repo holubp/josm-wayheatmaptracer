@@ -30,7 +30,7 @@ public final class SelectionIntegrity {
      * @throws IllegalStateException when repeated-node occurrence identity would be ambiguous
      */
     public static void requireNoRepeatedNodeOccurrences(Way way, int startIndex, int endIndex) {
-        Map<Node, List<Integer>> occurrences = occurrenceIndexes(way);
+        Map<Node, List<Integer>> occurrences = occurrenceIndex(way).occurrences();
         for (Map.Entry<Node, List<Integer>> entry : occurrences.entrySet()) {
             List<Integer> indexes = entry.getValue();
             long insideCount = indexes.stream()
@@ -43,6 +43,16 @@ public final class SelectionIntegrity {
                 throw new IllegalStateException("Selected segment contains a node that also appears elsewhere in the way. Split the way or select a simpler segment before aligning.");
             }
         }
+    }
+
+    /**
+     * Builds the identity-based node occurrence index shared by selection helpers.
+     *
+     * @param way way whose node occurrences are indexed
+     * @return immutable occurrence index with constant-time range safety queries
+     */
+    static NodeOccurrenceIndex occurrenceIndex(Way way) {
+        return new NodeOccurrenceIndex(way);
     }
 
     /**
@@ -83,12 +93,61 @@ public final class SelectionIntegrity {
         }
     }
 
-    private static Map<Node, List<Integer>> occurrenceIndexes(Way way) {
-        Map<Node, List<Integer>> occurrences = new IdentityHashMap<>();
-        List<Node> nodes = way.getNodes();
-        for (int i = 0; i < nodes.size(); i++) {
-            occurrences.computeIfAbsent(nodes.get(i), ignored -> new ArrayList<>()).add(i);
+    /**
+     * Identity-based occurrence information for one immutable view of a way's node sequence.
+     */
+    static final class NodeOccurrenceIndex {
+        private final Map<Node, List<Integer>> occurrences;
+        private final int[] repeatedOccurrencePrefix;
+
+        /**
+         * Indexes all node identities in way order.
+         *
+         * @param way source way
+         */
+        NodeOccurrenceIndex(Way way) {
+            Map<Node, List<Integer>> mutableOccurrences = new IdentityHashMap<>();
+            List<Node> nodes = way.getNodes();
+            for (int i = 0; i < nodes.size(); i++) {
+                mutableOccurrences.computeIfAbsent(nodes.get(i), ignored -> new ArrayList<>()).add(i);
+            }
+            Map<Node, List<Integer>> immutableOccurrences = new IdentityHashMap<>();
+            mutableOccurrences.forEach((node, indexes) -> immutableOccurrences.put(node, List.copyOf(indexes)));
+            occurrences = java.util.Collections.unmodifiableMap(immutableOccurrences);
+            repeatedOccurrencePrefix = new int[nodes.size() + 1];
+            for (int i = 0; i < nodes.size(); i++) {
+                repeatedOccurrencePrefix[i + 1] = repeatedOccurrencePrefix[i]
+                    + (occurrences.get(nodes.get(i)).size() > 1 ? 1 : 0);
+            }
         }
-        return occurrences;
+
+        /**
+         * Returns whether every node identity in an inclusive range occurs exactly once in the whole way.
+         *
+         * @param startIndex inclusive first occurrence index
+         * @param endIndex inclusive last occurrence index
+         * @return true when the range satisfies repeated-node selection safety
+         */
+        boolean rangeIsUnambiguous(int startIndex, int endIndex) {
+            if (startIndex < 0 || endIndex < startIndex || endIndex + 1 >= repeatedOccurrencePrefix.length) {
+                throw new IllegalArgumentException("Node occurrence range is outside the way.");
+            }
+            return repeatedOccurrencePrefix[endIndex + 1] == repeatedOccurrencePrefix[startIndex];
+        }
+
+        /**
+         * Returns identity-based occurrence indexes for a node.
+         *
+         * @param node node identity to query
+         * @return immutable occurrence indexes, or an empty list when absent
+         */
+        List<Integer> indexes(Node node) {
+            return occurrences.getOrDefault(node, List.of());
+        }
+
+        /** Returns the immutable identity map used by the authoritative exception-producing validator. */
+        Map<Node, List<Integer>> occurrences() {
+            return occurrences;
+        }
     }
 }

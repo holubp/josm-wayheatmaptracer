@@ -405,7 +405,13 @@ worker remains a separately gated minor-version change.
 
 Full-way selections with 2-5 nodes may be recognized as sketch-like for UI/debug context, but the current visible-layer path keeps the configured alignment mode to preserve predictable runtime behavior.
 
-`Select Longest Heatmap Segment` is a helper action for the alignment workflow. It selects the longest stretch of the selected way bounded by endpoints or nodes shared with another way, producing the way-plus-two-node selection expected by alignment.
+### Segment Selection Contract
+
+`Select Longest Heatmap Segment` is a selection-only preprocessing action for the alignment workflow. It creates no command and does not modify OSM primitives. Maximal candidate ranges are consecutive pairs of the selected way's endpoints and nodes shared by another way. Shared nodes are legal inclusive endpoints, but no shared-way node may occur in a candidate's open interior.
+
+With only one way selected, the action chooses the geometrically longest eligible maximal range. With one way plus one uniquely occurring node selected, it chooses the longest eligible maximal range containing that occurrence. A selected junction belongs to both adjacent ranges; strict greater-than comparison chooses the longer side and preserves the earlier range in exact ties. The helper replaces the hint with the selected way and the two range endpoints, which preserves `SelectionResolver`'s existing zero-or-two-node contract.
+
+Every emitted range must satisfy `SelectionIntegrity`'s whole-way repeated-node rule. An unsafe maximal range is skipped rather than shortened at arbitrary points; if no eligible global or hinted range remains, the selection is left unchanged and the action reports an error. Candidate enumeration and repeated-occurrence indexing are linear in the way's node count.
 
 The preview overlay uses solid blue for an applicable selected result, dashed red for an inspection-only rejected result, orange dashes for the original segment, and labeled dashed lines for alternatives. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates applicable previews immediately and shows rejected slide-time geometry without enabling Apply.
 Candidate changes during preview must use each candidate's slide-time `EastNorth` geometry. Do not reproject candidate screen/raster points through the current `MapView`, because the user may have panned or zoomed before rating or selecting alternatives.

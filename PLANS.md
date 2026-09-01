@@ -1,5 +1,15 @@
 # Implementation Backlog
 
+## Longest non-branching segment selection (v0.20.3 release authorized)
+
+The checkpointed execution record is
+[`superpowers/docs/plans/2026-09-01-v0.20.3-longest-nonbranching-segment-execution.md`](superpowers/docs/plans/2026-09-01-v0.20.3-longest-nonbranching-segment-execution.md).
+The helper now treats one selected node as a location hint, filters maximal
+endpoint/shared-way-node ranges through the existing repeated-occurrence safety
+contract, and emits the same way-plus-two-endpoint selection consumed by the
+unchanged slider. Invalid or ambiguous selections fail without changing OSM
+data. The maintainer explicitly selected `0.20.3` for this implementation.
+
 ## Geometry cleanup and corridor fidelity (v0.20.2)
 
 The checkpointed execution plan is
