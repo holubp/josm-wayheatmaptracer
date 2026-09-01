@@ -16,6 +16,7 @@ import javax.swing.SwingUtilities;
 import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.gui.MainApplication;
+import org.openstreetmap.josm.gui.Notification;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
@@ -144,13 +145,48 @@ public class HeatmapLayerSettingsAction extends JosmAction {
         return Math.min(size - 1, Math.max(1, Math.round((size - 1) * 0.25f)));
     }
 
-    private void showProbeResult(SelectedSourceProbeResult result, Throwable error) {
+    /**
+     * Chooses modal or transient presentation for a completed source probe.
+     *
+     * @param result structured probe result, or null when probing failed
+     * @param error asynchronous probe failure, or null on normal completion
+     * @return controlled message and presentation mode
+     */
+    static ProbePresentation probePresentation(SelectedSourceProbeResult result, Throwable error) {
         String message = error == null && result != null
             ? result.message()
             : tr("Selected-source check failed safely; see the redacted diagnostics.");
-        int messageType = result != null && result.available()
-            ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE;
-        JOptionPane.showMessageDialog(MainApplication.getMainFrame(), message,
-            tr("WayHeatmapTracer source check"), messageType);
+        return new ProbePresentation(message, error != null || result == null || !result.available());
+    }
+
+    /**
+     * Shows successful checks transiently and keeps failed checks modal.
+     *
+     * @param result structured probe result, or null when probing failed
+     * @param error asynchronous probe failure, or null on normal completion
+     */
+    private void showProbeResult(SelectedSourceProbeResult result, Throwable error) {
+        ProbePresentation presentation = probePresentation(result, error);
+        if (!presentation.modal()) {
+            new Notification(presentation.message())
+                .setIcon(JOptionPane.INFORMATION_MESSAGE)
+                .setDuration(Notification.TIME_SHORT)
+                .show();
+            return;
+        }
+        JOptionPane.showMessageDialog(MainApplication.getMainFrame(), presentation.message(),
+            tr("WayHeatmapTracer source check"), JOptionPane.WARNING_MESSAGE);
+    }
+
+    /**
+     * User-visible routing for an asynchronous selected-source probe result.
+     *
+     * @param message controlled user-facing status text
+     * @param modal whether presentation must block for user attention
+     */
+    record ProbePresentation(String message, boolean modal) {
+        ProbePresentation {
+            Objects.requireNonNull(message, "message");
+        }
     }
 }
