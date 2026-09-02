@@ -1,7 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.Point;
@@ -48,7 +47,7 @@ class HeatmapLayerSettingsActionTest {
     }
 
     @Test
-    void presentsSuccessfulProbeAsNonModalAndFailuresAsModal() {
+    void suppressesSuccessfulProbeAndKeepsFailuresModal() {
         SelectedSourceProbeResult success = new SelectedSourceProbeResult(
             TileFetchStatus.SUCCESS_NETWORK, true, "fresh network success", null);
         SelectedSourceProbeResult failure = new SelectedSourceProbeResult(
@@ -61,10 +60,12 @@ class HeatmapLayerSettingsActionTest {
         HeatmapLayerSettingsAction.ProbePresentation exceptionPresentation =
             HeatmapLayerSettingsAction.probePresentation(null, new IllegalStateException("failed"));
 
-        assertFalse(successPresentation.modal());
+        assertEquals(HeatmapLayerSettingsAction.ProbePresentationKind.NONE, successPresentation.kind());
         assertEquals("fresh network success", successPresentation.message());
-        assertTrue(failurePresentation.modal());
+        assertEquals(HeatmapLayerSettingsAction.ProbePresentationKind.MODAL_WARNING,
+            failurePresentation.kind());
         assertEquals("authentication failed", failurePresentation.message());
-        assertTrue(exceptionPresentation.modal());
+        assertEquals(HeatmapLayerSettingsAction.ProbePresentationKind.MODAL_WARNING,
+            exceptionPresentation.kind());
     }
 }

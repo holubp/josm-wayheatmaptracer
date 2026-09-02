@@ -379,7 +379,7 @@ bodies, or arbitrary server messages.
 
 The selected-source settings check is asynchronous and tests a deterministic stencil of at most five selected
 z15 tile near the current map center. It reports plugin-cache and fresh-network
-success separately through short non-modal JOSM notifications; failed or
+success separately in verbose diagnostics without opening a success message; failed or
 inconclusive checks remain modal warnings. JOSM-visible fallback imagery is not evidence of direct
 source availability. Fixed sampler acquisition remains synchronously awaited by
 the current alignment action; moving mutable JOSM selection/data access to a

@@ -16,7 +16,6 @@ import javax.swing.SwingUtilities;
 import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.gui.MainApplication;
-import org.openstreetmap.josm.gui.Notification;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
@@ -146,7 +145,7 @@ public class HeatmapLayerSettingsAction extends JosmAction {
     }
 
     /**
-     * Chooses modal or transient presentation for a completed source probe.
+     * Chooses silent or modal presentation for a completed source probe.
      *
      * @param result structured probe result, or null when probing failed
      * @param error asynchronous probe failure, or null on normal completion
@@ -156,22 +155,21 @@ public class HeatmapLayerSettingsAction extends JosmAction {
         String message = error == null && result != null
             ? result.message()
             : tr("Selected-source check failed safely; see the redacted diagnostics.");
-        return new ProbePresentation(message, error != null || result == null || !result.available());
+        return new ProbePresentation(message, error == null && result != null && result.available()
+            ? ProbePresentationKind.NONE : ProbePresentationKind.MODAL_WARNING);
     }
 
     /**
-     * Shows successful checks transiently and keeps failed checks modal.
+     * Keeps successful checks silent and failed checks modal.
      *
      * @param result structured probe result, or null when probing failed
      * @param error asynchronous probe failure, or null on normal completion
      */
     private void showProbeResult(SelectedSourceProbeResult result, Throwable error) {
         ProbePresentation presentation = probePresentation(result, error);
-        if (!presentation.modal()) {
-            new Notification(presentation.message())
-                .setIcon(JOptionPane.INFORMATION_MESSAGE)
-                .setDuration(Notification.TIME_SHORT)
-                .show();
+        if (presentation.kind() == ProbePresentationKind.NONE) {
+            PluginLog.verbose("Selected-source check succeeded without user interruption: %s",
+                presentation.message());
             return;
         }
         JOptionPane.showMessageDialog(MainApplication.getMainFrame(), presentation.message(),
@@ -179,14 +177,21 @@ public class HeatmapLayerSettingsAction extends JosmAction {
     }
 
     /**
-     * User-visible routing for an asynchronous selected-source probe result.
+     * Presentation routing for an asynchronous selected-source probe result.
      *
-     * @param message controlled user-facing status text
-     * @param modal whether presentation must block for user attention
+     * @param message controlled diagnostic or warning text
+     * @param kind whether the result is silent or requires a warning dialog
      */
-    record ProbePresentation(String message, boolean modal) {
+    record ProbePresentation(String message, ProbePresentationKind kind) {
         ProbePresentation {
             Objects.requireNonNull(message, "message");
+            Objects.requireNonNull(kind, "kind");
         }
+    }
+
+    /** Presentation modes for the selected-source health result. */
+    enum ProbePresentationKind {
+        NONE,
+        MODAL_WARNING
     }
 }
