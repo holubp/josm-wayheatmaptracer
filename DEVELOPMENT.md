@@ -419,7 +419,7 @@ With only one way selected, the action chooses the geometrically longest eligibl
 
 Every emitted range must satisfy `SelectionIntegrity`'s whole-way repeated-node rule. An unsafe maximal range is skipped rather than shortened at arbitrary points; if no eligible global or hinted range remains, the selection is left unchanged and the action reports an error. Candidate enumeration and repeated-occurrence indexing are linear in the way's node count.
 
-The preview overlay uses solid blue for an applicable selected result, dashed red for an inspection-only rejected result, orange dashes for the original segment, and labeled dashed lines for alternatives. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector recalculates applicable previews immediately and shows rejected slide-time geometry without enabling Apply.
+The preview overlay uses solid blue for an applicable selected result, amber dashes for a review-required result, red dashes for a blocked result, orange dashes for the original segment, and labeled dashed lines for alternatives. The preview dialog is modeless so the mapper can pan/zoom and toggle layer visibility while the overlay remains active. The ridge selector shows the exact final preview for review-required candidates; explicit session-local confirmation enables Apply only after revalidation. Blocked slide-time geometry remains available for diagnosis without enabling Apply. Any Apply-time revalidation failure closes the stale preview and requires a fresh slide instead of leaving an enabled confirmation behind.
 Candidate changes during preview must use each candidate's slide-time `EastNorth` geometry. Do not reproject candidate screen/raster points through the current `MapView`, because the user may have panned or zoomed before rating or selecting alternatives.
 
 ### 0.18.1 Review Hardening
@@ -485,7 +485,7 @@ A core-censored observation records only signal existence: it cannot seed a
 track, supply a center, count as direct coverage, authorize a bend or endpoint,
 or authorize cleanup. An internal censored run is applicable only when the
 existing tracker bridges compatible observations within 16 profiles and 20 m;
-otherwise coverage is incomplete and the preview is inspection-only. A search-edge
+otherwise coverage is incomplete. A meaningful-signal incomplete candidate is review-required: the modeless preview shows its exact final geometry and requires explicit session-local confirmation before Apply. A search-edge
 label requires censored evidence intersecting that selected bridge projection; an
 unrelated clipped parallel mode does not relabel the bridge. A tested robust
 multi-point extrapolation was intentionally rejected because it fragmented the
@@ -493,7 +493,7 @@ public complementary sparse corridor and private sparse replay; deeper semantic
 strand identity remains in the deferred multimodal plan. Legacy
 v0.2 tracking does not consume this classification.
 
-A corridor core is treated as laterally complete when both threshold crossings are bracketed by valid below-threshold samples inside the configured decision window. Native source-pixel pitch remains localization uncertainty and does not reserve a fixed margin at both edges. Profile filtering cannot import signal from outside that window. Ordinary operation and one-shot retry are bounded to the calibrated 7.01-14 m half-width range; optional nearby-way displacement scoring uses a fixed 7.01 m physical normalization, so widening does not make remote corridors cheaper.
+A corridor core is treated as laterally complete when both threshold crossings are bracketed by valid below-threshold samples inside the configured decision window. Native source-pixel pitch remains localization uncertainty and does not reserve a fixed margin at both edges. Profile filtering cannot import signal from outside that window. Ordinary 7-10 m operation remains supported, and one-shot retry is bounded to the calibrated 7.01-14 m half-width range; optional nearby-way displacement scoring uses a fixed 7.01 m physical normalization, so widening does not make remote corridors cheaper.
 
 The modeless preview explains complete, bridged, and unresolved search-edge
 coverage. An explicit 'Retry with wider search...' performs a fresh full-segment
@@ -508,7 +508,7 @@ reported as rejected, not unchanged. Each remaining interval
 is processed independently, frozen geometry is exact, and at most one partial
 cleaned sibling is produced after fresh assignment and whole-preview safety
 checks. Preview status distinguishes skipped, unchanged, partial, full, and
-rejected outcomes. Format 13 adds band-boundary fields and cleanup interval
+rejected outcomes. Format 14 adds typed candidate disposition, reason codes, review confirmation, revalidation status, and reviewed/applied preview identities. Format 13 adds band-boundary fields and cleanup interval
 counts; retry widths and reasons are retained in credential-safe slide logging.
 
 The selected-source access check bypasses cache reads and tests a deterministic
@@ -531,7 +531,7 @@ plugin-direct source availability semantics.
 - Repeated-node selections are unsafe because one OSM node cannot carry two independent slide positions. Reject selected segments where a segment node occurs more than once in the way, including occurrences outside the selected range, unless a future implementation explicitly models occurrence identity.
 - Modeless previews must be invalidated before candidate switching and before apply when the underlying way node sequence or source node coordinates have changed.
 - No-signal candidates may be exported for diagnostics but must not be applicable. Short unsupported runs can be bridged only when there is real heatmap signal before or after the gap.
-- Corridor-aware candidates whose informative track terminates locally or contains an unapproved longitudinal gap remain inspection-only. Detector priors must not promote them over complete candidates.
+- Corridor-aware candidates whose informative track terminates locally or contains an unapproved longitudinal gap are review-required only when meaningful signal remains and no structural, topology, assignment, stale-source, or downloaded-area failure exists. They show the exact final preview and require explicit session-local confirmation; no-signal and unsafe candidates remain blocked. Detector priors must not promote them automatically over complete candidates.
 - Connected-way safety checks inspect only segments directly adjacent to the shared junction and ignore intersections inside a source-resolution-aware junction tolerance. Short lateral excursions are measured against the robust corridor tube, so a sharp shape supported by both the tube and heatmap is not rejected merely because raw profile offsets reverse.
 - Geometry-dependent safety checks use each candidate's cached final preview after fixed-anchor reconstruction. Debug export must preserve raw tracker geometry separately from final preview geometry, and immutable original geometry separately from actual post-Apply geometry.
 - In precise mode, simplification must not be followed by uniform redistribution of points. The simplified centerline density is intentional and should be preserved.

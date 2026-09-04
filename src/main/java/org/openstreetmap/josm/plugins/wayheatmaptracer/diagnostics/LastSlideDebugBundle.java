@@ -23,10 +23,12 @@ import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
@@ -228,9 +230,26 @@ public final class LastSlideDebugBundle {
         String cleanupAnchorsCsv = geometryCleanupAnchorsCsv(result);
         String cleanupLocalShapeCsv = geometryCleanupLocalShapeCsv(result);
         String highestRankedApplicableBase = highestRankedApplicableBaseId(result);
+        CandidateAssessment selectedAssessment = selected == null ? null : AlignmentService.assessCandidate(selected);
+        boolean reviewConfirmed = "review-confirmed".equals(status) || "applied-after-review".equals(status)
+            || "review-apply-failed".equals(status);
+        boolean reviewRequested = reviewConfirmed || "review-confirmation-failed".equals(status);
+        String reviewRevalidationResult = reviewConfirmed && !"review-apply-failed".equals(status)
+            ? "passed" : reviewRequested ? "failed" : "not-run";
+        boolean applied = "applied".equals(status) || "applied-after-review".equals(status);
         String statusJson = "{"
             + "\"status\":\"" + escape(status) + "\","
             + "\"selectedCandidate\":\"" + escape(selected == null ? "" : selected.id()) + "\","
+            + "\"selectedDisposition\":\""
+                + (selectedAssessment == null ? "" : selectedAssessment.disposition()) + "\","
+            + "\"selectedAssessmentReasons\":" + assessmentReasonsJson(selectedAssessment) + ','
+            + "\"reviewConfirmationRequested\":" + reviewRequested + ','
+            + "\"reviewConfirmed\":" + reviewConfirmed + ','
+            + "\"reviewRevalidationResult\":\"" + reviewRevalidationResult + "\","
+            + "\"reviewedPreviewGeometryHash\":\""
+                + (reviewConfirmed ? geometryHash(result.previewPolyline()) : "") + "\","
+            + "\"appliedGeometryHash\":\""
+                + (applied ? geometryHash(appliedPolyline(result)) : "") + "\","
             + "\"highestRankedApplicableBase\":\"" + escape(highestRankedApplicableBase) + "\","
             + "\"initialPreviewCandidate\":\""
                 + escape(initialPreviewCandidate == null ? "" : initialPreviewCandidate.id()) + "\","
@@ -248,7 +267,7 @@ public final class LastSlideDebugBundle {
                 + redactSensitiveValues(verboseLog),
             originalOsm(result),
             previewOsm(result),
-            "applied".equals(status) ? appliedOsm(result) : "",
+            applied ? appliedOsm(result) : "",
             candidateOsm(result),
             candidatePreviewOsm(result),
             junctionSafetyCsv(result),
@@ -338,13 +357,51 @@ public final class LastSlideDebugBundle {
     private String manifestJson() {
         return "{"
             + "\"type\":\"wayheatmaptracer-last-slide-debug-bundle\","
-            + "\"formatVersion\":13,"
+            + "\"formatVersion\":14,"
             + "\"pluginVersion\":\"" + escape(pluginVersion()) + "\","
             + "\"buildIdentity\":\"" + escape(buildIdentity()) + "\","
             + "\"containsSecrets\":false,"
             + "\"files\":[\"diagnostics.json\",\"status.json\",\"verbose-log.txt\",\"original-segment.osm\",\"preview-segment.osm\",\"applied-segment.osm\",\"candidate-ridges.osm\",\"candidate-previews.osm\",\"junction-safety.csv\",\"proposed-node-positions.csv\",\"junction-context.osm\",\"candidate-ratings.json\",\"candidate-metrics.csv\",\"geometry-cleanup.csv\",\"geometry-cleanup-anchors.csv\",\"geometry-cleanup-local-shape.csv\",\"profile-peaks.csv\",\"palette-samples.csv\",\"profile-intensity.csv\",\"corridor-bands.csv\",\"corridor-tracks.csv\",\"corridor-bundles.csv\",\"bundle-points.csv\",\"optimizer-costs.csv\",\"scale-space.csv\",\"corridor-tube.csv\",\"association-decisions.csv\",\"endpoint-approaches.csv\",\"detector-performance.csv\",\"detector-attempts.json\",\"parallel-context.json\",\"tile-manifest.json\",\"tile-acquisition.json\",\"aggregate-intensity/metadata.json\"]"
             + "}";
     }
+
+    /**
+     * Serializes the selected candidate's typed assessment reasons.
+     *
+     * @param assessment selected candidate assessment, or {@code null}
+     * @return JSON array of stable reason names
+     */
+    private static String assessmentReasonsJson(CandidateAssessment assessment) {
+        if (assessment == null) {
+            return "[]";
+        }
+        StringBuilder builder = new StringBuilder("[");
+        for (int index = 0; index < assessment.reasons().size(); index++) {
+            if (index > 0) {
+                builder.append(',');
+            }
+            builder.append('"').append(assessment.reasons().get(index)).append('"');
+        }
+        return builder.append(']').toString();
+    }
+
+    /**
+     * Hashes ordered projected geometry without exposing coordinates in status metadata.
+     *
+     * @param geometry geometry whose exact identity is required
+     * @return lowercase SHA-256 hash
+     */
+    private static String geometryHash(List<EastNorth> geometry) {
+        StringBuilder canonical = new StringBuilder();
+        for (EastNorth point : geometry) {
+            canonical.append(Long.toHexString(Double.doubleToLongBits(point.east())))
+                .append(':')
+                .append(Long.toHexString(Double.doubleToLongBits(point.north())))
+                .append(';');
+        }
+        return sha256(canonical.toString());
+    }
+
 
     /**
      * Serializes cleanup attempts without altering the established candidate-metrics schema.
@@ -654,6 +711,35 @@ public final class LastSlideDebugBundle {
         }
         builder.append("  </way>\n</osm>\n");
         return builder.toString();
+    }
+
+
+    /**
+     * Reads the currently applied selected segment in source-selection order.
+     *
+     * @param result immutable slide result whose way now contains the applied edit
+     * @return current projected segment geometry, or an empty list when it cannot be resolved
+     */
+    private static List<EastNorth> appliedPolyline(AlignmentResult result) {
+        List<Node> original = result.selection().segmentNodes();
+        if (original.isEmpty()) {
+            return List.of();
+        }
+        List<Node> wayNodes = result.selection().way().getNodes();
+        int first = wayNodes.indexOf(original.get(0));
+        int last = wayNodes.indexOf(original.get(original.size() - 1));
+        if (first < 0 || last < 0) {
+            return List.of();
+        }
+        List<Node> applied = new java.util.ArrayList<>(
+            wayNodes.subList(Math.min(first, last), Math.max(first, last) + 1));
+        if (first > last) {
+            java.util.Collections.reverse(applied);
+        }
+        return applied.stream()
+            .map(node -> node.getEastNorth(ProjectionRegistry.getProjection()))
+            .filter(java.util.Objects::nonNull)
+            .toList();
     }
 
     private static String appliedOsm(AlignmentResult result) {

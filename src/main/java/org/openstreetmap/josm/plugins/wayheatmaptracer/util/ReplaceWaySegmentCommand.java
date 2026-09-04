@@ -138,7 +138,9 @@ public final class ReplaceWaySegmentCommand extends Command {
         List<Double> previewFractions = PolylineMath.fractionsForSegment(previewPolyline);
         List<PreviewNodeAssignmentPlanner.NodeAssignment> plannedAssignments =
             PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, previewPolyline);
-        validateProposedNodePositions(plannedAssignments);
+        if (proposedNodePositions != null) {
+            validateProposedNodePositions(selection, sourcePolyline, previewPolyline, proposedNodePositions);
+        }
         for (PreviewNodeAssignmentPlanner.NodeAssignment assignment : plannedAssignments) {
             PluginLog.verbose(
                 "Precise protected node assignment node=%d fixed=%s source=(%.3f,%.3f) target=(%.3f,%.3f).",
@@ -432,12 +434,41 @@ public final class ReplaceWaySegmentCommand extends Command {
         return List.copyOf(anchors);
     }
 
-    private void validateProposedNodePositions(
+
+    /**
+     * Validates a candidate-owned precise existing-node assignment plan without changing OSM state.
+     *
+     * <p>The source geometry must be the immutable geometry captured when the candidate was created.
+     * This makes the method suitable both before preview confirmation and immediately before applying
+     * a modeless preview: a changed selected way or node position is rejected as stale.</p>
+     *
+     * @param selection selected way segment snapshot
+     * @param sourcePolyline immutable selected geometry captured for the candidate
+     * @param previewPolyline candidate final preview geometry
+     * @param proposedNodePositions candidate-owned targets keyed by existing node id
+     * @throws IllegalArgumentException when an input geometry is malformed
+     * @throws IllegalStateException when the selection, source, or assignment map is stale or inconsistent
+     */
+    public static void validateProposedNodePositions(
+        SelectionContext selection,
+        List<EastNorth> sourcePolyline,
+        List<EastNorth> previewPolyline,
+        Map<Long, EastNorth> proposedNodePositions
+    ) {
+        validateSelectedSegmentSnapshot(selection);
+        validateSourceSnapshot(selection, sourcePolyline);
+        if (proposedNodePositions == null) {
+            throw new IllegalStateException("Candidate existing-node assignments are missing");
+        }
+        List<PreviewNodeAssignmentPlanner.NodeAssignment> assignments =
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection, sourcePolyline, previewPolyline);
+        validateProposedNodePositions(proposedNodePositions, assignments);
+    }
+
+    private static void validateProposedNodePositions(
+        Map<Long, EastNorth> proposedNodePositions,
         List<PreviewNodeAssignmentPlanner.NodeAssignment> assignments
     ) {
-        if (proposedNodePositions == null) {
-            return;
-        }
         Map<Long, EastNorth> expected = PreviewNodeAssignmentPlanner.targetMap(assignments);
         if (!proposedNodePositions.keySet().equals(expected.keySet())) {
             throw new IllegalStateException("Candidate existing-node assignments do not match the selected topology");
@@ -448,6 +479,42 @@ public final class ReplaceWaySegmentCommand extends Command {
                 || provided.distance(entry.getValue()) > PROVIDED_TARGET_EPSILON) {
                 throw new IllegalStateException(
                     "Candidate existing-node assignment differs from the final preview plan for node " + entry.getKey());
+            }
+        }
+    }
+
+    private static void validateSelectedSegmentSnapshot(SelectionContext selection) {
+        if (selection == null || selection.way() == null || selection.segmentNodes() == null
+            || selection.segmentNodes().size() < 2
+            || selection.startIndex() < 0
+            || selection.endIndex() < selection.startIndex()
+            || selection.endIndex() >= selection.way().getNodesCount()
+            || selection.segmentNodes().size() != selection.endIndex() - selection.startIndex() + 1) {
+            throw new IllegalStateException("Selected way segment is stale or malformed");
+        }
+        Set<Node> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        for (int index = 0; index < selection.segmentNodes().size(); index++) {
+            Node selected = selection.segmentNodes().get(index);
+            if (selected == null || !seen.add(selected)
+                || selection.way().getNode(selection.startIndex() + index) != selected) {
+                throw new IllegalStateException("Selected way segment no longer matches the candidate source");
+            }
+        }
+    }
+
+    private static void validateSourceSnapshot(SelectionContext selection, List<EastNorth> sourcePolyline) {
+        if (sourcePolyline == null || sourcePolyline.size() != selection.segmentNodes().size()) {
+            throw new IllegalArgumentException("Source geometry must match the selected node sequence");
+        }
+        for (int index = 0; index < sourcePolyline.size(); index++) {
+            EastNorth source = sourcePolyline.get(index);
+            EastNorth current = selection.segmentNodes().get(index)
+                .getEastNorth(ProjectionRegistry.getProjection());
+            if (source == null || !Double.isFinite(source.east()) || !Double.isFinite(source.north())) {
+                throw new IllegalArgumentException("Source geometry contains a non-finite point");
+            }
+            if (current == null || current.distance(source) > PROVIDED_TARGET_EPSILON) {
+                throw new IllegalStateException("Selected source geometry changed after candidate creation");
             }
         }
     }

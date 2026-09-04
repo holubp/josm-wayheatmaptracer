@@ -27,6 +27,8 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateCleanupProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CleanupEvidenceProvenance;
@@ -54,6 +56,9 @@ class LastSlideDebugBundleTest {
         CenterlineCandidate candidate = new CenterlineCandidate("hot/strand-1", 1.0,
             List.of(new Point2D.Double(0, 0), new Point2D.Double(10, 0)), List.of(0.0, 0.0))
             .withEastNorthPoints(List.of(new EastNorth(0, 0), new EastNorth(10, 0)))
+            .withEvidence(new CandidateEvidence("hot", 2, 2, 0, 0, 2.0, 1.0, 0.2, 1.0, 0.4, 0.0, List.of())
+                .withCorridorCoverage(new CorridorCoverage(true, false, 1, 2, 0.5, 0, 1, 0.0, 0.0,
+                    0, 0.0, 0, true, "unresolved-search-edge-censoring")))
             .withFinalPreviewGeometry(List.of(new EastNorth(0, 0), new EastNorth(10, 0)),
                 Map.of(first.getUniqueId(), new EastNorth(0, 0), last.getUniqueId(), new EastNorth(10, 0)));
         AlignmentDiagnostics diagnostics = new AlignmentDiagnostics(
@@ -93,13 +98,54 @@ class LastSlideDebugBundleTest {
             assertTrue(text(zip, "diagnostics.json").contains("pluginVersion"));
             assertTrue(text(zip, "diagnostics.json").contains("buildIdentity"));
             assertTrue(text(zip, "manifest.json").contains("containsSecrets\":false"));
-            assertTrue(text(zip, "manifest.json").contains("formatVersion\":13"));
+            assertTrue(text(zip, "manifest.json").contains("formatVersion\":14"));
             assertNotNull(zip.getEntry("tile-acquisition.json"));
             assertTrue(text(zip, "proposed-node-positions.csv").contains("hot/strand-1"));
             assertTrue(text(zip, "diagnostics.json").contains("dedicated-csv-artifacts"));
             assertTrue(text(zip, "diagnostics.json").contains("profile-intensity.csv"));
             assertTrue(text(zip, "diagnostics.json").contains("corridor-bundles.csv"));
             assertTrue(text(zip, "verbose-log.txt").contains("Plugin-Build:"));
+            assertTrue(text(zip, "status.json").contains("selectedDisposition\":\"REVIEW_REQUIRED"));
+            assertTrue(text(zip, "status.json").contains("reviewConfirmed\":false"));
+        }
+
+        Path reviewedPath = temporaryDirectory.resolve("last-slide-reviewed.zip");
+        LastSlideDebugBundle.fromResult(
+            result, candidate, candidate, "applied-after-review", "redacted log", Map.of())
+            .writeTo(reviewedPath.toFile());
+        try (ZipFile zip = new ZipFile(reviewedPath.toFile())) {
+            String status = text(zip, "status.json");
+            assertTrue(status.contains("selectedDisposition\":\"REVIEW_REQUIRED"));
+            assertTrue(status.contains("reviewConfirmed\":true"));
+            assertTrue(status.matches(".*\"reviewedPreviewGeometryHash\":\"[0-9a-f]{64}\".*"));
+            assertTrue(status.matches(".*\"appliedGeometryHash\":\"[0-9a-f]{64}\".*"));
+            assertTrue(text(zip, "applied-segment.osm").contains("<way"));
+        }
+
+        Path failedReviewPath = temporaryDirectory.resolve("last-slide-review-failed.zip");
+        LastSlideDebugBundle.fromResult(
+            result, candidate, candidate, "review-confirmation-failed", "redacted log", Map.of())
+            .writeTo(failedReviewPath.toFile());
+        try (ZipFile zip = new ZipFile(failedReviewPath.toFile())) {
+            String status = text(zip, "status.json");
+            assertTrue(status.contains("reviewConfirmationRequested\":true"));
+            assertTrue(status.contains("reviewConfirmed\":false"));
+            assertTrue(status.contains("reviewRevalidationResult\":\"failed"));
+            assertEquals("", text(zip, "applied-segment.osm"));
+        }
+
+        Path failedApplyPath = temporaryDirectory.resolve("last-slide-review-apply-failed.zip");
+        LastSlideDebugBundle.fromResult(
+            result, candidate, candidate, "review-apply-failed", "redacted log", Map.of())
+            .writeTo(failedApplyPath.toFile());
+        try (ZipFile zip = new ZipFile(failedApplyPath.toFile())) {
+            String status = text(zip, "status.json");
+            assertTrue(status.contains("reviewConfirmationRequested\":true"));
+            assertTrue(status.contains("reviewConfirmed\":true"));
+            assertTrue(status.contains("reviewRevalidationResult\":\"failed"));
+            assertTrue(status.matches(".*\"reviewedPreviewGeometryHash\":\"[0-9a-f]{64}\".*"));
+            assertTrue(status.contains("appliedGeometryHash\":\"\""));
+            assertEquals("", text(zip, "applied-segment.osm"));
         }
     }
 

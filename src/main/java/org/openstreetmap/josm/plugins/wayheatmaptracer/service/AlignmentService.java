@@ -29,7 +29,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttempt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetectorAttemptStatus;
@@ -1410,6 +1412,11 @@ public final class AlignmentService {
                 status = DetectorAttemptStatus.APPLICABLE;
                 reasonCode = "applicable";
                 reason = "At least one candidate passed signal and structural safety checks.";
+            } else if (produced.stream().anyMatch(candidate -> assessCandidate(candidate).disposition()
+                == CandidateAssessment.Disposition.REVIEW_REQUIRED)) {
+                status = DetectorAttemptStatus.REVIEW_REQUIRED;
+                reasonCode = "review-required";
+                reason = "Meaningful heatmap evidence exists, but the corridor is incomplete and requires review.";
             } else if (produced.stream().anyMatch(candidate -> !candidate.safetyWarnings().isEmpty())) {
                 status = DetectorAttemptStatus.STRUCTURALLY_UNSAFE;
                 reasonCode = "structurally-unsafe";
@@ -1792,13 +1799,39 @@ public final class AlignmentService {
      * @return result containing the candidate-specific preview and node moves
      */
     public AlignmentResult applyCandidate(AlignmentResult base, CenterlineCandidate candidate, ManagedHeatmapConfig config) {
-        if (!isApplicableCandidate(candidate)) {
-            if (!candidate.safetyWarnings().isEmpty()) {
-                throw new IllegalStateException("Selected ridge is structurally unsafe for safe alignment: "
-                    + String.join("; ", candidate.safetyWarnings()));
-            }
-            throw new IllegalStateException("Selected ridge does not contain enough heatmap signal for safe alignment.");
+        CandidateAssessment assessment = assessCandidate(candidate);
+        if (!assessment.automaticallyApplicable()) {
+            throw candidateRejection(candidate, assessment);
         }
+        return candidatePreview(base, candidate, config);
+    }
+
+    /**
+     * Builds the exact immutable final preview for an automatically applicable or review-required candidate.
+     * Hard-blocked candidates remain diagnostic-only.
+     *
+     * @param base original slide result
+     * @param candidate candidate selected for review
+     * @param config immutable slide-time settings
+     * @return result containing the candidate's stored final preview and node moves
+     */
+    public AlignmentResult previewCandidate(
+        AlignmentResult base,
+        CenterlineCandidate candidate,
+        ManagedHeatmapConfig config
+    ) {
+        CandidateAssessment assessment = assessCandidate(candidate);
+        if (assessment.disposition() == CandidateAssessment.Disposition.HARD_BLOCKED) {
+            throw candidateRejection(candidate, assessment);
+        }
+        return candidatePreview(base, candidate, config);
+    }
+
+    private AlignmentResult candidatePreview(
+        AlignmentResult base,
+        CenterlineCandidate candidate,
+        ManagedHeatmapConfig config
+    ) {
         List<EastNorth> preview = finalPreviewGeometry(
             candidate, base.selection(), base.sourcePolyline(), config, null);
         List<NodeMove> nodeMoves = interpolateMoves(base.selection(), preview);
@@ -1831,9 +1864,21 @@ public final class AlignmentService {
         );
     }
 
+    private IllegalStateException candidateRejection(
+        CenterlineCandidate candidate,
+        CandidateAssessment assessment
+    ) {
+        if (!candidate.safetyWarnings().isEmpty()) {
+            return new IllegalStateException("Selected ridge is structurally unsafe for safe alignment: "
+                + String.join("; ", candidate.safetyWarnings()));
+        }
+        return new IllegalStateException("Selected ridge cannot be applied automatically: "
+            + assessment.reasons());
+    }
+
     private List<CenterlineCandidate> applicableCandidates(List<CenterlineCandidate> candidates) {
         List<CenterlineCandidate> result = candidates.stream()
-            .filter(this::isApplicableCandidate)
+            .filter(candidate -> assessCandidate(candidate).automaticallyApplicable())
             .toList();
         if (result.size() != candidates.size()) {
             PluginLog.verbose("Rejected %d detected ridge candidates without enough heatmap signal or structurally safe continuity.",
@@ -1842,21 +1887,37 @@ public final class AlignmentService {
         return result;
     }
 
-    private boolean isApplicableCandidate(CenterlineCandidate candidate) {
+    /**
+     * Classifies one candidate without conflating incomplete evidence with structural unsafety.
+     *
+     * @param candidate candidate to classify
+     * @return typed automatic, review-required, or hard-blocked assessment
+     */
+    public static CandidateAssessment assessCandidate(CenterlineCandidate candidate) {
         if (!candidate.safetyWarnings().isEmpty()) {
-            return false;
+            return new CandidateAssessment(CandidateAssessment.Disposition.HARD_BLOCKED,
+                List.of(CandidateAssessment.Reason.STRUCTURAL_SAFETY_FAILURE));
         }
         if (!candidate.evidence().hasSignal()) {
-            return false;
+            return new CandidateAssessment(CandidateAssessment.Disposition.HARD_BLOCKED,
+                List.of(CandidateAssessment.Reason.NO_HEATMAP_SIGNAL));
+        }
+        boolean sufficientSupport = candidate.evidence().supportedProfiles() >= MIN_APPLY_SUPPORTED_PROFILES
+            || candidate.evidence().supportRatio() >= MIN_APPLY_SUPPORT_RATIO;
+        if (!sufficientSupport) {
+            return new CandidateAssessment(CandidateAssessment.Disposition.HARD_BLOCKED,
+                List.of(CandidateAssessment.Reason.INSUFFICIENT_SIGNAL_SUPPORT));
         }
         if (candidate.evidence().corridorCoverage().measured()
             && !candidate.evidence().corridorCoverage().complete()) {
-            return false;
+            return new CandidateAssessment(CandidateAssessment.Disposition.REVIEW_REQUIRED,
+                List.of(CandidateAssessment.Reason.INCOMPLETE_LONGITUDINAL_CORRIDOR));
         }
-        if (candidate.evidence().supportedProfiles() >= MIN_APPLY_SUPPORTED_PROFILES) {
-            return true;
-        }
-        return candidate.evidence().supportRatio() >= MIN_APPLY_SUPPORT_RATIO;
+        return new CandidateAssessment(CandidateAssessment.Disposition.APPLICABLE, List.of());
+    }
+
+    private boolean isApplicableCandidate(CenterlineCandidate candidate) {
+        return assessCandidate(candidate).automaticallyApplicable();
     }
 
     private List<CenterlineCandidate> annotateCandidateSafety(
@@ -1953,6 +2014,25 @@ public final class AlignmentService {
             : candidate.finalPreviewPoints();
     }
 
+    /**
+     * Decides whether edge proximity is an independent hard block.
+     *
+     * <p>Incomplete measured coverage already records bounded search-edge uncertainty and may
+     * proceed only through explicit review. Complete or unmeasured candidates remain blocked
+     * when too much of their geometry rides the search edge. An incomplete candidate is still blocked
+     * when a majority of its measured offsets are edge-pinned.</p>
+     *
+     * @param edgeRatio fraction of selected offsets close to the search edge
+     * @param coverage typed longitudinal coverage evidence
+     * @return whether edge proximity must remain a non-overridable block
+     */
+    static boolean edgeProximityHardBlocks(double edgeRatio, CorridorCoverage coverage) {
+        if (edgeRatio < 0.20) {
+            return false;
+        }
+        return !coverage.measured() || coverage.complete() || edgeRatio >= 0.60;
+    }
+
     private List<String> candidateSafetyWarnings(
         CenterlineCandidate candidate,
         EffectiveSampling effectiveSampling,
@@ -1975,7 +2055,7 @@ public final class AlignmentService {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "abrupt lateral jump %.1fm", metrics.p95DeltaMeters()));
         }
-        if (metrics.edgeRatio() >= 0.20) {
+        if (edgeProximityHardBlocks(metrics.edgeRatio(), candidate.evidence().corridorCoverage())) {
             warnings.add(String.format(java.util.Locale.ROOT,
                 "too many samples near search edge %.0f%%", metrics.edgeRatio() * 100.0));
         }
@@ -1984,10 +2064,6 @@ public final class AlignmentService {
             String topologyIssue = proposedJunctionAssignmentIssue(candidate, selection);
             if (topologyIssue != null) {
                 warnings.add("inconsistent proposed junction topology");
-            }
-            if (candidate.evidence().corridorCoverage().measured()
-                && !candidate.evidence().corridorCoverage().complete()) {
-                warnings.add("incomplete longitudinal corridor");
             }
             if (hasFinalPreviewSelfIntersection(candidate)) {
                 warnings.add("self-intersection in final preview");
@@ -3430,11 +3506,12 @@ public final class AlignmentService {
         EffectiveSampling effectiveSampling
     ) {
         StringBuilder builder = new StringBuilder(
-            "rank,candidate_id,display_name,detector,visible_color,intensity_source,source_tier,applicable,raw_score,calibrated_score,measurable_quality_score,detector_prior,global_detector_adjustment,coverage_complete,coverage_reason,observed_profiles,informative_profiles,informative_coverage_ratio,first_observed_profile,last_observed_profile,leading_unsupported_m,trailing_unsupported_m,max_internal_unsupported_profiles,max_internal_unsupported_m,approved_bridge_count,informative_evidence_beyond_track,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,optimizer_cost_per_profile,in_corridor_fraction,scale_persistence,scale_conflict_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,tube_residual_mean_source_px,tube_residual_p95_source_px,corridor_hf_rms_source_px,corridor_hf_p95_source_px,non_sustained_hf_rms_source_px,non_sustained_hf_p95_source_px,unsupported_reversal_count,unsupported_reversal_ratio,turn_p95_deg,turn_max_deg,curvature_change_p95_deg,forward_progress_violations,unsupported_excursions,max_gap_m,endpoint_approach_max_turn_deg,true_longitudinal_persistence,endpoint_approaches_supported,topology_reason_codes,junction_safety_tolerance_m,safety_warnings\n");
+            "rank,candidate_id,display_name,detector,visible_color,intensity_source,source_tier,applicable,candidate_disposition,candidate_assessment_reasons,raw_score,calibrated_score,measurable_quality_score,detector_prior,global_detector_adjustment,coverage_complete,coverage_reason,observed_profiles,informative_profiles,informative_coverage_ratio,first_observed_profile,last_observed_profile,leading_unsupported_m,trailing_unsupported_m,max_internal_unsupported_profiles,max_internal_unsupported_m,approved_bridge_count,informative_evidence_beyond_track,support_ratio,mean_intensity,mean_gradient_strength,longitudinal_stability,signal_to_noise,ambiguity,signal_existence_confidence,localization_confidence,optimizer_cost,optimizer_cost_per_profile,in_corridor_fraction,scale_persistence,scale_conflict_fraction,max_consecutive_empty_profiles,source_meters_per_pixel,offset_abs_mean_px,p95_delta_px,p95_acceleration_px,high_frequency_p95_px,p95_delta_source_px,p95_acceleration_source_px,high_frequency_p95_source_px,sub_source_wiggle_ratio,sign_flips,edge_ratio,offset_abs_mean_m,p95_delta_m,p95_acceleration_m,high_frequency_p95_m,tube_residual_mean_source_px,tube_residual_p95_source_px,corridor_hf_rms_source_px,corridor_hf_p95_source_px,non_sustained_hf_rms_source_px,non_sustained_hf_p95_source_px,unsupported_reversal_count,unsupported_reversal_ratio,turn_p95_deg,turn_max_deg,curvature_change_p95_deg,forward_progress_violations,unsupported_excursions,max_gap_m,endpoint_approach_max_turn_deg,true_longitudinal_persistence,endpoint_approaches_supported,topology_reason_codes,junction_safety_tolerance_m,safety_warnings\n");
         IntensitySamplingMode source = intensitySamplingMode(config);
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
             CandidateMetrics metrics = candidateDiagnosticMetrics(candidate, effectiveSampling);
+            CandidateAssessment assessment = assessCandidate(candidate);
             CorridorQuality quality = candidate.evidence().corridorQuality();
             var coverage = candidate.evidence().corridorCoverage();
             String detector = detectorMode(candidate);
@@ -3446,6 +3523,9 @@ public final class AlignmentService {
                 .append(csv(source.name())).append(',')
                 .append(DetectorFamily.sourceTier(normalizedVisibleColor(config), detector)).append(',')
                 .append(isApplicableCandidate(candidate)).append(',')
+                .append(assessment.disposition()).append(',')
+                .append(csv(assessment.reasons().stream().map(Enum::name)
+                    .collect(java.util.stream.Collectors.joining(";")))).append(',')
                 .append(format(candidate.score())).append(',')
                 .append(format(calibratedRankingScore(candidate, config, effectiveSampling))).append(',')
                 .append(format(measurableCorridorRankingScore(candidate, effectiveSampling))).append(',')
@@ -3681,6 +3761,7 @@ public final class AlignmentService {
         for (int i = 0; i < candidates.size(); i++) {
             CenterlineCandidate candidate = candidates.get(i);
             CandidateMetrics metrics = candidateDiagnosticMetrics(candidate, effectiveSampling);
+            CandidateAssessment assessment = assessCandidate(candidate);
             if (i > 0) {
                 builder.append(',');
             }
@@ -3717,6 +3798,9 @@ public final class AlignmentService {
                 .append("\"topologyReasonCodes\":").append(stringArray(candidate.junctionSafetyFindings().stream()
                     .map(JunctionSafetyFinding::reasonCode).distinct().toList())).append(',')
                 .append("\"safetyWarnings\":").append(stringArray(candidate.safetyWarnings())).append(',')
+                .append("\"disposition\":\"").append(assessment.disposition()).append("\",")
+                .append("\"assessmentReasons\":").append(stringArray(assessment.reasons().stream()
+                    .map(Enum::name).toList())).append(',')
                 .append("\"cleanupEvidence\":")
                 .append(cleanupEvidenceSummaryJson(candidate)).append(',')
                 .append("\"evidence\":").append(candidate.evidence().toJson())

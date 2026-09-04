@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -302,6 +303,54 @@ class ReplaceWaySegmentCommandTest {
         assertEquals(3, way.getNodesCount());
         assertEquals(start, way.firstNode());
         assertEquals(end, way.lastNode());
+    }
+
+    @Test
+    void validatesCompleteCandidateAssignmentsWithoutMutatingDataset() {
+        Fixture fixture = fixture();
+        List<EastNorth> source = fixture.selection.segmentNodes().stream()
+            .map(ReplaceWaySegmentCommandTest::eastNorth)
+            .toList();
+        List<EastNorth> preview = List.of(
+            source.get(0),
+            new EastNorth(source.get(1).east() + 10.0, source.get(1).north() + 5.0),
+            source.get(source.size() - 1));
+        Map<Long, EastNorth> valid = PreviewNodeAssignmentPlanner.targetMap(
+            PreviewNodeAssignmentPlanner.preciseAssignments(fixture.selection, source, preview));
+
+        assertDoesNotThrow(() -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, source, preview, valid));
+
+        Map<Long, EastNorth> missing = new java.util.HashMap<>(valid);
+        missing.remove(fixture.start.getUniqueId());
+        assertThrows(IllegalStateException.class, () -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, source, preview, missing));
+
+        Map<Long, EastNorth> extra = new java.util.HashMap<>(valid);
+        extra.put(999_999L, new EastNorth(0.0, 0.0));
+        assertThrows(IllegalStateException.class, () -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, source, preview, extra));
+
+        Map<Long, EastNorth> inconsistent = new java.util.HashMap<>(valid);
+        inconsistent.put(fixture.start.getUniqueId(), new EastNorth(1.0, 0.0));
+        assertThrows(IllegalStateException.class, () -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, source, preview, inconsistent));
+
+        Map<Long, EastNorth> nonfinite = new java.util.HashMap<>(valid);
+        nonfinite.put(fixture.start.getUniqueId(), new EastNorth(Double.NaN, 0.0));
+        assertThrows(IllegalStateException.class, () -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, source, preview, nonfinite));
+
+        List<EastNorth> staleSource = new java.util.ArrayList<>(source);
+        staleSource.set(1, source.get(1).add(1.0, 0.0));
+        assertThrows(IllegalStateException.class, () -> ReplaceWaySegmentCommand.validateProposedNodePositions(
+            fixture.selection, staleSource, preview, valid));
+        assertEquals(List.of(fixture.start, fixture.reused, fixture.droppedTagged, fixture.droppedPlain,
+            fixture.end), fixture.way.getNodes());
+        assertEquals(source, fixture.selection.segmentNodes().stream()
+            .map(ReplaceWaySegmentCommandTest::eastNorth)
+            .toList());
+        assertFalse(fixture.dataSet.isModified());
     }
 
     private static Fixture fixture() {

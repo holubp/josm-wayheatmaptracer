@@ -22,6 +22,7 @@ import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentDiagnostics;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -495,6 +496,69 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void incompleteSupportedCorridorRequiresReviewWhileStructuralFailuresRemainBlocked() {
+        CorridorCoverage incompleteCoverage = new CorridorCoverage(true, false, 3, 10, 0.3,
+            2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unsupported-trailing-corridor");
+        CenterlineCandidate incomplete = candidate("hot/strand-review",
+            signalEvidence().withCorridorCoverage(incompleteCoverage));
+        CenterlineCandidate structurallyUnsafe = incomplete.withSafetyWarnings(
+            List.of("self-intersection in final preview"));
+        CenterlineCandidate noSignal = candidate("hot/strand-empty", CandidateEvidence.empty());
+        AlignmentService service = new AlignmentService();
+
+        assertEquals(CandidateAssessment.Disposition.REVIEW_REQUIRED,
+            service.assessCandidate(incomplete).disposition());
+        assertEquals(List.of(CandidateAssessment.Reason.INCOMPLETE_LONGITUDINAL_CORRIDOR),
+            service.assessCandidate(incomplete).reasons());
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            service.assessCandidate(structurallyUnsafe).disposition());
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            service.assessCandidate(noSignal).disposition());
+    }
+
+    @Test
+    void reviewPreviewUsesExactStoredFinalGeometryWithoutMakingCandidateAutomaticallyApplicable() {
+        CorridorCoverage incompleteCoverage = new CorridorCoverage(true, false, 3, 10, 0.3,
+            2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unsupported-trailing-corridor");
+        List<EastNorth> source = List.of(
+            new EastNorth(0, 0), new EastNorth(10, 0), new EastNorth(20, 0));
+        List<EastNorth> raw = List.of(
+            new EastNorth(0, 1), new EastNorth(10, 1), new EastNorth(20, 1));
+        List<EastNorth> reviewed = List.of(
+            new EastNorth(0, 0), new EastNorth(8, 2), new EastNorth(16, 1), new EastNorth(20, 0));
+        CenterlineCandidate incomplete = candidate("hot/strand-review",
+            signalEvidence().withCorridorCoverage(incompleteCoverage))
+            .withEastNorthPoints(raw)
+            .withFinalPreviewPoints(reviewed);
+        SelectionContext selection = selection(3);
+        AlignmentResult base = new AlignmentResult(selection, null, List.of(incomplete),
+            source, List.of(), List.of(),
+            new AlignmentDiagnostics("Strava", 1, 0, 0, 0, 0, "{}", "{}", "{}", "[]", "[]", "[]"),
+            null, List.of(), List.of());
+        AlignmentService service = new AlignmentService();
+
+        AlignmentResult preview = service.previewCandidate(base, incomplete, corridorConfig());
+
+        assertEquals(reviewed, preview.previewPolyline());
+        assertTrue(preview.applicableCandidates().isEmpty());
+        assertThrows(IllegalStateException.class,
+            () -> service.applyCandidate(base, incomplete, corridorConfig()));
+    }
+
+
+    @Test
+    void searchEdgeProximityIsReviewableOnlyWhenCorridorEvidenceIsIncomplete() {
+        CorridorCoverage incomplete = new CorridorCoverage(true, false, 3, 10, 0.3,
+            2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unresolved-search-edge-censoring");
+        CorridorCoverage complete = completeCoverage(10, 10);
+
+        assertFalse(AlignmentService.edgeProximityHardBlocks(0.30, incomplete));
+        assertTrue(AlignmentService.edgeProximityHardBlocks(0.70, incomplete));
+        assertTrue(AlignmentService.edgeProximityHardBlocks(0.30, complete));
+        assertFalse(AlignmentService.edgeProximityHardBlocks(0.19, complete));
+        assertTrue(AlignmentService.edgeProximityHardBlocks(0.30, CorridorCoverage.empty()));
+    }
+    @Test
     void detailedSelectionKeepsConfiguredAlignmentMode() {
         SelectionContext detailed = selection(8);
         ManagedHeatmapConfig config = config(AlignmentMode.MOVE_EXISTING_NODES);
@@ -551,6 +615,32 @@ class AlignmentServiceTest {
 
         assertTrue(attempts.stream().anyMatch(attempt -> attempt.mappingName().equals("all-colors-combined")
             && attempt.status() == DetectorAttemptStatus.SOURCE_UNAVAILABLE));
+    }
+
+    @Test
+    void detectorAttemptReportsReviewRequiredForMeaningfulIncompleteCandidate() {
+        CorridorCoverage incompleteCoverage = new CorridorCoverage(true, false, 3, 10, 0.3,
+            2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unsupported-trailing-corridor");
+        CenterlineCandidate candidate = candidate("hot/strand-review",
+            signalEvidence().withCorridorCoverage(incompleteCoverage));
+        AlignmentService service = new AlignmentService();
+
+        var attempts = service.detectorAttempts(List.of("hot"), List.of(candidate),
+            config(AlignmentMode.MOVE_EXISTING_NODES), 0, false);
+
+        assertEquals(DetectorAttemptStatus.REVIEW_REQUIRED, attempts.get(0).status());
+        assertEquals("review-required", attempts.get(0).reasonCode());
+
+        CenterlineCandidate structurallyUnsafe = candidate("hot/unsafe", signalEvidence())
+            .withSafetyWarnings(List.of("self-intersection"));
+        var structuralAttempt = service.detectorAttempts(List.of("hot"), List.of(structurallyUnsafe),
+            config(AlignmentMode.MOVE_EXISTING_NODES), 0, false).get(0);
+        assertEquals(DetectorAttemptStatus.STRUCTURALLY_UNSAFE, structuralAttempt.status());
+
+        var noSignalAttempt = service.detectorAttempts(List.of("hot"),
+            List.of(candidate("hot/empty", CandidateEvidence.empty())),
+            config(AlignmentMode.MOVE_EXISTING_NODES), 0, false).get(0);
+        assertEquals(DetectorAttemptStatus.INSUFFICIENT_SIGNAL, noSignalAttempt.status());
     }
 
     @Test

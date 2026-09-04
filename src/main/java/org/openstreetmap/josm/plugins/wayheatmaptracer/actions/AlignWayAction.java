@@ -20,6 +20,7 @@ import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
 import javax.swing.DefaultListCellRenderer;
 
 import org.openstreetmap.josm.actions.JosmAction;
@@ -40,6 +41,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResol
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateReviewConfirmation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -258,8 +261,11 @@ public class AlignWayAction extends JosmAction {
         CenterlineCandidate initial = initialCandidate(result);
         boolean ratingMode = config.candidateRatingEnabled();
         boolean[] loadingRating = {false};
+        CandidateReviewConfirmation[] reviewConfirmation = {null};
         PreviewSelection[] current = {buildPreviewSelection(dataSet, result, initial, initial, config)};
-        overlay.show(selection, current[0].result(), initial, PluginPreferences.isDebugEnabled());
+        CandidateAssessment initialAssessment = AlignmentService.assessCandidate(initial);
+        overlay.show(selection, current[0].result(), initial, initialAssessment.disposition(), false,
+            PluginPreferences.isDebugEnabled());
         JComboBox<CenterlineCandidate> comboBox = new JComboBox<>();
         comboBox.setModel(new DefaultComboBoxModel<>(result.candidates().toArray(CenterlineCandidate[]::new)));
         comboBox.setSelectedItem(initial);
@@ -270,7 +276,9 @@ public class AlignWayAction extends JosmAction {
             ) {
                 super.getListCellRendererComponent(list, value, index, selected, focused);
                 if (value instanceof CenterlineCandidate candidate) {
-                    setText(candidateListLabel(candidate, candidateApplicable(result, candidate)));
+                    CandidateAssessment assessment = AlignmentService.assessCandidate(candidate);
+                    setText(candidateListLabel(candidate, assessment,
+                        confirmationMatches(reviewConfirmation[0], candidate, current[0])));
                 }
                 return this;
             }
@@ -281,7 +289,10 @@ public class AlignWayAction extends JosmAction {
         JCheckBox unnecessaryKinks = new JCheckBox(tr("unnecessary kinks"));
         JCheckBox badJunctionShapes = new JCheckBox(tr("bad junction shapes"));
         JButton apply = new JButton(tr("Apply"));
-        apply.setEnabled(candidateApplicable(result, initial));
+        apply.setEnabled(initialAssessment.automaticallyApplicable());
+        JButton confirm = new JButton(tr("Confirm reviewed candidate"));
+        confirm.setVisible(canConfirmCandidate(initialAssessment));
+        confirm.setEnabled(canConfirmCandidate(initialAssessment));
         JButton retry = new JButton(tr("Retry with wider search..."));
         configureRetryButton(retry, initial, slideConfig, result);
 
@@ -299,7 +310,7 @@ public class AlignWayAction extends JosmAction {
         );
         double currentSearchHalfWidth = retrySearchBounds(slideConfig, result).currentMeters();
         JLabel selectedCoverageStatus = new JLabel(coverageStatus(
-            initial, currentSearchHalfWidth, candidateApplicable(result, initial)));
+            initial, currentSearchHalfWidth, initialAssessment, false));
         panel.add(selectedCoverageStatus, GBC.eol());
         JLabel selectedCleanupStatus = new JLabel(cleanupStatus(initial));
         panel.add(selectedCleanupStatus, GBC.eol());
@@ -311,14 +322,25 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
             try {
+                reviewConfirmation[0] = null;
                 current[0] = buildPreviewSelection(dataSet, result, current[0].initialCandidate(), selected, config);
-                overlay.show(selection, current[0].result(), selected, PluginPreferences.isDebugEnabled());
+                CandidateAssessment assessment = AlignmentService.assessCandidate(selected);
+                overlay.show(selection, current[0].result(), selected, assessment.disposition(), false,
+                    PluginPreferences.isDebugEnabled());
                 selectedCoverageStatus.setText(coverageStatus(
-                    selected, currentSearchHalfWidth, candidateApplicable(result, selected)));
+                    selected, currentSearchHalfWidth, assessment, false));
                 selectedCleanupStatus.setText(cleanupStatus(selected));
-                apply.setEnabled(candidateApplicable(result, selected));
+                apply.setEnabled(assessment.automaticallyApplicable());
+                confirm.setVisible(canConfirmCandidate(assessment));
+                confirm.setEnabled(canConfirmCandidate(assessment));
+                confirm.setText(tr("Confirm reviewed candidate"));
+                java.awt.Window previewWindow = SwingUtilities.getWindowAncestor(confirm);
+                if (previewWindow != null) {
+                    previewWindow.pack();
+                }
                 selectedCandidateDetail.setText(cleanupDetail(selected));
                 configureRetryButton(retry, selected, slideConfig, result);
+                comboBox.repaint();
                 loadingRating[0] = true;
                 loadCandidateRating(candidateRatings.get(selected.id()), ratingBox, offTheLine, jumping, unnecessaryKinks, badJunctionShapes);
                 loadingRating[0] = false;
@@ -341,6 +363,7 @@ public class AlignWayAction extends JosmAction {
 
         JButton cancel = new JButton(tr("Cancel"));
         JPanel buttons = new JPanel();
+        buttons.add(confirm);
         buttons.add(apply);
         buttons.add(retry);
         buttons.add(cancel);
@@ -352,6 +375,50 @@ public class AlignWayAction extends JosmAction {
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.pack();
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        confirm.addActionListener(event -> {
+            try {
+                CandidateAssessment assessment = AlignmentService.assessCandidate(current[0].candidate());
+                if (!canConfirmCandidate(assessment)) {
+                    throw new IllegalStateException(tr("This candidate cannot be enabled by review."));
+                }
+                int answer = JOptionPane.showConfirmDialog(
+                    dialog,
+                    tr("Confirm that you reviewed the complete displayed geometry. Evidence uncertainty will be "
+                        + "accepted, but all geometry and topology safety checks will remain mandatory."),
+                    tr("Confirm reviewed candidate"),
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+                );
+                if (answer != JOptionPane.YES_OPTION) {
+                    return;
+                }
+                SelectionIntegrity.requirePreviewSourceUnchanged(
+                    dataSet, selection, current[0].result().sourcePolyline());
+                requireCandidateAssignmentPlan(selection, current[0].result(),
+                    current[0].candidate(), config);
+                alignmentService.requireCurrentTopologySafe(current[0].candidate(), selection);
+                if (!config.allowUndownloadedAlignment()) {
+                    requirePreviewWithinDownloadedArea(current[0].result().previewPolyline(), dataSet);
+                }
+                reviewConfirmation[0] = CandidateReviewConfirmation.capture(
+                    current[0].candidate(), current[0].result().previewPolyline());
+                apply.setEnabled(true);
+                confirm.setEnabled(false);
+                confirm.setText(tr("Review confirmed"));
+                selectedCoverageStatus.setText(coverageStatus(current[0].candidate(),
+                    currentSearchHalfWidth, assessment, true));
+                overlay.show(selection, current[0].result(), current[0].candidate(),
+                    assessment.disposition(), true, PluginPreferences.isDebugEnabled());
+                comboBox.repaint();
+                PluginLog.verbose("Candidate review confirmed: candidate=%s previewPoints=%d.",
+                    current[0].candidate().id(), current[0].result().previewPolyline().size());
+                updatePreviewBundle(current[0], candidateRatings, "review-confirmed");
+            } catch (Exception ex) {
+                PluginLog.verbose("Candidate review confirmation failed: %s", ex.toString());
+                updatePreviewBundle(current[0], candidateRatings, "review-confirmation-failed");
+                showError(tr("WayHeatmapTracer review confirmation failed: {0}", ex.getMessage()));
+            }
+        });
         retry.addActionListener(event -> retryWithWiderSearch(
             dialog, dataSet, selection, current[0], slideConfig, imageryLayer, mapView, candidateRatings
         ));
@@ -368,8 +435,11 @@ public class AlignWayAction extends JosmAction {
         });
         apply.addActionListener(event -> {
             try {
-                applyPreview(dataSet, selection, current[0], config, candidateRatings);
+                applyPreview(dataSet, selection, current[0], config, candidateRatings,
+                    reviewConfirmation[0]);
                 dialog.dispose();
+                overlay.hide();
+                PluginLog.endSlideSession();
             } catch (Exception ex) {
                 Logging.error(ex);
                 PluginLog.verbose("Alignment apply failed with exception: %s", ex.toString());
@@ -377,14 +447,15 @@ public class AlignWayAction extends JosmAction {
                     current[0].result(),
                     current[0].candidate(),
                     current[0].initialCandidate(),
-                    "apply-failed",
+                    reviewConfirmation[0] == null ? "apply-failed" : "review-apply-failed",
                     PluginLog.currentSlideLog(),
                     candidateRatings
                 ));
-                showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
-            } finally {
+                reviewConfirmation[0] = null;
                 overlay.hide();
                 PluginLog.endSlideSession();
+                dialog.dispose();
+                showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
             }
         });
         cancel.addActionListener(event -> {
@@ -398,12 +469,17 @@ public class AlignWayAction extends JosmAction {
      * Selects the candidate initially shown by preview and recorded by diagnostics.
      *
      * @param result completed alignment result
-     * @return first applicable candidate, or the first inspection-only candidate when none apply
+     * @return first applicable candidate, then the first review-required candidate, then the first blocked candidate
      * @throws IllegalStateException when the result contains no candidates
      */
     static CenterlineCandidate initialCandidate(AlignmentResult result) {
+        List<CenterlineCandidate> preferredCandidates = result.applicableCandidates().isEmpty()
+            ? result.candidates().stream()
+                .filter(candidate -> AlignmentService.assessCandidate(candidate).reviewRequired())
+                .toList()
+            : result.applicableCandidates();
         CenterlineCandidate selected = InitialPreviewCandidatePolicy.select(
-            result.candidates(), result.applicableCandidates());
+            result.candidates(), preferredCandidates);
         if (selected != null) {
             return selected;
         }
@@ -418,57 +494,102 @@ public class AlignWayAction extends JosmAction {
         ManagedHeatmapConfig config
     ) {
         SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, base.selection(), base.sourcePolyline());
-        if (!candidateApplicable(base, candidate)) {
-            List<EastNorth> geometry = candidate.eastNorthPoints().size() >= 2
-                ? candidate.eastNorthPoints() : base.sourcePolyline();
+        CandidateAssessment assessment = AlignmentService.assessCandidate(candidate);
+        if (assessment.disposition() == CandidateAssessment.Disposition.HARD_BLOCKED) {
+            List<EastNorth> geometry = candidate.finalPreviewPoints().size() >= 2
+                ? candidate.finalPreviewPoints()
+                : candidate.eastNorthPoints().size() >= 2 ? candidate.eastNorthPoints() : base.sourcePolyline();
             AlignmentResult diagnostic = new AlignmentResult(base.selection(), base.capturedHeatmap(),
                 base.candidates(), base.sourcePolyline(), geometry, List.of(), base.diagnostics(), base.tileMosaics(),
                 base.detectorAttempts(), base.applicableCandidates());
             return new PreviewSelection(initialCandidate, candidate, diagnostic);
         }
-        AlignmentResult candidateResult = alignmentService.applyCandidate(base, candidate, config);
+        AlignmentResult candidateResult = assessment.automaticallyApplicable()
+            ? alignmentService.applyCandidate(base, candidate, config)
+            : alignmentService.previewCandidate(base, candidate, config);
         if (!config.allowUndownloadedAlignment()) {
             requirePreviewWithinDownloadedArea(candidateResult.previewPolyline(), dataSet);
         }
         return new PreviewSelection(initialCandidate, candidate, candidateResult);
     }
 
-    private boolean candidateApplicable(AlignmentResult result, CenterlineCandidate candidate) {
-        return result.applicableCandidates().stream().anyMatch(value -> value.id().equals(candidate.id()));
+
+    /**
+     * Validates the complete candidate-owned assignment plan before review or Apply.
+     *
+     * @param selection slide-time selected segment
+     * @param preview exact candidate preview
+     * @param candidate candidate owning existing-node targets
+     * @param config slide-time heatmap configuration
+     */
+    private static void requireCandidateAssignmentPlan(
+        SelectionContext selection,
+        AlignmentResult preview,
+        CenterlineCandidate candidate,
+        ManagedHeatmapConfig config
+    ) {
+        if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE
+            && AlignmentService.effectiveAlignmentMode(selection, config) == AlignmentMode.PRECISE_SHAPE) {
+            ReplaceWaySegmentCommand.validateProposedNodePositions(
+                selection,
+                preview.sourcePolyline(),
+                preview.previewPolyline(),
+                candidate.proposedNodePositions()
+            );
+        }
+    }
+
+    private static boolean confirmationMatches(
+        CandidateReviewConfirmation confirmation,
+        CenterlineCandidate candidate,
+        PreviewSelection preview
+    ) {
+        return confirmation != null && preview != null && preview.candidate().id().equals(candidate.id())
+            && confirmation.matches(candidate, preview.result().previewPolyline());
     }
 
     /**
-     * Builds the compact human-readable candidate label used by the ridge selector.
+     * Builds a candidate label from its typed preview disposition.
      *
      * @param candidate candidate represented by the list row
-     * @param applicable whether the candidate may be applied
-     * @return label distinguishing complete, bridged, and unresolved search-edge evidence
+     * @param assessment current typed disposition
+     * @param reviewConfirmed whether this exact preview was explicitly confirmed
+     * @return user-facing candidate label
      */
-    static String candidateListLabel(CenterlineCandidate candidate, boolean applicable) {
-        String applicability = applicable ? tr("applicable") : tr("inspection only");
+    static String candidateListLabel(
+        CenterlineCandidate candidate,
+        CandidateAssessment assessment,
+        boolean reviewConfirmed
+    ) {
+        String disposition = switch (assessment.disposition()) {
+            case APPLICABLE -> tr("applicable");
+            case REVIEW_REQUIRED -> reviewConfirmed ? tr("review confirmed") : tr("review required");
+            case HARD_BLOCKED -> tr("blocked");
+        };
         String reason = candidate.evidence().corridorCoverage().reason();
         if ("complete-with-search-edge-bridge".equals(reason)) {
-            return tr("{0} - {1} - search-edge gaps bridged", candidate.displayName(), applicability);
+            return tr("{0} - {1} - search-edge gaps bridged", candidate.displayName(), disposition);
         }
         if ("unresolved-search-edge-censoring".equals(reason)) {
-            return tr("{0} - {1} - heatmap center leaves search corridor",
-                candidate.displayName(), applicability);
+            return tr("{0} - {1} - incomplete search-edge evidence", candidate.displayName(), disposition);
         }
-        return tr("{0} - {1}", candidate.displayName(), applicability);
+        return tr("{0} - {1}", candidate.displayName(), disposition);
     }
 
     /**
-     * Builds the prominent selected-candidate corridor coverage notification.
+     * Builds a selected-candidate coverage message without treating reviewable uncertainty as a hard stop.
      *
      * @param candidate selected preview candidate
-     * @param searchHalfWidthMeters factual half-width used by this slide
-     * @param applicable whether all candidate safety checks permit Apply
-     * @return concise human-readable coverage status
+     * @param searchHalfWidthMeters factual slide-time half-width
+     * @param assessment current typed disposition
+     * @param reviewConfirmed whether this exact preview was explicitly confirmed
+     * @return user-facing coverage status
      */
     static String coverageStatus(
         CenterlineCandidate candidate,
         double searchHalfWidthMeters,
-        boolean applicable
+        CandidateAssessment assessment,
+        boolean reviewConfirmed
     ) {
         var coverage = candidate.evidence().corridorCoverage();
         if (!coverage.measured()) {
@@ -476,21 +597,34 @@ public class AlignWayAction extends JosmAction {
         }
         if ("complete-with-search-edge-bridge".equals(coverage.reason())) {
             String message = tr("Search-edge gaps were interpolated from surrounding evidence.");
-            return applicable ? message
-                : tr("{0} This candidate remains inspection-only because of another safety finding.", message);
+            return assessment.automaticallyApplicable() || reviewConfirmed
+                ? message
+                : tr("{0} Another safety finding blocks this candidate.", message);
         }
-        if ("unresolved-search-edge-censoring".equals(coverage.reason())) {
-            return tr("The heatmap center leaves the configured {0} m search corridor; "
-                    + "this candidate is inspection-only.",
-                String.format(Locale.ROOT, "%.1f", searchHalfWidthMeters));
+        if (assessment.reviewRequired()) {
+            if (reviewConfirmed) {
+                return tr("Incomplete corridor evidence was reviewed and confirmed for this preview.");
+            }
+            if ("unresolved-search-edge-censoring".equals(coverage.reason())) {
+                return tr("Review required: heatmap evidence reaches the configured {0} m search boundary; review the complete "
+                        + "preview before confirming it.",
+                    String.format(Locale.ROOT, "%.1f", searchHalfWidthMeters));
+            }
+            return tr("Review required: corridor evidence is incomplete; review the complete preview before confirming it.");
         }
         if (coverage.complete()) {
-            return applicable
+            return assessment.automaticallyApplicable()
                 ? tr("Corridor coverage: complete.")
-                : tr("Corridor coverage is complete, but another safety finding makes this candidate inspection-only.");
+                : tr("Corridor coverage is complete, but a structural safety finding blocks this candidate.");
         }
-        return tr("Corridor coverage is incomplete; this candidate is inspection-only.");
+        return tr("Corridor evidence is incomplete and another safety finding blocks this candidate.");
     }
+
+    /** Returns whether explicit review can promote this candidate. */
+    static boolean canConfirmCandidate(CandidateAssessment assessment) {
+        return assessment != null && assessment.reviewRequired();
+    }
+
 
     /**
      * Returns whether a candidate has bridge or unresolved search-edge coverage that warrants an
@@ -803,12 +937,22 @@ public class AlignWayAction extends JosmAction {
         SelectionContext selection,
         PreviewSelection preview,
         ManagedHeatmapConfig config,
-        Map<String, CandidateRating> candidateRatings
+        Map<String, CandidateRating> candidateRatings,
+        CandidateReviewConfirmation reviewConfirmation
     ) {
         CenterlineCandidate chosen = preview.candidate();
         AlignmentResult chosenResult = preview.result();
+        CandidateAssessment assessment = AlignmentService.assessCandidate(chosen);
+        if (assessment.disposition() == CandidateAssessment.Disposition.HARD_BLOCKED) {
+            throw new IllegalStateException(tr("This candidate is blocked by a structural or signal-safety finding."));
+        }
+        if (assessment.reviewRequired()
+            && !confirmationMatches(reviewConfirmation, chosen, preview)) {
+            throw new IllegalStateException(tr("Review and confirm this exact candidate preview before applying it."));
+        }
 
         SelectionIntegrity.requirePreviewSourceUnchanged(dataSet, selection, chosenResult.sourcePolyline());
+        requireCandidateAssignmentPlan(selection, chosenResult, chosen, config);
         if (config.trackerMode() == TrackerMode.CORRIDOR_AWARE) {
             alignmentService.requireCurrentTopologySafe(chosen, selection);
         }
@@ -847,7 +991,9 @@ public class AlignWayAction extends JosmAction {
             ));
         }
         DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-            chosenResult, chosen, preview.initialCandidate(), "applied", PluginLog.currentSlideLog(), candidateRatings));
+            chosenResult, chosen, preview.initialCandidate(),
+            reviewConfirmation == null ? "applied" : "applied-after-review",
+            PluginLog.currentSlideLog(), candidateRatings));
     }
 
     private JPanel buildSummaryPanel(

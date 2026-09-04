@@ -12,6 +12,7 @@ class DetectorAttemptTest {
     @Test
     void onlyApplicableStatusEnablesGeometryApplication() {
         assertTrue(attempt(DetectorAttemptStatus.APPLICABLE).applicable());
+        assertFalse(attempt(DetectorAttemptStatus.REVIEW_REQUIRED).applicable());
         assertFalse(attempt(DetectorAttemptStatus.STRUCTURALLY_UNSAFE).applicable());
         assertFalse(attempt(DetectorAttemptStatus.NO_PERSISTENT_CORRIDOR).applicable());
         assertFalse(attempt(DetectorAttemptStatus.SOURCE_UNAVAILABLE).applicable());

@@ -4,6 +4,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 public enum DetectorAttemptStatus {
     /** At least one candidate passed all apply gates. */
     APPLICABLE,
+    /** Meaningful evidence exists, but explicit review is required before apply. */
+    REVIEW_REQUIRED,
     /** Geometry evidence exists but violates a structural safety gate. */
     STRUCTURALLY_UNSAFE,
     /** Geometry evidence exists but supported signal is inadequate. */

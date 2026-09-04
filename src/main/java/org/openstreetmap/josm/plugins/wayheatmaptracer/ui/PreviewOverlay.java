@@ -14,6 +14,7 @@ import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.layer.MapViewPaintable;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 
@@ -26,6 +27,8 @@ public final class PreviewOverlay implements MapViewPaintable {
     private SelectionContext selection;
     private AlignmentResult result;
     private CenterlineCandidate chosenCandidate;
+    private CandidateAssessment.Disposition disposition;
+    private boolean reviewConfirmed;
     private boolean debugEnabled;
     private boolean attached;
 
@@ -49,12 +52,23 @@ public final class PreviewOverlay implements MapViewPaintable {
      * @param selection slide-time selection metadata
      * @param result alignment result whose source/preview/candidates should be drawn
      * @param chosenCandidate currently selected candidate
+     * @param disposition typed candidate handling state
+     * @param reviewConfirmed whether this exact review-required preview was confirmed
      * @param debugEnabled whether to show more candidate labels
      */
-    public void show(SelectionContext selection, AlignmentResult result, CenterlineCandidate chosenCandidate, boolean debugEnabled) {
+    public void show(
+        SelectionContext selection,
+        AlignmentResult result,
+        CenterlineCandidate chosenCandidate,
+        CandidateAssessment.Disposition disposition,
+        boolean reviewConfirmed,
+        boolean debugEnabled
+    ) {
         this.selection = selection;
         this.result = result;
         this.chosenCandidate = chosenCandidate;
+        this.disposition = disposition;
+        this.reviewConfirmed = reviewConfirmed;
         this.debugEnabled = debugEnabled;
         MapView mapView = MainApplication.getMap().mapView;
         if (!attached) {
@@ -75,6 +89,8 @@ public final class PreviewOverlay implements MapViewPaintable {
         selection = null;
         result = null;
         chosenCandidate = null;
+        disposition = null;
+        reviewConfirmed = false;
     }
 
     @Override
@@ -85,11 +101,14 @@ public final class PreviewOverlay implements MapViewPaintable {
 
         drawPolyline(g, mv, result.sourcePolyline(), new Color(255, 153, 0, 190), new float[] {6f, 6f}, 2f);
         drawCandidateAlternatives(g, mv);
-        boolean applicable = result.applicableCandidates().stream()
-            .anyMatch(candidate -> candidate.id().equals(chosenCandidate.id()));
-        drawPolyline(g, mv, result.previewPolyline(),
-            applicable ? new Color(0, 90, 255, 230) : new Color(210, 35, 35, 220),
-            applicable ? null : new float[] {7f, 5f}, applicable ? 3.5f : 2.8f);
+        boolean applicable = disposition == CandidateAssessment.Disposition.APPLICABLE || reviewConfirmed;
+        boolean reviewRequired = disposition == CandidateAssessment.Disposition.REVIEW_REQUIRED && !reviewConfirmed;
+        Color selectedColor = applicable
+            ? new Color(0, 90, 255, 230)
+            : reviewRequired ? new Color(220, 135, 0, 230) : new Color(210, 35, 35, 220);
+        float[] selectedDash = applicable ? null : reviewRequired ? new float[] {10f, 4f} : new float[] {7f, 5f};
+        drawPolyline(g, mv, result.previewPolyline(), selectedColor, selectedDash,
+            applicable ? 3.5f : reviewRequired ? 3.2f : 2.8f);
         drawLegend(g);
     }
 
@@ -177,8 +196,11 @@ public final class PreviewOverlay implements MapViewPaintable {
         g.setFont(g.getFont().deriveFont(Font.PLAIN, 12f));
         drawLegendItem(g, x, y, new Color(0, 90, 255, 230), null, "selected preview");
         drawLegendItem(g, x, y + 18, new Color(255, 153, 0, 190), new float[] {6f, 6f}, "original segment");
+        drawLegendItem(g, x, y + 36, new Color(220, 135, 0, 230), new float[] {10f, 4f},
+            "review required");
         if (result.candidates().size() > 1) {
-            drawLegendItem(g, x, y + 36, new Color(130, 80, 230, 150), new float[] {3f, 5f}, "other detected ridges");
+            drawLegendItem(g, x, y + 54, new Color(130, 80, 230, 150), new float[] {3f, 5f},
+                "other detected ridges");
         }
     }
 

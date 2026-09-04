@@ -10,6 +10,7 @@ import java.util.OptionalDouble;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
 
@@ -66,6 +67,17 @@ class AlignWayActionTest {
         assertSame(first, AlignWayAction.initialCandidate(result(List.of(first, second), List.of())));
     }
 
+
+    @Test
+    void initiallyPrefersReviewRequiredCandidateOverHardBlockedCandidate() {
+        CenterlineCandidate blocked = candidate("hot/ridge-blocked");
+        CenterlineCandidate reviewable = candidate("hot/ridge-review").withEvidence(
+            new CandidateEvidence("hot", 4, 4, 0, 0, 3.2, 0.8, 0.2, 0.9, 0.5, 0.1, List.of())
+                .withCorridorCoverage(coverage(true, false, 0, "unresolved-search-edge-censoring")));
+
+        assertSame(reviewable, AlignWayAction.initialCandidate(
+            result(List.of(blocked, reviewable), List.of())));
+    }
     @Test
     void rejectsAnEmptyCandidateResult() {
         AlignmentResult result = result(List.of(), List.of());
@@ -137,13 +149,27 @@ class AlignWayActionTest {
             .withCorridorCoverage(coverage(true, true, 2, "complete-with-search-edge-bridge")));
         CenterlineCandidate unresolved = candidate("hot/ridge-2").withEvidence(CandidateEvidence.empty()
             .withCorridorCoverage(coverage(true, false, 0, "unresolved-search-edge-censoring")));
+        CandidateAssessment applicable = new CandidateAssessment(
+            CandidateAssessment.Disposition.APPLICABLE, List.of());
+        CandidateAssessment review = new CandidateAssessment(
+            CandidateAssessment.Disposition.REVIEW_REQUIRED,
+            List.of(CandidateAssessment.Reason.INCOMPLETE_LONGITUDINAL_CORRIDOR));
+        CandidateAssessment blocked = new CandidateAssessment(
+            CandidateAssessment.Disposition.HARD_BLOCKED,
+            List.of(CandidateAssessment.Reason.STRUCTURAL_SAFETY_FAILURE));
 
-        assertTrue(AlignWayAction.candidateListLabel(bridged, true).contains("search-edge gaps bridged"));
-        assertTrue(AlignWayAction.candidateListLabel(unresolved, false).contains("leaves search corridor"));
-        assertTrue(AlignWayAction.coverageStatus(bridged, 7.0, true)
+        assertTrue(AlignWayAction.candidateListLabel(bridged, applicable, false)
+            .contains("search-edge gaps bridged"));
+        assertTrue(AlignWayAction.candidateListLabel(unresolved, review, false)
+            .contains("review required"));
+        assertTrue(AlignWayAction.candidateListLabel(unresolved, review, true)
+            .contains("review confirmed"));
+        assertTrue(AlignWayAction.coverageStatus(bridged, 7.0, applicable, false)
             .contains("Search-edge gaps were interpolated"));
-        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, false).contains("7.0 m search corridor"));
-        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, false).contains("inspection-only"));
+        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, review, false).contains("7.0 m search boundary"));
+        assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, review, false).contains("Review required"));
+        assertTrue(AlignWayAction.canConfirmCandidate(review));
+        assertTrue(!AlignWayAction.canConfirmCandidate(blocked));
     }
 
     private static CenterlineCandidate candidate(String id) {
