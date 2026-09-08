@@ -166,7 +166,9 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
         if (request == null || evidence == null || network == null
             || request.engine() != TrackerMode.PROBABILISTIC
             || !request.evidenceSnapshotId().equals(evidence.snapshotId())
+            || !request.evidenceContentHash().equals(evidence.canonicalHash())
             || !request.networkSnapshotId().equals(network.snapshotId())
+            || !request.networkContentHash().equals(network.canonicalHash())
             || !request.evidenceResolution().equals(evidence.resolution())
             || network.role() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole.CAPTURED_BEFORE) {
             throw new IllegalArgumentException("Probabilistic request does not match immutable snapshots");

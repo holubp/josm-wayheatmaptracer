@@ -1,10 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 
-/** Versioned reversible local metric frame admitted by a conservative analytic distortion bound. */
+/** Versioned reversible local WGS84 tangent frame admitted by a conservative analytic bound. */
 public record LocalMetricFrame(String projectionId, GeographicPoint origin,
     DistortionCertificate distortionCertificate) {
-    private static final double EARTH_RADIUS_METERS = 6_378_137.0;
-
     /** Accepts only a factory-produced certificate bound to this exact transform and origin. */
     public LocalMetricFrame {
         if (projectionId == null || projectionId.isBlank() || origin == null || distortionCertificate == null
@@ -14,7 +12,7 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
         }
     }
 
-    /** Creates a local equirectangular frame with a bound over the complete declared domain. */
+    /** Creates a local WGS84 tangent frame with a bound over the complete declared domain. */
     public static LocalMetricFrame certifiedEquirectangular(GeographicPoint origin,
         GeographicPoint southWest, GeographicPoint northEast) {
         if (southWest.latitudeDegrees() > northEast.latitudeDegrees()) {
@@ -22,14 +20,14 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
         }
         double longitudeSpan = positiveLongitudeSpan(southWest.longitudeDegrees(), northEast.longitudeDegrees());
         if (longitudeSpan > 180.0) {
-            throw new IllegalArgumentException("Local equirectangular domain crosses the long antimeridian arc");
+            throw new IllegalArgumentException("Local tangent domain crosses the long antimeridian arc");
         }
-        DistortionCertificate certificate = DistortionCertificate.equirectangular(
+        DistortionCertificate certificate = DistortionCertificate.wgs84Local(
             origin, southWest, northEast, longitudeSpan);
         if (!contains(certificate, origin)) {
             throw new IllegalArgumentException("Frame origin must lie inside its certified domain");
         }
-        return new LocalMetricFrame("local-equirectangular-v3", origin, certificate);
+        return new LocalMetricFrame("local-wgs84-tangent-v1", origin, certificate);
     }
 
     /** Converts a geographic coordinate inside the certified domain to local ground metres. */
@@ -37,18 +35,19 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
         if (!contains(distortionCertificate, point)) {
             throw new IllegalArgumentException("Coordinate lies outside the certified metric-frame domain");
         }
-        double cosLatitude = Math.cos(Math.toRadians(origin.latitudeDegrees()));
-        return new MetricPoint(EARTH_RADIUS_METERS
-                * Math.toRadians(normalizeDelta(point.longitudeDegrees() - origin.longitudeDegrees()))
-                * cosLatitude,
-            EARTH_RADIUS_METERS * Math.toRadians(point.latitudeDegrees() - origin.latitudeDegrees()));
+        return new MetricPoint(
+            Math.toRadians(normalizeDelta(point.longitudeDegrees() - origin.longitudeDegrees()))
+                * distortionCertificate.eastMetersPerRadian(),
+            Math.toRadians(point.latitudeDegrees() - origin.latitudeDegrees())
+                * distortionCertificate.northMetersPerRadian());
     }
 
     /** Converts a metric coordinate back to a geographic coordinate inside the certified domain. */
     public GeographicPoint toGeographic(MetricPoint point) {
-        double latitude = origin.latitudeDegrees() + Math.toDegrees(point.yMeters() / EARTH_RADIUS_METERS);
-        double longitude = normalize(origin.longitudeDegrees() + Math.toDegrees(point.xMeters()
-            / (EARTH_RADIUS_METERS * Math.cos(Math.toRadians(origin.latitudeDegrees())))));
+        double latitude = origin.latitudeDegrees() + Math.toDegrees(
+            point.yMeters() / distortionCertificate.northMetersPerRadian());
+        double longitude = normalize(origin.longitudeDegrees() + Math.toDegrees(
+            point.xMeters() / distortionCertificate.eastMetersPerRadian()));
         GeographicPoint result = new GeographicPoint(latitude, longitude);
         if (!contains(distortionCertificate, result)) {
             throw new IllegalArgumentException("Metric coordinate lies outside the certified frame domain");

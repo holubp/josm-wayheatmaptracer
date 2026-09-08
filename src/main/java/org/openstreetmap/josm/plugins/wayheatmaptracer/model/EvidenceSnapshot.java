@@ -50,6 +50,60 @@ public record EvidenceSnapshot(
             java.util.List.of(coordinateFrame, transform, resolution, decisionRegion, evidenceRegion, fields));
     }
 
+    /** Returns a content-bound hash over coordinates, masks, scalar values, resolution, and source lineage. */
+    public String canonicalHash() {
+        CanonicalEncoder encoder = new CanonicalEncoder().field("evidence-snapshot-v1")
+            .field(sourceIdentity).field(coordinateFrame.projectionId())
+            .field(Double.toHexString(coordinateFrame.origin().latitudeDegrees()))
+            .field(Double.toHexString(coordinateFrame.origin().longitudeDegrees()))
+            .field(coordinateFrame.distortionCertificate().method())
+            .field(Double.toHexString(coordinateFrame.distortionCertificate().maximumRelativeDistanceError()))
+            .field(transform.transformId()).field(transform.originKind().name())
+            .field(Double.toHexString(transform.origin().xMeters()))
+            .field(Double.toHexString(transform.origin().yMeters()))
+            .field(Double.toHexString(transform.xAxisEastMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.xAxisNorthMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.yAxisEastMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.yAxisNorthMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.rasterPixelsPerSourcePixel()))
+            .field(resolution.kind().name())
+            .field(resolution.nativePitchMeters().isPresent())
+            .field(resolution.nativePitchMeters().isPresent()
+                ? Double.toHexString(resolution.nativePitchMeters().getAsDouble()) : "unknown")
+            .field(Double.toHexString(resolution.renderedPitchMeters()));
+        resolution.spatialPitchSamples().forEach(sample -> encoder.field("pitch")
+            .field(Double.toHexString(sample.chainageMeters()))
+            .field(sample.nativePitchMeters().isPresent())
+            .field(sample.nativePitchMeters().isPresent()
+                ? Double.toHexString(sample.nativePitchMeters().getAsDouble()) : "unknown")
+            .field(Double.toHexString(sample.renderedPitchMeters())));
+        encodeRegion(encoder.field("decision"), decisionRegion);
+        encodeRegion(encoder.field("evidence"), evidenceRegion);
+        fields.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+            ScalarEvidenceField field = entry.getValue();
+            EvidenceFieldLineage lineage = field.lineage();
+            encoder.field("field").field(entry.getKey()).field(field.width()).field(field.height())
+                .field(lineage.acquisitionKind().name()).field(lineage.derivationKind().name())
+                .field(lineage.sourcePalette()).field(lineage.correlationGroup().name())
+                .field(lineage.completeAggregate());
+            lineage.scalarOperations().forEach(operation -> encoder.field("operation").field(operation));
+            double[] values = field.copiedValues();
+            boolean[] valid = field.copiedValidity();
+            for (int index = 0; index < values.length; index++) {
+                encoder.field(valid[index]).field(Double.toHexString(values[index]));
+            }
+        });
+        return encoder.sha256();
+    }
+
+    private static void encodeRegion(CanonicalEncoder encoder, MetricRegion region) {
+        region.polygons().forEach(polygon -> {
+            encoder.field("polygon").field(polygon.size());
+            polygon.forEach(point -> encoder.field(Double.toHexString(point.xMeters()))
+                .field(Double.toHexString(point.yMeters())));
+        });
+    }
+
     /** Returns closed correlation groups, not palette count, as independent evidence groups. */
     public Set<EvidenceCorrelationGroup> independentEvidenceGroups() {
         return fields.values().stream().map(field -> field.lineage().correlationGroup())

@@ -56,16 +56,38 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         }
         for (ExternalPort port : closure.externalPorts()) {
             DetachedPrimitive primitive = primitives.get(port.wayKey());
-            if (!(primitive instanceof DetachedWay way)
-                || port.boundaryOccurrenceIndex() >= way.nodeKeys().size()
-                || !way.nodeKeys().get(port.boundaryOccurrenceIndex()).equals(port.boundaryNodeKey())
-                || port.side() == ExternalPort.Side.BEFORE && port.boundaryOccurrenceIndex() != 0
-                || port.side() == ExternalPort.Side.AFTER
-                    && port.boundaryOccurrenceIndex() != way.nodeKeys().size() - 1) {
-                throw new IllegalArgumentException("External port is inconsistent with its terminal way occurrence");
+            if (!(primitive instanceof DetachedWay way) || !portMatches(port, way, role, primitives)) {
+                throw new IllegalArgumentException("External port is inconsistent with its captured adjacency");
             }
         }
         DetachedValueVerifier.verify(java.util.List.of(role, closure, primitives));
+    }
+
+    private static boolean portMatches(ExternalPort port, DetachedWay way, SnapshotRole role,
+        Map<PrimitiveKey, DetachedPrimitive> primitives) {
+        DetachedPrimitive outsidePrimitive = primitives.get(port.outsideNeighborKey());
+        if (!(outsidePrimitive instanceof DetachedNode outsideNode)
+            || !outsideNode.coordinate().equals(port.outsideNeighborCoordinate())) {
+            return false;
+        }
+        if (role == SnapshotRole.CAPTURED_BEFORE) {
+            int boundary = port.boundaryOccurrenceIndex();
+            int outside = port.side() == ExternalPort.Side.BEFORE ? boundary - 1 : boundary + 1;
+            return boundary >= 0 && boundary < way.nodeKeys().size()
+                && outside >= 0 && outside < way.nodeKeys().size()
+                && way.nodeKeys().get(boundary).equals(port.boundaryNodeKey())
+                && way.nodeKeys().get(outside).equals(port.outsideNeighborKey());
+        }
+        int matches = 0;
+        for (int boundary = 0; boundary < way.nodeKeys().size(); boundary++) {
+            int outside = port.side() == ExternalPort.Side.BEFORE ? boundary - 1 : boundary + 1;
+            if (outside >= 0 && outside < way.nodeKeys().size()
+                && way.nodeKeys().get(boundary).equals(port.boundaryNodeKey())
+                && way.nodeKeys().get(outside).equals(port.outsideNeighborKey())) {
+                matches++;
+            }
+        }
+        return matches == 1;
     }
 
     /** Derives complete within-snapshot incoming references from way occurrences and relation members. */

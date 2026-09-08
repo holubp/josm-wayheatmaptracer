@@ -428,8 +428,7 @@ public final class ImageSupportedRefitter {
                             > request.config().trustRadiusMeters() + 1.0e-9) {
                 return Validation.rejected("outside-branch-or-trust-region");
             }
-            if (index > 0 && !request.branchCorridor().containsSegment(points.get(index - 1), points.get(index),
-                    Math.min(0.5, request.config().sourcePitchMeters() / 2.0))) {
+            if (index > 0 && !request.branchCorridor().containsSegment(points.get(index - 1), points.get(index))) {
                 return Validation.rejected("segment-outside-branch-corridor");
             }
         }

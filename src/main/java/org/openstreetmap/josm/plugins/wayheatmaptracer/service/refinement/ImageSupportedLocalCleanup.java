@@ -278,8 +278,7 @@ public final class ImageSupportedLocalCleanup {
         double chordCost = image.meanSegmentCost(points.get(first), points.get(last));
         boolean chordSupported = Double.isFinite(chordCost) && Double.isFinite(originalCost)
                 && chordCost <= originalCost + 0.02
-                && branchCorridor.containsSegment(points.get(first), points.get(last),
-                        Math.min(0.5, image.sourcePitchMeters() / 4.0));
+                && branchCorridor.containsSegment(points.get(first), points.get(last));
         if (maximum <= tolerance && chordSupported) {
             return;
         }

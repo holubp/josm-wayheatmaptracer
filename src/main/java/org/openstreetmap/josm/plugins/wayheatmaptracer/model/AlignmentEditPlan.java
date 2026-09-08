@@ -224,7 +224,7 @@ public record AlignmentEditPlan(
             if (oldValue instanceof DetachedRelation oldRelation
                 && newValue instanceof DetachedRelation newRelation) {
                 if (permissions.junctionPolicy() != JunctionPolicy.REATTACH
-                    || !relationSemanticsPreserved(oldRelation, newRelation)) {
+                    || !relationSemanticsPreserved(before, after, oldRelation, newRelation)) {
                     throw new IllegalArgumentException("Relation member edits exceed reattachment semantics");
                 }
             }
@@ -235,7 +235,8 @@ public record AlignmentEditPlan(
         }
     }
 
-    private static boolean relationSemanticsPreserved(DetachedRelation before, DetachedRelation after) {
+    private static boolean relationSemanticsPreserved(NetworkSnapshot beforeSnapshot,
+        NetworkSnapshot afterSnapshot, DetachedRelation before, DetachedRelation after) {
         if (before.members().equals(after.members())) {
             return true;
         }
@@ -244,6 +245,8 @@ public record AlignmentEditPlan(
             return false;
         }
         int differences = 0;
+        PrimitiveKey oldVia = null;
+        PrimitiveKey newVia = null;
         for (int index = 0; index < before.members().size(); index++) {
             DetachedRelationMember left = before.members().get(index);
             DetachedRelationMember right = after.members().get(index);
@@ -256,8 +259,40 @@ public record AlignmentEditPlan(
                 || right.memberKey().type() != PrimitiveKey.Type.NODE) {
                 return false;
             }
+            oldVia = left.memberKey();
+            newVia = right.memberKey();
         }
-        return differences == 1;
+        if (differences != 1 || oldVia == null || newVia == null) {
+            return false;
+        }
+        PrimitiveKey from = uniqueWayMember(before.members(), "from");
+        PrimitiveKey to = uniqueWayMember(before.members(), "to");
+        return from != null && to != null
+            && beforeSnapshot.closure().removableExistingNodeKeys().contains(oldVia)
+            && !afterSnapshot.primitives().containsKey(oldVia)
+            && !beforeSnapshot.primitives().containsKey(newVia)
+            && newVia.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL
+            && wayContains(beforeSnapshot, from, oldVia) && wayContains(beforeSnapshot, to, oldVia)
+            && wayContains(afterSnapshot, from, newVia) && wayContains(afterSnapshot, to, newVia);
+    }
+
+    private static PrimitiveKey uniqueWayMember(List<DetachedRelationMember> members, String role) {
+        PrimitiveKey result = null;
+        for (DetachedRelationMember member : members) {
+            if (!role.equals(member.role())) {
+                continue;
+            }
+            if (result != null || member.memberKey().type() != PrimitiveKey.Type.WAY) {
+                return null;
+            }
+            result = member.memberKey();
+        }
+        return result;
+    }
+
+    private static boolean wayContains(NetworkSnapshot snapshot, PrimitiveKey wayKey, PrimitiveKey nodeKey) {
+        DetachedPrimitive primitive = snapshot.primitives().get(wayKey);
+        return primitive instanceof DetachedWay way && way.nodeKeys().contains(nodeKey);
     }
 
     private static void validateOccurrenceAuthority(NetworkSnapshot before, NetworkSnapshot after,
@@ -342,33 +377,36 @@ public record AlignmentEditPlan(
                 throw new IllegalArgumentException("Removed node lies outside the authorized edit region");
             }
         }
-        for (PrimitiveKey key : writes) {
-            if (after.primitives().get(key) instanceof DetachedWay way) {
-                for (int index = 1; index < way.nodeKeys().size(); index++) {
-                    PrimitiveKey leftKey = way.nodeKeys().get(index - 1);
-                    PrimitiveKey rightKey = way.nodeKeys().get(index);
-                    if (adjacencyExists(before, key, leftKey, rightKey)) {
-                        continue;
-                    }
-                    DetachedNode left = requireNode(after, leftKey);
-                    DetachedNode right = requireNode(after, rightKey);
-                    if (!editRegion.containsSegment(frame.toMetric(left.coordinate()), frame.toMetric(right.coordinate()))) {
-                        throw new IllegalArgumentException("New way segment leaves the authorized edit region");
-                    }
+        for (PrimitiveKey key : affectedWayKeys(before, after, writes)) {
+            if (!(after.primitives().get(key) instanceof DetachedWay way)) {
+                continue;
+            }
+            for (int index = 1; index < way.nodeKeys().size(); index++) {
+                PrimitiveKey leftKey = way.nodeKeys().get(index - 1);
+                PrimitiveKey rightKey = way.nodeKeys().get(index);
+                DetachedNode left = requireNode(after, leftKey);
+                DetachedNode right = requireNode(after, rightKey);
+                if (segmentGeometryUnchanged(before, key, leftKey, rightKey,
+                    left.coordinate(), right.coordinate())) {
+                    continue;
+                }
+                if (!editRegion.containsSegment(frame.toMetric(left.coordinate()), frame.toMetric(right.coordinate()))) {
+                    throw new IllegalArgumentException("Changed way segment leaves the authorized edit region");
                 }
             }
         }
     }
 
-    private static boolean adjacencyExists(NetworkSnapshot snapshot, PrimitiveKey wayKey,
-        PrimitiveKey left, PrimitiveKey right) {
-        DetachedPrimitive value = snapshot.primitives().get(wayKey);
+    private static boolean segmentGeometryUnchanged(NetworkSnapshot before, PrimitiveKey wayKey,
+        PrimitiveKey leftKey, PrimitiveKey rightKey, GeographicPoint left, GeographicPoint right) {
+        DetachedPrimitive value = before.primitives().get(wayKey);
         if (!(value instanceof DetachedWay way)) {
             return false;
         }
         for (int index = 1; index < way.nodeKeys().size(); index++) {
-            if (way.nodeKeys().get(index - 1).equals(left) && way.nodeKeys().get(index).equals(right)) {
-                return true;
+            if (way.nodeKeys().get(index - 1).equals(leftKey) && way.nodeKeys().get(index).equals(rightKey)) {
+                return requireNode(before, leftKey).coordinate().equals(left)
+                    && requireNode(before, rightKey).coordinate().equals(right);
             }
         }
         return false;

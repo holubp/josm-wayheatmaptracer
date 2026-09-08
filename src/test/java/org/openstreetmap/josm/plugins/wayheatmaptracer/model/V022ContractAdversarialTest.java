@@ -58,13 +58,14 @@ class V022ContractAdversarialTest {
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 3);
         PrimitiveKey outside = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 4);
         Map<PrimitiveKey, DetachedPrimitive> values = Map.of(
+            outside, new DetachedNode(outside, new GeographicPoint(41.999, 19), Map.of(), false, false),
             first, new DetachedNode(first, new GeographicPoint(42, 19), Map.of(), false, false),
             second, new DetachedNode(second, new GeographicPoint(42.001, 19), Map.of(), false, false),
-            way, new DetachedWay(way, List.of(first, second), Map.of("highway", "path"), false, false));
+            way, new DetachedWay(way, List.of(outside, first, second), Map.of("highway", "path"), false, false));
         ClosureDescriptor closure = new ClosureDescriptor(ClosureDescriptor.Scope.SELECTION_SAFETY,
             "ports-v1", values.keySet(), Set.of(), Set.of(), Set.of(first, second), Set.of(), Map.of(),
-            List.of(new ExternalPort(way, second, outside, 1, ExternalPort.Side.BEFORE,
-                new GeographicPoint(42.002, 19))), MetricRegion.rectangle(-10, -10, 10, 10),
+            List.of(new ExternalPort(way, first, outside, 1, ExternalPort.Side.AFTER,
+                new GeographicPoint(41.999, 19))), MetricRegion.rectangle(-10, -10, 10, 10),
             MetricRegion.rectangle(-5, -5, 5, 5), false, true, true, true);
 
         assertThrows(IllegalArgumentException.class, () -> new NetworkSnapshot("before",

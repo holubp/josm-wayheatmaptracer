@@ -11,7 +11,9 @@ public record TraceRequest(
     RecoveryPermissions permissions,
     TraceBudgets budgets,
     String evidenceSnapshotId,
+    String evidenceContentHash,
     String networkSnapshotId,
+    String networkContentHash,
     String settingsHash,
     String parameterHash,
     String samplerId,
@@ -23,7 +25,8 @@ public record TraceRequest(
     public TraceRequest {
         if (selectedWayKey == null || selectedWayKey.type() != PrimitiveKey.Type.WAY || selectedRange == null
             || engine == null || geometryMode == null || permissions == null || budgets == null
-            || blank(evidenceSnapshotId) || blank(networkSnapshotId) || blank(settingsHash)
+            || blank(evidenceSnapshotId) || blank(evidenceContentHash) || blank(networkSnapshotId)
+            || blank(networkContentHash) || blank(settingsHash)
             || blank(parameterHash) || blank(samplerId) || !Double.isFinite(configuredSampleStepMeters)
             || configuredSampleStepMeters <= 0.0 || profileChainage == null || evidenceResolution == null
             || Math.abs(profileChainage.configuredStepMeters() - configuredSampleStepMeters) > 1e-12

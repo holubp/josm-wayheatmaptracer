@@ -119,7 +119,9 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
     private static void validate(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network) {
         if (request == null || evidence == null || network == null || request.engine() != TrackerMode.DIRECTIONAL_IMAGE
             || !request.evidenceSnapshotId().equals(evidence.snapshotId())
+            || !request.evidenceContentHash().equals(evidence.canonicalHash())
             || !request.networkSnapshotId().equals(network.snapshotId())
+            || !request.networkContentHash().equals(network.canonicalHash())
             || !request.evidenceResolution().equals(evidence.resolution()) || network.role() != SnapshotRole.CAPTURED_BEFORE) {
             throw new IllegalArgumentException("Directional image request does not match immutable snapshots");
         }

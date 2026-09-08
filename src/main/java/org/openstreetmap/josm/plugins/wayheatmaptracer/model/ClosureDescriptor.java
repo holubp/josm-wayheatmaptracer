@@ -74,7 +74,7 @@ public record ClosureDescriptor(
         Set<PrimitiveKey> capturedKeys = primitiveKeys;
         if (externalPorts.stream().anyMatch(port -> !capturedKeys.contains(port.wayKey())
             || !capturedKeys.contains(port.boundaryNodeKey())
-            || capturedKeys.contains(port.outsideNeighborKey()))) {
+            || !capturedKeys.contains(port.outsideNeighborKey()))) {
             throw new IllegalArgumentException("External ports must cross the captured closure boundary");
         }
     }

@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
@@ -36,11 +37,12 @@ final class RefinementTestFixtures {
         }
         ScalarEvidenceField field = new ScalarEvidenceField(width, height, values, valid,
                 new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
-                        EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "synthetic", "scene", false));
+                        EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "synthetic", EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
         MetricRegion region = MetricRegion.rectangle(scene.bounds().minX(), scene.bounds().minY(),
                 scene.bounds().maxX(), scene.bounds().maxY());
-        RasterMetricTransform transform = RasterMetricTransform.visible(
-                new MetricPoint(scene.pixelCenterX(0), scene.pixelCenterY(0)), pitch);
+        RasterMetricTransform transform = new RasterMetricTransform("synthetic-positive-y-v1",
+                RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                new MetricPoint(scene.pixelCenterX(0), scene.pixelCenterY(0)), pitch, 0.0, 0.0, pitch, 1.0);
         return new ImageCostField(field, transform, region, pitch);
     }
 
@@ -100,9 +102,11 @@ final class RefinementTestFixtures {
         ScalarEvidenceField field = new ScalarEvidenceField(size, size, values, valid,
                 new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
                         EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
-                        "synthetic", "constant", false));
+                        "synthetic", EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
         MetricRegion region = MetricRegion.rectangle(-50, -50, 49, 49);
         return new ImageCostField(field,
-                RasterMetricTransform.visible(new MetricPoint(-50, -50), 1.0), region, 1.0);
+                new RasterMetricTransform("synthetic-positive-y-v1",
+                        RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                        new MetricPoint(-50, -50), 1.0, 0.0, 0.0, 1.0, 1.0), region, 1.0);
     }
 }

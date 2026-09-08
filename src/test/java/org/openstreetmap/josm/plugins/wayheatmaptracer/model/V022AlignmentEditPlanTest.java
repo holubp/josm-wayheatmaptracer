@@ -185,7 +185,6 @@ class V022AlignmentEditPlanTest {
     }
 
     private static List<ExternalPort> standardPorts() {
-        return List.of(new ExternalPort(WAY_1, NODE_1, OUTSIDE_NODE, 0, ExternalPort.Side.BEFORE,
-            new GeographicPoint(41.9999, 18.9999)));
+        return List.of();
     }
 }
