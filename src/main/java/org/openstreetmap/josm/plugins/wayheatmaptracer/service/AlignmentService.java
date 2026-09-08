@@ -823,6 +823,8 @@ public final class AlignmentService {
                 corridorAwareTracker.trackDetailed(profiles, effectiveSampling.trackerNormalizationRasterPx(),
                     junctionContext(selection, profiles.size(), config, effectiveSampling), detector,
                     cleanupConfig, effectiveSampling.samplingScale().groundMetersPerRasterPixel()));
+            case PROBABILISTIC, HYBRID, DIRECTIONAL_IMAGE -> throw new IllegalStateException(
+                "Modern trace engine is not yet integrated");
         };
     }
 

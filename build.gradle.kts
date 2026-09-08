@@ -52,6 +52,15 @@ tasks.register<JavaExec>("extractJosmTmsCache") {
     mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.tools.JosmTileCacheExtractor")
 }
 
+tasks.register<JavaExec>("v022GenerateFixtures") {
+    group = "verification"
+    description = "Generates the deterministic public v0.22 analytic-fixture manifest"
+    classpath = sourceSets["tools"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022FixtureDescriptionTool")
+    args("--output", layout.buildDirectory.file("v022/synthetic/manifest.json").get().asFile.absolutePath)
+    outputs.file(layout.buildDirectory.file("v022/synthetic/manifest.json"))
+}
+
 tasks.jar {
     archiveBaseName.set("wayheatmaptracer")
     archiveVersion.set("")

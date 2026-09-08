@@ -42,7 +42,7 @@ public final class HeatmapSettingsDialog {
     private final JComboBox<String> color = new JComboBox<>(COLORS);
     private final JComboBox<String> manualLayer = new JComboBox<>();
     private final JComboBox<AlignmentMode> alignmentMode = new JComboBox<>(AlignmentMode.values());
-    private final JComboBox<TrackerMode> trackerMode = new JComboBox<>(TrackerMode.values());
+    private final JComboBox<TrackerMode> trackerMode = new JComboBox<>(TrackerMode.selectableValues());
     private final JComboBox<InferenceMode> inferenceMode = new JComboBox<>(InferenceMode.values());
     private final JComboBox<IntensitySamplingMode> intensitySamplingMode = new JComboBox<>(IntensitySamplingMode.values());
     private final JTextField regex = new JTextField(36);
