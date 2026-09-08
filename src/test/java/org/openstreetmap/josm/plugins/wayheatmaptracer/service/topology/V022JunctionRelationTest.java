@@ -1,0 +1,225 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.accepted;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.frozenCandidate;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.member;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.network;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.node;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.nodeId;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.plan;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.relation;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.relationId;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.way;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.wayId;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.FindingCode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.LocationFeatureDecision;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.PlanningResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.TopologyEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.TopologyNetwork;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.TopologyNetwork.Completeness;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.TopologyNetwork.Id;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.TopologyNetwork.Relation;
+
+class V022JunctionRelationTest {
+    private static final long L = 31;
+    private static final long J = 32;
+    private static final long M = 33;
+    private static final long R = 34;
+    private static final long A = 35;
+    private static final long K = 36;
+    private static final long T = 37;
+    private static final long RECEIVER = 201;
+    private static final long SELECTED = 202;
+
+    @Test
+    void t091ViaNodeRestrictionKeepsOrExplicitlyRemapsViaIdentityAndIncidence() {
+        Relation restriction = relation(301, Map.of("type", "restriction", "restriction", "no_left_turn"),
+            Completeness.COMPLETE, member(wayId(RECEIVER), "from"), member(nodeId(J), "via"),
+            member(wayId(SELECTED), "to"));
+        TopologyNetwork before = narrowT(List.of(restriction), Map.of(), Map.of("highway", "path"));
+
+        TopologyEditPlan edit = accepted(plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED));
+
+        assertEquals(restriction, edit.after().relation(relationId(301)));
+        assertTrue(edit.after().way(wayId(RECEIVER)).nodeIds().contains(nodeId(J)));
+        assertTrue(edit.after().way(wayId(SELECTED)).nodeIds().contains(nodeId(J)));
+
+        TopologyNetwork featureBefore = narrowT(List.of(restriction), Map.of("barrier", "gate"),
+            Map.of("highway", "path"));
+        TopologyEditPlan remapped = accepted(plan(featureBefore,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)),
+            Map.of(nodeId(J), LocationFeatureDecision.RETAIN_AT_OLD_LOCATION), Set.of(nodeId(J)),
+            RECEIVER, SELECTED));
+        Id newVia = remapped.junctionIdentities().get(nodeId(J));
+        assertEquals(newVia, remapped.after().relation(relationId(301)).members().get(1).memberId());
+        assertTrue(remapped.after().way(wayId(RECEIVER)).nodeIds().contains(newVia));
+        assertTrue(remapped.after().way(wayId(SELECTED)).nodeIds().contains(newVia));
+    }
+
+    @Test
+    void t092ViaWayRestrictionPreservesOrderedTraversalAndEntryExitConnections() {
+        long from = 211;
+        long via = 212;
+        long to = 213;
+        Relation restriction = relation(302, Map.of("type", "restriction", "restriction", "only_straight_on"),
+            Completeness.COMPLETE, member(wayId(from), "from"), member(wayId(via), "via"),
+            member(wayId(to), "to"));
+        TopologyNetwork before = network(
+            List.of(node(L, -10, 0), node(J, 0, 0), node(K, 20, 0), node(T, 40, 0), node(A, 10, 30)),
+            List.of(way(from, A, J), way(via, L, J, K), way(to, K, T)), List.of(restriction));
+
+        TopologyEditPlan edit = accepted(plan(before,
+            List.of(frozenCandidate(J, 10, 0, from, via)), Map.of(), Set.of(), from, via));
+
+        assertEquals(restriction.members(), edit.after().relation(relationId(302)).members());
+        assertTrue(sharesNode(edit.after(), wayId(from), wayId(via)));
+        assertTrue(sharesNode(edit.after(), wayId(via), wayId(to)));
+    }
+
+    @Test
+    void t093RestrictionExceptAndConditionalTagsArePreservedExactly() {
+        Map<String, String> tags = Map.of(
+            "type", "restriction",
+            "restriction", "no_right_turn",
+            "except", "bicycle;psv",
+            "restriction:conditional", "no_right_turn @ (Mo-Fr 07:00-09:00)");
+        Relation restriction = relation(303, tags, Completeness.COMPLETE,
+            member(wayId(RECEIVER), "from"), member(nodeId(J), "via"), member(wayId(SELECTED), "to"));
+        TopologyNetwork before = narrowT(List.of(restriction), Map.of(), Map.of("highway", "path"));
+
+        TopologyEditPlan edit = accepted(plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED));
+
+        assertEquals(tags, edit.after().relation(relationId(303)).tags());
+    }
+
+    @Test
+    void t094RouteRelationPreservesWayIdsMemberOrderRolesAndLocalContinuity() {
+        long left = 221;
+        long right = 222;
+        Relation route = relation(304, Map.of("type", "route", "route", "hiking"), Completeness.COMPLETE,
+            member(wayId(left), "forward"), member(wayId(right), "backward"));
+        TopologyNetwork before = network(
+            List.of(node(L, -60, 0), node(J, 0, 0), node(M, 10, 0), node(R, 60, 0), node(A, 20, 60)),
+            List.of(way(left, L, J), way(right, J, M, R), way(SELECTED, A, J)), List.of(route));
+
+        TopologyEditPlan edit = accepted(plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, left, right)), Map.of(), Set.of(),
+            left, right, SELECTED));
+
+        assertEquals(route, edit.after().relation(relationId(304)));
+        assertTrue(sharesNode(edit.after(), wayId(left), wayId(right)));
+    }
+
+    @Test
+    void t095LocationBoundTagRequiresExplicitDecisionAndIsNeverDuplicatedOrDropped() {
+        TopologyNetwork before = narrowT(List.of(), Map.of("highway", "traffic_signals"),
+            Map.of("highway", "path"));
+        PlanningResult unresolved = plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED);
+        assertFalse(unresolved.accepted());
+        assertTrue(unresolved.hasFinding(FindingCode.LOCATION_FEATURE_DECISION_REQUIRED));
+
+        TopologyEditPlan edit = accepted(plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)),
+            Map.of(nodeId(J), LocationFeatureDecision.RETAIN_AT_OLD_LOCATION), Set.of(),
+            RECEIVER, SELECTED));
+        Id replacement = edit.junctionIdentities().get(nodeId(J));
+        assertEquals(Map.of("highway", "traffic_signals"), edit.after().node(nodeId(J)).tags());
+        assertTrue(edit.after().node(replacement).tags().isEmpty());
+        assertEquals(1, edit.after().nodes().values().stream()
+            .filter(node -> "traffic_signals".equals(node.tags().get("highway"))).count());
+    }
+
+    @Test
+    void t096IncompleteOrUnknownAffectedRelationBlocksTheProposal() {
+        Relation incomplete = relation(305, Map.of("type", "restriction"), Completeness.INCOMPLETE,
+            member(wayId(RECEIVER), "from"), member(nodeId(J), "via"));
+        PlanningResult missing = plan(narrowT(List.of(incomplete), Map.of(), Map.of("highway", "path")),
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED);
+        assertFalse(missing.accepted());
+        assertTrue(missing.hasFinding(FindingCode.INCOMPLETE_RELATION));
+
+        Relation unknown = relation(306, Map.of("type", "connectivity"), Completeness.COMPLETE,
+            member(wayId(RECEIVER), ""));
+        PlanningResult unsupported = plan(narrowT(List.of(unknown), Map.of(), Map.of("highway", "path")),
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED);
+        assertFalse(unsupported.accepted());
+        assertTrue(unsupported.hasFinding(FindingCode.UNSUPPORTED_RELATION));
+    }
+
+    @Test
+    void t097GradeSeparatedCrossingStaysDisconnectedButExistingBridgeEndpointStaysShared() {
+        long lowerA = 41;
+        long lowerB = 42;
+        long lowerWay = 231;
+        TopologyNetwork gradeSeparated = network(
+            List.of(node(L, -60, 0), node(J, 0, 0), node(M, 10, 0), node(R, 60, 0), node(A, 20, 60),
+                node(lowerA, 20, -40), node(lowerB, 20, 40)),
+            List.of(way(RECEIVER, Map.of("highway", "primary", "layer", "0"), L, J, M, R),
+                way(SELECTED, A, J), way(lowerWay, Map.of("highway", "service", "tunnel", "yes", "layer", "-1"),
+                    lowerA, lowerB)));
+
+        TopologyEditPlan crossingEdit = accepted(plan(gradeSeparated,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED));
+        assertEquals(gradeSeparated.way(wayId(lowerWay)), crossingEdit.after().way(wayId(lowerWay)));
+        assertFalse(crossingEdit.after().way(wayId(lowerWay)).nodeIds().contains(nodeId(J)));
+
+        TopologyNetwork bridgeEndpoint = network(
+            List.of(node(L, -60, 0), node(J, 0, 0), node(R, 60, 0), node(A, 20, 60)),
+            List.of(way(RECEIVER, Map.of("highway", "primary", "layer", "0"), L, J, R),
+                way(SELECTED, Map.of("highway", "path", "bridge", "yes", "layer", "1"), A, J)));
+        TopologyEditPlan endpointEdit = accepted(plan(bridgeEndpoint,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, RECEIVER)), Map.of(), Set.of(),
+            RECEIVER, SELECTED));
+        assertTrue(endpointEdit.after().way(wayId(RECEIVER)).nodeIds().contains(nodeId(J)));
+        assertTrue(endpointEdit.after().way(wayId(SELECTED)).nodeIds().contains(nodeId(J)));
+    }
+
+    @Test
+    void t098AreaOrClosedWayThatWouldNeedTopologyChangeIsRejectedWithoutImplicitSplit() {
+        long areaWay = 241;
+        TopologyNetwork before = network(
+            List.of(node(L, -40, 0), node(J, 0, 0), node(R, 40, 0), node(A, 20, 50)),
+            List.of(way(areaWay, Map.of("area", "yes", "landuse", "grass"), L, J, R, L),
+                way(SELECTED, A, J)));
+
+        PlanningResult result = plan(before,
+            List.of(frozenCandidate(J, 20, 0, SELECTED, areaWay)), Map.of(), Set.of(),
+            areaWay, SELECTED);
+
+        assertFalse(result.accepted());
+        assertTrue(result.hasFinding(FindingCode.AREA_OR_CLOSED_WAY_UNSUPPORTED));
+        assertTrue(result.plan().isEmpty());
+    }
+
+    private static TopologyNetwork narrowT(List<Relation> relations, Map<String, String> junctionTags,
+        Map<String, String> selectedTags) {
+        return network(
+            List.of(node(L, -60, 0), node(J, 0, 0, junctionTags), node(M, 10, 0),
+                node(R, 60, 0), node(A, 20, 60)),
+            List.of(way(RECEIVER, Map.of("highway", "primary"), L, J, M, R),
+                way(SELECTED, selectedTags, A, J)), relations);
+    }
+
+    private static boolean sharesNode(TopologyNetwork network, Id firstWay, Id secondWay) {
+        return network.way(firstWay).nodeIds().stream()
+            .anyMatch(network.way(secondWay).nodeIds()::contains);
+    }
+}
