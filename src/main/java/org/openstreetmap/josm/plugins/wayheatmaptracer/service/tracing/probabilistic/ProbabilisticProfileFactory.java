@@ -17,6 +17,23 @@ public final class ProbabilisticProfileFactory {
     private static final double[] B5 = {1, 4, 6, 4, 1};
 
     /**
+     * Computes the exact profile chainage used by deterministic resampling.
+     *
+     *  sourcePolyline selected way geometry in the snapshot metric frame
+     *  configuredStepMeters desired longitudinal step in ground metres
+     *  immutable request-owned chainage accepted by the profile sampler
+     */
+    public org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage(
+            List<MetricPoint> sourcePolyline, double configuredStepMeters) {
+        if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)) {
+            throw new IllegalArgumentException("Profile chainage inputs are incomplete");
+        }
+        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters);
+        return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage(
+                curve.chainageMeters(), configuredStepMeters);
+    }
+
+    /**
      * Samples complete physical profiles along an immutable source polyline.
      *
      * @param sourcePolyline selected way geometry in the snapshot metric frame

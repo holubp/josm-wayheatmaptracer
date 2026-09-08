@@ -12,6 +12,18 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 
 class V022ProbabilisticStateTest {
+    
+    void exportedProfileChainageExactlyMatchesFactoryResampling() {
+        List<MetricPoint> source = List.of(new MetricPoint(0, 0), new MetricPoint(3, 0),
+                new MetricPoint(3, 4));
+        ProbabilisticProfileFactory factory = new ProbabilisticProfileFactory();
+
+        var chainage = factory.profileChainage(source, 2.0);
+
+        assertEquals(List.of(0.0, 1.75, 3.5, 5.25, 7.0), chainage.cumulativeGroundMeters());
+        assertEquals(2.0, chainage.configuredStepMeters());
+    }
+
     @Test
     void t013FullProfileStatesDoNotDependOnCorridorATrackMembership() {
         ProbabilisticProfile profile = profile(List.of(mode("discarded-by-a", 2.25)), List.of(), OptionalDouble.empty());

@@ -85,7 +85,16 @@ public final class ModernTracePipeline {
         this.corridorProposalEngine = corridorProposalEngine;
     }
 
-    /** Runs inference and every common post-inference stage on immutable inputs. */
+    /**
+     * Runs inference and every common post-inference stage on immutable inputs.
+     *
+     *  request frozen engine request and budgets
+     *  evidence frozen scalar raster evidence
+     *  network frozen OSM network closure
+     *  options common refinement and ranking options
+     *  cancellation cooperative cancellation boundary
+     *  inference diagnostics and physically ranked final routes
+     */
     public Result run(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
             Options options, CancellationProbe cancellation) {
         if (request == null || evidence == null || network == null || options == null
