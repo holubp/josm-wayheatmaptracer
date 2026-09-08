@@ -9,8 +9,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.IPreferences;
 
@@ -49,6 +52,14 @@ public final class PluginPreferences {
     private static final String SAMPLE_STEP_METERS = PREFIX + "sampleStepMeters";
     private static final String INTENSITY_SAMPLING_MODE = PREFIX + "intensitySamplingMode";
     private static final String CACHE_BUSTER = PREFIX + "cacheBuster";
+    private static final String TRACING_SCHEMA_VERSION = PREFIX + "tracing.schemaVersion";
+    private static final String TRACING_ENGINE = PREFIX + "tracing.engine";
+    private static final String TRACING_DIAGNOSTIC_COMPARISONS = PREFIX + "tracing.diagnosticComparisons";
+    private static final String RECOVERY_SCHEMA_VERSION = PREFIX + "recovery.schemaVersion";
+    private static final String RECOVERY_WIDER_DISCOVERY = PREFIX + "recovery.widerDiscovery";
+    private static final String RECOVERY_MAXIMUM_RADIUS_METERS = PREFIX + "recovery.maximumRadiusMeters";
+    private static final String RECOVERY_JUNCTION_POLICY = PREFIX + "recovery.junctionPolicy";
+    private static final String RECOVERY_RECONSTRUCT_INCIDENT_WAYS = PREFIX + "recovery.reconstructIncidentWays";
     private static final String CLEANUP_SCHEMA_VERSION = PREFIX + "cleanup.schemaVersion";
     private static final String CLEANUP_MODE = PREFIX + "cleanup.mode";
     private static final String CLEANUP_CHOICE = PREFIX + "cleanup.choice";
@@ -108,6 +119,60 @@ public final class PluginPreferences {
             IntensitySamplingMode.fromPreference(pref.get(INTENSITY_SAMPLING_MODE, IntensitySamplingMode.COLOR_MAPPING.name())),
             Math.max(0L, pref.getLong(CACHE_BUSTER, 0L))
         );
+    }
+
+    /**
+     * Loads versioned modern tracing settings without granting new route or network-edit authority
+     * to old preferences.
+     *
+     * <p>A missing modern schema retains the stored tracker choice, defaults to A otherwise, and
+     * maps the legacy junction checkbox only to {@link JunctionPolicy#LEGACY_BOUNDED_MOVE}.
+     * It never infers {@link JunctionPolicy#REATTACH}.</p>
+     *
+     * @return immutable modern tracing settings
+     */
+    public static TracingSettings loadTracingSettings() {
+        ManagedHeatmapConfig legacy = load();
+        IPreferences pref = Config.getPref();
+        if (pref == null || pref.getInt(TRACING_SCHEMA_VERSION, 0) < 1) {
+            JunctionPolicy policy = legacy.adjustJunctionNodes()
+                ? JunctionPolicy.LEGACY_BOUNDED_MOVE : JunctionPolicy.FIXED;
+            return new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, legacy.trackerMode(),
+                new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION, false,
+                    legacy.searchHalfWidthMeters(), legacy.searchHalfWidthMeters(), policy, false), false);
+        }
+        TrackerMode engine = TrackerMode.fromPreference(pref.get(TRACING_ENGINE, legacy.trackerMode().name()));
+        double ordinary = legacy.searchHalfWidthMeters();
+        boolean wider = pref.getBoolean(RECOVERY_WIDER_DISCOVERY, false);
+        double maximum = wider ? Math.max(ordinary, pref.getDouble(RECOVERY_MAXIMUM_RADIUS_METERS,
+            RecoverySettings.DEFAULT_MAXIMUM_DISCOVERY_RADIUS_METERS)) : ordinary;
+        JunctionPolicy policy = junctionPolicy(pref.get(RECOVERY_JUNCTION_POLICY, JunctionPolicy.FIXED.name()));
+        boolean reconstruct = policy == JunctionPolicy.REATTACH
+            && pref.getBoolean(RECOVERY_RECONSTRUCT_INCIDENT_WAYS, false);
+        try {
+            return new TracingSettings(Math.max(1, pref.getInt(TRACING_SCHEMA_VERSION,
+                TracingSettings.CURRENT_SCHEMA_VERSION)), engine,
+                new RecoverySettings(Math.max(1, pref.getInt(RECOVERY_SCHEMA_VERSION,
+                    RecoverySettings.CURRENT_SCHEMA_VERSION)), wider, ordinary, maximum, policy, reconstruct),
+                pref.getBoolean(TRACING_DIAGNOSTIC_COMPARISONS, false));
+        } catch (IllegalArgumentException exception) {
+            return TracingSettings.defaults(ordinary);
+        }
+    }
+
+    /** Saves modern tracing/recovery settings without rewriting legacy junction-adjustment intent. */
+    public static void saveTracingSettings(TracingSettings settings) {
+        Objects.requireNonNull(settings, "settings");
+        IPreferences pref = Config.getPref();
+        pref.putInt(TRACING_SCHEMA_VERSION, TracingSettings.CURRENT_SCHEMA_VERSION);
+        pref.put(TRACING_ENGINE, settings.engine().name());
+        pref.putBoolean(TRACING_DIAGNOSTIC_COMPARISONS, settings.diagnosticComparisons());
+        RecoverySettings recovery = settings.recovery();
+        pref.putInt(RECOVERY_SCHEMA_VERSION, RecoverySettings.CURRENT_SCHEMA_VERSION);
+        pref.putBoolean(RECOVERY_WIDER_DISCOVERY, recovery.widerDiscovery());
+        pref.putDouble(RECOVERY_MAXIMUM_RADIUS_METERS, recovery.maximumDiscoveryRadiusMeters());
+        pref.put(RECOVERY_JUNCTION_POLICY, recovery.junctionPolicy().name());
+        pref.putBoolean(RECOVERY_RECONSTRUCT_INCIDENT_WAYS, recovery.reconstructIncidentWays());
     }
 
     /**
@@ -297,6 +362,18 @@ public final class PluginPreferences {
      */
     public static boolean isDebugEnabled() {
         return load().debug();
+    }
+
+
+    private static JunctionPolicy junctionPolicy(String value) {
+        if (value != null) {
+            for (JunctionPolicy policy : JunctionPolicy.values()) {
+                if (policy.name().equalsIgnoreCase(value.trim())) {
+                    return policy;
+                }
+            }
+        }
+        return JunctionPolicy.FIXED;
     }
 
     private static void putSensitive(String key, String value) {

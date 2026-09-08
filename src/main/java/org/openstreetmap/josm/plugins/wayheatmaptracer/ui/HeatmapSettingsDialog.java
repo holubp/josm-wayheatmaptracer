@@ -21,6 +21,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieParser;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.StravaCookieValues;
@@ -55,6 +58,11 @@ public final class HeatmapSettingsDialog {
     private final JCheckBox parallelWayAwareness = new JCheckBox(tr("Use nearby parallel ways as alignment context"));
     private final JCheckBox allowUndownloadedAlignment = new JCheckBox(tr("Allow aligning without downloaded OSM area"));
     private final JCheckBox adjustJunctionNodes = new JCheckBox(tr("Adjust junction and endpoint nodes"));
+    private final JCheckBox widerDiscovery = new JCheckBox(tr("Allow one wider discovery attempt"));
+    private final JTextField maximumDiscoveryRadiusMeters = new JTextField(8);
+    private final JComboBox<JunctionPolicy> junctionPolicy = new JComboBox<>(JunctionPolicy.values());
+    private final JCheckBox reconstructIncidentWays = new JCheckBox(tr("Reconstruct incident-way geometry"));
+    private final JCheckBox diagnosticComparisons = new JCheckBox(tr("Run additional experimental engines for comparison"));
     private final JTextField halfWidth = new JTextField(8);
     private final JTextField step = new JTextField(8);
     private final JTextField inferenceZoom = new JTextField(8);
@@ -103,6 +111,25 @@ public final class HeatmapSettingsDialog {
         searchHalfWidthMeters.setText(Double.toString(config.searchHalfWidthMeters()));
         sampleStepMeters.setText(Double.toString(config.sampleStepMeters()));
         cacheBuster = config.cacheBuster();
+
+        TracingSettings tracing = PluginPreferences.loadTracingSettings();
+        trackerMode.setSelectedItem(tracing.engine());
+        widerDiscovery.setSelected(tracing.recovery().widerDiscovery());
+        maximumDiscoveryRadiusMeters.setText(Double.toString(
+            tracing.recovery().maximumDiscoveryRadiusMeters()));
+        junctionPolicy.setSelectedItem(tracing.recovery().junctionPolicy());
+        reconstructIncidentWays.setSelected(tracing.recovery().reconstructIncidentWays());
+        diagnosticComparisons.setSelected(tracing.diagnosticComparisons());
+        junctionPolicy.addActionListener(event -> updateRecoveryControlState());
+        adjustJunctionNodes.addActionListener(event -> {
+            if (adjustJunctionNodes.isSelected()
+                && junctionPolicy.getSelectedItem() == JunctionPolicy.REATTACH) {
+                junctionPolicy.setSelectedItem(JunctionPolicy.FIXED);
+            }
+            updateRecoveryControlState();
+        });
+        updateRecoveryControlState();
+
 
         manualLayer.addItem("");
         for (org.openstreetmap.josm.gui.layer.Layer layer : MainApplication.getLayerManager().getLayers()) {
@@ -183,6 +210,16 @@ public final class HeatmapSettingsDialog {
         panel.add(allowUndownloadedAlignment, GBC.eol());
         panel.add(adjustJunctionNodes, GBC.eol());
 
+        panel.add(widerDiscovery, GBC.eol());
+        panel.add(new JLabel(tr("Maximum discovery radius meters")), GBC.std());
+        panel.add(maximumDiscoveryRadiusMeters, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Modern junction policy")), GBC.std());
+        panel.add(junctionPolicy, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(reconstructIncidentWays, GBC.eol());
+        panel.add(new JLabel(tr("Legacy junction adjustment moves existing endpoints only; reattachment is a separate explicit network edit.")), GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(diagnosticComparisons, GBC.eol());
+
+
         int answer = JOptionPane.showConfirmDialog(
             parent,
             panel,
@@ -226,7 +263,35 @@ public final class HeatmapSettingsDialog {
             (IntensitySamplingMode) intensitySamplingMode.getSelectedItem(),
             cacheBuster
         ));
+
+        double ordinaryRadius = parseDouble(searchHalfWidthMeters.getText(), 7.01);
+        boolean enableWiderDiscovery = widerDiscovery.isSelected();
+        JunctionPolicy selectedJunctionPolicy = (JunctionPolicy) junctionPolicy.getSelectedItem();
+        if (selectedJunctionPolicy == null) {
+            selectedJunctionPolicy = JunctionPolicy.FIXED;
+        }
+        PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+            (TrackerMode) trackerMode.getSelectedItem(), new RecoverySettings(
+                RecoverySettings.CURRENT_SCHEMA_VERSION, enableWiderDiscovery, ordinaryRadius,
+                enableWiderDiscovery ? Math.max(ordinaryRadius, parseDouble(
+                    maximumDiscoveryRadiusMeters.getText(),
+                    RecoverySettings.DEFAULT_MAXIMUM_DISCOVERY_RADIUS_METERS)) : ordinaryRadius,
+                selectedJunctionPolicy, selectedJunctionPolicy == JunctionPolicy.REATTACH
+                    && reconstructIncidentWays.isSelected()), diagnosticComparisons.isSelected()));
         return true;
+    }
+
+
+    private void updateRecoveryControlState() {
+        boolean reattach = junctionPolicy.getSelectedItem() == JunctionPolicy.REATTACH;
+        reconstructIncidentWays.setEnabled(reattach);
+        if (!reattach) {
+            reconstructIncidentWays.setSelected(false);
+        }
+        adjustJunctionNodes.setEnabled(!reattach);
+        if (reattach) {
+            adjustJunctionNodes.setSelected(false);
+        }
     }
 
     private void bypassManagedTileCache() {

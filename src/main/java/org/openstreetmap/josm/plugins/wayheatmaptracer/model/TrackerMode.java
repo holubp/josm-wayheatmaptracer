@@ -16,9 +16,9 @@ public enum TrackerMode {
         this.capabilities = capabilities;
     }
 
-    /** Returns engines currently wired to a complete preview/apply path. */
+    /** Returns every engine deliberately exposed by the versioned tracing settings UI. */
     public static TrackerMode[] selectableValues() {
-        return new TrackerMode[] {LEGACY_V02, CORRIDOR_AWARE};
+        return values().clone();
     }
 
     /** Returns the public default used when no explicit preference exists. */
