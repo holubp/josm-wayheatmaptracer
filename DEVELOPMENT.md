@@ -25,7 +25,11 @@ capture and pipeline integration remain separate work.
 `MetricRegion.intersectsSegment` tests segment interiors, boundary contacts, and
 collinear overlaps against each polygon in the region union. It preserves gaps
 between polygons; endpoint containment alone cannot establish spatial exclusion.
-Live collision-closure capture and revalidation are separate callers of this helper.
+`CollisionEnvelopeQuery` uses that helper after clipping geographic segments to the
+certified local frame. Its versioned scan limits apply before copying way nodes.
+Unknown/incomplete ways and ambiguous antipodal longitude arcs produce an explicit
+indeterminate failure; fully known remote geometry is excluded normally. Live
+snapshot producers and Apply/preview validation still require integration.
 
 ## Build And Test
 
