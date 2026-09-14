@@ -3,7 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -133,9 +135,10 @@ public final class AlignmentJob<R> implements AutoCloseable {
     private final AtomicReference<Attempt<R>> current = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    /** Creates a single-worker job with a bounded daemon executor. */
+    /** Creates one daemon worker with capacity for one pending attempt; overload fails explicitly. */
     public AlignmentJob(EventDispatcher dispatcher) {
-        this(dispatcher, Executors.newSingleThreadExecutor(new JobThreadFactory()));
+        this(dispatcher, new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(1), new JobThreadFactory(), new ThreadPoolExecutor.AbortPolicy()));
     }
 
     /** Creates a job with an injected executor for lifecycle integration tests. */

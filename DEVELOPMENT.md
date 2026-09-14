@@ -6,6 +6,8 @@ cannot cancel a replacement attempt or overwrite an already terminal outcome.
 Capture completion submits work only while it still owns the capturing state.
 An attempt cancelled during capture returns its cancelled outcome without queueing
 work; a rejected executor submission terminates the owned attempt as failed.
+The default executor allows one running and one pending attempt. A cancelled
+pending task retains its slot until drained; overload fails explicitly.
 
 ## Build And Test
 
