@@ -72,8 +72,9 @@ class V022AlignmentEditPlanTest {
 
     @Test
     void t103BeforeAndAfterClosurePortsAndGenerationMustMatch() {
-        NetworkSnapshot after = new NetworkSnapshot("changed-generation", SnapshotRole.PROPOSED_AFTER, "dataset-fixture", 2L,
-            afterSnapshot().closure(), afterSnapshot().primitives());
+        NetworkSnapshot after = new NetworkSnapshot("changed-generation", SnapshotRole.PROPOSED_AFTER,
+            "dataset-fixture", 2L, afterSnapshot().closure(), afterSnapshot().primitives(),
+            afterSnapshot().incomingReferrerWatches());
 
         assertThrows(IllegalArgumentException.class,
             () -> plan(beforeSnapshot(), after, expectedPreview()));
@@ -166,8 +167,10 @@ class V022AlignmentEditPlanTest {
 
     private static NetworkSnapshot snapshot(String id, Map<PrimitiveKey, DetachedPrimitive> primitives,
         ClosureDescriptor closure) {
-        return new NetworkSnapshot(id, id.startsWith("before") ? SnapshotRole.CAPTURED_BEFORE : SnapshotRole.PROPOSED_AFTER,
-            "dataset-fixture", 1L, closure, primitives);
+        return new NetworkSnapshot(id,
+            id.startsWith("before") ? SnapshotRole.CAPTURED_BEFORE : SnapshotRole.PROPOSED_AFTER,
+            "dataset-fixture", 1L, closure, primitives,
+            V022SnapshotFixtures.closedWorldReferrerWatches(primitives));
     }
 
     private static ClosureDescriptor standardClosure() {

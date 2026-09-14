@@ -333,7 +333,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             }
         }
         Map<PrimitiveKey, Set<PrimitiveKey>> expectedReferrers = beforeState
-            ? plan.before().incomingReferrers() : plan.after().incomingReferrers();
+            ? plan.before().incomingReferrerWatches() : plan.after().incomingReferrerWatches();
         for (PrimitiveKey key : expected.keySet()) {
             Set<PrimitiveKey> actual = new LinkedHashSet<>();
             requireLivePrimitive(key).getReferrers().forEach(referrer -> actual.add(keyForLive(referrer)));

@@ -69,7 +69,8 @@ class V022ContractAdversarialTest {
             MetricRegion.rectangle(-5, -5, 5, 5), false, true, true, true);
 
         assertThrows(IllegalArgumentException.class, () -> new NetworkSnapshot("before",
-            SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, values));
+            SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, values,
+            V022SnapshotFixtures.closedWorldReferrerWatches(values)));
     }
 
     @Test

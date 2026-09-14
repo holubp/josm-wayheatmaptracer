@@ -122,6 +122,28 @@ class V022AtomicApplyTest {
     }
 
     @Test
+    void g603FailureRestoresUnchangedExternalBoundaryReferrer() {
+        Fixture fixture = Fixture.createWithExternalBoundaryReferrer();
+        LiveState before = LiveState.capture(fixture);
+        Way external = (Way) fixture.dataSet.getPrimitiveById(30L,
+            org.openstreetmap.josm.data.osm.OsmPrimitiveType.WAY);
+        ApplyAlignmentEditPlanCommand command = fixture.command(point -> {
+            if (point == ApplyAlignmentEditPlanCommand.MutationPoint.AFTER_MOVE_NODES) {
+                throw new InjectedFailure(point);
+            }
+        });
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+            () -> onEdt(() -> UndoRedoHandler.getInstance().add(command)));
+
+        assertTrue(failure.getCause() instanceof InjectedFailure);
+        before.assertMatches(fixture);
+        assertEquals(List.of(9L, 1L), external.getNodeIds());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
     void g601InterruptedOffEdtApplyCannotQueueALateMutation() throws InterruptedException {
         Fixture fixture = Fixture.create(false);
         LiveState before = LiveState.capture(fixture);
@@ -288,10 +310,19 @@ class V022AtomicApplyTest {
         }
 
         static Fixture createWithNeverUploadedSecondNode() {
-            return create(false, false);
+            return create(false, false, false);
+        }
+
+        static Fixture createWithExternalBoundaryReferrer() {
+            return create(false, true, true);
         }
 
         private static Fixture create(boolean initiallyDirty, boolean secondNodeUploaded) {
+            return create(initiallyDirty, secondNodeUploaded, false);
+        }
+
+        private static Fixture create(boolean initiallyDirty, boolean secondNodeUploaded,
+            boolean externalBoundaryReferrer) {
             DataSet dataSet = new DataSet();
             Node n1 = loadedNode(1, 42.0000, 19.0000);
             Node n2 = secondNodeUploaded ? loadedNode(2, 42.0000, 19.0001)
@@ -320,6 +351,14 @@ class V022AtomicApplyTest {
             restriction.setModified(false);
             dataSet.addPrimitive(restriction);
 
+            Way external = null;
+            if (externalBoundaryReferrer) {
+                Node externalNode = loadedNode(9, 42.0003, 19.0000);
+                dataSet.addPrimitive(externalNode);
+                external = loadedWay(30, List.of(externalNode, n1));
+                dataSet.addPrimitive(external);
+            }
+
             if (initiallyDirty) {
                 Node unrelatedNew = new Node(new LatLon(42.001, 19.001));
                 unrelatedNew.put("note", "pre-existing local edit");
@@ -328,7 +367,7 @@ class V022AtomicApplyTest {
             }
 
             return new Fixture(dataSet, createPlan(dataSet, selected, incident, independent, restriction,
-                n1, n2, n3, n4, n5, n7, n8));
+                external == null ? null : key(external), n1, n2, n3, n4, n5, n7, n8));
         }
 
         ApplyAlignmentEditPlanCommand command(ApplyAlignmentEditPlanCommand.MutationProbe probe) {
@@ -337,7 +376,7 @@ class V022AtomicApplyTest {
         }
 
         private static AlignmentEditPlan createPlan(DataSet dataSet, Way selected, Way incident,
-            Way independent, Relation restriction, Node... nodes) {
+            Way independent, Relation restriction, PrimitiveKey externalBoundaryReferrer, Node... nodes) {
             Map<PrimitiveKey, DetachedPrimitive> beforeValues = new LinkedHashMap<>();
             for (Node node : nodes) {
                 beforeValues.put(key(node), detached(node));
@@ -373,8 +412,14 @@ class V022AtomicApplyTest {
                 MetricRegion.rectangle(-100.0, -100.0, 100.0, 100.0),
                 true, true, true, true);
 
+            Map<PrimitiveKey, Set<PrimitiveKey>> beforeWatches = new LinkedHashMap<>(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures
+                    .closedWorldReferrerWatches(beforeValues));
+            if (externalBoundaryReferrer != null) {
+                beforeWatches.put(n1, Set.of(selectedKey, externalBoundaryReferrer));
+            }
             NetworkSnapshot before = new NetworkSnapshot("atomic-before", SnapshotRole.CAPTURED_BEFORE,
-                DATASET_ID, SOURCE_GENERATION, closure, beforeValues);
+                DATASET_ID, SOURCE_GENERATION, closure, beforeValues, beforeWatches);
             Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(beforeValues);
             afterValues.remove(n2);
             afterValues.remove(n3);
@@ -391,8 +436,14 @@ class V022AtomicApplyTest {
                 new DetachedRelationMember(replacement, "via"),
                 new DetachedRelationMember(incidentKey, "to")),
                 Map.copyOf(restriction.getKeys()), false, true));
+            Map<PrimitiveKey, Set<PrimitiveKey>> afterWatches = new LinkedHashMap<>(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures
+                    .closedWorldReferrerWatches(afterValues));
+            if (externalBoundaryReferrer != null) {
+                afterWatches.put(n1, Set.of(selectedKey, externalBoundaryReferrer));
+            }
             NetworkSnapshot after = new NetworkSnapshot("atomic-after", SnapshotRole.PROPOSED_AFTER,
-                DATASET_ID, SOURCE_GENERATION, closure, afterValues);
+                DATASET_ID, SOURCE_GENERATION, closure, afterValues, afterWatches);
 
             GeographicPoint origin = new GeographicPoint(42.0001, 19.0001);
             LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(origin,

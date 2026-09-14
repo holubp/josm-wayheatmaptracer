@@ -174,7 +174,9 @@ class V022ModernTracePipelineTest {
                 Map.of(way, List.of(new OccurrenceRange(0, 1))), List.of(), region, region,
                 false, true, true, true);
         NetworkSnapshot network = new NetworkSnapshot("network", SnapshotRole.CAPTURED_BEFORE,
-                "dataset", 1, closure, values);
+                "dataset", 1, closure, values,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures
+                    .closedWorldReferrerWatches(values));
         int size = 15;
         double[] intensity = new double[size * size];
         boolean[] valid = new boolean[intensity.length];

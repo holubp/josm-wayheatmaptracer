@@ -224,7 +224,9 @@ class V022LocalizationCorrectionTest {
             Set.of(), Map.of(way, List.of(new OccurrenceRange(0, 1))), List.of(), region, region,
             false, true, true, true);
         NetworkSnapshot network = new NetworkSnapshot("localization-network",
-            SnapshotRole.CAPTURED_BEFORE, "localization-dataset", 1, closure, primitives);
+            SnapshotRole.CAPTURED_BEFORE, "localization-dataset", 1, closure, primitives,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures
+                .closedWorldReferrerWatches(primitives));
         ProbabilisticProfileFactory factory = new ProbabilisticProfileFactory();
         List<MetricPoint> source = List.of(new MetricPoint(10, 50), new MetricPoint(110, 50));
         var chainage = factory.profileChainage(source, 10.0);

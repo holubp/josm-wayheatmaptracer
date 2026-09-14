@@ -59,6 +59,40 @@ class V022AtomicApplyLifecycleTest {
     }
 
     @Test
+    void g603ExternalBoundaryReferrerSurvivesApplyAndUndo() {
+        V022AtomicApplyTest.Fixture fixture =
+            V022AtomicApplyTest.Fixture.createWithExternalBoundaryReferrer();
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture);
+        Way external = way(fixture, 30L);
+
+        apply(fixture);
+
+        assertEquals(List.of(9L, 1L), external.getNodeIds());
+        assertEquals(Set.of(10L, 30L), referrerIds(node(fixture, 1L)));
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        before.assertMatches(fixture);
+        assertEquals(List.of(9L, 1L), external.getNodeIds());
+    }
+
+    @Test
+    void g603StaleExternalBoundaryReferrerRejectsBeforeMutation() {
+        V022AtomicApplyTest.Fixture fixture =
+            V022AtomicApplyTest.Fixture.createWithExternalBoundaryReferrer();
+        Way external = way(fixture, 30L);
+        external.setNodes(List.of(node(fixture, 9L)));
+        V022AtomicApplyTest.LiveState stale = V022AtomicApplyTest.LiveState.capture(fixture);
+        ApplyAlignmentEditPlanCommand command = fixture.command(point -> { });
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+            () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command)));
+
+        assertTrue(failure.getMessage().startsWith("Stale referrer closure: "));
+        stale.assertMatches(fixture);
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
     void g601OffEdtUndoIsRejectedWithoutLateMutationOrUndoOwnershipLoss() {
         V022AtomicApplyTest.Fixture fixture = V022AtomicApplyTest.Fixture.create(false);
         ApplyAlignmentEditPlanCommand command = apply(fixture);

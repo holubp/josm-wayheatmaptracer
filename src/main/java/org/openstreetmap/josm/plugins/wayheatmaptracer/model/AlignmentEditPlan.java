@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -46,6 +47,7 @@ public record AlignmentEditPlan(
             throw new IllegalArgumentException("Selected occurrence range exceeds source way");
         }
         validateIdentityNamespaces(before, after);
+        validateProposedReferrerWatches(before, after);
         Set<PrimitiveKey> writeSet = writeSet(before, after);
         if (writeSet.isEmpty()) {
             throw new IllegalArgumentException("An edit plan must contain a material change");
@@ -61,6 +63,8 @@ public record AlignmentEditPlan(
         validateOccurrenceAuthority(before, after, writeSet);
         validateMetricAuthority(before, after, writeSet, metricFrame);
         Set<PrimitiveKey> affectedWays = affectedWayKeys(before, after, writeSet);
+        validateDecisionReferrerPayload(before, after, writeSet, affectedWays,
+            selectedWayKey, selectedRange);
         if (!finalPreviewWays.keySet().equals(affectedWays)) {
             throw new IllegalArgumentException("Final preview must contain exactly every affected way geometry");
         }
@@ -89,7 +93,7 @@ public record AlignmentEditPlan(
 
     /** Returns the schema-versioned identity that review confirmation binds to. */
     public String canonicalHash() {
-        CanonicalEncoder encoder = new CanonicalEncoder().field("alignment-edit-plan-v3");
+        CanonicalEncoder encoder = new CanonicalEncoder().field("alignment-edit-plan-v4");
         NetworkSnapshot.encodeKey(encoder, selectedWayKey);
         encoder.field(selectedRange.firstIndex()).field(selectedRange.lastIndex())
             .field(before.canonicalHash()).field(after.canonicalHash())
@@ -127,6 +131,38 @@ public record AlignmentEditPlan(
         }
     }
 
+    private static void validateProposedReferrerWatches(NetworkSnapshot before,
+        NetworkSnapshot after) {
+        Map<PrimitiveKey, Set<PrimitiveKey>> expected = new LinkedHashMap<>();
+        Map<PrimitiveKey, Set<PrimitiveKey>> beforeInternal = before.internalIncomingReferrers();
+        Map<PrimitiveKey, Set<PrimitiveKey>> afterInternal = after.internalIncomingReferrers();
+        for (PrimitiveKey target : after.primitives().keySet()) {
+            Set<PrimitiveKey> refs = new LinkedHashSet<>(afterInternal.get(target));
+            if (before.primitives().containsKey(target)) {
+                Set<PrimitiveKey> external = new LinkedHashSet<>(
+                    before.incomingReferrerWatches().get(target));
+                external.removeAll(beforeInternal.get(target));
+                refs.addAll(external);
+            }
+            expected.put(target, Set.copyOf(refs));
+        }
+        Set<PrimitiveKey> removed = new LinkedHashSet<>(before.primitives().keySet());
+        removed.removeAll(after.primitives().keySet());
+        for (PrimitiveKey target : removed) {
+            Set<PrimitiveKey> external = new LinkedHashSet<>(
+                before.incomingReferrerWatches().get(target));
+            external.removeAll(beforeInternal.get(target));
+            if (!external.isEmpty()) {
+                throw new IllegalArgumentException(
+                    "Removed primitive retains an external referrer watch");
+            }
+        }
+        if (!expected.equals(after.incomingReferrerWatches())) {
+            throw new IllegalArgumentException(
+                "Proposed referrer watches do not match the exact derived graph");
+        }
+    }
+
     private static void validateCreatedAndRemoved(NetworkSnapshot before, NetworkSnapshot after,
         Set<PrimitiveKey> writeSet) {
         Set<PrimitiveKey> added = new LinkedHashSet<>(after.primitives().keySet());
@@ -147,11 +183,10 @@ public record AlignmentEditPlan(
         }
         for (PrimitiveKey key : removed) {
             DetachedPrimitive primitive = before.primitives().get(key);
-            if (!(primitive instanceof DetachedNode node) || !node.tags().isEmpty()
-                || after.incomingReferrers().containsKey(key)) {
+            if (!(primitive instanceof DetachedNode node) || !node.tags().isEmpty()) {
                 throw new IllegalArgumentException("Only authorized untagged unreferenced nodes may be removed");
             }
-            Set<PrimitiveKey> oldReferrers = before.incomingReferrers().getOrDefault(key, Set.of());
+            Set<PrimitiveKey> oldReferrers = before.incomingReferrerWatches().get(key);
             if (!writeSet.containsAll(oldReferrers)) {
                 throw new IllegalArgumentException("Every old referrer of a removed node must be rewritten");
             }
@@ -205,7 +240,7 @@ public record AlignmentEditPlan(
 
     private static boolean nodeSharedWithSelected(NetworkSnapshot snapshot, PrimitiveKey nodeKey,
         PrimitiveKey selectedWayKey) {
-        Set<PrimitiveKey> referrers = snapshot.incomingReferrers().getOrDefault(nodeKey, Set.of());
+        Set<PrimitiveKey> referrers = snapshot.incomingReferrerWatches().get(nodeKey);
         return referrers.contains(selectedWayKey) && referrers.stream()
             .anyMatch(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selectedWayKey));
     }
@@ -424,6 +459,161 @@ public record AlignmentEditPlan(
         });
     }
 
+    private static Set<PrimitiveKey> retainedNodesWithChangedIncidence(NetworkSnapshot before,
+        NetworkSnapshot after, PrimitiveKey selectedWayKey, OccurrenceRange selectedRange) {
+        Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> beforeIncidence =
+            wayIncidence(before);
+        Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> afterIncidence =
+            wayIncidence(after);
+        Set<PrimitiveKey> result = new LinkedHashSet<>();
+        for (PrimitiveKey key : before.primitives().keySet()) {
+            Map<PrimitiveKey, List<DirectedNeighbors>> oldOccurrences =
+                beforeIncidence.getOrDefault(key, Map.of());
+            Map<PrimitiveKey, List<DirectedNeighbors>> newOccurrences =
+                afterIncidence.getOrDefault(key, Map.of());
+            if (key.type() != PrimitiveKey.Type.NODE
+                || !(after.primitives().get(key) instanceof DetachedNode)
+                || oldOccurrences.equals(newOccurrences)) {
+                continue;
+            }
+            if (!permittedFixedBoundaryCut(before, after, key, selectedWayKey, selectedRange,
+                oldOccurrences, newOccurrences)) {
+                result.add(key);
+            }
+        }
+        return Set.copyOf(result);
+    }
+
+    private static Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> wayIncidence(
+        NetworkSnapshot snapshot) {
+        Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> mutable = new LinkedHashMap<>();
+        snapshot.primitives().values().stream()
+            .filter(DetachedWay.class::isInstance)
+            .map(DetachedWay.class::cast)
+            .sorted(java.util.Comparator.comparing(DetachedWay::key))
+            .forEach(way -> {
+                Map<PrimitiveKey, List<DirectedNeighbors>> occurrencesByNode = new LinkedHashMap<>();
+                for (int index = 0; index < way.nodeKeys().size(); index++) {
+                    PrimitiveKey node = way.nodeKeys().get(index);
+                    occurrencesByNode.computeIfAbsent(node, ignored -> new ArrayList<>()).add(
+                        new DirectedNeighbors(neighbor(way.nodeKeys(), index - 1),
+                            neighbor(way.nodeKeys(), index + 1)));
+                }
+                occurrencesByNode.forEach((node, occurrences) -> mutable
+                    .computeIfAbsent(node, ignored -> new LinkedHashMap<>())
+                    .put(way.key(), List.copyOf(occurrences)));
+            });
+        Map<PrimitiveKey, Map<PrimitiveKey, List<DirectedNeighbors>>> result = new LinkedHashMap<>();
+        mutable.forEach((node, ways) -> result.put(node, Map.copyOf(ways)));
+        return Map.copyOf(result);
+    }
+
+    private static PrimitiveKey neighbor(List<PrimitiveKey> nodes, int index) {
+        return index >= 0 && index < nodes.size() ? nodes.get(index) : null;
+    }
+
+    private static boolean permittedFixedBoundaryCut(NetworkSnapshot before,
+        NetworkSnapshot after, PrimitiveKey nodeKey, PrimitiveKey selectedWayKey,
+        OccurrenceRange selectedRange,
+        Map<PrimitiveKey, List<DirectedNeighbors>> oldOccurrences,
+        Map<PrimitiveKey, List<DirectedNeighbors>> newOccurrences) {
+        if (!before.closure().protectedExistingNodeKeys().contains(nodeKey)
+            || !before.primitives().get(nodeKey).equals(after.primitives().get(nodeKey))
+            || !before.incomingReferrerWatches().get(nodeKey)
+                .equals(after.incomingReferrerWatches().get(nodeKey))) {
+            return false;
+        }
+        DetachedWay beforeWay = requireWay(before, selectedWayKey);
+        DetachedWay afterWay = requireWay(after, selectedWayKey);
+        int beforeOccurrence = uniqueOccurrence(beforeWay.nodeKeys(), nodeKey);
+        int afterOccurrence = uniqueOccurrence(afterWay.nodeKeys(), nodeKey);
+        if (beforeOccurrence < 0 || afterOccurrence < 0) {
+            return false;
+        }
+        boolean firstBoundary = beforeOccurrence == selectedRange.firstIndex();
+        boolean lastBoundary = beforeOccurrence == selectedRange.lastIndex();
+        if (firstBoundary == lastBoundary) {
+            return false;
+        }
+        Map<PrimitiveKey, List<DirectedNeighbors>> otherBefore =
+            new LinkedHashMap<>(oldOccurrences);
+        Map<PrimitiveKey, List<DirectedNeighbors>> otherAfter =
+            new LinkedHashMap<>(newOccurrences);
+        otherBefore.remove(selectedWayKey);
+        otherAfter.remove(selectedWayKey);
+        if (!otherBefore.equals(otherAfter)) {
+            return false;
+        }
+        if (firstBoundary) {
+            return sameOutwardNeighbor(before, after,
+                    neighbor(beforeWay.nodeKeys(), beforeOccurrence - 1),
+                    neighbor(afterWay.nodeKeys(), afterOccurrence - 1))
+                && occurrenceAuthorized(before.closure(), selectedWayKey, beforeOccurrence + 1);
+        }
+        return sameOutwardNeighbor(before, after,
+                neighbor(beforeWay.nodeKeys(), beforeOccurrence + 1),
+                neighbor(afterWay.nodeKeys(), afterOccurrence + 1))
+            && occurrenceAuthorized(before.closure(), selectedWayKey, beforeOccurrence - 1);
+    }
+
+    private static boolean sameOutwardNeighbor(NetworkSnapshot before, NetworkSnapshot after,
+        PrimitiveKey beforeNeighbor, PrimitiveKey afterNeighbor) {
+        if (!Objects.equals(beforeNeighbor, afterNeighbor)) {
+            return false;
+        }
+        if (beforeNeighbor == null) {
+            return true;
+        }
+        return before.primitives().get(beforeNeighbor).equals(after.primitives().get(afterNeighbor));
+    }
+
+    private static int uniqueOccurrence(List<PrimitiveKey> nodes, PrimitiveKey nodeKey) {
+        int occurrence = -1;
+        for (int index = 0; index < nodes.size(); index++) {
+            if (!nodes.get(index).equals(nodeKey)) {
+                continue;
+            }
+            if (occurrence >= 0) {
+                return -1;
+            }
+            occurrence = index;
+        }
+        return occurrence;
+    }
+
+    private record DirectedNeighbors(PrimitiveKey predecessor, PrimitiveKey successor) {
+    }
+
+    private static void validateDecisionReferrerPayload(NetworkSnapshot before,
+        NetworkSnapshot after, Set<PrimitiveKey> writes, Set<PrimitiveKey> affectedWays,
+        PrimitiveKey selectedWayKey, OccurrenceRange selectedRange) {
+        Set<PrimitiveKey> targets = writes.stream()
+            .filter(before.primitives()::containsKey)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        targets.addAll(affectedWays);
+        targets.addAll(retainedNodesWithChangedIncidence(
+            before, after, selectedWayKey, selectedRange));
+        if (!before.primitives().keySet().containsAll(affectedWays)
+            || !after.primitives().keySet().containsAll(affectedWays)) {
+            throw new IllegalArgumentException(
+                "Every affected way requires complete decision payload");
+        }
+        for (PrimitiveKey target : targets) {
+            if (before.primitives().containsKey(target)
+                && !before.primitives().keySet().containsAll(
+                    before.incomingReferrerWatches().get(target))) {
+                throw new IllegalArgumentException(
+                    "Changed primitive has identity-only before-state referrers");
+            }
+            if (after.primitives().containsKey(target)
+                && !after.primitives().keySet().containsAll(
+                    after.incomingReferrerWatches().get(target))) {
+                throw new IllegalArgumentException(
+                    "Changed primitive has identity-only proposed-state referrers");
+            }
+        }
+    }
+
     private static Set<PrimitiveKey> writeSet(NetworkSnapshot before, NetworkSnapshot after) {
         Set<PrimitiveKey> keys = new LinkedHashSet<>(before.primitives().keySet());
         keys.addAll(after.primitives().keySet());
@@ -437,9 +627,9 @@ public record AlignmentEditPlan(
         Set<PrimitiveKey> result = writes.stream().filter(key -> key.type() == PrimitiveKey.Type.WAY)
             .collect(Collectors.toCollection(LinkedHashSet::new));
         writes.stream().filter(key -> key.type() == PrimitiveKey.Type.NODE).forEach(node -> {
-            before.incomingReferrers().getOrDefault(node, Set.of()).stream()
+            before.incomingReferrerWatches().getOrDefault(node, Set.of()).stream()
                 .filter(key -> key.type() == PrimitiveKey.Type.WAY).forEach(result::add);
-            after.incomingReferrers().getOrDefault(node, Set.of()).stream()
+            after.incomingReferrerWatches().getOrDefault(node, Set.of()).stream()
                 .filter(key -> key.type() == PrimitiveKey.Type.WAY).forEach(result::add);
         });
         return Set.copyOf(result);

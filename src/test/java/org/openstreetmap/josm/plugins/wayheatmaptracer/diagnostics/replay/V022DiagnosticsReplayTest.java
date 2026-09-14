@@ -88,6 +88,8 @@ class V022DiagnosticsReplayTest {
             "replay-closure-v1", values.keySet(), Set.of(), Set.of(), Set.of(first, second), Set.of(), Map.of(), List.of(),
             MetricRegion.rectangle(-20, -20, 20, 20), MetricRegion.rectangle(-20, -20, 20, 20),
             false, true, true, true);
-        return new NetworkSnapshot("network", SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, values);
+        return new NetworkSnapshot("network", SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, values,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.V022SnapshotFixtures
+                .closedWorldReferrerWatches(values));
     }
 }

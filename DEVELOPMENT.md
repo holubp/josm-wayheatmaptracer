@@ -630,3 +630,19 @@ plugin-direct source availability semantics.
 - Direct `luminance`, `value`, and `alpha` source modes bypass palette mappings entirely and should be tested against scalar/transparent fixtures rather than palette-ordering assertions.
 
 The palette ranking is heuristic and should be changed together with regression tests in `HeatmapFixtureArchiveTest`.
+
+### Bounded modern referrer watches
+
+`NetworkSnapshot.incomingReferrerWatches` records complete incoming way/relation
+identities separately from materialized primitive payloads. This lets unchanged
+remote network branches remain outside a bounded capture without hiding changes
+to their references. Every captured primitive needs an explicit watch entry;
+production constructors never infer completeness from the captured subset.
+
+`AlignmentEditPlan` derives proposed watches from the captured external baseline
+and the proposed internal references. It requires incident payloads for moved or
+removed nodes and changed ordered incidence, including retained-node detachment
+and reordering. A protected selected boundary may retain identity-only external
+watches only while its occurrence and outward node payload stay exact. The apply
+command compares these complete watches against live referrers. This prerequisite
+does not establish live capture integration or resolve the host failed-redo gate.

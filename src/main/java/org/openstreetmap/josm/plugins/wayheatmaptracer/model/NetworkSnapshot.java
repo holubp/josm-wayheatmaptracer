@@ -10,15 +10,25 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Detached
 
 /** Detached immutable network closure captured on JOSM's owning thread. */
 public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
-    long sourceGeneration, ClosureDescriptor closure, Map<PrimitiveKey, DetachedPrimitive> primitives) {
+    long sourceGeneration, ClosureDescriptor closure, Map<PrimitiveKey, DetachedPrimitive> primitives,
+    Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches) {
+    static final int MAX_MATERIALIZED_PRIMITIVES = 250_000;
+    static final int MAX_PAYLOAD_REFERENCES = 1_000_000;
+    static final int MAX_REFERRER_WATCH_IDENTITIES = 1_000_000;
+
     /** Copies state and validates identity namespaces, internal references, and external ports. */
     public NetworkSnapshot {
         if (snapshotId == null || snapshotId.isBlank() || role == null
             || datasetIdentity == null || datasetIdentity.isBlank()
-            || sourceGeneration < 0 || closure == null || primitives == null) {
+            || sourceGeneration < 0 || closure == null || primitives == null
+            || incomingReferrerWatches == null) {
             throw new IllegalArgumentException("Network snapshot is incomplete");
         }
+        validateInventoryBounds(primitives, incomingReferrerWatches);
         primitives = Map.copyOf(new LinkedHashMap<>(primitives));
+        Map<PrimitiveKey, Set<PrimitiveKey>> watchCopy = new LinkedHashMap<>();
+        incomingReferrerWatches.forEach((key, value) -> watchCopy.put(key, Set.copyOf(value)));
+        incomingReferrerWatches = Map.copyOf(watchCopy);
         Set<PrimitiveKey> keys = primitives.keySet();
         Set<PrimitiveKey> existingKeys = keys.stream()
             .filter(key -> key.identityKind() == PrimitiveKey.IdentityKind.OSM_UNIQUE)
@@ -42,6 +52,10 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
                 throw new IllegalArgumentException("Proposed-after snapshot omits an unauthorized primitive");
             }
         }
+        if (!incomingReferrerWatches.keySet().equals(keys)) {
+            throw new IllegalArgumentException(
+                "Referrer watches require an entry for every materialized primitive");
+        }
         for (DetachedPrimitive primitive : primitives.values()) {
             if (primitive.deleted()) {
                 throw new IllegalArgumentException("Active snapshots represent deletion by absence, not a flag");
@@ -54,13 +68,55 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
                 throw new IllegalArgumentException("Relation member is outside the materialized snapshot");
             }
         }
+        Map<PrimitiveKey, Set<PrimitiveKey>> internalReferrers = internalIncomingReferrers(primitives);
+        incomingReferrerWatches.forEach((target, watched) -> {
+            if (watched.stream().anyMatch(referrer -> referrer.identityKind()
+                != PrimitiveKey.IdentityKind.OSM_UNIQUE
+                || referrer.type() != PrimitiveKey.Type.WAY
+                    && referrer.type() != PrimitiveKey.Type.RELATION)) {
+                throw new IllegalArgumentException(
+                    "Referrer watches may contain only existing way or relation identities");
+            }
+            Set<PrimitiveKey> internal = internalReferrers.get(target);
+            if (!watched.containsAll(internal)
+                || watched.stream().filter(keys::contains).anyMatch(referrer -> !internal.contains(referrer))) {
+                throw new IllegalArgumentException(
+                    "Materialized reference payload and referrer watch disagree");
+            }
+        });
         for (ExternalPort port : closure.externalPorts()) {
             DetachedPrimitive primitive = primitives.get(port.wayKey());
             if (!(primitive instanceof DetachedWay way) || !portMatches(port, way, role, primitives)) {
                 throw new IllegalArgumentException("External port is inconsistent with its captured adjacency");
             }
         }
-        DetachedValueVerifier.verify(java.util.List.of(role, closure, primitives));
+        DetachedValueVerifier.verify(java.util.List.of(role, closure, primitives, incomingReferrerWatches));
+    }
+
+    private static void validateInventoryBounds(Map<PrimitiveKey, DetachedPrimitive> primitives,
+        Map<PrimitiveKey, Set<PrimitiveKey>> watches) {
+        if (primitives.size() > MAX_MATERIALIZED_PRIMITIVES
+            || watches.size() > MAX_MATERIALIZED_PRIMITIVES) {
+            throw new IllegalArgumentException("Network snapshot primitive inventory exceeds its budget");
+        }
+        long payloadReferences = 0;
+        for (DetachedPrimitive primitive : primitives.values()) {
+            payloadReferences += primitive instanceof DetachedWay way ? way.nodeKeys().size()
+                : primitive instanceof DetachedRelation relation ? relation.members().size() : 0;
+            if (payloadReferences > MAX_PAYLOAD_REFERENCES) {
+                throw new IllegalArgumentException("Network snapshot payload reference budget exceeded");
+            }
+        }
+        long watchedIdentities = 0;
+        for (Map.Entry<PrimitiveKey, Set<PrimitiveKey>> entry : watches.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                throw new IllegalArgumentException("Referrer watch entries cannot be null");
+            }
+            watchedIdentities += entry.getValue().size();
+            if (watchedIdentities > MAX_REFERRER_WATCH_IDENTITIES) {
+                throw new IllegalArgumentException("Network snapshot watch identity budget exceeded");
+            }
+        }
     }
 
     private static boolean portMatches(ExternalPort port, DetachedWay way, SnapshotRole role,
@@ -90,16 +146,20 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         return matches == 1;
     }
 
-    /** Derives complete within-snapshot incoming references from way occurrences and relation members. */
-    public Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrers() {
+    /** Derives references from materialized way occurrences and relation members only. */
+    public Map<PrimitiveKey, Set<PrimitiveKey>> internalIncomingReferrers() {
+        return internalIncomingReferrers(primitives);
+    }
+
+    private static Map<PrimitiveKey, Set<PrimitiveKey>> internalIncomingReferrers(
+        Map<PrimitiveKey, DetachedPrimitive> values) {
         Map<PrimitiveKey, Set<PrimitiveKey>> mutable = new LinkedHashMap<>();
-        primitives.values().forEach(primitive -> {
+        values.keySet().forEach(key -> mutable.put(key, new LinkedHashSet<>()));
+        values.values().forEach(primitive -> {
             if (primitive instanceof DetachedWay way) {
-                way.nodeKeys().forEach(node -> mutable.computeIfAbsent(node,
-                    ignored -> new LinkedHashSet<>()).add(way.key()));
+                way.nodeKeys().forEach(node -> mutable.get(node).add(way.key()));
             } else if (primitive instanceof DetachedRelation relation) {
-                relation.members().forEach(member -> mutable.computeIfAbsent(member.memberKey(),
-                    ignored -> new LinkedHashSet<>()).add(relation.key()));
+                relation.members().forEach(member -> mutable.get(member.memberKey()).add(relation.key()));
             }
         });
         Map<PrimitiveKey, Set<PrimitiveKey>> result = new LinkedHashMap<>();
@@ -109,7 +169,7 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
 
     /** Returns a recapture-stable hash excluding attempt-local snapshot ID. */
     public String canonicalHash() {
-        CanonicalEncoder encoder = new CanonicalEncoder().field("network-snapshot-v4")
+        CanonicalEncoder encoder = new CanonicalEncoder().field("network-snapshot-v5")
             .field(role.name()).field(datasetIdentity).field(sourceGeneration).field(closure.scope().name())
             .field(closure.queryVersion()).field(closure.mayCreateNodes())
             .field(closure.wayReferrersComplete()).field(closure.relationReferrersComplete())
@@ -133,8 +193,8 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
             .forEach(port -> encodePort(encoder, port));
         primitives.entrySet().stream().sorted(Map.Entry.comparingByKey())
             .forEach(entry -> encodePrimitive(encoder, entry.getValue()));
-        incomingReferrers().entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
-            encodeKey(encoder.field("referrers"), entry.getKey());
+        incomingReferrerWatches.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+            encodeKey(encoder.field("referrer-watch"), entry.getKey());
             entry.getValue().stream().sorted().forEach(key -> encodeKey(encoder, key));
         });
         return encoder.sha256();

@@ -70,8 +70,10 @@ class V022EditAuthorityAdversarialTest {
                 Map.of(), false, true),
             WAY, beforeValues.get(WAY));
         return new Fixture(
-            new NetworkSnapshot("before", SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, beforeValues),
-            new NetworkSnapshot("after", SnapshotRole.PROPOSED_AFTER, "dataset", 1, closure, afterValues));
+            new NetworkSnapshot("before", SnapshotRole.CAPTURED_BEFORE, "dataset", 1, closure, beforeValues,
+                V022SnapshotFixtures.closedWorldReferrerWatches(beforeValues)),
+            new NetworkSnapshot("after", SnapshotRole.PROPOSED_AFTER, "dataset", 1, closure, afterValues,
+                V022SnapshotFixtures.closedWorldReferrerWatches(afterValues)));
     }
 
     private record Fixture(NetworkSnapshot before, NetworkSnapshot after) { }

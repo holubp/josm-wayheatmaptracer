@@ -43,7 +43,7 @@ class V022ContractReviewRegressionTest {
                 ((DetachedNode) values.get(outside)).coordinate())));
 
         assertDoesNotThrow(() -> new NetworkSnapshot("before", SnapshotRole.CAPTURED_BEFORE,
-            "dataset", 1, closure, values));
+            "dataset", 1, closure, values, V022SnapshotFixtures.closedWorldReferrerWatches(values)));
     }
 
     @Test
@@ -84,11 +84,13 @@ class V022ContractReviewRegressionTest {
             MetricRegion.rectangle(-40, -10, 40, 10), MetricRegion.rectangle(-2, -2, 10, 10),
             false, true, true, true);
         NetworkSnapshot before = new NetworkSnapshot("before", SnapshotRole.CAPTURED_BEFORE,
-            "dataset", 1, closure, beforeValues);
+            "dataset", 1, closure, beforeValues,
+            V022SnapshotFixtures.closedWorldReferrerWatches(beforeValues));
         Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(beforeValues);
         afterValues.put(junction, new DetachedNode(junction, movedJunction, Map.of(), false, true));
         NetworkSnapshot after = new NetworkSnapshot("after", SnapshotRole.PROPOSED_AFTER,
-            "dataset", 1, closure, afterValues);
+            "dataset", 1, closure, afterValues,
+            V022SnapshotFixtures.closedWorldReferrerWatches(afterValues));
         Map<PrimitiveKey, List<GeographicPoint>> preview = Map.of(
             selected, List.of(startPoint, movedJunction), incident, List.of(movedJunction, farPoint));
 
