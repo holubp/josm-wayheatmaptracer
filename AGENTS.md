@@ -1,5 +1,7 @@
 # AGENTS
 
+- Modern job cancellation must atomically target the latest nonterminal state of the same attempt sequence, preserving its snapshot. Never compare-and-set only the initial acquisition object after worker phase transitions; never overwrite a newer sequence or terminal outcome.
+
 Repository-specific guardrails for future changes:
 
 - Treat JOSM coordinate spaces explicitly. Downloaded-area checks use `Bounds` with geographic coordinates. The visible-layer fallback intentionally uses the 0.2.0-style rendered layer: candidates are tracked in oversampled capture space, projected back through the slide-time capture bounds, and then carried as `EastNorth` only for preview/debug export.

@@ -1,5 +1,9 @@
 # Development Notes
 
+Modern background attempts cancel the latest active state of their own sequence.
+Worker cancellation or interruption retains the captured snapshot; late workers
+cannot cancel a replacement attempt or overwrite an already terminal outcome.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

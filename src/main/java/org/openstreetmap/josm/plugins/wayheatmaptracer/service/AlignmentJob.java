@@ -244,9 +244,10 @@ public final class AlignmentJob<R> implements AutoCloseable {
     }
 
     private Attempt<R> cancelAttempt(Attempt<R> attempt, String reason) {
-        Attempt<R> cancelled = new Attempt<>(attempt.sequence(), attempt.snapshot(), State.CANCELLED,
-            true, null, reason);
-        current.compareAndSet(attempt, cancelled);
+        current.updateAndGet(currentAttempt -> currentAttempt == null
+            || currentAttempt.sequence() != attempt.sequence() || currentAttempt.state().terminal() ? currentAttempt
+                : new Attempt<>(currentAttempt.sequence(), currentAttempt.snapshot(), State.CANCELLED,
+                    true, null, reason));
         return current.get();
     }
 
