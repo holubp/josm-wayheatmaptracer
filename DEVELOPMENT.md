@@ -646,3 +646,24 @@ and reordering. A protected selected boundary may retain identity-only external
 watches only while its occurrence and outward node payload stay exact. The apply
 command compares these complete watches against live referrers. This prerequisite
 does not establish live capture integration or resolve the host failed-redo gate.
+
+### Detached A scalar input
+
+`DetachedScalarProfileSampler` supplies the actual Corridor-aware tracker with
+profiles from an immutable scalar evidence snapshot and frozen sampling locations.
+It preserves raw/B3/B5 evidence and keeps output raster pitch distinct from native
+source uncertainty. Scalar data never passes through RGB palette conversion.
+
+Raster support and decision authorization are separate. Every interval between
+lateral samples must have complete raster support and remain within the decision
+region before its endpoints may contribute route-position evidence. Valid halo
+pixels remain available to filtering. Unsupported intervals propagate through
+filters and peak extraction instead of becoming zero-filled complete ridges.
+Cancellation is checked during filtering, plateau scans, peak construction and
+materialization. Legacy sampling retains its original overloads and arithmetic.
+
+`DetachedScalarProfileSamplerTest` compares exact Legacy profile evidence on a
+fully supported frame and invokes the production tracker. It also covers sampled
+and unsampled holes, a concave decision-region notch, valid parallel modes, halo
+filter contribution and cancellation. This is an input prerequisite: the modern
+A TraceEngine adapter and live modern engine integration are still required.
