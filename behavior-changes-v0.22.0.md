@@ -4,6 +4,18 @@ This ledger distinguishes compatibility behavior from intentional changes in the
 new tracing architecture. It is part of the release contract, not a claim that
 an experimental engine is calibrated for unattended use.
 
+## Current development-build status
+
+The live workflow currently supports Legacy and Corridor-aware tracing. The three
+new engine choices still report "Modern trace engine is not yet integrated" when
+invoked through the live alignment service. Detached component tests do not
+establish live integration of refitting, network reconstruction, preview or replay.
+
+The modern behavior and safety boundaries below remain mandatory release
+requirements. They are not claims that this intermediate build implements them.
+Release requires the complete approved scope, independent review, production
+replay and the mandatory external validation gates.
+
 ## Unchanged compatibility paths
 
 - `LEGACY_V02` retains its existing sampling, peak extraction, fallback,
@@ -15,7 +27,7 @@ an experimental engine is calibrated for unattended use.
 - Wider discovery, junction reattachment, and incident-way reconstruction are
   separate permissions and remain off after upgrade.
 
-## Intentional modern behavior
+## Required modern behavior
 
 - Final geometry is assessed after anchor reconstruction and any authorized
   refit or cleanup. A cleaned label cannot bypass a dogleg, foldback, touch,
@@ -35,7 +47,7 @@ an experimental engine is calibrated for unattended use.
   reviewed/applied as one immutable multi-way edit plan. It is not the old
   bounded shared-node movement option.
 
-## Safety boundaries
+## Required safety boundaries
 
 - Modern computation consumes detached evidence and network snapshots. It does
   not retain live JOSM primitives, map views, credentials, or preferences.
