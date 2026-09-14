@@ -22,6 +22,11 @@ coordinate; requesting that coordinate from a detached profile fails explicitly.
 This input contract is a prerequisite for the modern A adapter, whose production
 capture and pipeline integration remain separate work.
 
+`MetricRegion.intersectsSegment` tests segment interiors, boundary contacts, and
+collinear overlaps against each polygon in the region union. It preserves gaps
+between polygons; endpoint containment alone cannot establish spatial exclusion.
+Live collision-closure capture and revalidation are separate callers of this helper.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

@@ -75,6 +75,25 @@ public final class MetricRegion {
         return true;
     }
 
+    /** Returns whether a segment touches or crosses any polygon in the union. */
+    public boolean intersectsSegment(MetricPoint start, MetricPoint end) {
+        if (start == null || end == null) {
+            return false;
+        }
+        if (contains(start) || contains(end)) {
+            return true;
+        }
+        for (List<MetricPoint> polygon : polygons) {
+            for (int index = 0; index < polygon.size(); index++) {
+                if (segmentsIntersect(start, end, polygon.get(index),
+                    polygon.get((index + 1) % polygon.size()))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /** Returns whether every boundary and interior of another hole-free polygon union is contained. */
     public boolean containsRegion(MetricRegion other) {
         if (other == null) {
