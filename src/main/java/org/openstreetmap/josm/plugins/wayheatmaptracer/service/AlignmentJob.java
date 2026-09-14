@@ -150,7 +150,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
      * @param capture event-thread capture callback
      * @param worker pure background worker
      * @param publisher event-thread preview publisher
-     * @return a newly started attempt or the active attempt which was cancelled
+     * @return the owned new attempt (possibly cancelled during capture), or the active attempt cancelled
      */
     public StartResult<R> start(Capture capture, Worker<R> worker, PreviewPublisher<R> publisher) {
         Objects.requireNonNull(capture, "capture");
@@ -176,8 +176,19 @@ public final class AlignmentJob<R> implements AutoCloseable {
             throw exception;
         }
         Attempt<R> acquiring = new Attempt<>(next, snapshot, State.ACQUIRING, false, null, "");
-        current.set(acquiring);
-        executor.execute(() -> runWorker(acquiring, worker, publisher));
+        if (!current.compareAndSet(capturing, acquiring)) {
+            Attempt<R> active = current.get();
+            Attempt<R> abandoned = active != null && active.sequence() == next ? active
+                : new Attempt<>(next, snapshot, State.CANCELLED, true, null,
+                    "superseded during capture");
+            return new StartResult<>(abandoned, true, false);
+        }
+        try {
+            executor.execute(() -> runWorker(acquiring, worker, publisher));
+        } catch (java.util.concurrent.RejectedExecutionException exception) {
+            transitionIfCurrent(next, State.FAILED, null, safeFailure(exception));
+            throw exception;
+        }
         return new StartResult<>(acquiring, true, false);
     }
 

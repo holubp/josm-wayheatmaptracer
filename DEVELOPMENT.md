@@ -3,6 +3,9 @@
 Modern background attempts cancel the latest active state of their own sequence.
 Worker cancellation or interruption retains the captured snapshot; late workers
 cannot cancel a replacement attempt or overwrite an already terminal outcome.
+Capture completion submits work only while it still owns the capturing state.
+An attempt cancelled during capture returns its cancelled outcome without queueing
+work; a rejected executor submission terminates the owned attempt as failed.
 
 ## Build And Test
 
