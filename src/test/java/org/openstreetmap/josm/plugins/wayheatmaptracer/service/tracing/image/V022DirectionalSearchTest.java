@@ -9,6 +9,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 
 class V022DirectionalSearchTest {
     @Test
@@ -75,6 +76,28 @@ class V022DirectionalSearchTest {
     }
 
     @Test
+    void zeroLengthAnchorConnectorPreservesHeadingAndExportedObjectiveInBothDirections() {
+        List<MetricPoint> original = List.of(new MetricPoint(1, 1), new MetricPoint(10, 6),
+                new MetricPoint(18, 1));
+        double[] objectives = new double[2];
+        for (int direction = 0; direction < 2; direction++) {
+            List<MetricPoint> anchors = direction == 0 ? original
+                    : List.of(original.get(2), original.get(1), original.get(0));
+            Scene scene = Scene.uniform(21, 10, anchors.get(0), anchors.get(2));
+            scene.draw(original, 1.0);
+            DirectionalImageSearchResult result = new DirectionalImageSearch().solve(scene.problem(anchors,
+                    DirectionalImageSearchProblem.Scope.ORDINARY, false));
+            ImageCostField image = ImageCostField.fromEvidence(scene.evidence(), "scalar");
+            assertFalse(result.paths().isEmpty());
+            for (DirectionalImagePath path : result.paths()) {
+                assertEquals(recomputedObjective(path, image), path.objective(), 1e-9);
+            }
+            objectives[direction] = result.paths().get(0).objective();
+        }
+        assertEquals(objectives[0], objectives[1], 1e-9);
+    }
+
+    @Test
     void t045GeometricSelfIntersectionRejectsOrientationSpaceSimpleLoop() {
         List<MetricPoint> loop = List.of(new MetricPoint(0, 0), new MetricPoint(3, 3),
             new MetricPoint(0, 3), new MetricPoint(3, 0));
@@ -104,5 +127,30 @@ class V022DirectionalSearchTest {
     private static DirectionalImageSearchResult solve(Scene scene, boolean zeroHeuristic) {
         return new DirectionalImageSearch().solve(scene.problem(List.of(scene.start(), scene.end()),
             DirectionalImageSearchProblem.Scope.ORDINARY, zeroHeuristic));
+    }
+
+    private static double recomputedObjective(DirectionalImagePath path, ImageCostField image) {
+        double result = 0.0;
+        for (int index = 1; index < path.points().size(); index++) {
+            MetricPoint start = path.points().get(index - 1);
+            MetricPoint end = path.points().get(index);
+            MetricPoint tangent = new MetricPoint(end.xMeters() - start.xMeters(),
+                    end.yMeters() - start.yMeters());
+            double length = start.distanceTo(end);
+            int samples = Math.max(1, (int) Math.ceil(length / 0.25));
+            double energy = 0.0;
+            for (int sampleIndex = 0; sampleIndex <= samples; sampleIndex++) {
+                double fraction = (double) sampleIndex / samples;
+                MetricPoint point = new MetricPoint(start.xMeters() + fraction * tangent.xMeters(),
+                        start.yMeters() + fraction * tangent.yMeters());
+                energy += image.sampleRoute(point, tangent).orElseThrow().imageEnergy();
+            }
+            result += length * (0.05 + energy / (samples + 1.0));
+            if (index > 1) {
+                result += 0.25 * (1.0 - Math.cos(path.headingsRadians().get(index - 1)
+                        - path.headingsRadians().get(index - 2)));
+            }
+        }
+        return result;
     }
 }

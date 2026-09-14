@@ -5,13 +5,12 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalDouble;
+import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -24,6 +23,7 @@ public final class DirectionalImageSearch {
     private static final int[][] DIRECTIONS = directions();
     private static final double LENGTH_DENSITY = 0.05;
     private static final double HEADING_WEIGHT = 0.25;
+    private static final double BRANCH_DEVIATION_RADIUS_GRID_PITCHES = 4.0;
     private static final int HARD_RAW_ALTERNATIVES = 32;
     private static final int HARD_DISTINCT_ALTERNATIVES = 8;
 
@@ -51,7 +51,7 @@ public final class DirectionalImageSearch {
         }
         raw.add(first.path);
         int rawLimit = Math.min(HARD_RAW_ALTERNATIVES, problem.budgets().maximumRawAlternatives());
-        int probes = Math.min(rawLimit - 1, first.edgeKeys.size());
+        int probes = Math.min(Math.max(0, rawLimit - 2), first.edgeKeys.size());
         for (int probe = 1; probe <= probes; probe++) {
             int edgeIndex = probe * first.edgeKeys.size() / (probes + 1);
             PathResult deviation = shortest(context, Set.of(first.edgeKeys.get(edgeIndex)));
@@ -61,6 +61,19 @@ public final class DirectionalImageSearch {
             }
             if (deviation.path != null && raw.stream().noneMatch(path -> sameGeometry(path, deviation.path))) {
                 raw.add(deviation.path);
+            }
+        }
+        if (rawLimit > 1) {
+            MetricPoint branchCenter = pointAtFraction(first.path.points(), 0.5);
+            PathResult branchDeviation = shortest(context, Set.of(), new ForbiddenDisk(branchCenter,
+                    BRANCH_DEVIATION_RADIUS_GRID_PITCHES * context.pitch));
+            if (branchDeviation.limit) {
+                return result(DirectionalImageSearchResult.Status.RESOURCE_LIMIT, raw, true, context,
+                        "state or transition budget exhausted during branch deviation");
+            }
+            if (raw.size() < rawLimit && branchDeviation.path != null
+                    && raw.stream().noneMatch(path -> sameGeometry(path, branchDeviation.path))) {
+                raw.add(branchDeviation.path);
             }
         }
         List<DirectionalImagePath> distinct = new ArrayList<>();
@@ -87,6 +100,11 @@ public final class DirectionalImageSearch {
     }
 
     private static PathResult shortest(SearchContext context, Set<String> banned) {
+        return shortest(context, banned, null);
+    }
+
+    private static PathResult shortest(SearchContext context, Set<String> banned,
+            ForbiddenDisk forbiddenDisk) {
         Node start = Node.anchor(0, context.anchors.get(0));
         State initial = new State(start, 0, -1);
         PriorityQueue<Entry> queue = new PriorityQueue<>(ENTRY_ORDER);
@@ -119,7 +137,9 @@ public final class DirectionalImageSearch {
                     context.cancellation.checkpoint();
                 }
                 String edgeKey = edgeKey(entry.state.node, transition.node);
-                if (banned.contains(edgeKey) || !admissibleEdge(context, entry.state.node.point, transition.node.point)) {
+                if (banned.contains(edgeKey) || (forbiddenDisk != null
+                        && forbiddenDisk.blocks(entry.state.node.point, transition.node.point))
+                        || !admissibleEdge(context, entry.state.node.point, transition.node.point)) {
                     continue;
                 }
                 double edgeCost = edgeCost(context, entry.state, transition);
@@ -167,9 +187,11 @@ public final class DirectionalImageSearch {
         }
         int nextAnchor = state.phase + 1;
         MetricPoint anchor = context.anchors.get(nextAnchor);
-        if (state.node.point.distanceTo(anchor) <= context.maxStep + 1e-9) {
-            result.add(new Transition(Node.anchor(nextAnchor, anchor), nextAnchor,
-                nearestHeading(state.node.point, anchor)));
+        double anchorDistance = state.node.point.distanceTo(anchor);
+        if (anchorDistance <= context.maxStep + 1e-9) {
+            int connectorHeading = anchorDistance <= 1.0e-12 ? state.heading
+                    : nearestHeading(state.node.point, anchor);
+            result.add(new Transition(Node.anchor(nextAnchor, anchor), nextAnchor, connectorHeading));
         }
         return result;
     }
@@ -178,12 +200,16 @@ public final class DirectionalImageSearch {
         if (!DirectionalImageGeometry.segmentAuthorized(context.problem.evidence().decisionRegion(), start, end)) {
             return false;
         }
+        if (start.distanceTo(end) <= 1.0e-12) {
+            return true;
+        }
         int samples = Math.max(1, (int) Math.ceil(start.distanceTo(end) / (context.pitch / 2.0)));
+        MetricPoint tangent = subtract(end, start);
         for (int sample = 0; sample <= samples; sample++) {
             double fraction = (double) sample / samples;
             MetricPoint point = interpolate(start, end, fraction);
-            OptionalDouble value = sample(context, point);
-            if (value.isEmpty() || value.getAsDouble() <= 1e-3) {
+            Optional<ImageCostField.RouteSample> value = sample(context, point, tangent);
+            if (value.isEmpty()) {
                 return false;
             }
         }
@@ -194,30 +220,30 @@ public final class DirectionalImageSearch {
         MetricPoint start = state.node.point;
         MetricPoint end = transition.node.point;
         double length = start.distanceTo(end);
+        if (length <= 1.0e-12) {
+            return 0.0;
+        }
         int samples = Math.max(1, (int) Math.ceil(length / (context.pitch / 2.0)));
         double presence = 0.0;
+        MetricPoint tangent = subtract(end, start);
         for (int sample = 0; sample <= samples; sample++) {
-            OptionalDouble value = sample(context, interpolate(start, end, (double) sample / samples));
+            Optional<ImageCostField.RouteSample> value = sample(context,
+                    interpolate(start, end, (double) sample / samples), tangent);
             if (value.isEmpty()) {
                 return Double.POSITIVE_INFINITY;
             }
-            presence += -Math.log(Math.max(1e-6, value.getAsDouble()));
+            double energy = value.orElseThrow().imageEnergy();
+            presence += energy;
         }
         double heading = state.heading < 0 ? 0.0 : HEADING_WEIGHT * (1.0
             - Math.cos(bearing(state.heading) - bearing(transition.heading)));
         return length * (LENGTH_DENSITY + presence / (samples + 1.0)) + heading;
     }
 
-    private static OptionalDouble sample(SearchContext context, MetricPoint point) {
-        RasterPoint raster = context.problem.evidence().transform().metricToPixelCenter(point);
-        if (raster.x() < 0.0 || raster.y() < 0.0 || raster.x() > context.field.width() - 1.0
-            || raster.y() > context.field.height() - 1.0
-            || !context.field.supportsInterpolationAt(raster.x(), raster.y())) {
-            return OptionalDouble.empty();
-        }
-        int x = (int) Math.round(raster.x());
-        int y = (int) Math.round(raster.y());
-        return context.field.sample(x, y);
+    private static Optional<ImageCostField.RouteSample> sample(SearchContext context,
+            MetricPoint point, MetricPoint tangent) {
+        RouteQuery key = new RouteQuery(point, tangent);
+        return context.samples.computeIfAbsent(key, ignored -> context.image.sampleRoute(point, tangent));
     }
 
     private static double heuristic(SearchContext context, Node node, int phase) {
@@ -242,8 +268,18 @@ public final class DirectionalImageSearch {
         }
         java.util.Collections.reverse(reversePoints);
         java.util.Collections.reverse(reverseHeadings);
-        List<Double> headings = reverseHeadings.stream().map(DirectionalImageSearch::bearing).toList();
-        return new DirectionalImagePath(reversePoints, headings, entry.g, branchSignature(reversePoints));
+        List<MetricPoint> points = new ArrayList<>();
+        List<Double> headings = new ArrayList<>();
+        points.add(reversePoints.get(0));
+        for (int index = 1; index < reversePoints.size(); index++) {
+            MetricPoint point = reversePoints.get(index);
+            if (point.distanceTo(points.get(points.size() - 1)) <= 1.0e-12) {
+                continue;
+            }
+            points.add(point);
+            headings.add(bearing(reverseHeadings.get(index - 1)));
+        }
+        return new DirectionalImagePath(points, headings, entry.g, branchSignature(points));
     }
 
     private static String branchSignature(List<MetricPoint> points) {
@@ -290,6 +326,10 @@ public final class DirectionalImageSearch {
             a.yMeters() + fraction * (b.yMeters() - a.yMeters()));
     }
 
+    private static MetricPoint subtract(MetricPoint end, MetricPoint start) {
+        return new MetricPoint(end.xMeters() - start.xMeters(), end.yMeters() - start.yMeters());
+    }
+
     private static int nearestHeading(MetricPoint start, MetricPoint end) {
         double angle = Math.atan2(end.yMeters() - start.yMeters(), end.xMeters() - start.xMeters());
         int best = 0;
@@ -325,7 +365,8 @@ public final class DirectionalImageSearch {
     private static final class SearchContext {
         private final DirectionalImageSearchProblem problem;
         private final CancellationProbe cancellation;
-        private final ScalarEvidenceField field;
+        private final ImageCostField image;
+        private final Map<RouteQuery, Optional<ImageCostField.RouteSample>> samples = new HashMap<>();
         private final List<MetricPoint> anchors;
         private final double pitch;
         private final double maxStep;
@@ -335,10 +376,25 @@ public final class DirectionalImageSearch {
         SearchContext(DirectionalImageSearchProblem problem, CancellationProbe cancellation) {
             this.problem = problem;
             this.cancellation = cancellation;
-            this.field = problem.evidence().fields().get(problem.fieldName());
+            this.image = ImageCostField.fromEvidence(problem.evidence(), problem.fieldName());
             this.anchors = problem.orderedAnchors();
             this.pitch = problem.gridPitchMeters();
             this.maxStep = Math.sqrt(5.0) * pitch;
+        }
+    }
+    private record RouteQuery(MetricPoint point, MetricPoint tangent) { }
+    private record ForbiddenDisk(MetricPoint center, double radius) {
+        boolean blocks(MetricPoint start, MetricPoint end) {
+            double dx = end.xMeters() - start.xMeters();
+            double dy = end.yMeters() - start.yMeters();
+            double lengthSquared = dx * dx + dy * dy;
+            double fraction = lengthSquared > 0.0
+                    ? ((center.xMeters() - start.xMeters()) * dx
+                            + (center.yMeters() - start.yMeters()) * dy) / lengthSquared : 0.0;
+            fraction = Math.max(0.0, Math.min(1.0, fraction));
+            double closestX = start.xMeters() + fraction * dx;
+            double closestY = start.yMeters() + fraction * dy;
+            return Math.hypot(center.xMeters() - closestX, center.yMeters() - closestY) <= radius;
         }
     }
     private record Node(int x, int y, int anchorIndex, MetricPoint point) {

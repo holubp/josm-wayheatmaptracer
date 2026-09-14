@@ -1,12 +1,17 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
 import java.util.Optional;
+import java.util.OptionalDouble;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.StrictScalarSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 /**
  * Frozen scalar-image interpolation field used by refitting and final quality checks.
@@ -22,11 +27,18 @@ public final class ImageCostField {
             double centerGradientX, double centerGradientY) {
     }
 
+    /** Background-relative evidence measured on the normal of an actual proposed route segment. */
+    public record RouteSample(MetricPoint normal, double rawIntensity, double noiseFloor,
+            double peakIntensity, double presenceResponse, double presenceCost, double centerCost,
+            double imageEnergy, double existenceConfidence, double localizationConfidence,
+            boolean directlyLocalized) { }
+
     private final int width;
     private final int height;
     private final double[] intensity;
     private final boolean[] valid;
     private final boolean[] interpolationValid;
+    private final ScalarEvidenceField scalarField;
     private final RasterMetricTransform transform;
     private final MetricRegion decisionRegion;
     private final double sourcePitchMeters;
@@ -43,9 +55,20 @@ public final class ImageCostField {
         this.intensity = field.copiedValues();
         this.valid = field.copiedValidity();
         this.interpolationValid = field.copiedInterpolationValidity();
+        this.scalarField = field;
         this.transform = transform;
         this.decisionRegion = decisionRegion;
         this.sourcePitchMeters = sourcePitchMeters;
+    }
+
+    /** Creates a frozen field for one named immutable evidence-snapshot scalar source. */
+    public static ImageCostField fromEvidence(EvidenceSnapshot evidence, String fieldName) {
+        if (evidence == null || fieldName == null || fieldName.isBlank()
+                || !evidence.fields().containsKey(fieldName)) {
+            throw new IllegalArgumentException("Named scalar evidence is unavailable");
+        }
+        return new ImageCostField(evidence.fields().get(fieldName), evidence.transform(),
+                evidence.decisionRegion(), evidence.resolution().effectivePitchMeters());
     }
 
     /** Returns the physical source-pixel pitch used for uncertainty and trust limits. */
@@ -57,6 +80,126 @@ public final class ImageCostField {
     public boolean supports(MetricPoint point) {
         return sample(point).isPresent();
     }
+
+    /**
+     * Re-extracts shared scalar features along the supplied route tangent.
+     * A valid query with no complete two-sided mode is returned as unknown, not as localization.
+     */
+    public Optional<RouteSample> sampleRoute(MetricPoint point, MetricPoint routeTangent) {
+        if (point == null || routeTangent == null) {
+            throw new IllegalArgumentException("Route-local sampling requires a point and tangent");
+        }
+        double tangentLength = Math.hypot(routeTangent.xMeters(), routeTangent.yMeters());
+        if (!(tangentLength > 0.0) || !Double.isFinite(tangentLength)) {
+            throw new IllegalArgumentException("Route tangent must be finite and nonzero");
+        }
+        OptionalDouble raw = StrictScalarSampler.sample(scalarField, transform, decisionRegion, point);
+        if (raw.isEmpty()) {
+            return Optional.empty();
+        }
+        MetricPoint normal = new MetricPoint(-routeTangent.yMeters() / tangentLength,
+                routeTangent.xMeters() / tangentLength);
+        EvidenceModelParameters.Localization parameters = EvidenceModelParameters.defaults().localization();
+        double halfWidth = Math.max(parameters.routeProfileHalfWidthMeters(), 4.0 * sourcePitchMeters);
+        int intervals = Math.max(4, (int) Math.ceil(2.0 * halfWidth / (sourcePitchMeters * 0.5)));
+        if ((intervals & 1) != 0) {
+            intervals++;
+        }
+        java.util.List<LocalScalarProfileExtractor.Sample> samples = new java.util.ArrayList<>(intervals + 1);
+        for (int index = 0; index <= intervals; index++) {
+            double offset = -halfWidth + 2.0 * halfWidth * index / intervals;
+            MetricPoint location = new MetricPoint(point.xMeters() + normal.xMeters() * offset,
+                    point.yMeters() + normal.yMeters() * offset);
+            OptionalDouble value = StrictScalarSampler.sample(scalarField, transform, decisionRegion, location);
+            samples.add(new LocalScalarProfileExtractor.Sample(offset,
+                    value.orElse(Double.NaN), value.isPresent()));
+        }
+        LocalScalarProfileExtractor.Result features = new LocalScalarProfileExtractor().extract(samples,
+                sourcePitchMeters, parameters);
+        double responseRange = features.maximumIntensity() - features.noiseFloor();
+        double presenceResponse = responseRange > 0.0
+                ? clamp((raw.getAsDouble() - features.noiseFloor()) / responseRange) : 0.0;
+        if (features.modes().isEmpty() && features.censoredModes().isEmpty()) {
+            double presenceCost = responseRange > 0.0
+                    ? -Math.log(Math.max(1.0e-6, presenceResponse)) : Double.POSITIVE_INFINITY;
+            return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
+                    features.maximumIntensity(), presenceResponse, presenceCost,
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0.0, false));
+        }
+        LocalScalarProfileExtractor.Mode nearestMode = features.modes().stream()
+                .min(java.util.Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0)))
+                .orElse(null);
+        LocalScalarProfileExtractor.CensoredMode nearestCensored = features.censoredModes().stream()
+                    .min(java.util.Comparator.comparingDouble(mode -> Math.abs(mode.boundaryOffsetMeters())))
+                    .orElse(null);
+        if (nearestMode == null || nearestCensored != null
+                && Math.abs(nearestCensored.boundaryOffsetMeters())
+                        < nearestMode.distanceToCenterSet(0.0)) {
+            double directedDistance = nearestCensored.side() == LocalScalarProfileExtractor.CensorSide.RIGHT
+                    ? Math.max(0.0, nearestCensored.boundaryOffsetMeters())
+                    : Math.max(0.0, -nearestCensored.boundaryOffsetMeters());
+            double presenceCost = -Math.log(Math.max(1.0e-6, presenceResponse));
+            double directionalCost = nearestCensored.gradientTowardEdge()
+                    ? EvidenceModelParameters.huber(directedDistance / sourcePitchMeters) : 0.0;
+            return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
+                    features.maximumIntensity(), presenceResponse, presenceCost,
+                    Double.POSITIVE_INFINITY, presenceCost + directionalCost,
+                    nearestCensored.existenceConfidence(), 0.0, false));
+        }
+        LocalScalarProfileExtractor.Mode selected = nearestMode;
+        double distance = selected.distanceToCenterSet(0.0);
+        double normalizedDistance = distance
+                / Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters());
+        double centerCost = EvidenceModelParameters.huber(normalizedDistance);
+        double presenceCost = -Math.log(Math.max(1.0e-6, presenceResponse));
+        return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
+                features.maximumIntensity(), presenceResponse, presenceCost, centerCost,
+                presenceCost + centerCost, selected.existenceConfidence(),
+                selected.localizationConfidence(),
+                selected.localizationConfidence() > 0.0
+                        && distance <= selected.localizationSigmaMeters() + 1.0e-12));
+    }
+
+    /** Returns mean nonnegative route-local image energy, or infinity when evidence is unknown. */
+    public double meanRouteSegmentCost(MetricPoint start, MetricPoint end) {
+        MetricPoint tangent = new MetricPoint(end.xMeters() - start.xMeters(),
+                end.yMeters() - start.yMeters());
+        double length = start.distanceTo(end);
+        if (!(length > 0.0)) {
+            return Double.POSITIVE_INFINITY;
+        }
+        int samples = Math.max(1, (int) Math.ceil(length / Math.min(2.0, sourcePitchMeters / 2.0)));
+        double total = 0.0;
+        for (int index = 0; index < samples; index++) {
+            Optional<RouteSample> value = sampleRoute(interpolate(start, end,
+                    (index + 0.5) / samples), tangent);
+            if (value.isEmpty() || !Double.isFinite(value.orElseThrow().imageEnergy())) {
+                return Double.POSITIVE_INFINITY;
+            }
+            total += value.orElseThrow().imageEnergy();
+        }
+        return total / samples;
+    }
+
+    /** Returns physical-length-weighted route-local image energy for a polyline. */
+    public double meanRoutePolylineCost(java.util.List<MetricPoint> points) {
+        double weighted = 0.0;
+        double length = 0.0;
+        for (int index = 1; index < points.size(); index++) {
+            double segmentLength = points.get(index - 1).distanceTo(points.get(index));
+            if (segmentLength <= 1.0e-12) {
+                continue;
+            }
+            double cost = meanRouteSegmentCost(points.get(index - 1), points.get(index));
+            if (!Double.isFinite(cost)) {
+                return Double.POSITIVE_INFINITY;
+            }
+            weighted += segmentLength * cost;
+            length += segmentLength;
+        }
+        return length > 0.0 ? weighted / length : Double.POSITIVE_INFINITY;
+    }
+
 
     /**
      * Returns bilinear center cost and its analytic gradient at a metric point.
@@ -174,5 +317,9 @@ public final class ImageCostField {
     private static MetricPoint interpolate(MetricPoint start, MetricPoint end, double fraction) {
         return new MetricPoint(start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
                 start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
+    }
+
+    private static double clamp(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
     }
 }

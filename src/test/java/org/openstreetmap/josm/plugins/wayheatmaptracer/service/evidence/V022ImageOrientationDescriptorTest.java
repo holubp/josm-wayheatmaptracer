@@ -245,14 +245,14 @@ class V022ImageOrientationDescriptorTest {
             defaults.minimumOrientationValidFraction(), defaults.orientationBackgroundQuantile(),
             defaults.orientationProminenceFraction(), Integer.MAX_VALUE,
             defaults.localModeProminenceFraction(), defaults.localModeShoulderFraction(),
-            defaults.localModeCoreFraction()));
+            defaults.localModeCoreFraction(), defaults.routeProfileHalfWidthMeters()));
         assertThrows(IllegalArgumentException.class, () -> new EvidenceModelParameters.Localization(
             defaults.orientationHeadingCount(), defaults.minimumOrientationRayMeters(),
             defaults.orientationRayLengthPitches(), defaults.maximumOrientationStepPitches(),
             defaults.minimumOrientationValidFraction(), defaults.orientationBackgroundQuantile(),
             defaults.orientationProminenceFraction(), defaults.maximumOrientationSampleCount() + 1,
             defaults.localModeProminenceFraction(), defaults.localModeShoulderFraction(),
-            defaults.localModeCoreFraction()));
+            defaults.localModeCoreFraction(), defaults.routeProfileHalfWidthMeters()));
     }
 
     private static ImageOrientationDescriptor.Result describe(Fixture fixture, MetricPoint center,

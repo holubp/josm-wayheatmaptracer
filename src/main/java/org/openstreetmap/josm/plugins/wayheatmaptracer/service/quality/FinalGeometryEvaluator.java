@@ -12,7 +12,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageC
 
 /** Evaluates the exact final-preview polyline with physical local and topology checks. */
 public final class FinalGeometryEvaluator {
-    private static final double DIRECT_SUPPORT_INTENSITY_MINIMUM = 0.25;
     /** Stable defect codes shared by all modern engines. */
     public enum FindingCode {
         SELF_INTERSECTION,
@@ -109,7 +108,7 @@ public final class FinalGeometryEvaluator {
                 ? Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? Disposition.APPLICABLE : Disposition.REVIEW_REQUIRED;
         return new Result(request.id(), disposition, findings, support.totalLength, support.directLength,
-                support.worstUnsupportedSpan, request.image().meanPolylineCost(request.points()),
+                support.worstUnsupportedSpan, request.image().meanRoutePolylineCost(request.points()),
                 roughness(request.points()));
     }
 
@@ -181,11 +180,19 @@ public final class FinalGeometryEvaluator {
                     continue;
                 }
                 List<MetricPoint> local = request.points().subList(first, last + 1);
-                double routeCost = request.image().meanPolylineCost(local);
-                double chordCost = request.image().meanSegmentCost(request.points().get(first),
+                double routeCost = request.image().meanRoutePolylineCost(local);
+                double chordCost = request.image().meanRouteSegmentCost(request.points().get(first),
                         request.points().get(last));
-                boolean supportedBend = Double.isFinite(routeCost) && Double.isFinite(chordCost)
-                        && routeCost <= chordCost + 0.02;
+                SupportMetrics localSupport = supportMetrics(local, request.image(),
+                        request.sourcePitchMeters());
+                boolean directlySupported = localSupport.directLength >= 0.95 * localSupport.totalLength;
+                boolean costsFinite = Double.isFinite(routeCost) && Double.isFinite(chordCost);
+                boolean routeUnknownWithinSourceUncertainty = !Double.isFinite(routeCost)
+                        && Double.isFinite(chordCost)
+                        && localSupport.worstUnsupportedSpan <= request.sourcePitchMeters();
+                boolean supportedBend = directlySupported
+                        || routeUnknownWithinSourceUncertainty
+                        || costsFinite && routeCost <= chordCost + 0.02;
                 if (!supportedBend) {
                     findings.add(review(FindingCode.UNSUPPORTED_ISOLATED_EXCURSION,
                             first, last, amplitude));
@@ -209,10 +216,18 @@ public final class FinalGeometryEvaluator {
         MetricPoint approach = points.get(approachIndex);
         double amplitude = pointSegmentDistance(apex, approach, end);
         List<MetricPoint> route = start ? List.of(end, apex, approach) : List.of(approach, apex, end);
-        double routeCost = image.meanPolylineCost(route);
-        double chordCost = image.meanSegmentCost(approach, end);
-        if (amplitude > onset && (!Double.isFinite(routeCost) || !Double.isFinite(chordCost)
-                || routeCost > chordCost + 0.02)) {
+        double routeCost = image.meanRoutePolylineCost(route);
+        double chordCost = image.meanRouteSegmentCost(approach, end);
+        SupportMetrics support = supportMetrics(route, image, image.sourcePitchMeters());
+        boolean directlySupported = support.directLength >= 0.95 * support.totalLength;
+        boolean costsFinite = Double.isFinite(routeCost) && Double.isFinite(chordCost);
+        boolean routeUnknownWithinSourceUncertainty = !Double.isFinite(routeCost)
+                && Double.isFinite(chordCost)
+                && support.worstUnsupportedSpan <= image.sourcePitchMeters();
+        boolean supportedBend = directlySupported
+                || routeUnknownWithinSourceUncertainty
+                || costsFinite && routeCost <= chordCost + 0.02;
+        if (amplitude > onset && !supportedBend) {
             findings.add(review(FindingCode.UNSUPPORTED_TERMINAL_KINK,
                     Math.min(endIndex, approachIndex), Math.max(endIndex, approachIndex), amplitude));
         }
@@ -260,12 +275,16 @@ public final class FinalGeometryEvaluator {
             MetricPoint start = points.get(segment);
             MetricPoint end = points.get(segment + 1);
             double length = start.distanceTo(end);
+            if (length <= 1.0e-12) {
+                continue;
+            }
+            MetricPoint tangent = subtract(end, start);
             int samples = Math.max(1, (int) Math.ceil(length / step));
             double piece = length / samples;
             for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++) {
                 MetricPoint point = interpolate(start, end, (sampleIndex + 0.5) / samples);
-                boolean supported = image.sample(point)
-                        .map(sample -> sample.intensity() >= DIRECT_SUPPORT_INTENSITY_MINIMUM).orElse(false);
+                boolean supported = image.sampleRoute(point, tangent)
+                        .map(ImageCostField.RouteSample::directlyLocalized).orElse(false);
                 total += piece;
                 if (supported) {
                     direct += piece;

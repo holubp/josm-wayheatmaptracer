@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalDouble;
 import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
@@ -21,6 +20,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
 
@@ -79,21 +79,39 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
 
     private static List<ObservationOwnership> support(List<MetricPoint> points, EvidenceSnapshot evidence,
         ScalarEvidenceField field) {
+        ImageCostField image = new ImageCostField(field, evidence.transform(), evidence.decisionRegion(),
+                evidence.resolution().effectivePitchMeters());
         List<ObservationOwnership> support = new ArrayList<>(points.size());
-        for (MetricPoint point : points) {
+        for (int index = 0; index < points.size(); index++) {
+            MetricPoint point = points.get(index);
+            if (index == 0 || index == points.size() - 1) {
+                support.add(ObservationOwnership.FIXED_TOPOLOGY_ONLY);
+                continue;
+            }
+            if (point.distanceTo(points.get(index - 1)) <= 1.0e-12
+                    || point.distanceTo(points.get(index + 1)) <= 1.0e-12) {
+                support.add(ObservationOwnership.FIXED_TOPOLOGY_ONLY);
+                continue;
+            }
             if (!evidence.routePositionAuthorized(point)) {
                 support.add(ObservationOwnership.NO_RASTER);
                 continue;
             }
-            var raster = evidence.transform().metricToPixelCenter(point);
-            int x = (int) Math.round(raster.x());
-            int y = (int) Math.round(raster.y());
-            OptionalDouble intensity = !field.supportsInterpolationAt(raster.x(), raster.y())
-                    || x < 0 || x >= field.width() || y < 0 || y >= field.height()
-                ? OptionalDouble.empty() : field.sample(x, y);
-            support.add(intensity.isEmpty() ? ObservationOwnership.NO_RASTER
-                : intensity.getAsDouble() > 1e-3 ? ObservationOwnership.DIRECT_TWO_SIDED
-                    : ObservationOwnership.NO_SIGNAL_VALID_RASTER);
+            MetricPoint tangent = new MetricPoint(points.get(index + 1).xMeters() - points.get(index - 1).xMeters(),
+                    points.get(index + 1).yMeters() - points.get(index - 1).yMeters());
+            ImageCostField.RouteSample sample = image.sampleRoute(point, tangent).orElse(null);
+            if (sample == null) {
+                support.add(ObservationOwnership.NO_RASTER);
+            } else if (sample.directlyLocalized()) {
+                support.add(ObservationOwnership.DIRECT_TWO_SIDED);
+            } else if (sample.localizationConfidence() > 0.0
+                    || Double.isFinite(sample.centerCost())) {
+                support.add(ObservationOwnership.DIRECT_AMBIGUOUS);
+            } else if (sample.existenceConfidence() > 0.0) {
+                support.add(ObservationOwnership.CORE_CENSORED);
+            } else {
+                support.add(ObservationOwnership.NO_SIGNAL_VALID_RASTER);
+            }
         }
         return List.copyOf(support);
     }

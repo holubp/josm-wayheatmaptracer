@@ -62,6 +62,20 @@ remain explicit. Direction costs consume the selected mode's support, including
 the narrowly identified legacy constructor path. This component evidence does not
 complete shared final-geometry localization, live capture, or modern routing.
 
+Shared modern route evaluation re-extracts local scalar modes along the proposed
+route normal. Presence and localization remain separate: uniform brightness does
+not establish a center, while faint coherent contrast can provide measured support.
+Ambiguous or censored evidence remains non-direct, including at invalid-support
+boundaries. The image engine's ownership and candidate summaries consume those
+fresh measurements; topology-only occurrences remain protected from that upgrade.
+
+Zero-length image-search connectors advance the ordered anchor phase without
+resetting incoming heading. Final evaluation skips their zero physical contribution
+while preserving occurrence identity for topology checks. Capture-cell validity is
+shared by route sampling, probabilistic profiles and measured image orientation.
+The route query re-extracts modes and is not a frozen differentiable objective:
+production refitting still requires frozen branch-owned fields and curvature targets.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

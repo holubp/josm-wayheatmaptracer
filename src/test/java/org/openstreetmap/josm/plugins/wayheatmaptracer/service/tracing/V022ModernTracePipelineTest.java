@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
@@ -41,6 +42,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
 
 /** Common detached post-processing regressions for all modern tracing engines. */
 class V022ModernTracePipelineTest {
@@ -108,6 +110,29 @@ class V022ModernTracePipelineTest {
         assertFalse(result.inference().alternativesTruncated());
     }
 
+    @Test
+    void directionalEngineCarriesFaintRelativeSupportIntoCandidateAdaptation() {
+        Fixture fixture = fixture(TrackerMode.DIRECTIONAL_IMAGE, 1.0e-4, 8.0e-4);
+        TraceHypothesisSet inference = new DirectionalImageTraceEngine("native").trace(fixture.request,
+                fixture.evidence, fixture.network, CancellationProbe.NONE);
+
+        assertFalse(inference.hypotheses().isEmpty());
+        TraceHypothesis route = inference.hypotheses().get(0);
+        assertEquals(ObservationOwnership.FIXED_TOPOLOGY_ONLY, route.support().get(0));
+        assertEquals(ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                route.support().get(route.support().size() - 1));
+        assertTrue(route.support().subList(1, route.support().size() - 1).stream()
+                .anyMatch(ownership -> ownership == ObservationOwnership.DIRECT_TWO_SIDED));
+
+        var candidate = new ModernCandidateAdapter().adapt(inference, fixture.evidence, "native",
+                List.of(new MetricPoint(0, 0), new MetricPoint(4, 0)), point -> {
+                    MetricPoint metric = fixture.evidence.coordinateFrame().toMetric(point);
+                    return new EastNorth(metric.xMeters(), metric.yMeters());
+                }).get(0);
+        assertTrue(candidate.evidence().supportedProfiles() > 0);
+        assertTrue(candidate.evidence().hasSignal());
+    }
+
     private static ModernTracePipeline.Options options(GeometryCleanupConfig cleanup) {
         return new ModernTracePipeline.Options("native", cleanup, Set.of(), "native", 0);
     }
@@ -127,6 +152,10 @@ class V022ModernTracePipelineTest {
     }
 
     private static Fixture fixture(TrackerMode mode) {
+        return fixture(mode, 0.1, 1.0);
+    }
+
+    private static Fixture fixture(TrackerMode mode, double background, double ridge) {
         GeographicPoint origin = new GeographicPoint(42, 19);
         LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(origin,
                 new GeographicPoint(41.999, 18.999), new GeographicPoint(42.001, 19.001));
@@ -151,7 +180,7 @@ class V022ModernTracePipelineTest {
         boolean[] valid = new boolean[intensity.length];
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
-                intensity[y * size + x] = y >= 4 && y <= 6 ? 1.0 : 0.1;
+                intensity[y * size + x] = y >= 4 && y <= 6 ? ridge : background;
                 valid[y * size + x] = true;
             }
         }

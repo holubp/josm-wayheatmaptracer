@@ -202,7 +202,7 @@ class V022LocalizationCorrectionTest {
                 localization.minimumOrientationValidFraction(), localization.orientationBackgroundQuantile(),
                 localization.orientationProminenceFraction(), budget,
                 localization.localModeProminenceFraction(), localization.localModeShoulderFraction(),
-                localization.localModeCoreFraction()));
+                localization.localModeCoreFraction(), localization.routeProfileHalfWidthMeters()));
     }
 
     private static EngineFixture engineFixture() {

@@ -4,7 +4,6 @@ import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalDouble;
 import java.util.function.Function;
 
 import org.openstreetmap.josm.data.coor.EastNorth;
@@ -20,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 
 /** Converts detached modern hypotheses into the existing modeless-preview candidate contract. */
 public final class ModernCandidateAdapter {
@@ -38,6 +38,7 @@ public final class ModernCandidateAdapter {
         if (field == null) {
             throw new IllegalArgumentException("Selected scalar evidence field is unavailable");
         }
+        ImageCostField image = ImageCostField.fromEvidence(evidence, fieldName);
         List<CenterlineCandidate> result = new ArrayList<>();
         for (TraceHypothesis hypothesis : hypotheses.hypotheses()) {
             List<Point2D.Double> raster = hypothesis.points().stream().map(point -> {
@@ -49,15 +50,15 @@ public final class ModernCandidateAdapter {
             List<Double> offsets = hypothesis.points().stream()
                     .map(point -> signedDistance(point, sourcePolyline)
                             / evidence.resolution().outputRasterPitchMeters()).toList();
-            CandidateEvidence candidateEvidence = summarize(hypothesis, evidence, field, fieldName);
+            CandidateEvidence candidateEvidence = summarize(hypothesis, image, fieldName);
             result.add(new CenterlineCandidate(hypothesis.id(), -hypothesis.objective(), raster, offsets,
                     projected, candidateEvidence, List.of()));
         }
         return List.copyOf(result);
     }
 
-    private static CandidateEvidence summarize(TraceHypothesis hypothesis, EvidenceSnapshot evidence,
-            ScalarEvidenceField field, String fieldName) {
+    private static CandidateEvidence summarize(TraceHypothesis hypothesis, ImageCostField image,
+            String fieldName) {
         int supported = 0;
         int empty = 0;
         int maximumEmpty = 0;
@@ -65,18 +66,30 @@ public final class ModernCandidateAdapter {
         int first = -1;
         int last = -1;
         double total = 0.0;
+        double totalSignalToNoise = 0.0;
+        double totalExistence = 0.0;
+        double totalLocalization = 0.0;
         for (int index = 0; index < hypothesis.points().size(); index++) {
             ObservationOwnership ownership = hypothesis.support().get(index);
-            boolean observed = ownership == ObservationOwnership.DIRECT_TWO_SIDED
-                    || ownership == ObservationOwnership.DIRECT_AMBIGUOUS
-                    || ownership == ObservationOwnership.SHOULDER_CENSORED;
-            OptionalDouble sample = sample(field, evidence, hypothesis.points().get(index));
-            if (observed && sample.isPresent()) {
+            boolean freshMeasurementAllowed = ownership != ObservationOwnership.FIXED_TOPOLOGY_ONLY;
+            ImageCostField.RouteSample sample = null;
+            if (freshMeasurementAllowed) {
+                MetricPoint routeTangent = tangent(hypothesis.points(), index);
+                if (routeTangent != null) {
+                    sample = image.sampleRoute(hypothesis.points().get(index),
+                            routeTangent).orElse(null);
+                }
+            }
+            if (freshMeasurementAllowed && sample != null && sample.directlyLocalized()) {
                 supported++;
                 currentEmpty = 0;
                 first = first < 0 ? index : first;
                 last = index;
-                total += sample.getAsDouble();
+                total += sample.rawIntensity();
+                totalSignalToNoise += (sample.peakIntensity() - sample.noiseFloor())
+                        / Math.max(0.02, sample.noiseFloor());
+                totalExistence += sample.existenceConfidence();
+                totalLocalization += sample.localizationConfidence();
             } else {
                 empty++;
                 currentEmpty++;
@@ -98,23 +111,21 @@ public final class ModernCandidateAdapter {
                         count == 0 ? 0.0 : (double) supported / count)));
         return new CandidateEvidence(fieldName, count, supported, empty, maximumEmpty, total, mean,
                 hypothesis.diagnostics().getOrDefault("meanGradientStrength", 0.0), persistence,
-                supported == 0 ? 0.0 : mean / Math.max(0.02, 1.0 - mean), ambiguity,
-                supported == 0 ? 0.0 : Math.min(1.0, mean + persistence * 0.25),
-                supported == 0 ? 0.0 : Math.min(1.0, hypothesis.posteriorProbability() + 0.25),
+                supported == 0 ? 0.0 : totalSignalToNoise / supported, ambiguity,
+                supported == 0 ? 0.0 : totalExistence / supported,
+                supported == 0 ? 0.0 : totalLocalization / supported,
                 hypothesis.objective(), supported == 0 ? 0.0 : (double) supported / count,
                 0.0, 0.0, CorridorQuality.empty(), coverage, List.of(fieldName));
     }
 
-    private static OptionalDouble sample(ScalarEvidenceField field, EvidenceSnapshot evidence,
-            MetricPoint point) {
-        RasterPoint raster = evidence.transform().metricToPixelCenter(point);
-        if (!field.supportsInterpolationAt(raster.x(), raster.y())) {
-            return OptionalDouble.empty();
-        }
-        int x = (int) Math.round(raster.x());
-        int y = (int) Math.round(raster.y());
-        return x < 0 || y < 0 || x >= field.width() || y >= field.height()
-                ? OptionalDouble.empty() : field.sample(x, y);
+    private static MetricPoint tangent(List<MetricPoint> points, int index) {
+        MetricPoint start = points.get(Math.max(0, index - 1));
+        MetricPoint end = points.get(Math.min(points.size() - 1, index + 1));
+        double east = end.xMeters() - start.xMeters();
+        double north = end.yMeters() - start.yMeters();
+        return !Double.isFinite(east) || !Double.isFinite(north)
+                || Math.hypot(east, north) <= 1.0e-12
+                ? null : new MetricPoint(east, north);
     }
 
     private static double maximumGap(TraceHypothesis hypothesis) {

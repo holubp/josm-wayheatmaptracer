@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 /** Consumer regression: four valid output vertices do not certify source support between them. */
@@ -40,6 +41,16 @@ class V022CapturedCellConsumerTest {
             descriptor.describe(snapshot, field, new MetricPoint(50.25, 50.25), 1).support().status());
         assertEquals(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
             descriptor.describe(snapshot, field, new MetricPoint(70.25, 50.25), 1).support().status());
+    }
+
+    @Test
+    void routeLocalizationRejectsUnsupportedCellButKeepsAdjacentRidge() {
+        EvidenceSnapshot snapshot = snapshot();
+        ImageCostField image = ImageCostField.fromEvidence(snapshot, "scalar");
+        MetricPoint tangent = new MetricPoint(1, 0);
+        assertTrue(image.sampleRoute(new MetricPoint(50.25, 50.25), tangent).isEmpty());
+        assertTrue(image.sampleRoute(new MetricPoint(70.25, 50.25), tangent)
+            .orElseThrow().directlyLocalized());
     }
 
     private static EvidenceSnapshot snapshot() {

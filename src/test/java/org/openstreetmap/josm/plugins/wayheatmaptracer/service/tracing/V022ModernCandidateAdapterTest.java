@@ -1,6 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -27,7 +29,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 /** Existing-preview adaptation checks for detached modern hypotheses. */
 class V022ModernCandidateAdapterTest {
     @Test
-    void projectionOffsetsAndIncompleteEvidenceRemainExplicit() {
+    void projectionOffsetsAndUniformBrightnessRemainExplicitButUnlocalized() {
         EvidenceSnapshot evidence = evidence();
         TraceHypothesis route = new TraceHypothesis("b-0", "main",
                 List.of(new MetricPoint(1, 1), new MetricPoint(5, 2), new MetricPoint(9, 1)),
@@ -45,7 +47,8 @@ class V022ModernCandidateAdapterTest {
 
         assertEquals(3, candidate.eastNorthPoints().size());
         assertEquals(1.0, candidate.offsetsPx().get(1), 1.0e-9);
-        assertTrue(candidate.evidence().hasSignal());
+        assertFalse(candidate.evidence().hasSignal());
+        assertEquals(0, candidate.evidence().supportedProfiles());
         assertEquals("modern-incomplete-evidence", candidate.evidence().corridorCoverage().reason());
     }
 
@@ -86,15 +89,98 @@ class V022ModernCandidateAdapterTest {
                         12, 12, 12, 12), "source");
     }
 
+    @Test
+    void freshRelativeEvidenceReplacesStaleNoSignalButNotTopologyOnlyOwnership() {
+        EvidenceSnapshot evidence = evidence(true);
+        List<MetricPoint> points = List.of(new MetricPoint(1, 5), new MetricPoint(5, 5),
+                new MetricPoint(9, 5));
+        TraceHypothesis stale = new TraceHypothesis("faint", "main", points,
+                List.of(ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                        ObservationOwnership.NO_SIGNAL_VALID_RASTER,
+                        ObservationOwnership.FIXED_TOPOLOGY_ONLY), 1.0, 0.0, Map.of());
+        TraceHypothesis topologyOnly = new TraceHypothesis("topology", "main", points,
+                List.of(ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                        ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                        ObservationOwnership.FIXED_TOPOLOGY_ONLY), 1.0, 0.0, Map.of());
+        ModernCandidateAdapter adapter = new ModernCandidateAdapter();
+
+        var refreshed = adapter.adapt(new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE,
+                List.of(stale), TraceHypothesisSet.Status.COMPLETE, false, 1, 1, "faint"),
+                evidence, "hot", List.of(points.get(0), points.get(2)),
+                point -> project(evidence, point)).get(0);
+        var protectedCandidate = adapter.adapt(new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE,
+                List.of(topologyOnly), TraceHypothesisSet.Status.COMPLETE, false, 1, 1, "topology"),
+                evidence, "hot", List.of(points.get(0), points.get(2)),
+                point -> project(evidence, point)).get(0);
+
+        assertEquals(1, refreshed.evidence().supportedProfiles());
+        assertTrue(refreshed.evidence().hasSignal());
+        assertEquals(0, protectedCandidate.evidence().supportedProfiles());
+    }
+
+    @Test
+    void topologyOnlyDuplicatesAreRetainedAndUndefinedMeasurementTangentsFailClosed() {
+        EvidenceSnapshot evidence = evidence(true);
+        MetricPoint first = new MetricPoint(1, 5);
+        MetricPoint second = new MetricPoint(9, 5);
+        ModernCandidateAdapter adapter = new ModernCandidateAdapter();
+        for (List<MetricPoint> points : List.of(
+                List.of(first, first, second), List.of(first, second, first))) {
+            TraceHypothesis topologyOnly = new TraceHypothesis("topology-duplicates", "main",
+                    points, java.util.Collections.nCopies(points.size(),
+                            ObservationOwnership.FIXED_TOPOLOGY_ONLY),
+                    1.0, 0.0, Map.of());
+            var candidate = assertDoesNotThrow(() -> adapter.adapt(
+                    new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE,
+                            List.of(topologyOnly), TraceHypothesisSet.Status.COMPLETE,
+                            false, 1, 1, "topology"),
+                    evidence, "hot", List.of(first, second),
+                    point -> project(evidence, point))).get(0);
+            assertEquals(points.size(), candidate.screenPoints().size());
+            assertEquals(0, candidate.evidence().supportedProfiles());
+        }
+
+        List<MetricPoint> reversing = List.of(first, second, first);
+        TraceHypothesis undefinedMeasurement = new TraceHypothesis("undefined-tangent", "main",
+                reversing, List.of(ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                        ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.FIXED_TOPOLOGY_ONLY),
+                1.0, 0.0, Map.of());
+        var candidate = assertDoesNotThrow(() -> adapter.adapt(
+                new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE,
+                        List.of(undefinedMeasurement), TraceHypothesisSet.Status.COMPLETE,
+                        false, 1, 1, "undefined"),
+                evidence, "hot", List.of(first, second),
+                point -> project(evidence, point))).get(0);
+        assertEquals(3, candidate.screenPoints().size());
+        assertEquals(0, candidate.evidence().supportedProfiles());
+    }
+
+    private static EastNorth project(EvidenceSnapshot evidence, GeographicPoint point) {
+        MetricPoint metric = evidence.coordinateFrame().toMetric(point);
+        return new EastNorth(metric.xMeters(), metric.yMeters());
+    }
+
     private static EvidenceSnapshot evidence() {
+        return evidence(false);
+    }
+
+    private static EvidenceSnapshot evidence(boolean faintRidge) {
         GeographicPoint origin = new GeographicPoint(42, 19);
         LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(origin,
                 new GeographicPoint(41.999, 18.999), new GeographicPoint(42.001, 19.001));
         int size = 12;
         double[] values = new double[size * size];
         boolean[] valid = new boolean[values.length];
-        java.util.Arrays.fill(values, 0.8);
+        java.util.Arrays.fill(values, faintRidge ? 1.0e-4 : 0.8);
         java.util.Arrays.fill(valid, true);
+        if (faintRidge) {
+            for (int y = 4; y <= 6; y++) {
+                for (int x = 0; x < size; x++) {
+                    values[y * size + x] = 8.0e-4;
+                }
+            }
+        }
         ScalarEvidenceField field = new ScalarEvidenceField(size, size, values, valid,
                 new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
                         EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "hot",
