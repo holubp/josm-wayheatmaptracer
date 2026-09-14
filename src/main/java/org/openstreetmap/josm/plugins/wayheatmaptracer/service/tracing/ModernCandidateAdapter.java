@@ -48,7 +48,7 @@ public final class ModernCandidateAdapter {
                     .map(evidence.coordinateFrame()::toGeographic).map(geographicProjector).toList();
             List<Double> offsets = hypothesis.points().stream()
                     .map(point -> signedDistance(point, sourcePolyline)
-                            / evidence.resolution().renderedPitchMeters()).toList();
+                            / evidence.resolution().outputRasterPitchMeters()).toList();
             CandidateEvidence candidateEvidence = summarize(hypothesis, evidence, field, fieldName);
             result.add(new CenterlineCandidate(hypothesis.id(), -hypothesis.objective(), raster, offsets,
                     projected, candidateEvidence, List.of()));
@@ -108,6 +108,9 @@ public final class ModernCandidateAdapter {
     private static OptionalDouble sample(ScalarEvidenceField field, EvidenceSnapshot evidence,
             MetricPoint point) {
         RasterPoint raster = evidence.transform().metricToPixelCenter(point);
+        if (!field.supportsInterpolationAt(raster.x(), raster.y())) {
+            return OptionalDouble.empty();
+        }
         int x = (int) Math.round(raster.x());
         int y = (int) Math.round(raster.y());
         return x < 0 || y < 0 || x >= field.width() || y >= field.height()

@@ -15,9 +15,19 @@ public record EvidenceSnapshot(
     MetricRegion decisionRegion,
     MetricRegion evidenceRegion,
     Map<String, ScalarEvidenceField> fields,
+    RasterResamplingProvenance resampling,
     String sourceIdentity
 ) {
-    /** Copies containers and proves region and common-raster ownership. */
+    /** Preserves direct-grid construction semantics for existing snapshot producers. */
+    public EvidenceSnapshot(String snapshotId, LocalMetricFrame coordinateFrame,
+            RasterMetricTransform transform, EvidenceResolution resolution,
+            MetricRegion decisionRegion, MetricRegion evidenceRegion,
+            Map<String, ScalarEvidenceField> fields, String sourceIdentity) {
+        this(snapshotId, coordinateFrame, transform, resolution, decisionRegion, evidenceRegion,
+                fields, directProvenance(fields), sourceIdentity);
+    }
+
+    /** Copies containers and proves region, raster, resolution, and resampling ownership. */
     public EvidenceSnapshot {
         if (snapshotId == null || snapshotId.isBlank() || sourceIdentity == null || sourceIdentity.isBlank()) {
             throw new IllegalArgumentException("Evidence snapshot identity is required");
@@ -27,6 +37,7 @@ public record EvidenceSnapshot(
         resolution = Objects.requireNonNull(resolution, "resolution");
         decisionRegion = Objects.requireNonNull(decisionRegion, "decisionRegion");
         evidenceRegion = Objects.requireNonNull(evidenceRegion, "evidenceRegion");
+        resampling = Objects.requireNonNull(resampling, "resampling");
         if (fields == null || fields.isEmpty()) {
             throw new IllegalArgumentException("Evidence snapshot requires at least one scalar field");
         }
@@ -36,6 +47,9 @@ public record EvidenceSnapshot(
         if (fields.entrySet().stream().anyMatch(entry -> entry.getKey() == null || entry.getKey().isBlank()
             || entry.getValue() == null || entry.getValue().width() != width || entry.getValue().height() != height)) {
             throw new IllegalArgumentException("Evidence fields must share one named raster frame");
+        }
+        if (resampling.outputWidth() != width || resampling.outputHeight() != height) {
+            throw new IllegalArgumentException("Resampling provenance does not match the evidence raster");
         }
         MetricPoint topLeft = transform.pixelCenterToMetric(-0.5, -0.5);
         MetricPoint topRight = transform.pixelCenterToMetric(width - 0.5, -0.5);
@@ -47,18 +61,19 @@ public record EvidenceSnapshot(
             throw new IllegalArgumentException("Decision, halo, and raster regions are inconsistent");
         }
         org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.DetachedValueVerifier.verify(
-            java.util.List.of(coordinateFrame, transform, resolution, decisionRegion, evidenceRegion, fields));
+            java.util.List.of(coordinateFrame, transform, resolution, decisionRegion, evidenceRegion,
+                    fields, resampling));
     }
 
     /** Returns a content-bound hash over coordinates, masks, scalar values, resolution, and source lineage. */
     public String canonicalHash() {
-        CanonicalEncoder encoder = new CanonicalEncoder().field("evidence-snapshot-v1")
+        CanonicalEncoder encoder = new CanonicalEncoder().field("evidence-snapshot-v3")
             .field(sourceIdentity).field(coordinateFrame.projectionId())
             .field(Double.toHexString(coordinateFrame.origin().latitudeDegrees()))
             .field(Double.toHexString(coordinateFrame.origin().longitudeDegrees()))
             .field(coordinateFrame.distortionCertificate().method())
             .field(Double.toHexString(coordinateFrame.distortionCertificate().maximumRelativeDistanceError()))
-            .field(transform.transformId()).field(transform.originKind().name())
+            .field(transform.transformId()).field(transform.originKind().name()).field(transform.axisUnit().name())
             .field(Double.toHexString(transform.origin().xMeters()))
             .field(Double.toHexString(transform.origin().yMeters()))
             .field(Double.toHexString(transform.xAxisEastMetersPerSourcePixel()))
@@ -66,11 +81,24 @@ public record EvidenceSnapshot(
             .field(Double.toHexString(transform.yAxisEastMetersPerSourcePixel()))
             .field(Double.toHexString(transform.yAxisNorthMetersPerSourcePixel()))
             .field(Double.toHexString(transform.rasterPixelsPerSourcePixel()))
+            .field(transform.accuracyCertificate().method())
+            .field(Double.toHexString(transform.accuracyCertificate().maximumErrorMeters()))
+            .field(Double.toHexString(transform.accuracyCertificate().toleranceMeters()))
+            .field(transform.accuracyCertificate().verificationPointCount())
             .field(resolution.kind().name())
             .field(resolution.nativePitchMeters().isPresent())
             .field(resolution.nativePitchMeters().isPresent()
                 ? Double.toHexString(resolution.nativePitchMeters().getAsDouble()) : "unknown")
-            .field(Double.toHexString(resolution.renderedPitchMeters()));
+            .field(Double.toHexString(resolution.renderedPitchMeters()))
+            .field(resolution.resampledPitchMeters().isPresent())
+            .field(resolution.resampledPitchMeters().isPresent()
+                ? Double.toHexString(resolution.resampledPitchMeters().getAsDouble()) : "not-resampled")
+            .field(resampling.method()).field(resampling.sourceTransformKind())
+            .field(resampling.sourceTransformIdentity())
+            .field(resampling.inputCoordinateConvention())
+            .field(resampling.scalarOrder()).field(resampling.validityRule())
+            .field(resampling.inputWidth()).field(resampling.inputHeight())
+            .field(resampling.outputWidth()).field(resampling.outputHeight());
         resolution.spatialPitchSamples().forEach(sample -> encoder.field("pitch")
             .field(Double.toHexString(sample.chainageMeters()))
             .field(sample.nativePitchMeters().isPresent())
@@ -92,8 +120,21 @@ public record EvidenceSnapshot(
             for (int index = 0; index < values.length; index++) {
                 encoder.field(valid[index]).field(Double.toHexString(values[index]));
             }
+            boolean[] interpolationValid = field.copiedInterpolationValidity();
+            for (boolean completeCellSupport : interpolationValid) {
+                encoder.field("cell-support").field(completeCellSupport);
+            }
         });
         return encoder.sha256();
+    }
+
+    private static RasterResamplingProvenance directProvenance(
+            Map<String, ScalarEvidenceField> fields) {
+        if (fields == null || fields.isEmpty() || fields.values().iterator().next() == null) {
+            throw new IllegalArgumentException("Evidence snapshot requires at least one scalar field");
+        }
+        ScalarEvidenceField field = fields.values().iterator().next();
+        return RasterResamplingProvenance.direct(field.width(), field.height());
     }
 
     private static void encodeRegion(CanonicalEncoder encoder, MetricRegion region) {

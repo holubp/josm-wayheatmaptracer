@@ -31,6 +31,19 @@ Unknown/incomplete ways and ambiguous antipodal longitude arcs produce an explic
 indeterminate failure; fully known remote geometry is excluded normally. Live
 snapshot producers and Apply/preview validation still require integration.
 
+Modern scalar capture uses explicit analytic input transforms and resamples into an
+exact metric grid. Managed world-pixel boundaries and visible first-pixel-center
+conventions remain distinct. The immutable field records both vertex validity and
+complete interpolation-cell support, so gaps cannot disappear between valid output
+vertices. Filtering propagates that support; consumers use `sampleBilinear` instead
+of reconstructing interpolation from four valid vertices alone.
+
+Capture admission checks separate 512 MiB peak-working and 256 MiB retained-component
+limits before pixel processing. Checked accounting includes output fields, geometry,
+resolution samples, lineage strings and their backing arrays. These component limits
+do not replace the required shared attempt budget for capture, solvers and refitting.
+Live capture producers and production replay still require integration.
+
 The isolated `GeometricCurvatureOperator` evaluates fine-mesh curvature against
 explicit inverse-metre targets with exact Huber loss and current-length quadrature.
 Its analytic gradient includes the derivative of those weights. Count admission

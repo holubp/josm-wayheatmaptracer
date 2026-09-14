@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -89,6 +90,78 @@ class V022EvidenceSnapshotTest {
 
         assertEquals(2, snapshot.fields().size());
         assertEquals(1, snapshot.independentEvidenceGroups().size());
+    }
+
+    @Test
+    void transformCertificateChangesEvidenceIdentity() {
+        EvidenceSnapshot original = snapshot(Map.of("hot", field("hot")));
+        RasterMetricTransform transform = original.transform();
+        EvidenceSnapshot remeasured = new EvidenceSnapshot(original.snapshotId(), original.coordinateFrame(),
+            new RasterMetricTransform(transform.transformId(), transform.originKind(), transform.origin(),
+                transform.xAxisEastMetersPerSourcePixel(), transform.xAxisNorthMetersPerSourcePixel(),
+                transform.yAxisEastMetersPerSourcePixel(), transform.yAxisNorthMetersPerSourcePixel(),
+                transform.rasterPixelsPerSourcePixel(),
+                new RasterTransformCertificate("independently-declared-affine-v2", 0.0, 0.0, 0)),
+            original.resolution(), original.decisionRegion(), original.evidenceRegion(),
+            original.fields(), original.sourceIdentity());
+
+        assertNotEquals(original.canonicalHash(), remeasured.canonicalHash());
+    }
+
+    @Test
+    void resamplingProvenanceChangesEvidenceIdentity() {
+        EvidenceSnapshot direct = snapshot(Map.of("hot", field("hot")));
+        EvidenceSnapshot resampled = new EvidenceSnapshot(direct.snapshotId(), direct.coordinateFrame(),
+                direct.transform(), direct.resolution().resampledTo(1.0),
+                direct.decisionRegion(), direct.evidenceRegion(), direct.fields(),
+                RasterResamplingProvenance.exactInverseBilinear(
+                        "constructed-local-metric-affine-v1", "test-affine-v1",
+                        3, 3, 2, 2),
+                direct.sourceIdentity());
+
+        assertNotEquals(direct.canonicalHash(), resampled.canonicalHash());
+    }
+
+    @Test
+    void exactTransformParametersChangeEvidenceIdentity() {
+        EvidenceSnapshot direct = snapshot(Map.of("hot", field("hot")));
+        RasterResamplingProvenance first = RasterResamplingProvenance.exactInverseBilinear(
+                "visible-web-mercator-projection-bounds-v1", "bounds-a",
+                3, 3, 2, 2);
+        RasterResamplingProvenance second = RasterResamplingProvenance.exactInverseBilinear(
+                "visible-web-mercator-projection-bounds-v1", "bounds-b",
+                3, 3, 2, 2);
+        EvidenceSnapshot firstSnapshot = new EvidenceSnapshot(direct.snapshotId(),
+                direct.coordinateFrame(), direct.transform(),
+                direct.resolution().resampledTo(1.0), direct.decisionRegion(),
+                direct.evidenceRegion(), direct.fields(), first, direct.sourceIdentity());
+        EvidenceSnapshot secondSnapshot = new EvidenceSnapshot(direct.snapshotId(),
+                direct.coordinateFrame(), direct.transform(),
+                direct.resolution().resampledTo(1.0), direct.decisionRegion(),
+                direct.evidenceRegion(), direct.fields(), second, direct.sourceIdentity());
+
+        assertNotEquals(firstSnapshot.canonicalHash(), secondSnapshot.canonicalHash());
+    }
+
+    @Test
+    void interpolationCellSupportIsImmutableAndChangesEvidenceIdentity() {
+        double[] values = {0.2, 0.8, 0.4, 0.6};
+        boolean[] valid = {true, true, true, true};
+        boolean[] unsupportedCell = {false};
+        ScalarEvidenceField supported = new ScalarEvidenceField(
+                2, 2, values, valid, new boolean[] {true}, lineage("hot"));
+        ScalarEvidenceField unsupported = new ScalarEvidenceField(
+                2, 2, values, valid, unsupportedCell, lineage("hot"));
+        EvidenceSnapshot supportedSnapshot = snapshot(Map.of("hot", supported));
+        EvidenceSnapshot unsupportedSnapshot = snapshot(Map.of("hot", unsupported));
+
+        unsupportedCell[0] = true;
+        boolean[] returned = unsupported.copiedInterpolationValidity();
+        returned[0] = true;
+
+        assertFalse(unsupported.supportsInterpolationCell(0, 0));
+        assertTrue(unsupported.sampleBilinear(0.5, 0.5).isEmpty());
+        assertNotEquals(supportedSnapshot.canonicalHash(), unsupportedSnapshot.canonicalHash());
     }
 
     private static ScalarEvidenceField field(String palette) {

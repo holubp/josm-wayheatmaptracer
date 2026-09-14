@@ -13,40 +13,51 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineag
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Detached scalar-capture regressions for modern engines. */
 class V022RasterEvidenceCaptureTest {
     @Test
-    void scalarMappingPrecedesFilteringAndCaptureFunctionIsNotRetained() {
+    void scalarMappingPrecedesMetricResamplingAndFiltering() {
+        LocalMetricFrame frame = frame();
         BufferedImage image = image(40, 30);
-        GeographicPoint origin = geographic(10, 15);
-        GeographicPoint end = geographic(28, 15);
+        MetricRasterGrid grid = new MetricRasterGrid(frame, new MetricPoint(0.25, 0.25),
+                1, 0, 0, 1, 1, 38, 30);
         EvidenceFieldLineage lineage = lineage();
-        EvidenceSnapshot snapshot = new RasterEvidenceCapture().capture("capture", image,
-                List.of(origin, end), V022RasterEvidenceCaptureTest::geographic,
+        EvidenceSnapshot snapshot = new RasterEvidenceCapture().capture("capture", image, valid(image),
+                List.of(metric(frame, 10, 15), metric(frame, 28, 15)), inverse(frame), grid,
                 EvidenceResolution.nativeSource(1.0, 1.0), 3.0, "safe-source",
                 EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
-                List.of(new RasterEvidenceCapture.FieldSpec("hot", pixel ->
-                        (pixel >>> 16 & 0xff) / 255.0, lineage,
-                        field -> field.convolveSeparable(new double[] {1, 2, 1}))));
+                List.of(RasterEvidenceCapture.FieldSpec.separable("hot", pixel ->
+                        (pixel >>> 16 & 0xff) / 255.0, lineage, new double[] {1, 2, 1})),
+                CancellationProbe.NONE);
 
-        assertEquals(List.of("separable-[1.0, 2.0, 1.0]"),
+        assertEquals(List.of("strict-bilinear-metric-resample-v2",
+                        "separable-[1.0, 2.0, 1.0]"),
                 snapshot.fields().get("hot").lineage().scalarOperations());
-        assertTrue(snapshot.routePositionAuthorized(snapshot.coordinateFrame().toMetric(origin)));
+        assertTrue(snapshot.routePositionAuthorized(snapshot.coordinateFrame().toMetric(
+                metric(frame, 10, 15))));
         assertEquals(1, snapshot.independentEvidenceGroups().size());
     }
 
     @Test
-    void incompleteRasterCannotPretendToOwnTheDecisionCorridor() {
+    void incompleteMetricGridCannotPretendToOwnTheDecisionCorridor() {
+        LocalMetricFrame frame = frame();
         BufferedImage image = image(8, 8);
+        MetricRasterGrid grid = new MetricRasterGrid(frame, new MetricPoint(0.25, 0.25),
+                1, 0, 0, 1, 1, 6, 6);
 
         assertThrows(IllegalArgumentException.class, () -> new RasterEvidenceCapture().capture(
-                "capture", image, List.of(geographic(1, 1), geographic(7, 7)),
-                V022RasterEvidenceCaptureTest::geographic,
+                "capture", image, valid(image),
+                List.of(metric(frame, 1, 1), metric(frame, 5, 5)), inverse(frame), grid,
                 EvidenceResolution.renderedOnly(1.0), 5.0, "safe-source",
                 EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
-                List.of(RasterEvidenceCapture.FieldSpec.direct("hot", pixel -> 1.0, lineage()))));
+                List.of(RasterEvidenceCapture.FieldSpec.direct("hot", pixel -> 1.0, lineage())),
+                CancellationProbe.NONE));
     }
 
     private static BufferedImage image(int width, int height) {
@@ -59,12 +70,25 @@ class V022RasterEvidenceCaptureTest {
         return image;
     }
 
-    private static GeographicPoint geographic(RasterPoint point) {
-        return geographic(point.x(), point.y());
+    private static boolean[] valid(BufferedImage image) {
+        boolean[] validity = new boolean[Math.multiplyExact(image.getWidth(), image.getHeight())];
+        java.util.Arrays.fill(validity, true);
+        return validity;
     }
 
-    private static GeographicPoint geographic(double x, double y) {
-        return new GeographicPoint(42.0 + y / 111_000.0, 19.0 + x / 82_000.0);
+    private static LocalMetricFrame frame() {
+        GeographicPoint origin = new GeographicPoint(42, 19);
+        return LocalMetricFrame.certifiedEquirectangular(origin,
+                new GeographicPoint(41.999, 18.999), new GeographicPoint(42.001, 19.001));
+    }
+
+    private static GeographicPoint metric(LocalMetricFrame frame, double x, double y) {
+        return frame.toGeographic(new MetricPoint(x, y));
+    }
+
+    private static SupportedInputRasterTransform inverse(LocalMetricFrame frame) {
+        return SupportedInputRasterTransform.localMetricAffine(
+                frame, new RasterPoint(0, 0), 1, 0, 0, 1);
     }
 
     private static EvidenceFieldLineage lineage() {

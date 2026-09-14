@@ -88,7 +88,8 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
             var raster = evidence.transform().metricToPixelCenter(point);
             int x = (int) Math.round(raster.x());
             int y = (int) Math.round(raster.y());
-            OptionalDouble intensity = x < 0 || x >= field.width() || y < 0 || y >= field.height()
+            OptionalDouble intensity = !field.supportsInterpolationAt(raster.x(), raster.y())
+                    || x < 0 || x >= field.width() || y < 0 || y >= field.height()
                 ? OptionalDouble.empty() : field.sample(x, y);
             support.add(intensity.isEmpty() ? ObservationOwnership.NO_RASTER
                 : intensity.getAsDouble() > 1e-3 ? ObservationOwnership.DIRECT_TWO_SIDED

@@ -26,6 +26,7 @@ public final class ImageCostField {
     private final int height;
     private final double[] intensity;
     private final boolean[] valid;
+    private final boolean[] interpolationValid;
     private final RasterMetricTransform transform;
     private final MetricRegion decisionRegion;
     private final double sourcePitchMeters;
@@ -41,6 +42,7 @@ public final class ImageCostField {
         this.height = field.height();
         this.intensity = field.copiedValues();
         this.valid = field.copiedValidity();
+        this.interpolationValid = field.copiedInterpolationValidity();
         this.transform = transform;
         this.decisionRegion = decisionRegion;
         this.sourcePitchMeters = sourcePitchMeters;
@@ -72,6 +74,7 @@ public final class ImageCostField {
         int x1 = x0 + 1;
         int y1 = y0 + 1;
         if (x0 < 0 || y0 < 0 || x1 >= width || y1 >= height
+                || !interpolationValid[y0 * (width - 1) + x0]
                 || !isValid(x0, y0) || !isValid(x1, y0) || !isValid(x0, y1) || !isValid(x1, y1)) {
             return Optional.empty();
         }

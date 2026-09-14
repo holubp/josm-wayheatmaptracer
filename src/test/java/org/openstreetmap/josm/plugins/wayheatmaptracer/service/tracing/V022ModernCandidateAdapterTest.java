@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterResamplingProvenance;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
@@ -46,6 +47,43 @@ class V022ModernCandidateAdapterTest {
         assertEquals(1.0, candidate.offsetsPx().get(1), 1.0e-9);
         assertTrue(candidate.evidence().hasSignal());
         assertEquals("modern-incomplete-evidence", candidate.evidence().corridorCoverage().reason());
+    }
+
+    @Test
+    void resampledOutputPitchDefinesCandidateRasterOffsets() {
+        EvidenceSnapshot evidence = resampledEvidence();
+        TraceHypothesis route = new TraceHypothesis("b-resampled", "main",
+                List.of(new MetricPoint(0.2, 0.2), new MetricPoint(1.0, 0.4),
+                        new MetricPoint(1.8, 0.2)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED),
+                1.0, 0.8, Map.of());
+        TraceHypothesisSet set = new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(route),
+                TraceHypothesisSet.Status.COMPLETE, false, 3, 3, "complete");
+
+        var candidate = new ModernCandidateAdapter().adapt(set, evidence, "hot",
+                List.of(new MetricPoint(0.2, 0.2), new MetricPoint(1.8, 0.2)), point -> {
+                    MetricPoint metric = evidence.coordinateFrame().toMetric(point);
+                    return new EastNorth(metric.xMeters(), metric.yMeters());
+                }).get(0);
+
+        assertEquals(2.4, evidence.resolution().effectivePitchMeters(), 0.0);
+        assertEquals(0.4, evidence.resolution().renderedPitchMeters(), 0.0);
+        assertEquals(0.2, evidence.resolution().resampledPitchMeters().orElseThrow(), 0.0);
+        assertEquals(1.0, candidate.offsetsPx().get(1), 1.0e-9);
+    }
+
+    private static EvidenceSnapshot resampledEvidence() {
+        EvidenceSnapshot direct = evidence();
+        return new EvidenceSnapshot("resampled", direct.coordinateFrame(),
+                RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 0.2, 0, 0, 0.2),
+                EvidenceResolution.nativeSource(2.4, 0.4).resampledTo(0.2),
+                MetricRegion.rectangle(0, 0, 2.2, 2.2),
+                MetricRegion.rectangle(-0.1, -0.1, 2.3, 2.3), direct.fields(),
+                RasterResamplingProvenance.exactInverseBilinear(
+                        "constructed-local-metric-affine-v1", "test-affine-v1",
+                        12, 12, 12, 12), "source");
     }
 
     private static EvidenceSnapshot evidence() {

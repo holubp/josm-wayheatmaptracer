@@ -186,22 +186,7 @@ public final class ProbabilisticProfileFactory {
             || x > field.width() - 1.0 || y > field.height() - 1.0) {
             return OptionalDouble.empty();
         }
-        int x0 = (int) Math.floor(x);
-        int y0 = (int) Math.floor(y);
-        int x1 = Math.min(field.width() - 1, x0 + 1);
-        int y1 = Math.min(field.height() - 1, y0 + 1);
-        OptionalDouble q00 = field.sample(x0, y0);
-        OptionalDouble q10 = field.sample(x1, y0);
-        OptionalDouble q01 = field.sample(x0, y1);
-        OptionalDouble q11 = field.sample(x1, y1);
-        if (q00.isEmpty() || q10.isEmpty() || q01.isEmpty() || q11.isEmpty()) {
-            return OptionalDouble.empty();
-        }
-        double fx = x - x0;
-        double fy = y - y0;
-        double top = q00.getAsDouble() + fx * (q10.getAsDouble() - q00.getAsDouble());
-        double bottom = q01.getAsDouble() + fx * (q11.getAsDouble() - q01.getAsDouble());
-        return OptionalDouble.of(top + fy * (bottom - top));
+        return field.sampleBilinear(x, y);
     }
 
     private List<ProbabilisticProfile.Sample> sampleProfile(MetricPoint anchor, MetricPoint normal,

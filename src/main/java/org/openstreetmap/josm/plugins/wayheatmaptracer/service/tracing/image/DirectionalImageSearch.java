@@ -211,7 +211,8 @@ public final class DirectionalImageSearch {
     private static OptionalDouble sample(SearchContext context, MetricPoint point) {
         RasterPoint raster = context.problem.evidence().transform().metricToPixelCenter(point);
         if (raster.x() < 0.0 || raster.y() < 0.0 || raster.x() > context.field.width() - 1.0
-            || raster.y() > context.field.height() - 1.0) {
+            || raster.y() > context.field.height() - 1.0
+            || !context.field.supportsInterpolationAt(raster.x(), raster.y())) {
             return OptionalDouble.empty();
         }
         int x = (int) Math.round(raster.x());
