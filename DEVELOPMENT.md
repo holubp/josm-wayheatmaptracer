@@ -31,6 +31,14 @@ Unknown/incomplete ways and ambiguous antipodal longitude arcs produce an explic
 indeterminate failure; fully known remote geometry is excluded normally. Live
 snapshot producers and Apply/preview validation still require integration.
 
+Modern probabilistic profiles retain independently localized lateral modes using
+local prominence, noise, and uncertainty. A stronger distant ridge must not erase
+a weaker coherent mode. Image direction is measured around each lateral mode by
+an 18-heading two-sided descriptor; unknown, censored, and resource-limited support
+remain explicit. Direction costs consume the selected mode's support, including
+the narrowly identified legacy constructor path. This component evidence does not
+complete shared final-geometry localization, live capture, or modern routing.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

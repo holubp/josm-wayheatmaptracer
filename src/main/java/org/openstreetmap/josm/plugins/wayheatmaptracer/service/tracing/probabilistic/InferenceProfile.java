@@ -1,8 +1,11 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 
@@ -13,8 +16,7 @@ public final class InferenceProfile {
     private final MetricPoint normalUnit;
     private final List<LateralStateCell> cells;
     private final double[] unaryCosts;
-    private final List<Double> supportedDirectionsRadians;
-    private final double orientationCertainty;
+    private final Map<String, ImageOrientationSupport> orientationByBranch;
     private final ObservationOwnership ownership;
     private final boolean entirelyMissing;
     private final double[][] componentResponsibilities;
@@ -35,19 +37,46 @@ public final class InferenceProfile {
     public InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
         List<LateralStateCell> cells, double[] unaryCosts, List<Double> supportedDirectionsRadians,
         double orientationCertainty, ObservationOwnership ownership, boolean entirelyMissing) {
-        this(chainageMeters, anchor, normalUnit, cells, unaryCosts, supportedDirectionsRadians,
-            orientationCertainty, ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()][0]);
+        this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+            uniformOrientation(cells,
+                ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()][0]);
     }
 
-    /** Creates a fully evaluated profile including per-state component responsibilities. */
+    /** Creates a profile retaining measured image-orientation intervals. */
+    public InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
+        List<LateralStateCell> cells, double[] unaryCosts, ImageOrientationSupport orientationSupport,
+        ObservationOwnership ownership, boolean entirelyMissing) {
+        this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+            uniformOrientation(cells, orientationSupport),
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()][0]);
+    }
+
+    /** Retains the point-direction constructor for deterministic graph fixtures. */
     public InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
         List<LateralStateCell> cells, double[] unaryCosts, List<Double> supportedDirectionsRadians,
         double orientationCertainty, ObservationOwnership ownership, boolean entirelyMissing,
         double[][] componentResponsibilities) {
+        this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+            uniformOrientation(cells,
+                ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
+            ownership, entirelyMissing, componentResponsibilities);
+    }
+
+    /** Creates a fully evaluated profile with branch-owned image orientation evidence. */
+    public InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
+        List<LateralStateCell> cells, double[] unaryCosts,
+        Map<String, ImageOrientationSupport> orientationByBranch,
+        ObservationOwnership ownership, boolean entirelyMissing,
+        double[][] componentResponsibilities) {
         if (!Double.isFinite(chainageMeters) || chainageMeters < 0.0 || anchor == null || normalUnit == null
             || cells == null || cells.isEmpty() || unaryCosts == null || unaryCosts.length != cells.size()
-            || supportedDirectionsRadians == null || !Double.isFinite(orientationCertainty)
-            || orientationCertainty < 0.0 || orientationCertainty > 1.0 || ownership == null
+            || orientationByBranch == null || orientationByBranch.entrySet().stream().anyMatch(entry ->
+                entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null)
+            || cells != null && orientationByBranch != null && cells.stream().anyMatch(cell ->
+                !cell.branchLabel().equals("unlocalized")
+                    && !orientationByBranch.containsKey(cell.branchLabel()))
+            || ownership == null
             || componentResponsibilities == null || componentResponsibilities.length != cells.size()) {
             throw new IllegalArgumentException("Inference profile is incomplete");
         }
@@ -60,8 +89,8 @@ public final class InferenceProfile {
         this.normalUnit = normalUnit;
         this.cells = List.copyOf(cells);
         this.unaryCosts = unaryCosts.clone();
-        this.supportedDirectionsRadians = List.copyOf(supportedDirectionsRadians);
-        this.orientationCertainty = orientationCertainty;
+        this.orientationByBranch = java.util.Collections.unmodifiableMap(
+            new LinkedHashMap<>(orientationByBranch));
         this.ownership = ownership;
         this.entirelyMissing = entirelyMissing;
         this.componentResponsibilities = deepCopy(componentResponsibilities);
@@ -99,12 +128,34 @@ public final class InferenceProfile {
 
     /** Returns alternative supported orientations in radians. */
     public List<Double> supportedDirectionsRadians() {
-        return supportedDirectionsRadians;
+        return orientationByBranch.values().stream()
+            .flatMap(support -> support.supportedDirectionsRadians().stream()).distinct().sorted().toList();
     }
 
     /** Returns orientation evidence certainty. */
     public double orientationCertainty() {
-        return orientationCertainty;
+        return orientationByBranch.values().stream()
+            .mapToDouble(ImageOrientationSupport::certainty).max().orElse(0.0);
+    }
+
+    /** Returns the first branch support for compatibility-only callers. */
+    public ImageOrientationSupport orientationSupport() {
+        return orientationByBranch.values().stream().findFirst().orElseGet(() ->
+            ImageOrientationSupport.unknown(
+                ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
+    }
+
+    /** Returns orientation evidence owned by the selected lateral state's explicit branch. */
+    public ImageOrientationSupport orientationSupport(int stateIndex) {
+        return orientationByBranch.getOrDefault(cells.get(stateIndex).branchLabel(),
+            ImageOrientationSupport.unknown(
+                ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
+    }
+
+    /** Returns whether any admitted branch exhausted configured orientation work. */
+    public boolean orientationResourceLimited() {
+        return orientationByBranch.values().stream().anyMatch(support -> support.status()
+            == ImageOrientationSupport.Status.RESOURCE_LIMIT);
     }
 
     /** Returns factual support ownership. */
@@ -135,5 +186,15 @@ public final class InferenceProfile {
             copy[index] = values[index].clone();
         }
         return copy;
+    }
+
+    private static Map<String, ImageOrientationSupport> uniformOrientation(
+        List<LateralStateCell> cells, ImageOrientationSupport support) {
+        if (cells == null || support == null) {
+            return Map.of();
+        }
+        Map<String, ImageOrientationSupport> result = new LinkedHashMap<>();
+        cells.forEach(cell -> result.put(cell.branchLabel(), support));
+        return result;
     }
 }

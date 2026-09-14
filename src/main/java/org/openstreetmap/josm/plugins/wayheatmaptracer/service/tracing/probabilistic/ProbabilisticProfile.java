@@ -4,6 +4,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalDouble;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 
 /** One complete scalar cross-section and its detached physical geometry. */
@@ -21,8 +22,7 @@ public record ProbabilisticProfile(
     List<Mode> modes,
     List<CensoredMode> censoredModes,
     OptionalDouble exactAnchorOffsetMeters,
-    List<Double> supportedDirectionsRadians,
-    double orientationCertainty
+    ImageOrientationSupport orientationSupport
 ) {
     /** A scalar sample already mapped from the source palette. */
     public record Sample(double offsetMeters, double intensity, boolean valid) {
@@ -39,7 +39,20 @@ public record ProbabilisticProfile(
     public record Mode(String id, String evidenceLineage, double coreMinimumMeters,
         double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
         double localizationConfidence, List<Double> peakOffsetsMeters,
-        List<Double> nestedCenterOffsetsMeters, boolean groupedParent) {
+        List<Double> nestedCenterOffsetsMeters, boolean groupedParent,
+        ImageOrientationSupport orientationSupport) {
+        /** Retains mode fixtures that predate branch-local image orientation. */
+        public Mode(String id, String evidenceLineage, double coreMinimumMeters,
+            double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
+            double localizationConfidence, List<Double> peakOffsetsMeters,
+            List<Double> nestedCenterOffsetsMeters, boolean groupedParent) {
+            this(id, evidenceLineage, coreMinimumMeters, coreMaximumMeters,
+                localizationSigmaMeters, existenceConfidence, localizationConfidence,
+                peakOffsetsMeters, nestedCenterOffsetsMeters, groupedParent,
+                ImageOrientationSupport.unknown(
+                    ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
+        }
+
         /** Validates a finite core, confidence and immutable modal positions. */
         public Mode {
             if (blank(id) || blank(evidenceLineage) || !Double.isFinite(coreMinimumMeters)
@@ -47,6 +60,7 @@ public record ProbabilisticProfile(
                 || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
                 || !unit(existenceConfidence) || !unit(localizationConfidence)
                 || peakOffsetsMeters == null || nestedCenterOffsetsMeters == null
+                || orientationSupport == null
                 || peakOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))
                 || nestedCenterOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))) {
                 throw new IllegalArgumentException("Measured mode is invalid");
@@ -86,6 +100,18 @@ public record ProbabilisticProfile(
     /** Side at which positional support leaves the measured decision window. */
     public enum CensorSide { LEFT, RIGHT }
 
+    /** Retains the point-direction constructor for deterministic graph fixtures. */
+    public ProbabilisticProfile(int profileIndex, double chainageMeters, MetricPoint anchor,
+        MetricPoint normalUnit, double minimumOffsetMeters, double maximumOffsetMeters,
+        double sourcePitchMeters, boolean nativePitchKnown, double noiseFloor, List<Sample> samples,
+        List<Mode> modes, List<CensoredMode> censoredModes, OptionalDouble exactAnchorOffsetMeters,
+        List<Double> supportedDirectionsRadians, double orientationCertainty) {
+        this(profileIndex, chainageMeters, anchor, normalUnit, minimumOffsetMeters,
+            maximumOffsetMeters, sourcePitchMeters, nativePitchKnown, noiseFloor, samples, modes,
+            censoredModes, exactAnchorOffsetMeters,
+            ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty));
+    }
+
     /** Deeply copies profile evidence and enforces a unit normal and ordered scalar axis. */
     public ProbabilisticProfile {
         if (profileIndex < 0 || !Double.isFinite(chainageMeters) || chainageMeters < 0.0
@@ -94,7 +120,7 @@ public record ProbabilisticProfile(
             || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0
             || !unit(noiseFloor) || samples == null || samples.isEmpty() || modes == null
             || censoredModes == null || exactAnchorOffsetMeters == null
-            || supportedDirectionsRadians == null || !unit(orientationCertainty)) {
+            || orientationSupport == null) {
             throw new IllegalArgumentException("Probabilistic profile is incomplete");
         }
         double norm = Math.hypot(normalUnit.xMeters(), normalUnit.yMeters());
@@ -109,15 +135,28 @@ public record ProbabilisticProfile(
         }
         modes = List.copyOf(modes);
         censoredModes = List.copyOf(censoredModes);
-        supportedDirectionsRadians = List.copyOf(supportedDirectionsRadians);
-        if (supportedDirectionsRadians.stream().anyMatch(value -> !Double.isFinite(value))) {
-            throw new IllegalArgumentException("Supported directions must be finite");
-        }
         if (exactAnchorOffsetMeters.isPresent() && (!Double.isFinite(exactAnchorOffsetMeters.getAsDouble())
             || exactAnchorOffsetMeters.getAsDouble() < minimumOffsetMeters
             || exactAnchorOffsetMeters.getAsDouble() > maximumOffsetMeters)) {
             throw new IllegalArgumentException("Exact anchor is outside the decision window");
         }
+    }
+
+    /** Returns representative bearings for compatibility diagnostics. */
+    public List<Double> supportedDirectionsRadians() {
+        return orientationSupport.supportedDirectionsRadians();
+    }
+
+    /** Returns image-orientation certainty. */
+    public double orientationCertainty() {
+        return orientationSupport.certainty();
+    }
+
+    /** Returns whether configured image-orientation work exhausted its descriptor budget. */
+    public boolean orientationResourceLimited() {
+        return orientationSupport.status() == ImageOrientationSupport.Status.RESOURCE_LIMIT
+            || modes.stream().anyMatch(mode -> mode.orientationSupport().status()
+                == ImageOrientationSupport.Status.RESOURCE_LIMIT);
     }
 
     private static boolean unit(double value) {

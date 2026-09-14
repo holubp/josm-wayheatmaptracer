@@ -45,6 +45,11 @@ public final class ProbabilisticInference {
         cancellation.checkpoint();
         validate(profiles, parameters, budgets);
         long stateCount = profiles.stream().mapToLong(profile -> profile.cells().size()).sum();
+        if (parameters.orientationWeight() > 0.0
+            && profiles.stream().anyMatch(InferenceProfile::orientationResourceLimited)) {
+            return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, stateCount, 0,
+                "orientation descriptor resource limit", profiles);
+        }
         if (profiles.stream().anyMatch(profile -> profile.cells().size() > budgets.maximumStatesPerProfile())) {
             return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, stateCount, 0,
                 "state budget exceeded", profiles);
@@ -490,18 +495,17 @@ public final class ProbabilisticInference {
         }
         InferenceProfile start = profiles.get(startProfile);
         InferenceProfile end = profiles.get(startProfile + 1);
-        if (end.supportedDirectionsRadians().isEmpty() || end.orientationCertainty() == 0.0) {
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport support =
+            end.orientationSupport(endState);
+        if (support.modes().isEmpty() || support.certainty() == 0.0) {
             return 0.0;
         }
         MetricPoint first = start.point(startState);
         MetricPoint second = end.point(endState);
         double heading = Math.atan2(second.yMeters() - first.yMeters(), second.xMeters() - first.xMeters());
-        double mismatch = end.supportedDirectionsRadians().stream().mapToDouble(direction -> {
-            double sine = Math.sin(wrap(heading - direction));
-            return sine * sine;
-        }).min().orElse(0.0);
         double span = end.chainageMeters() - start.chainageMeters();
-        return parameters.orientationWeight() * span * end.orientationCertainty() * mismatch;
+        return parameters.orientationWeight() * span * support.certainty()
+            * support.mismatchSquared(heading);
     }
 
     private static double tripleEnergy(List<InferenceProfile> profiles, int profileIndex,

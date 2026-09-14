@@ -6,13 +6,15 @@ import java.util.List;
 import java.util.OptionalDouble;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Samples full scalar cross-sections and extracts deterministic finite observation hypotheses. */
 public final class ProbabilisticProfileFactory {
-    private static final double[] LEVELS = {0.72, 0.84, 0.92};
     private static final double[] B3 = {1, 2, 1};
     private static final double[] B5 = {1, 4, 6, 4, 1};
 
@@ -47,13 +49,25 @@ public final class ProbabilisticProfileFactory {
     public List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
         EvidenceSnapshot evidence, ScalarEvidenceField field) {
+        return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters, fixedEndpoints,
+            evidence, field, EvidenceModelParameters.defaults(), CancellationProbe.NONE);
+    }
+
+    /** Samples profiles with a versioned localization policy and cooperative cancellation. */
+    public List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
+        EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        CancellationProbe cancellation) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
-            || !positive(searchHalfWidthMeters) || evidence == null || field == null) {
+            || !positive(searchHalfWidthMeters) || evidence == null || field == null
+            || parameters == null || cancellation == null) {
             throw new IllegalArgumentException("Profile sampling inputs are incomplete");
         }
         ResampledCurve curve = resample(sourcePolyline, configuredStepMeters);
+        ImageOrientationDescriptor orientationDescriptor = new ImageOrientationDescriptor();
         List<ProbabilisticProfile> result = new ArrayList<>(curve.points().size());
         for (int index = 0; index < curve.points().size(); index++) {
+            cancellation.checkpoint();
             double sourcePitch = evidence.resolution().effectivePitchMetersAt(curve.chainageMeters().get(index));
             double samplePitch = 0.5 * sourcePitch;
             MetricPoint anchor = curve.points().get(index);
@@ -70,14 +84,17 @@ public final class ProbabilisticProfileFactory {
             List<ProbabilisticProfile.Sample> samples = sampleProfile(anchor, normal, minimum,
                 maximum, samplePitch, evidence, field);
             double noise = robustNoiseFloor(samples);
-            ExtractedModes extracted = extractModes(samples, noise, sourcePitch, index);
+            ExtractedModes extracted = extractModes(samples, noise, sourcePitch, index,
+                parameters.localization());
+            List<ProbabilisticProfile.Mode> orientedModes = bindOrientationToModes(
+                extracted.modes(), anchor, normal, sourcePitch, evidence, field, parameters,
+                cancellation, orientationDescriptor);
+            ImageOrientationSupport orientation = aggregateOrientation(orientedModes);
             OptionalDouble exact = fixedEndpoints && (index == 0 || index == curve.points().size() - 1)
                 ? OptionalDouble.of(0.0) : OptionalDouble.empty();
             result.add(new ProbabilisticProfile(index, curve.chainageMeters().get(index), anchor, normal,
-                minimum, maximum, sourcePitch, evidence.resolution().nativePitchMeters().isPresent(),
-                noise, samples, extracted.modes(), extracted.censoredModes(), exact,
-                List.of(Math.atan2(tangent.yMeters(), tangent.xMeters())),
-                extracted.modes().isEmpty() ? 0.0 : 1.0));
+                minimum, maximum, sourcePitch, evidence.resolution().nativePitchMeters().isPresent(), noise,
+                samples, orientedModes, extracted.censoredModes(), exact, orientation));
         }
         return List.copyOf(result);
     }
@@ -87,11 +104,20 @@ public final class ProbabilisticProfileFactory {
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
         double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
         ScalarEvidenceField field) {
+        return create(sourcePolyline, profileChainage, searchHalfWidthMeters, fixedEndpoints,
+            evidence, field, EvidenceModelParameters.defaults(), CancellationProbe.NONE);
+    }
+
+    /** Samples a request-owned chainage with versioned localization and cancellation. */
+    public List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
+        ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation) {
         if (profileChainage == null) {
             throw new IllegalArgumentException("Measured profile chainage is required");
         }
         List<ProbabilisticProfile> result = create(sourcePolyline, profileChainage.configuredStepMeters(),
-            searchHalfWidthMeters, fixedEndpoints, evidence, field);
+            searchHalfWidthMeters, fixedEndpoints, evidence, field, parameters, cancellation);
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }
@@ -102,6 +128,52 @@ public final class ProbabilisticProfileFactory {
             }
         }
         return result;
+    }
+
+    private static List<ProbabilisticProfile.Mode> bindOrientationToModes(
+        List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
+        double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
+        EvidenceModelParameters parameters, CancellationProbe cancellation,
+        ImageOrientationDescriptor descriptor) {
+        List<ProbabilisticProfile.Mode> result = new ArrayList<>(modes.size());
+        for (ProbabilisticProfile.Mode mode : modes) {
+            cancellation.checkpoint();
+            MetricPoint center = offset(anchor, normal, mode.coreCenterMeters());
+            ImageOrientationSupport support = descriptor.describe(evidence, field, center,
+                sourcePitch, parameters, cancellation).support();
+            result.add(new ProbabilisticProfile.Mode(mode.id(), mode.evidenceLineage(),
+                mode.coreMinimumMeters(), mode.coreMaximumMeters(), mode.localizationSigmaMeters(),
+                mode.existenceConfidence(), mode.localizationConfidence(), mode.peakOffsetsMeters(),
+                mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support));
+        }
+        return List.copyOf(result);
+    }
+
+    private static ImageOrientationSupport aggregateOrientation(
+        List<ProbabilisticProfile.Mode> modes) {
+        if (modes.stream().anyMatch(mode -> mode.orientationSupport().status()
+            == ImageOrientationSupport.Status.RESOURCE_LIMIT)) {
+            return ImageOrientationSupport.unknown(ImageOrientationSupport.Status.RESOURCE_LIMIT);
+        }
+        List<ImageOrientationSupport> measured = modes.stream()
+            .map(ProbabilisticProfile.Mode::orientationSupport)
+            .filter(support -> !support.modes().isEmpty()).toList();
+        if (measured.isEmpty()) {
+            ImageOrientationSupport.Status status = modes.stream()
+                .map(ProbabilisticProfile.Mode::orientationSupport)
+                .map(ImageOrientationSupport::status)
+                .filter(candidate -> candidate == ImageOrientationSupport.Status.INVALID_CENTER)
+                .findFirst().orElse(ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
+            return ImageOrientationSupport.unknown(status);
+        }
+        List<ImageOrientationSupport.AngularMode> angularModes = measured.stream()
+            .flatMap(support -> support.modes().stream())
+            .sorted(java.util.Comparator.comparingDouble(
+                ImageOrientationSupport.AngularMode::peakBearingRadians)).toList();
+        double certainty = measured.stream().mapToDouble(ImageOrientationSupport::certainty)
+            .max().orElse(0.0);
+        return new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+            angularModes, certainty);
     }
 
     /** Samples one scalar value using strict bilinear validity. */
@@ -147,7 +219,8 @@ public final class ProbabilisticProfileFactory {
     }
 
     private static ExtractedModes extractModes(List<ProbabilisticProfile.Sample> samples,
-        double noiseFloor, double sourcePitch, int profileIndex) {
+        double noiseFloor, double sourcePitch, int profileIndex,
+        EvidenceModelParameters.Localization parameters) {
         double[] raw = samples.stream().mapToDouble(sample -> sample.valid() ? sample.intensity() : Double.NaN)
             .toArray();
         double maximum = Arrays.stream(raw).filter(Double::isFinite).max().orElse(noiseFloor);
@@ -156,29 +229,46 @@ public final class ProbabilisticProfileFactory {
         }
         double[] b3 = convolve(raw, B3);
         double[] b5 = convolve(raw, B5);
-        double threshold = noiseFloor + LEVELS[0] * (maximum - noiseFloor);
-        List<IndexInterval> elementary = intervals(raw, threshold);
         List<ProbabilisticProfile.Mode> modes = new ArrayList<>();
         List<ProbabilisticProfile.CensoredMode> censored = new ArrayList<>();
         int modeIndex = 0;
-        for (IndexInterval interval : elementary) {
+        for (LocalPeak peak : localPeaks(raw)) {
+            double localBackground = Math.max(noiseFloor,
+                Math.max(peak.leftMinimum(), peak.rightMinimum()));
+            double prominence = peak.value() - localBackground;
+            double localResponseRange = Math.max(0.0, peak.value() - noiseFloor);
+            double uncertainty = localModeUncertainty(raw, b3, b5, peak);
+            double requiredProminence = Math.max(
+                parameters.localModeProminenceFraction() * localResponseRange, uncertainty);
+            if (!(prominence > 0.0)
+                || prominence + 1e-12 < requiredProminence) {
+                continue;
+            }
+            double threshold = localBackground + parameters.localModeShoulderFraction() * prominence;
+            IndexInterval interval = containingInterval(raw, peak.first(), peak.last(), threshold);
             int peakIndex = peak(raw, interval);
             boolean leftCensored = interval.first() == 0;
             boolean rightCensored = interval.last() == raw.length - 1;
             String id = "p" + profileIndex + "-m" + modeIndex++;
             String lineage = id + "-scalar-band";
+            double existence = Math.max(0.0, Math.min(1.0,
+                prominence / Math.max(localResponseRange, 1e-12)));
             if (leftCensored || rightCensored) {
                 ProbabilisticProfile.CensorSide side = rightCensored
                     ? ProbabilisticProfile.CensorSide.RIGHT : ProbabilisticProfile.CensorSide.LEFT;
                 int edge = rightCensored ? interval.last() : interval.first();
                 censored.add(new ProbabilisticProfile.CensoredMode(id, lineage, side,
-                    samples.get(edge).offsetMeters(), 1.0, gradientTowardEdge(raw, edge, rightCensored)));
+                    samples.get(edge).offsetMeters(), existence,
+                    gradientTowardEdge(raw, edge, rightCensored)));
                 continue;
             }
             List<Double> centers = new ArrayList<>();
-            addNestedCenter(centers, raw, samples, peakIndex, noiseFloor, maximum, true);
-            addNestedCenter(centers, b3, samples, peakIndex, noiseFloor, maximum, false);
-            addNestedCenter(centers, b5, samples, peakIndex, noiseFloor, maximum, false);
+            addNestedCenter(centers, raw, samples, interval, localBackground,
+                parameters.localModeCoreFraction(), true);
+            addNestedCenter(centers, b3, samples, interval, localBackground,
+                parameters.localModeCoreFraction(), false);
+            addNestedCenter(centers, b5, samples, interval, localBackground,
+                parameters.localModeCoreFraction(), false);
             if (centers.size() < 2) {
                 continue;
             }
@@ -188,31 +278,117 @@ public final class ProbabilisticProfileFactory {
             double halfCenter = Math.min(sourcePitch * 0.5, Math.max(sourcePitch * 0.25, deviation));
             double peakOffset = samples.get(peakIndex).offsetMeters();
             modes.add(new ProbabilisticProfile.Mode(id, lineage, center - halfCenter, center + halfCenter,
-                sigma, 1.0, agreementConfidence(centers, sourcePitch), List.of(peakOffset), centers, false));
+                sigma, existence, agreementConfidence(centers, sourcePitch),
+                List.of(peakOffset), centers, false));
         }
         return new ExtractedModes(modes, censored);
     }
 
+    private static List<LocalPeak> localPeaks(double[] values) {
+        List<LocalPeak> result = new ArrayList<>();
+        int index = 0;
+        while (index < values.length) {
+            if (!Double.isFinite(values[index])) {
+                index++;
+                continue;
+            }
+            int first = index;
+            int last = index;
+            while (last + 1 < values.length && Double.isFinite(values[last + 1])
+                && Math.abs(values[last + 1] - values[first]) <= 1e-12) {
+                last++;
+            }
+            double left = first > 0 && Double.isFinite(values[first - 1])
+                ? values[first - 1] : Double.NEGATIVE_INFINITY;
+            double right = last + 1 < values.length && Double.isFinite(values[last + 1])
+                ? values[last + 1] : Double.NEGATIVE_INFINITY;
+            if (values[first] > left + 1e-12 && values[first] > right + 1e-12) {
+                double leftMinimum = first == 0 ? 0.0
+                    : localMinimum(values, first, -1, values[first]);
+                double rightMinimum = last == values.length - 1 ? 0.0
+                    : localMinimum(values, last, 1, values[first]);
+                result.add(new LocalPeak(first, last, values[first], leftMinimum, rightMinimum));
+            }
+            index = last + 1;
+        }
+        return result;
+    }
+
+    private static double localMinimum(double[] values, int start, int direction, double peakValue) {
+        double minimum = peakValue;
+        for (int index = start + direction; index >= 0 && index < values.length;
+             index += direction) {
+            if (!Double.isFinite(values[index]) || values[index] > peakValue + 1e-12) {
+                break;
+            }
+            minimum = Math.min(minimum, values[index]);
+        }
+        return minimum;
+    }
+
+    private static IndexInterval containingInterval(double[] values, int firstPeak, int lastPeak,
+        double threshold) {
+        int first = firstPeak;
+        int last = lastPeak;
+        while (first > 0 && Double.isFinite(values[first - 1]) && values[first - 1] >= threshold) {
+            first--;
+        }
+        while (last + 1 < values.length && Double.isFinite(values[last + 1])
+            && values[last + 1] >= threshold) {
+            last++;
+        }
+        return new IndexInterval(first, last);
+    }
+
     private static void addNestedCenter(List<Double> centers, double[] values,
-        List<ProbabilisticProfile.Sample> samples, int peakIndex, double noiseFloor,
-        double rawMaximum, boolean requiredFine) {
+        List<ProbabilisticProfile.Sample> samples, IndexInterval search, double localBackground,
+        double coreFraction, boolean requiredFine) {
+        int peakIndex = peak(values, search);
         if (!Double.isFinite(values[peakIndex])) {
             return;
         }
         double localMaximum = values[peakIndex];
-        double threshold = noiseFloor + LEVELS[2] * Math.max(0.0, localMaximum - noiseFloor);
+        double threshold = localBackground
+            + coreFraction * Math.max(0.0, localMaximum - localBackground);
         int left = peakIndex;
         int right = peakIndex;
-        while (left > 0 && Double.isFinite(values[left - 1]) && values[left - 1] >= threshold) {
+        while (left > search.first() && Double.isFinite(values[left - 1])
+            && values[left - 1] >= threshold) {
             left--;
         }
-        while (right + 1 < values.length && Double.isFinite(values[right + 1])
+        while (right < search.last() && Double.isFinite(values[right + 1])
             && values[right + 1] >= threshold) {
             right++;
         }
-        if (left > 0 && right + 1 < values.length && (!requiredFine || rawMaximum > noiseFloor)) {
+        boolean twoSided = left > 0 && right + 1 < values.length
+            && Double.isFinite(values[left - 1]) && Double.isFinite(values[right + 1]);
+        if (twoSided && (!requiredFine || localMaximum > localBackground)) {
             centers.add(0.5 * (samples.get(left).offsetMeters() + samples.get(right).offsetMeters()));
         }
+    }
+
+    private static double localModeUncertainty(double[] raw, double[] b3, double[] b5,
+        LocalPeak peak) {
+        int first = Math.max(0, peak.first() - 6);
+        int last = Math.min(raw.length - 1, peak.last() + 6);
+        List<Double> adjacentVariation = new ArrayList<>();
+        for (int index = first + 1; index <= last; index++) {
+            if (Double.isFinite(raw[index - 1]) && Double.isFinite(raw[index])) {
+                adjacentVariation.add(Math.abs(raw[index] - raw[index - 1]));
+            }
+        }
+        double localNoise = adjacentVariation.isEmpty() ? 0.0 : median(adjacentVariation);
+        int peakIndex = peak(raw, new IndexInterval(peak.first(), peak.last()));
+        double filterUncertainty = 0.0;
+        if (Double.isFinite(b3[peakIndex])) {
+            filterUncertainty = Math.max(filterUncertainty,
+                Math.abs(raw[peakIndex] - b3[peakIndex]));
+        }
+        if (Double.isFinite(b3[peakIndex]) && Double.isFinite(b5[peakIndex])) {
+            filterUncertainty = Math.max(filterUncertainty,
+                Math.abs(b3[peakIndex] - b5[peakIndex]));
+        }
+        return Math.max(3.0 * localNoise, filterUncertainty);
     }
 
     private static double[] convolve(double[] values, double[] kernel) {
@@ -237,20 +413,6 @@ public final class ProbabilisticProfileFactory {
         return result;
     }
 
-    private static List<IndexInterval> intervals(double[] values, double threshold) {
-        List<IndexInterval> result = new ArrayList<>();
-        int start = -1;
-        for (int index = 0; index <= values.length; index++) {
-            boolean high = index < values.length && Double.isFinite(values[index]) && values[index] >= threshold;
-            if (high && start < 0) {
-                start = index;
-            } else if (!high && start >= 0) {
-                result.add(new IndexInterval(start, index - 1));
-                start = -1;
-            }
-        }
-        return result;
-    }
 
     private static int peak(double[] values, IndexInterval interval) {
         int selected = interval.first();
@@ -356,6 +518,8 @@ public final class ProbabilisticProfileFactory {
     }
 
     private record ResampledCurve(List<MetricPoint> points, List<Double> chainageMeters) { }
+    private record LocalPeak(int first, int last, double value, double leftMinimum,
+        double rightMinimum) { }
     private record IndexInterval(int first, int last) { }
     private record ExtractedModes(List<ProbabilisticProfile.Mode> modes,
         List<ProbabilisticProfile.CensoredMode> censoredModes) { }

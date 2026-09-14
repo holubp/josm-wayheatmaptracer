@@ -62,8 +62,15 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
         }
         List<MetricPoint> source = selectedPolyline(request, evidence, network);
         boolean fixedEndpoints = request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
-        List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source, request.profileChainage(), request.permissions().ordinaryRadiusMeters(),
-            fixedEndpoints, evidence, field);
+        List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
+            request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
+            evidence, field, parameters, cancellation);
+        if (parameters.orientationWeight() > 0.0
+            && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
+            return new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                "orientation descriptor resource limit");
+        }
         List<InferenceProfile> evaluated = new ArrayList<>(profiles.size());
         long stateCount = 0;
         ProbabilisticStateBuilder stateBuilder = new ProbabilisticStateBuilder();

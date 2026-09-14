@@ -2,8 +2,11 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabil
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 
 /** Evaluates the deterministic finite observation mixture on an admitted lateral lattice. */
@@ -67,8 +70,23 @@ public final class ProbabilisticObservationModel {
                 ? ObservationOwnership.NO_SIGNAL_VALID_RASTER : ObservationOwnership.NO_RASTER
                 : ObservationOwnership.CORE_CENSORED;
         return new InferenceProfile(profile.chainageMeters(), profile.anchor(), profile.normalUnit(),
-            lattice.cells(), unary, profile.supportedDirectionsRadians(), profile.orientationCertainty(),
+            lattice.cells(), unary, orientationByBranch(profile),
             ownership, !localized, responsibilities);
+    }
+
+    private static Map<String, ImageOrientationSupport> orientationByBranch(
+        ProbabilisticProfile profile) {
+        Map<String, ImageOrientationSupport> result = new LinkedHashMap<>();
+        ImageOrientationSupport profileSupport = profile.orientationSupport();
+        profile.modes().forEach(mode -> {
+            ImageOrientationSupport support = mode.orientationSupport();
+            if (profileSupport.status() == ImageOrientationSupport.Status.LEGACY_POINT_DIRECTIONS
+                && support.status() == ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT) {
+                support = profileSupport;
+            }
+            result.put(mode.id(), support);
+        });
+        return java.util.Collections.unmodifiableMap(result);
     }
 
     private static void fillMeasured(double[] output, ProbabilisticProfile profile,
