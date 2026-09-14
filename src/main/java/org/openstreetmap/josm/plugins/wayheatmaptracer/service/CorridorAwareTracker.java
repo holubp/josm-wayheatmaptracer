@@ -10,6 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
@@ -156,7 +157,7 @@ public final class CorridorAwareTracker {
         return trackExtracted(corridorProfiles, sourcePixelSizePx, junctionContext, detectorMode, cleanupConfig,
             groundMetersPerRasterPixel,
             Map.of(), List.of(),
-            extractionNanos, 0L);
+            extractionNanos, 0L, null);
     }
 
     /**
@@ -253,7 +254,41 @@ public final class CorridorAwareTracker {
         long associationNanos = System.nanoTime() - associationStart;
         return trackExtracted(fine, sourcePixelSizePx, junctionContext, detectorMode, cleanupConfig,
             groundMetersPerRasterPixel,
-            association.evidence(), association.profiles(), extractionNanos, associationNanos);
+            association.evidence(), association.profiles(), extractionNanos, associationNanos, null);
+    }
+
+    /** Runs multi-scale tracking only when declared modern solver budgets admit the complete exact DP. */
+    public TrackingResult trackDetailed(
+        MultiScaleProfileSet profileSet,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        String detectorMode,
+        GeometryCleanupConfig cleanupConfig,
+        double groundMetersPerRasterPixel,
+        TraceBudgets budgets
+    ) {
+        if (budgets == null) {
+            throw new IllegalArgumentException("Corridor trace budgets are required");
+        }
+        if (profileSet.levels().isEmpty()) {
+            return trackDetailed(profileSet, sourcePixelSizePx, junctionContext, detectorMode,
+                cleanupConfig, groundMetersPerRasterPixel);
+        }
+        for (MultiScaleProfileSet.ScaleProfileLevel level : profileSet.levels()) {
+            validatePhysicalProfileSequence(level.profiles());
+        }
+        validateAlignedPhysicalSequences(profileSet);
+        long extractionStart = System.nanoTime();
+        List<List<CorridorProfile>> extractedLevels = profileSet.levels().stream()
+            .map(level -> extractor.extract(level.profiles(), sourcePixelSizePx)).toList();
+        long extractionNanos = System.nanoTime() - extractionStart;
+        List<CorridorProfile> fine = extractedLevels.get(0);
+        long associationStart = System.nanoTime();
+        ScaleAssociation association = associateScales(profileSet, extractedLevels, sourcePixelSizePx);
+        long associationNanos = System.nanoTime() - associationStart;
+        return trackExtracted(fine, sourcePixelSizePx, junctionContext, detectorMode, cleanupConfig,
+            groundMetersPerRasterPixel, association.evidence(), association.profiles(),
+            extractionNanos, associationNanos, budgets);
     }
 
     private void validatePhysicalProfileSequence(
@@ -298,11 +333,15 @@ public final class CorridorAwareTracker {
         Map<String, BandScaleEvidence> scaleEvidence,
         List<MultiScaleCorridorProfile> multiScaleProfiles,
         long extractionNanos,
-        long scaleAssociationNanos
+        long scaleAssociationNanos,
+        TraceBudgets budgets
     ) {
         long trackingStart = System.nanoTime();
         List<CorridorTrack> elementary = tracker.track(corridorProfiles, sourcePixelSizePx, scaleEvidence);
         CorridorGrouping.GroupingResult grouped = grouping.group(elementary, corridorProfiles, sourcePixelSizePx);
+        if (budgets != null) {
+            enforceSolverBudgets(grouped.tracks().size(), corridorProfiles.size(), budgets);
+        }
         long trackingNanos = System.nanoTime() - trackingStart;
         long optimizationStart = System.nanoTime();
         List<CenterlineCandidate> candidates = new ArrayList<>();
@@ -365,6 +404,27 @@ public final class CorridorAwareTracker {
         return new TrackingResult(sorted, corridorProfiles, grouped.tracks(), grouped.decisions(), grouped.bundles(), optimizations,
             tubes, multiScaleProfiles, effectiveScaleEvidence, sourcePixelSizePx,
             new TrackingTiming(extractionNanos, scaleAssociationNanos, trackingNanos, optimizationNanos));
+    }
+
+    private static void enforceSolverBudgets(int trackCount, int profileCount, TraceBudgets budgets) {
+        int maximumStates = CorridorOptimizationParameters.defaults().maxOffsetStates();
+        try {
+            long statesSquared = Math.multiplyExact((long) maximumStates, maximumStates);
+            long statesCubed = Math.multiplyExact(statesSquared, maximumStates);
+            long transitionsPerTrack = profileCount <= 1 ? maximumStates
+                : Math.addExact(statesSquared,
+                    Math.multiplyExact(Math.max(0L, profileCount - 2L), statesCubed));
+            long maximumTransitions = Math.multiplyExact((long) trackCount, transitionsPerTrack);
+            if (maximumStates > budgets.maximumStatesPerProfile()
+                    || trackCount > budgets.maximumRawAlternatives()
+                    || maximumTransitions > budgets.maximumTransitions()
+                    || maximumTransitions > budgets.maximumPairVisits()) {
+                throw new CorridorResourceLimitException(
+                    "declared budgets cannot admit the complete corridor optimizer state space");
+            }
+        } catch (ArithmeticException exception) {
+            throw new CorridorResourceLimitException("corridor optimizer bound overflowed");
+        }
     }
 
     private Map<String, BandScaleEvidence> parentScaleEvidence(

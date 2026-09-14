@@ -19,7 +19,7 @@ public record TraceHypothesisSet(TrackerMode engine, List<TraceHypothesis> hypot
         }
         hypotheses = List.copyOf(hypotheses);
         boolean hasRoutes = !hypotheses.isEmpty();
-        if ((status == Status.COMPLETE || status == Status.AMBIGUOUS) && (!hasRoutes || evaluatedStates == 0)
+        if ((status == Status.COMPLETE || status == Status.AMBIGUOUS) && !hasRoutes
             || (status == Status.NO_ROUTE || status == Status.CANCELLED) && hasRoutes
             || status == Status.RESOURCE_LIMIT && !alternativesTruncated) {
             throw new IllegalArgumentException("Trace hypothesis status contradicts retained computation");
@@ -31,7 +31,8 @@ public record TraceHypothesisSet(TrackerMode engine, List<TraceHypothesis> hypot
                 throw new IllegalArgumentException("Retained alternatives must have unique identities and branches");
             }
         }
-        double retainedMass = hypotheses.stream().mapToDouble(TraceHypothesis::posteriorProbability).sum();
+        double retainedMass = hypotheses.stream().map(TraceHypothesis::posteriorProbability)
+            .filter(java.util.OptionalDouble::isPresent).mapToDouble(java.util.OptionalDouble::getAsDouble).sum();
         if (retainedMass > 1.0 + 1e-9) {
             throw new IllegalArgumentException("Retained hypothesis posterior mass exceeds one");
         }

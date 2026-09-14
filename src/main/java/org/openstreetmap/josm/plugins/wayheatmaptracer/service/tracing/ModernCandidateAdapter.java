@@ -105,7 +105,8 @@ public final class ModernCandidateAdapter {
                 last < 0 || last == count - 1 ? 0.0 : chainage(hypothesis.points(), last, count - 1),
                 maximumEmpty, maximumGap(hypothesis), 0, false,
                 complete ? "modern-complete-direct-evidence" : "modern-incomplete-evidence");
-        double ambiguity = 1.0 - hypothesis.posteriorProbability();
+        double ambiguity = hypothesis.posteriorProbability().isPresent()
+            ? 1.0 - hypothesis.posteriorProbability().getAsDouble() : 1.0;
         double persistence = Math.max(0.0, Math.min(1.0,
                 hypothesis.diagnostics().getOrDefault("longitudinalPersistence",
                         count == 0 ? 0.0 : (double) supported / count)));

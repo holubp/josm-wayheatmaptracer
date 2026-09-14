@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
@@ -65,7 +66,7 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
             diagnostics.put("headingCount", (double) path.headingsRadians().size());
             hypotheses.add(new TraceHypothesis("directional-image-" + index,
                 path.branchSignature() + "-" + index, path.points(), support(path.points(), evidence, field),
-                path.objective(), 0.0, diagnostics));
+                path.objective(), OptionalDouble.empty(), diagnostics));
         }
         TraceHypothesisSet.Status status = switch (result.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;

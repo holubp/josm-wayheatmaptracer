@@ -61,7 +61,7 @@ class V022HybridRecoveryTest {
 
         TraceHypothesis proposal = result.hypotheses().get(0);
         assertEquals(1.0, proposal.diagnostics().get("structuralPriorOnly"));
-        assertEquals(0.0, proposal.posteriorProbability());
+        assertTrue(proposal.posteriorProbability().isEmpty());
         assertEquals(0.7, proposal.diagnostics().get("sourcePosteriorProbability"));
     }
 

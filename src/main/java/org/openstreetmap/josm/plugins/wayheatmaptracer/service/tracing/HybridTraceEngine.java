@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.concurrent.CancellationException;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
@@ -78,7 +79,6 @@ public final class HybridTraceEngine implements TraceEngine {
                     || probabilistic.status() == TraceHypothesisSet.Status.AMBIGUOUS;
             status = ambiguous ? TraceHypothesisSet.Status.AMBIGUOUS
                     : TraceHypothesisSet.Status.COMPLETE;
-            states = Math.max(1, states);
         }
         return new TraceHypothesisSet(TrackerMode.HYBRID, routes, status, truncated, states,
                 transitions, "independent A proposals and unguided B; common final ranking required");
@@ -90,11 +90,13 @@ public final class HybridTraceEngine implements TraceEngine {
             Map<String, Double> diagnostics = new LinkedHashMap<>(hypothesis.diagnostics());
             diagnostics.put("structuralPriorOnly", "a".equals(family) ? 1.0 : 0.0);
             diagnostics.put("independentImageObservationCount", 1.0);
-            diagnostics.put("sourcePosteriorProbability", hypothesis.posteriorProbability());
+            diagnostics.put("sourcePosteriorAvailable", hypothesis.posteriorProbability().isPresent() ? 1.0 : 0.0);
+            hypothesis.posteriorProbability().ifPresent(
+                value -> diagnostics.put("sourcePosteriorProbability", value));
             target.add(new TraceHypothesis("hybrid-" + family + "-" + hypothesis.id(),
                     family + ":" + hypothesis.branchSignature(), hypothesis.points(),
                     hypothesis.support(), hypothesis.objective(),
-                    0.0, diagnostics));
+                    OptionalDouble.empty(), diagnostics));
         }
     }
 
@@ -104,7 +106,7 @@ public final class HybridTraceEngine implements TraceEngine {
                 request.evidenceSnapshotId(), request.evidenceContentHash(),
                 request.networkSnapshotId(), request.networkContentHash(), request.settingsHash(),
                 request.parameterHash(), request.samplerId(), request.configuredSampleStepMeters(),
-                request.profileChainage(), request.evidenceResolution());
+                request.profileChainage(), request.evidenceResolution(), request.corridorInput());
     }
 
     private static long saturatedAdd(long left, long right) {

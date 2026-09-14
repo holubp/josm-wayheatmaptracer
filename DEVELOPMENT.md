@@ -687,3 +687,24 @@ unchanged state, bounded closure and query membership, permissions, invalid inpu
 resource limits and 20,000 nested relations. The producer is a prerequisite; live
 action/preview integration, total-attempt accounting and failed-redo history
 requirements remain open.
+
+### Modern A engine adapter
+
+`CorridorEngineAdapter` implements `TraceEngine` using the production detached
+scalar sampler and Corridor-aware tracker. Its request carries exact frozen
+`CorridorTraceInput` locations and physical lateral step; missing or mismatched
+inputs fail closed. Fixed endpoint constraints retain topology-only support when
+the endpoint is away from the measured ridge. Output uses the captured raster
+transform, and counters come from actual optimizer diagnostics.
+
+Before exact optimization, the modern entry point admits the complete conservative
+state/pair/transition bound and raw alternative count. Existing tracker overloads
+and arithmetic remain unchanged. A, image search and Hybrid explicitly expose
+unavailable posterior probabilities; B retains its conditional probabilities.
+Unknown probability must not become a cross-engine ranking penalty when the
+currently unused preview adapter is wired. Common final ranking is posterior-free.
+
+The adapter has direct production parity, fixed-anchor, provenance, snapshot,
+resource and availability regressions. An independent rotated 2 m raster probe
+verified coordinate conversion. Live modern engine/UI integration, refitting,
+production replay and complete attempt-wide accounting remain unfinished.
