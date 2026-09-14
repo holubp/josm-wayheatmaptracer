@@ -31,6 +31,16 @@ Unknown/incomplete ways and ambiguous antipodal longitude arcs produce an explic
 indeterminate failure; fully known remote geometry is excluded normally. Live
 snapshot producers and Apply/preview validation still require integration.
 
+The isolated `GeometricCurvatureOperator` evaluates fine-mesh curvature against
+explicit inverse-metre targets with exact Huber loss and current-length quadrature.
+Its analytic gradient includes the derivative of those weights. Count admission
+precedes target copying, and staged inverse-length arithmetic avoids overflow and
+subnormal intermediate precision loss. Regression tests cover straight unequal
+spacing, collinear insertion, nonzero targets, both Huber branches, finite differences,
+and coordinate scales through `1e162`. This helper has no production refitter caller;
+frozen image fields and supported target inference remain required before integration
+into the fitting objective.
+
 Modern probabilistic profiles retain independently localized lateral modes using
 local prominence, noise, and uncertainty. A stronger distant ridge must not erase
 a weaker coherent mode. Image direction is measured around each lateral mode by
