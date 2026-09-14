@@ -667,3 +667,23 @@ fully supported frame and invokes the production tracker. It also covers sampled
 and unsampled holes, a concave decision-region notch, valid parallel modes, halo
 filter contribution and cancellation. This is an input prerequisite: the modern
 A TraceEngine adapter and live modern engine integration are still required.
+
+### Bounded network snapshot producer
+
+`NetworkSnapshotCapture` reads the live dataset under its read lock on the EDT,
+then returns immutable detached network values. It derives collision membership,
+complete necessary way/relation payloads, incoming identity watches and fixed
+ports from the actual inventory. Unchanged remote branches may terminate at
+identity-only watches. Capture membership does not grant editing authority.
+
+The input carries explicit selection and accepted movement/recovery permissions.
+Tagged movement without feature handling is rejected. Junction reattachment may
+authorize receiving-way occurrences along a frozen locus; independent incident
+shape-node movement still requires reconstruction permission. Necessary nested
+relations use iterative, budgeted traversal, with checks before queue expansion.
+
+`V022NetworkSnapshotCaptureTest` covers real EDT datasets, detachment and exact
+unchanged state, bounded closure and query membership, permissions, invalid inputs,
+resource limits and 20,000 nested relations. The producer is a prerequisite; live
+action/preview integration, total-attempt accounting and failed-redo history
+requirements remain open.
