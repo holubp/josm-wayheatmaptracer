@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.APIDataSet;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.OsmPrimitive;
@@ -57,13 +59,72 @@ class V022AtomicApplyLifecycleTest {
     }
 
     @Test
+    void g601OffEdtUndoIsRejectedWithoutLateMutationOrUndoOwnershipLoss() {
+        V022AtomicApplyTest.Fixture fixture = V022AtomicApplyTest.Fixture.create(false);
+        ApplyAlignmentEditPlanCommand command = apply(fixture);
+        V022AtomicApplyTest.LiveState after = V022AtomicApplyTest.LiveState.capture(fixture);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class, command::undoCommand);
+
+        assertEquals("Alignment Undo must execute on the EDT", failure.getMessage());
+        V022AtomicApplyTest.onEdt(() -> { });
+        after.assertMatches(fixture);
+        assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void g602NeverUploadedExistingRemovalIsPhysicalAndUndoRedoExact() {
+        V022AtomicApplyTest.Fixture fixture =
+            V022AtomicApplyTest.Fixture.createWithNeverUploadedSecondNode();
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture);
+        Node transientNode = way(fixture, 10L).getNode(1);
+        assertTrue(transientNode.isNew());
+
+        ApplyAlignmentEditPlanCommand command = apply(fixture);
+        V022AtomicApplyTest.LiveState after = V022AtomicApplyTest.LiveState.capture(fixture);
+
+        assertNull(transientNode.getDataSet());
+        APIDataSet upload = new APIDataSet(fixture.dataSet);
+        assertFalse(upload.getPrimitivesToDelete().contains(transientNode));
+        assertFalse(upload.getPrimitives().contains(transientNode));
+
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        before.assertMatches(fixture);
+        assertSame(transientNode, way(fixture, 10L).getNode(1));
+
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+        after.assertMatches(fixture);
+        assertNull(transientNode.getDataSet());
+        assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+    }
+
+    @Test
+    void g602UploadSetContainsCreatedModifiedAndDeletedPrimitives() {
+        V022AtomicApplyTest.Fixture fixture = V022AtomicApplyTest.Fixture.create(false);
+        Node removedSecond = node(fixture, 2L);
+        Node removedVia = node(fixture, 3L);
+
+        apply(fixture);
+
+        Node created = appliedJunction(fixture);
+        APIDataSet upload = new APIDataSet(fixture.dataSet);
+        assertEquals(Set.of(created), Set.copyOf(upload.getPrimitivesToAdd()));
+        assertEquals(Set.of(node(fixture, 8L), way(fixture, 10L), way(fixture, 11L), relation(fixture)),
+            Set.copyOf(upload.getPrimitivesToUpdate()));
+        assertEquals(Set.of(removedSecond, removedVia), Set.copyOf(upload.getPrimitivesToDelete()));
+        assertDeletedTombstone(fixture, removedSecond);
+        assertDeletedTombstone(fixture, removedVia);
+    }
+
+    @Test
     void t109UndoRestoresAnInitiallyCleanDatasetExactly() {
         V022AtomicApplyTest.Fixture fixture = V022AtomicApplyTest.Fixture.create(false);
         V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture);
         assertFalse(fixture.dataSet.isModified());
         apply(fixture);
 
-        UndoRedoHandler.getInstance().undo();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
 
         before.assertMatches(fixture);
         assertFalse(fixture.dataSet.isModified());
@@ -78,7 +139,7 @@ class V022AtomicApplyLifecycleTest {
         assertTrue(fixture.dataSet.isModified());
         apply(fixture);
 
-        UndoRedoHandler.getInstance().undo();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
 
         before.assertMatches(fixture);
         assertTrue(fixture.dataSet.isModified());
@@ -93,9 +154,9 @@ class V022AtomicApplyLifecycleTest {
         V022AtomicApplyTest.LiveState after = V022AtomicApplyTest.LiveState.capture(fixture);
 
         for (int cycle = 0; cycle < 20; cycle++) {
-            UndoRedoHandler.getInstance().undo();
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
             before.assertMatches(fixture);
-            UndoRedoHandler.getInstance().redo();
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
             after.assertMatches(fixture);
         }
 
@@ -112,7 +173,7 @@ class V022AtomicApplyLifecycleTest {
         Node created = appliedJunction(fixture);
         assertFalse(originalNodeIds.contains(created.getUniqueId()));
 
-        UndoRedoHandler.getInstance().undo();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
 
         assertNull(created.getDataSet());
         assertTrue(fixture.dataSet.getWays().stream().noneMatch(way -> way.containsNode(created)));
@@ -132,8 +193,8 @@ class V022AtomicApplyLifecycleTest {
         double latitude = firstApplied.lat();
         double longitude = firstApplied.lon();
 
-        UndoRedoHandler.getInstance().undo();
-        UndoRedoHandler.getInstance().redo();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
 
         Node redone = appliedJunction(fixture);
         assertSame(firstApplied, redone);
@@ -155,9 +216,9 @@ class V022AtomicApplyLifecycleTest {
         assertSame(replacement, relation.getMember(1).getMember());
         assertEquals("via", relation.getMember(1).getRole());
         assertEquals(Set.of(10L, 11L, 20L), referrerIds(replacement));
-        assertNull(originalVia.getDataSet());
+        assertDeletedTombstone(fixture, originalVia);
 
-        UndoRedoHandler.getInstance().undo();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
 
         assertSame(originalVia, relation.getMember(1).getMember());
         assertEquals("via", relation.getMember(1).getRole());
@@ -169,9 +230,10 @@ class V022AtomicApplyLifecycleTest {
         assertNull(replacement.getDataSet());
     }
 
-    private static void apply(V022AtomicApplyTest.Fixture fixture) {
+    private static ApplyAlignmentEditPlanCommand apply(V022AtomicApplyTest.Fixture fixture) {
         ApplyAlignmentEditPlanCommand command = fixture.command(point -> { });
         V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        return command;
     }
 
     private static void assertAfterState(V022AtomicApplyTest.Fixture fixture) {
@@ -187,8 +249,8 @@ class V022AtomicApplyLifecycleTest {
         assertEquals(List.of(node(fixture, 5L), replacement), incident.getNodes());
         assertSame(replacement, relation.getMember(1).getMember());
         assertCoordinate(node(fixture, 8L), expectedMoved.coordinate());
-        assertNull(fixture.dataSet.getPrimitiveById(2L, OsmPrimitiveType.NODE));
-        assertNull(fixture.dataSet.getPrimitiveById(3L, OsmPrimitiveType.NODE));
+        assertDeletedTombstone(fixture, node(fixture, 2L));
+        assertDeletedTombstone(fixture, node(fixture, 3L));
         assertEquals(List.of(7L, 8L), independent.getNodeIds());
         assertTrue(fixture.dataSet.isModified());
     }
@@ -207,6 +269,13 @@ class V022AtomicApplyLifecycleTest {
 
     private static Relation relation(V022AtomicApplyTest.Fixture fixture) {
         return (Relation) fixture.dataSet.getPrimitiveById(20L, OsmPrimitiveType.RELATION);
+    }
+
+    private static void assertDeletedTombstone(V022AtomicApplyTest.Fixture fixture, Node node) {
+        assertSame(fixture.dataSet, node.getDataSet());
+        assertSame(node, fixture.dataSet.getPrimitiveById(node.getPrimitiveId()));
+        assertTrue(node.isDeleted());
+        assertTrue(node.isModified());
     }
 
     private static void assertCoordinate(Node actual, GeographicPoint expected) {

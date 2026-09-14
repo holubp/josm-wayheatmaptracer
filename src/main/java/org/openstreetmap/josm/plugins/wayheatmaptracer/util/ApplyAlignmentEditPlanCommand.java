@@ -1,6 +1,5 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
-import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -11,8 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import javax.swing.SwingUtilities;
@@ -106,12 +103,12 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
      * Revalidates and applies the complete edit on the EDT in one dataset update.
      *
      * @return {@code true} after the exact proposed after-state was established
-     * @throws IllegalStateException if state is stale, EDT dispatch fails, or mutation fails
+     * @throws IllegalStateException if called off the EDT, state is stale, or mutation fails
      */
     @Override
     public boolean executeCommand() {
         if (!SwingUtilities.isEventDispatchThread()) {
-            return callOnEdt(this::executeCommand);
+            throw new IllegalStateException("Alignment Apply must execute on the EDT");
         }
         if (applied) {
             throw new IllegalStateException("Alignment edit plan is already applied");
@@ -139,11 +136,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     @Override
     public void undoCommand() {
         if (!SwingUtilities.isEventDispatchThread()) {
-            callOnEdt(() -> {
-                undoCommand();
-                return null;
-            });
-            return;
+            throw new IllegalStateException("Alignment Undo must execute on the EDT");
         }
         if (!applied) {
             throw new IllegalStateException("Alignment edit plan is not currently applied");
@@ -261,7 +254,12 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             if (!(primitive instanceof Node node) || !node.getReferrers().isEmpty()) {
                 throw new IllegalStateException("Planned node deletion still has live referrers: " + key);
             }
-            getAffectedDataSet().removePrimitive(node);
+            if (node.isNew()) {
+                getAffectedDataSet().removePrimitive(node);
+            } else {
+                node.setModified(true);
+                node.setDeleted(true);
+            }
         }
         applyFinalModifiedFlags();
         checkpoint(MutationPoint.AFTER_DELETE_NODES);
@@ -310,9 +308,17 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
 
     private void validateAfterState() {
         for (PrimitiveKey key : plan.removedPrimitives().keySet()) {
-            if (requireExistingPrimitive(key).getDataSet() != null
-                || getAffectedDataSet().getPrimitiveById(key.id(), osmType(key)) != null) {
-                throw new IllegalStateException("Removed primitive remains in the dataset: " + key);
+            OsmPrimitive primitive = requireExistingPrimitive(key);
+            OsmPrimitive indexed = getAffectedDataSet().getPrimitiveById(key.id(), osmType(key));
+            if (primitive.isNew()) {
+                if (primitive.getDataSet() != null || indexed != null) {
+                    throw new IllegalStateException("Transient removed primitive remains in the dataset: " + key);
+                }
+            } else if (primitive.getDataSet() != getAffectedDataSet() || indexed != primitive
+                || !primitive.isDeleted() || !primitive.isModified()
+                || !primitive.getReferrers().isEmpty()) {
+                throw new IllegalStateException(
+                    "Uploaded removed primitive is not a deletion tombstone: " + key);
             }
         }
         validateLiveSnapshot(plan.after().primitives(), false);
@@ -452,36 +458,6 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
 
     private static List<PrimitiveKey> sorted(Collection<PrimitiveKey> keys) {
         return keys.stream().sorted(Comparator.naturalOrder()).toList();
-    }
-
-    private static <T> T callOnEdt(Callable<T> operation) {
-        AtomicReference<T> result = new AtomicReference<>();
-        AtomicReference<Throwable> failure = new AtomicReference<>();
-        try {
-            SwingUtilities.invokeAndWait(() -> {
-                try {
-                    result.set(operation.call());
-                } catch (Throwable throwable) {
-                    failure.set(throwable);
-                }
-            });
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted while waiting for the alignment transaction", exception);
-        } catch (InvocationTargetException exception) {
-            throw new IllegalStateException("Alignment transaction dispatch failed", exception.getCause());
-        }
-        Throwable throwable = failure.get();
-        if (throwable instanceof RuntimeException runtimeException) {
-            throw runtimeException;
-        }
-        if (throwable instanceof Error error) {
-            throw error;
-        }
-        if (throwable != null) {
-            throw new IllegalStateException("Alignment transaction failed", throwable);
-        }
-        return result.get();
     }
 
     private static String requireText(String value, String name) {

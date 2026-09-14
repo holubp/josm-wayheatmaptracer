@@ -9,6 +9,11 @@ work; a rejected executor submission terminates the owned attempt as failed.
 The default executor allows one running and one pending attempt. A cancelled
 pending task retains its slot until drained; overload fails explicitly.
 
+Modern edit-plan Apply and Undo must be called on the EDT by the owning UI/Undo
+transaction. Off-thread calls fail before dispatching any mutation. Removed
+uploaded nodes remain modified deletion tombstones for upload; never-uploaded
+unused nodes leave dataset membership. Undo/redo restores the exact recorded state.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

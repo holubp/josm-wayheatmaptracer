@@ -13,6 +13,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.SwingUtilities;
@@ -20,6 +22,7 @@ import javax.swing.SwingUtilities;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.data.UndoRedoHandler;
@@ -90,6 +93,72 @@ class V022AtomicApplyTest {
             () -> onEdt(() -> UndoRedoHandler.getInstance().add(command)));
 
         assertTrue(failure.getCause() instanceof InjectedFailure);
+        before.assertMatches(fixture);
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void g602FailureAfterPhysicalTransientDeletionRollsBack() {
+        Fixture fixture = Fixture.createWithNeverUploadedSecondNode();
+        LiveState before = LiveState.capture(fixture);
+        Node transientNode = fixture.dataSet.getNodes().stream()
+            .filter(Node::isNew).findFirst().orElseThrow();
+        ApplyAlignmentEditPlanCommand command = fixture.command(point -> {
+            if (point == ApplyAlignmentEditPlanCommand.MutationPoint.AFTER_DELETE_NODES) {
+                throw new InjectedFailure(point);
+            }
+        });
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+            () -> onEdt(() -> UndoRedoHandler.getInstance().add(command)));
+
+        assertTrue(failure.getCause() instanceof InjectedFailure);
+        before.assertMatches(fixture);
+        assertSame(fixture.dataSet, transientNode.getDataSet());
+        assertFalse(transientNode.isDeleted());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void g601InterruptedOffEdtApplyCannotQueueALateMutation() throws InterruptedException {
+        Fixture fixture = Fixture.create(false);
+        LiveState before = LiveState.capture(fixture);
+        ApplyAlignmentEditPlanCommand command = fixture.command(point -> { });
+        CountDownLatch edtBlocked = new CountDownLatch(1);
+        CountDownLatch releaseEdt = new CountDownLatch(1);
+        SwingUtilities.invokeLater(() -> {
+            edtBlocked.countDown();
+            try {
+                releaseEdt.await();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        assertTrue(edtBlocked.await(5, TimeUnit.SECONDS));
+
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread worker = new Thread(() -> {
+            Thread.currentThread().interrupt();
+            try {
+                command.executeCommand();
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            }
+        }, "interrupted-off-edt-apply");
+
+        try {
+            worker.start();
+            worker.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(worker.isAlive(), "Interrupted Apply caller did not return");
+            assertTrue(failure.get() instanceof IllegalStateException,
+                "Off-EDT Apply must fail before dispatch");
+        } finally {
+            releaseEdt.countDown();
+        }
+
+        onEdt(() -> { });
         before.assertMatches(fixture);
         assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
@@ -215,9 +284,18 @@ class V022AtomicApplyTest {
         }
 
         static Fixture create(boolean initiallyDirty) {
+            return create(initiallyDirty, true);
+        }
+
+        static Fixture createWithNeverUploadedSecondNode() {
+            return create(false, false);
+        }
+
+        private static Fixture create(boolean initiallyDirty, boolean secondNodeUploaded) {
             DataSet dataSet = new DataSet();
             Node n1 = loadedNode(1, 42.0000, 19.0000);
-            Node n2 = loadedNode(2, 42.0000, 19.0001);
+            Node n2 = secondNodeUploaded ? loadedNode(2, 42.0000, 19.0001)
+                : new Node(new LatLon(42.0000, 19.0001));
             Node n3 = loadedNode(3, 42.0000, 19.0002);
             Node n4 = loadedNode(4, 42.0000, 19.0003);
             Node n5 = loadedNode(5, 42.0001, 19.0002);
