@@ -14,6 +14,14 @@ transaction. Off-thread calls fail before dispatching any mutation. Removed
 uploaded nodes remain modified deletion tombstones for upload; never-uploaded
 unused nodes leave dataset membership. Undo/redo restores the exact recorded state.
 
+Pure corridor processing accepts `ProfileSamplingLocation` values with explicit
+raster coordinates and ground chainage. `DetachedProfileSamplingLocation` derives
+and validates its geographic, local metric, and raster association through immutable
+transforms. Only the legacy `ProfileSamplingAnchor` provides a JOSM projected
+coordinate; requesting that coordinate from a detached profile fails explicitly.
+This input contract is a prerequisite for the modern A adapter, whose production
+capture and pipeline integration remain separate work.
+
 ## Build And Test
 
 Build and run the test suite from repo root:

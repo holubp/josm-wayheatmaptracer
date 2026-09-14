@@ -1523,7 +1523,7 @@ public final class RenderedHeatmapSampler {
      * @param projectedLateralTransform slide-time raster-offset projection, or empty for compatibility profiles
      */
     public record CrossSectionProfile(
-        ProfileSamplingAnchor samplingAnchor,
+        ProfileSamplingLocation samplingAnchor,
         Point2D.Double normalScreen,
         List<CrossSectionPeak> peaks,
         boolean anchorWithinRaster,
@@ -1560,12 +1560,35 @@ public final class RenderedHeatmapSampler {
         }
 
         /**
+         * Compatibility constructor for detached profiles without a captured projected lateral transform.
+         *
+         * @param samplingAnchor detached or legacy typed sampling location
+         * @param normalScreen unit normal used for offset sampling
+         * @param peaks candidate heatmap ridges found on this cross-section
+         * @param anchorWithinRaster whether the source point was inside the sampled raster
+         * @param intensitySamples complete raw and filtered cross-section evidence
+         */
+        public CrossSectionProfile(
+            ProfileSamplingLocation samplingAnchor,
+            Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks,
+            boolean anchorWithinRaster,
+            List<IntensitySample> intensitySamples
+        ) {
+            this(samplingAnchor, normalScreen, peaks, anchorWithinRaster, intensitySamples, Optional.empty());
+        }
+
+        /**
          * Returns the source position in the active JOSM projection.
          *
          * @return source position in the active JOSM projection
+         * @throws UnsupportedOperationException when the anchor is detached and no JOSM projection exists
          */
         public EastNorth anchor() {
-            return samplingAnchor.sourceMapCoordinate();
+            if (samplingAnchor instanceof ProfileSamplingAnchor legacySamplingAnchor) {
+                return legacySamplingAnchor.sourceMapCoordinate();
+            }
+            throw new UnsupportedOperationException("Detached sampling anchors do not carry active JOSM source coordinates.");
         }
 
         /**
@@ -1574,7 +1597,7 @@ public final class RenderedHeatmapSampler {
          * @return sampled-raster anchor
          */
         public Point2D.Double anchorScreen() {
-            return samplingAnchor.rasterCoordinate();
+            return samplingAnchor.anchorScreen();
         }
 
         /**
@@ -1594,6 +1617,18 @@ public final class RenderedHeatmapSampler {
          * @param peaks extracted ridge peaks
          */
         public CrossSectionProfile(ProfileSamplingAnchor samplingAnchor, Point2D.Double normalScreen,
+            List<CrossSectionPeak> peaks) {
+            this(samplingAnchor, normalScreen, peaks, true, List.of());
+        }
+
+        /**
+         * Creates a detached or legacy profile without retained full-profile samples.
+         *
+         * @param samplingAnchor typed sampling location
+         * @param normalScreen raster-space unit normal
+         * @param peaks extracted ridge peaks
+         */
+        public CrossSectionProfile(ProfileSamplingLocation samplingAnchor, Point2D.Double normalScreen,
             List<CrossSectionPeak> peaks) {
             this(samplingAnchor, normalScreen, peaks, true, List.of());
         }

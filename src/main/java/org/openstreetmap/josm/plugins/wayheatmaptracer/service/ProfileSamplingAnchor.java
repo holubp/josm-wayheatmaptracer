@@ -8,6 +8,7 @@ import java.util.Objects;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 
 /**
  * Binds one longitudinal sampling position across map, raster, and physical-distance spaces.
@@ -22,7 +23,7 @@ public record ProfileSamplingAnchor(
     double rasterX,
     double rasterY,
     double cumulativeGroundDistanceMeters
-) {
+) implements ProfileSamplingLocation {
     /** Validates that every coordinate and the physical distance are finite and usable. */
     public ProfileSamplingAnchor {
         Objects.requireNonNull(sourceMapCoordinate, "sourceMapCoordinate");
@@ -44,6 +45,12 @@ public record ProfileSamplingAnchor(
      */
     public Point2D.Double rasterCoordinate() {
         return new Point2D.Double(rasterX, rasterY);
+    }
+
+    /** Returns the typed raster coordinate retained for detached consumers. */
+    @Override
+    public RasterPoint rasterPoint() {
+        return new RasterPoint(rasterX, rasterY);
     }
 
     /**
