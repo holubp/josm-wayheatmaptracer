@@ -420,10 +420,12 @@ public final class CorridorAwareTracker {
                     || maximumTransitions > budgets.maximumTransitions()
                     || maximumTransitions > budgets.maximumPairVisits()) {
                 throw new CorridorResourceLimitException(
-                    "declared budgets cannot admit the complete corridor optimizer state space");
+                    "declared budgets cannot admit the complete corridor optimizer state space",
+                    trackCount);
             }
         } catch (ArithmeticException exception) {
-            throw new CorridorResourceLimitException("corridor optimizer bound overflowed");
+            throw new CorridorResourceLimitException(
+                "corridor optimizer bound overflowed", trackCount);
         }
     }
 

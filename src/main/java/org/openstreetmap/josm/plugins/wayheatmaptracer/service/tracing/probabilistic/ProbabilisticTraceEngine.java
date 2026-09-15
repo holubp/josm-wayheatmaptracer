@@ -20,10 +20,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
-public final class ProbabilisticTraceEngine implements TraceEngine {
+public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceEngine {
     private final String fieldName;
     private final EvidenceModelParameters parameters;
 
@@ -43,22 +44,44 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
 
     @Override
     public TraceHypothesisSet trace(TraceRequest request, EvidenceSnapshot evidence,
-        NetworkSnapshot network, CancellationProbe cancellation) {
+            NetworkSnapshot network, CancellationProbe cancellation) {
+        return traceWithUsage(request, evidence, network, cancellation).result();
+    }
+
+    @Override
+    public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, CancellationProbe cancellation) {
         try {
-            return traceInternal(request, evidence, network, cancellation);
+            return traceInternal(request, evidence, network, cancellation, null);
         } catch (java.util.concurrent.CancellationException exception) {
-            return new TraceHypothesisSet(request.engine(), List.of(), TraceHypothesisSet.Status.CANCELLED,
-                false, 0, 0, "cancelled");
+            return run(new TraceHypothesisSet(request.engine(), List.of(),
+                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
         }
     }
 
-    private TraceHypothesisSet traceInternal(TraceRequest request, EvidenceSnapshot evidence,
-        NetworkSnapshot network, CancellationProbe cancellation) {
+    @Override
+    public TraceEngineRun traceGuidedWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, ProbabilisticStructuralGuide guide,
+            CancellationProbe cancellation) {
+        if (guide == null) {
+            throw new IllegalArgumentException("Structural guide is required");
+        }
+        try {
+            return traceInternal(request, evidence, network, cancellation, guide);
+        } catch (java.util.concurrent.CancellationException exception) {
+            return run(new TraceHypothesisSet(request.engine(), List.of(),
+                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
+        }
+    }
+
+    private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
+        NetworkSnapshot network, CancellationProbe cancellation,
+        ProbabilisticStructuralGuide guide) {
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
         ScalarEvidenceField field = evidence.fields().get(fieldName);
         if (field == null) {
-            return noRoute(request, "scalar evidence field is unavailable");
+            return run(noRoute(request, "scalar evidence field is unavailable"), 0, 0);
         }
         List<MetricPoint> source = selectedPolyline(request, evidence, network);
         boolean fixedEndpoints = request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
@@ -67,9 +90,9 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
             evidence, field, parameters, cancellation);
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
-            return new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
+            return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
                 TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
-                "orientation descriptor resource limit");
+                "orientation descriptor resource limit"), 0, 0);
         }
         List<InferenceProfile> evaluated = new ArrayList<>(profiles.size());
         long stateCount = 0;
@@ -80,13 +103,15 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
             StateSpaceBuildResult stateResult = stateBuilder.build(profile,
                 request.budgets().maximumStatesPerProfile());
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
-                return new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
+                return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
                     TraceHypothesisSet.Status.RESOURCE_LIMIT, true, stateCount, 0,
-                    "STATE_LIMIT at profile " + profile.profileIndex() + ": " + stateResult.explanation());
+                    "STATE_LIMIT at profile " + profile.profileIndex() + ": " + stateResult.explanation()), 0, 0);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
             stateCount += lattice.cells().size();
-            evaluated.add(observationModel.evaluate(profile, lattice, parameters));
+            InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters);
+            evaluated.add(guide == null ? evaluatedProfile
+                : guide.apply(evaluatedProfile, profile.sourcePitchMeters()));
         }
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
             parameters, request.budgets(), evidence.decisionRegion(), cancellation);
@@ -94,20 +119,23 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
                 || inference.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
                 || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
         List<TraceHypothesis> hypotheses = usableRoutes
-                ? toHypotheses(inference, evaluated, evidence, field) : List.of();
+                ? toHypotheses(inference, evaluated, evidence, field, guide) : List.of();
         TraceHypothesisSet.Status status = switch (inference.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;
             case AMBIGUOUS, REVIEW_REQUIRED -> TraceHypothesisSet.Status.AMBIGUOUS;
             case ALL_MISSING, NO_ROUTE, NUMERIC_FAILURE -> TraceHypothesisSet.Status.NO_ROUTE;
             case RESOURCE_LIMIT -> TraceHypothesisSet.Status.RESOURCE_LIMIT;
         };
-        return new TraceHypothesisSet(TrackerMode.PROBABILISTIC, hypotheses, status,
-            inference.alternativeSearchTruncated(), stateCount, inference.evaluatedTransitions(),
-            inference.explanation());
+        TraceHypothesisSet result = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
+            hypotheses, status, inference.alternativeSearchTruncated(), stateCount,
+            inference.evaluatedTransitions(), guide == null ? inference.explanation()
+                : inference.explanation() + "; capped same-image structural guide applied");
+        return run(result, inference.evaluatedPairVisits(), inference.rawPaths().size());
     }
 
     private List<TraceHypothesis> toHypotheses(ProbabilisticInferenceResult inference,
-        List<InferenceProfile> profiles, EvidenceSnapshot evidence, ScalarEvidenceField field) {
+        List<InferenceProfile> profiles, EvidenceSnapshot evidence, ScalarEvidenceField field,
+        ProbabilisticStructuralGuide guide) {
         List<TraceHypothesis> result = new ArrayList<>();
         int index = 0;
         for (ProbabilisticPath path : inference.distinctPaths()) {
@@ -121,6 +149,13 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
             diagnostics.put("temperature", parameters.temperature());
             diagnostics.put("turnWeight", parameters.turnWeight());
             diagnostics.put("orientationWeight", parameters.orientationWeight());
+            if (guide != null) {
+                diagnostics.put("structuralGuideApplied", 1.0);
+                diagnostics.put("structuralGuideWeight", parameters.guideWeight());
+                diagnostics.put("structuralGuideCap", ProbabilisticStructuralGuide.MAXIMUM_COST);
+                diagnostics.put("structuralGuideSameImage", 1.0);
+                diagnostics.put("structuralGuideSectionCount", (double) guide.sectionCount());
+            }
             result.add(new TraceHypothesis("probabilistic-" + index++, path.branchSignature(),
                 path.points(), support, path.energy(), path.conditionalPosteriorMass(), diagnostics));
         }
@@ -184,6 +219,12 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
             || network.role() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole.CAPTURED_BEFORE) {
             throw new IllegalArgumentException("Probabilistic request does not match immutable snapshots");
         }
+    }
+
+    private static TraceEngineRun run(TraceHypothesisSet result,
+            long pairVisits, int rawAlternatives) {
+        return new TraceEngineRun(result, new TraceWorkUsage(pairVisits,
+            result.evaluatedTransitions(), rawAlternatives, result.hypotheses().size()));
     }
 
     private static TraceHypothesisSet noRoute(TraceRequest request, String explanation) {

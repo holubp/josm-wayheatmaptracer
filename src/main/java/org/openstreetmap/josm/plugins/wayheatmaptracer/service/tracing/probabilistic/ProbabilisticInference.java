@@ -484,8 +484,9 @@ public final class ProbabilisticInference {
 
     private static double profileEnergy(List<InferenceProfile> profiles, int profileIndex, int state,
         EvidenceModelParameters parameters) {
-        return profileQuadrature(profiles, profileIndex) * parameters.dataWeight()
-            * profiles.get(profileIndex).unaryCost(state);
+        InferenceProfile profile = profiles.get(profileIndex);
+        return profileQuadrature(profiles, profileIndex) * (parameters.dataWeight()
+            * profile.unaryCost(state) + parameters.guideWeight() * profile.structuralGuideCost(state));
     }
 
     private static double pairEnergy(List<InferenceProfile> profiles, int startProfile, int startState,

@@ -38,7 +38,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.MultiScaleProfileSet;
 
 /** Production Engine A adapter over frozen scalar evidence and explicit profile locations. */
-public final class CorridorEngineAdapter implements TraceEngine {
+public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     private final String fieldName;
 
     /** Creates Engine A for one scalar evidence field. */
@@ -52,18 +52,25 @@ public final class CorridorEngineAdapter implements TraceEngine {
     @Override
     public TraceHypothesisSet trace(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation) {
+        return traceWithUsage(request, evidence, network, cancellation).result();
+    }
+
+    @Override
+    public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, CancellationProbe cancellation) {
         try {
             return traceInternal(request, evidence, network, cancellation);
         } catch (CancellationException exception) {
-            return new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
-                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled");
+            return run(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
+                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
         } catch (CorridorResourceLimitException exception) {
-            return new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0, exception.getMessage());
+            return run(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                exception.getMessage()), 0, exception.rawAlternatives());
         }
     }
 
-    private TraceHypothesisSet traceInternal(TraceRequest request, EvidenceSnapshot evidence,
+    private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation) {
         validate(request, evidence, network, cancellation);
         CorridorTraceInput input = request.corridorInput().orElseThrow();
@@ -86,30 +93,39 @@ public final class CorridorEngineAdapter implements TraceEngine {
         List<CenterlineCandidate> usable = tracked.candidates().stream()
             .filter(candidate -> candidate.evidence().hasSignal()).toList();
         if (usable.isEmpty()) {
-            return new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
+            return run(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(),
                 TraceHypothesisSet.Status.NO_ROUTE, false, evaluatedStates, evaluatedTransitions,
-                "corridor tracker found no route with measured signal");
+                "corridor tracker found no route with measured signal"), evaluatedTransitions,
+                tracked.tracks().size());
         }
         int retainedCount = Math.min(usable.size(), request.budgets().maximumDistinctAlternatives());
         boolean truncated = retainedCount < usable.size();
         List<TraceHypothesis> hypotheses = new ArrayList<>(retainedCount);
         for (int index = 0; index < retainedCount; index++) {
             cancellation.checkpoint();
-            hypotheses.add(toHypothesis(usable.get(index), tracked, evidence, fieldName, request));
+            hypotheses.add(toHypothesis(usable.get(index), tracked, evidence, fieldName, request,
+                usable.size() > 1));
         }
         cancellation.checkpoint();
         TraceHypothesisSet.Status status = truncated ? TraceHypothesisSet.Status.RESOURCE_LIMIT
             : hypotheses.size() == 1 ? TraceHypothesisSet.Status.COMPLETE
             : TraceHypothesisSet.Status.AMBIGUOUS;
-        return new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, hypotheses, status,
+        return run(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, hypotheses, status,
             truncated, evaluatedStates, evaluatedTransitions,
             truncated ? "corridor alternatives exceeded the retained-result budget"
-                : "production corridor tracker completed");
+                : "production corridor tracker completed"), evaluatedTransitions,
+                tracked.tracks().size());
+    }
+
+    private static TraceEngineRun run(TraceHypothesisSet result,
+            long pairVisits, int rawAlternatives) {
+        return new TraceEngineRun(result, new TraceWorkUsage(pairVisits,
+            result.evaluatedTransitions(), rawAlternatives, result.hypotheses().size()));
     }
 
     private static TraceHypothesis toHypothesis(CenterlineCandidate candidate,
             CorridorAwareTracker.TrackingResult tracked, EvidenceSnapshot evidence, String fieldName,
-            TraceRequest request) {
+            TraceRequest request, boolean competingPersistentMode) {
         CorridorCenterlineOptimizer.OptimizationResult optimization =
             tracked.optimizations().get(candidate.id());
         CorridorTrack track = tracked.tracks().stream()
@@ -134,6 +150,15 @@ public final class CorridorEngineAdapter implements TraceEngine {
         diagnostics.put("maximumOffsetStates", (double) optimization.maximumOffsetStates());
         diagnostics.put("retainedPairStateAllocations", (double) optimization.retainedPairStateAllocations());
         diagnostics.put("longitudinalPersistence", candidate.evidence().longitudinalStability());
+        diagnostics.put("scaleConflictFraction", candidate.evidence().scaleConflictFraction());
+        boolean localDefect = !candidate.safetyWarnings().isEmpty()
+            || candidate.evidence().corridorQuality().unsupportedExcursions() > 0
+            || candidate.evidence().corridorQuality().unsupportedReversalCount() > 0
+            || candidate.evidence().corridorQuality().forwardProgressViolations() > 0;
+        diagnostics.put("localDefect", localDefect ? 1.0 : 0.0);
+        diagnostics.put("junctionAmbiguity",
+            request.permissions().junctionPolicy() == JunctionPolicy.FIXED ? 0.0 : 1.0);
+        diagnostics.put("competingPersistentMode", competingPersistentMode ? 1.0 : 0.0);
         return new TraceHypothesis("corridor-" + candidate.id(), candidate.id(), points, support,
             optimization.totalCost(), OptionalDouble.empty(), diagnostics);
     }

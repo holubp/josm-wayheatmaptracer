@@ -36,7 +36,7 @@ public record EvidenceModelParameters(
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
         return new EvidenceModelParameters("probabilistic-v0.22-localization-1", 1.0, 1.0, 2.0,
-            0.5, 0.0, Math.toRadians(30.0), 1.0, 2.0, Localization.defaults());
+            0.5, 0.5, Math.toRadians(30.0), 1.0, 2.0, Localization.defaults());
     }
 
     /** Returns a deterministic data-only parameter set used by exact solver tests. */

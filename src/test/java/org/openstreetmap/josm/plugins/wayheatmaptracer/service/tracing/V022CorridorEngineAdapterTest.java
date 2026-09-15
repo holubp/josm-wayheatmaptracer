@@ -134,13 +134,18 @@ class V022CorridorEngineAdapterTest {
     void solverBudgetThatCannotAdmitTheProductionStateSpaceFailsBeforePublishingRoutes() {
         Fixture fixture = fixture(true);
         TraceRequest constrained = withBudgets(fixture.request(), new TraceBudgets(3, 1, 1, 1, 1));
-        TraceHypothesisSet result = new CorridorEngineAdapter(FIELD).trace(
-            constrained, fixture.evidence(), fixture.network());
+        TraceEngineRun run = new CorridorEngineAdapter(FIELD).traceWithUsage(
+            constrained, fixture.evidence(), fixture.network(), CancellationProbe.NONE);
+        TraceHypothesisSet result = run.result();
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, result.status());
         assertTrue(result.alternativesTruncated());
         assertTrue(result.hypotheses().isEmpty());
         assertEquals(0, result.evaluatedStates());
         assertEquals(0, result.evaluatedTransitions());
+        assertEquals(0, run.usage().pairVisits());
+        assertEquals(0, run.usage().transitions());
+        assertEquals(1, run.usage().rawAlternatives());
+        assertEquals(0, run.usage().distinctAlternatives());
     }
 
     @Test

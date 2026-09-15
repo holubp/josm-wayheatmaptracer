@@ -19,6 +19,7 @@ public final class InferenceProfile {
     private final Map<String, ImageOrientationSupport> orientationByBranch;
     private final ObservationOwnership ownership;
     private final boolean entirelyMissing;
+    private final double[] structuralGuideCosts;
     private final double[][] componentResponsibilities;
 
     /**
@@ -40,7 +41,8 @@ public final class InferenceProfile {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells,
                 ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
-            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()][0]);
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
+            new double[cells == null ? 0 : cells.size()][0]);
     }
 
     /** Creates a profile retaining measured image-orientation intervals. */
@@ -49,7 +51,8 @@ public final class InferenceProfile {
         ObservationOwnership ownership, boolean entirelyMissing) {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells, orientationSupport),
-            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()][0]);
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
+            new double[cells == null ? 0 : cells.size()][0]);
     }
 
     /** Retains the point-direction constructor for deterministic graph fixtures. */
@@ -60,7 +63,8 @@ public final class InferenceProfile {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells,
                 ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
-            ownership, entirelyMissing, componentResponsibilities);
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
+            componentResponsibilities);
     }
 
     /** Creates a fully evaluated profile with branch-owned image orientation evidence. */
@@ -69,8 +73,19 @@ public final class InferenceProfile {
         Map<String, ImageOrientationSupport> orientationByBranch,
         ObservationOwnership ownership, boolean entirelyMissing,
         double[][] componentResponsibilities) {
+        this(chainageMeters, anchor, normalUnit, cells, unaryCosts, orientationByBranch,
+            ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
+            componentResponsibilities);
+    }
+
+    private InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
+        List<LateralStateCell> cells, double[] unaryCosts,
+        Map<String, ImageOrientationSupport> orientationByBranch,
+        ObservationOwnership ownership, boolean entirelyMissing, double[] structuralGuideCosts,
+        double[][] componentResponsibilities) {
         if (!Double.isFinite(chainageMeters) || chainageMeters < 0.0 || anchor == null || normalUnit == null
             || cells == null || cells.isEmpty() || unaryCosts == null || unaryCosts.length != cells.size()
+            || structuralGuideCosts == null || structuralGuideCosts.length != cells.size()
             || orientationByBranch == null || orientationByBranch.entrySet().stream().anyMatch(entry ->
                 entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null)
             || cells != null && orientationByBranch != null && cells.stream().anyMatch(cell ->
@@ -81,7 +96,8 @@ public final class InferenceProfile {
             throw new IllegalArgumentException("Inference profile is incomplete");
         }
         double norm = Math.hypot(normalUnit.xMeters(), normalUnit.yMeters());
-        if (Math.abs(norm - 1.0) > 1e-9 || Arrays.stream(unaryCosts).anyMatch(value -> !Double.isFinite(value))) {
+        if (Math.abs(norm - 1.0) > 1e-9 || Arrays.stream(unaryCosts).anyMatch(value -> !Double.isFinite(value))
+            || Arrays.stream(structuralGuideCosts).anyMatch(value -> !Double.isFinite(value) || value < 0.0)) {
             throw new IllegalArgumentException("Inference profile geometry or unary costs are invalid");
         }
         this.chainageMeters = chainageMeters;
@@ -93,6 +109,7 @@ public final class InferenceProfile {
             new LinkedHashMap<>(orientationByBranch));
         this.ownership = ownership;
         this.entirelyMissing = entirelyMissing;
+        this.structuralGuideCosts = structuralGuideCosts.clone();
         this.componentResponsibilities = deepCopy(componentResponsibilities);
     }
 
@@ -166,6 +183,20 @@ public final class InferenceProfile {
     /** Returns whether this profile contains no localized observation. */
     public boolean entirelyMissing() {
         return entirelyMissing;
+    }
+
+    /** Returns the bounded same-image structural prior cost for one state. */
+    public double structuralGuideCost(int stateIndex) {
+        return structuralGuideCosts[stateIndex];
+    }
+
+    /** Returns an otherwise identical profile with explicit structural-prior costs. */
+    public InferenceProfile withStructuralGuideCosts(double[] costs) {
+        if (costs == null || costs.length != cells.size()) {
+            throw new IllegalArgumentException("Structural guide costs must match the state lattice");
+        }
+        return new InferenceProfile(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+            orientationByBranch, ownership, entirelyMissing, costs, componentResponsibilities);
     }
 
     /** Returns a defensive copy of component responsibilities. */

@@ -126,6 +126,22 @@ class V022ProbabilisticInferenceTest {
 
 
     @Test
+    void t075StructuralGuideRemainsASeparateCappedTermInExactMapAndMarginals() {
+        InferenceProfile profile = profile(0, new double[] {-1, 1}, new double[] {1, 1},
+            new double[] {0, 0}, new String[] {"left", "right"})
+            .withStructuralGuideCosts(new double[] {4, 0});
+
+        ProbabilisticInferenceResult result = new ProbabilisticInference().solve(List.of(profile),
+            EvidenceModelParameters.defaults(), TraceBudgets.defaults());
+
+        assertArrayEquals(new int[] {1}, result.mapPath().orElseThrow().stateIndices());
+        double left = Math.exp(-EvidenceModelParameters.defaults().guideWeight() * 4.0);
+        assertArrayEquals(new double[] {left / (1.0 + left), 1.0 / (1.0 + left)},
+            result.positionMarginals().get(0), 1.0e-12);
+        assertEquals(0.0, result.mapPath().orElseThrow().energy(), 1.0e-12);
+    }
+
+    @Test
     void segmentInteriorCannotJumpAcrossAProhibitedDecisionRegionGap() {
         List<InferenceProfile> profiles = List.of(
             profile(0, new double[] {0}, new double[] {1}, new double[] {0}, new String[] {"route"}),
