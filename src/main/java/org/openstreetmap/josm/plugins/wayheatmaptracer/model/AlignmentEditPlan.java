@@ -370,24 +370,38 @@ public record AlignmentEditPlan(
         int previousAfter = -1;
         for (int beforeIndex : fixedBeforeIndexes) {
             int afterIndex = after.indexOf(before.get(beforeIndex));
-            if (afterIndex <= previousAfter || !authorizedGap(editable, previousBefore + 1, beforeIndex - 1,
-                after.subList(previousAfter + 1, afterIndex), before.subList(previousBefore + 1, beforeIndex))) {
+            if (afterIndex <= previousAfter || !authorizedGap(before, editable, ranges,
+                previousBefore + 1, beforeIndex - 1, after.subList(previousAfter + 1, afterIndex),
+                before.subList(previousBefore + 1, beforeIndex))) {
                 return false;
             }
             previousBefore = beforeIndex;
             previousAfter = afterIndex;
         }
-        return authorizedGap(editable, previousBefore + 1, before.size() - 1,
+        return authorizedGap(before, editable, ranges, previousBefore + 1, before.size() - 1,
             after.subList(previousAfter + 1, after.size()), before.subList(previousBefore + 1, before.size()));
     }
 
-    private static boolean authorizedGap(boolean[] editable, int from, int to,
-        List<PrimitiveKey> afterGap, List<PrimitiveKey> beforeGap) {
+    private static boolean authorizedGap(List<PrimitiveKey> before, boolean[] editable,
+        List<OccurrenceRange> ranges, int from, int to, List<PrimitiveKey> afterGap,
+        List<PrimitiveKey> beforeGap) {
         boolean canChange = false;
         for (int index = from; index <= to; index++) {
             canChange |= editable[index];
         }
-        return canChange || afterGap.equals(beforeGap);
+        if (canChange || afterGap.equals(beforeGap)) {
+            return true;
+        }
+        if (!beforeGap.isEmpty() || afterGap.isEmpty() || from != to + 1
+            || from <= 0 || from >= before.size()
+            || afterGap.stream().anyMatch(key -> key.type() != PrimitiveKey.Type.NODE
+                || key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL)) {
+            return false;
+        }
+        int leftOccurrence = from - 1;
+        int rightOccurrence = from;
+        return ranges.stream().anyMatch(range -> range.firstIndex() <= leftOccurrence
+            && range.lastIndex() >= rightOccurrence);
     }
 
     private static void validateMetricAuthority(NetworkSnapshot before, NetworkSnapshot after,

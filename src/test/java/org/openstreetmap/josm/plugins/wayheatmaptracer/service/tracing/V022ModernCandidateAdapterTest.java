@@ -15,16 +15,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineag
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterResamplingProvenance;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 
 /** Existing-preview adaptation checks for detached modern hypotheses. */
 class V022ModernCandidateAdapterTest {
@@ -154,6 +160,51 @@ class V022ModernCandidateAdapterTest {
                 point -> project(evidence, point))).get(0);
         assertEquals(3, candidate.screenPoints().size());
         assertEquals(0, candidate.evidence().supportedProfiles());
+    }
+
+    @Test
+    void finalRouteProjectionPreservesFinalGeometryAndCompleteExistingAssignments() {
+        EvidenceSnapshot evidence = evidence(true);
+        PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10);
+        PrimitiveKey firstNode = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 1);
+        PrimitiveKey lastNode = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 2);
+        List<MetricPoint> rawPoints = List.of(new MetricPoint(1, 1),
+            new MetricPoint(5, 1), new MetricPoint(9, 1));
+        List<MetricPoint> finalPoints = List.of(new MetricPoint(1, 1),
+            new MetricPoint(5, 5), new MetricPoint(9, 1));
+        TraceHypothesis raw = new TraceHypothesis("route-final", "main", rawPoints,
+            java.util.Collections.nCopies(3, ObservationOwnership.DIRECT_TWO_SIDED),
+            2.0, 0.8, Map.of());
+        TraceHypothesis finalized = new TraceHypothesis("route-final", "main", finalPoints,
+            java.util.Collections.nCopies(3, ObservationOwnership.DIRECT_TWO_SIDED),
+            2.0, 0.8, Map.of());
+        List<FinalRoutePointId> ids = List.of(
+            new ExistingWayNodeOccurrence(way, firstNode, 0),
+            new GeneratedCandidatePoint("route-final", 1),
+            new ExistingWayNodeOccurrence(way, lastNode, 1));
+        Map<FinalRoutePointId, MetricPoint> assignments = Map.of(
+            ids.get(0), finalPoints.get(0), ids.get(1), finalPoints.get(1),
+            ids.get(2), finalPoints.get(2));
+        Map<FinalRoutePointId, ObservationOwnership> ownership = Map.of(
+            ids.get(0), ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+            ids.get(1), ObservationOwnership.DIRECT_TWO_SIDED,
+            ids.get(2), ObservationOwnership.FIXED_TOPOLOGY_ONLY);
+        FinalGeometryEvaluator.Result quality = new FinalGeometryEvaluator.Result(
+            "route-final", FinalGeometryEvaluator.Disposition.APPLICABLE, List.of(),
+            10.0, 10.0, 0.0, 0.1, 0.0);
+        ModernTracePipeline.Route route = new ModernTracePipeline.Route(raw, finalized,
+            ids, assignments, ownership, quality,
+            ImageSupportedLocalCleanup.Status.UNCHANGED, true);
+
+        var candidate = new ModernCandidateAdapter().adaptRoutes(List.of(route),
+            TrackerMode.PROBABILISTIC, evidence, "hot",
+            List.of(rawPoints.get(0), rawPoints.get(2)), point -> project(evidence, point)).get(0);
+
+        assertEquals(finalPoints.stream().map(point -> project(evidence,
+            evidence.coordinateFrame().toGeographic(point))).toList(),
+            candidate.finalPreviewPoints());
+        assertEquals(Map.of(1L, candidate.finalPreviewPoints().get(0),
+            2L, candidate.finalPreviewPoints().get(2)), candidate.proposedNodePositions());
     }
 
     private static EastNorth project(EvidenceSnapshot evidence, GeographicPoint point) {

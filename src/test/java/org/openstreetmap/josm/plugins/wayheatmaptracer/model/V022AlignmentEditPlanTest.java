@@ -116,6 +116,106 @@ class V022AlignmentEditPlanTest {
         assertEquals(SnapshotRole.CAPTURED_BEFORE, before.role());
     }
 
+    @Test
+    void t107ProtectedAdjacentOccurrencesPermitPlanLocalInsertionInsideOneEditableRange() {
+        AlignmentEditPlan plan = protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, PLANNED_NODE, NODE_2),
+            List.of(new OccurrenceRange(0, 1)), true, Map.of());
+
+        assertEquals(Set.of(PLANNED_NODE), plan.createdPrimitives().keySet());
+        assertEquals(List.of(NODE_1, PLANNED_NODE, NODE_2),
+            ((DetachedWay) plan.after().primitives().get(WAY_1)).nodeKeys());
+    }
+
+    @Test
+    void t108ProtectedEdgeInsertionDoesNotAuthorizeExtensionsDisjointRangesOrExistingReuse() {
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(PLANNED_NODE, NODE_1, NODE_2),
+            List.of(new OccurrenceRange(0, 1)), true, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, NODE_2, PLANNED_NODE),
+            List.of(new OccurrenceRange(0, 1)), true, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, PLANNED_NODE, NODE_2),
+            List.of(new OccurrenceRange(0, 0), new OccurrenceRange(1, 1)), true, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, PLANNED_NODE, NODE_2),
+            List.of(new OccurrenceRange(0, 1)), false, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, OUTSIDE_NODE, NODE_2),
+            List.of(new OccurrenceRange(0, 1)), true,
+            Map.of(OUTSIDE_NODE, node(OUTSIDE_NODE, 42.00005, 19.00005))));
+    }
+
+    @Test
+    void t109ProtectedInsertionAuthorityDoesNotPermitOutsideEdgeDeletionReorderOrMovement() {
+        PrimitiveKey node3 = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 3);
+        Map<PrimitiveKey, DetachedPrimitive> third =
+            Map.of(node3, node(node3, 42.0002, 19.0002));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2, node3), List.of(NODE_1, NODE_2, PLANNED_NODE, node3),
+            List.of(new OccurrenceRange(0, 1)), true, third));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1),
+            List.of(new OccurrenceRange(0, 1)), true, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_2, NODE_1),
+            List.of(new OccurrenceRange(0, 1)), true, Map.of()));
+
+        Map<PrimitiveKey, DetachedPrimitive> moved =
+            Map.of(NODE_1, node(NODE_1, 42.00001, 19.00001));
+        assertThrows(IllegalArgumentException.class, () -> protectedInsertionPlan(
+            List.of(NODE_1, NODE_2), List.of(NODE_1, PLANNED_NODE, NODE_2),
+            List.of(new OccurrenceRange(0, 1)), true, moved));
+    }
+
+    private static AlignmentEditPlan protectedInsertionPlan(List<PrimitiveKey> beforeNodes,
+            List<PrimitiveKey> afterNodes, List<OccurrenceRange> ranges,
+            boolean mayCreateNodes, Map<PrimitiveKey, DetachedPrimitive> overrides) {
+        Map<PrimitiveKey, DetachedPrimitive> beforeValues = new LinkedHashMap<>();
+        beforeValues.put(NODE_1, node(NODE_1, 42.0, 19.0));
+        beforeValues.put(NODE_2, node(NODE_2, 42.0001, 19.0001));
+        overrides.forEach(beforeValues::putIfAbsent);
+        beforeValues.put(WAY_1, new DetachedWay(WAY_1, beforeNodes,
+            Map.of("highway", "path"), false, false));
+        Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(beforeValues);
+        overrides.forEach(afterValues::put);
+        afterValues.put(PLANNED_NODE, node(PLANNED_NODE, 42.00005, 19.00005));
+        afterValues.put(WAY_1, new DetachedWay(WAY_1, afterNodes,
+            Map.of("highway", "path"), false, true));
+
+        Set<PrimitiveKey> existing = Set.copyOf(beforeValues.keySet());
+        Set<PrimitiveKey> protectedNodes = existing.stream()
+            .filter(key -> key.type() == PrimitiveKey.Type.NODE)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        ClosureDescriptor closure = new ClosureDescriptor(ClosureDescriptor.Scope.EDIT_COMPONENT,
+            "protected-edge-v1", existing, Set.of(WAY_1), Set.of(), protectedNodes, Set.of(),
+            Map.of(WAY_1, ranges), List.of(), MetricRegion.rectangle(-30, -30, 30, 30),
+            MetricRegion.rectangle(-20, -20, 20, 20), mayCreateNodes, true, true, true);
+        NetworkSnapshot before = new NetworkSnapshot("protected-before", SnapshotRole.CAPTURED_BEFORE,
+            "dataset-fixture", 1L, closure, beforeValues,
+            V022SnapshotFixtures.closedWorldReferrerWatches(beforeValues));
+        NetworkSnapshot after = new NetworkSnapshot("protected-after", SnapshotRole.PROPOSED_AFTER,
+            "dataset-fixture", 1L, closure, afterValues,
+            V022SnapshotFixtures.closedWorldReferrerWatches(afterValues));
+        GeographicPoint origin = new GeographicPoint(42.0, 19.0);
+        LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(origin,
+            new GeographicPoint(41.999, 18.999), new GeographicPoint(42.001, 19.001));
+        List<GeographicPoint> preview = afterNodes.stream()
+            .map(key -> ((DetachedNode) afterValues.get(key)).coordinate()).toList();
+        return new AlignmentEditPlan(WAY_1,
+            new OccurrenceRange(0, beforeNodes.size() - 1), before, after, frame,
+            RecoveryPermissions.disabled(7.01),
+            "settings-hash", "evidence-hash", "parameter-hash", "route-protected-insertion",
+            Map.of(WAY_1, preview),
+            new ValidationReport(ValidationReport.Disposition.APPLICABLE, List.of()));
+    }
+
+    private static DetachedNode node(PrimitiveKey key, double latitude, double longitude) {
+        return new DetachedNode(key, new GeographicPoint(latitude, longitude), Map.of(), false,
+            key.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL);
+    }
+
     private static AlignmentEditPlan plan(NetworkSnapshot before, NetworkSnapshot after,
         Map<PrimitiveKey, List<GeographicPoint>> preview) {
         GeographicPoint origin = new GeographicPoint(42.0, 19.0);

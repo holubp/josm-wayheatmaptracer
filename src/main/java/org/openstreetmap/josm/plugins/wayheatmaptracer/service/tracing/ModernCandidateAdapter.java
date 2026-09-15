@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import java.awt.geom.Point2D;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -13,6 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorQuality;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
@@ -77,9 +79,19 @@ public final class ModernCandidateAdapter {
                     .filter(finding -> finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK)
                     .map(finding -> "modern-final:" + finding.code().name())
                     .toList();
+            Map<Long, EastNorth> proposedNodePositions = new LinkedHashMap<>();
+            for (var entry : route.existingAssignments().entrySet()) {
+                ExistingWayNodeOccurrence occurrence = entry.getKey();
+                EastNorth target = geographicProjector.apply(
+                    evidence.coordinateFrame().toGeographic(entry.getValue()));
+                if (proposedNodePositions.put(occurrence.nodeKey().id(), target) != null) {
+                    throw new IllegalArgumentException(
+                        "Final route repeats an existing node identity");
+                }
+            }
             result.add(new CenterlineCandidate(base.id(), base.score(), base.screenPoints(),
-                    base.offsetsPx(), base.eastNorthPoints(), base.eastNorthPoints(), List.of(),
-                    Double.NaN, base.evidence(), hardFindings));
+                    base.offsetsPx(), base.eastNorthPoints(), base.eastNorthPoints(),
+                    proposedNodePositions, List.of(), Double.NaN, base.evidence(), hardFindings));
         }
         return List.copyOf(result);
     }
