@@ -190,6 +190,16 @@ public final class TileFetchCoordinator implements AutoCloseable {
     }
 
     /**
+     * Returns whether the supplied settings generation is the runtime-owned active generation.
+     *
+     * @param generation captured attempt generation
+     * @return true only for the currently active runtime generation
+     */
+    public boolean isActiveGeneration(ManagedTileGeneration generation) {
+        return generation != null && generation.value() == activeGeneration;
+    }
+
+    /**
      * Schedules one non-blocking eligibility callback; closed coordinators ignore it.
      *
      * @param when earliest callback time
@@ -318,6 +328,9 @@ public final class TileFetchCoordinator implements AutoCloseable {
     private CompletionStage<TileFetchResult> subscriber(CompletableFuture<TileFetchResult> shared,
         TileRequest request) {
         CompletableFuture<TileFetchResult> consumer = new CompletableFuture<>();
+        CancellationToken.Registration cancellation = request.cancellation().onCancellation(
+                () -> consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled",
+                        "Tile acquisition was cancelled.", null)));
         shared.whenComplete((result, error) -> {
             if (request.cancellation().isCancelled()) {
                 consumer.complete(failure(request, TileFetchStatus.CANCELLED, "cancelled",
@@ -328,6 +341,7 @@ public final class TileFetchCoordinator implements AutoCloseable {
             } else {
                 consumer.complete(result.as(result.status(), request.purpose()));
             }
+            cancellation.close();
         });
         return consumer;
     }

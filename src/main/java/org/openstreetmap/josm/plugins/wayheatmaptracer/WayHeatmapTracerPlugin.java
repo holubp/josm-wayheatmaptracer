@@ -32,6 +32,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegm
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
 /**
@@ -51,6 +53,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
     private final AlignWayAction alignWayAction;
     private final AlignWayAction alignPreciseAction;
     private final AlignWayAction alignMoveNodesAction;
+    private final PreviewSessionController<LiveBPreviewService.Computed> modernPreviewSession;
     private Timer shortcutInstallRetryTimer;
 
     /**
@@ -64,12 +67,15 @@ public class WayHeatmapTracerPlugin extends Plugin {
         this.alignWayAction = new AlignWayAction();
         this.alignPreciseAction = new AlignWayAction(AlignmentMode.PRECISE_SHAPE);
         this.alignMoveNodesAction = new AlignWayAction(AlignmentMode.MOVE_EXISTING_NODES);
+        this.modernPreviewSession = new PreviewSessionController<>(javax.swing.SwingUtilities::invokeLater);
         this.actions = List.of(
             alignWayAction,
             alignPreciseAction,
             alignMoveNodesAction,
-            AlignWayAction.experimentalCorridorAwareVisiblePreview(),
-            AlignWayAction.experimentalProbabilisticVisiblePreview(),
+            AlignWayAction.experimentalCorridorAwareVisiblePreview(modernPreviewSession),
+            AlignWayAction.experimentalProbabilisticVisiblePreview(modernPreviewSession),
+            AlignWayAction.experimentalCorridorAwareManagedPreview(modernPreviewSession),
+            AlignWayAction.experimentalProbabilisticManagedPreview(modernPreviewSession),
             new SelectLongestSegmentAction(),
             new HeatmapLayerSettingsAction(),
             new GeometryCleanupSettingsAction(),
@@ -88,7 +94,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
      */
     public void destroy() {
         AggregateIntensityLayer.removeExisting();
-        ManagedTileRuntime.close();
+        modernPreviewSession.closeThen(ManagedTileRuntime::close);
         JMenu menu = MainApplication.getMenu().moreToolsMenu;
         Map<Action, Component> byAction = Arrays.stream(menu.getMenuComponents())
             .filter(JMenuItem.class::isInstance)

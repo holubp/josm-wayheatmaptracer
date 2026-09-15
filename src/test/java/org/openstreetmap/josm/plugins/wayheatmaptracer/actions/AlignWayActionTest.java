@@ -25,6 +25,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
@@ -77,32 +78,36 @@ class AlignWayActionTest {
 
     @Test
     void closedOrSupersededLivePreviewCannotPublishLate() {
-        AlignWayAction.LivePreviewGate gate = new AlignWayAction.LivePreviewGate();
-        long first = gate.open();
-        assertTrue(gate.isCurrent(first));
-        Object window = new Object();
-        assertTrue(gate.isCurrentWindow(first, window, window, true));
-        assertTrue(!gate.isCurrentWindow(first, window, new Object(), true));
-        assertTrue(!gate.isCurrentWindow(first, window, window, false));
-        gate.close(first);
-        assertTrue(!gate.isCurrent(first));
-        long second = gate.open();
-        assertTrue(!gate.isCurrent(first));
-        assertTrue(gate.isCurrent(second));
-        gate.closeAll();
-        assertTrue(!gate.isCurrent(second));
+        try (PreviewSessionController<String> session =
+                new PreviewSessionController<>(Runnable::run)) {
+            PreviewSessionController.Owner first = session.open(() -> { });
+            assertTrue(session.isCurrent(first));
+            Object window = new Object();
+            assertTrue(session.isCurrentWindow(first, window, window, true));
+            assertTrue(!session.isCurrentWindow(first, window, new Object(), true));
+            assertTrue(!session.isCurrentWindow(first, window, window, false));
+            session.close(first);
+            assertTrue(!session.isCurrent(first));
+            PreviewSessionController.Owner second = session.open(() -> { });
+            assertTrue(!session.isCurrent(first));
+            assertTrue(session.isCurrent(second));
+            session.closeAll();
+            assertTrue(!session.isCurrent(second));
+        }
     }
 
     @Test
     void staleOwnerCloseCannotAuthorizeSharedPreviewCleanup() {
-        AlignWayAction.LivePreviewGate gate = new AlignWayAction.LivePreviewGate();
-        long first = gate.open();
-        long second = gate.open();
+        try (PreviewSessionController<String> session =
+                new PreviewSessionController<>(Runnable::run)) {
+            PreviewSessionController.Owner first = session.open(() -> { });
+            PreviewSessionController.Owner second = session.open(() -> { });
 
-        assertFalse(gate.close(first));
-        assertTrue(gate.isCurrent(second));
-        assertTrue(gate.close(second));
-        assertFalse(gate.isCurrent(second));
+            assertFalse(session.close(first));
+            assertTrue(session.isCurrent(second));
+            assertTrue(session.close(second));
+            assertFalse(session.isCurrent(second));
+        }
     }
 
     @Test

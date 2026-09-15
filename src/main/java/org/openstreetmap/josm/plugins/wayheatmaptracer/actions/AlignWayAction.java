@@ -58,6 +58,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
@@ -84,25 +89,28 @@ public class AlignWayAction extends JosmAction {
     private final AlignmentService alignmentService = new AlignmentService();
     /** Map overlay used for candidate preview. */
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
-    /** One latest-attempt owner for the experimental detached B preview. */
-    private final AlignmentJob<LiveBPreviewService.Computed> livePreviewJob =
-            new AlignmentJob<>(SwingUtilities::invokeLater);
+    /** Plugin-wide owner for experimental preview work, windows, and overlay cleanup. */
+    private final PreviewSessionController<LiveBPreviewService.Computed> livePreviewSession;
+    /** Whether this action created and therefore closes its private fallback preview session. */
+    private final boolean ownsLivePreviewSession;
     /** Stateless exact capture and production B pipeline adapter. */
     private final LiveBPreviewService livePreviewService = new LiveBPreviewService();
-    /** Window-generation gate that prevents a closed preview from publishing late. */
-    private final LivePreviewGate livePreviewGate = new LivePreviewGate();
     /** Optional shortcut-specific mode override, or null for configured behavior. */
     private final AlignmentMode forcedAlignmentMode;
     /** Explicit session-local read-only modern-preview engine, or null for ordinary alignment. */
     private final TrackerMode forcedLivePreviewEngine;
+    /** Explicit selected managed-source preview, or false for visible and ordinary actions. */
+    private final boolean forcedManagedPreview;
     /** Current modeless preview dialog, if one is open. */
     private JDialog activePreviewDialog;
+    /** This action's current plugin-wide preview authority, if any. */
+    private PreviewSessionController.Owner activeLivePreviewOwner;
 
     /**
      * Creates the default alignment action using the mode configured in plugin settings.
      */
     public AlignWayAction() {
-        this(null, null);
+        this(null, null, false, new PreviewSessionController<>(SwingUtilities::invokeLater), true);
     }
 
     /**
@@ -111,25 +119,67 @@ public class AlignWayAction extends JosmAction {
      * @param forcedAlignmentMode alignment mode to force for this action, or {@code null} to use settings
      */
     public AlignWayAction(AlignmentMode forcedAlignmentMode) {
-        this(forcedAlignmentMode, null);
+        this(forcedAlignmentMode, null, false,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
     }
 
     /** Creates the explicit session-local visible-source Engine A preview action. */
     public static AlignWayAction experimentalCorridorAwareVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE);
+        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, false,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates Engine A visible preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalCorridorAwareVisiblePreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, false, session, false);
     }
 
     /** Creates the explicit session-local visible-source Engine B preview action. */
     public static AlignWayAction experimentalProbabilisticVisiblePreview() {
-        return new AlignWayAction(null, TrackerMode.PROBABILISTIC);
+        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
     }
 
-    private AlignWayAction(AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
+    /** Creates Engine B visible preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalProbabilisticVisiblePreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false, session, false);
+    }
+
+    /** Creates the explicit session-local managed-source Engine A preview action. */
+    public static AlignWayAction experimentalCorridorAwareManagedPreview() {
+        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, true,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates Engine A managed preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalCorridorAwareManagedPreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, true, session, false);
+    }
+
+    /** Creates the explicit session-local managed-source Engine B preview action. */
+    public static AlignWayAction experimentalProbabilisticManagedPreview() {
+        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, true,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates Engine B managed preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalProbabilisticManagedPreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.PROBABILISTIC, true, session, false);
+    }
+
+    private AlignWayAction(AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine,
+            boolean forcedManagedPreview,
+            PreviewSessionController<LiveBPreviewService.Computed> livePreviewSession,
+            boolean ownsLivePreviewSession) {
         super(
-            actionName(forcedAlignmentMode, forcedLivePreviewEngine),
+            actionName(forcedAlignmentMode, forcedLivePreviewEngine, forcedManagedPreview),
             null,
-            actionTooltip(forcedAlignmentMode, forcedLivePreviewEngine),
-            shortcut(forcedAlignmentMode, forcedLivePreviewEngine),
+            actionTooltip(forcedAlignmentMode, forcedLivePreviewEngine, forcedManagedPreview),
+            shortcut(forcedAlignmentMode, forcedLivePreviewEngine, forcedManagedPreview),
             true
         );
         if (forcedLivePreviewEngine != null && forcedLivePreviewEngine != TrackerMode.CORRIDOR_AWARE
@@ -138,6 +188,9 @@ public class AlignWayAction extends JosmAction {
         }
         this.forcedAlignmentMode = forcedAlignmentMode;
         this.forcedLivePreviewEngine = forcedLivePreviewEngine;
+        this.forcedManagedPreview = forcedManagedPreview;
+        this.livePreviewSession = Objects.requireNonNull(livePreviewSession, "livePreviewSession");
+        this.ownsLivePreviewSession = ownsLivePreviewSession;
         putValue("help", HelpUtil.ht("/Plugin/WayHeatmapTracer"));
     }
 
@@ -153,11 +206,11 @@ public class AlignWayAction extends JosmAction {
     @Override
     public void actionPerformed(ActionEvent e) {
         if (activePreviewDialog != null && activePreviewDialog.isDisplayable()) {
-            AlignmentJob.Attempt<LiveBPreviewService.Computed> attempt = livePreviewJob.currentAttempt();
+            AlignmentJob.Attempt<LiveBPreviewService.Computed> attempt = livePreviewSession.currentAttempt();
             if (attempt != null && !attempt.state().terminal()) {
-                livePreviewJob.cancel();
-                livePreviewGate.closeAll();
-                overlay.hide();
+                if (livePreviewSession.close(activeLivePreviewOwner)) {
+                    overlay.hide();
+                }
                 activePreviewDialog.dispose();
                 PluginLog.endSlideSession();
             } else {
@@ -188,8 +241,8 @@ public class AlignWayAction extends JosmAction {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
             ManagedHeatmapConfig selectedConfig = config;
-            ImageryLayer imageryLayer = selectVisibleSource(forcedLivePreviewEngine != null,
-                    HeatmapLayerResolver::resolve,
+            ImageryLayer imageryLayer = forcedManagedPreview ? null : selectVisibleSource(
+                    forcedLivePreviewEngine != null, HeatmapLayerResolver::resolve,
                     () -> selectedConfig.hasManagedAccessValues()
                             ? HeatmapLayerResolver.resolveOptional().orElse(null)
                             : HeatmapLayerResolver.resolve());
@@ -200,7 +253,7 @@ public class AlignWayAction extends JosmAction {
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
             if (forcedLivePreviewEngine != null || config.trackerMode() == TrackerMode.PROBABILISTIC) {
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, forcedLivePreviewEngine != null);
+                        persistedSlideConfig, forcedLivePreviewEngine != null, forcedManagedPreview);
                 return;
             }
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
@@ -235,9 +288,11 @@ public class AlignWayAction extends JosmAction {
 
     private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
-            AlignmentConfig persistedSlideConfig, boolean explicitVisibleSource) {
-        LiveBPreviewService.requireSupported(selection,
-                ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
+            AlignmentConfig persistedSlideConfig, boolean explicitVisibleSource, boolean managedSource) {
+        if (!managedSource) {
+            LiveBPreviewService.requireSupported(selection,
+                    ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
+        }
         DiagnosticsRegistry.setLastBundle(null);
         overlay.hide();
         String engineLabel = livePreviewEngineLabel(slideConfig.heatmap().trackerMode());
@@ -254,15 +309,18 @@ public class AlignWayAction extends JosmAction {
         progress.pack();
         progress.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = progress;
-        long previewOwner = livePreviewGate.open();
-        String sourceIdentity = liveLayerIdentity(imageryLayer);
+        PreviewSessionController.Owner previewOwner = livePreviewSession.open(progress::dispose);
+        activeLivePreviewOwner = previewOwner;
+        String sourceIdentity = managedSource ? "managed-selected-" + slideConfig.heatmap().color()
+                + "-g" + slideConfig.heatmap().cacheBuster() : liveLayerIdentity(imageryLayer);
         javax.swing.Timer failureMonitor = new javax.swing.Timer(150, event -> {
-            AlignmentJob.Attempt<LiveBPreviewService.Computed> current = livePreviewJob.currentAttempt();
-            if (activePreviewDialog != progress || current == null) {
+            AlignmentJob.Attempt<LiveBPreviewService.Computed> current = livePreviewSession.currentAttempt();
+            if (!livePreviewSession.isCurrent(previewOwner)
+                    || activePreviewDialog != progress || current == null) {
                 ((javax.swing.Timer) event.getSource()).stop();
             } else if (current.state() == AlignmentJob.State.FAILED) {
                 ((javax.swing.Timer) event.getSource()).stop();
-                boolean closed = livePreviewGate.close(previewOwner);
+                boolean closed = livePreviewSession.close(previewOwner);
                 progress.dispose();
                 if (closed) {
                     overlay.hide();
@@ -272,15 +330,14 @@ public class AlignWayAction extends JosmAction {
                 }
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
                 ((javax.swing.Timer) event.getSource()).stop();
-                livePreviewGate.close(previewOwner);
+                livePreviewSession.close(previewOwner);
                 progress.dispose();
             }
         });
         progress.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
-                boolean closed = livePreviewGate.close(previewOwner);
+                boolean closed = livePreviewSession.close(previewOwner);
                 if (closed) {
-                    livePreviewJob.cancel();
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
@@ -295,20 +352,38 @@ public class AlignWayAction extends JosmAction {
         cancel.addActionListener(event -> progress.dispatchEvent(
                 new WindowEvent(progress, WindowEvent.WINDOW_CLOSING)));
         try {
-            livePreviewJob.startDetached(() -> {
-                LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
-                        selection, imageryLayer, mapView, slideConfig, sourceIdentity);
-                LiveBPreviewService.Captured captured = livePreviewService.capture(
-                        dataSet, selection, raster, slideConfig, explicitVisibleSource);
-                AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
-                        captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
-                        captured.network().canonicalHash());
-                return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
-            }, (captured, context) -> livePreviewService.compute(captured, context),
-                    attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
-                            imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
+            if (managedSource) {
+                final LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+                final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
+                final TileFetchCoordinator coordinator = ManagedTileRuntime.initializedCoordinator();
+                livePreviewSession.start(previewOwner, () -> {
+                    seed[0] = livePreviewService.captureManagedSeed(dataSet, selection, slideConfig, sourceIdentity);
+                    return new AlignmentJob.AttemptSnapshot(seed[0].network().snapshotId(), sourceIdentity,
+                            seed[0].settingsHash(), seed[0].network().canonicalHash());
+                }, (snapshot, context) -> {
+                    ManagedModernPreviewSource source = new ManagedModernPreviewSource(coordinator);
+                    ManagedModernPreviewSource.Raster raster = source.acquire(
+                            ManagedModernPreviewSource.selectedOnly(seed[0].sourceGeographic(),
+                                    slideConfig.heatmap(), sourceIdentity), credentials, context);
+                    return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
+                }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                        imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
+            } else {
+                livePreviewSession.startDetached(previewOwner, () -> {
+                    LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
+                            selection, imageryLayer, mapView, slideConfig, sourceIdentity);
+                    LiveBPreviewService.Captured captured = livePreviewService.capture(
+                            dataSet, selection, raster, slideConfig, explicitVisibleSource);
+                    AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
+                            captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
+                            captured.network().canonicalHash());
+                    return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
+                }, (captured, context) -> livePreviewService.compute(captured, context),
+                        attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                                imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
+            }
         } catch (RuntimeException exception) {
-            livePreviewGate.close(previewOwner);
+            livePreviewSession.close(previewOwner);
             progress.dispose();
             throw exception;
         }
@@ -316,11 +391,11 @@ public class AlignWayAction extends JosmAction {
         progress.setVisible(true);
     }
 
-    private void publishLiveBPreview(long previewOwner, JDialog progress, DataSet dataSet,
+    private void publishLiveBPreview(PreviewSessionController.Owner previewOwner, JDialog progress, DataSet dataSet,
             SelectionContext selection,
             ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed) {
-        if (!livePreviewGate.isCurrent(previewOwner)
+        if (!livePreviewSession.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
@@ -339,7 +414,7 @@ public class AlignWayAction extends JosmAction {
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer,
                     slideConfig, persistedSlideConfig, computed, candidates);
         } catch (RuntimeException exception) {
-            boolean closed = livePreviewGate.close(previewOwner);
+            boolean closed = livePreviewSession.close(previewOwner);
             progress.dispose();
             if (closed) {
                 overlay.hide();
@@ -350,7 +425,7 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private void showLiveBReadOnlyDialog(long previewOwner, DataSet dataSet,
+    private void showLiveBReadOnlyDialog(PreviewSessionController.Owner previewOwner, DataSet dataSet,
             SelectionContext selection,
             ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates) {
@@ -387,8 +462,9 @@ public class AlignWayAction extends JosmAction {
         dialog.pack();
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
+        livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
         Runnable refresh = () -> {
-            if (!livePreviewGate.isCurrentWindow(previewOwner, dialog,
+            if (!livePreviewSession.isCurrentWindow(previewOwner, dialog,
                     activePreviewDialog, dialog.isDisplayable())) {
                 throw new IllegalStateException("The preview window no longer owns this attempt");
             }
@@ -410,7 +486,7 @@ public class AlignWayAction extends JosmAction {
             try {
                 refresh.run();
             } catch (RuntimeException exception) {
-                boolean closed = livePreviewGate.close(previewOwner);
+                boolean closed = livePreviewSession.close(previewOwner);
                 dialog.dispose();
                 if (closed) {
                     overlay.hide();
@@ -422,14 +498,14 @@ public class AlignWayAction extends JosmAction {
         });
         dialog.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
-                boolean closed = livePreviewGate.close(previewOwner);
+                boolean closed = livePreviewSession.close(previewOwner);
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
             }
             @Override public void windowClosed(WindowEvent event) {
-                if (livePreviewGate.close(previewOwner)) {
+                if (livePreviewSession.close(previewOwner)) {
                     overlay.hide();
                 }
                 if (activePreviewDialog == dialog) {
@@ -476,15 +552,21 @@ public class AlignWayAction extends JosmAction {
             LiveBPreviewService.Captured captured) {
         AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
                 PluginPreferences.loadGeometryCleanup());
+        boolean managed = captured.managedRaster() != null;
         if (MainApplication.getLayerManager().getEditDataSet() != dataSet
-                || !imageryLayer.isVisible()
-                || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer
                 || !matchesLivePreviewSettings(persistedSlideConfig, slideConfig, currentPersisted,
-                        forcedAlignmentMode, forcedLivePreviewEngine)) {
+                        forcedAlignmentMode, forcedLivePreviewEngine)
+                || managed && !slideConfig.heatmap().hasSameManagedSource(currentPersisted.heatmap())
+                || !managed && (!imageryLayer.isVisible()
+                        || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer)) {
             throw new IllegalStateException("The dataset, source layer, or settings changed after capture");
         }
-        livePreviewService.requireCurrent(dataSet, captured, liveLayerIdentity(imageryLayer),
-                ProjectionRegistry.getProjection().toCode());
+        if (managed) {
+            livePreviewService.requireCurrent(dataSet, captured);
+        } else {
+            livePreviewService.requireCurrent(dataSet, captured, liveLayerIdentity(imageryLayer),
+                    ProjectionRegistry.getProjection().toCode());
+        }
     }
 
     private static String liveLayerIdentity(ImageryLayer layer) {
@@ -494,48 +576,17 @@ public class AlignWayAction extends JosmAction {
 
     @Override
     public void destroy() {
-        livePreviewGate.closeAll();
-        livePreviewJob.close();
-        overlay.hide();
+        if (livePreviewSession.close(activeLivePreviewOwner)) {
+            overlay.hide();
+        }
+        if (ownsLivePreviewSession) {
+            livePreviewSession.close();
+        }
         if (activePreviewDialog != null) {
             activePreviewDialog.dispose();
             activePreviewDialog = null;
         }
         super.destroy();
-    }
-
-    /** Small headless-testable owner gate shared by progress and read-only preview windows. */
-    static final class LivePreviewGate {
-        private long sequence;
-        private long current;
-        private boolean open;
-
-        long open() {
-            current = ++sequence;
-            open = true;
-            return current;
-        }
-
-        boolean isCurrent(long owner) {
-            return open && owner == current;
-        }
-
-        boolean isCurrentWindow(long owner, Object expectedWindow,
-                Object activeWindow, boolean displayable) {
-            return isCurrent(owner) && expectedWindow == activeWindow && displayable;
-        }
-
-        boolean close(long owner) {
-            if (!open || owner != current) {
-                return false;
-            }
-            open = false;
-            return true;
-        }
-
-        void closeAll() {
-            open = false;
-        }
     }
 
     ManagedHeatmapConfig effectiveConfig(ManagedHeatmapConfig config) {
@@ -595,10 +646,13 @@ public class AlignWayAction extends JosmAction {
     }
 
     private static String actionName(AlignmentMode forcedAlignmentMode,
-            TrackerMode forcedLivePreviewEngine) {
+            TrackerMode forcedLivePreviewEngine, boolean managedSource) {
         if (forcedLivePreviewEngine != null) {
-            return tr("Experimental Engine {0} Visible Preview (Read Only)",
-                    livePreviewEngineShortLabel(forcedLivePreviewEngine));
+            return managedSource
+                ? tr("Experimental Engine {0} Managed Preview (Read Only)",
+                        livePreviewEngineShortLabel(forcedLivePreviewEngine))
+                : tr("Experimental Engine {0} Visible Preview (Read Only)",
+                        livePreviewEngineShortLabel(forcedLivePreviewEngine));
         }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
             return tr("Align Way to Heatmap Precisely");
@@ -610,10 +664,13 @@ public class AlignWayAction extends JosmAction {
     }
 
     private static String actionTooltip(AlignmentMode forcedAlignmentMode,
-            TrackerMode forcedLivePreviewEngine) {
+            TrackerMode forcedLivePreviewEngine, boolean managedSource) {
         if (forcedLivePreviewEngine != null) {
-            return tr("Preview Engine {0} using only the current rendered visible layer; stored credentials are not used for acquisition",
-                    livePreviewEngineShortLabel(forcedLivePreviewEngine));
+            return managedSource
+                ? tr("Preview Engine {0} from the selected managed tile source using configured access values",
+                        livePreviewEngineShortLabel(forcedLivePreviewEngine))
+                : tr("Preview Engine {0} using only the current rendered visible layer; stored credentials are not used for acquisition",
+                        livePreviewEngineShortLabel(forcedLivePreviewEngine));
         }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
             return tr("Align the selected way to a heatmap and rebuild the selected segment precisely");
@@ -625,36 +682,26 @@ public class AlignWayAction extends JosmAction {
     }
 
     private static Shortcut shortcut(AlignmentMode forcedAlignmentMode,
-            TrackerMode forcedLivePreviewEngine) {
+            TrackerMode forcedLivePreviewEngine, boolean managedSource) {
         if (forcedLivePreviewEngine != null) {
             String engine = livePreviewEngineShortLabel(forcedLivePreviewEngine).toLowerCase(Locale.ROOT);
-            return Shortcut.registerShortcut("wayheatmaptracer:experimental-" + engine + "-visible-preview",
-                    tr("WayHeatmapTracer: Experimental Engine {0} Visible Preview",
-                            livePreviewEngineShortLabel(forcedLivePreviewEngine)),
+            String source = managedSource ? "managed" : "visible";
+            return Shortcut.registerShortcut("wayheatmaptracer:experimental-" + engine + "-" + source + "-preview",
+                    tr("WayHeatmapTracer: Experimental Engine {0} {1} Preview",
+                            livePreviewEngineShortLabel(forcedLivePreviewEngine),
+                            managedSource ? tr("Managed") : tr("Visible")),
                     KeyEvent.VK_UNDEFINED, Shortcut.NONE);
         }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
-            return Shortcut.registerShortcut(
-                "wayheatmaptracer:align-precise",
-                tr("WayHeatmapTracer: Align Way to Heatmap Precisely"),
-                KeyEvent.VK_S,
-                Shortcut.ALT_CTRL_SHIFT
-            );
+            return Shortcut.registerShortcut("wayheatmaptracer:align-precise",
+                tr("WayHeatmapTracer: Align Way to Heatmap Precisely"), KeyEvent.VK_S, Shortcut.ALT_CTRL_SHIFT);
         }
         if (forcedAlignmentMode == AlignmentMode.MOVE_EXISTING_NODES) {
-            return Shortcut.registerShortcut(
-                "wayheatmaptracer:align-move-nodes",
-                tr("WayHeatmapTracer: Align Way to Heatmap by Moving Nodes"),
-                KeyEvent.VK_M,
-                Shortcut.ALT_CTRL_SHIFT
-            );
+            return Shortcut.registerShortcut("wayheatmaptracer:align-move-nodes",
+                tr("WayHeatmapTracer: Align Way to Heatmap by Moving Nodes"), KeyEvent.VK_M, Shortcut.ALT_CTRL_SHIFT);
         }
-        return Shortcut.registerShortcut(
-            "wayheatmaptracer:align",
-            tr("WayHeatmapTracer: Align Way to Heatmap"),
-            KeyEvent.VK_Y,
-            Shortcut.CTRL_SHIFT
-        );
+        return Shortcut.registerShortcut("wayheatmaptracer:align",
+            tr("WayHeatmapTracer: Align Way to Heatmap"), KeyEvent.VK_Y, Shortcut.CTRL_SHIFT);
     }
 
     @Override

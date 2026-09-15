@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.Color;
@@ -40,6 +41,17 @@ class TileAcquisitionFoundationTest {
 
     @TempDir
     java.nio.file.Path temporary;
+
+    @Test
+    void strictInitializedCoordinatorAccessorNeverRecreatesClosedRuntime() {
+        ManagedTileRuntime.close();
+
+        assertThrows(IllegalStateException.class, ManagedTileRuntime::initializedCoordinator);
+        assertTrue(ManagedTileRuntime.diagnosticsJsonIfInitialized()
+                .contains("\"runtimeState\":\"not-initialized\""));
+
+        ManagedTileRuntime.close();
+    }
 
     @Test
     void addressAndUrlContainOnlySafeNormalizedIdentity() {
@@ -293,9 +305,10 @@ class TileAcquisitionFoundationTest {
             CompletableFuture<TileFetchResult> second = coordinator.fetch(secondRequest, credentials()).toCompletableFuture();
             assertTrue(entered.await(2, TimeUnit.SECONDS));
             firstToken.cancel();
-            release.countDown();
 
             assertEquals(TileFetchStatus.CANCELLED, first.get(2, TimeUnit.SECONDS).status());
+            assertFalse(second.isDone(), "consumer cancellation must leave the shared transport running");
+            release.countDown();
             assertTrue(second.get(2, TimeUnit.SECONDS).usable());
         }
     }

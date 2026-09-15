@@ -3,6 +3,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -131,6 +133,9 @@ public final class AlignmentJob<R> implements AutoCloseable {
     public static final class JobContext implements CancellationProbe {
         private final BooleanSupplier cancelled;
         private final Consumer<State> transition;
+        private final AtomicBoolean cancellationSignalled = new AtomicBoolean();
+        private final CopyOnWriteArrayList<Runnable> cancellationListeners =
+                new CopyOnWriteArrayList<>();
 
         private JobContext(BooleanSupplier cancelled, Consumer<State> transition) {
             this.cancelled = cancelled;
@@ -148,7 +153,29 @@ public final class AlignmentJob<R> implements AutoCloseable {
         /** Returns whether this attempt was cancelled, superseded, or its layer was destroyed. */
         @Override
         public boolean cancelled() {
-            return cancelled.getAsBoolean();
+            return cancellationSignalled.get() || cancelled.getAsBoolean();
+        }
+
+        @Override
+        public Registration onCancellation(Runnable callback) {
+            Objects.requireNonNull(callback, "callback");
+            if (cancelled()) {
+                callback.run();
+                return () -> { };
+            }
+            cancellationListeners.add(callback);
+            if (cancelled() && cancellationListeners.remove(callback)) {
+                callback.run();
+                return () -> { };
+            }
+            return () -> cancellationListeners.remove(callback);
+        }
+
+        private void signalCancellation() {
+            if (cancellationSignalled.compareAndSet(false, true)) {
+                cancellationListeners.forEach(Runnable::run);
+                cancellationListeners.clear();
+            }
         }
     }
 
@@ -157,6 +184,7 @@ public final class AlignmentJob<R> implements AutoCloseable {
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Attempt<R>> current = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final ConcurrentHashMap<Long, JobContext> contexts = new ConcurrentHashMap<>();
 
     /** Creates one daemon worker with capacity for one pending attempt; overload fails explicitly. */
     public AlignmentJob(EventDispatcher dispatcher) {
@@ -286,6 +314,10 @@ public final class AlignmentJob<R> implements AutoCloseable {
     private void runWorker(Attempt<R> started, Worker<R> worker, PreviewPublisher<R> publisher) {
         JobContext context = new JobContext(() -> isCancelled(started.sequence()),
             state -> transitionIfCurrent(started.sequence(), state, null, ""));
+        contexts.put(started.sequence(), context);
+        if (isCancelled(started.sequence())) {
+            context.signalCancellation();
+        }
         try {
             context.checkpoint();
             context.transition(State.INFERRING);
@@ -303,6 +335,8 @@ public final class AlignmentJob<R> implements AutoCloseable {
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
             transitionIfCurrent(started.sequence(), State.FAILED, null, safeFailure(exception));
+        } finally {
+            contexts.remove(started.sequence(), context);
         }
     }
 
@@ -315,6 +349,10 @@ public final class AlignmentJob<R> implements AutoCloseable {
             DetachedWorker<I, R> worker, PreviewPublisher<R> publisher) {
         JobContext context = new JobContext(() -> isCancelled(started.sequence()),
             state -> transitionIfCurrent(started.sequence(), state, null, ""));
+        contexts.put(started.sequence(), context);
+        if (isCancelled(started.sequence())) {
+            context.signalCancellation();
+        }
         try {
             context.checkpoint();
             context.transition(State.INFERRING);
@@ -332,6 +370,8 @@ public final class AlignmentJob<R> implements AutoCloseable {
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
             transitionIfCurrent(started.sequence(), State.FAILED, null, safeFailure(exception));
+        } finally {
+            contexts.remove(started.sequence(), context);
         }
     }
 
@@ -348,11 +388,15 @@ public final class AlignmentJob<R> implements AutoCloseable {
     }
 
     private Attempt<R> cancelAttempt(Attempt<R> attempt, String reason) {
-        current.updateAndGet(currentAttempt -> currentAttempt == null
+        Attempt<R> updated = current.updateAndGet(currentAttempt -> currentAttempt == null
             || currentAttempt.sequence() != attempt.sequence() || currentAttempt.state().terminal() ? currentAttempt
                 : new Attempt<>(currentAttempt.sequence(), currentAttempt.snapshot(), State.CANCELLED,
                     true, null, reason));
-        return current.get();
+        JobContext context = contexts.get(attempt.sequence());
+        if (context != null) {
+            context.signalCancellation();
+        }
+        return updated;
     }
 
     private void transitionIfCurrent(long attemptSequence, State state, R result, String failureReason) {

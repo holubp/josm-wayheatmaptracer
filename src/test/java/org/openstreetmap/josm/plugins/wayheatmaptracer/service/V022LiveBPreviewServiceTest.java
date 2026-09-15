@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -27,6 +28,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -145,6 +147,34 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void managedCandidateSwitchRejectsProjectionChangedAfterCapture() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), managedConfig(), "managed-test"));
+        BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        LiveBPreviewService.Captured captured = service.attachManagedRaster(seed[0],
+                new ManagedModernPreviewSource.Raster(image,
+                        new boolean[] {true, true, true, true},
+                        SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
+                        "hot", 15, "managed-test"));
+
+        assertEquals("EPSG:3857", captured.projectionCode());
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:4326"));
+                IllegalStateException failure = assertThrows(IllegalStateException.class,
+                        () -> service.requireCurrent(fixture.dataSet(), captured));
+                assertTrue(failure.getMessage().contains("projection"));
+            });
+        } finally {
+            SwingUtilities.invokeAndWait(() -> ProjectionRegistry.setProjection(
+                    Projections.getProjectionByCode("EPSG:3857")));
+        }
+    }
+
+    @Test
     void unsupportedControlsFailExplicitlyBeforeRasterOrNetworkWork() throws Exception {
         Fixture fixture = fixture();
         ManagedHeatmapConfig unsupported = config().heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
@@ -235,6 +265,16 @@ class V022LiveBPreviewServiceTest {
                 false, false, false, false, false, false, false, false,
                 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
                 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
+        return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static AlignmentConfig managedConfig() {
+        ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("key", "policy", "signature", "session",
+                "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.CORRIDOR_AWARE, false, false, false, false, false, false,
+                false, false, false, false, 7, 4, 3.0,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                IntensitySamplingMode.COLOR_MAPPING, 0L);
         return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
     }
 

@@ -19,6 +19,7 @@ import javax.swing.SwingUtilities;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -94,16 +95,41 @@ public final class LiveBPreviewService {
     }
 
     /** Complete detached worker input captured on the EDT. */
-    public record Captured(VisibleRaster raster, NetworkSnapshotCapture.Specification specification,
+    public record Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+            NetworkSnapshotCapture.Specification specification,
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, MetricRasterGrid outputGrid,
             String palette, double searchRadiusMeters, double sampleStepMeters,
-            String settingsHash, String parameterHash, TrackerMode engine) {
+            String settingsHash, String parameterHash, TrackerMode engine, String projectionCode) {
         public Captured {
+            if ((raster == null) == (managedRaster == null)) {
+                throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
+            }
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
-            if (engine == null) {
+            if (engine == null || projectionCode == null || projectionCode.isBlank()) {
                 throw new IllegalArgumentException("Live preview engine is required");
+            }
+        }
+    }
+
+    /** EDT-owned managed source and network snapshot, excluding credentials and acquired pixels. */
+    public record ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
+            NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
+            List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
+            double searchRadiusMeters, double sampleStepMeters, String settingsHash,
+            String parameterHash, TrackerMode engine, String sourceIdentity, String projectionCode) {
+        public ManagedCaptureSeed {
+            sourceGeographic = List.copyOf(sourceGeographic);
+            sourceMetric = List.copyOf(sourceMetric);
+            if (specification == null || network == null || frame == null || sourceGeographic.size() < 2
+                    || sourceMetric.size() != sourceGeographic.size() || palette == null || palette.isBlank()
+                    || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0.0
+                    || !Double.isFinite(sampleStepMeters) || sampleStepMeters <= 0.0
+                    || settingsHash == null || parameterHash == null || engine == null
+                    || sourceIdentity == null || sourceIdentity.isBlank()
+                    || projectionCode == null || projectionCode.isBlank()) {
+                throw new IllegalArgumentException("Managed preview seed is incomplete");
             }
         }
     }
@@ -162,8 +188,58 @@ public final class LiveBPreviewService {
                 Map.of(way, List.of(range)), Set.of(way), Set.of(), Set.of(), protectedNodes,
                 true, RecoveryPermissions.disabled(radius));
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
-        return new Captured(raster, specification, network, source, metric, grid,
-                config.heatmap().color(), radius, step, settingsHash, parameterHash, engine);
+        return new Captured(raster, null, specification, network, source, metric, grid,
+                config.heatmap().color(), radius, step, settingsHash, parameterHash, engine,
+                raster.projectionCode());
+    }
+
+    /** Captures the detached managed source/network seed on the EDT before background acquisition. */
+    public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, String sourceIdentity) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Managed preview seed capture must execute on the EDT");
+        }
+        requireManagedSupported(selection, config);
+        List<GeographicPoint> source = selection.segmentNodes().stream()
+                .map(LiveBPreviewService::geographic).toList();
+        LocalMetricFrame frame = ManagedModernPreviewSource.managedFrame(source,
+                config.heatmap().inferenceZoom(), config.heatmap().searchHalfWidthMeters());
+        List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
+        double radius = config.heatmap().searchHalfWidthMeters();
+        PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, selection.way().getUniqueId());
+        OccurrenceRange range = new OccurrenceRange(selection.startIndex(), selection.endIndex());
+        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>();
+        for (Node node : selection.segmentNodes()) {
+            protectedNodes.add(PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId()));
+        }
+        MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
+        String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson());
+        String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
+                source.toString(), settingsHash).substring(0, 16);
+        NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
+                "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)), 0L, way, range,
+                frame, decision, decision, Map.of(way, List.of(range)), Set.of(way), Set.of(), Set.of(),
+                protectedNodes, true, RecoveryPermissions.disabled(radius));
+        return new ManagedCaptureSeed(specification, NetworkSnapshotCapture.capture(dataSet, specification),
+                source, metric, frame, config.heatmap().color(), radius,
+                config.heatmap().sampleStepMeters(), settingsHash,
+                hash("managed-live-" + config.heatmap().trackerMode().name().toLowerCase(java.util.Locale.ROOT)),
+                config.heatmap().trackerMode(), sourceIdentity,
+                ProjectionRegistry.getProjection().toCode());
+    }
+
+    /** Attaches immutable native pixels to an EDT-captured seed without retaining credentials. */
+    public Captured attachManagedRaster(ManagedCaptureSeed seed, ManagedModernPreviewSource.Raster raster) {
+        if (seed == null || raster == null || !seed.palette().equals(raster.palette())
+                || !seed.sourceIdentity().equals(raster.sourceIdentity())) {
+            throw new IllegalArgumentException("Managed raster does not match its captured seed");
+        }
+        MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
+                seed.sourceMetric(), raster.zoom(), seed.searchRadiusMeters());
+        return new Captured(null, raster, seed.specification(), seed.network(), seed.sourceGeographic(),
+                seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
+                seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.engine(),
+                seed.projectionCode());
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
@@ -199,6 +275,9 @@ public final class LiveBPreviewService {
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {
+        if (captured.managedRaster() != null) {
+            return captureManagedEvidence(captured, cancellation);
+        }
         cancellation.checkpoint();
         boolean[] valid = new boolean[Math.multiplyExact(captured.raster().width(),
                 captured.raster().height())];
@@ -225,8 +304,39 @@ public final class LiveBPreviewService {
                 EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER, List.of(field), cancellation);
     }
 
+    private EvidenceSnapshot captureManagedEvidence(Captured captured, CancellationProbe cancellation) {
+        ManagedModernPreviewSource.Raster raster = captured.managedRaster();
+        double pitch = TileHeatmapSampler.metersPerPixel(raster.zoom(),
+                captured.sourceGeographic().get(captured.sourceGeographic().size() / 2).latitudeDegrees());
+        EvidenceResolution resolution = EvidenceResolution.nativeSource(pitch,
+                captured.outputGrid().pitchMeters());
+        EvidenceFieldLineage lineage = new EvidenceFieldLineage(
+                EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,
+                EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING,
+                captured.palette(), EvidenceCorrelationGroup.STRAVA_RENDERINGS, false);
+        RasterEvidenceCapture.FieldSpec field = RasterEvidenceCapture.FieldSpec.direct(FIELD,
+                argb -> intensity(argb, captured.palette()), lineage);
+        return new RasterEvidenceCapture().capture(captured.network().snapshotId() + "-evidence",
+                raster.image(), raster.validity(), captured.sourceGeographic(), raster.transform(),
+                captured.outputGrid(), resolution, captured.searchRadiusMeters(), raster.sourceIdentity(),
+                EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE, List.of(field), cancellation);
+    }
+
     /** Repeats the exact bounded live query and rejects any relevant source or referrer change. */
     public void requireCurrent(DataSet dataSet, Captured captured) {
+        if (captured.managedRaster() != null) {
+            if (!SwingUtilities.isEventDispatchThread()) {
+                throw new IllegalStateException("Live preview revalidation must execute on the EDT");
+            }
+            if (!captured.projectionCode().equals(ProjectionRegistry.getProjection().toCode())) {
+                throw new IllegalStateException("Live preview source, layer, or projection is stale");
+            }
+            NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
+            if (!current.canonicalHash().equals(captured.network().canonicalHash())) {
+                throw new IllegalStateException("Live preview network snapshot is stale");
+            }
+            return;
+        }
         requireCurrent(dataSet, captured, captured.raster().sourceIdentity(),
                 captured.raster().projectionCode());
     }
@@ -300,6 +410,23 @@ public final class LiveBPreviewService {
             if (!identities.add(node.getUniqueId())) {
                 throw new IllegalArgumentException("Experimental live preview rejects repeated node identities");
             }
+        }
+    }
+
+    private static void requireManagedSupported(SelectionContext selection, AlignmentConfig config) {
+        if (selection == null || config == null || !config.heatmap().hasManagedAccessValues()) {
+            throw new IllegalArgumentException("Managed preview requires configured managed source access");
+        }
+        var heatmap = config.heatmap();
+        if (heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
+                && heatmap.trackerMode() != TrackerMode.PROBABILISTIC
+                || heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE
+                || !config.cleanup().isDisabled() || heatmap.simplifyEnabled()
+                || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
+                || heatmap.parallelWayAwareness() || heatmap.adjustJunctionNodes()
+                || config.searchHalfWidthMetersOverride().isPresent()
+                || heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
+            throw new IllegalArgumentException("Managed experimental preview supports selected-palette Precise Shape only");
         }
     }
 

@@ -35,6 +35,19 @@ public final class ManagedTileRuntime {
     }
 
     /**
+     * Returns the already initialized plugin-owned coordinator without creating a new runtime.
+     *
+     * @return existing plugin-owned coordinator
+     * @throws IllegalStateException when plugin initialization has not completed or teardown closed it
+     */
+    public static synchronized TileFetchCoordinator initializedCoordinator() {
+        if (coordinator == null) {
+            throw new IllegalStateException("Managed tile runtime is not initialized");
+        }
+        return coordinator;
+    }
+
+    /**
      * Returns the initialized shared coordinator, creating it lazily for compatibility call sites.
      *
      * @return plugin-owned coordinator
