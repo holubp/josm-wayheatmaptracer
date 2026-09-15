@@ -153,7 +153,7 @@ public final class ModernTracePipeline {
         for (TraceHypothesis hypothesis : inference.hypotheses()) {
             cancellation.checkpoint();
             routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
-                    request, options, pitch));
+                    request, options, pitch, cancellation));
         }
         return new Result(inference, rank(routes, request.engine(), options));
     }
@@ -172,14 +172,16 @@ public final class ModernTracePipeline {
 
     private static Route finalizeRoute(TraceHypothesis source, TraceHypothesisSet inference,
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
-            TraceRequest request, Options options, double pitch) {
+            TraceRequest request, Options options, double pitch, CancellationProbe cancellation) {
         SeedGeometry seed = seedGeometry(source, evidence, network, request);
         ImageSupportedLocalCleanup.Mode mode = cleanupMode(options.cleanup().mode());
         ImageSupportedLocalCleanup.Result cleanup = new ImageSupportedLocalCleanup().clean(
                 new ImageSupportedLocalCleanup.Request(seed.pointIds(), seed.points(),
                     seed.retainedIndices(), seed.protectedIndices(), image,
                     evidence.decisionRegion(), mode, ImageSupportedRefitter.Config.defaults(pitch),
-                    options.cleanup().simplificationDeviationMeters(), seed.assignments(), List.of()));
+                    options.cleanup().simplificationDeviationMeters(), seed.assignments(), List.of()),
+                cancellation);
+        cancellation.checkpoint();
         List<MetricPoint> finalPoints = cleanup.points();
         validateFinalProvenance(seed, cleanup, network.closure().removableExistingNodeKeys());
         Map<FinalRoutePointId, ObservationOwnership> retainedSource = new LinkedHashMap<>();

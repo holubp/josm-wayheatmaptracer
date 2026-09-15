@@ -100,6 +100,22 @@ final class RefinementTestFixtures {
                 List.of(geometry -> ImageSupportedRefitter.Validation.rejected("blocked")));
     }
 
+    static ImageSupportedLocalCleanup.Request twoIslandCleanupRequest() {
+        List<MetricPoint> points = List.of(
+                new MetricPoint(10, 0), new MetricPoint(15, 0), new MetricPoint(20, 1),
+                new MetricPoint(25, 0), new MetricPoint(30, 0), new MetricPoint(40, 0),
+                new MetricPoint(50, 0), new MetricPoint(55, 0), new MetricPoint(60, -1),
+                new MetricPoint(65, 0), new MetricPoint(70, 0));
+        List<FinalRoutePointId> ids = pointIds("two-island", points.size());
+        Set<Integer> retained = java.util.stream.IntStream.range(0, points.size())
+                .boxed().collect(java.util.stream.Collectors.toUnmodifiableSet());
+        return new ImageSupportedLocalCleanup.Request(ids, points, retained, Set.of(0, 5, 10),
+                straightGaussianWithGap(), MetricRegion.rectangle(0, -20, 89.5, 19.5),
+                ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE,
+                ImageSupportedRefitter.Config.defaults(1.0), 0.45,
+                assignments(ids, points), List.of());
+    }
+
     private static List<FinalRoutePointId> pointIds(String candidate, int count) {
         List<FinalRoutePointId> result = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
@@ -132,5 +148,31 @@ final class RefinementTestFixtures {
                 new RasterMetricTransform("synthetic-positive-y-v1",
                         RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
                         new MetricPoint(-50, -50), 1.0, 0.0, 0.0, 1.0, 1.0), region, 1.0);
+    }
+
+    private static ImageCostField straightGaussianWithGap() {
+        int width = 180;
+        int height = 80;
+        double[] values = new double[width * height];
+        boolean[] valid = new boolean[values.length];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                double metricX = 0.5 * x;
+                double metricY = -20.0 + 0.5 * y;
+                int index = y * width + x;
+                valid[index] = metricX < 39.0 || metricX > 41.0;
+                values[index] = valid[index]
+                        ? 0.01 + 0.8 * Math.exp(-0.5 * metricY * metricY) : Double.NaN;
+            }
+        }
+        ScalarEvidenceField field = new ScalarEvidenceField(width, height, values, valid,
+                new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                        EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                        "two-island-gaussian", EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        return new ImageCostField(field,
+                new RasterMetricTransform("two-island-gaussian-v1",
+                        RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                        new MetricPoint(0, -20), 0.5, 0.0, 0.0, 0.5, 1.0),
+                MetricRegion.rectangle(0, -20, 89.5, 19.5), 1.0);
     }
 }

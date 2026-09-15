@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Cleans independently measurable image-supported intervals without moving frozen islands. */
 public final class ImageSupportedLocalCleanup {
@@ -134,6 +135,14 @@ public final class ImageSupportedLocalCleanup {
 
     /** Evaluates and cleans each directly measurable interval independently. */
     public Result clean(Request request) {
+        return clean(request, CancellationProbe.NONE);
+    }
+
+    /** Evaluates local intervals with cooperative cancellation through refitting and reduction. */
+    public Result clean(Request request, CancellationProbe cancellation) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(cancellation, "cancellation");
+        cancellation.checkpoint();
         if (request.mode() == Mode.OFF) {
             ImageSupportedRefitter.Validation validation = validateWholeGeometry(request, request.points());
             if (!validation.feasible()) {
@@ -148,6 +157,7 @@ public final class ImageSupportedLocalCleanup {
 
         boolean[] supported = new boolean[request.points().size()];
         for (int index = 0; index < supported.length; index++) {
+            cancellation.checkpoint();
             supported[index] = request.image().supports(request.points().get(index));
         }
         List<Run> runs = partition(supported);
@@ -161,6 +171,7 @@ public final class ImageSupportedLocalCleanup {
         boolean anyEvaluated = false;
 
         for (Run run : runs) {
+            cancellation.checkpoint();
             List<FinalRoutePointId> runIds = request.occurrenceIds().subList(run.first, run.last + 1);
             List<MetricPoint> runPoints = request.points().subList(run.first, run.last + 1);
             if (!run.supported || runPoints.size() < 3) {
@@ -196,7 +207,7 @@ public final class ImageSupportedLocalCleanup {
                 ImageSupportedRefitter.Request refitRequest = new ImageSupportedRefitter.Request(
                         runPoints, runPoints, localFixed, request.image(), request.branchCorridor(),
                         ImageSupportedRefitter.Mode.IMAGE_SUPPORTED, request.refitConfig(), request.validators());
-                ImageSupportedRefitter.Result refit = refitter.refit(refitRequest);
+                ImageSupportedRefitter.Result refit = refitter.refit(refitRequest, cancellation);
                 rejected = refit.status() == ImageSupportedRefitter.Status.REVERTED;
                 refitNonconverged = refit.status() != ImageSupportedRefitter.Status.CONVERGED;
                 anyNonconverged |= refitNonconverged;
@@ -206,7 +217,7 @@ public final class ImageSupportedLocalCleanup {
             }
 
             Reduction reduction = reduce(runIds, refined, localRetained, request.image(),
-                    request.branchCorridor(), request.reductionToleranceMeters());
+                    request.branchCorridor(), request.reductionToleranceMeters(), cancellation);
             boolean moved = maximumDistance(runPoints, refined) > 0.05;
             boolean changed = moved || reduction.points.size() < runPoints.size();
             if (rejected && !changed) {
@@ -234,6 +245,7 @@ public final class ImageSupportedLocalCleanup {
                     IntervalDisposition.REJECTED, false, List.of(), provenanceFailure));
             return result(Status.REJECTED, request.occurrenceIds(), request.points(), rejectedIntervals);
         }
+        cancellation.checkpoint();
         ImageSupportedRefitter.Validation validation = validateWholeGeometry(request, List.copyOf(outputPoints));
         if (!validation.feasible()) {
             List<IntervalResult> rejectedIntervals = new ArrayList<>(intervalResults);
@@ -330,7 +342,8 @@ public final class ImageSupportedLocalCleanup {
 
     private static Reduction reduce(List<FinalRoutePointId> ids, List<MetricPoint> points,
             Set<Integer> protectedIndices,
-            ImageCostField image, MetricRegion branchCorridor, double tolerance) {
+            ImageCostField image, MetricRegion branchCorridor, double tolerance,
+            CancellationProbe cancellation) {
         if (tolerance <= 0.0 || points.size() <= 2) {
             return new Reduction(List.copyOf(ids), List.copyOf(points));
         }
@@ -340,7 +353,8 @@ public final class ImageSupportedLocalCleanup {
         for (int index : protectedIndices) {
             keep[index] = true;
         }
-        reduceRange(points, 0, points.size() - 1, tolerance, image, branchCorridor, keep, protectedIndices);
+        reduceRange(points, 0, points.size() - 1, tolerance, image, branchCorridor, keep,
+                protectedIndices, cancellation);
         List<FinalRoutePointId> reducedIds = new ArrayList<>();
         List<MetricPoint> reducedPoints = new ArrayList<>();
         for (int index = 0; index < points.size(); index++) {
@@ -353,15 +367,19 @@ public final class ImageSupportedLocalCleanup {
     }
 
     private static void reduceRange(List<MetricPoint> points, int first, int last, double tolerance,
-            ImageCostField image, MetricRegion branchCorridor, boolean[] keep, Set<Integer> protectedIndices) {
+            ImageCostField image, MetricRegion branchCorridor, boolean[] keep,
+            Set<Integer> protectedIndices, CancellationProbe cancellation) {
+        cancellation.checkpoint();
         if (last <= first + 1) {
             return;
         }
         for (int index = first + 1; index < last; index++) {
             if (protectedIndices.contains(index)) {
                 keep[index] = true;
-                reduceRange(points, first, index, tolerance, image, branchCorridor, keep, protectedIndices);
-                reduceRange(points, index, last, tolerance, image, branchCorridor, keep, protectedIndices);
+                reduceRange(points, first, index, tolerance, image, branchCorridor, keep,
+                        protectedIndices, cancellation);
+                reduceRange(points, index, last, tolerance, image, branchCorridor, keep,
+                        protectedIndices, cancellation);
                 return;
             }
         }
@@ -383,8 +401,10 @@ public final class ImageSupportedLocalCleanup {
             return;
         }
         keep[maximumIndex] = true;
-        reduceRange(points, first, maximumIndex, tolerance, image, branchCorridor, keep, protectedIndices);
-        reduceRange(points, maximumIndex, last, tolerance, image, branchCorridor, keep, protectedIndices);
+        reduceRange(points, first, maximumIndex, tolerance, image, branchCorridor, keep,
+                protectedIndices, cancellation);
+        reduceRange(points, maximumIndex, last, tolerance, image, branchCorridor, keep,
+                protectedIndices, cancellation);
     }
 
     private static double pointSegmentDistance(MetricPoint point, MetricPoint start, MetricPoint end) {

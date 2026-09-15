@@ -2,15 +2,30 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.GeometricCurvatureOperator.InverseMetersVector;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenSample;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenSupport;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 /** Deterministic projected-gradient refitter over one frozen scalar-image objective. */
 public final class ImageSupportedRefitter {
+    private static final double NORMALIZATION_LENGTH_METERS = 1.0;
+    private static final int MAXIMUM_CONTROL_POINTS = 32_768;
+    private static final int MAXIMUM_VALIDATORS = 1_024;
+    private static final long MAXIMUM_WORKING_BYTES = 256L * 1024L * 1024L;
+    /** Why one independent control is held equal to its frozen input coordinate. */
+    public enum FreezeReason { EXPLICIT_FIXED, UNAVAILABLE_PROFILE, UNKNOWN_CURVATURE_STENCIL }
     /** Controls whether coordinate refinement is permitted. */
     public enum Mode { OFF, REDUCE_POINTS_ONLY, IMAGE_SUPPORTED }
 
@@ -18,6 +33,7 @@ public final class ImageSupportedRefitter {
     public enum Status {
         SKIPPED_OFF,
         SKIPPED_REDUCE_ONLY,
+        SKIPPED_NO_ELIGIBLE_CONTROLS,
         CONVERGED,
         ITERATION_LIMIT_RETAINED,
         LINE_SEARCH_FAILED_RETAINED,
@@ -42,7 +58,7 @@ public final class ImageSupportedRefitter {
 
         /** Returns the plan's initial deterministic settings for a known physical pitch. */
         public static Config defaults(double sourcePitchMeters) {
-            return new Config(sourcePitchMeters, 3.0, 0.12, 1.25 * sourcePitchMeters,
+            return new Config(sourcePitchMeters, 3.0, 0.1, 1.25 * sourcePitchMeters,
                     150, 20, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-3, 3);
         }
 
@@ -94,6 +110,16 @@ public final class ImageSupportedRefitter {
             Mode mode, Config config, List<GeometryValidator> validators) {
         /** Defensively copies request containers and validates occurrence alignment. */
         public Request {
+            Objects.requireNonNull(initialPoints, "initialPoints");
+            Objects.requireNonNull(trustOrigin, "trustOrigin");
+            Objects.requireNonNull(fixedIndices, "fixedIndices");
+            Objects.requireNonNull(validators, "validators");
+            int controlCount = initialPoints.size();
+            if (controlCount < 2 || controlCount > MAXIMUM_CONTROL_POINTS
+                    || trustOrigin.size() != controlCount || fixedIndices.size() > controlCount
+                    || validators.size() > MAXIMUM_VALIDATORS) {
+                throw new IllegalArgumentException("Refit request exceeds deterministic bounds");
+            }
             initialPoints = List.copyOf(initialPoints);
             trustOrigin = List.copyOf(trustOrigin);
             fixedIndices = Set.copyOf(fixedIndices);
@@ -106,8 +132,7 @@ public final class ImageSupportedRefitter {
             for (int index : fixedIndices) {
                 invalidFixedIndex |= index < 0 || index >= initialPoints.size();
             }
-            if (initialPoints.size() < 2 || initialPoints.size() != trustOrigin.size()
-                    || invalidFixedIndex) {
+            if (invalidFixedIndex) {
                 throw new IllegalArgumentException("Refit geometry and occurrence policies are inconsistent");
             }
         }
@@ -120,7 +145,13 @@ public final class ImageSupportedRefitter {
         }
     }
 
-    /** Objective value and analytic per-occurrence gradient in metric coordinates. */
+    /**
+     * Objective value and analytic projected search gradient in metric coordinates.
+     *
+     * <p>Coordinates held by frozen equality constraints have zero gradient. The objective can be
+     * queried away from that feasible manifold for diagnostics, but those zero components are not
+     * raw unconstrained derivatives.</p>
+     */
     public record ObjectiveEvaluation(double objective, List<MetricPoint> gradient, boolean supported) {
         /** Copies the gradient. */
         public ObjectiveEvaluation {
@@ -142,147 +173,188 @@ public final class ImageSupportedRefitter {
     /** Frozen objective fields and geometry policies for one optimizer invocation. */
     public static final class FrozenProblem {
         private final Request request;
-        private final double referenceLength;
-        private final List<MetricPoint> curvatureTargets;
-        private final List<MetricPoint> segmentNormals;
-        private final List<Integer> segmentSampleCounts;
+        private final FrozenRefitMesh mesh;
+        private final List<FrozenProfile> profiles;
+        private final SupportedCurvatureBank curvatureBank;
+        private final List<CurvatureBlock> curvatureBlocks;
+        private final Set<Integer> frozenControls;
+        private final Map<Integer, Set<FreezeReason>> freezeReasons;
+        private final boolean movableEvidence;
 
-        private FrozenProblem(Request request, double referenceLength, List<MetricPoint> curvatureTargets,
-                List<MetricPoint> segmentNormals, List<Integer> segmentSampleCounts) {
+        private FrozenProblem(Request request, FrozenRefitMesh mesh, List<FrozenProfile> profiles,
+                SupportedCurvatureBank curvatureBank, List<CurvatureBlock> curvatureBlocks,
+                Set<Integer> frozenControls, Map<Integer, Set<FreezeReason>> freezeReasons,
+                boolean movableEvidence) {
             this.request = request;
-            this.referenceLength = referenceLength;
-            this.curvatureTargets = List.copyOf(curvatureTargets);
-            this.segmentNormals = List.copyOf(segmentNormals);
-            this.segmentSampleCounts = List.copyOf(segmentSampleCounts);
+            this.mesh = mesh;
+            this.profiles = List.copyOf(profiles);
+            this.curvatureBank = curvatureBank;
+            this.curvatureBlocks = List.copyOf(curvatureBlocks);
+            this.frozenControls = Set.copyOf(frozenControls);
+            LinkedHashMap<Integer, Set<FreezeReason>> copiedReasons = new LinkedHashMap<>();
+            freezeReasons.forEach((index, reasons) -> copiedReasons.put(index, Set.copyOf(reasons)));
+            this.freezeReasons = Map.copyOf(copiedReasons);
+            this.movableEvidence = movableEvidence;
         }
+
+        /** Returns the immutable physical reference mesh size for diagnostics and bounds tests. */
+        public int meshPointCount() { return mesh.meshPointCount(); }
+        /** Returns the immutable reference length in metres. */
+        public double referenceLengthMeters() { return mesh.referenceLengthMeters(); }
+        /** Returns typed image-curvature ownership for every interior mesh point. */
+        public List<SupportedCurvatureBank.Target> curvatureTargets() { return curvatureBank.targets(); }
+        /** Returns occurrence indices frozen because their own branch evidence is unavailable. */
+        public Set<Integer> frozenControlIndices() { return frozenControls; }
+        /** Returns immutable equality-constraint provenance for every frozen occurrence. */
+        public Map<Integer, Set<FreezeReason>> frozenControlReasons() { return freezeReasons; }
     }
+
+    private record CurvatureBlock(int firstMeshPoint, int meshPointCount,
+            GeometricCurvatureOperator operator) { }
 
     /** Freezes image descriptors, branch identity, arclength and supported-curvature targets. */
     public FrozenProblem freeze(Request request) {
-        double length = polylineLength(request.initialPoints());
-        if (!(length > 0.0)) {
-            throw new IllegalArgumentException("Refit input must have positive physical length");
-        }
-        List<MetricPoint> targets = new ArrayList<>(request.initialPoints().size());
-        targets.add(new MetricPoint(0, 0));
-        for (int index = 1; index < request.initialPoints().size() - 1; index++) {
-            MetricPoint previous = request.initialPoints().get(index - 1);
-            MetricPoint current = request.initialPoints().get(index);
-            MetricPoint next = request.initialPoints().get(index + 1);
-            MetricPoint secondDifference = new MetricPoint(previous.xMeters() - 2.0 * current.xMeters() + next.xMeters(),
-                    previous.yMeters() - 2.0 * current.yMeters() + next.yMeters());
-            boolean coherentSupport = coherentBendSupport(request.initialPoints(), index, request.image());
-            targets.add(coherentSupport ? secondDifference : new MetricPoint(0, 0));
-        }
-        targets.add(new MetricPoint(0, 0));
+        return freeze(request, CancellationProbe.NONE);
+    }
 
-        List<MetricPoint> normals = new ArrayList<>(request.initialPoints().size() - 1);
-        List<Integer> sampleCounts = new ArrayList<>(request.initialPoints().size() - 1);
+    /** Freezes all branch, mesh, image and curvature evidence with bounded cancellation checks. */
+    public FrozenProblem freeze(Request request, CancellationProbe cancellation) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(cancellation, "cancellation");
         double spacing = Math.min(2.0, Math.max(request.config().sourcePitchMeters() / 2.0, 0.5));
-        for (int index = 1; index < request.initialPoints().size(); index++) {
-            MetricPoint delta = subtract(request.initialPoints().get(index), request.initialPoints().get(index - 1));
-            double norm = Math.max(1.0e-12, Math.hypot(delta.xMeters(), delta.yMeters()));
-            normals.add(new MetricPoint(-delta.yMeters() / norm, delta.xMeters() / norm));
-            sampleCounts.add(Math.max(1, (int) Math.ceil(norm / spacing)));
+        FrozenRefitMesh mesh = FrozenRefitMesh.build(request.initialPoints(), request.fixedIndices(),
+                spacing, cancellation);
+        List<MetricPoint> meshPoints = mesh.interpolate(request.initialPoints());
+        preflightFrozenProfiles(meshPoints.size(), request.config().sourcePitchMeters());
+        ArrayList<FrozenProfile> profiles = new ArrayList<>(meshPoints.size());
+        for (int index = 0; index < meshPoints.size(); index++) {
+            cancellation.checkpoint();
+            MetricPoint tangent = tangent(meshPoints, index);
+            profiles.add(request.image().freezeProfile(meshPoints.get(index), tangent, cancellation));
         }
-        return new FrozenProblem(request, length, targets, normals, sampleCounts);
+        SupportedCurvatureBank bank = SupportedCurvatureBank.build(mesh, profiles,
+                request.config().sourcePitchMeters(), cancellation);
+        List<CurvatureBlock> blocks = curvatureBlocks(bank, request.config(), NORMALIZATION_LENGTH_METERS);
+        Set<Integer> frozen = new HashSet<>(request.fixedIndices());
+        Map<Integer, Set<FreezeReason>> freezeReasons = new LinkedHashMap<>();
+        request.fixedIndices().forEach(index -> addFreezeReason(index, FreezeReason.EXPLICIT_FIXED,
+                frozen, freezeReasons));
+        for (int rowIndex = 0; rowIndex < mesh.rows().size(); rowIndex++) {
+            if (profiles.get(rowIndex).support() != FrozenSupport.MEASURED) {
+                freezeRow(mesh.rows().get(rowIndex), FreezeReason.UNAVAILABLE_PROFILE,
+                        frozen, freezeReasons);
+            }
+        }
+        for (int targetIndex = 0; targetIndex < bank.targets().size(); targetIndex++) {
+            if (bank.targets().get(targetIndex).status() == SupportedCurvatureBank.Status.UNKNOWN) {
+                freezeRow(mesh.rows().get(targetIndex), FreezeReason.UNKNOWN_CURVATURE_STENCIL,
+                        frozen, freezeReasons);
+                freezeRow(mesh.rows().get(targetIndex + 1), FreezeReason.UNKNOWN_CURVATURE_STENCIL,
+                        frozen, freezeReasons);
+                freezeRow(mesh.rows().get(targetIndex + 2), FreezeReason.UNKNOWN_CURVATURE_STENCIL,
+                        frozen, freezeReasons);
+            }
+        }
+        boolean movableEvidence = false;
+        for (int rowIndex = 0; rowIndex < mesh.rows().size(); rowIndex++) {
+            FrozenRefitMesh.Row row = mesh.rows().get(rowIndex);
+            if (profiles.get(rowIndex).support() == FrozenSupport.MEASURED
+                    && (!frozen.contains(row.leftControl()) || !frozen.contains(row.rightControl()))) {
+                movableEvidence = true;
+                break;
+            }
+        }
+        return new FrozenProblem(request, mesh, profiles, bank, blocks, frozen, freezeReasons,
+                movableEvidence);
     }
 
     /** Evaluates the frozen arclength-weighted image, curvature and trust objective. */
     public ObjectiveEvaluation evaluate(FrozenProblem problem, List<MetricPoint> points) {
-        if (points.size() != problem.request.initialPoints().size()) {
+        return evaluate(problem, points, CancellationProbe.NONE);
+    }
+
+    /** Evaluates the frozen objective with bounded cooperative cancellation. */
+    public ObjectiveEvaluation evaluate(FrozenProblem problem, List<MetricPoint> points,
+            CancellationProbe cancellation) {
+        if (problem == null || points == null || points.size() != problem.request.initialPoints().size()) {
             throw new IllegalArgumentException("Objective geometry occurrence count changed");
         }
-        int size = points.size();
-        double[] gx = new double[size];
-        double[] gy = new double[size];
+        Objects.requireNonNull(cancellation, "cancellation");
+        cancellation.checkpoint();
+        List<MetricPoint> meshPoints = problem.mesh.interpolate(points);
+        int meshSize = meshPoints.size();
+        double[] meshGx = new double[meshSize];
+        double[] meshGy = new double[meshSize];
         double objective = 0.0;
-        for (int segment = 0; segment < size - 1; segment++) {
-            MetricPoint start = points.get(segment);
-            MetricPoint end = points.get(segment + 1);
+        double referenceLength = NORMALIZATION_LENGTH_METERS;
+        for (int segment = 0; segment < meshSize - 1; segment++) {
+            cancellation.checkpoint();
+            FrozenProfile firstProfile = problem.profiles.get(segment);
+            FrozenProfile secondProfile = problem.profiles.get(segment + 1);
+            if (firstProfile.support() != FrozenSupport.MEASURED
+                    || secondProfile.support() != FrozenSupport.MEASURED) {
+                continue;
+            }
+            MetricPoint start = meshPoints.get(segment);
+            MetricPoint end = meshPoints.get(segment + 1);
             MetricPoint delta = subtract(end, start);
             double length = Math.hypot(delta.xMeters(), delta.yMeters());
             if (!(length > 1.0e-9)) {
-                return unsupported(size);
+                return unsupported(points.size());
             }
-            int samples = problem.segmentSampleCounts.get(segment);
-            double meanCost = 0.0;
-            double derivativeStartX = 0.0;
-            double derivativeStartY = 0.0;
-            double derivativeEndX = 0.0;
-            double derivativeEndY = 0.0;
-            for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++) {
-                double fraction = (sampleIndex + 0.5) / samples;
-                MetricPoint location = interpolate(start, end, fraction);
-                java.util.Optional<ImageCostField.Sample> sample = problem.request.image().sample(location);
-                if (sample.isEmpty()) {
-                    return unsupported(size);
-                }
-                ImageCostField.Sample value = sample.orElseThrow();
-                meanCost += value.centerCost() / samples;
-                derivativeStartX += (1.0 - fraction) * value.centerGradientX() / samples;
-                derivativeStartY += (1.0 - fraction) * value.centerGradientY() / samples;
-                derivativeEndX += fraction * value.centerGradientX() / samples;
-                derivativeEndY += fraction * value.centerGradientY() / samples;
-            }
-            MetricPoint normal = problem.segmentNormals.get(segment);
-            double dot = delta.xMeters() * normal.xMeters() + delta.yMeters() * normal.yMeters();
-            double lengthSquared = length * length;
-            double orientation = dot * dot / lengthSquared;
-            double segmentDensity = meanCost + 0.5 * orientation;
-            objective += length * segmentDensity / problem.referenceLength;
-
-            double lengthDerivativeX = delta.xMeters() / length;
-            double lengthDerivativeY = delta.yMeters() / length;
-            double orientationDerivativeX = 2.0 * dot * normal.xMeters() / lengthSquared
-                    - 2.0 * dot * dot * delta.xMeters() / (lengthSquared * lengthSquared);
-            double orientationDerivativeY = 2.0 * dot * normal.yMeters() / lengthSquared
-                    - 2.0 * dot * dot * delta.yMeters() / (lengthSquared * lengthSquared);
-            double commonX = (lengthDerivativeX * segmentDensity + length * 0.5 * orientationDerivativeX)
-                    / problem.referenceLength;
-            double commonY = (lengthDerivativeY * segmentDensity + length * 0.5 * orientationDerivativeY)
-                    / problem.referenceLength;
-            gx[segment] += -commonX + length * derivativeStartX / problem.referenceLength;
-            gy[segment] += -commonY + length * derivativeStartY / problem.referenceLength;
-            gx[segment + 1] += commonX + length * derivativeEndX / problem.referenceLength;
-            gy[segment + 1] += commonY + length * derivativeEndY / problem.referenceLength;
+            Optional<FrozenSample> first = firstProfile.evaluate(start);
+            Optional<FrozenSample> second = secondProfile.evaluate(end);
+            if (first.isEmpty() || second.isEmpty()) return unsupported(points.size());
+            FrozenSample a = first.orElseThrow();
+            FrozenSample b = second.orElseThrow();
+            double density = 0.5 * (a.cost() + b.cost());
+            double ex = delta.xMeters();
+            double ey = delta.yMeters();
+            double expected = averageUndirected(firstProfile.orientationRadians(),
+                    secondProfile.orientationRadians());
+            double ux = Math.cos(expected);
+            double uy = Math.sin(expected);
+            double cross = ex * uy - ey * ux;
+            double certainty = Math.min(firstProfile.orientationCertainty(),
+                    secondProfile.orientationCertainty());
+            double orientationNumerator = 0.5 * certainty * cross * cross;
+            objective += (length * density + orientationNumerator / length) / referenceLength;
+            double commonX = (ex / length * density
+                    + certainty * cross * uy / length
+                    - orientationNumerator * ex / (length * length * length)) / referenceLength;
+            double commonY = (ey / length * density
+                    - certainty * cross * ux / length
+                    - orientationNumerator * ey / (length * length * length)) / referenceLength;
+            meshGx[segment] += -commonX + 0.5 * length * a.gradientX() / referenceLength;
+            meshGy[segment] += -commonY + 0.5 * length * a.gradientY() / referenceLength;
+            meshGx[segment + 1] += commonX + 0.5 * length * b.gradientX() / referenceLength;
+            meshGy[segment + 1] += commonY + 0.5 * length * b.gradientY() / referenceLength;
         }
 
-        double pitchSquared = problem.request.config().sourcePitchMeters()
-                * problem.request.config().sourcePitchMeters();
-        for (int index = 1; index < size - 1; index++) {
-            MetricPoint target = problem.curvatureTargets.get(index);
-            double rx = points.get(index - 1).xMeters() - 2.0 * points.get(index).xMeters()
-                    + points.get(index + 1).xMeters() - target.xMeters();
-            double ry = points.get(index - 1).yMeters() - 2.0 * points.get(index).yMeters()
-                    + points.get(index + 1).yMeters() - target.yMeters();
-            double coefficient = problem.request.config().lambdaCurvature()
-                    / problem.referenceLength / pitchSquared;
-            double weight = coefficient * localWeight(points, index);
-            objective += 0.5 * weight * (rx * rx + ry * ry);
-            gx[index - 1] += weight * rx;
-            gy[index - 1] += weight * ry;
-            gx[index] -= 2.0 * weight * rx;
-            gy[index] -= 2.0 * weight * ry;
-            gx[index + 1] += weight * rx;
-            gy[index + 1] += weight * ry;
-
-            MetricPoint left = subtract(points.get(index), points.get(index - 1));
-            MetricPoint right = subtract(points.get(index + 1), points.get(index));
-            double leftLength = Math.hypot(left.xMeters(), left.yMeters());
-            double rightLength = Math.hypot(right.xMeters(), right.yMeters());
-            double weightDerivativeFactor = 0.25 * coefficient * (rx * rx + ry * ry);
-            gx[index - 1] -= weightDerivativeFactor * left.xMeters() / leftLength;
-            gy[index - 1] -= weightDerivativeFactor * left.yMeters() / leftLength;
-            gx[index] += weightDerivativeFactor * (left.xMeters() / leftLength
-                    - right.xMeters() / rightLength);
-            gy[index] += weightDerivativeFactor * (left.yMeters() / leftLength
-                    - right.yMeters() / rightLength);
-            gx[index + 1] += weightDerivativeFactor * right.xMeters() / rightLength;
-            gy[index + 1] += weightDerivativeFactor * right.yMeters() / rightLength;
+        for (CurvatureBlock block : problem.curvatureBlocks) {
+            cancellation.checkpoint();
+            int count = block.meshPointCount();
+            GeometricCurvatureOperator.Evaluation value = block.operator.evaluate(
+                    meshPoints.subList(block.firstMeshPoint(), block.firstMeshPoint() + count));
+            objective += value.objective();
+            for (int local = 0; local < value.gradient().size(); local++) {
+                int global = block.firstMeshPoint() + local;
+                meshGx[global] += value.gradient().get(local).xObjectivePerMeter();
+                meshGy[global] += value.gradient().get(local).yObjectivePerMeter();
+            }
         }
+
+        List<MetricPoint> meshGradient = new ArrayList<>(meshSize);
+        for (int index = 0; index < meshSize; index++) {
+            meshGradient.add(new MetricPoint(meshGx[index], meshGy[index]));
+        }
+        List<MetricPoint> controlGradient = problem.mesh.scatter(meshGradient);
+        int size = points.size();
+        double[] gx = controlGradient.stream().mapToDouble(MetricPoint::xMeters).toArray();
+        double[] gy = controlGradient.stream().mapToDouble(MetricPoint::yMeters).toArray();
 
         for (int index = 0; index < size; index++) {
+            if ((index & 1023) == 0) cancellation.checkpoint();
             MetricPoint delta = subtract(points.get(index), problem.request.trustOrigin().get(index));
             double distance = Math.hypot(delta.xMeters(), delta.yMeters());
             double radius = problem.request.config().trustRadiusMeters();
@@ -298,7 +370,7 @@ public final class ImageSupportedRefitter {
         }
         List<MetricPoint> gradient = new ArrayList<>(size);
         for (int index = 0; index < size; index++) {
-            gradient.add(problem.request.fixedIndices().contains(index)
+            gradient.add(problem.frozenControls.contains(index)
                     ? new MetricPoint(0, 0) : new MetricPoint(gx[index], gy[index]));
         }
         return new ObjectiveEvaluation(objective, gradient, true);
@@ -306,22 +378,35 @@ public final class ImageSupportedRefitter {
 
     /** Runs projected gradient with fixed diagonal scaling and Armijo backtracking. */
     public Result refit(Request request) {
+        return refit(request, CancellationProbe.NONE);
+    }
+
+    /** Runs projected gradient with bounded cooperative cancellation. */
+    public Result refit(Request request, CancellationProbe cancellation) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(cancellation, "cancellation");
+        cancellation.checkpoint();
         if (request.mode() == Mode.OFF) {
             return skipped(Status.SKIPPED_OFF, request.initialPoints());
         }
         if (request.mode() == Mode.REDUCE_POINTS_ONLY) {
             return skipped(Status.SKIPPED_REDUCE_ONLY, request.initialPoints());
         }
-        FrozenProblem problem = freeze(request);
+        FrozenProblem problem = freeze(request, cancellation);
         List<MetricPoint> current = request.initialPoints();
-        ObjectiveEvaluation initial = evaluate(problem, current);
+        ObjectiveEvaluation initial = evaluate(problem, current, cancellation);
+        if (!problem.movableEvidence) {
+            return new Result(Status.SKIPPED_NO_ELIGIBLE_CONTROLS, current,
+                    initial.objective(), initial.objective(), 0,
+                    Double.POSITIVE_INFINITY, 0.0, false, List.of("no-free-eligible-controls"));
+        }
         if (!initial.supported() || !validate(request, current).feasible()) {
             return new Result(Status.REVERTED, current, initial.objective(), initial.objective(), 0,
                     Double.POSITIVE_INFINITY, 0.0, false, List.of("initial-geometry-infeasible"));
         }
         double[] scalingX = new double[current.size()];
         double[] scalingY = new double[current.size()];
-        double dimensionScale = problem.referenceLength;
+        double dimensionScale = NORMALIZATION_LENGTH_METERS;
         for (int index = 0; index < current.size(); index++) {
             scalingX[index] = 1.0 / Math.max(1.0,
                     Math.abs(initial.gradient().get(index).xMeters() * dimensionScale));
@@ -336,9 +421,10 @@ public final class ImageSupportedRefitter {
         List<String> rejectedCodes = new ArrayList<>();
         boolean acceptedAny = false;
         for (int iteration = 0; iteration < request.config().maximumIterations(); iteration++) {
+            cancellation.checkpoint();
             if (residual < request.config().gradientTolerance()) {
-                return result(Status.CONVERGED, request, current, initial.objective(), evaluation.objective(),
-                        iteration, residual, acceptedAny, rejectedCodes);
+                return retainedResult(Status.CONVERGED, problem, current, initial.objective(),
+                        evaluation.objective(), iteration, residual, acceptedAny, rejectedCodes, cancellation);
             }
             List<MetricPoint> direction = direction(evaluation.gradient(), scalingX, scalingY, dimensionScale,
                     request.fixedIndices());
@@ -349,6 +435,7 @@ public final class ImageSupportedRefitter {
             List<MetricPoint> acceptedPoints = current;
             ObjectiveEvaluation acceptedEvaluation = evaluation;
             for (int halving = 0; halving < request.config().maximumLineSearchHalvings(); halving++) {
+                cancellation.checkpoint();
                 List<MetricPoint> trial = boundedTrial(current, request.trustOrigin(), direction, trialStep,
                         request.config().trustRadiusMeters(), request.fixedIndices());
                 Validation validation = validate(request, trial);
@@ -357,7 +444,7 @@ public final class ImageSupportedRefitter {
                     trialStep *= 0.5;
                     continue;
                 }
-                ObjectiveEvaluation trialEvaluation = evaluate(problem, trial);
+                ObjectiveEvaluation trialEvaluation = evaluate(problem, trial, cancellation);
                 double slope = dot(evaluation.gradient(), displacement(current, trial));
                 if (!trialEvaluation.supported() || !(slope < 0.0)
                         || trialEvaluation.objective() > evaluation.objective()
@@ -375,8 +462,8 @@ public final class ImageSupportedRefitter {
                         ? Status.LINE_SEARCH_FAILED_RETAINED : Status.REVERTED;
                 List<MetricPoint> points = status == Status.REVERTED ? request.initialPoints() : current;
                 double objective = status == Status.REVERTED ? initial.objective() : evaluation.objective();
-                return result(status, request, points, initial.objective(), objective, iteration,
-                        residual, status != Status.REVERTED, rejectedCodes);
+                return retainedResult(status, problem, points, initial.objective(), objective, iteration,
+                        residual, status != Status.REVERTED, rejectedCodes, cancellation);
             }
             current = acceptedPoints;
             evaluation = acceptedEvaluation;
@@ -393,24 +480,88 @@ public final class ImageSupportedRefitter {
             }
             residual = scaledResidual(evaluation.gradient(), scalingX, scalingY, dimensionScale);
             if (stableIterations >= request.config().stableIterationsRequired()) {
-                return new Result(Status.CONVERGED, current, initial.objective(), evaluation.objective(),
-                        iteration + 1, residual, maximumMovement, true, deduplicate(rejectedCodes));
+                return retainedResult(Status.CONVERGED, problem, current, initial.objective(),
+                        evaluation.objective(), iteration + 1, residual, true, rejectedCodes, cancellation);
             }
         }
-        return new Result(Status.ITERATION_LIMIT_RETAINED, current, initial.objective(), evaluation.objective(),
-                request.config().maximumIterations(), residual, maximumMovement,
-                acceptedAny && evaluation.objective() < initial.objective(), deduplicate(rejectedCodes));
+        return retainedResult(Status.ITERATION_LIMIT_RETAINED, problem, current, initial.objective(),
+                evaluation.objective(), request.config().maximumIterations(), residual,
+                acceptedAny && evaluation.objective() < initial.objective(), rejectedCodes, cancellation);
+    }
+
+    /** Independently re-extracts image branches on final geometry without altering the frozen objective. */
+    boolean finalBranchSupported(FrozenProblem problem, List<MetricPoint> points,
+            CancellationProbe cancellation) {
+        if (problem == null || points == null || cancellation == null
+                || points.size() != problem.request.initialPoints().size()) {
+            throw new IllegalArgumentException("Final branch validation inputs are inconsistent");
+        }
+        List<MetricPoint> meshPoints = problem.mesh.interpolate(points);
+        for (int index = 0; index < meshPoints.size(); index++) {
+            cancellation.checkpoint();
+            FrozenProfile original = problem.profiles.get(index);
+            if (original.support() != FrozenSupport.MEASURED) continue;
+            FrozenProfile measured = problem.request.image().freezeProfile(meshPoints.get(index),
+                    tangent(meshPoints, index), cancellation);
+            if (measured.support() != FrozenSupport.MEASURED) return false;
+            MetricPoint originalCenter = profileCenter(original);
+            MetricPoint measuredCenter = profileCenter(measured);
+            double branchTolerance = Math.max(problem.request.config().sourcePitchMeters(),
+                    original.localizationSigmaMeters() + measured.localizationSigmaMeters());
+            if (originalCenter.distanceTo(measuredCenter) > branchTolerance + 1.0e-9) return false;
+            if (original.orientationCertainty() > 0.0 && measured.orientationCertainty() > 0.0
+                    && undirectedDistance(original.orientationRadians(), measured.orientationRadians())
+                            > Math.toRadians(30.0)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Result retainedResult(Status status, FrozenProblem problem, List<MetricPoint> points,
+            double initialObjective, double finalObjective, int iterations, double residual,
+            boolean accepted, List<String> codes, CancellationProbe cancellation) {
+        Request request = problem.request;
+        if (accepted && !finalBranchSupported(problem, points, cancellation)) {
+            ArrayList<String> rejected = new ArrayList<>(codes);
+            rejected.add("final-image-branch-unavailable");
+            return new Result(Status.REVERTED, request.initialPoints(), initialObjective, initialObjective,
+                    iterations, residual, maxDistance(request.initialPoints(), request.trustOrigin()),
+                    false, deduplicate(rejected));
+        }
+        return new Result(status, points, initialObjective, finalObjective, iterations, residual,
+                maxDistance(points, request.trustOrigin()), accepted, deduplicate(codes));
+    }
+
+    static long estimatedFrozenProfilePeakBytes(int meshPointCount, int profileSampleCount) {
+        if (meshPointCount < 0 || profileSampleCount < 2) {
+            throw new IllegalArgumentException("Frozen-profile dimensions are invalid");
+        }
+        try {
+            long retainedProfiles = Math.multiplyExact((long) meshPointCount,
+                    Math.addExact(160L, Math.multiplyExact(16L, profileSampleCount)));
+            long activeProfile = Math.addExact(4_096L, Math.multiplyExact(96L, profileSampleCount));
+            long meshAndGradients = Math.multiplyExact(384L, meshPointCount);
+            return Math.addExact(Math.addExact(retainedProfiles, activeProfile), meshAndGradients);
+        } catch (ArithmeticException exception) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private static void preflightFrozenProfiles(int meshPointCount, double sourcePitchMeters) {
+        EvidenceModelParameters.Localization parameters = EvidenceModelParameters.defaults().localization();
+        double halfWidth = Math.max(parameters.routeProfileHalfWidthMeters(), 4.0 * sourcePitchMeters);
+        double requestedIntervals = Math.max(4.0,
+                Math.ceil(2.0 * halfWidth / (sourcePitchMeters * 0.25)));
+        if (!Double.isFinite(requestedIntervals) || requestedIntervals > Integer.MAX_VALUE - 1.0
+                || estimatedFrozenProfilePeakBytes(meshPointCount, (int) requestedIntervals + 1)
+                        > MAXIMUM_WORKING_BYTES) {
+            throw new IllegalArgumentException("Frozen refit exceeds the deterministic resource bound");
+        }
     }
 
     private static Result skipped(Status status, List<MetricPoint> points) {
         return new Result(status, points, Double.NaN, Double.NaN, 0, Double.NaN, 0.0, false, List.of());
-    }
-
-    private static Result result(Status status, Request request, List<MetricPoint> points,
-            double initialObjective, double finalObjective, int iterations, double residual,
-            boolean accepted, List<String> codes) {
-        return new Result(status, points, initialObjective, finalObjective, iterations, residual,
-                maxDistance(points, request.trustOrigin()), accepted, deduplicate(codes));
     }
 
     private static ObjectiveEvaluation unsupported(int size) {
@@ -508,38 +659,70 @@ public final class ImageSupportedRefitter {
         return result;
     }
 
-    private static double localWeight(List<MetricPoint> points, int index) {
-        return 0.5 * (points.get(index - 1).distanceTo(points.get(index))
-                + points.get(index).distanceTo(points.get(index + 1)));
+    private static List<CurvatureBlock> curvatureBlocks(SupportedCurvatureBank bank,
+            Config config, double referenceLength) {
+        ArrayList<CurvatureBlock> result = new ArrayList<>();
+        List<SupportedCurvatureBank.Target> targets = bank.targets();
+        int index = 0;
+        while (index < targets.size()) {
+            while (index < targets.size()
+                    && targets.get(index).status() == SupportedCurvatureBank.Status.UNKNOWN) index++;
+            if (index >= targets.size()) break;
+            int first = index;
+            ArrayList<InverseMetersVector> values = new ArrayList<>();
+            while (index < targets.size()
+                    && targets.get(index).status() != SupportedCurvatureBank.Status.UNKNOWN) {
+                values.add(targets.get(index).curvature());
+                index++;
+            }
+            result.add(new CurvatureBlock(first, values.size() + 2,
+                    new GeometricCurvatureOperator(config.sourcePitchMeters(), referenceLength,
+                            config.lambdaCurvature(), values)));
+        }
+        return List.copyOf(result);
     }
 
-    private static boolean coherentBendSupport(List<MetricPoint> points, int apex, ImageCostField image) {
-        double[] chainage = new double[points.size()];
-        for (int index = 1; index < points.size(); index++) {
-            chainage[index] = chainage[index - 1] + points.get(index - 1).distanceTo(points.get(index));
+    private static void freezeRow(FrozenRefitMesh.Row row, FreezeReason reason,
+            Set<Integer> frozen, Map<Integer, Set<FreezeReason>> freezeReasons) {
+        addFreezeReason(row.leftControl(), reason, frozen, freezeReasons);
+        addFreezeReason(row.rightControl(), reason, frozen, freezeReasons);
+    }
+
+    private static void addFreezeReason(int control, FreezeReason reason, Set<Integer> frozen,
+            Map<Integer, Set<FreezeReason>> freezeReasons) {
+        frozen.add(control);
+        freezeReasons.computeIfAbsent(control, ignored -> new HashSet<>()).add(reason);
+    }
+
+    private static MetricPoint tangent(List<MetricPoint> points, int index) {
+        MetricPoint first = points.get(index == 0 ? 0 : index - 1);
+        MetricPoint second = points.get(index == points.size() - 1 ? points.size() - 1 : index + 1);
+        MetricPoint tangent = subtract(second, first);
+        if (!(Math.hypot(tangent.xMeters(), tangent.yMeters()) > 0.0)) {
+            throw new IllegalArgumentException("Refit mesh tangent is degenerate");
         }
-        int supportedWindows = 0;
-        for (double window : new double[] {6.0, 10.0, 20.0}) {
-            double halfWindow = window / 2.0;
-            int left = apex - 1;
-            while (left > 0 && chainage[apex] - chainage[left] < halfWindow) {
-                left--;
-            }
-            int right = apex + 1;
-            while (right < points.size() - 1 && chainage[right] - chainage[apex] < halfWindow) {
-                right++;
-            }
-            if (left >= apex || right <= apex) {
-                continue;
-            }
-            double routeCost = image.meanPolylineCost(points.subList(left, right + 1));
-            double chordCost = image.meanSegmentCost(points.get(left), points.get(right));
-            if (Double.isFinite(routeCost) && Double.isFinite(chordCost)
-                    && routeCost + 0.02 < chordCost && image.supports(points.get(apex))) {
-                supportedWindows++;
-            }
-        }
-        return supportedWindows >= 2;
+        return tangent;
+    }
+
+    private static double averageUndirected(double first, double second) {
+        double difference = second - first;
+        while (difference > Math.PI / 2.0) difference -= Math.PI;
+        while (difference < -Math.PI / 2.0) difference += Math.PI;
+        double result = first + 0.5 * difference;
+        result %= Math.PI;
+        return result < 0.0 ? result + Math.PI : result;
+    }
+
+    private static double undirectedDistance(double first, double second) {
+        double difference = Math.abs(first - second);
+        difference %= Math.PI;
+        return Math.min(difference, Math.PI - difference);
+    }
+
+    private static MetricPoint profileCenter(FrozenProfile profile) {
+        double offset = 0.5 * (profile.coreMinimumMeters() + profile.coreMaximumMeters());
+        return new MetricPoint(profile.origin().xMeters() + profile.normal().xMeters() * offset,
+                profile.origin().yMeters() + profile.normal().yMeters() * offset);
     }
 
     private static double polylineLength(List<MetricPoint> points) {

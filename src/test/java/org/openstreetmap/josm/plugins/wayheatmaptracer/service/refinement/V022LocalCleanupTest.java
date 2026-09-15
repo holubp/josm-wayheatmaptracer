@@ -28,8 +28,9 @@ class V022LocalCleanupTest {
         ImageSupportedLocalCleanup.Result result = cleanup.clean(request(scene,
                 ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE));
 
-        assertEquals(ImageSupportedLocalCleanup.Status.PARTIALLY_CLEANED, result.status());
-        assertTrue(result.intervals().stream().filter(ImageSupportedLocalCleanup.IntervalResult::changed).count() >= 2);
+        assertEquals(ImageSupportedLocalCleanup.Status.REJECTED, result.status());
+        assertTrue(result.intervals().stream().anyMatch(interval ->
+                interval.detail().equals("refit-validation-rejected")));
     }
 
     @Test
@@ -76,7 +77,7 @@ class V022LocalCleanupTest {
         ImageSupportedLocalCleanup.Result noEligibleInterval = cleanup.clean(request(emptyScene, straight,
                 Set.of(0, 2), ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE));
 
-        assertEquals(ImageSupportedLocalCleanup.Status.PARTIALLY_CLEANED, partial.status());
+        assertEquals(ImageSupportedLocalCleanup.Status.UNCHANGED, partial.status());
         assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED, skipped.status());
         assertEquals(ImageSupportedLocalCleanup.Status.UNCHANGED, unchanged.status());
         assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED, noEligibleInterval.status());
@@ -90,6 +91,36 @@ class V022LocalCleanupTest {
                 RefinementTestFixtures.cleanupOffRejectedByValidatorRequest());
         assertEquals(ImageSupportedLocalCleanup.Status.REJECTED, invalidOff.status(),
                 "cleanup Off suppresses transformation, not final validation");
+    }
+
+    @Test
+    void independentlyEligibleMeasuredIslandsBothChangeAroundExactMissingAnchor() {
+        ImageSupportedLocalCleanup.Request request = RefinementTestFixtures.twoIslandCleanupRequest();
+        for (int first : List.of(0, 6)) {
+            List<MetricPoint> island = request.points().subList(first, first + 5);
+            ImageSupportedRefitter.Request refitRequest = new ImageSupportedRefitter.Request(
+                    island, island, Set.of(0, 4), request.image(), request.branchCorridor(),
+                    ImageSupportedRefitter.Mode.IMAGE_SUPPORTED, request.refitConfig(), List.of());
+            ImageSupportedRefitter.FrozenProblem problem = new ImageSupportedRefitter().freeze(refitRequest);
+            assertTrue(problem.curvatureTargets().stream()
+                    .anyMatch(target -> target.status() != SupportedCurvatureBank.Status.UNKNOWN));
+            assertTrue(java.util.stream.IntStream.range(1, 4)
+                    .anyMatch(index -> !problem.frozenControlIndices().contains(index)),
+                    "island " + first + " frozen=" + problem.frozenControlReasons());
+        }
+
+        ImageSupportedLocalCleanup.Result result = cleanup.clean(request);
+
+        assertEquals(ImageSupportedLocalCleanup.Status.PARTIALLY_CLEANED, result.status());
+        assertEquals(2, result.intervals().stream()
+                .filter(ImageSupportedLocalCleanup.IntervalResult::changed).count());
+        assertEquals(request.points().get(5), result.assignments().get(request.occurrenceIds().get(5)));
+        assertNotSame(request.originalAssignments(), result.assignments());
+        for (int index = 0; index < result.points().size(); index++) {
+            if (!result.occurrenceIds().get(index).equals(request.occurrenceIds().get(5))) {
+                assertTrue(request.image().supports(result.points().get(index)));
+            }
+        }
     }
 
     @Test

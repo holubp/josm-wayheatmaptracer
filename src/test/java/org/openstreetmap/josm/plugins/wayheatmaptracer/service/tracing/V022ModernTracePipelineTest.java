@@ -9,6 +9,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
@@ -48,6 +50,21 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.Dir
 
 /** Common detached post-processing regressions for all modern tracing engines. */
 class V022ModernTracePipelineTest {
+    @Test
+    void cancellationContinuesThroughCommonCleanupAndCannotReturnSuccess() {
+        Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);
+        TraceEngine engine = (request, evidence, network, cancellation) ->
+                routes(request.engine(), route("cancel-cleanup", 0.7));
+        GeometryCleanupConfig enabled = GeometryCleanupConfig.disabled()
+                .withMode(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE);
+        AtomicInteger checkpoints = new AtomicInteger();
+
+        assertThrows(CancellationException.class, () -> new ModernTracePipeline(engine).run(
+                fixture.request, fixture.evidence, fixture.network, options(enabled),
+                () -> checkpoints.incrementAndGet() >= 2));
+        assertEquals(2, checkpoints.get());
+    }
+
     @Test
     void ranksCompleteCenterSupportedRouteAheadOfOffCorridorRoute() {
         Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);

@@ -1,9 +1,14 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
@@ -12,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.StrictScalarSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 /**
@@ -22,6 +28,107 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * performed.</p>
  */
 public final class ImageCostField {
+    private static final int MAXIMUM_FROZEN_PROFILE_SAMPLES = 65_536;
+    /** Frozen ownership state for a selected local image branch. */
+    public enum FrozenSupport { MEASURED, AMBIGUOUS, MISSING }
+
+    /** Cost and metric gradient from one frozen local branch field. */
+    public record FrozenSample(double cost, double gradientX, double gradientY) { }
+
+    /**
+     * Immutable background-relative one-dimensional field and measured image direction.
+     * The selected mode and every interpolation ordinate are fixed before optimization.
+     */
+    public record FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
+            double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
+            double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
+            List<ImageOrientationSupport.AngularMode> orientationModes,
+            double orientationRadians, double orientationCertainty) {
+        /** Copies interpolation arrays and validates measured fields. */
+        public FrozenProfile {
+            offsetsMeters = offsetsMeters.clone();
+            values = values.clone();
+            orientationModes = List.copyOf(orientationModes);
+            if (support == null || origin == null || normal == null
+                    || offsetsMeters.length != values.length || offsetsMeters.length < 2
+                    || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
+                    || !Double.isFinite(orientationRadians) || !Double.isFinite(orientationCertainty)
+                    || orientationCertainty < 0.0 || orientationCertainty > 1.0) {
+                throw new IllegalArgumentException("Frozen profile is incomplete");
+            }
+        }
+
+        /** Returns a defensive copy of the fixed profile abscissae. */
+        @Override public double[] offsetsMeters() { return offsetsMeters.clone(); }
+        /** Returns a defensive copy of the fixed profile ordinates. */
+        @Override public double[] values() { return values.clone(); }
+
+        /** Evaluates the declared fixed branch field without selecting another mode. */
+        public Optional<FrozenSample> evaluate(MetricPoint point) {
+            if (support != FrozenSupport.MEASURED) {
+                return Optional.empty();
+            }
+            double dx = point.xMeters() - origin.xMeters();
+            double dy = point.yMeters() - origin.yMeters();
+            double offset = dx * normal.xMeters() + dy * normal.yMeters();
+            int exact = Arrays.binarySearch(offsetsMeters, offset);
+            double intensity;
+            double intensityDerivative;
+            if (exact >= 0) {
+                if (exact == 0 || exact == offsetsMeters.length - 1
+                        || !Double.isFinite(values[exact - 1]) || !Double.isFinite(values[exact])
+                        || !Double.isFinite(values[exact + 1])) {
+                    return Optional.empty();
+                }
+                intensity = values[exact];
+                double leftSlope = (values[exact] - values[exact - 1])
+                        / (offsetsMeters[exact] - offsetsMeters[exact - 1]);
+                double rightSlope = (values[exact + 1] - values[exact])
+                        / (offsetsMeters[exact + 1] - offsetsMeters[exact]);
+                intensityDerivative = 0.5 * (leftSlope + rightSlope);
+            } else {
+                int upper = -exact - 1;
+                if (upper <= 0 || upper >= offsetsMeters.length
+                        || !Double.isFinite(values[upper - 1]) || !Double.isFinite(values[upper])) {
+                    return Optional.empty();
+                }
+                int lower = upper - 1;
+                double span = offsetsMeters[upper] - offsetsMeters[lower];
+                double fraction = (offset - offsetsMeters[lower]) / span;
+                intensity = values[lower] + fraction * (values[upper] - values[lower]);
+                intensityDerivative = (values[upper] - values[lower]) / span;
+            }
+            double responseRange = peakIntensity - noiseFloor;
+            if (!(responseRange > 1.0e-12)) {
+                return Optional.empty();
+            }
+            double response = (intensity - noiseFloor) / responseRange;
+            double clippedResponse = Math.max(1.0e-6, Math.min(1.0, response));
+            double responseDerivative = response > 1.0e-6 && response < 1.0
+                    ? intensityDerivative / responseRange : 0.0;
+            double presenceCost = -Math.log(clippedResponse);
+            double presenceDerivative = -responseDerivative / clippedResponse;
+            double distance;
+            double distanceSign;
+            if (offset < coreMinimumMeters) {
+                distance = coreMinimumMeters - offset;
+                distanceSign = -1.0;
+            } else if (offset > coreMaximumMeters) {
+                distance = offset - coreMaximumMeters;
+                distanceSign = 1.0;
+            } else {
+                distance = 0.0;
+                distanceSign = 0.0;
+            }
+            double normalized = distance / localizationSigmaMeters;
+            double centerCost = EvidenceModelParameters.huber(normalized);
+            double centerDerivative = distanceSign * Math.min(1.0, normalized)
+                    / localizationSigmaMeters;
+            double derivative = presenceDerivative + centerDerivative;
+            return Optional.of(new FrozenSample(presenceCost + centerCost,
+                    derivative * normal.xMeters(), derivative * normal.yMeters()));
+        }
+    }
     /** Interpolated scalar evidence costs and their analytic metric-coordinate gradients. */
     public record Sample(double intensity, double presenceCost, double centerCost,
             double presenceGradientX, double presenceGradientY,
@@ -104,6 +211,78 @@ public final class ImageCostField {
     /** Returns the physical source-pixel pitch used for uncertainty and trust limits. */
     public double sourcePitchMeters() {
         return sourcePitchMeters;
+    }
+
+    /** Freezes one selected scalar mode and its local interpolation field at a route point. */
+    public FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent) {
+        return freezeProfile(point, routeTangent, CancellationProbe.NONE);
+    }
+
+    /** Freezes one profile with bounded cooperative cancellation during scalar sampling. */
+    public FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
+            CancellationProbe cancellation) {
+        if (point == null || routeTangent == null) {
+            throw new IllegalArgumentException("Frozen profile requires a point and tangent");
+        }
+        if (cancellation == null) {
+            throw new IllegalArgumentException("Frozen profile cancellation probe is required");
+        }
+        double tangentLength = Math.hypot(routeTangent.xMeters(), routeTangent.yMeters());
+        if (!(tangentLength > 0.0) || !Double.isFinite(tangentLength)) {
+            throw new IllegalArgumentException("Frozen profile tangent must be finite and nonzero");
+        }
+        MetricPoint normal = new MetricPoint(-routeTangent.yMeters() / tangentLength,
+                routeTangent.xMeters() / tangentLength);
+        EvidenceModelParameters.Localization parameters = EvidenceModelParameters.defaults().localization();
+        double halfWidth = Math.max(parameters.routeProfileHalfWidthMeters(), 4.0 * sourcePitchMeters);
+        double requestedIntervals = Math.max(4.0,
+                Math.ceil(2.0 * halfWidth / (sourcePitchMeters * 0.25)));
+        if (!Double.isFinite(requestedIntervals)
+                || requestedIntervals + 1.0 > MAXIMUM_FROZEN_PROFILE_SAMPLES) {
+            throw new IllegalArgumentException("Frozen profile exceeds the deterministic resource bound");
+        }
+        int intervals = (int) requestedIntervals;
+        // Put offset zero inside one fixed interpolation interval, avoiding a
+        // derivative convention change at the initial numerical point.
+        if ((intervals & 1) == 0) {
+            intervals++;
+        }
+        double[] offsets = new double[intervals + 1];
+        double[] values = new double[intervals + 1];
+        List<LocalScalarProfileExtractor.Sample> samples = new ArrayList<>(intervals + 1);
+        for (int index = 0; index <= intervals; index++) {
+            if ((index & 1023) == 0) cancellation.checkpoint();
+            double offset = -halfWidth + 2.0 * halfWidth * index / intervals;
+            offsets[index] = offset;
+            MetricPoint location = new MetricPoint(point.xMeters() + normal.xMeters() * offset,
+                    point.yMeters() + normal.yMeters() * offset);
+            OptionalDouble value = sampleScalar(location);
+            values[index] = value.orElse(Double.NaN);
+            samples.add(new LocalScalarProfileExtractor.Sample(offset, values[index], value.isPresent()));
+        }
+        LocalScalarProfileExtractor.Result extracted = new LocalScalarProfileExtractor().extract(samples,
+                sourcePitchMeters, parameters);
+        List<LocalScalarProfileExtractor.Mode> ordered = extracted.modes().stream()
+                .sorted(Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0))).toList();
+        if (ordered.isEmpty()) {
+            return unavailable(FrozenSupport.MISSING, point, normal, offsets, values,
+                    extracted.noiseFloor(), extracted.maximumIntensity());
+        }
+        LocalScalarProfileExtractor.Mode selected = ordered.get(0);
+        if (ordered.size() > 1 && ordered.get(1).distanceToCenterSet(0.0)
+                <= selected.distanceToCenterSet(0.0) + sourcePitchMeters) {
+            return unavailable(FrozenSupport.AMBIGUOUS, point, normal, offsets, values,
+                    extracted.noiseFloor(), extracted.maximumIntensity());
+        }
+        Orientation orientation = measureOrientation(point, routeTangent, cancellation);
+        double routeBearing = normalizeBearing(Math.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
+        return new FrozenProfile(FrozenSupport.MEASURED, point, normal,
+                selected.coreMinimumMeters(), selected.coreMaximumMeters(),
+                Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters()),
+                extracted.noiseFloor(), extracted.maximumIntensity(),
+                offsets, values, orientation.modes(),
+                orientation.measured() ? orientation.radians() : routeBearing,
+                orientation.measured() ? orientation.certainty() : 0.0);
     }
 
     /** Returns whether a point has complete bilinear image support inside the decision region. */
@@ -359,6 +538,201 @@ public final class ImageCostField {
 
     private boolean isValid(int x, int y) {
         return valid[y * width + x];
+    }
+
+    private OptionalDouble sampleScalar(MetricPoint point) {
+        return StrictScalarSampler.sample(scalarField, transform, decisionRegion, point);
+    }
+
+    private FrozenProfile unavailable(FrozenSupport support, MetricPoint point, MetricPoint normal,
+            double[] offsets, double[] values, double noiseFloor, double peakIntensity) {
+        return new FrozenProfile(support, point, normal, 0.0, 0.0, sourcePitchMeters,
+                noiseFloor, peakIntensity, offsets, values, List.of(), 0.0, 0.0);
+    }
+
+    private Orientation measureOrientation(MetricPoint center, MetricPoint routeTangent,
+            CancellationProbe cancellation) {
+        EvidenceModelParameters.Localization parameters = EvidenceModelParameters.defaults().localization();
+        int headings = parameters.orientationHeadingCount();
+        double rayLength = Math.max(parameters.minimumOrientationRayMeters(),
+                parameters.orientationRayLengthPitches() * sourcePitchMeters);
+        int samples = Math.max(2, (int) Math.ceil((rayLength - sourcePitchMeters)
+                / (parameters.maximumOrientationStepPitches() * sourcePitchMeters)) + 1);
+        if ((long) headings * 2L * samples > parameters.maximumOrientationSampleCount()) {
+            return Orientation.UNKNOWN;
+        }
+        double[][][] rays = new double[headings][2][samples];
+        double[] backgroundValues = new double[headings * 2 * samples + 1];
+        int backgroundCount = 0;
+        OptionalDouble centerValue = sampleScalar(center);
+        if (centerValue.isEmpty()) {
+            return Orientation.UNKNOWN;
+        }
+        backgroundValues[backgroundCount++] = centerValue.getAsDouble();
+        for (int heading = 0; heading < headings; heading++) {
+            cancellation.checkpoint();
+            double angle = Math.PI * heading / headings;
+            for (int side = 0; side < 2; side++) {
+                Arrays.fill(rays[heading][side], Double.NaN);
+                double sign = side == 0 ? 1.0 : -1.0;
+                for (int index = 0; index < samples; index++) {
+                    if ((index & 1023) == 0) cancellation.checkpoint();
+                    double distance = sourcePitchMeters + (rayLength - sourcePitchMeters)
+                            * index / (samples - 1.0);
+                    MetricPoint point = new MetricPoint(center.xMeters()
+                            + sign * Math.cos(angle) * distance,
+                            center.yMeters() + sign * Math.sin(angle) * distance);
+                    OptionalDouble value = sampleScalar(point);
+                    if (value.isPresent()) {
+                        rays[heading][side][index] = value.getAsDouble();
+                        backgroundValues[backgroundCount++] = value.getAsDouble();
+                    }
+                }
+            }
+        }
+        Arrays.sort(backgroundValues, 0, backgroundCount);
+        int quantileIndex = Math.min(backgroundCount - 1,
+                (int) Math.floor(parameters.orientationBackgroundQuantile() * (backgroundCount - 1)));
+        double background = backgroundValues[quantileIndex];
+        double[] response = new double[headings];
+        double[] validFraction = new double[headings];
+        Arrays.fill(response, Double.NaN);
+        double minimum = Double.POSITIVE_INFINITY;
+        double maximum = Double.NEGATIVE_INFINITY;
+        for (int heading = 0; heading < headings; heading++) {
+            double[] means = new double[2];
+            double[] fractions = new double[2];
+            boolean complete = true;
+            for (int side = 0; side < 2; side++) {
+                int validCount = 0;
+                double total = 0.0;
+                for (double value : rays[heading][side]) {
+                    if (Double.isFinite(value)) {
+                        validCount++;
+                        total += Math.max(0.0, value - background);
+                    }
+                }
+                fractions[side] = validCount / (double) samples;
+                complete &= fractions[side] + 1.0e-12 >= parameters.minimumOrientationValidFraction();
+                means[side] = validCount == 0 ? 0.0 : total / validCount;
+            }
+            if (complete) {
+                response[heading] = Math.min(means[0], means[1]);
+                validFraction[heading] = Math.min(fractions[0], fractions[1]);
+                minimum = Math.min(minimum, response[heading]);
+                maximum = Math.max(maximum, response[heading]);
+            }
+        }
+        double range = maximum - minimum;
+        if (!Double.isFinite(range) || !(maximum > 1.0e-12) || !(range > 1.0e-12)) {
+            return Orientation.UNKNOWN;
+        }
+        ImageOrientationSupport support = extractOrientationModes(response, validFraction,
+                minimum, maximum, parameters);
+        if (support.status() != ImageOrientationSupport.Status.MEASURED_TWO_SIDED) {
+            return Orientation.UNKNOWN;
+        }
+        double routeAngle = normalizeBearing(Math.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
+        ImageOrientationSupport.AngularMode selectedMode = support.modes().stream()
+                .min(Comparator.comparingDouble(mode -> mode.distanceTo(routeAngle))).orElseThrow();
+        double selected = selectedMode.contains(routeAngle) ? routeAngle
+                : undirectedDistance(routeAngle, selectedMode.startRadians())
+                        <= undirectedDistance(routeAngle, selectedMode.endRadians())
+                                ? selectedMode.startRadians() : selectedMode.endRadians();
+        return new Orientation(true, selected, support.certainty(), support.modes());
+    }
+
+    private static ImageOrientationSupport extractOrientationModes(double[] response,
+            double[] validFraction, double minimum, double maximum,
+            EvidenceModelParameters.Localization parameters) {
+        double range = maximum - minimum;
+        int count = response.length;
+        boolean[] visited = new boolean[count];
+        List<ImageOrientationSupport.AngularMode> modes = new ArrayList<>();
+        for (int index = 0; index < count; index++) {
+            if (visited[index] || !Double.isFinite(response[index])) continue;
+            int previous = Math.floorMod(index - 1, count);
+            int next = (index + 1) % count;
+            double value = response[index];
+            if (!Double.isFinite(response[previous]) || !Double.isFinite(response[next])
+                    || value + 1.0e-12 < response[previous] || value + 1.0e-12 < response[next]
+                    || !(value > response[previous] + 1.0e-12 || value > response[next] + 1.0e-12)) {
+                continue;
+            }
+            int start = index;
+            int end = index;
+            while (Math.floorMod(start - 1, count) != end
+                    && equalOrientationResponse(response, Math.floorMod(start - 1, count), value)) {
+                start = Math.floorMod(start - 1, count);
+            }
+            while ((end + 1) % count != start
+                    && equalOrientationResponse(response, (end + 1) % count, value)) {
+                end = (end + 1) % count;
+            }
+            int outsideBefore = Math.floorMod(start - 1, count);
+            int outsideAfter = (end + 1) % count;
+            if (!Double.isFinite(response[outsideBefore]) || !Double.isFinite(response[outsideAfter])
+                    || !(value > response[outsideBefore] + 1.0e-12)
+                    || !(value > response[outsideAfter] + 1.0e-12)
+                    || value - minimum + 1.0e-12
+                            < parameters.orientationProminenceFraction() * range) {
+                continue;
+            }
+            int plateauSize = 1;
+            for (int cursor = start; cursor != end; cursor = (cursor + 1) % count) plateauSize++;
+            for (int cursor = start;; cursor = (cursor + 1) % count) {
+                visited[cursor] = true;
+                if (cursor == end) break;
+            }
+            double step = Math.PI / count;
+            double peak = plateauSize == 1 ? interpolateOrientationPeak(response, index, step)
+                    : ImageOrientationSupport.normalize((start + 0.5 * (plateauSize - 1)) * step);
+            modes.add(new ImageOrientationSupport.AngularMode(
+                    plateauSize == 1 ? peak : start * step,
+                    plateauSize == 1 ? peak : end * step, peak, value));
+        }
+        if (modes.isEmpty()) {
+            return ImageOrientationSupport.unknown(
+                    ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
+        }
+        modes.sort(Comparator.comparingDouble(ImageOrientationSupport.AngularMode::peakBearingRadians));
+        double minimumRayFraction = java.util.stream.IntStream.range(0, count)
+                .filter(index -> Double.isFinite(response[index]))
+                .mapToDouble(index -> validFraction[index]).min().orElse(0.0);
+        double certainty = Math.max(0.0, Math.min(1.0, range / Math.max(maximum, 1.0e-12)))
+                * minimumRayFraction;
+        return new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+                modes, certainty);
+    }
+
+    private static boolean equalOrientationResponse(double[] response, int index, double value) {
+        return Double.isFinite(response[index]) && Math.abs(response[index] - value) <= 1.0e-12;
+    }
+
+    private static double interpolateOrientationPeak(double[] response, int index, double step) {
+        double left = response[Math.floorMod(index - 1, response.length)];
+        double center = response[index];
+        double right = response[(index + 1) % response.length];
+        double denominator = left - 2.0 * center + right;
+        if (Math.abs(denominator) <= 1.0e-15) return index * step;
+        double offset = 0.5 * (left - right) / denominator;
+        return !Double.isFinite(offset) || Math.abs(offset) > 1.0 ? index * step
+                : ImageOrientationSupport.normalize((index + offset) * step);
+    }
+
+    private static double normalizeBearing(double value) {
+        double result = value % Math.PI;
+        return result < 0.0 ? result + Math.PI : result;
+    }
+
+    private static double undirectedDistance(double first, double second) {
+        double difference = Math.abs(normalizeBearing(first) - normalizeBearing(second));
+        return Math.min(difference, Math.PI - difference);
+    }
+
+    private record Orientation(boolean measured, double radians, double certainty,
+            List<ImageOrientationSupport.AngularMode> modes) {
+        private static final Orientation UNKNOWN = new Orientation(false, 0.0, 0.0, List.of());
     }
 
     private double value(int x, int y) {
