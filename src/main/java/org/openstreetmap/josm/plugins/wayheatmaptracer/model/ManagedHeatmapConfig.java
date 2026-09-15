@@ -124,6 +124,24 @@ public record ManagedHeatmapConfig(
     }
 
     /**
+     * Returns an in-memory copy with a temporary tracker-engine override.
+     *
+     * @param mode requested one-shot engine, or {@code null} to keep the current setting
+     * @return copied configuration with the effective engine
+     */
+    public ManagedHeatmapConfig withTrackerMode(TrackerMode mode) {
+        return new ManagedHeatmapConfig(
+            keyPairId, policy, signature, sessionToken, activity, color, manualLayerName, layerRegex,
+            alignmentMode, mode == null ? trackerMode : mode, verbose, debug, multiColorDetection,
+            aggregateAllColorSchemes, showAggregateIntensityLayer, candidateRatingEnabled,
+            parallelWayAwareness, allowUndownloadedAlignment, adjustJunctionNodes, simplifyEnabled,
+            crossSectionHalfWidthPx, crossSectionStepPx, simplifyTolerancePx, inferenceMode,
+            inferenceZoom, validationZoom, searchHalfWidthMeters, sampleStepMeters,
+            intensitySamplingMode, cacheBuster
+        );
+    }
+
+    /**
      * Returns an in-memory copy with a different physical managed-tile search width.
      *
      * <p>This helper is used only by a slide-time retry configuration. Callers must not persist

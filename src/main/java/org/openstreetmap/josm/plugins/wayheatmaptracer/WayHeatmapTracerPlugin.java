@@ -68,6 +68,8 @@ public class WayHeatmapTracerPlugin extends Plugin {
             alignWayAction,
             alignPreciseAction,
             alignMoveNodesAction,
+            AlignWayAction.experimentalCorridorAwareVisiblePreview(),
+            AlignWayAction.experimentalProbabilisticVisiblePreview(),
             new SelectLongestSegmentAction(),
             new HeatmapLayerSettingsAction(),
             new GeometryCleanupSettingsAction(),

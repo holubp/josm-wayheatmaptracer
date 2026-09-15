@@ -353,8 +353,10 @@ The plugin explicitly supports a Strava heatmap imagery workflow for OSM improve
 
 The documentation avoids publishing a raw tokenized imagery URL, but the settings dialog uses the real cookie field names so users can copy the values accurately.
 
-### Experimental live Probabilistic B preview
+### Experimental live modern previews
 
-The `Probabilistic` tracker currently offers an experimental read-only live preview for `Precise Shape` with cleanup Off and a visible EPSG:3857 rendered source. It runs production B and common final validation, shows the final quality findings, and never offers Apply, confirmation, or wider retry. Existing nodes stay fixed. Closing or repeating the action cancels pending work, and source, settings, layer, projection, or relevant OSM changes reject a stale preview. Last-slide debug export is unavailable for this path and is cleared when it starts.
+The `Probabilistic` tracker offers its existing experimental read-only live B preview for `Precise Shape` with cleanup Off and a visible EPSG:3857 rendered source. The Tools menu also contains `Experimental Engine A Visible Preview (Read Only)` and `Experimental Engine B Visible Preview (Read Only)`. These explicit session-local actions run their named production engine over the currently rendered visible layer; the ordinary Corridor-aware Align workflow retains its normal preview and Apply path.
 
-Other modern engines, managed-source sampling, cleanup, junction movement, parallel context, alternative or aggregate detectors, and direct-intensity modes are not supported by this interim path.
+Both interim previews keep existing nodes fixed, run common final validation, show final quality findings, and never offer Apply, confirmation, wider retry, or Format-15 export. The explicit A and B actions may use a currently rendered layer while managed credentials remain stored, but they do not perform managed acquisition or pass credentials to worker input. Closing or repeating the action cancels pending work, and source, settings, layer, projection, or relevant OSM changes reject a stale preview.
+
+Managed-source sampling, cleanup, junction movement, parallel context, alternative or aggregate detectors, and direct-intensity modes are not supported by these interim paths.

@@ -8,9 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
@@ -19,6 +27,54 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @Test
+    void explicitAVisiblePreviewIsSessionLocalAndLeavesOrdinaryCorridorActionUnchanged() {
+        ManagedHeatmapConfig configured = configuredCorridor();
+        assertSame(configured, AlignWayAction.effectiveConfig(configured, null, null));
+        ManagedHeatmapConfig preview = AlignWayAction.effectiveConfig(configured, null,
+                TrackerMode.CORRIDOR_AWARE);
+        assertEquals(TrackerMode.CORRIDOR_AWARE, preview.trackerMode());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, preview.alignmentMode());
+        assertEquals(configured.keyPairId(), preview.keyPairId());
+        ManagedHeatmapConfig previewB = AlignWayAction.effectiveConfig(configured, null,
+                TrackerMode.PROBABILISTIC);
+        assertEquals(TrackerMode.PROBABILISTIC, previewB.trackerMode());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, previewB.alignmentMode());
+        assertEquals(configured.keyPairId(), previewB.keyPairId());
+
+        AlignmentConfig persisted = new AlignmentConfig(configured, GeometryCleanupConfig.disabled());
+        AlignmentConfig effective = new AlignmentConfig(preview, GeometryCleanupConfig.disabled());
+        AlignmentConfig effectiveB = new AlignmentConfig(previewB, GeometryCleanupConfig.disabled());
+        assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, effective, persisted,
+                null, TrackerMode.CORRIDOR_AWARE));
+        assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, effectiveB, persisted,
+                null, TrackerMode.PROBABILISTIC));
+        AlignmentConfig changedTracker = new AlignmentConfig(configured.withTrackerMode(
+                TrackerMode.PROBABILISTIC), GeometryCleanupConfig.disabled());
+        AlignmentConfig changedMode = new AlignmentConfig(configured.withAlignmentMode(
+                AlignmentMode.PRECISE_SHAPE), GeometryCleanupConfig.disabled());
+        assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, effective, changedTracker,
+                null, TrackerMode.CORRIDOR_AWARE));
+        assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, effective, changedMode,
+                null, TrackerMode.CORRIDOR_AWARE));
+    }
+
+    @Test
+    void explicitVisibleSourceRequiresALayerBeforePreviewUiCanOpen() {
+        AtomicBoolean ordinaryResolverUsed = new AtomicBoolean();
+
+        assertThrows(NullPointerException.class, () -> AlignWayAction.selectVisibleSource(true,
+                () -> null, () -> {
+                    ordinaryResolverUsed.set(true);
+                    return "ordinary";
+                }));
+        assertFalse(ordinaryResolverUsed.get());
+        assertEquals("visible", AlignWayAction.selectVisibleSource(true, () -> "visible",
+                () -> "ordinary"));
+        assertEquals("ordinary", AlignWayAction.selectVisibleSource(false, () -> "visible",
+                () -> "ordinary"));
+    }
+
     @Test
     void closedOrSupersededLivePreviewCannotPublishLate() {
         AlignWayAction.LivePreviewGate gate = new AlignWayAction.LivePreviewGate();
@@ -201,6 +257,14 @@ class AlignWayActionTest {
         assertTrue(AlignWayAction.coverageStatus(unresolved, 7.0, review, false).contains("Review required"));
         assertTrue(AlignWayAction.canConfirmCandidate(review));
         assertTrue(!AlignWayAction.canConfirmCandidate(blocked));
+    }
+
+    private static ManagedHeatmapConfig configuredCorridor() {
+        return new ManagedHeatmapConfig("stored-key", "stored-policy", "stored-signature", "stored-session",
+            "all", "hot", ".", ".*", AlignmentMode.MOVE_EXISTING_NODES,
+            TrackerMode.CORRIDOR_AWARE, false, false, false, false, false, false,
+            false, false, false, false, 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION,
+            15, 15, 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
     }
 
     private static CenterlineCandidate candidate(String id) {

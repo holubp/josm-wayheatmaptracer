@@ -24,6 +24,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConf
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
@@ -57,6 +58,58 @@ class V022LiveBPreviewServiceTest {
 
         assertFalse(result.pipeline().routes().isEmpty(),
                 "supported visible evidence must produce a final B route");
+        var route = result.pipeline().routes().get(0);
+        assertEquals(1.0, route.hypothesis().diagnostics().get("commonFinalProcessing"));
+        assertEquals(2, route.existingAssignments().size());
+        assertTrue(route.pointIds().get(0) instanceof ExistingWayNodeOccurrence);
+        assertTrue(route.pointIds().get(route.pointIds().size() - 1)
+                instanceof ExistingWayNodeOccurrence);
+        assertEquals(before, state(fixture.dataSet()));
+        SwingUtilities.invokeAndWait(() -> service.requireCurrent(fixture.dataSet(), captured[0]));
+    }
+
+    @Test
+    void realProductionAUsesFactualDetachedLocationsAndPreservesDataSet() throws Exception {
+        Fixture fixture = fixture();
+        List<String> before = state(fixture.dataSet());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.CORRIDOR_AWARE)));
+
+        LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
+
+        assertEquals(TrackerMode.CORRIDOR_AWARE, result.pipeline().inference().engine());
+        var locations = result.request().corridorInput().orElseThrow().profileLocations();
+        assertEquals(result.request().profileChainage().cumulativeGroundMeters(), locations.stream()
+                .map(location -> location.cumulativeGroundDistanceMeters()).toList());
+        assertEquals(captured[0].sourceMetric().get(0), locations.get(0).metricPoint());
+        assertEquals(captured[0].sourceMetric().get(captured[0].sourceMetric().size() - 1),
+                locations.get(locations.size() - 1).metricPoint());
+        double sourceLength = captured[0].sourceMetric().get(0).distanceTo(
+                captured[0].sourceMetric().get(captured[0].sourceMetric().size() - 1));
+        for (int index = 1; index < locations.size() - 1; index++) {
+            double fraction = result.request().profileChainage().cumulativeGroundMeters().get(index)
+                    / sourceLength;
+            MetricPoint start = captured[0].sourceMetric().get(0);
+            MetricPoint end = captured[0].sourceMetric().get(captured[0].sourceMetric().size() - 1);
+            MetricPoint expected = new MetricPoint(start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
+                    start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
+            assertEquals(expected.xMeters(), locations.get(index).metricPoint().xMeters(), 1.0e-12);
+            assertEquals(expected.yMeters(), locations.get(index).metricPoint().yMeters(), 1.0e-12);
+            var expectedGeographic = result.evidence().coordinateFrame().toGeographic(expected);
+            assertEquals(expectedGeographic.latitudeDegrees(),
+                    locations.get(index).geographicPoint().latitudeDegrees(), 1.0e-12);
+            assertEquals(expectedGeographic.longitudeDegrees(),
+                    locations.get(index).geographicPoint().longitudeDegrees(), 1.0e-12);
+            var expectedRaster = result.evidence().transform().metricToPixelCenter(expected);
+            assertEquals(expectedRaster.x(), locations.get(index).rasterPoint().x(), 1.0e-12);
+            assertEquals(expectedRaster.y(), locations.get(index).rasterPoint().y(), 1.0e-12);
+        }
+        assertEquals(result.evidence().resolution().outputRasterPitchMeters(),
+                result.request().corridorInput().orElseThrow().lateralStepMeters());
+        assertFalse(result.pipeline().routes().isEmpty(),
+                "supported visible evidence must produce a final A route");
         var route = result.pipeline().routes().get(0);
         assertEquals(1.0, route.hypothesis().diagnostics().get("commonFinalProcessing"));
         assertEquals(2, route.existingAssignments().size());
@@ -103,6 +156,36 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void explicitVisibleSourceSessionAcceptsStoredCredentialsWithoutPassingThemToWorkerInput()
+            throws Exception {
+        Fixture fixture = fixture();
+        ManagedHeatmapConfig storedCredentials = new ManagedHeatmapConfig("key-secret", "policy-secret",
+                "signature-secret", "session-secret", "all", "hot", ".", ".*",
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, false, false,
+                false, false, false, false, false, false, false, false,
+                7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
+                7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
+        AlignmentConfig config = new AlignmentConfig(storedCredentials, GeometryCleanupConfig.disabled());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.Captured[] capturedB = new LiveBPreviewService.Captured[1];
+        AlignmentConfig probabilistic = new AlignmentConfig(storedCredentials.withTrackerMode(
+                TrackerMode.PROBABILISTIC), GeometryCleanupConfig.disabled());
+
+        SwingUtilities.invokeAndWait(() -> {
+            assertThrows(IllegalArgumentException.class, () -> service.capture(fixture.dataSet(),
+                    fixture.selection(), raster(), config));
+            captured[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), config, true);
+            capturedB[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), probabilistic, true);
+        });
+
+        assertFalse(captured[0].toString().contains("secret"));
+        assertFalse(capturedB[0].toString().contains("secret"));
+        assertEquals(TrackerMode.CORRIDOR_AWARE, captured[0].engine());
+        assertEquals(TrackerMode.PROBABILISTIC, capturedB[0].engine());
+    }
+
+    @Test
     void visibleRasterRejectsBoundsThatDoNotMatchOversampledDimensions() {
         int[] pixels = new int[200 * 200];
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
@@ -143,8 +226,12 @@ class V022LiveBPreviewServiceTest {
     }
 
     private static AlignmentConfig config() {
+        return config(TrackerMode.PROBABILISTIC);
+    }
+
+    private static AlignmentConfig config(TrackerMode trackerMode) {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("", "", "", "", "all", "hot", "", ".*",
-                AlignmentMode.PRECISE_SHAPE, TrackerMode.PROBABILISTIC, false, false,
+                AlignmentMode.PRECISE_SHAPE, trackerMode, false, false,
                 false, false, false, false, false, false, false, false,
                 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
                 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);

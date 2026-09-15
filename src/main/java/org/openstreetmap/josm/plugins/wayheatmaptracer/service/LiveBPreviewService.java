@@ -9,6 +9,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.function.Function;
@@ -21,6 +22,7 @@ import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
@@ -96,27 +98,36 @@ public final class LiveBPreviewService {
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, MetricRasterGrid outputGrid,
             String palette, double searchRadiusMeters, double sampleStepMeters,
-            String settingsHash, String parameterHash) {
+            String settingsHash, String parameterHash, TrackerMode engine) {
         public Captured {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
+            if (engine == null) {
+                throw new IllegalArgumentException("Live preview engine is required");
+            }
         }
     }
 
     /** Detached result from the actual common modern final pipeline. */
-    public record Computed(Captured captured, EvidenceSnapshot evidence,
+    public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
             ModernTracePipeline.Result pipeline) { }
 
     /** Captures the bounded network and exact visible-render frame on the EDT without mutation. */
     public Captured capture(DataSet dataSet, SelectionContext selection,
             VisibleRaster raster, AlignmentConfig config) {
+        return capture(dataSet, selection, raster, config, false);
+    }
+
+    /** Captures a visible source explicitly selected for this read-only preview session. */
+    public Captured capture(DataSet dataSet, SelectionContext selection,
+            VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource) {
         if (!SwingUtilities.isEventDispatchThread()) {
-            throw new IllegalStateException("Live B preview capture must execute on the EDT");
+            throw new IllegalStateException("Live preview capture must execute on the EDT");
         }
         if (raster == null) {
-            throw new IllegalArgumentException("Live B preview raster is required");
+            throw new IllegalArgumentException("Live preview raster is required");
         }
-        requireSupported(selection, raster.projectionCode(), config);
+        requireSupported(selection, raster.projectionCode(), config, explicitVisibleSource);
         List<GeographicPoint> source = selection.segmentNodes().stream()
                 .map(LiveBPreviewService::geographic).toList();
         GeographicPoint southWest = inverseMercator(raster.minimumEast(), raster.minimumNorth());
@@ -140,9 +151,10 @@ public final class LiveBPreviewService {
         for (Node node : selection.segmentNodes()) {
             protectedNodes.add(PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId()));
         }
+        TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson());
-        String parameterHash = hash("live-probabilistic-default-v1");
-        String snapshotId = "live-b-network-" + hash(Long.toString(selection.way().getUniqueId()),
+        String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT) + "-v1");
+        String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(
                 snapshotId, "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)),
@@ -151,33 +163,39 @@ public final class LiveBPreviewService {
                 true, RecoveryPermissions.disabled(radius));
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         return new Captured(raster, specification, network, source, metric, grid,
-                config.heatmap().color(), radius, step, settingsHash, parameterHash);
+                config.heatmap().color(), radius, step, settingsHash, parameterHash, engine);
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
     public Computed compute(Captured captured, CancellationProbe cancellation) {
         if (SwingUtilities.isEventDispatchThread()) {
-            throw new IllegalStateException("Live B preview inference must execute off the EDT");
+            throw new IllegalStateException("Live preview inference must execute off the EDT");
         }
         if (captured == null || cancellation == null) {
-            throw new IllegalArgumentException("Live B preview computation is incomplete");
+            throw new IllegalArgumentException("Live preview computation is incomplete");
         }
         EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
+        Optional<CorridorTraceInput> corridorInput = captured.engine() == TrackerMode.CORRIDOR_AWARE
+                ? Optional.of(CorridorTraceInput.from(chainage, captured.sourceMetric(),
+                        evidence.coordinateFrame(), evidence.transform(),
+                        evidence.resolution().outputRasterPitchMeters()))
+                : Optional.empty();
         TraceRequest request = new TraceRequest(captured.specification().selectedWayKey(),
-                captured.specification().selectedRange(), TrackerMode.PROBABILISTIC,
+                captured.specification().selectedRange(), captured.engine(),
                 AlignmentMode.PRECISE_SHAPE, captured.specification().permissions(),
                 TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
-                captured.settingsHash(), captured.parameterHash(), "visible-b-v1",
-                captured.sampleStepMeters(), chainage, evidence.resolution());
+                captured.settingsHash(), captured.parameterHash(), "visible-"
+                        + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
+                captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput);
         ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
                 .run(request, evidence, captured.network(),
                         new ModernTracePipeline.Options(FIELD,
                                 org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig.disabled(),
                                 "selected-visible", 0), cancellation);
-        return new Computed(captured, evidence, pipeline);
+        return new Computed(captured, evidence, request, pipeline);
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {
@@ -217,16 +235,16 @@ public final class LiveBPreviewService {
     public void requireCurrent(DataSet dataSet, Captured captured,
             String sourceIdentity, String projectionCode) {
         if (!SwingUtilities.isEventDispatchThread()) {
-            throw new IllegalStateException("Live B preview revalidation must execute on the EDT");
+            throw new IllegalStateException("Live preview revalidation must execute on the EDT");
         }
         if (dataSet == null || captured == null
                 || !captured.raster().sourceIdentity().equals(sourceIdentity)
                 || !captured.raster().projectionCode().equals(projectionCode)) {
-            throw new IllegalStateException("Live B preview source, layer, or projection is stale");
+            throw new IllegalStateException("Live preview source, layer, or projection is stale");
         }
         NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
         if (!current.canonicalHash().equals(captured.network().canonicalHash())) {
-            throw new IllegalStateException("Live B preview network snapshot is stale");
+            throw new IllegalStateException("Live preview network snapshot is stale");
         }
     }
 
@@ -234,41 +252,53 @@ public final class LiveBPreviewService {
     public List<CenterlineCandidate> adapt(Computed computed,
             Function<GeographicPoint, EastNorth> projector) {
         return new ModernCandidateAdapter().adaptRoutes(computed.pipeline().routes(),
-                computed.evidence(), FIELD, computed.captured().sourceMetric(), projector);
+                computed.request().engine(), computed.evidence(), FIELD,
+                computed.captured().sourceMetric(), projector);
     }
 
     /** Rejects unsupported live settings before any raster or network acquisition. */
     public static void requireSupported(SelectionContext selection, String projectionCode,
             AlignmentConfig config) {
+        requireSupported(selection, projectionCode, config, false);
+    }
+
+    /**
+     * Rejects unsupported live settings before acquisition, allowing managed credentials only when a
+     * caller explicitly selected the rendered visible source for this one read-only session.
+     */
+    public static void requireSupported(SelectionContext selection, String projectionCode,
+            AlignmentConfig config, boolean explicitVisibleSource) {
         if (selection == null || selection.segmentNodes() == null || selection.segmentNodes().size() < 2
                 || projectionCode == null || config == null) {
-            throw new IllegalArgumentException("Live B preview inputs are incomplete");
+            throw new IllegalArgumentException("Live preview inputs are incomplete");
         }
         var heatmap = config.heatmap();
-        if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC) {
-            throw new IllegalArgumentException("Experimental live preview supports Probabilistic B only");
+        if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC
+                && heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE) {
+            throw new IllegalArgumentException("Experimental live preview supports only Probabilistic B or Corridor-aware A");
         }
         if (heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
-            throw new IllegalArgumentException("Experimental live B preview requires Precise Shape");
+            throw new IllegalArgumentException("Experimental live preview requires Precise Shape");
         }
         if (!config.cleanup().isDisabled() || heatmap.simplifyEnabled()) {
-            throw new IllegalArgumentException("Experimental live B preview requires cleanup and simplification Off");
+            throw new IllegalArgumentException("Experimental live preview requires cleanup and simplification Off");
         }
-        if (heatmap.hasManagedAccessValues() || heatmap.multiColorDetection()
-                || heatmap.aggregateAllColorSchemes() || heatmap.parallelWayAwareness()
+        if ((heatmap.hasManagedAccessValues() && !explicitVisibleSource)
+                || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
+                || heatmap.parallelWayAwareness()
                 || heatmap.adjustJunctionNodes() || config.searchHalfWidthMetersOverride().isPresent()) {
-            throw new IllegalArgumentException("Experimental live B preview does not support managed, expanded, or junction options");
+            throw new IllegalArgumentException("Experimental live preview does not support managed acquisition, expanded, or junction options");
         }
         if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
-            throw new IllegalArgumentException("Experimental live B preview supports Color mapping only");
+            throw new IllegalArgumentException("Experimental live preview supports Color mapping only");
         }
         if (!"EPSG:3857".equals(projectionCode)) {
-            throw new IllegalArgumentException("Experimental live B preview requires EPSG:3857");
+            throw new IllegalArgumentException("Experimental live preview requires EPSG:3857");
         }
         Set<Long> identities = new LinkedHashSet<>();
         for (Node node : selection.way().getNodes()) {
             if (!identities.add(node.getUniqueId())) {
-                throw new IllegalArgumentException("Experimental live B preview rejects repeated node identities");
+                throw new IllegalArgumentException("Experimental live preview rejects repeated node identities");
             }
         }
     }

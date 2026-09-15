@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 
@@ -60,16 +61,15 @@ public final class ModernCandidateAdapter {
 
     /** Adapts the stored common-pipeline final routes and preserves their final quality findings. */
     public List<CenterlineCandidate> adaptRoutes(List<ModernTracePipeline.Route> routes,
-            EvidenceSnapshot evidence, String fieldName, List<MetricPoint> sourcePolyline,
+            TrackerMode engine, EvidenceSnapshot evidence, String fieldName, List<MetricPoint> sourcePolyline,
             Function<GeographicPoint, EastNorth> geographicProjector) {
-        if (routes == null) {
-            throw new IllegalArgumentException("Modern final routes are required");
+        if (routes == null || engine == null) {
+            throw new IllegalArgumentException("Modern final routes and engine are required");
         }
         List<CenterlineCandidate> result = new ArrayList<>();
         for (ModernTracePipeline.Route route : routes) {
             TraceHypothesisSet one = new TraceHypothesisSet(
-                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.PROBABILISTIC,
-                    List.of(route.hypothesis()), TraceHypothesisSet.Status.COMPLETE,
+                    engine, List.of(route.hypothesis()), TraceHypothesisSet.Status.COMPLETE,
                     false, route.hypothesis().points().size(), 0, "common-final-route");
             CenterlineCandidate base = adapt(one, evidence, fieldName, sourcePolyline,
                     geographicProjector).get(0);

@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
@@ -91,6 +93,8 @@ public class AlignWayAction extends JosmAction {
     private final LivePreviewGate livePreviewGate = new LivePreviewGate();
     /** Optional shortcut-specific mode override, or null for configured behavior. */
     private final AlignmentMode forcedAlignmentMode;
+    /** Explicit session-local read-only modern-preview engine, or null for ordinary alignment. */
+    private final TrackerMode forcedLivePreviewEngine;
     /** Current modeless preview dialog, if one is open. */
     private JDialog activePreviewDialog;
 
@@ -98,7 +102,7 @@ public class AlignWayAction extends JosmAction {
      * Creates the default alignment action using the mode configured in plugin settings.
      */
     public AlignWayAction() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -107,14 +111,33 @@ public class AlignWayAction extends JosmAction {
      * @param forcedAlignmentMode alignment mode to force for this action, or {@code null} to use settings
      */
     public AlignWayAction(AlignmentMode forcedAlignmentMode) {
+        this(forcedAlignmentMode, null);
+    }
+
+    /** Creates the explicit session-local visible-source Engine A preview action. */
+    public static AlignWayAction experimentalCorridorAwareVisiblePreview() {
+        return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE);
+    }
+
+    /** Creates the explicit session-local visible-source Engine B preview action. */
+    public static AlignWayAction experimentalProbabilisticVisiblePreview() {
+        return new AlignWayAction(null, TrackerMode.PROBABILISTIC);
+    }
+
+    private AlignWayAction(AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
         super(
-            actionName(forcedAlignmentMode),
+            actionName(forcedAlignmentMode, forcedLivePreviewEngine),
             null,
-            actionTooltip(forcedAlignmentMode),
-            shortcut(forcedAlignmentMode),
+            actionTooltip(forcedAlignmentMode, forcedLivePreviewEngine),
+            shortcut(forcedAlignmentMode, forcedLivePreviewEngine),
             true
         );
+        if (forcedLivePreviewEngine != null && forcedLivePreviewEngine != TrackerMode.CORRIDOR_AWARE
+                && forcedLivePreviewEngine != TrackerMode.PROBABILISTIC) {
+            throw new IllegalArgumentException("Only explicit Corridor-aware A or Probabilistic B preview is supported");
+        }
         this.forcedAlignmentMode = forcedAlignmentMode;
+        this.forcedLivePreviewEngine = forcedLivePreviewEngine;
         putValue("help", HelpUtil.ht("/Plugin/WayHeatmapTracer"));
     }
 
@@ -156,22 +179,28 @@ public class AlignWayAction extends JosmAction {
                 return;
             }
 
-            config = effectiveConfig(PluginPreferences.load());
+            ManagedHeatmapConfig persistedConfig = PluginPreferences.load();
+            config = effectiveConfig(persistedConfig);
             SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
             if (!config.allowUndownloadedAlignment()) {
                 requireDownloadedAreaCoverage(selection, dataSet);
             } else {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
-            ImageryLayer imageryLayer = config.hasManagedAccessValues()
-                ? HeatmapLayerResolver.resolveOptional().orElse(null)
-                : HeatmapLayerResolver.resolve();
+            ManagedHeatmapConfig selectedConfig = config;
+            ImageryLayer imageryLayer = selectVisibleSource(forcedLivePreviewEngine != null,
+                    HeatmapLayerResolver::resolve,
+                    () -> selectedConfig.hasManagedAccessValues()
+                            ? HeatmapLayerResolver.resolveOptional().orElse(null)
+                            : HeatmapLayerResolver.resolve());
             MapView mapView = MainApplication.getMap().mapView;
 
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
+            AlignmentConfig persistedSlideConfig = new AlignmentConfig(persistedConfig, cleanupConfig);
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
-            if (config.trackerMode() == TrackerMode.PROBABILISTIC) {
-                startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig);
+            if (forcedLivePreviewEngine != null || config.trackerMode() == TrackerMode.PROBABILISTIC) {
+                startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, forcedLivePreviewEngine != null);
                 return;
             }
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
@@ -205,14 +234,17 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
-            ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig) {
+            ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
+            AlignmentConfig persistedSlideConfig, boolean explicitVisibleSource) {
         LiveBPreviewService.requireSupported(selection,
-                ProjectionRegistry.getProjection().toCode(), slideConfig);
+                ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
         DiagnosticsRegistry.setLastBundle(null);
         overlay.hide();
+        String engineLabel = livePreviewEngineLabel(slideConfig.heatmap().trackerMode());
         JDialog progress = new JDialog(MainApplication.getMainFrame(),
-                tr("Experimental B Preview"), false);
-        JLabel status = new JLabel(tr("Capturing the visible source and computing a read-only B preview..."));
+                tr("Experimental {0} Preview", engineLabel), false);
+        JLabel status = new JLabel(tr("Capturing the visible source and computing a read-only {0} preview...",
+                engineLabel));
         JButton cancel = new JButton(tr("Cancel"));
         JPanel panel = new JPanel();
         panel.add(status);
@@ -235,7 +267,8 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("Experimental B preview failed safely: {0}", current.failureReason()));
+                    showError(tr("Experimental {0} preview failed safely: {1}", engineLabel,
+                            current.failureReason()));
                 }
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
                 ((javax.swing.Timer) event.getSource()).stop();
@@ -266,14 +299,14 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
                         selection, imageryLayer, mapView, slideConfig, sourceIdentity);
                 LiveBPreviewService.Captured captured = livePreviewService.capture(
-                        dataSet, selection, raster, slideConfig);
+                        dataSet, selection, raster, slideConfig, explicitVisibleSource);
                 AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
                         captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
                         captured.network().canonicalHash());
                 return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
             }, (captured, context) -> livePreviewService.compute(captured, context),
                     attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
-                            imageryLayer, slideConfig, attempt.result()));
+                            imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
         } catch (RuntimeException exception) {
             livePreviewGate.close(previewOwner);
             progress.dispose();
@@ -285,37 +318,41 @@ public class AlignWayAction extends JosmAction {
 
     private void publishLiveBPreview(long previewOwner, JDialog progress, DataSet dataSet,
             SelectionContext selection,
-            ImageryLayer imageryLayer, AlignmentConfig slideConfig,
+            ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed) {
         if (!livePreviewGate.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
         try {
-            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, computed.captured());
+            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, persistedSlideConfig,
+                    computed.captured());
             List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                             new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
             if (candidates.isEmpty()) {
-                throw new IllegalStateException("Production B returned no previewable final route");
+                throw new IllegalStateException("Production "
+                        + livePreviewEngineLabel(slideConfig.heatmap().trackerMode())
+                        + " returned no previewable final route");
             }
             progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer,
-                    slideConfig, computed, candidates);
+                    slideConfig, persistedSlideConfig, computed, candidates);
         } catch (RuntimeException exception) {
             boolean closed = livePreviewGate.close(previewOwner);
             progress.dispose();
             if (closed) {
                 overlay.hide();
                 PluginLog.endSlideSession();
-                showError(tr("Experimental B preview was rejected: {0}", exception.getMessage()));
+                showError(tr("Experimental {0} preview was rejected: {1}",
+                        livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
             }
         }
     }
 
     private void showLiveBReadOnlyDialog(long previewOwner, DataSet dataSet,
             SelectionContext selection,
-            ImageryLayer imageryLayer, AlignmentConfig slideConfig,
+            ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates) {
         JComboBox<CenterlineCandidate> choices = new JComboBox<>(
                 candidates.toArray(CenterlineCandidate[]::new));
@@ -334,7 +371,8 @@ public class AlignWayAction extends JosmAction {
                 "Modern Format-15 debug export is unavailable for this experimental preview."));
         JButton close = new JButton(tr("Close preview"));
         JPanel panel = new JPanel();
-        panel.add(new JLabel(tr("Experimental read-only Probabilistic B final geometry")));
+        panel.add(new JLabel(tr("Experimental read-only {0} final geometry",
+                livePreviewEngineLabel(slideConfig.heatmap().trackerMode()))));
         if (candidates.size() > 1) {
             panel.add(choices);
         }
@@ -342,7 +380,8 @@ public class AlignWayAction extends JosmAction {
         panel.add(diagnostics);
         panel.add(close);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
-                tr("Experimental B Preview (Read Only)"), false);
+                tr("Experimental {0} Preview (Read Only)",
+                        livePreviewEngineLabel(slideConfig.heatmap().trackerMode())), false);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         dialog.pack();
@@ -354,7 +393,8 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException("The preview window no longer owns this attempt");
             }
             int index = Math.max(0, choices.getSelectedIndex());
-            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, computed.captured());
+            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, persistedSlideConfig,
+                    computed.captured());
             CenterlineCandidate candidate = candidates.get(index);
             AlignmentResult display = liveBDisplayResult(selection, computed, candidates, candidate);
             FinalGeometryEvaluator.Disposition disposition =
@@ -375,7 +415,8 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("Experimental B preview became stale: {0}", exception.getMessage()));
+                    showError(tr("Experimental {0} preview became stale: {1}",
+                            livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
                 }
             }
         });
@@ -431,13 +472,15 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void requireLiveBCurrent(DataSet dataSet, ImageryLayer imageryLayer,
-            AlignmentConfig slideConfig, LiveBPreviewService.Captured captured) {
+            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
+            LiveBPreviewService.Captured captured) {
+        AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
+                PluginPreferences.loadGeometryCleanup());
         if (MainApplication.getLayerManager().getEditDataSet() != dataSet
                 || !imageryLayer.isVisible()
                 || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer
-                || !slideConfig.equals(new AlignmentConfig(
-                        effectiveConfig(PluginPreferences.load()),
-                        PluginPreferences.loadGeometryCleanup()))) {
+                || !matchesLivePreviewSettings(persistedSlideConfig, slideConfig, currentPersisted,
+                        forcedAlignmentMode, forcedLivePreviewEngine)) {
             throw new IllegalStateException("The dataset, source layer, or settings changed after capture");
         }
         livePreviewService.requireCurrent(dataSet, captured, liveLayerIdentity(imageryLayer),
@@ -495,12 +538,54 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private ManagedHeatmapConfig effectiveConfig(ManagedHeatmapConfig config) {
-        if (forcedAlignmentMode == null) {
-            return config;
+    ManagedHeatmapConfig effectiveConfig(ManagedHeatmapConfig config) {
+        if (forcedAlignmentMode != null) {
+            PluginLog.verbose("Using one-shot alignment mode override: %s.", forcedAlignmentMode);
         }
-        PluginLog.verbose("Using one-shot alignment mode override: %s.", forcedAlignmentMode);
-        return config.withAlignmentMode(forcedAlignmentMode);
+        if (forcedLivePreviewEngine != null) {
+            PluginLog.verbose("Using explicit read-only visible-source modern preview: %s.",
+                    forcedLivePreviewEngine);
+        }
+        return effectiveConfig(config, forcedAlignmentMode, forcedLivePreviewEngine);
+    }
+
+    static ManagedHeatmapConfig effectiveConfig(ManagedHeatmapConfig config,
+            AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
+        ManagedHeatmapConfig effective = forcedAlignmentMode == null ? config
+                : config.withAlignmentMode(forcedAlignmentMode);
+        return forcedLivePreviewEngine == null ? effective
+                : effective.withAlignmentMode(AlignmentMode.PRECISE_SHAPE)
+                        .withTrackerMode(forcedLivePreviewEngine);
+    }
+
+    /** Selects a required rendered layer for an explicit visible-source preview before UI setup. */
+    static <T> T selectVisibleSource(boolean explicitVisibleSource, Supplier<T> requiredVisibleSource,
+            Supplier<T> ordinarySource) {
+        Objects.requireNonNull(requiredVisibleSource, "requiredVisibleSource");
+        Objects.requireNonNull(ordinarySource, "ordinarySource");
+        return explicitVisibleSource ? Objects.requireNonNull(requiredVisibleSource.get(),
+                "Experimental visible preview requires a current rendered heatmap layer")
+                : ordinarySource.get();
+    }
+
+    static boolean matchesLivePreviewSettings(AlignmentConfig persistedAtCapture,
+            AlignmentConfig effectiveAtCapture, AlignmentConfig currentPersisted,
+            AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
+        if (!persistedAtCapture.equals(currentPersisted)) {
+            return false;
+        }
+        AlignmentConfig currentEffective = new AlignmentConfig(
+                effectiveConfig(currentPersisted.heatmap(), forcedAlignmentMode,
+                        forcedLivePreviewEngine), currentPersisted.cleanup());
+        return effectiveAtCapture.equals(currentEffective);
+    }
+
+    private static String livePreviewEngineLabel(TrackerMode engine) {
+        return engine == TrackerMode.CORRIDOR_AWARE ? tr("Corridor-aware A") : tr("Probabilistic B");
+    }
+
+    private static String livePreviewEngineShortLabel(TrackerMode engine) {
+        return engine == TrackerMode.CORRIDOR_AWARE ? "A" : "B";
     }
 
     private void updateAggregateIntensityLayer(AlignmentResult result, ManagedHeatmapConfig config) {
@@ -509,7 +594,12 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
-    private static String actionName(AlignmentMode forcedAlignmentMode) {
+    private static String actionName(AlignmentMode forcedAlignmentMode,
+            TrackerMode forcedLivePreviewEngine) {
+        if (forcedLivePreviewEngine != null) {
+            return tr("Experimental Engine {0} Visible Preview (Read Only)",
+                    livePreviewEngineShortLabel(forcedLivePreviewEngine));
+        }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
             return tr("Align Way to Heatmap Precisely");
         }
@@ -519,7 +609,12 @@ public class AlignWayAction extends JosmAction {
         return tr("Align Way to Heatmap");
     }
 
-    private static String actionTooltip(AlignmentMode forcedAlignmentMode) {
+    private static String actionTooltip(AlignmentMode forcedAlignmentMode,
+            TrackerMode forcedLivePreviewEngine) {
+        if (forcedLivePreviewEngine != null) {
+            return tr("Preview Engine {0} using only the current rendered visible layer; stored credentials are not used for acquisition",
+                    livePreviewEngineShortLabel(forcedLivePreviewEngine));
+        }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
             return tr("Align the selected way to a heatmap and rebuild the selected segment precisely");
         }
@@ -529,7 +624,15 @@ public class AlignWayAction extends JosmAction {
         return tr("Align the selected way geometry to a heatmap imagery layer");
     }
 
-    private static Shortcut shortcut(AlignmentMode forcedAlignmentMode) {
+    private static Shortcut shortcut(AlignmentMode forcedAlignmentMode,
+            TrackerMode forcedLivePreviewEngine) {
+        if (forcedLivePreviewEngine != null) {
+            String engine = livePreviewEngineShortLabel(forcedLivePreviewEngine).toLowerCase(Locale.ROOT);
+            return Shortcut.registerShortcut("wayheatmaptracer:experimental-" + engine + "-visible-preview",
+                    tr("WayHeatmapTracer: Experimental Engine {0} Visible Preview",
+                            livePreviewEngineShortLabel(forcedLivePreviewEngine)),
+                    KeyEvent.VK_UNDEFINED, Shortcut.NONE);
+        }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
             return Shortcut.registerShortcut(
                 "wayheatmaptracer:align-precise",
