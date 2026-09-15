@@ -195,6 +195,10 @@ For rough new paths, draw a simple way approximately along the heatmap trace, se
 All actions are under JOSM `More tools`:
 
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
+- `Experimental Engine A Visible Preview (Read Only)`
+- `Experimental Engine B Visible Preview (Read Only)`
+- `Experimental Engine A Managed Preview (Read Only)`
+- `Experimental Engine B Managed Preview (Read Only)`
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Geometry Cleanup Settings`: no default shortcut
 - `Select Longest Heatmap Segment`: no default shortcut
@@ -355,8 +359,15 @@ The documentation avoids publishing a raw tokenized imagery URL, but the setting
 
 ### Experimental live modern previews
 
-The `Probabilistic` tracker offers its existing experimental read-only live B preview for `Precise Shape` with cleanup Off and a visible EPSG:3857 rendered source. The Tools menu also contains `Experimental Engine A Visible Preview (Read Only)` and `Experimental Engine B Visible Preview (Read Only)`. These explicit session-local actions run their named production engine over the currently rendered visible layer; the ordinary Corridor-aware Align workflow retains its normal preview and Apply path.
+The Tools menu contains four explicit session-local, read-only modern preview actions:
 
-Both interim previews keep existing nodes fixed, run common final validation, show final quality findings, and never offer Apply, confirmation, wider retry, or Format-15 export. The explicit A and B actions may use a currently rendered layer while managed credentials remain stored, but they do not perform managed acquisition or pass credentials to worker input. Closing or repeating the action cancels pending work, and source, settings, layer, projection, or relevant OSM changes reject a stale preview.
+- `Experimental Engine A Visible Preview (Read Only)`
+- `Experimental Engine B Visible Preview (Read Only)`
+- `Experimental Engine A Managed Preview (Read Only)`
+- `Experimental Engine B Managed Preview (Read Only)`
 
-Managed-source sampling, cleanup, junction movement, parallel context, alternative or aggregate detectors, and direct-intensity modes are not supported by these interim paths.
+The visible actions run the named production engine over the currently rendered heatmap layer. The managed actions use only the selected managed palette with the configured managed access values. Both sources support Engine A (Corridor-aware) and Engine B (Probabilistic), `Precise Shape`, `Color mapping`, and geometry cleanup `Off`. Managed previews require one selected palette; keep multi-color detection and all-color aggregation disabled. Keep nearby parallel-way context, junction/endpoint adjustment, wider discovery, incident-way reconstruction, additional experimental engines, aggregate intensity display, and candidate rating disabled. Visible previews require the rendered source in `EPSG:3857`.
+
+Select at least two consecutive nodes without repeated node identities. The modeless preview lets you inspect final-route candidates, switch candidates, pan/zoom, and use `Cancel` or `Close`; closing, repeating, or superseding an action cancels pending work. Source, settings, projection, or relevant OSM changes reject a stale preview. These actions keep existing nodes fixed, run common final validation, and never offer modern Apply, confirmation, retry, or Format-15 export. The ordinary `Align Way to Heatmap` workflow retains its existing preview and Apply path.
+
+Hybrid, Direction-aware Image, all-color modern acquisition, and direct-intensity modern previews are unavailable through these actions.
