@@ -103,6 +103,10 @@ The current implementation is designed for private development:
 - Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
 - Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The default fixed-scale search is calibrated to the good z15 setup: source tile z15, 6.0x reference raster, 0.389 m/px reference view, about 7.01 m search half-width, and about 1.56 m sampling step.
 
+## Offline Confidence Calibration
+
+The v0.22 offline calibration helper fits a fixed regularized logistic model only from independently human-labeled geographic groups, then evaluates its frozen coefficients on a disjoint deterministic holdout. Its model hash binds the parameter, domain, feature encoding, solver, and fixed reliability-gate settings. Public status distinguishes fitted/evaluated from validated: every populated predeclared probability bin needs sufficient independent-site support and a conservative group-level reliability bound within the fixed limit, otherwise empirical confidence remains unavailable. Actual outcome losses and predictions are averaged within a site to total site weight one; public JSON exposes no site identifiers. A numerical 1% severe-error certificate separately counts only eligible sites (an eligible site with any qualifying wrong outcome is an error); an empty eligible cohort is unavailable and even a certificate never grants Apply permission or bypasses deterministic geometry policy.
+
 ## Build
 
 Requirements:
