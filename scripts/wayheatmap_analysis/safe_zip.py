@@ -286,7 +286,14 @@ class SafeArchiveReader:
                                 payload.close()
                                 self._release(payload_size, budget)
                     names = {item.filename for item in infos if not item.is_dir()}
-                    if "candidate-metrics.csv" in names:
+                    format15_production = {
+                        "replay-manifest.json",
+                        "frozen-input.bin",
+                        "frozen-input-identities.json",
+                        "trace-request.json",
+                        "evidence-frame.json",
+                    }.issubset(names)
+                    if "candidate-metrics.csv" in names or format15_production:
                         bundle = BundleSource(name, source)
                         if on_bundle is not None:
                             on_bundle(bundle)

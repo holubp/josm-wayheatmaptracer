@@ -272,6 +272,17 @@ contents without extraction. It scans the validated text inventory and ZIP comme
 for credential-like material without echoing values. Quarantined archives are
 excluded from the training/validation/holdout split lock.
 
+### Offline Format-15 Replay (development)
+
+The v0.22 corpus tool recognizes legacy diagnostic bundles and the exact frozen
+Format-15 production signature. Inventory errors remain typed failures in strict
+replay, including when other cases succeed. Generate the manifest with
+`scripts/v022-corpus.py inventory`, then run the `v022Replay` Gradle task with
+`--strict --offline`, an explicit engine list, output path, and empty ablation
+configuration. Current production replay covers frozen scalar inference and final
+geometry. Raster preprocessing, full edit plans, and canonical expected outcomes
+for failed, cancelled, or resource-limited attempts remain unfinished.
+
 ## Palette Calibration Workflow
 
 For color-scheme tuning, use `More tools -> Export Heatmap Calibration Tiles` after selecting the relevant way or way segment. The plugin downloads and exports redacted tile images for the same selected segment across the base Strava color schemes: `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle contains mosaics, source tiles, and tile metadata, but not cookies or signed URLs.

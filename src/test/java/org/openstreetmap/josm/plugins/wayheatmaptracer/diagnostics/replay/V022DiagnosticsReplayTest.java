@@ -35,9 +35,9 @@ class V022DiagnosticsReplayTest {
             "diagnostics.json", "profile-intensity.csv", "rendered-layer-capture.png",
             "original-segment.osm", "candidate-previews.osm"));
 
-        assertTrue(capability.supports(ReplayLevel.SCALAR_INFERENCE));
-        assertTrue(capability.supports(ReplayLevel.RASTER_INFERENCE));
-        assertTrue(capability.supports(ReplayLevel.FINAL_GEOMETRY));
+        assertFalse(capability.supports(ReplayLevel.SCALAR_INFERENCE));
+        assertFalse(capability.supports(ReplayLevel.RASTER_INFERENCE));
+        assertFalse(capability.supports(ReplayLevel.FINAL_GEOMETRY));
         assertFalse(capability.supports(ReplayLevel.FULL_EDIT_PLAN));
     }
 

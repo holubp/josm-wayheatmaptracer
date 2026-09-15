@@ -22,7 +22,7 @@ public final class Format15Bundle {
         if (buildIdentity == null || buildIdentity.isBlank()) {
             throw new IllegalArgumentException("Format-15 build identity is required");
         }
-        Format15Safety.requireSafeText(buildIdentity);
+        Format15Safety.requireSafeExportedMetadata(buildIdentity);
         this.buildIdentity = buildIdentity;
         this.sourceIdentityHash = Format15Safety.requiredHash(sourceIdentityHash, "sourceIdentityHash");
         this.parameterHash = Format15Safety.requiredHash(parameterHash, "parameterHash");

@@ -29,6 +29,23 @@ def bundle():
     return make([("diagnostics.json", b"{}"), ("candidate-metrics.csv", b"candidate_id\na\n")])
 
 
+def production_bundle():
+    return make([
+        ("replay-manifest.json", b"{}"),
+        ("frozen-input.bin", b"frozen"),
+        ("frozen-input-identities.json", b"{}"),
+        ("trace-request.json", b"{}"),
+        ("evidence-frame.json", b"{}"),
+    ])
+
+
+def test_recognizes_format15_production_signature_without_legacy_metrics():
+    bundles = discover(production_bundle())
+
+    assert len(bundles) == 1
+    assert b"candidate-metrics.csv" not in bundles[0].data
+
+
 def test_valid_depth_eight_and_rejects_depth_nine():
     data = bundle()
     for index in range(8):

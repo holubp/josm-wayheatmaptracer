@@ -42,7 +42,7 @@ Capture admission checks separate 512 MiB peak-working and 256 MiB retained-comp
 limits before pixel processing. Checked accounting includes output fields, geometry,
 resolution samples, lineage strings and their backing arrays. These component limits
 do not replace the required shared attempt budget for capture, solvers and refitting.
-Live capture producers and production replay still require integration.
+Live capture producers plus raster and full-edit-plan replay still require integration.
 
 The isolated `GeometricCurvatureOperator` evaluates fine-mesh curvature against
 explicit inverse-metre targets with exact Huber loss and current-length quadrature.
@@ -547,6 +547,15 @@ copies. Privacy consumers scan bounded decoded chunks and retain findings only;
 they must not accumulate all decoded member text outside the reader's budget.
 
 Old bundles remain readable. The analyzers preserve old raw values but flag format-4 physical columns and post-Apply original geometry as untrusted. These commands analyze exported outcomes and do not replay a new tracker implementation against old imagery.
+
+Format-15 frozen production bundles are recognized by their complete replay
+manifest/input/identity/request/evidence-frame signature; legacy candidate-metrics
+bundles remain recognized. `v022Replay` verifies nested outer and bundle hashes,
+runs requested scalar/final engines, and treats every corpus inventory error as a
+typed strict failure. Exported identities reject absolute paths and signed values
+before persistence, and codec collection admission is symmetric on encode/decode.
+Raster preprocessing, full edit plans, and expected canonical negative outcomes are
+still unsupported and must not be inferred from a successful scalar/final run.
 
 ## Corridor-Aware Promotion Contract
 

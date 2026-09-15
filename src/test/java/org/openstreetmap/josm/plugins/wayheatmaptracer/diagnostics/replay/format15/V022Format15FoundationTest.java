@@ -40,7 +40,7 @@ class V022Format15FoundationTest {
         assertEquals(original.artifactNames(), read.artifactNames());
         assertEquals(original.artifact("trace-request.json").sha256(),
             read.artifact("trace-request.json").orElseThrow().sha256());
-        assertTrue(read.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
+        assertFalse(read.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
     }
 
     @Test
@@ -55,8 +55,8 @@ class V022Format15FoundationTest {
         Format15Archive read = Format15ArchiveReader.read(file);
 
         assertEquals(14, read.formatVersion());
-        assertTrue(read.capability().supports(ReplayLevel.SCALAR_INFERENCE));
-        assertTrue(read.capability().supports(ReplayLevel.RASTER_INFERENCE));
+        assertFalse(read.capability().supports(ReplayLevel.SCALAR_INFERENCE));
+        assertFalse(read.capability().supports(ReplayLevel.RASTER_INFERENCE));
         assertFalse(read.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
     }
 
@@ -93,14 +93,10 @@ class V022Format15FoundationTest {
         Format15BundleWriter.write(completeBundle(), file);
         Format15Archive archive = Format15ArchiveReader.read(file);
 
-        String result = Format15ReplayRunner.replay(archive, ReplayLevel.FULL_EDIT_PLAN,
-            SOURCE_HASH, PARAMETER_HASH, context -> {
-                assertFalse(context.allowsNetwork());
-                assertThrows(IllegalStateException.class, () -> context.requireNetwork("missing.png"));
-                return "replayed";
-            });
-
-        assertEquals("replayed", result);
+        ReplayMismatchException failure = assertThrows(ReplayMismatchException.class,
+            () -> Format15ReplayRunner.replay(archive, ReplayLevel.FULL_EDIT_PLAN,
+                SOURCE_HASH, PARAMETER_HASH));
+        assertTrue(failure.getMessage().contains("not implemented"));
     }
 
     @Test
@@ -144,10 +140,10 @@ class V022Format15FoundationTest {
 
         assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
             ReplayLevel.SCALAR_INFERENCE, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            PARAMETER_HASH, ignored -> null));
+            PARAMETER_HASH));
         assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
             ReplayLevel.SCALAR_INFERENCE, SOURCE_HASH,
-            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", ignored -> null));
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"));
     }
 
     @Test

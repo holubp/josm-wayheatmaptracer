@@ -52,6 +52,13 @@ tasks.register<JavaExec>("extractJosmTmsCache") {
     mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.tools.JosmTileCacheExtractor")
 }
 
+tasks.register<JavaExec>("v022Replay") {
+    group = "verification"
+    description = "Runs strict offline Format-15 production replay from a manifest"
+    classpath = sourceSets["tools"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022ReplayTool")
+}
+
 tasks.register<JavaExec>("v022GenerateFixtures") {
     group = "verification"
     description = "Generates the deterministic public v0.22 analytic-fixture manifest"

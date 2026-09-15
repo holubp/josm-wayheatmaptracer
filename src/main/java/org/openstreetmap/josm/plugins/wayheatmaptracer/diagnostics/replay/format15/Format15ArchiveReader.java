@@ -4,6 +4,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -171,17 +174,27 @@ public final class Format15ArchiveReader {
     }
 
     private static Map<String, Object> parseObject(Format15Artifact artifact, String name)
-        throws Format15ArchiveException {
+            throws Format15ArchiveException {
+        return parseObject(artifact.bytes(), name);
+    }
+
+    static Map<String, Object> parseObject(byte[] bytes, String name)
+            throws Format15ArchiveException {
         try {
-            Object value = new JsonParser(new ByteArrayInputStream(artifact.bytes())).parse();
+            String text = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes)).toString();
+            Object value = new JsonParser(text).parse();
             if (!(value instanceof Map<?, ?> map)) {
                 throw new Format15ArchiveException(name + " is not a JSON object");
             }
-            @SuppressWarnings("unchecked") Map<String, Object> result = (Map<String, Object>) map;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> result = (Map<String, Object>) map;
             return result;
         } catch (Format15ArchiveException exception) {
             throw exception;
-        } catch (RuntimeException | IOException exception) {
+        } catch (CharacterCodingException | RuntimeException exception) {
             throw new Format15ArchiveException(name + " is malformed", exception);
         }
     }
@@ -219,12 +232,12 @@ public final class Format15ArchiveReader {
     }
 
     /** Small strict JSON parser for the writer-owned manifest; it rejects duplicate keys. */
-    private static final class JsonParser {
+    static final class JsonParser {
         private final String text;
         private int position;
 
-        JsonParser(InputStream input) throws IOException {
-            this.text = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        JsonParser(String text) {
+            this.text = text;
         }
 
         Object parse() {

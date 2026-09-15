@@ -55,6 +55,24 @@ final class Format15Safety {
         }
     }
 
+    static void requireSafeExportedMetadata(String value) {
+        requireSafeText(value);
+        String lower = value.toLowerCase(java.util.Locale.ROOT);
+        boolean rooted = !value.isEmpty()
+                && (value.charAt(0) == '/' || value.charAt(0) == '\\');
+        boolean driveAbsolute = value.length() >= 3
+                && ((value.charAt(0) >= 'A' && value.charAt(0) <= 'Z')
+                        || (value.charAt(0) >= 'a' && value.charAt(0) <= 'z'))
+                && value.charAt(1) == ':'
+                && (value.charAt(2) == '/' || value.charAt(2) == '\\');
+        if (rooted || driveAbsolute || lower.startsWith("file:")
+                || lower.contains("x-amz-signature=")
+                || lower.contains("signature=") || lower.contains("policy=")) {
+            throw new IllegalArgumentException(
+                    "Replay metadata contains a private path or signed value");
+        }
+    }
+
     static String sha256(byte[] bytes) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
