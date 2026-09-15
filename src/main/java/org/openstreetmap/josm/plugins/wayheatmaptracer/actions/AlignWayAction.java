@@ -147,6 +147,18 @@ public class AlignWayAction extends JosmAction {
         return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false, session, false);
     }
 
+    /** Creates the explicit session-local visible-source Directional Image preview action. */
+    public static AlignWayAction experimentalDirectionalImageVisiblePreview() {
+        return new AlignWayAction(null, TrackerMode.DIRECTIONAL_IMAGE, false,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates Directional Image visible preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalDirectionalImageVisiblePreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.DIRECTIONAL_IMAGE, false, session, false);
+    }
+
     /** Creates the explicit session-local visible-source Hybrid A+B preview action. */
     public static AlignWayAction experimentalHybridVisiblePreview() {
         return new AlignWayAction(null, TrackerMode.HYBRID, false,
@@ -196,12 +208,15 @@ public class AlignWayAction extends JosmAction {
         );
         if (forcedLivePreviewEngine != null && forcedLivePreviewEngine != TrackerMode.CORRIDOR_AWARE
                 && forcedLivePreviewEngine != TrackerMode.PROBABILISTIC
-                && forcedLivePreviewEngine != TrackerMode.HYBRID) {
+                && forcedLivePreviewEngine != TrackerMode.HYBRID
+                && forcedLivePreviewEngine != TrackerMode.DIRECTIONAL_IMAGE) {
             throw new IllegalArgumentException("Only explicit Corridor-aware A, Probabilistic B, "
-                    + "or visible Hybrid A+B preview is supported");
+                    + "visible Hybrid A+B, or visible Directional Image preview is supported");
         }
-        if (forcedLivePreviewEngine == TrackerMode.HYBRID && forcedManagedPreview) {
-            throw new IllegalArgumentException("Hybrid preview is visible-source only");
+        if ((forcedLivePreviewEngine == TrackerMode.HYBRID
+                || forcedLivePreviewEngine == TrackerMode.DIRECTIONAL_IMAGE)
+                && forcedManagedPreview) {
+            throw new IllegalArgumentException("Hybrid and Directional Image previews are visible-source only");
         }
         this.forcedAlignmentMode = forcedAlignmentMode;
         this.forcedLivePreviewEngine = forcedLivePreviewEngine;
@@ -653,6 +668,7 @@ public class AlignWayAction extends JosmAction {
             case CORRIDOR_AWARE -> tr("Corridor-aware A");
             case PROBABILISTIC -> tr("Probabilistic B");
             case HYBRID -> tr("Hybrid A+B");
+            case DIRECTIONAL_IMAGE -> tr("Directional Image");
             default -> tr("Modern");
         };
     }
@@ -662,6 +678,7 @@ public class AlignWayAction extends JosmAction {
             case CORRIDOR_AWARE -> "A";
             case PROBABILISTIC -> "B";
             case HYBRID -> "Hybrid A+B";
+            case DIRECTIONAL_IMAGE -> "Image";
             default -> "Modern";
         };
     }

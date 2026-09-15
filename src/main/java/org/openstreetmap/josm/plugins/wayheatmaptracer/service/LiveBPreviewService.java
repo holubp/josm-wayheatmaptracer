@@ -388,9 +388,13 @@ public final class LiveBPreviewService {
         var heatmap = config.heatmap();
         if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC
                 && heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
-                && heatmap.trackerMode() != TrackerMode.HYBRID) {
+                && heatmap.trackerMode() != TrackerMode.HYBRID
+                && heatmap.trackerMode() != TrackerMode.DIRECTIONAL_IMAGE) {
             throw new IllegalArgumentException("Experimental live preview supports only Corridor-aware A, "
-                    + "Probabilistic B, or visible Hybrid A+B");
+                    + "Probabilistic B, visible Hybrid A+B, or visible Directional Image");
+        }
+        if (heatmap.trackerMode() == TrackerMode.DIRECTIONAL_IMAGE && !explicitVisibleSource) {
+            throw new IllegalArgumentException("Directional Image preview is visible-source only");
         }
         if (heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
             throw new IllegalArgumentException("Experimental live preview requires Precise Shape");

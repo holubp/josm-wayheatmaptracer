@@ -149,6 +149,25 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void realProductionDirectionalImageReturnsReadOnlyRouteFromVisibleFrame() throws Exception {
+        Fixture fixture = fixture();
+        List<String> before = state(fixture.dataSet());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.DIRECTIONAL_IMAGE), true));
+
+        LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
+
+        assertEquals(TrackerMode.DIRECTIONAL_IMAGE, result.request().engine());
+        assertEquals(TraceBudgets.defaults(), result.request().budgets());
+        assertEquals(TrackerMode.DIRECTIONAL_IMAGE, result.pipeline().inference().engine());
+        assertFalse(result.pipeline().routes().isEmpty(),
+                "supported visible evidence must produce a final Image route");
+        assertEquals(before, state(fixture.dataSet()));
+    }
+
+    @Test
     void publicationRejectsChangedSourceProjectionAndNewRelevantReferrer() throws Exception {
         Fixture fixture = fixture();
         LiveBPreviewService service = new LiveBPreviewService();

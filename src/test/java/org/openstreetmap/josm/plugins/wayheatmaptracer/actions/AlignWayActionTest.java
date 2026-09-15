@@ -71,6 +71,16 @@ class AlignWayActionTest {
     }
 
     @Test
+    void explicitDirectionalImagePreviewUsesTheSharedReadOnlyContract() {
+        ManagedHeatmapConfig configured = configuredCorridor();
+        ManagedHeatmapConfig preview = AlignWayAction.effectiveConfig(configured, null,
+                TrackerMode.DIRECTIONAL_IMAGE);
+        assertEquals(TrackerMode.DIRECTIONAL_IMAGE, preview.trackerMode());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, preview.alignmentMode());
+        assertEquals(configured.keyPairId(), preview.keyPairId());
+    }
+
+    @Test
     void explicitVisibleSourceRequiresALayerBeforePreviewUiCanOpen() {
         AtomicBoolean ordinaryResolverUsed = new AtomicBoolean();
 

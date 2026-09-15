@@ -75,6 +75,7 @@ public class WayHeatmapTracerPlugin extends Plugin {
             AlignWayAction.experimentalCorridorAwareVisiblePreview(modernPreviewSession),
             AlignWayAction.experimentalProbabilisticVisiblePreview(modernPreviewSession),
             AlignWayAction.experimentalHybridVisiblePreview(modernPreviewSession),
+            AlignWayAction.experimentalDirectionalImageVisiblePreview(modernPreviewSession),
             AlignWayAction.experimentalCorridorAwareManagedPreview(modernPreviewSession),
             AlignWayAction.experimentalProbabilisticManagedPreview(modernPreviewSession),
             new SelectLongestSegmentAction(),
