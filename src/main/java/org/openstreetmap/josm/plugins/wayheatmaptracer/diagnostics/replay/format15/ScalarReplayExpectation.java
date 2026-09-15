@@ -16,7 +16,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 final class ScalarReplayExpectation {
     static final String ARTIFACT_NAME = "expected-scalar-output.json";
     private static final String SCHEMA = "wayheatmaptracer-scalar-output-expectation-1";
-    private static final int MAX_BYTES = 16 * 1024;
+    static final int MAX_BYTES = 16 * 1024;
     private static final Set<String> KEYS = Set.of("schema", "fingerprintSchema",
         "buildIdentity", "inputHash", "parameterHash", "capturedEngine",
         "requestedEngine", "replayLevel", "fingerprintSha256");
@@ -103,19 +103,27 @@ final class ScalarReplayExpectation {
             + ",\"requestedEngine\":" + quote(requestedEngine.name())
             + ",\"replayLevel\":" + quote(ReplayLevel.SCALAR_INFERENCE.name())
             + ",\"fingerprintSha256\":" + quote(fingerprint) + "}\n";
+        return encodeJson(json, "scalar-expectation-budget",
+            "scalar-expectation-invalid");
+    }
+
+    static byte[] encodeJson(String json, String budgetReason, String invalidReason) {
+        if (json == null || json.length() > MAX_BYTES) {
+            throw new IllegalArgumentException(budgetReason);
+        }
         try {
             ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .encode(CharBuffer.wrap(json));
             if (encoded.remaining() > MAX_BYTES) {
-                throw new IllegalArgumentException("scalar-expectation-budget");
+                throw new IllegalArgumentException(budgetReason);
             }
             byte[] bytes = new byte[encoded.remaining()];
             encoded.get(bytes);
             return bytes;
         } catch (CharacterCodingException exception) {
-            throw new IllegalArgumentException("scalar-expectation-invalid", exception);
+            throw new IllegalArgumentException(invalidReason, exception);
         }
     }
 
@@ -148,14 +156,14 @@ final class ScalarReplayExpectation {
             && ScalarReplayFingerprint.sha256(actual.inference()).equals(fingerprint);
     }
 
-    private static boolean isExecutableModern(TrackerMode engine) {
+    static boolean isExecutableModern(TrackerMode engine) {
         return engine == TrackerMode.CORRIDOR_AWARE
             || engine == TrackerMode.PROBABILISTIC
             || engine == TrackerMode.HYBRID
             || engine == TrackerMode.DIRECTIONAL_IMAGE;
     }
 
-    private static String string(Map<String, Object> object, String key) {
+    static String string(Map<String, Object> object, String key) {
         Object value = object.get(key);
         if (!(value instanceof String string) || string.isBlank()) {
             throw new IllegalArgumentException("field");
@@ -163,7 +171,7 @@ final class ScalarReplayExpectation {
         return string;
     }
 
-    private static int integer(Map<String, Object> object, String key) {
+    static int integer(Map<String, Object> object, String key) {
         Object value = object.get(key);
         if (!(value instanceof Number number) || number.intValue() != number.doubleValue()) {
             throw new IllegalArgumentException("field");
@@ -171,7 +179,7 @@ final class ScalarReplayExpectation {
         return number.intValue();
     }
 
-    private static String quote(String value) {
+    static String quote(String value) {
         StringBuilder result = new StringBuilder("\"");
         for (int index = 0; index < value.length(); index++) {
             char character = value.charAt(index);

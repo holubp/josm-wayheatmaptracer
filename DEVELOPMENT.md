@@ -563,9 +563,13 @@ It excludes only the free-form explanation because that text is diagnostic rathe
 solver output. Missing or different-engine expectations are unavailable; malformed,
 stale, or changed matching-engine expectations are fidelity mismatches. Producer and
 reader enforce the same 16 KiB UTF-8 JSON envelope, accept only executable modern
-engine fields, and reject malformed Unicode. Positive quality validation remains
-independent. Raster preprocessing, final-output fingerprints, full
-edit plans, and deterministic cancellation replay remain unsupported.
+engine fields, and reject malformed Unicode. `expected-final-output.json` uses the same
+admission and identity rules, then fingerprints the executed inference and ordered final
+routes: raw/final hypotheses, typed existing/generated point identities, complete
+assignments and source ownership, quality disposition and ordered findings with physical
+metrics, cleanup status, and geometry-change flag. Point-keyed maps follow final point
+order. Positive quality validation remains independent. Raster preprocessing, full edit
+plans, and deterministic cancellation replay remain unsupported.
 
 ## Corridor-Aware Promotion Contract
 

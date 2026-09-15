@@ -67,7 +67,7 @@ final class ScalarReplayFingerprint {
         }
     }
 
-    private static void writeHypothesis(DataOutputStream data, TraceHypothesis hypothesis)
+    static void writeHypothesis(DataOutputStream data, TraceHypothesis hypothesis)
             throws IOException {
         writeString(data, hypothesis.id());
         writeString(data, hypothesis.branchSignature());
@@ -101,7 +101,7 @@ final class ScalarReplayFingerprint {
         }
     }
 
-    private static void writeString(DataOutputStream data, String value) throws IOException {
+    static void writeString(DataOutputStream data, String value) throws IOException {
         if (value == null) {
             throw new IllegalArgumentException("scalar-output-invalid");
         }

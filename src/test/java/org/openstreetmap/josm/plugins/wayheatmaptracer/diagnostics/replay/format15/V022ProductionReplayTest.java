@@ -35,6 +35,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelation
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
@@ -55,10 +57,216 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnershi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
+    @Test
+    void finalFingerprintPreservesCompleteOrderedRouteSemanticsAndCanonicalMaps() {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+            ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        String baseline = FinalReplayFingerprint.sha256(actual);
+        assertEquals(baseline, FinalReplayFingerprint.sha256(actual));
+        ModernTracePipeline.Route route = actual.routes().get(0);
+
+        TraceHypothesis rawChanged = copyHypothesis(route.rawHypothesis(),
+            route.rawHypothesis().id(), route.rawHypothesis().branchSignature(),
+            route.rawHypothesis().points(), route.rawHypothesis().support(),
+            route.rawHypothesis().objective() + 1.0,
+            route.rawHypothesis().posteriorProbability(), route.rawHypothesis().diagnostics());
+        ModernTracePipeline.Route changedRaw = copyRoute(route, rawChanged, route.hypothesis(),
+            route.pointIds(), route.assignments(), route.sourceOwnership(), route.quality(),
+            route.cleanupStatus(), route.geometryChanged());
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(changedRaw))));
+
+        int pointIndex = Math.min(1, route.hypothesis().points().size() - 1);
+        List<MetricPoint> changedPoints = new java.util.ArrayList<>(route.hypothesis().points());
+        MetricPoint point = changedPoints.get(pointIndex);
+        changedPoints.set(pointIndex, new MetricPoint(point.xMeters(), point.yMeters() + 0.125));
+        TraceHypothesis changedFinalHypothesis = copyHypothesis(route.hypothesis(),
+            route.hypothesis().id(), route.hypothesis().branchSignature(), changedPoints,
+            route.hypothesis().support(), route.hypothesis().objective(),
+            route.hypothesis().posteriorProbability(), route.hypothesis().diagnostics());
+        Map<FinalRoutePointId, MetricPoint> changedAssignments =
+            new LinkedHashMap<>(route.assignments());
+        changedAssignments.put(route.pointIds().get(pointIndex), changedPoints.get(pointIndex));
+        ModernTracePipeline.Route changedFinal = copyRoute(route, route.rawHypothesis(),
+            changedFinalHypothesis, route.pointIds(), changedAssignments, route.sourceOwnership(),
+            route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(changedFinal))));
+
+        List<FinalRoutePointId> changedIds = new java.util.ArrayList<>(route.pointIds());
+        FinalRoutePointId oldId = changedIds.get(0);
+        FinalRoutePointId newId = new GeneratedCandidatePoint("changed-identity", 100_000);
+        changedIds.set(0, newId);
+        Map<FinalRoutePointId, MetricPoint> identityAssignments =
+            remap(route.assignments(), oldId, newId);
+        Map<FinalRoutePointId, ObservationOwnership> identityOwnership =
+            remap(route.sourceOwnership(), oldId, newId);
+        ModernTracePipeline.Route changedIdentity = copyRoute(route, route.rawHypothesis(),
+            route.hypothesis(), changedIds, identityAssignments, identityOwnership,
+            route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(changedIdentity))));
+
+        Map<FinalRoutePointId, ObservationOwnership> changedOwnership =
+            new LinkedHashMap<>(route.sourceOwnership());
+        ObservationOwnership ownership = changedOwnership.get(route.pointIds().get(0));
+        changedOwnership.put(route.pointIds().get(0),
+            ownership == ObservationOwnership.DIRECT_TWO_SIDED
+                ? ObservationOwnership.DIRECT_AMBIGUOUS
+                : ObservationOwnership.DIRECT_TWO_SIDED);
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(copyRoute(route,
+            route.rawHypothesis(), route.hypothesis(), route.pointIds(), route.assignments(),
+            changedOwnership, route.quality(), route.cleanupStatus(), route.geometryChanged())))));
+
+        FinalGeometryEvaluator.Result quality = route.quality();
+        List<FinalGeometryEvaluator.Finding> findings = new java.util.ArrayList<>(
+            quality.findings());
+        findings.add(new FinalGeometryEvaluator.Finding(
+            FinalGeometryEvaluator.FindingCode.SUPPORT_MISMATCH,
+            FinalGeometryEvaluator.Severity.REVIEW, 0, 1, 0.25));
+        FinalGeometryEvaluator.Result changedQuality = new FinalGeometryEvaluator.Result(
+            quality.id(), FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, findings,
+            quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+            quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(),
+            quality.bendPreservingRoughness());
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(copyRoute(route,
+            route.rawHypothesis(), route.hypothesis(), route.pointIds(), route.assignments(),
+            route.sourceOwnership(), changedQuality, route.cleanupStatus(),
+            route.geometryChanged())))));
+        FinalGeometryEvaluator.Result changedMetric = new FinalGeometryEvaluator.Result(
+            quality.id(), quality.disposition(), quality.findings(),
+            quality.totalLengthMeters() + 0.125, quality.directlySupportedLengthMeters(),
+            quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(),
+            quality.bendPreservingRoughness());
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(copyRoute(route,
+            route.rawHypothesis(), route.hypothesis(), route.pointIds(), route.assignments(),
+            route.sourceOwnership(), changedMetric, route.cleanupStatus(),
+            route.geometryChanged())))));
+        ImageSupportedLocalCleanup.Status changedCleanup = route.cleanupStatus()
+                == ImageSupportedLocalCleanup.Status.SKIPPED
+                    ? ImageSupportedLocalCleanup.Status.UNCHANGED
+                    : ImageSupportedLocalCleanup.Status.SKIPPED;
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(copyRoute(route,
+            route.rawHypothesis(), route.hypothesis(), route.pointIds(), route.assignments(),
+            route.sourceOwnership(), route.quality(), changedCleanup,
+            route.geometryChanged())))));
+        assertNotEquals(baseline, finalFingerprint(withRoutes(actual, List.of(copyRoute(route,
+            route.rawHypothesis(), route.hypothesis(), route.pointIds(), route.assignments(),
+            route.sourceOwnership(), route.quality(), route.cleanupStatus(),
+            !route.geometryChanged())))));
+
+        Map<FinalRoutePointId, MetricPoint> reverseAssignments = reverse(route.assignments());
+        Map<FinalRoutePointId, ObservationOwnership> reverseOwnership =
+            reverse(route.sourceOwnership());
+        ModernTracePipeline.Route reverseMaps = copyRoute(route, route.rawHypothesis(),
+            route.hypothesis(), route.pointIds(), reverseAssignments, reverseOwnership,
+            route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertEquals(baseline, finalFingerprint(withRoutes(actual, List.of(reverseMaps))));
+        assertNotEquals(finalFingerprint(withRoutes(actual, List.of(route, changedRaw))),
+            finalFingerprint(withRoutes(actual, List.of(changedRaw, route))));
+        assertThrows(IllegalArgumentException.class, () -> FinalReplayFingerprint.sha256(
+            withRoutes(actual, Collections.nCopies(4_097, route))));
+    }
+
+    @Test
+    void finalCliMatchesActualFactoryOutputWhileScalarOnlyRemainsUnavailable(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15Bundle expected = Format15ProductionBundleFactory
+            .createWithExpectedFinalOutput("test", input, TrackerMode.CORRIDOR_AWARE);
+        CliRun matching = runCli(directory.resolve("matching-final"), expected, "A",
+            51.0, 55.0, false, "{}", "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(0, matching.exit(), matching.output());
+        assertTrue(expected.artifactNames().contains("expected-final-output.json"));
+        assertTrue(matching.output().contains("\"fidelityStatus\":\"MATCH\""));
+        assertTrue(matching.output().contains("\"qualityStatus\":\"PASS\""));
+
+        Format15Bundle scalarOnly = Format15ProductionBundleFactory
+            .createWithExpectedScalarOutput("test", input, TrackerMode.CORRIDOR_AWARE);
+        CliRun unavailable = runCli(directory.resolve("scalar-only-final"), scalarOnly, "A",
+            51.0, 55.0, false, "{}", "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(0, unavailable.exit(), unavailable.output());
+        assertTrue(unavailable.output().contains(
+            "\"fidelityStatus\":\"UNAVAILABLE\""));
+    }
+
+    @Test
+    void matchingNegativeFinalOutputStillFailsPositiveQuality(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.NO_SIGNAL);
+        Format15Bundle expected = Format15ProductionBundleFactory
+            .createWithExpectedFinalOutput("test", input, TrackerMode.CORRIDOR_AWARE);
+        CliRun run = runCli(directory, expected, "A", 0.0, 0.0, false, "{}",
+            "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(2, run.exit());
+        assertTrue(run.output().contains("\"fidelityStatus\":\"MATCH\""));
+        assertTrue(run.output().contains("\"qualityStatus\":\"FAIL\""));
+        assertTrue(run.output().contains("\"actualStatus\":\"NO_ROUTE\""));
+    }
+
+    @Test
+    void finalExpectationIsEngineScopedAndInvalidArtifactsFail(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        assertThrows(IllegalArgumentException.class, () -> Format15ProductionBundleFactory
+            .createWithExpectedFinalOutput("b".repeat(16_384), input,
+                TrackerMode.CORRIDOR_AWARE));
+        Format15Bundle expected = Format15ProductionBundleFactory
+            .createWithExpectedFinalOutput("test", input, TrackerMode.CORRIDOR_AWARE);
+        CliRun otherEngine = runCli(directory.resolve("other-final-engine"), expected, "B",
+            51.0, 55.0, false, "{}", "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(0, otherEngine.exit(), otherEngine.output());
+        assertTrue(otherEngine.output().contains(
+            "\"fidelityStatus\":\"UNAVAILABLE\""));
+
+        String valid = new String(expected.artifact("expected-final-output.json").bytes(),
+            StandardCharsets.UTF_8);
+        Format15Bundle invalid = withFinalExpectedArtifact(expected, valid.replace(
+            "wayheatmaptracer-final-output-expectation-1",
+            "wayheatmaptracer-final-output-expectation-2"));
+        CliRun malformed = runCli(directory.resolve("invalid-final"), invalid, "B",
+            51.0, 55.0, false, "{}", "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(2, malformed.exit(), malformed.output());
+        assertTrue(malformed.output().contains("\"fidelityStatus\":\"MISMATCH\""));
+
+        String changed = valid.replaceFirst(
+            "(\"fingerprintSha256\":\")[0-9a-f]{64}", "$1" + "2".repeat(64));
+        CliRun mismatch = runCli(directory.resolve("changed-final"),
+            withFinalExpectedArtifact(expected, changed), "A", 51.0, 55.0, false, "{}",
+            "FINAL_GEOMETRY",
+            "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+        assertEquals(2, mismatch.exit(), mismatch.output());
+        assertTrue(mismatch.output().contains(
+            "\"reason\":\"final-output-mismatch\""));
+
+        Format15Bundle scalar = Format15ProductionBundleFactory
+            .createWithExpectedScalarOutput("test", input, TrackerMode.CORRIDOR_AWARE);
+        String scalarJson = new String(scalar.artifact("expected-scalar-output.json").bytes(),
+            StandardCharsets.UTF_8);
+        List<String> invalidScalar = List.of(
+            scalarJson.replace("wayheatmaptracer-scalar-output-expectation-1",
+                "wayheatmaptracer-scalar-output-expectation-2"),
+            scalarJson.replace(expected.sourceIdentityHash(), "0".repeat(64)));
+        for (int index = 0; index < invalidScalar.size(); index++) {
+            CliRun unusedInvalid = runCli(directory.resolve("invalid-unused-scalar-" + index),
+                withExpectedArtifact(expected, invalidScalar.get(index)), "A", 51.0, 55.0,
+                false, "{}", "FINAL_GEOMETRY",
+                "[\"complete-edit-plan\",\"incident-relations\"]", "[]");
+            assertEquals(2, unusedInvalid.exit(), unusedInvalid.output());
+            assertTrue(unusedInvalid.output().contains(
+                "\"fidelityStatus\":\"MISMATCH\""));
+        }
+    }
+
     @Test
     void scalarFingerprintIsStableAndDiscriminatesSemanticOutput() {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
@@ -730,6 +938,51 @@ class V022ProductionReplayTest {
             manifestPath.toString(), "--engines", engines, "--output", output.toString(),
             "--strict", "--offline", "--ablation-config", ablation.toString()});
         return new CliRun(exit, Files.readString(output, StandardCharsets.UTF_8));
+    }
+
+    private static String finalFingerprint(Format15ReplayRunner.Result output) {
+        return FinalReplayFingerprint.sha256(output);
+    }
+
+    private static Format15ReplayRunner.Result withRoutes(Format15ReplayRunner.Result source,
+            List<ModernTracePipeline.Route> routes) {
+        return new Format15ReplayRunner.Result(source.level(), source.capturedEngine(),
+            source.engine(), source.inference(), routes, source.inputHash());
+    }
+
+    private static ModernTracePipeline.Route copyRoute(ModernTracePipeline.Route source,
+            TraceHypothesis raw, TraceHypothesis hypothesis, List<FinalRoutePointId> ids,
+            Map<FinalRoutePointId, MetricPoint> assignments,
+            Map<FinalRoutePointId, ObservationOwnership> ownership,
+            FinalGeometryEvaluator.Result quality, ImageSupportedLocalCleanup.Status cleanup,
+            boolean changed) {
+        return new ModernTracePipeline.Route(raw, hypothesis, ids, assignments, ownership,
+            quality, cleanup, changed);
+    }
+
+    private static <T> Map<FinalRoutePointId, T> remap(Map<FinalRoutePointId, T> source,
+            FinalRoutePointId oldId, FinalRoutePointId newId) {
+        Map<FinalRoutePointId, T> result = new LinkedHashMap<>();
+        source.forEach((id, value) -> result.put(id.equals(oldId) ? newId : id, value));
+        return result;
+    }
+
+    private static <T> Map<FinalRoutePointId, T> reverse(
+            Map<FinalRoutePointId, T> source) {
+        List<Map.Entry<FinalRoutePointId, T>> entries =
+            new java.util.ArrayList<>(source.entrySet());
+        Collections.reverse(entries);
+        Map<FinalRoutePointId, T> result = new LinkedHashMap<>();
+        entries.forEach(entry -> result.put(entry.getKey(), entry.getValue()));
+        return result;
+    }
+
+    private static Format15Bundle withFinalExpectedArtifact(Format15Bundle source, String text) {
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(source.artifacts());
+        artifacts.put("expected-final-output.json",
+            Format15Artifact.text("expected-final-output.json", text));
+        return new Format15Bundle(source.buildIdentity(), source.sourceIdentityHash(),
+            source.parameterHash(), artifacts);
     }
 
     private static TraceHypothesisSet syntheticScalar(String branch, String diagnostic) {

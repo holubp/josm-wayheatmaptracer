@@ -69,9 +69,11 @@ public final class ProductionReplayCommand {
                 throw new ReplayMismatchException("unsupported-replay-level");
             }
             Format15Archive archive = Format15NestedArchiveReader.read(item);
-            Optional<ScalarReplayExpectation> expected;
+            Optional<ScalarReplayExpectation> expectedScalar;
+            Optional<FinalReplayExpectation> expectedFinal;
             try {
-                expected = ScalarReplayExpectation.read(archive);
+                expectedScalar = ScalarReplayExpectation.read(archive);
+                expectedFinal = FinalReplayExpectation.read(archive);
             } catch (ReplayMismatchException invalid) {
                 fidelity = "MISMATCH";
                 throw invalid;
@@ -83,30 +85,30 @@ public final class ProductionReplayCommand {
                             "frozen-production-input-missing"));
             capturedEngine = input.request().engine();
             try {
-                expected.ifPresent(value -> value.validateBinding(archive, input));
+                expectedScalar.ifPresent(value -> value.validateBinding(archive, input));
+                expectedFinal.ifPresent(value -> value.validateBinding(archive, input));
             } catch (ReplayMismatchException stale) {
                 fidelity = "MISMATCH";
                 throw stale;
             }
-            Format15ReplayRunner.Result scalar = Format15ReplayRunner.replay(archive,
-                    ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(),
+            Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(archive,
+                    item.replayCapability(), archive.sourceIdentityHash(),
                     archive.parameterHash(), engine);
-            inference = scalar.inference();
-            if (item.replayCapability() == ReplayLevel.SCALAR_INFERENCE) {
-                if (expected.isPresent() && expected.orElseThrow().requestedEngine() == engine) {
-                    fidelity = expected.orElseThrow().matches(scalar) ? "MATCH" : "MISMATCH";
-                }
-            } else {
-                fidelity = "UNSUPPORTED_LEVEL";
+            inference = actual.inference();
+            if (item.replayCapability() == ReplayLevel.SCALAR_INFERENCE
+                    && expectedScalar.isPresent()
+                    && expectedScalar.orElseThrow().requestedEngine() == engine) {
+                fidelity = expectedScalar.orElseThrow().matches(actual) ? "MATCH" : "MISMATCH";
+            } else if (item.replayCapability() == ReplayLevel.FINAL_GEOMETRY
+                    && expectedFinal.isPresent()
+                    && expectedFinal.orElseThrow().requestedEngine() == engine) {
+                fidelity = expectedFinal.orElseThrow().matches(actual) ? "MATCH" : "MISMATCH";
             }
             try {
-                ProductionReplayValidator.validateScalar(scalar);
-                if (item.replayCapability() == ReplayLevel.FINAL_GEOMETRY) {
-                    Format15ReplayRunner.Result finalResult = Format15ReplayRunner.replay(archive,
-                            ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
-                            archive.parameterHash(), engine);
-                    ProductionReplayValidator.validateFinal(finalResult, input,
-                        item.expectedRoute());
+                if (item.replayCapability() == ReplayLevel.SCALAR_INFERENCE) {
+                    ProductionReplayValidator.validateScalar(actual);
+                } else {
+                    ProductionReplayValidator.validateFinal(actual, input, item.expectedRoute());
                 }
                 quality = "PASS";
             } catch (ReplayMismatchException mismatch) {
@@ -114,7 +116,8 @@ public final class ProductionReplayCommand {
                 reason = safeReason(mismatch);
             }
             if (fidelity.equals("MISMATCH")) {
-                reason = "scalar-output-mismatch";
+                reason = item.replayCapability() == ReplayLevel.FINAL_GEOMETRY
+                        ? "final-output-mismatch" : "scalar-output-mismatch";
             }
             String status = quality.equals("PASS") && !fidelity.equals("MISMATCH")
                     ? "ok" : "failed";

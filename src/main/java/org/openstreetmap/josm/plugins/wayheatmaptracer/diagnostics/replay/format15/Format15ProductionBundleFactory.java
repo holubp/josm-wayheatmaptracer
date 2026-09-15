@@ -55,6 +55,22 @@ public final class Format15ProductionBundleFactory {
             base.parameterHash(), artifacts);
     }
 
+    /** Creates a frozen bundle that records one actual final-geometry production result. */
+    public static Format15Bundle createWithExpectedFinalOutput(String buildIdentity,
+            FrozenReplayInput input, TrackerMode requestedEngine) {
+        ScalarReplayExpectation.requireBuildIdentityFitsEnvelope(buildIdentity);
+        Format15Bundle base = create(buildIdentity, input);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+            ReplayLevel.FINAL_GEOMETRY, requestedEngine);
+        FinalReplayExpectation expectation = FinalReplayExpectation.capture(
+            base.buildIdentity(), input, actual);
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put(FinalReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
+            FinalReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
+        return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts);
+    }
+
     private static String quote(String value) {
         StringBuilder result = new StringBuilder("\"");
         for (int index = 0; index < value.length(); index++) {
