@@ -280,8 +280,12 @@ replay, including when other cases succeed. Generate the manifest with
 `scripts/v022-corpus.py inventory`, then run the `v022Replay` Gradle task with
 `--strict --offline`, an explicit engine list, output path, and empty ablation
 configuration. Current production replay covers frozen scalar inference and final
-geometry. Raster preprocessing, full edit plans, and canonical expected outcomes
-for failed, cancelled, or resource-limited attempts remain unfinished.
+geometry. A bundle may record one versioned scalar-output fingerprint for a requested
+engine. The CLI reports reproduction fidelity separately from positive quality, so a
+faithfully reproduced no-route or resource-limited scalar result still fails quality.
+Bundles without that artifact remain readable and report fidelity unavailable. Raster
+preprocessing, final-geometry fingerprints, full edit plans, and deterministic expected
+cancellation remain unfinished.
 
 ## Palette Calibration Workflow
 

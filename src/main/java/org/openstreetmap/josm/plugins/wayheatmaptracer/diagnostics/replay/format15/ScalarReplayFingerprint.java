@@ -1,0 +1,128 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15;
+
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.Map;
+import java.util.TreeMap;
+
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
+
+/** Canonical, bounded scalar replay output fingerprint. */
+final class ScalarReplayFingerprint {
+    static final int SCHEMA_VERSION = 1;
+    private static final int MAX_HYPOTHESES = 4_096;
+    private static final int MAX_AGGREGATE_ITEMS = 500_000;
+    private static final int MAX_STRING_BYTES = 1_048_576;
+
+    private ScalarReplayFingerprint() {
+    }
+
+    /** Hashes authoritative scalar semantics without retaining another serialized output copy. */
+    static String sha256(TraceHypothesisSet output) {
+        if (output == null || output.hypotheses().size() > MAX_HYPOTHESES) {
+            throw new IllegalArgumentException("scalar-output-budget");
+        }
+        long items = output.hypotheses().size();
+        for (TraceHypothesis hypothesis : output.hypotheses()) {
+            items = Math.addExact(items, hypothesis.points().size());
+            items = Math.addExact(items, hypothesis.support().size());
+            items = Math.addExact(items, hypothesis.diagnostics().size());
+            if (items > MAX_AGGREGATE_ITEMS) {
+                throw new IllegalArgumentException("scalar-output-budget");
+            }
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (DataOutputStream data = new DataOutputStream(
+                    new DigestOutputStream(OutputStream.nullOutputStream(), digest))) {
+                data.writeInt(SCHEMA_VERSION);
+                writeString(data, output.engine().name());
+                writeString(data, output.status().name());
+                data.writeBoolean(output.alternativesTruncated());
+                data.writeLong(output.evaluatedStates());
+                data.writeLong(output.evaluatedTransitions());
+                data.writeInt(output.hypotheses().size());
+                for (TraceHypothesis hypothesis : output.hypotheses()) {
+                    writeHypothesis(data, hypothesis);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Scalar digest stream failed", exception);
+        }
+    }
+
+    private static void writeHypothesis(DataOutputStream data, TraceHypothesis hypothesis)
+            throws IOException {
+        writeString(data, hypothesis.id());
+        writeString(data, hypothesis.branchSignature());
+        data.writeLong(Double.doubleToLongBits(hypothesis.objective()));
+        data.writeBoolean(hypothesis.posteriorProbability().isPresent());
+        if (hypothesis.posteriorProbability().isPresent()) {
+            data.writeLong(Double.doubleToLongBits(
+                hypothesis.posteriorProbability().getAsDouble()));
+        }
+        data.writeInt(hypothesis.points().size());
+        for (MetricPoint point : hypothesis.points()) {
+            data.writeLong(Double.doubleToLongBits(point.xMeters()));
+            data.writeLong(Double.doubleToLongBits(point.yMeters()));
+        }
+        data.writeInt(hypothesis.support().size());
+        for (ObservationOwnership ownership : hypothesis.support()) {
+            if (ownership == null) {
+                throw new IllegalArgumentException("scalar-output-invalid");
+            }
+            writeString(data, ownership.name());
+        }
+        Map<String, Double> diagnostics = new TreeMap<>(hypothesis.diagnostics());
+        data.writeInt(diagnostics.size());
+        for (Map.Entry<String, Double> entry : diagnostics.entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank()
+                    || entry.getValue() == null || !Double.isFinite(entry.getValue())) {
+                throw new IllegalArgumentException("scalar-output-invalid");
+            }
+            writeString(data, entry.getKey());
+            data.writeLong(Double.doubleToLongBits(entry.getValue()));
+        }
+    }
+
+    private static void writeString(DataOutputStream data, String value) throws IOException {
+        if (value == null) {
+            throw new IllegalArgumentException("scalar-output-invalid");
+        }
+        if (value.length() > MAX_STRING_BYTES) {
+            throw new IllegalArgumentException("scalar-output-budget");
+        }
+        byte[] bytes;
+        try {
+            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+            bytes = new byte[encoded.remaining()];
+            encoded.get(bytes);
+        } catch (CharacterCodingException exception) {
+            throw new IllegalArgumentException("scalar-output-invalid", exception);
+        }
+        if (bytes.length > MAX_STRING_BYTES) {
+            throw new IllegalArgumentException("scalar-output-budget");
+        }
+        data.writeInt(bytes.length);
+        data.write(bytes);
+    }
+}

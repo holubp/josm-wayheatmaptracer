@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
@@ -55,38 +56,74 @@ public final class ProductionReplayCommand {
             TrackerMode engine) {
         TrackerMode capturedEngine = null;
         TraceHypothesisSet inference = null;
+        String fidelity = "UNAVAILABLE";
+        String quality = "NOT_EVALUATED";
+        String reason = "";
         try {
             if (missingFor(item.replayCapability(), item.missingInputs())) {
                 throw new ReplayMismatchException("manifest-inputs-missing");
             }
             if (item.replayCapability() == ReplayLevel.RASTER_INFERENCE
                     || item.replayCapability() == ReplayLevel.FULL_EDIT_PLAN) {
+                fidelity = "UNSUPPORTED_LEVEL";
                 throw new ReplayMismatchException("unsupported-replay-level");
             }
             Format15Archive archive = Format15NestedArchiveReader.read(item);
+            Optional<ScalarReplayExpectation> expected;
+            try {
+                expected = ScalarReplayExpectation.read(archive);
+            } catch (ReplayMismatchException invalid) {
+                fidelity = "MISMATCH";
+                throw invalid;
+            }
             FrozenReplayInput input = archive.artifact("frozen-input.bin")
                     .map(Format15Artifact::bytes)
                     .map(FrozenReplayCodec::decode)
                     .orElseThrow(() -> new ReplayMismatchException(
                             "frozen-production-input-missing"));
             capturedEngine = input.request().engine();
+            try {
+                expected.ifPresent(value -> value.validateBinding(archive, input));
+            } catch (ReplayMismatchException stale) {
+                fidelity = "MISMATCH";
+                throw stale;
+            }
             Format15ReplayRunner.Result scalar = Format15ReplayRunner.replay(archive,
                     ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(),
                     archive.parameterHash(), engine);
             inference = scalar.inference();
-            ProductionReplayValidator.validateScalar(scalar);
-            if (item.replayCapability() == ReplayLevel.FINAL_GEOMETRY) {
-                Format15ReplayRunner.Result finalResult = Format15ReplayRunner.replay(archive,
-                        ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
-                        archive.parameterHash(), engine);
-                ProductionReplayValidator.validateFinal(finalResult, input,
-                        item.expectedRoute());
+            if (item.replayCapability() == ReplayLevel.SCALAR_INFERENCE) {
+                if (expected.isPresent() && expected.orElseThrow().requestedEngine() == engine) {
+                    fidelity = expected.orElseThrow().matches(scalar) ? "MATCH" : "MISMATCH";
+                }
+            } else {
+                fidelity = "UNSUPPORTED_LEVEL";
             }
+            try {
+                ProductionReplayValidator.validateScalar(scalar);
+                if (item.replayCapability() == ReplayLevel.FINAL_GEOMETRY) {
+                    Format15ReplayRunner.Result finalResult = Format15ReplayRunner.replay(archive,
+                            ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
+                            archive.parameterHash(), engine);
+                    ProductionReplayValidator.validateFinal(finalResult, input,
+                        item.expectedRoute());
+                }
+                quality = "PASS";
+            } catch (ReplayMismatchException mismatch) {
+                quality = "FAIL";
+                reason = safeReason(mismatch);
+            }
+            if (fidelity.equals("MISMATCH")) {
+                reason = "scalar-output-mismatch";
+            }
+            String status = quality.equals("PASS") && !fidelity.equals("MISMATCH")
+                    ? "ok" : "failed";
             return new CaseResult(item.caseId(), item.replayCapability(), engine,
-                    capturedEngine, inference, "ok", "");
+                    capturedEngine, inference, fidelity, quality, status, reason);
         } catch (IOException | RuntimeException exception) {
             return new CaseResult(item.caseId(), item.replayCapability(), engine,
-                    capturedEngine, inference, "failed", safeReason(exception));
+                    capturedEngine, inference, fidelity, quality, "failed",
+                    safeReason(exception));
         }
     }
 
@@ -159,6 +196,8 @@ public final class ProductionReplayCommand {
                     .append(",\"evaluatedTransitions\":")
                     .append(result.inference == null ? "null"
                             : result.inference.evaluatedTransitions())
+                    .append(",\"fidelityStatus\":").append(quote(result.fidelityStatus))
+                    .append(",\"qualityStatus\":").append(quote(result.qualityStatus))
                     .append(",\"status\":").append(quote(result.status))
                     .append(",\"reason\":").append(quote(result.reason)).append('}');
         }
@@ -213,7 +252,7 @@ public final class ProductionReplayCommand {
 
     private record CaseResult(String caseId, ReplayLevel level, TrackerMode engine,
             TrackerMode capturedEngine, TraceHypothesisSet inference,
-            String status, String reason) {
+            String fidelityStatus, String qualityStatus, String status, String reason) {
     }
 
     private record Arguments(Path manifest, List<TrackerMode> engines,

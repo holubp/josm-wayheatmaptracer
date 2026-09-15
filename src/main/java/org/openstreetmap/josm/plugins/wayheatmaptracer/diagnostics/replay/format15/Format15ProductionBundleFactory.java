@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
     private Format15ProductionBundleFactory() {
@@ -34,6 +37,22 @@ public final class Format15ProductionBundleFactory {
                 + ",\"contentHash\":" + quote(input.evidence().canonicalHash()) + "}\n"));
         return new Format15Bundle(buildIdentity, inputHash,
             input.request().parameterHash(), artifacts);
+    }
+
+    /** Creates a frozen bundle that records one actual scalar production result. */
+    public static Format15Bundle createWithExpectedScalarOutput(String buildIdentity,
+            FrozenReplayInput input, TrackerMode requestedEngine) {
+        ScalarReplayExpectation.requireBuildIdentityFitsEnvelope(buildIdentity);
+        Format15Bundle base = create(buildIdentity, input);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+            ReplayLevel.SCALAR_INFERENCE, requestedEngine);
+        ScalarReplayExpectation expectation = ScalarReplayExpectation.capture(
+            base.buildIdentity(), input, actual);
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put(ScalarReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
+            ScalarReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
+        return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts);
     }
 
     private static String quote(String value) {

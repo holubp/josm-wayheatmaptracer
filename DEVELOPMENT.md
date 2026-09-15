@@ -554,8 +554,18 @@ bundles remain recognized. `v022Replay` verifies nested outer and bundle hashes,
 runs requested scalar/final engines, and treats every corpus inventory error as a
 typed strict failure. Exported identities reject absolute paths and signed values
 before persistence, and codec collection admission is symmetric on encode/decode.
-Raster preprocessing, full edit plans, and expected canonical negative outcomes are
-still unsupported and must not be inferred from a successful scalar/final run.
+The optional `expected-scalar-output.json` binds its producing archive build, exact
+frozen input and parameters, captured/requested engine, and scalar level. Its streamed
+canonical fingerprint includes ordered hypotheses and branches, exact metric coordinate
+bits, typed observation ownership, optional posterior presence/value, objective, every
+numeric diagnostic sorted by key, completion status, truncation, and solver counters.
+It excludes only the free-form explanation because that text is diagnostic rather than
+solver output. Missing or different-engine expectations are unavailable; malformed,
+stale, or changed matching-engine expectations are fidelity mismatches. Producer and
+reader enforce the same 16 KiB UTF-8 JSON envelope, accept only executable modern
+engine fields, and reject malformed Unicode. Positive quality validation remains
+independent. Raster preprocessing, final-output fingerprints, full
+edit plans, and deterministic cancellation replay remain unsupported.
 
 ## Corridor-Aware Promotion Contract
 
