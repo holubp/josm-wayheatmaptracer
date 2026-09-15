@@ -32,6 +32,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 
 /**
  * Applies one immutable v0.22 alignment edit plan as an atomic JOSM command.
@@ -47,8 +48,9 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     private final LongSupplier liveSourceGeneration;
     private final String description;
     private final MutationProbe mutationProbe;
+    private final LiveNetworkSnapshotValidator fullClosureValidator;
     private final String canonicalPlanHash;
-    private final Map<PrimitiveKey, Node> createdNodes;
+    private Map<PrimitiveKey, Node> createdNodes = Map.of();
     private final List<PrimitiveKey> writeKeys;
     private final List<PrimitiveKey> createdKeys;
     private final List<PrimitiveKey> removedKeys;
@@ -61,7 +63,11 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     private boolean appliedSuccessfullyBefore;
 
     /**
-     * Creates a side-effect-free command for a reviewed edit plan.
+     * Creates a side-effect-free command for a detached or unit-test edit plan.
+     *
+     * <p>This compatibility boundary checks only the materialized plan payload and the supplied
+     * generation. Live Apply callers must use the full-closure constructor so spatial entrants are
+     * recaptured under the dataset write lock.</p>
      *
      * @param dataSet live dataset that supplied the detached snapshot
      * @param plan complete immutable before/after edit plan
@@ -71,18 +77,43 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
      */
     public ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
         String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description) {
-        this(dataSet, plan, liveDatasetIdentity, liveSourceGeneration, description, point -> { });
+        this(dataSet, plan, liveDatasetIdentity, liveSourceGeneration, description,
+            point -> { }, null);
+    }
+
+    /**
+     * Creates a command whose factual full closure is repeated at the locked Apply boundary.
+     */
+    public ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+            LiveNetworkSnapshotValidator validator, String description) {
+        this(dataSet, plan, Objects.requireNonNull(validator, "validator").datasetIdentity(),
+            validator::currentSourceGeneration, description, point -> { }, validator);
     }
 
     ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
         String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
         MutationProbe mutationProbe) {
+        this(dataSet, plan, liveDatasetIdentity, liveSourceGeneration, description,
+            mutationProbe, null);
+    }
+
+    ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+            LiveNetworkSnapshotValidator validator, String description,
+            MutationProbe mutationProbe) {
+        this(dataSet, plan, Objects.requireNonNull(validator, "validator").datasetIdentity(),
+            validator::currentSourceGeneration, description, mutationProbe, validator);
+    }
+
+    private ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+        String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
+        MutationProbe mutationProbe, LiveNetworkSnapshotValidator fullClosureValidator) {
         super(Objects.requireNonNull(dataSet, "dataSet"));
         this.plan = Objects.requireNonNull(plan, "plan");
         this.liveDatasetIdentity = requireText(liveDatasetIdentity, "liveDatasetIdentity");
         this.liveSourceGeneration = Objects.requireNonNull(liveSourceGeneration, "liveSourceGeneration");
         this.description = requireText(description, "description");
         this.mutationProbe = Objects.requireNonNull(mutationProbe, "mutationProbe");
+        this.fullClosureValidator = fullClosureValidator;
         if (plan.validation().disposition() == ValidationReport.Disposition.HARD_BLOCKED) {
             throw new IllegalArgumentException("A structurally blocked alignment plan cannot be applied");
         }
@@ -93,9 +124,8 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             throw new IllegalArgumentException("Every retained or created changed primitive must be modified");
         }
         canonicalPlanHash = plan.canonicalHash();
-        createdNodes = allocatePlanLocalNodes(plan);
         writeKeys = sorted(plan.writePrimitiveKeys());
-        createdKeys = sorted(createdNodes.keySet());
+        createdKeys = sorted(plan.createdPrimitives().keySet());
         removedKeys = sorted(plan.removedPrimitives().keySet());
     }
 
@@ -113,12 +143,18 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         if (applied) {
             throw new IllegalStateException("Alignment edit plan is already applied");
         }
-        prepareAndValidateBeforeState();
-        if (!appliedSuccessfullyBefore
-            && liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
-            throw new IllegalStateException("Alignment source generation changed before Apply");
-        }
         getAffectedDataSet().update(() -> {
+            if (fullClosureValidator != null) {
+                fullClosureValidator.validateLocked(getAffectedDataSet(), plan,
+                    !appliedSuccessfullyBefore);
+            } else if (!appliedSuccessfullyBefore
+                    && liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
+                throw new IllegalStateException("Alignment source generation changed before Apply");
+            }
+            if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
+                createdNodes = allocatePlanLocalNodes(plan);
+            }
+            prepareAndValidateBeforeState();
             ApplyAlignmentEditPlanCommand.super.executeCommand();
             try {
                 applyMutationPhases();

@@ -110,9 +110,50 @@ public final class NetworkSnapshotCapture {
         }
     }
 
+    /**
+     * Immutable proof that one exact specification produced one snapshot from one live dataset.
+     *
+     * <p>Only a successful capture can create this receipt. The dataset reference is retained solely
+     * for identity validation at a later locked command boundary.</p>
+     */
+    public static final class CapturedSnapshot {
+        private final DataSet dataSet;
+        private final Specification specification;
+        private final NetworkSnapshot snapshot;
+
+        private CapturedSnapshot(DataSet dataSet, Specification specification,
+                NetworkSnapshot snapshot) {
+            this.dataSet = dataSet;
+            this.specification = specification;
+            this.snapshot = snapshot;
+        }
+
+        /** Returns the exact immutable capture specification. */
+        public Specification specification() {
+            return specification;
+        }
+
+        /** Returns the exact detached snapshot produced by the capture. */
+        public NetworkSnapshot snapshot() {
+            return snapshot;
+        }
+
+        boolean belongsTo(DataSet candidate) {
+            return dataSet == candidate;
+        }
+    }
+
     /** Captures using the production limits. */
     public static NetworkSnapshot capture(DataSet dataSet, Specification specification) {
         return capture(dataSet, specification, DEFAULT_LIMITS);
+    }
+
+    /**
+     * Captures and returns an unforgeable receipt binding the specification, result, and dataset.
+     */
+    public static CapturedSnapshot captureBound(DataSet dataSet, Specification specification) {
+        NetworkSnapshot snapshot = capture(dataSet, specification, DEFAULT_LIMITS);
+        return new CapturedSnapshot(dataSet, specification, snapshot);
     }
 
     static NetworkSnapshot capture(DataSet dataSet, Specification specification, Limits limits) {
