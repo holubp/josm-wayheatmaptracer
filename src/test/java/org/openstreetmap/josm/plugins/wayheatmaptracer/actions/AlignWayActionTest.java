@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -18,6 +19,36 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @Test
+    void closedOrSupersededLivePreviewCannotPublishLate() {
+        AlignWayAction.LivePreviewGate gate = new AlignWayAction.LivePreviewGate();
+        long first = gate.open();
+        assertTrue(gate.isCurrent(first));
+        Object window = new Object();
+        assertTrue(gate.isCurrentWindow(first, window, window, true));
+        assertTrue(!gate.isCurrentWindow(first, window, new Object(), true));
+        assertTrue(!gate.isCurrentWindow(first, window, window, false));
+        gate.close(first);
+        assertTrue(!gate.isCurrent(first));
+        long second = gate.open();
+        assertTrue(!gate.isCurrent(first));
+        assertTrue(gate.isCurrent(second));
+        gate.closeAll();
+        assertTrue(!gate.isCurrent(second));
+    }
+
+    @Test
+    void staleOwnerCloseCannotAuthorizeSharedPreviewCleanup() {
+        AlignWayAction.LivePreviewGate gate = new AlignWayAction.LivePreviewGate();
+        long first = gate.open();
+        long second = gate.open();
+
+        assertFalse(gate.close(first));
+        assertTrue(gate.isCurrent(second));
+        assertTrue(gate.close(second));
+        assertFalse(gate.isCurrent(second));
+    }
+
     @Test
     void ordinaryRetryIsCappedAtFourteenMeters() {
         assertEquals(14.0, AlignWayAction.ordinaryRetryMaximumMeters(7.01, 80.0), 0.0);

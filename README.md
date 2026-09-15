@@ -352,3 +352,9 @@ The extractor reads JOSM's current `TMS_BLOCK_v2.key` and `TMS_BLOCK_v2.data` ca
 The plugin explicitly supports a Strava heatmap imagery workflow for OSM improvement, but the plugin itself is branded as `WayHeatmapTracer`.
 
 The documentation avoids publishing a raw tokenized imagery URL, but the settings dialog uses the real cookie field names so users can copy the values accurately.
+
+### Experimental live Probabilistic B preview
+
+The `Probabilistic` tracker currently offers an experimental read-only live preview for `Precise Shape` with cleanup Off and a visible EPSG:3857 rendered source. It runs production B and common final validation, shows the final quality findings, and never offers Apply, confirmation, or wider retry. Existing nodes stay fixed. Closing or repeating the action cancels pending work, and source, settings, layer, projection, or relevant OSM changes reject a stale preview. Last-slide debug export is unavailable for this path and is cleared when it starts.
+
+Other modern engines, managed-source sampling, cleanup, junction movement, parallel context, alternative or aggregate detectors, and direct-intensity modes are not supported by this interim path.

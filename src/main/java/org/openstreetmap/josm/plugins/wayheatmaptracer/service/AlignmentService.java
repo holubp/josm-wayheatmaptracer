@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 import org.openstreetmap.josm.data.Bounds;
@@ -176,6 +177,34 @@ public final class AlignmentService {
             throw new IllegalArgumentException("Requested wider search exceeds the visible sampler profile limit");
         }
         return Math.max(MIN_EFFECTIVE_HALF_WIDTH_PX, pixels);
+    }
+
+    /** Captures the exact visible-layer raster and slide-time scale for detached B preview. */
+    public LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
+            SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, String sourceIdentity) {
+        if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Visible B raster capture must execute on the EDT");
+        }
+        if (selection == null || imageryLayer == null || mapView == null || slideConfig == null
+                || sourceIdentity == null || sourceIdentity.isBlank()) {
+            throw new IllegalArgumentException("Visible B raster capture inputs are incomplete");
+        }
+        ManagedHeatmapConfig config = slideConfig.effectiveHeatmap();
+        List<EastNorth> source = toEastNorth(selection.segmentNodes());
+        int halfWidth = visibleSearchHalfWidthPixels(slideConfig, source);
+        RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, source, halfWidth);
+        EffectiveSampling sampling = effectiveSampling(config, capture, source, halfWidth);
+        BufferedImage image = capture.raster();
+        int[] pixels = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0,
+                image.getWidth());
+        ProjectionBounds bounds = capture.bounds();
+        OptionalDouble nativePitch = capture.sourceResolution().metersPerPixel();
+        return new LiveBPreviewService.VisibleRaster(image.getWidth(), image.getHeight(), pixels,
+                bounds.minEast, bounds.minNorth, bounds.maxEast, bounds.maxNorth,
+                capture.projectionUnitsPerViewPixel(),
+                sampling.samplingScale().groundMetersPerViewPixel(), nativePitch,
+                sourceIdentity, ProjectionRegistry.getProjection().toCode());
     }
 
     /**

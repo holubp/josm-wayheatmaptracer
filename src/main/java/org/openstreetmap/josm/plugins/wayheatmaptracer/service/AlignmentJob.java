@@ -78,6 +78,29 @@ public final class AlignmentJob<R> implements AutoCloseable {
         AttemptSnapshot capture();
     }
 
+    /** One immutable attempt identity and its caller-owned detached worker payload. */
+    public record CapturedAttempt<I>(AttemptSnapshot snapshot, I input) {
+        /** Rejects incomplete captures before any work is submitted. */
+        public CapturedAttempt {
+            Objects.requireNonNull(snapshot, "snapshot");
+            Objects.requireNonNull(input, "input");
+        }
+    }
+
+    /** Captures an immutable typed payload synchronously on the caller's event thread. */
+    @FunctionalInterface
+    public interface DetachedCapture<I> {
+        /** Returns the attempt identity together with its sole worker input. */
+        CapturedAttempt<I> capture();
+    }
+
+    /** Performs side-effect-free work using only the captured typed payload. */
+    @FunctionalInterface
+    public interface DetachedWorker<I, R> {
+        /** Computes one immutable preview from the captured input. */
+        R compute(I input, JobContext context) throws Exception;
+    }
+
     /** Performs side-effect-free background acquisition, inference, refinement, and validation. */
     @FunctionalInterface
     public interface Worker<R> {
@@ -195,6 +218,49 @@ public final class AlignmentJob<R> implements AutoCloseable {
         return new StartResult<>(acquiring, true, false);
     }
 
+    /** Starts one attempt whose complete typed payload is captured before worker submission. */
+    public <I> StartResult<R> startDetached(DetachedCapture<I> capture,
+            DetachedWorker<I, R> worker, PreviewPublisher<R> publisher) {
+        Objects.requireNonNull(capture, "capture");
+        Objects.requireNonNull(worker, "worker");
+        Objects.requireNonNull(publisher, "publisher");
+        requireOpen();
+        Attempt<R> existing = current.get();
+        if (existing != null && !existing.state().terminal()) {
+            Attempt<R> cancelled = cancelAttempt(existing, "cancelled by repeated invocation");
+            return new StartResult<>(cancelled, false, true);
+        }
+        long next = sequence.incrementAndGet();
+        Attempt<R> capturing = new Attempt<>(next, provisionalSnapshot(next), State.CAPTURING,
+                false, null, "");
+        current.set(capturing);
+        final CapturedAttempt<I> captured;
+        try {
+            captured = Objects.requireNonNull(capture.capture(), "capture result");
+        } catch (RuntimeException exception) {
+            Attempt<R> failed = new Attempt<>(next, capturing.snapshot(), State.FAILED,
+                    false, null, safeFailure(exception));
+            current.compareAndSet(capturing, failed);
+            throw exception;
+        }
+        AttemptSnapshot snapshot = captured.snapshot();
+        Attempt<R> acquiring = new Attempt<>(next, snapshot, State.ACQUIRING, false, null, "");
+        if (!current.compareAndSet(capturing, acquiring)) {
+            Attempt<R> active = current.get();
+            Attempt<R> abandoned = active != null && active.sequence() == next ? active
+                    : new Attempt<>(next, snapshot, State.CANCELLED, true, null,
+                            "superseded during capture");
+            return new StartResult<>(abandoned, true, false);
+        }
+        try {
+            executor.execute(() -> runDetachedWorker(acquiring, captured.input(), worker, publisher));
+        } catch (java.util.concurrent.RejectedExecutionException exception) {
+            transitionIfCurrent(next, State.FAILED, null, safeFailure(exception));
+            throw exception;
+        }
+        return new StartResult<>(acquiring, true, false);
+    }
+
     /** Cancels the active attempt without applying or publishing partial geometry. */
     public void cancel() {
         Attempt<R> attempt = current.get();
@@ -243,6 +309,30 @@ public final class AlignmentJob<R> implements AutoCloseable {
     private boolean isCancelled(long attemptSequence) {
         Attempt<R> attempt = current.get();
         return closed.get() || attempt == null || attempt.sequence() != attemptSequence || attempt.cancelled();
+    }
+
+    private <I> void runDetachedWorker(Attempt<R> started, I input,
+            DetachedWorker<I, R> worker, PreviewPublisher<R> publisher) {
+        JobContext context = new JobContext(() -> isCancelled(started.sequence()),
+            state -> transitionIfCurrent(started.sequence(), state, null, ""));
+        try {
+            context.checkpoint();
+            context.transition(State.INFERRING);
+            R result = worker.compute(input, context);
+            context.checkpoint();
+            if (result == null) {
+                throw new IllegalStateException("Alignment worker returned no preview");
+            }
+            context.transition(State.VALIDATING);
+            dispatcher.dispatch(() -> publishIfCurrent(started.sequence(), result, publisher));
+        } catch (CancellationException exception) {
+            cancelAttempt(started, "cancelled");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            cancelAttempt(started, "interrupted");
+        } catch (Exception exception) {
+            transitionIfCurrent(started.sequence(), State.FAILED, null, safeFailure(exception));
+        }
     }
 
     private void publishIfCurrent(long attemptSequence, R result, PreviewPublisher<R> publisher) {

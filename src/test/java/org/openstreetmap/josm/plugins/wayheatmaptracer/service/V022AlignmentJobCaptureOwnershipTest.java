@@ -12,6 +12,24 @@ import org.junit.jupiter.api.Test;
 
 class V022AlignmentJobCaptureOwnershipTest {
     @Test
+    void detachedPayloadCapturedOnCallerIsTheOnlyWorkerInput() {
+        QueueExecutor executor = new QueueExecutor();
+        List<String> published = new ArrayList<>();
+        try (AlignmentJob<String> job = new AlignmentJob<>(Runnable::run, executor)) {
+            var started = job.startDetached(
+                () -> new AlignmentJob.CapturedAttempt<>(snapshot("typed"), List.of("frozen")),
+                (captured, context) -> captured.get(0) + ":" + Thread.currentThread().getName(),
+                result -> published.add(result.result()));
+
+            assertTrue(started.started());
+            assertTrue(published.isEmpty());
+            executor.queue.remove().run();
+            assertEquals(1, published.size());
+            assertTrue(published.get(0).startsWith("frozen:"));
+        }
+    }
+
+    @Test
     void cancellationDuringCaptureRemainsTerminalWithoutSubmittingWork() {
         QueueExecutor executor = new QueueExecutor();
         try (AlignmentJob<String> job = new AlignmentJob<>(Runnable::run, executor)) {

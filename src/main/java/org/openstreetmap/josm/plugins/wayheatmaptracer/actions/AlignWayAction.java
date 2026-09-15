@@ -29,6 +29,7 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.osm.DataSet;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.MapView;
 import org.openstreetmap.josm.gui.help.HelpUtil;
@@ -50,9 +51,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConf
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrity;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
@@ -78,6 +82,13 @@ public class AlignWayAction extends JosmAction {
     private final AlignmentService alignmentService = new AlignmentService();
     /** Map overlay used for candidate preview. */
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
+    /** One latest-attempt owner for the experimental detached B preview. */
+    private final AlignmentJob<LiveBPreviewService.Computed> livePreviewJob =
+            new AlignmentJob<>(SwingUtilities::invokeLater);
+    /** Stateless exact capture and production B pipeline adapter. */
+    private final LiveBPreviewService livePreviewService = new LiveBPreviewService();
+    /** Window-generation gate that prevents a closed preview from publishing late. */
+    private final LivePreviewGate livePreviewGate = new LivePreviewGate();
     /** Optional shortcut-specific mode override, or null for configured behavior. */
     private final AlignmentMode forcedAlignmentMode;
     /** Current modeless preview dialog, if one is open. */
@@ -119,7 +130,16 @@ public class AlignWayAction extends JosmAction {
     @Override
     public void actionPerformed(ActionEvent e) {
         if (activePreviewDialog != null && activePreviewDialog.isDisplayable()) {
-            activePreviewDialog.toFront();
+            AlignmentJob.Attempt<LiveBPreviewService.Computed> attempt = livePreviewJob.currentAttempt();
+            if (attempt != null && !attempt.state().terminal()) {
+                livePreviewJob.cancel();
+                livePreviewGate.closeAll();
+                overlay.hide();
+                activePreviewDialog.dispose();
+                PluginLog.endSlideSession();
+            } else {
+                activePreviewDialog.toFront();
+            }
             return;
         }
         ManagedHeatmapConfig config = null;
@@ -150,6 +170,10 @@ public class AlignWayAction extends JosmAction {
 
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
+            if (config.trackerMode() == TrackerMode.PROBABILISTIC) {
+                startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig);
+                return;
+            }
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
             updateAggregateIntensityLayer(result, config);
             DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
@@ -177,6 +201,297 @@ public class AlignWayAction extends JosmAction {
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
             PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+        }
+    }
+
+    private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
+            ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig) {
+        LiveBPreviewService.requireSupported(selection,
+                ProjectionRegistry.getProjection().toCode(), slideConfig);
+        DiagnosticsRegistry.setLastBundle(null);
+        overlay.hide();
+        JDialog progress = new JDialog(MainApplication.getMainFrame(),
+                tr("Experimental B Preview"), false);
+        JLabel status = new JLabel(tr("Capturing the visible source and computing a read-only B preview..."));
+        JButton cancel = new JButton(tr("Cancel"));
+        JPanel panel = new JPanel();
+        panel.add(status);
+        panel.add(cancel);
+        progress.setContentPane(panel);
+        progress.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        progress.pack();
+        progress.setLocationRelativeTo(MainApplication.getMainFrame());
+        activePreviewDialog = progress;
+        long previewOwner = livePreviewGate.open();
+        String sourceIdentity = liveLayerIdentity(imageryLayer);
+        javax.swing.Timer failureMonitor = new javax.swing.Timer(150, event -> {
+            AlignmentJob.Attempt<LiveBPreviewService.Computed> current = livePreviewJob.currentAttempt();
+            if (activePreviewDialog != progress || current == null) {
+                ((javax.swing.Timer) event.getSource()).stop();
+            } else if (current.state() == AlignmentJob.State.FAILED) {
+                ((javax.swing.Timer) event.getSource()).stop();
+                boolean closed = livePreviewGate.close(previewOwner);
+                progress.dispose();
+                if (closed) {
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                    showError(tr("Experimental B preview failed safely: {0}", current.failureReason()));
+                }
+            } else if (current.state() == AlignmentJob.State.CANCELLED) {
+                ((javax.swing.Timer) event.getSource()).stop();
+                livePreviewGate.close(previewOwner);
+                progress.dispose();
+            }
+        });
+        progress.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent event) {
+                boolean closed = livePreviewGate.close(previewOwner);
+                if (closed) {
+                    livePreviewJob.cancel();
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                }
+            }
+            @Override public void windowClosed(WindowEvent event) {
+                failureMonitor.stop();
+                if (activePreviewDialog == progress) {
+                    activePreviewDialog = null;
+                }
+            }
+        });
+        cancel.addActionListener(event -> progress.dispatchEvent(
+                new WindowEvent(progress, WindowEvent.WINDOW_CLOSING)));
+        try {
+            livePreviewJob.startDetached(() -> {
+                LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
+                        selection, imageryLayer, mapView, slideConfig, sourceIdentity);
+                LiveBPreviewService.Captured captured = livePreviewService.capture(
+                        dataSet, selection, raster, slideConfig);
+                AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
+                        captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
+                        captured.network().canonicalHash());
+                return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
+            }, (captured, context) -> livePreviewService.compute(captured, context),
+                    attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                            imageryLayer, slideConfig, attempt.result()));
+        } catch (RuntimeException exception) {
+            livePreviewGate.close(previewOwner);
+            progress.dispose();
+            throw exception;
+        }
+        failureMonitor.start();
+        progress.setVisible(true);
+    }
+
+    private void publishLiveBPreview(long previewOwner, JDialog progress, DataSet dataSet,
+            SelectionContext selection,
+            ImageryLayer imageryLayer, AlignmentConfig slideConfig,
+            LiveBPreviewService.Computed computed) {
+        if (!livePreviewGate.isCurrent(previewOwner)
+                || activePreviewDialog != progress || !progress.isDisplayable()) {
+            return;
+        }
+        try {
+            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, computed.captured());
+            List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
+                    point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                            new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+            if (candidates.isEmpty()) {
+                throw new IllegalStateException("Production B returned no previewable final route");
+            }
+            progress.dispose();
+            showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer,
+                    slideConfig, computed, candidates);
+        } catch (RuntimeException exception) {
+            boolean closed = livePreviewGate.close(previewOwner);
+            progress.dispose();
+            if (closed) {
+                overlay.hide();
+                PluginLog.endSlideSession();
+                showError(tr("Experimental B preview was rejected: {0}", exception.getMessage()));
+            }
+        }
+    }
+
+    private void showLiveBReadOnlyDialog(long previewOwner, DataSet dataSet,
+            SelectionContext selection,
+            ImageryLayer imageryLayer, AlignmentConfig slideConfig,
+            LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates) {
+        JComboBox<CenterlineCandidate> choices = new JComboBox<>(
+                candidates.toArray(CenterlineCandidate[]::new));
+        choices.setRenderer(new DefaultListCellRenderer() {
+            @Override public java.awt.Component getListCellRendererComponent(JList<?> list,
+                    Object value, int index, boolean selected, boolean focused) {
+                super.getListCellRendererComponent(list, value, index, selected, focused);
+                if (value instanceof CenterlineCandidate candidate) {
+                    setText(candidate.displayName());
+                }
+                return this;
+            }
+        });
+        JLabel quality = new JLabel(liveBQualitySummary(computed, 0));
+        JLabel diagnostics = new JLabel(tr(
+                "Modern Format-15 debug export is unavailable for this experimental preview."));
+        JButton close = new JButton(tr("Close preview"));
+        JPanel panel = new JPanel();
+        panel.add(new JLabel(tr("Experimental read-only Probabilistic B final geometry")));
+        if (candidates.size() > 1) {
+            panel.add(choices);
+        }
+        panel.add(quality);
+        panel.add(diagnostics);
+        panel.add(close);
+        JDialog dialog = new JDialog(MainApplication.getMainFrame(),
+                tr("Experimental B Preview (Read Only)"), false);
+        dialog.setContentPane(panel);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.pack();
+        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        activePreviewDialog = dialog;
+        Runnable refresh = () -> {
+            if (!livePreviewGate.isCurrentWindow(previewOwner, dialog,
+                    activePreviewDialog, dialog.isDisplayable())) {
+                throw new IllegalStateException("The preview window no longer owns this attempt");
+            }
+            int index = Math.max(0, choices.getSelectedIndex());
+            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, computed.captured());
+            CenterlineCandidate candidate = candidates.get(index);
+            AlignmentResult display = liveBDisplayResult(selection, computed, candidates, candidate);
+            FinalGeometryEvaluator.Disposition disposition =
+                    computed.pipeline().routes().get(index).quality().disposition();
+            overlay.show(selection, display, candidate, switch (disposition) {
+                case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
+                case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
+                case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
+            }, false, PluginPreferences.isDebugEnabled());
+            quality.setText(liveBQualitySummary(computed, index));
+        };
+        choices.addActionListener(event -> {
+            try {
+                refresh.run();
+            } catch (RuntimeException exception) {
+                boolean closed = livePreviewGate.close(previewOwner);
+                dialog.dispose();
+                if (closed) {
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                    showError(tr("Experimental B preview became stale: {0}", exception.getMessage()));
+                }
+            }
+        });
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent event) {
+                boolean closed = livePreviewGate.close(previewOwner);
+                if (closed) {
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                }
+            }
+            @Override public void windowClosed(WindowEvent event) {
+                if (livePreviewGate.close(previewOwner)) {
+                    overlay.hide();
+                }
+                if (activePreviewDialog == dialog) {
+                    activePreviewDialog = null;
+                }
+            }
+        });
+        close.addActionListener(event -> dialog.dispatchEvent(
+                new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        try {
+            refresh.run();
+            dialog.setVisible(true);
+        } catch (RuntimeException exception) {
+            dialog.dispose();
+            throw exception;
+        }
+    }
+
+    private AlignmentResult liveBDisplayResult(SelectionContext selection,
+            LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates,
+            CenterlineCandidate selected) {
+        List<EastNorth> source = computed.captured().sourceGeographic().stream()
+                .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                        new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
+                .toList();
+        return new AlignmentResult(selection, null, candidates, source,
+                selected.finalPreviewPoints(), List.of(), null, null, List.of(), List.of());
+    }
+
+    private String liveBQualitySummary(LiveBPreviewService.Computed computed, int index) {
+        FinalGeometryEvaluator.Result quality = computed.pipeline().routes().get(index).quality();
+        String findings = quality.findings().isEmpty() ? tr("none")
+                : quality.findings().stream()
+                        .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
+                        .reduce((left, right) -> left + ", " + right).orElse(tr("none"));
+        return tr("Final quality: {0}; findings: {1}; supported length: {2} m of {3} m",
+                quality.disposition().name(), findings,
+                String.format(Locale.ROOT, "%.1f", quality.directlySupportedLengthMeters()),
+                String.format(Locale.ROOT, "%.1f", quality.totalLengthMeters()));
+    }
+
+    private void requireLiveBCurrent(DataSet dataSet, ImageryLayer imageryLayer,
+            AlignmentConfig slideConfig, LiveBPreviewService.Captured captured) {
+        if (MainApplication.getLayerManager().getEditDataSet() != dataSet
+                || !imageryLayer.isVisible()
+                || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer
+                || !slideConfig.equals(new AlignmentConfig(
+                        effectiveConfig(PluginPreferences.load()),
+                        PluginPreferences.loadGeometryCleanup()))) {
+            throw new IllegalStateException("The dataset, source layer, or settings changed after capture");
+        }
+        livePreviewService.requireCurrent(dataSet, captured, liveLayerIdentity(imageryLayer),
+                ProjectionRegistry.getProjection().toCode());
+    }
+
+    private static String liveLayerIdentity(ImageryLayer layer) {
+        return layer.getClass().getName() + "@"
+                + Integer.toUnsignedString(System.identityHashCode(layer)) + ":" + layer.getName();
+    }
+
+    @Override
+    public void destroy() {
+        livePreviewGate.closeAll();
+        livePreviewJob.close();
+        overlay.hide();
+        if (activePreviewDialog != null) {
+            activePreviewDialog.dispose();
+            activePreviewDialog = null;
+        }
+        super.destroy();
+    }
+
+    /** Small headless-testable owner gate shared by progress and read-only preview windows. */
+    static final class LivePreviewGate {
+        private long sequence;
+        private long current;
+        private boolean open;
+
+        long open() {
+            current = ++sequence;
+            open = true;
+            return current;
+        }
+
+        boolean isCurrent(long owner) {
+            return open && owner == current;
+        }
+
+        boolean isCurrentWindow(long owner, Object expectedWindow,
+                Object activeWindow, boolean displayable) {
+            return isCurrent(owner) && expectedWindow == activeWindow && displayable;
+        }
+
+        boolean close(long owner) {
+            if (!open || owner != current) {
+                return false;
+            }
+            open = false;
+            return true;
+        }
+
+        void closeAll() {
+            open = false;
         }
     }
 

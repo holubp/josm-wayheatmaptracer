@@ -158,6 +158,18 @@ class V022LocalizationCorrectionTest {
     }
 
     @Test
+    void allMissingActualEngineReturnsNoRouteWithoutExportingUnusablePaths() {
+        EngineFixture fixture = engineFixture(snapshot((x, y) -> 0.02));
+
+        TraceHypothesisSet result = new ProbabilisticTraceEngine("scalar").trace(
+                fixture.request(), fixture.evidence(), fixture.network(), CancellationProbe.NONE);
+
+        assertEquals(TraceHypothesisSet.Status.NO_ROUTE, result.status());
+        assertTrue(result.hypotheses().isEmpty());
+        assertEquals("all profiles lack localized evidence", result.explanation());
+    }
+
+    @Test
     void descriptorResourceExhaustionPropagatesThroughTheActualEngine() {
         EngineFixture fixture = engineFixture();
         EvidenceModelParameters limited = withDescriptorBudget(36);
@@ -206,7 +218,10 @@ class V022LocalizationCorrectionTest {
     }
 
     private static EngineFixture engineFixture() {
-        EvidenceSnapshot evidence = snapshot((x, y) -> 0.02 + 0.8 * gaussian(y, 50.0, 1.2));
+        return engineFixture(snapshot((x, y) -> 0.02 + 0.8 * gaussian(y, 50.0, 1.2)));
+    }
+
+    private static EngineFixture engineFixture(EvidenceSnapshot evidence) {
         LocalMetricFrame frame = evidence.coordinateFrame();
         PrimitiveKey first = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 101);
         PrimitiveKey last = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 102);

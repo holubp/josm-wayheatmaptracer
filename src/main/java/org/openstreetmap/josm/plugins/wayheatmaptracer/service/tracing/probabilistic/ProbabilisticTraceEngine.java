@@ -90,7 +90,11 @@ public final class ProbabilisticTraceEngine implements TraceEngine {
         }
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
             parameters, request.budgets(), evidence.decisionRegion(), cancellation);
-        List<TraceHypothesis> hypotheses = toHypotheses(inference, evaluated, evidence, field);
+        boolean usableRoutes = inference.status() == ProbabilisticInferenceResult.Status.COMPLETE
+                || inference.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
+                || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
+        List<TraceHypothesis> hypotheses = usableRoutes
+                ? toHypotheses(inference, evaluated, evidence, field) : List.of();
         TraceHypothesisSet.Status status = switch (inference.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;
             case AMBIGUOUS, REVIEW_REQUIRED -> TraceHypothesisSet.Status.AMBIGUOUS;

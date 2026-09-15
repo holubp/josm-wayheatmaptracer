@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 
 /** Converts detached modern hypotheses into the existing modeless-preview candidate contract. */
@@ -53,6 +54,32 @@ public final class ModernCandidateAdapter {
             CandidateEvidence candidateEvidence = summarize(hypothesis, image, fieldName);
             result.add(new CenterlineCandidate(hypothesis.id(), -hypothesis.objective(), raster, offsets,
                     projected, candidateEvidence, List.of()));
+        }
+        return List.copyOf(result);
+    }
+
+    /** Adapts the stored common-pipeline final routes and preserves their final quality findings. */
+    public List<CenterlineCandidate> adaptRoutes(List<ModernTracePipeline.Route> routes,
+            EvidenceSnapshot evidence, String fieldName, List<MetricPoint> sourcePolyline,
+            Function<GeographicPoint, EastNorth> geographicProjector) {
+        if (routes == null) {
+            throw new IllegalArgumentException("Modern final routes are required");
+        }
+        List<CenterlineCandidate> result = new ArrayList<>();
+        for (ModernTracePipeline.Route route : routes) {
+            TraceHypothesisSet one = new TraceHypothesisSet(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.PROBABILISTIC,
+                    List.of(route.hypothesis()), TraceHypothesisSet.Status.COMPLETE,
+                    false, route.hypothesis().points().size(), 0, "common-final-route");
+            CenterlineCandidate base = adapt(one, evidence, fieldName, sourcePolyline,
+                    geographicProjector).get(0);
+            List<String> hardFindings = route.quality().findings().stream()
+                    .filter(finding -> finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK)
+                    .map(finding -> "modern-final:" + finding.code().name())
+                    .toList();
+            result.add(new CenterlineCandidate(base.id(), base.score(), base.screenPoints(),
+                    base.offsetsPx(), base.eastNorthPoints(), base.eastNorthPoints(), List.of(),
+                    Double.NaN, base.evidence(), hardFindings));
         }
         return List.copyOf(result);
     }
