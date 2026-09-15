@@ -2,11 +2,16 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 
@@ -28,7 +33,8 @@ public final class FinalGeometryEvaluator {
         AMBIGUOUS_BRANCH,
         SEARCH_TRUNCATED,
         OPTIMIZER_FAILURE,
-        INSUFFICIENT_DIRECT_SUPPORT
+        INSUFFICIENT_DIRECT_SUPPORT,
+        PROTECTED_ASSIGNMENT_MISMATCH
     }
 
     /** Severity remains separate from empirical confidence or average fit. */
@@ -43,24 +49,88 @@ public final class FinalGeometryEvaluator {
     }
 
     /** Immutable evaluator input; {@code cleaned} is diagnostic metadata only. */
-    public record Request(String id, List<MetricPoint> points, ImageCostField image,
-            double sourcePitchMeters, Set<Integer> protectedIndices,
+    public record Request(String id, List<MetricPoint> points,
+            List<FinalRoutePointId> pointIds, ImageCostField image,
+            double sourcePitchMeters, Map<Integer, MetricPoint> protectedAssignments,
             List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
             boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed) {
         /** Copies final geometry and validates physical inputs. */
         public Request {
-            if (id == null || id.isBlank() || points == null || points.size() < 2 || image == null
+            if (id == null || id.isBlank() || points == null || points.size() < 2
+                    || pointIds == null || pointIds.size() != points.size() || image == null
                     || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0
-                    || protectedIndices == null || proposedIncidentGeometry == null) {
+                    || protectedAssignments == null || proposedIncidentGeometry == null) {
                 throw new IllegalArgumentException("Final geometry evaluation input is incomplete");
             }
             points = List.copyOf(points);
-            protectedIndices = Set.copyOf(protectedIndices);
+            pointIds = List.copyOf(pointIds);
+            if (new LinkedHashSet<>(pointIds).size() != pointIds.size()) {
+                throw new IllegalArgumentException("Final geometry occurrence identities are duplicated");
+            }
+            protectedAssignments = Map.copyOf(new LinkedHashMap<>(protectedAssignments));
+            for (Map.Entry<Integer, MetricPoint> entry : protectedAssignments.entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null || entry.getKey() < 0
+                        || entry.getKey() >= points.size()) {
+                    throw new IllegalArgumentException("Protected final assignments are invalid");
+                }
+            }
             List<List<MetricPoint>> incidents = new ArrayList<>();
             for (List<MetricPoint> incident : proposedIncidentGeometry) {
                 incidents.add(List.copyOf(incident));
             }
             proposedIncidentGeometry = List.copyOf(incidents);
+        }
+
+        /** Compatibility constructor for callers without typed final occurrence identities. */
+        public Request(String id, List<MetricPoint> points, ImageCostField image,
+                double sourcePitchMeters, Map<Integer, MetricPoint> protectedAssignments,
+                List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
+                boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed) {
+            this(id, points, generatedIdentities(id, points), image, sourcePitchMeters,
+                    protectedAssignments, proposedIncidentGeometry, cleaned, branchAmbiguous,
+                    searchTruncated, optimizerFailed);
+        }
+
+        /** Compatibility constructor for callers whose protected coordinates are the supplied points. */
+        public Request(String id, List<MetricPoint> points, ImageCostField image,
+                double sourcePitchMeters, Set<Integer> protectedIndices,
+                List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
+                boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed) {
+            this(id, points, generatedIdentities(id, points), image, sourcePitchMeters,
+                    protectedAssignments(points, protectedIndices), proposedIncidentGeometry,
+                    cleaned, branchAmbiguous, searchTruncated, optimizerFailed);
+        }
+
+        /** Returns the protected indexes retained for source compatibility. */
+        public Set<Integer> protectedIndices() {
+            return protectedAssignments.keySet();
+        }
+
+        private static List<FinalRoutePointId> generatedIdentities(String id,
+                List<MetricPoint> points) {
+            if (id == null || id.isBlank() || points == null) {
+                throw new IllegalArgumentException("Final geometry identities are incomplete");
+            }
+            List<FinalRoutePointId> result = new ArrayList<>(points.size());
+            for (int index = 0; index < points.size(); index++) {
+                result.add(new GeneratedCandidatePoint(id, index));
+            }
+            return List.copyOf(result);
+        }
+
+        private static Map<Integer, MetricPoint> protectedAssignments(List<MetricPoint> points,
+                Set<Integer> protectedIndices) {
+            if (points == null || protectedIndices == null) {
+                throw new IllegalArgumentException("Protected final assignments are incomplete");
+            }
+            Map<Integer, MetricPoint> result = new LinkedHashMap<>();
+            for (int index : protectedIndices) {
+                if (index < 0 || index >= points.size()) {
+                    throw new IllegalArgumentException("Protected final assignment index is invalid");
+                }
+                result.put(index, points.get(index));
+            }
+            return Map.copyOf(result);
         }
     }
 
@@ -83,7 +153,8 @@ public final class FinalGeometryEvaluator {
     /** Evaluates topology, localized excursions, image support and deterministic eligibility. */
     public Result evaluate(Request request) {
         List<Finding> findings = new ArrayList<>();
-        inspectIntersections(request.points(), findings);
+        inspectProtectedAssignments(request, findings);
+        inspectIntersections(request, findings);
         inspectBacktracks(request.points(), findings);
         inspectLocalExcursions(request, findings);
         inspectIncidentCrossings(request, findings);
@@ -112,12 +183,25 @@ public final class FinalGeometryEvaluator {
                 roughness(request.points()));
     }
 
-    private static void inspectIntersections(List<MetricPoint> points, List<Finding> findings) {
+    private static void inspectProtectedAssignments(Request request, List<Finding> findings) {
+        request.protectedAssignments().forEach((index, expected) -> {
+            if (!expected.equals(request.points().get(index))) {
+                findings.add(hard(FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
+                        index, index, expected.distanceTo(request.points().get(index))));
+            }
+        });
+    }
+
+    private static void inspectIntersections(Request request, List<Finding> findings) {
+        List<MetricPoint> points = request.points();
+        ZeroLengthAdjacency adjacency = new ZeroLengthAdjacency(points, request.pointIds());
         for (int first = 0; first < points.size() - 1; first++) {
             for (int second = first + 2; second < points.size() - 1; second++) {
                 IntersectionKind kind = intersection(points.get(first), points.get(first + 1),
                         points.get(second), points.get(second + 1));
-                if (kind == IntersectionKind.NONE) {
+                if (kind == IntersectionKind.NONE
+                        || (kind == IntersectionKind.TOUCH
+                                && adjacency.connects(first, second))) {
                     continue;
                 }
                 FindingCode code = switch (kind) {
@@ -128,6 +212,30 @@ public final class FinalGeometryEvaluator {
                 };
                 findings.add(hard(code, first, second + 1, 0));
             }
+        }
+    }
+
+    /** Prepares exact typed zero-length connector runs once for constant-time pair queries. */
+    static final class ZeroLengthAdjacency {
+        private final int[] runs;
+
+        ZeroLengthAdjacency(List<MetricPoint> points, List<FinalRoutePointId> pointIds) {
+            if (points == null || pointIds == null || points.size() != pointIds.size()) {
+                throw new IllegalArgumentException("Connector geometry and identities must match");
+            }
+            runs = new int[points.size()];
+            for (int index = 1; index < points.size(); index++) {
+                boolean connected = points.get(index - 1).equals(points.get(index))
+                        && pointIds.get(index - 1) instanceof ExistingWayNodeOccurrence first
+                        && pointIds.get(index) instanceof ExistingWayNodeOccurrence second
+                        && first.wayKey().equals(second.wayKey())
+                        && second.originalOccurrenceIndex() == first.originalOccurrenceIndex() + 1;
+                runs[index] = runs[index - 1] + (connected ? 0 : 1);
+            }
+        }
+
+        boolean connects(int firstSegment, int secondSegment) {
+            return runs[firstSegment + 1] == runs[secondSegment];
         }
     }
 

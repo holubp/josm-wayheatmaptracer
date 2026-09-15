@@ -6,6 +6,7 @@ import java.util.OptionalDouble;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
@@ -31,7 +32,36 @@ public final class ImageCostField {
     public record RouteSample(MetricPoint normal, double rawIntensity, double noiseFloor,
             double peakIntensity, double presenceResponse, double presenceCost, double centerCost,
             double imageEnergy, double existenceConfidence, double localizationConfidence,
-            boolean directlyLocalized) { }
+            boolean directlyLocalized, ObservationOwnership ownership) {
+        /** Compatibility constructor deriving the prior coarse ownership categories. */
+        public RouteSample(MetricPoint normal, double rawIntensity, double noiseFloor,
+                double peakIntensity, double presenceResponse, double presenceCost, double centerCost,
+                double imageEnergy, double existenceConfidence, double localizationConfidence,
+                boolean directlyLocalized) {
+            this(normal, rawIntensity, noiseFloor, peakIntensity, presenceResponse, presenceCost,
+                    centerCost, imageEnergy, existenceConfidence, localizationConfidence,
+                    directlyLocalized, directlyLocalized ? ObservationOwnership.DIRECT_TWO_SIDED
+                            : localizationConfidence > 0.0 || Double.isFinite(centerCost)
+                                    ? ObservationOwnership.DIRECT_AMBIGUOUS
+                                    : existenceConfidence > 0.0
+                                            ? ObservationOwnership.CORE_CENSORED
+                                            : ObservationOwnership.NO_SIGNAL_VALID_RASTER);
+        }
+
+        /** Requires an explicit ownership classification for the current route query. */
+        public RouteSample {
+            boolean directOwnership = ownership == ObservationOwnership.DIRECT_TWO_SIDED;
+            boolean measuredOwnership = directOwnership
+                    || ownership == ObservationOwnership.DIRECT_AMBIGUOUS
+                    || ownership == ObservationOwnership.CORE_CENSORED
+                    || ownership == ObservationOwnership.SHOULDER_CENSORED
+                    || ownership == ObservationOwnership.NO_SIGNAL_VALID_RASTER;
+            if (normal == null || ownership == null || !measuredOwnership
+                    || directlyLocalized != directOwnership) {
+                throw new IllegalArgumentException("Route sample ownership is inconsistent");
+            }
+        }
+    }
 
     private final int width;
     private final int height;
@@ -124,7 +154,8 @@ public final class ImageCostField {
                     ? -Math.log(Math.max(1.0e-6, presenceResponse)) : Double.POSITIVE_INFINITY;
             return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
                     features.maximumIntensity(), presenceResponse, presenceCost,
-                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0.0, false));
+                    Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0.0, false,
+                    ObservationOwnership.NO_SIGNAL_VALID_RASTER));
         }
         LocalScalarProfileExtractor.Mode nearestMode = features.modes().stream()
                 .min(java.util.Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0)))
@@ -144,7 +175,9 @@ public final class ImageCostField {
             return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
                     features.maximumIntensity(), presenceResponse, presenceCost,
                     Double.POSITIVE_INFINITY, presenceCost + directionalCost,
-                    nearestCensored.existenceConfidence(), 0.0, false));
+                    nearestCensored.existenceConfidence(), 0.0, false,
+                    censoredOwnership(samples, nearestCensored, features.noiseFloor(),
+                            parameters.localModeCoreFraction())));
         }
         LocalScalarProfileExtractor.Mode selected = nearestMode;
         double distance = selected.distanceToCenterSet(0.0);
@@ -152,12 +185,52 @@ public final class ImageCostField {
                 / Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters());
         double centerCost = EvidenceModelParameters.huber(normalizedDistance);
         double presenceCost = -Math.log(Math.max(1.0e-6, presenceResponse));
+        boolean directlyLocalized = selected.localizationConfidence() > 0.0
+                && distance <= selected.localizationSigmaMeters() + 1.0e-12;
         return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
                 features.maximumIntensity(), presenceResponse, presenceCost, centerCost,
                 presenceCost + centerCost, selected.existenceConfidence(),
-                selected.localizationConfidence(),
-                selected.localizationConfidence() > 0.0
-                        && distance <= selected.localizationSigmaMeters() + 1.0e-12));
+                selected.localizationConfidence(), directlyLocalized,
+                directlyLocalized ? ObservationOwnership.DIRECT_TWO_SIDED
+                        : ObservationOwnership.DIRECT_AMBIGUOUS));
+    }
+
+    private static ObservationOwnership censoredOwnership(
+            java.util.List<LocalScalarProfileExtractor.Sample> samples,
+            LocalScalarProfileExtractor.CensoredMode censored, double noiseFloor,
+            double coreFraction) {
+        int edge = 0;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (int index = 0; index < samples.size(); index++) {
+            double distance = Math.abs(samples.get(index).offsetMeters()
+                    - censored.boundaryOffsetMeters());
+            if (distance < bestDistance) {
+                edge = index;
+                bestDistance = distance;
+            }
+        }
+        int direction = censored.side() == LocalScalarProfileExtractor.CensorSide.LEFT ? 1 : -1;
+        double edgeIntensity = samples.get(edge).intensity();
+        double localPeak = edgeIntensity;
+        double previous = edgeIntensity;
+        boolean descending = false;
+        for (int index = edge + direction; index >= 0 && index < samples.size();
+                index += direction) {
+            double value = samples.get(index).intensity();
+            if (!samples.get(index).valid() || !Double.isFinite(value)) {
+                break;
+            }
+            if (descending && value > previous + 1.0e-12) {
+                break;
+            }
+            localPeak = Math.max(localPeak, value);
+            descending |= value < previous - 1.0e-12;
+            previous = value;
+        }
+        double coreThreshold = noiseFloor + coreFraction * Math.max(0.0, localPeak - noiseFloor);
+        return edgeIntensity + 1.0e-12 >= coreThreshold
+                ? ObservationOwnership.CORE_CENSORED
+                : ObservationOwnership.SHOULDER_CENSORED;
     }
 
     /** Returns mean nonnegative route-local image energy, or infinity when evidence is unknown. */

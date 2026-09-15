@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,24 @@ class V022FinalGeometryTest {
         assertEquals(raw.disposition(), cleaned.disposition());
         assertEquals(raw.findings(), cleaned.findings());
         assertNotEquals(FinalGeometryEvaluator.Disposition.APPLICABLE, cleaned.disposition());
+    }
+
+    @Test
+    void protectedAssignmentMismatchIsHardBlockedRegardlessOfCleanedLabel() {
+        List<MetricPoint> moved = List.of(p(0, 0), p(10, 1), p(20, 0));
+        Map<Integer, MetricPoint> expected = Map.of(0, p(0, 0), 1, p(10, 0), 2, p(20, 0));
+
+        FinalGeometryEvaluator.Result raw = evaluator.evaluate(new FinalGeometryEvaluator.Request(
+                "protected-raw", moved, QualityTestFixtures.constantImage(0.8), 1.0,
+                expected, List.of(), false, false, false, false));
+        FinalGeometryEvaluator.Result cleaned = evaluator.evaluate(new FinalGeometryEvaluator.Request(
+                "protected-cleaned", moved, QualityTestFixtures.constantImage(0.8), 1.0,
+                expected, List.of(), true, false, false, false));
+
+        assertTrue(raw.has(FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH));
+        assertTrue(cleaned.has(FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH));
+        assertEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED, raw.disposition());
+        assertEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED, cleaned.disposition());
     }
 
     @Test

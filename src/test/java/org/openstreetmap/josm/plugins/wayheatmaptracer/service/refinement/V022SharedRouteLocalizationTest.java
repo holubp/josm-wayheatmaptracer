@@ -14,6 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelation
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
@@ -33,6 +34,8 @@ class V022SharedRouteLocalizationTest {
 
         assertTrue(weak.directlyLocalized());
         assertTrue(strong.directlyLocalized());
+        assertEquals(ObservationOwnership.DIRECT_TWO_SIDED, weak.ownership());
+        assertEquals(ObservationOwnership.DIRECT_TWO_SIDED, strong.ownership());
         assertEquals(strong.presenceResponse(), weak.presenceResponse(), 1e-9);
         assertEquals(strong.centerCost(), weak.centerCost(), 1e-9);
         assertTrue(weak.rawIntensity() < strong.rawIntensity());
@@ -47,6 +50,8 @@ class V022SharedRouteLocalizationTest {
 
         assertFalse(bright.directlyLocalized());
         assertFalse(dark.directlyLocalized());
+        assertEquals(ObservationOwnership.NO_SIGNAL_VALID_RASTER, bright.ownership());
+        assertEquals(ObservationOwnership.NO_SIGNAL_VALID_RASTER, dark.ownership());
         assertEquals(0.9, bright.rawIntensity(), 1e-9);
         assertEquals(0.0, dark.rawIntensity(), 1e-9);
     }
@@ -58,6 +63,8 @@ class V022SharedRouteLocalizationTest {
         ImageCostField.RouteSample displaced = image.sampleRoute(new MetricPoint(0, 2), HORIZONTAL).orElseThrow();
 
         assertTrue(center.directlyLocalized());
+        assertEquals(ObservationOwnership.DIRECT_TWO_SIDED, center.ownership());
+        assertEquals(ObservationOwnership.DIRECT_AMBIGUOUS, displaced.ownership());
         assertTrue(displaced.imageEnergy() > center.imageEnergy());
         assertTrue(displaced.centerCost() > center.centerCost());
     }
@@ -87,6 +94,7 @@ class V022SharedRouteLocalizationTest {
         Optional<ImageCostField.RouteSample> censored = boundary.sampleRoute(new MetricPoint(0, -49.5), HORIZONTAL);
         assertTrue(censored.isPresent());
         assertFalse(censored.orElseThrow().directlyLocalized());
+        assertEquals(ObservationOwnership.CORE_CENSORED, censored.orElseThrow().ownership());
     }
 
     @Test

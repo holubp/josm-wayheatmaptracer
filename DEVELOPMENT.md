@@ -708,3 +708,10 @@ The adapter has direct production parity, fixed-anchor, provenance, snapshot,
 resource and availability regressions. An independent rotated 2 m raster probe
 verified coordinate conversion. Live modern engine/UI integration, refitting,
 production replay and complete attempt-wide accounting remain unfinished.
+
+
+### Modern final-route provenance
+
+Common final processing preserves typed existing node occurrences separately from generated candidate points. Retaining an existing identity and fixing its coordinate are independent constraints: removal-only nodes may be omitted by authorized reduction, but retain their original coordinate if kept. Movable non-removable nodes retain identity while following their explicit movement authority. Final assignments and protected positions are immutable, checked against the detached selected way, and evaluated on actual final geometry.
+
+Fresh point and segment support is measured again after refitting or reduction; original support remains diagnostic provenance. Fresh no-signal and boundary-censored ownership cannot become direct support by borrowing source flags. Exact consecutive coincident existing occurrences remain distinct topology identities. A prepared zero-length connector index preserves their geometric adjacency with linear construction and constant-time queries; generated duplicates, remote touches, different-way/nonconsecutive identities and overlaps receive no exemption. This detached pipeline work does not complete the live modern preview or edit-plan integration.

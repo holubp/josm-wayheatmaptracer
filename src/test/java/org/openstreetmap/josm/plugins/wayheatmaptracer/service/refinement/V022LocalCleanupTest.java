@@ -5,12 +5,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.SyntheticHeatmapScene;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022SceneCatalog;
@@ -37,7 +40,7 @@ class V022LocalCleanupTest {
                 ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE));
 
         assertTrue(result.points().contains(original.get(5)));
-        assertEquals(original.get(5), result.assignments().get("p5"));
+        assertEquals(original.get(5), result.assignments().get(pointId(5)));
     }
 
     @Test
@@ -98,10 +101,10 @@ class V022LocalCleanupTest {
         ImageSupportedLocalCleanup.Result result = cleanup.clean(request);
 
         ImageSupportedLocalCleanup.IntervalResult containingAnchor = result.intervals().stream()
-                .filter(interval -> interval.frozenOccurrenceIds().contains("p5")).findFirst().orElseThrow();
+                .filter(interval -> interval.frozenOccurrenceIds().contains(pointId(5))).findFirst().orElseThrow();
         assertEquals(ImageSupportedLocalCleanup.IntervalDisposition.FROZEN_MISSING_EVIDENCE,
                 containingAnchor.disposition());
-        assertEquals(request.points().get(5), result.assignments().get("p5"));
+        assertEquals(request.points().get(5), result.assignments().get(pointId(5)));
     }
 
     @Test
@@ -119,8 +122,9 @@ class V022LocalCleanupTest {
         ImageSupportedLocalCleanup.Request multiInterval = request(V022SceneCatalog.scene("S26", 47),
                 ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE);
         ImageSupportedLocalCleanup.Request guarded = new ImageSupportedLocalCleanup.Request(
-                multiInterval.occurrenceIds(), multiInterval.points(), multiInterval.protectedIndices(),
-                multiInterval.image(), multiInterval.branchCorridor(), multiInterval.mode(),
+                multiInterval.occurrenceIds(), multiInterval.points(), multiInterval.retainedIndices(),
+                multiInterval.protectedIndices(), multiInterval.image(), multiInterval.branchCorridor(),
+                multiInterval.mode(),
                 multiInterval.refitConfig(), multiInterval.reductionToleranceMeters(),
                 multiInterval.originalAssignments(), List.of(points -> points.size() > 5
                         ? ImageSupportedRefitter.Validation.rejected("assembled-geometry-invalid")
@@ -128,6 +132,41 @@ class V022LocalCleanupTest {
         ImageSupportedLocalCleanup.Result rejected = cleanup.clean(guarded);
         assertEquals(ImageSupportedLocalCleanup.Status.REJECTED, rejected.status());
         assertEquals(multiInterval.points(), rejected.points());
+    }
+
+    @Test
+    void cleanupRejectsMissingOriginalOccurrenceAssignments() {
+        SyntheticHeatmapScene scene = V022SceneCatalog.scene("S03", 29);
+        ImageSupportedLocalCleanup.Request valid = request(scene,
+                ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY);
+
+        assertThrows(IllegalArgumentException.class, () -> new ImageSupportedLocalCleanup.Request(
+                valid.occurrenceIds(), valid.points(), valid.retainedIndices(),
+                valid.protectedIndices(), valid.image(), valid.branchCorridor(), valid.mode(), valid.refitConfig(),
+                valid.reductionToleranceMeters(), java.util.Map.of(), valid.validators()));
+    }
+
+    @Test
+    void cleanupRejectsReorderedAndDuplicateOccurrenceAssignments() {
+        SyntheticHeatmapScene scene = V022SceneCatalog.scene("S03", 29);
+        ImageSupportedLocalCleanup.Request valid = request(scene,
+                ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY);
+        java.util.Map<FinalRoutePointId, MetricPoint> reordered = new java.util.LinkedHashMap<>();
+        for (int index = 0; index < valid.occurrenceIds().size(); index++) {
+            int source = index == 0 ? 1 : index == 1 ? 0 : index;
+            reordered.put(valid.occurrenceIds().get(index), valid.points().get(source));
+        }
+        assertThrows(IllegalArgumentException.class, () -> new ImageSupportedLocalCleanup.Request(
+                valid.occurrenceIds(), valid.points(), valid.retainedIndices(),
+                valid.protectedIndices(), valid.image(), valid.branchCorridor(), valid.mode(), valid.refitConfig(),
+                valid.reductionToleranceMeters(), reordered, valid.validators()));
+
+        List<FinalRoutePointId> duplicate = new ArrayList<>(valid.occurrenceIds());
+        duplicate.set(1, duplicate.get(0));
+        assertThrows(IllegalArgumentException.class, () -> new ImageSupportedLocalCleanup.Request(
+                duplicate, valid.points(), valid.retainedIndices(), valid.protectedIndices(),
+                valid.image(), valid.branchCorridor(), valid.mode(), valid.refitConfig(),
+                valid.reductionToleranceMeters(), valid.originalAssignments(), valid.validators()));
     }
 
     private static ImageSupportedLocalCleanup.Request request(SyntheticHeatmapScene scene,
@@ -140,14 +179,86 @@ class V022LocalCleanupTest {
 
     private static ImageSupportedLocalCleanup.Request request(SyntheticHeatmapScene scene,
             List<MetricPoint> points, Set<Integer> protectedIndices, ImageSupportedLocalCleanup.Mode mode) {
-        List<String> ids = new ArrayList<>();
+        List<FinalRoutePointId> ids = new ArrayList<>();
+        java.util.Map<FinalRoutePointId, MetricPoint> assignments = new java.util.LinkedHashMap<>();
         for (int index = 0; index < points.size(); index++) {
-            ids.add("p" + index);
+            FinalRoutePointId id = pointId(index);
+            ids.add(id);
+            assignments.put(id, points.get(index));
         }
-        return new ImageSupportedLocalCleanup.Request(ids, points, protectedIndices,
+        return new ImageSupportedLocalCleanup.Request(ids, points, protectedIndices, protectedIndices,
                 RefinementTestFixtures.image(scene), RefinementTestFixtures.fullRegion(scene), mode,
                 ImageSupportedRefitter.Config.defaults(scene.rasterPitchMeters()), 0.45,
-                java.util.Map.of("sentinel", new MetricPoint(-1, -1)), List.of());
+                assignments, List.of());
+    }
+
+
+    @Test
+    void independentProbeTypedSourceOccurrenceOrderCannotBeReversedWithAlignedMap() {
+        var valid = request(V022SceneCatalog.scene("S03", 29), ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY);
+        var ids = new ArrayList<FinalRoutePointId>(valid.occurrenceIds());
+        var way = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.WAY, 100);
+        ids.set(1, new FinalRoutePointId.ExistingWayNodeOccurrence(way,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE, 102), 2));
+        ids.set(2, new FinalRoutePointId.ExistingWayNodeOccurrence(way,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE, 101), 1));
+        var assignments = new java.util.LinkedHashMap<FinalRoutePointId, MetricPoint>();
+        for (int i=0; i<ids.size(); i++) assignments.put(ids.get(i), valid.points().get(i));
+        assertThrows(IllegalArgumentException.class, () -> new ImageSupportedLocalCleanup.Request(ids,
+                valid.points(), valid.retainedIndices(), valid.protectedIndices(), valid.image(),
+                valid.branchCorridor(), valid.mode(), valid.refitConfig(), valid.reductionToleranceMeters(),
+                assignments, valid.validators()));
+    }
+
+    @Test
+    void typedExistingOccurrenceSlotCannotNameTwoNodes() {
+        var valid = request(V022SceneCatalog.scene("S03", 29),
+                ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY);
+        var ids = new ArrayList<FinalRoutePointId>(valid.occurrenceIds());
+        var way = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.WAY, 100);
+        ids.set(1, new FinalRoutePointId.ExistingWayNodeOccurrence(way,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE, 101), 1));
+        ids.set(2, new FinalRoutePointId.ExistingWayNodeOccurrence(way,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE, 102), 1));
+
+        assertInvalidTypedOccurrences(valid, ids);
+    }
+
+    @Test
+    void typedExistingOccurrenceCannotRepeatOneNodeAtDifferentIndexes() {
+        var valid = request(V022SceneCatalog.scene("S03", 29),
+                ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY);
+        var ids = new ArrayList<FinalRoutePointId>(valid.occurrenceIds());
+        var way = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.WAY, 100);
+        var node = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.existing(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE, 101);
+        ids.set(1, new FinalRoutePointId.ExistingWayNodeOccurrence(way, node, 1));
+        ids.set(2, new FinalRoutePointId.ExistingWayNodeOccurrence(way, node, 2));
+
+        assertInvalidTypedOccurrences(valid, ids);
+    }
+
+    private static void assertInvalidTypedOccurrences(ImageSupportedLocalCleanup.Request valid,
+            List<FinalRoutePointId> ids) {
+        var assignments = new java.util.LinkedHashMap<FinalRoutePointId, MetricPoint>();
+        for (int index = 0; index < ids.size(); index++) {
+            assignments.put(ids.get(index), valid.points().get(index));
+        }
+        assertThrows(IllegalArgumentException.class, () -> new ImageSupportedLocalCleanup.Request(ids,
+                valid.points(), valid.retainedIndices(), valid.protectedIndices(), valid.image(),
+                valid.branchCorridor(), valid.mode(), valid.refitConfig(),
+                valid.reductionToleranceMeters(), assignments, valid.validators()));
+    }
+
+    private static FinalRoutePointId pointId(int index) {
+        return new GeneratedCandidatePoint("cleanup-fixture", index);
     }
 
     private static List<MetricPoint> points(SyntheticHeatmapScene scene) {

@@ -7,6 +7,8 @@ import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
@@ -70,27 +72,49 @@ final class RefinementTestFixtures {
                 List.of(new MetricPoint(9, -1), new MetricPoint(11, -1),
                         new MetricPoint(11, 11), new MetricPoint(9, 11))));
         ImageCostField image = constantImage(0.8);
-        return new ImageSupportedLocalCleanup.Request(List.of("a", "b", "c", "d"), points,
-                Set.of(0, 3), image, corridor, ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY,
-                ImageSupportedRefitter.Config.defaults(1.0), 20.0, Map.of(), List.of());
+        List<FinalRoutePointId> ids = pointIds("u", points.size());
+        return new ImageSupportedLocalCleanup.Request(ids, points, Set.of(0, 3), Set.of(0, 3),
+                image, corridor, ImageSupportedLocalCleanup.Mode.REDUCE_POINTS_ONLY,
+                ImageSupportedRefitter.Config.defaults(1.0), 20.0,
+                assignments(ids, points), List.of());
     }
 
     static ImageSupportedLocalCleanup.Request unlocalizedLimitedCleanupRequest() {
         List<MetricPoint> points = List.of(new MetricPoint(0, 0), new MetricPoint(5, 0),
                 new MetricPoint(10, 3), new MetricPoint(15, 0), new MetricPoint(20, 0));
-        return new ImageSupportedLocalCleanup.Request(List.of("a", "b", "c", "d", "e"), points,
-                Set.of(0, 4), constantImage(0.1), MetricRegion.rectangle(-40, -40, 40, 40),
+        List<FinalRoutePointId> ids = pointIds("limited", points.size());
+        return new ImageSupportedLocalCleanup.Request(ids, points, Set.of(0, 4), Set.of(0, 4),
+                constantImage(0.1), MetricRegion.rectangle(-40, -40, 40, 40),
                 ImageSupportedLocalCleanup.Mode.REFIT_AND_REDUCE,
                 ImageSupportedRefitter.Config.defaults(1.0).withIterationLimit(1), 0.45,
-                Map.of(), List.of());
+                assignments(ids, points), List.of());
     }
 
     static ImageSupportedLocalCleanup.Request cleanupOffRejectedByValidatorRequest() {
         List<MetricPoint> points = List.of(new MetricPoint(0, 0), new MetricPoint(10, 0));
-        return new ImageSupportedLocalCleanup.Request(List.of("a", "b"), points, Set.of(0, 1),
+        List<FinalRoutePointId> ids = pointIds("off", points.size());
+        return new ImageSupportedLocalCleanup.Request(ids, points, Set.of(0, 1), Set.of(0, 1),
                 constantImage(0.8), MetricRegion.rectangle(-40, -40, 40, 40),
                 ImageSupportedLocalCleanup.Mode.OFF, ImageSupportedRefitter.Config.defaults(1.0),
-                0.0, Map.of(), List.of(geometry -> ImageSupportedRefitter.Validation.rejected("blocked")));
+                0.0, assignments(ids, points),
+                List.of(geometry -> ImageSupportedRefitter.Validation.rejected("blocked")));
+    }
+
+    private static List<FinalRoutePointId> pointIds(String candidate, int count) {
+        List<FinalRoutePointId> result = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            result.add(new GeneratedCandidatePoint(candidate, index));
+        }
+        return List.copyOf(result);
+    }
+
+    private static Map<FinalRoutePointId, MetricPoint> assignments(
+            List<FinalRoutePointId> ids, List<MetricPoint> points) {
+        Map<FinalRoutePointId, MetricPoint> result = new java.util.LinkedHashMap<>();
+        for (int index = 0; index < ids.size(); index++) {
+            result.put(ids.get(index), points.get(index));
+        }
+        return Map.copyOf(result);
     }
 
     private static ImageCostField constantImage(double value) {
