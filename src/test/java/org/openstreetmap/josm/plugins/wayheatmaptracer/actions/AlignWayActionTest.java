@@ -61,6 +61,16 @@ class AlignWayActionTest {
     }
 
     @Test
+    void explicitHybridPreviewConfigUsesTheSharedReadOnlyContract() {
+        ManagedHeatmapConfig configured = configuredCorridor();
+        ManagedHeatmapConfig preview = AlignWayAction.effectiveConfig(configured, null,
+                TrackerMode.HYBRID);
+        assertEquals(TrackerMode.HYBRID, preview.trackerMode());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, preview.alignmentMode());
+        assertEquals(configured.keyPairId(), preview.keyPairId());
+    }
+
+    @Test
     void explicitVisibleSourceRequiresALayerBeforePreviewUiCanOpen() {
         AtomicBoolean ordinaryResolverUsed = new AtomicBoolean();
 

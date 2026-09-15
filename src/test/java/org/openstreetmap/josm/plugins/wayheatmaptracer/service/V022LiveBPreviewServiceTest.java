@@ -28,6 +28,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
@@ -120,6 +121,31 @@ class V022LiveBPreviewServiceTest {
                 instanceof ExistingWayNodeOccurrence);
         assertEquals(before, state(fixture.dataSet()));
         SwingUtilities.invokeAndWait(() -> service.requireCurrent(fixture.dataSet(), captured[0]));
+    }
+
+    @Test
+    void realProductionHybridRetainsUnguidedBWithFundedHybridBudget() throws Exception {
+        Fixture fixture = fixture();
+        List<String> before = state(fixture.dataSet());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.HYBRID)));
+
+        LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
+
+        assertEquals(TrackerMode.HYBRID, result.request().engine());
+        assertEquals(TraceBudgets.fundedHybrid(), result.request().budgets());
+        assertEquals(TrackerMode.HYBRID, result.pipeline().inference().engine());
+        assertTrue(result.pipeline().inference().hypotheses().stream()
+                .anyMatch(hypothesis -> hypothesis.branchSignature().startsWith("b:")),
+                "Hybrid output must retain the unguided B family");
+        assertFalse(result.pipeline().routes().isEmpty(),
+                "supported visible evidence must produce a final Hybrid route");
+        assertTrue(result.pipeline().routes().stream()
+                .anyMatch(route -> route.hypothesis().branchSignature().startsWith("b:")),
+                "common final processing must retain an unguided B route");
+        assertEquals(before, state(fixture.dataSet()));
     }
 
     @Test

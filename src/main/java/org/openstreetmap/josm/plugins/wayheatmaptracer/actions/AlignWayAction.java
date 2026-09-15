@@ -147,6 +147,18 @@ public class AlignWayAction extends JosmAction {
         return new AlignWayAction(null, TrackerMode.PROBABILISTIC, false, session, false);
     }
 
+    /** Creates the explicit session-local visible-source Hybrid A+B preview action. */
+    public static AlignWayAction experimentalHybridVisiblePreview() {
+        return new AlignWayAction(null, TrackerMode.HYBRID, false,
+                new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates Hybrid A+B visible preview with the plugin-owned shared session. */
+    public static AlignWayAction experimentalHybridVisiblePreview(
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        return new AlignWayAction(null, TrackerMode.HYBRID, false, session, false);
+    }
+
     /** Creates the explicit session-local managed-source Engine A preview action. */
     public static AlignWayAction experimentalCorridorAwareManagedPreview() {
         return new AlignWayAction(null, TrackerMode.CORRIDOR_AWARE, true,
@@ -183,8 +195,13 @@ public class AlignWayAction extends JosmAction {
             true
         );
         if (forcedLivePreviewEngine != null && forcedLivePreviewEngine != TrackerMode.CORRIDOR_AWARE
-                && forcedLivePreviewEngine != TrackerMode.PROBABILISTIC) {
-            throw new IllegalArgumentException("Only explicit Corridor-aware A or Probabilistic B preview is supported");
+                && forcedLivePreviewEngine != TrackerMode.PROBABILISTIC
+                && forcedLivePreviewEngine != TrackerMode.HYBRID) {
+            throw new IllegalArgumentException("Only explicit Corridor-aware A, Probabilistic B, "
+                    + "or visible Hybrid A+B preview is supported");
+        }
+        if (forcedLivePreviewEngine == TrackerMode.HYBRID && forcedManagedPreview) {
+            throw new IllegalArgumentException("Hybrid preview is visible-source only");
         }
         this.forcedAlignmentMode = forcedAlignmentMode;
         this.forcedLivePreviewEngine = forcedLivePreviewEngine;
@@ -632,11 +649,21 @@ public class AlignWayAction extends JosmAction {
     }
 
     private static String livePreviewEngineLabel(TrackerMode engine) {
-        return engine == TrackerMode.CORRIDOR_AWARE ? tr("Corridor-aware A") : tr("Probabilistic B");
+        return switch (engine) {
+            case CORRIDOR_AWARE -> tr("Corridor-aware A");
+            case PROBABILISTIC -> tr("Probabilistic B");
+            case HYBRID -> tr("Hybrid A+B");
+            default -> tr("Modern");
+        };
     }
 
     private static String livePreviewEngineShortLabel(TrackerMode engine) {
-        return engine == TrackerMode.CORRIDOR_AWARE ? "A" : "B";
+        return switch (engine) {
+            case CORRIDOR_AWARE -> "A";
+            case PROBABILISTIC -> "B";
+            case HYBRID -> "Hybrid A+B";
+            default -> "Modern";
+        };
     }
 
     private void updateAggregateIntensityLayer(AlignmentResult result, ManagedHeatmapConfig config) {

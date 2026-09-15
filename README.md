@@ -197,8 +197,11 @@ All actions are under JOSM `More tools`:
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
 - `Experimental Engine A Visible Preview (Read Only)`
 - `Experimental Engine B Visible Preview (Read Only)`
+- `Experimental Engine Hybrid A+B Visible Preview (Read Only)`
 - `Experimental Engine A Managed Preview (Read Only)`
 - `Experimental Engine B Managed Preview (Read Only)`
+
+The Hybrid A+B visible preview reads the currently rendered heatmap layer and runs the independent unguided B result alongside the A proposal through the shared preview ranking. It is read-only; the ordinary `Align Way to Heatmap` action remains the action that can apply geometry.
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Geometry Cleanup Settings`: no default shortcut
 - `Select Longest Heatmap Segment`: no default shortcut

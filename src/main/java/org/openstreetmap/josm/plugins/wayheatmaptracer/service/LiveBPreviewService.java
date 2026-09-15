@@ -253,7 +253,9 @@ public final class LiveBPreviewService {
         EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
-        Optional<CorridorTraceInput> corridorInput = captured.engine() == TrackerMode.CORRIDOR_AWARE
+        Optional<CorridorTraceInput> corridorInput =
+                (captured.engine() == TrackerMode.CORRIDOR_AWARE
+                        || captured.engine() == TrackerMode.HYBRID)
                 ? Optional.of(CorridorTraceInput.from(chainage, captured.sourceMetric(),
                         evidence.coordinateFrame(), evidence.transform(),
                         evidence.resolution().outputRasterPitchMeters()))
@@ -261,7 +263,8 @@ public final class LiveBPreviewService {
         TraceRequest request = new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
                 AlignmentMode.PRECISE_SHAPE, captured.specification().permissions(),
-                TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
+                captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
+                        : TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
@@ -384,8 +387,10 @@ public final class LiveBPreviewService {
         }
         var heatmap = config.heatmap();
         if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC
-                && heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE) {
-            throw new IllegalArgumentException("Experimental live preview supports only Probabilistic B or Corridor-aware A");
+                && heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
+                && heatmap.trackerMode() != TrackerMode.HYBRID) {
+            throw new IllegalArgumentException("Experimental live preview supports only Corridor-aware A, "
+                    + "Probabilistic B, or visible Hybrid A+B");
         }
         if (heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
             throw new IllegalArgumentException("Experimental live preview requires Precise Shape");
