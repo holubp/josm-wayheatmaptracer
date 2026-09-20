@@ -81,6 +81,15 @@ class AlignWayActionTest {
     }
 
     @Test
+    void persistedModernEnginesUseTheLivePipelineRatherThanLegacyProfileTracking() {
+        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.PROBABILISTIC));
+        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.HYBRID));
+        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.DIRECTIONAL_IMAGE));
+        assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.CORRIDOR_AWARE));
+        assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.LEGACY_V02));
+    }
+
+    @Test
     void explicitVisibleSourceRequiresALayerBeforePreviewUiCanOpen() {
         AtomicBoolean ordinaryResolverUsed = new AtomicBoolean();
 

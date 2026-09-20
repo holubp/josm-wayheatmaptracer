@@ -291,7 +291,7 @@ public class AlignWayAction extends JosmAction {
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
             AlignmentConfig persistedSlideConfig = new AlignmentConfig(persistedConfig, cleanupConfig);
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
-            if (forcedLivePreviewEngine != null || config.trackerMode() == TrackerMode.PROBABILISTIC) {
+            if (forcedLivePreviewEngine != null || requiresLiveModernPreview(config.trackerMode())) {
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, forcedLivePreviewEngine != null, forcedManagedPreview);
                 return;
@@ -636,6 +636,12 @@ public class AlignWayAction extends JosmAction {
             dialog.dispose();
             throw exception;
         }
+    }
+
+    /** Routes persisted modern engines through their detached live pipeline. */
+    static boolean requiresLiveModernPreview(TrackerMode engine) {
+        return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
+                || engine == TrackerMode.DIRECTIONAL_IMAGE;
     }
 
     static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
