@@ -363,15 +363,17 @@ The documentation avoids publishing a raw tokenized imagery URL, but the setting
 
 ### Experimental live modern previews
 
-The Tools menu contains four explicit session-local, read-only modern preview actions:
+The Tools menu contains six explicit session-local modern preview actions:
 
 - `Experimental Engine A Visible Preview (Read Only)`
 - `Experimental Engine B Visible Preview (Read Only)`
+- `Experimental Hybrid A+B Visible Preview (Read Only)`
+- `Experimental Directional Image Visible Preview (Read Only)`
 - `Experimental Engine A Managed Preview (Read Only)`
 - `Experimental Engine B Managed Preview (Read Only)`
 
-The visible actions run the named production engine over the currently rendered heatmap layer. The managed actions use only the selected managed palette with the configured managed access values. Both sources support Engine A (Corridor-aware) and Engine B (Probabilistic), `Precise Shape`, `Color mapping`, and geometry cleanup `Off`. Managed previews require one selected palette; keep multi-color detection and all-color aggregation disabled. Keep nearby parallel-way context, junction/endpoint adjustment, wider discovery, incident-way reconstruction, additional experimental engines, aggregate intensity display, and candidate rating disabled. Visible previews require the rendered source in `EPSG:3857`.
+The visible actions run the named production engine over the currently rendered heatmap layer. The managed actions use only the selected managed palette with configured managed access values. Both sources support Engine A (Corridor-aware) and Engine B (Probabilistic); Hybrid and Directional Image are visible-source only. Modern previews require `Precise Shape`, `Color mapping`, and geometry cleanup `Off`. Managed previews require one selected palette; keep multi-color detection and all-color aggregation disabled. Keep nearby parallel-way context, junction/endpoint adjustment, wider discovery, incident-way reconstruction, aggregate intensity display, and candidate rating disabled. Visible previews require the rendered source in `EPSG:3857`.
 
-Select at least two consecutive nodes without repeated node identities. The modeless preview lets you inspect final-route candidates, switch candidates, pan/zoom, and use `Cancel` or `Close`; closing, repeating, or superseding an action cancels pending work. Source, settings, projection, or relevant OSM changes reject a stale preview. These actions keep existing nodes fixed, run common final validation, and never offer modern Apply, confirmation, retry, or Format-15 export. The ordinary `Align Way to Heatmap` workflow retains its existing preview and Apply path.
+Select at least two consecutive nodes without repeated node identities. The modeless preview lets you inspect final-route candidates, switch candidates, pan/zoom, and use `Cancel` or `Close`; closing, repeating, or superseding an action cancels pending work. Source, settings, projection, or relevant OSM changes reject a stale preview. All modern routes run common final validation.
 
-Hybrid, Direction-aware Image, all-color modern acquisition, and direct-intensity modern previews are unavailable through these actions.
+A deliberately narrow visible-source Apply is available only for Engine A or B when the final route is applicable, or after explicit confirmation of a review-required route. It requires the same `EPSG:3857`/`Precise Shape`/`Color mapping` constraints plus cleanup, simplification, junction adjustment, alternate detector mapping, and aggregate detection disabled. It applies an immutable fixed-anchor selected-way plan only after repeated source and network validation, including source validation under the command lock. Managed, Hybrid, Directional Image, multi-color, cleanup, wider-search, and junction-capable modern previews remain read-only. Format-15 export and retry are unavailable from this preview dialog.
