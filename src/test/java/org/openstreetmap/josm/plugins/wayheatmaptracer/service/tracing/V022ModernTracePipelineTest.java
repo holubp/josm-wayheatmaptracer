@@ -83,6 +83,38 @@ class V022ModernTracePipelineTest {
     }
 
     @Test
+    void unavailableReviewRouteSurvivesAndOutranksFiniteHardBlockedSibling() {
+        Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
+        ScalarEvidenceField original = base.evidence.fields().get("native");
+        double[] values = original.copiedValues();
+        boolean[] valid = original.copiedValidity();
+        values[5 * 15 + 6] = Double.NaN;
+        valid[5 * 15 + 6] = false;
+        EvidenceSnapshot evidence = new EvidenceSnapshot("unavailable-evidence",
+                base.evidence.coordinateFrame(), base.evidence.transform(), base.evidence.resolution(),
+                base.evidence.decisionRegion(), base.evidence.evidenceRegion(), Map.of("native",
+                        new ScalarEvidenceField(15, 15, values, valid,
+                                base.evidence.fields().get("native").lineage())), "source");
+        TraceHypothesis hard = new TraceHypothesis("a-hard", "a-hard",
+                List.of(new MetricPoint(0, 2), new MetricPoint(3, 2),
+                        new MetricPoint(2, 2), new MetricPoint(4, 2)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED),
+                1.0, 0.4, Map.of());
+        TraceEngine engine = (request, ignored, network, cancellation) -> routes(request.engine(),
+                hard, route("z-unavailable", 0));
+
+        ModernTracePipeline.Result result = new ModernTracePipeline(engine).run(base.request, evidence,
+                base.network, options(GeometryCleanupConfig.disabled()), CancellationProbe.NONE);
+
+        assertEquals(List.of("z-unavailable", "a-hard"), result.routes().stream()
+                .map(route -> route.hypothesis().id()).toList());
+        assertTrue(result.routes().get(0).quality().has(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .FindingCode.UNAVAILABLE_IMAGE_QUALITY));
+    }
+
+    @Test
     void reduceOnlyProducesASeparateFinalGeometryWithoutChangingInference() {
         Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);
         TraceHypothesis dense = new TraceHypothesis("dense", "center",

@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -10,7 +11,13 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.SyntheticHeatmapScene;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022SceneCatalog;
 
@@ -29,6 +36,28 @@ class V022FinalGeometryTest {
         FinalGeometryEvaluator.Result unlocalized = QualityTestFixtures.constantFieldDogleg(evaluator);
         assertNotEquals(FinalGeometryEvaluator.Disposition.APPLICABLE, unlocalized.disposition());
         assertTrue(unlocalized.has(FinalGeometryEvaluator.FindingCode.INSUFFICIENT_DIRECT_SUPPORT));
+    }
+
+    @Test
+    void unavailableRasterGapIsTypedAndLeavesOnlyReviewRequiredSharpBend() {
+        FinalGeometryEvaluator.Result shortGap = evaluator.evaluate(new FinalGeometryEvaluator.Request(
+                "short-unavailable-gap", List.of(p(0, 0), p(99, 10), p(101, 0), p(200, 0)),
+                narrowUnavailableGapImage(), 0.1, Set.of(), List.of(),
+                false, false, false, false));
+
+        assertTrue(shortGap.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY));
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, shortGap.disposition());
+        assertFalse(shortGap.has(FinalGeometryEvaluator.FindingCode.INSUFFICIENT_DIRECT_SUPPORT));
+
+        assertThrows(IllegalArgumentException.class, () -> new FinalGeometryEvaluator.Result(
+                "untyped-infinity", FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, List.of(),
+                10.0, 10.0, 0.0, Double.POSITIVE_INFINITY, 0.0));
+        assertThrows(IllegalArgumentException.class, () -> new FinalGeometryEvaluator.Result(
+                "fabricated-unavailable", FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,
+                List.of(new FinalGeometryEvaluator.Finding(
+                        FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY,
+                        FinalGeometryEvaluator.Severity.REVIEW, 0, 1, 0.0)),
+                10.0, 10.0, 0.0, 0.0, 0.0));
     }
 
     @Test
@@ -155,5 +184,42 @@ class V022FinalGeometryTest {
 
     private static MetricPoint p(double x, double y) {
         return new MetricPoint(x, y);
+    }
+
+    private static ImageCostField narrowUnavailableGapImage() {
+        int width = 2001;
+        int height = 1001;
+        double[] values = new double[width * height];
+        boolean[] valid = new boolean[values.length];
+        java.util.Arrays.fill(valid, true);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int index = y * width + x;
+                double distance = Math.min(distanceToSegment(x * 0.1, -50 + y * 0.1, 0, 0, 99, 10),
+                        Math.min(distanceToSegment(x * 0.1, -50 + y * 0.1, 99, 10, 101, 0),
+                                distanceToSegment(x * 0.1, -50 + y * 0.1, 101, 0, 200, 0)));
+                values[index] = 0.1 + 0.9 * Math.exp(-distance * distance / 0.5);
+            }
+            int masked = y * width + 1000;
+            values[masked] = Double.NaN;
+            valid[masked] = false;
+        }
+        ScalarEvidenceField field = new ScalarEvidenceField(width, height, values, valid,
+                new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                        EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "narrow-gap",
+                        EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        return new ImageCostField(field, new RasterMetricTransform("narrow-gap",
+                RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                new MetricPoint(0, -50), 0.1, 0, 0, 0.1, 1),
+                MetricRegion.rectangle(0, -50, 200, 50), 0.1);
+    }
+
+    private static double distanceToSegment(double x, double y, double ax, double ay,
+            double bx, double by) {
+        double dx = bx - ax;
+        double dy = by - ay;
+        double fraction = Math.max(0.0, Math.min(1.0,
+                ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(x - (ax + fraction * dx), y - (ay + fraction * dy));
     }
 }

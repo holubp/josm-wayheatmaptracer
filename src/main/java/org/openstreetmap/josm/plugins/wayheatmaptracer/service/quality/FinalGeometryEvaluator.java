@@ -34,6 +34,7 @@ public final class FinalGeometryEvaluator {
         SEARCH_TRUNCATED,
         OPTIMIZER_FAILURE,
         INSUFFICIENT_DIRECT_SUPPORT,
+        UNAVAILABLE_IMAGE_QUALITY,
         PROTECTED_ASSIGNMENT_MISMATCH
     }
 
@@ -142,6 +143,14 @@ public final class FinalGeometryEvaluator {
         /** Copies findings. */
         public Result {
             findings = List.copyOf(findings);
+            boolean unavailableImageQuality = findings.stream()
+                    .anyMatch(finding -> finding.code() == FindingCode.UNAVAILABLE_IMAGE_QUALITY);
+            if ((!Double.isFinite(meanImageCenterCost)
+                    && meanImageCenterCost != Double.POSITIVE_INFINITY)
+                    || meanImageCenterCost < 0.0
+                    || unavailableImageQuality != (meanImageCenterCost == Double.POSITIVE_INFINITY)) {
+                throw new IllegalArgumentException("Final image quality availability is inconsistent");
+            }
         }
 
         /** Returns whether a stable finding code is present. */
@@ -169,6 +178,11 @@ public final class FinalGeometryEvaluator {
         }
 
         SupportMetrics support = supportMetrics(request.points(), request.image(), request.sourcePitchMeters());
+        double meanImageCenterCost = request.image().meanRoutePolylineCost(request.points());
+        if (meanImageCenterCost == Double.POSITIVE_INFINITY) {
+            findings.add(review(FindingCode.UNAVAILABLE_IMAGE_QUALITY, 0,
+                    request.points().size() - 1, support.worstUnsupportedSpan));
+        }
         if (support.directLength + 1.0e-9 < 0.95 * support.totalLength
                 || support.worstUnsupportedSpan > 10.0) {
             findings.add(review(FindingCode.INSUFFICIENT_DIRECT_SUPPORT, 0,
@@ -179,7 +193,7 @@ public final class FinalGeometryEvaluator {
                 ? Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? Disposition.APPLICABLE : Disposition.REVIEW_REQUIRED;
         return new Result(request.id(), disposition, findings, support.totalLength, support.directLength,
-                support.worstUnsupportedSpan, request.image().meanRoutePolylineCost(request.points()),
+                support.worstUnsupportedSpan, meanImageCenterCost,
                 roughness(request.points()));
     }
 

@@ -85,6 +85,13 @@ class V022CandidateRankingTest {
     }
 
     @Test
+    void physicalQualityRejectsUnavailableImageCost() {
+        assertThrows(IllegalArgumentException.class, () -> new CandidateRankingPolicy.PhysicalQuality(
+                true, false, 0, 0, 0, 10, 10, 0, Double.POSITIVE_INFINITY,
+                0, 0, 0, 0));
+    }
+
+    @Test
     void physicalQualityRejectsImpossibleSupportRanges() {
         assertThrows(IllegalArgumentException.class, () -> new CandidateRankingPolicy.PhysicalQuality(
                 true, false, 0, 0, 0, 11, 10, 0, 0.1, 0.1, 0.1, 0, 0.5));
@@ -101,7 +108,7 @@ class V022CandidateRankingTest {
             int pointCount, double engineObjective, boolean cleaned, boolean hardBlocked) {
         CandidateRankingPolicy.PhysicalQuality quality = new CandidateRankingPolicy.PhysicalQuality(
                 complete, hardBlocked, severeDefects, 0, 0, directLength, totalLength, unsupportedSpan,
-                imageFit, imageFit, 0.05, 1, 0.5);
+                imageFit, Double.isFinite(imageFit) ? imageFit : 0.0, 0.05, 1, 0.5);
         return new CandidateRankingPolicy.Candidate(id, engine, "native", quality, engineObjective,
                 pointCount, cleaned, "family", false);
     }

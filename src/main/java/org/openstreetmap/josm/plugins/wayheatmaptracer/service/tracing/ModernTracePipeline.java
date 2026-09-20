@@ -509,9 +509,14 @@ public final class ModernTracePipeline {
         CandidateRankingPolicy ranking = new CandidateRankingPolicy();
         Map<String, Route> byId = new LinkedHashMap<>();
         List<CandidateRankingPolicy.Candidate> candidates = new ArrayList<>();
+        List<Route> unavailable = new ArrayList<>();
         for (Route route : routes) {
             FinalGeometryEvaluator.Result quality = route.quality();
             byId.put(route.hypothesis().id(), route);
+            if (quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY)) {
+                unavailable.add(route);
+                continue;
+            }
             long hard = quality.findings().stream()
                     .filter(finding -> finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK)
                     .count();
@@ -531,10 +536,31 @@ public final class ModernTracePipeline {
                     route.hypothesis().points().size(), route.geometryChanged(),
                     route.hypothesis().branchSignature(), route.geometryChanged()));
         }
-        List<Route> ordered = new ArrayList<>();
+        Map<String, Integer> finiteRank = new LinkedHashMap<>();
+        int position = 0;
         for (CandidateRankingPolicy.Candidate candidate : ranking.rank(candidates)) {
-            ordered.add(byId.get(candidate.id()));
+            finiteRank.put(candidate.id(), position++);
         }
+        unavailable.sort(Comparator.comparing((Route route) -> route.hypothesis().branchSignature())
+                .thenComparing(route -> route.hypothesis().id()));
+        List<Route> ordered = new ArrayList<>(routes);
+        ordered.sort(Comparator.comparing((Route route) -> isHardBlocked(route.quality()))
+                .thenComparing(route -> !isComplete(route.quality()))
+                .thenComparing(route -> route.quality().has(
+                        FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY))
+                .thenComparingInt(route -> finiteRank.getOrDefault(route.hypothesis().id(),
+                        Integer.MAX_VALUE))
+                .thenComparing(route -> route.hypothesis().branchSignature())
+                .thenComparing(route -> route.hypothesis().id()));
         return List.copyOf(ordered);
+    }
+
+    private static boolean isHardBlocked(FinalGeometryEvaluator.Result quality) {
+        return quality.findings().stream().anyMatch(
+                finding -> finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK);
+    }
+
+    private static boolean isComplete(FinalGeometryEvaluator.Result quality) {
+        return quality.directlySupportedLengthMeters() + 1.0e-6 >= quality.totalLengthMeters();
     }
 }
