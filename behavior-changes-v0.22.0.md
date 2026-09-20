@@ -6,10 +6,15 @@ an experimental engine is calibrated for unattended use.
 
 ## Current development-build status
 
-The live workflow currently supports Legacy and Corridor-aware tracing. The three
-new engine choices still report "Modern trace engine is not yet integrated" when
-invoked through the live alignment service. Detached component tests do not
-establish live integration of refitting, network reconstruction, preview or replay.
+The ordinary workflow supports Legacy and Corridor-aware tracing. Persisted
+Probabilistic B, Hybrid A+B, and Directional Image selections route to their
+detached live-preview pipeline instead of the legacy profile tracker. Explicit
+visible preview actions are available for A, B, Hybrid, and Directional Image;
+managed preview actions are available for A and B. A guarded visible-source
+Apply is available only for fixed-anchor A/B Precise Shape color-mapping routes
+within its documented validation boundary. Detached component tests and these
+bounded live paths do not establish full modern refitting, network reconstruction,
+replay, calibration, or release-gate completion.
 
 The modern behavior and safety boundaries below remain mandatory release
 requirements. They are not claims that this intermediate build implements them.
