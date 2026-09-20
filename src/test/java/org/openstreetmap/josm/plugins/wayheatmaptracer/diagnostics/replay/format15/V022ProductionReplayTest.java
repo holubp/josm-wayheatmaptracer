@@ -526,7 +526,7 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void frozenInputRoundTripsAndRunsEveryModernEngine(@TempDir Path directory) throws Exception {
+    void t163FullFrozenScalarSceneRunsEveryModernEngine(@TempDir Path directory) throws Exception {
         FrozenReplayInput captured = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
         FrozenReplayInput decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(captured));
         assertEquals(captured.evidence().canonicalHash(), decoded.evidence().canonicalHash());
