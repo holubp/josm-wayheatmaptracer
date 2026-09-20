@@ -73,7 +73,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
     @ParameterizedTest
     @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC", "CORRIDOR_AWARE"})
-    void T115_realProductionFinalRouteBuildsOneDeterministicDetachedPlanWithoutMutation(
+    void t164RasterEvidenceProducesOneDeterministicDetachedPlanWithoutMutation(
             TrackerMode mode) throws Exception {
         Fixture fixture = fixture();
         List<String> beforeLive = state(fixture);
