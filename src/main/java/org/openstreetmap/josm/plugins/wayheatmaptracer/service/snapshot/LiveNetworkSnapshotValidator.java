@@ -9,6 +9,7 @@ import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.LockedApplyValidator;
 
 /**
  * Repeats one factual bounded network capture at the final command boundary.
@@ -16,7 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
  * <p>The caller must invoke {@link #validateLocked(DataSet, AlignmentEditPlan, boolean)} while
  * holding the dataset write lock and before command snapshotting, allocation, or mutation.</p>
  */
-public final class LiveNetworkSnapshotValidator {
+public final class LiveNetworkSnapshotValidator implements LockedApplyValidator {
     private final NetworkSnapshotCapture.CapturedSnapshot captured;
     private final AlignmentEditPlan expectedPlan;
     private final LongSupplier liveSourceGeneration;
@@ -34,6 +35,7 @@ public final class LiveNetworkSnapshotValidator {
     }
 
     /** Returns the exact captured dataset identity. */
+    @Override
     public String datasetIdentity() {
         return captured.snapshot().datasetIdentity();
     }
@@ -48,6 +50,7 @@ public final class LiveNetworkSnapshotValidator {
      *
      * @throws IllegalStateException when called off the EDT or any factual closure state is stale
      */
+    @Override
     public void validateLocked(DataSet dataSet, AlignmentEditPlan plan,
             boolean requireSourceGeneration) {
         if (!SwingUtilities.isEventDispatchThread()) {

@@ -48,7 +48,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     private final LongSupplier liveSourceGeneration;
     private final String description;
     private final MutationProbe mutationProbe;
-    private final LiveNetworkSnapshotValidator fullClosureValidator;
+    private final LockedApplyValidator lockedValidator;
     private final String canonicalPlanHash;
     private Map<PrimitiveKey, Node> createdNodes = Map.of();
     private final List<PrimitiveKey> writeKeys;
@@ -90,6 +90,15 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             validator::currentSourceGeneration, description, point -> { }, validator);
     }
 
+    /**
+     * Creates a command whose complete factual Apply preflight runs under the dataset write lock.
+     */
+    public ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+            LockedApplyValidator validator, String description) {
+        this(dataSet, plan, Objects.requireNonNull(validator, "validator").datasetIdentity(),
+            () -> plan.before().sourceGeneration(), description, point -> { }, validator);
+    }
+
     ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
         String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
         MutationProbe mutationProbe) {
@@ -106,14 +115,14 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
 
     private ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
         String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
-        MutationProbe mutationProbe, LiveNetworkSnapshotValidator fullClosureValidator) {
+        MutationProbe mutationProbe, LockedApplyValidator lockedValidator) {
         super(Objects.requireNonNull(dataSet, "dataSet"));
         this.plan = Objects.requireNonNull(plan, "plan");
         this.liveDatasetIdentity = requireText(liveDatasetIdentity, "liveDatasetIdentity");
         this.liveSourceGeneration = Objects.requireNonNull(liveSourceGeneration, "liveSourceGeneration");
         this.description = requireText(description, "description");
         this.mutationProbe = Objects.requireNonNull(mutationProbe, "mutationProbe");
-        this.fullClosureValidator = fullClosureValidator;
+        this.lockedValidator = lockedValidator;
         if (plan.validation().disposition() == ValidationReport.Disposition.HARD_BLOCKED) {
             throw new IllegalArgumentException("A structurally blocked alignment plan cannot be applied");
         }
@@ -144,8 +153,8 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             throw new IllegalStateException("Alignment edit plan is already applied");
         }
         getAffectedDataSet().update(() -> {
-            if (fullClosureValidator != null) {
-                fullClosureValidator.validateLocked(getAffectedDataSet(), plan,
+            if (lockedValidator != null) {
+                lockedValidator.validateLocked(getAffectedDataSet(), plan,
                     !appliedSuccessfullyBefore);
             } else if (!appliedSuccessfullyBefore
                     && liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {

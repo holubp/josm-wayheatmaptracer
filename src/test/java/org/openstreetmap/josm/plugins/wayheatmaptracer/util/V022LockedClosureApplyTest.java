@@ -85,6 +85,29 @@ class V022LockedClosureApplyTest {
     }
 
     @Test
+    void genericLockedValidatorRunsUnderWriteLockBeforeCommandMutation() throws Exception {
+        Fixture fixture = fixture();
+        AtomicBoolean writeLockObserved = new AtomicBoolean();
+        LockedApplyValidator validator = new LockedApplyValidator() {
+            @Override public String datasetIdentity() {
+                return fixture.plan.before().datasetIdentity();
+            }
+            @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan,
+                    boolean firstExecution) {
+                writeLockObserved.set(firstExecution && readLockBlockedForAnotherThread(dataSet));
+                assertEquals(fixture.plan, plan);
+            }
+        };
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet, fixture.plan, validator, "Apply generic locked closure");
+
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+
+        assertTrue(writeLockObserved.get());
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+    }
+
+    @Test
     void fullClosureValidationRunsUnderWriteLockBeforeFirstMutation() throws Exception {
         Fixture fixture = fixture();
         AtomicBoolean writeLockObserved = new AtomicBoolean();
