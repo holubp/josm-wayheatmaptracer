@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,7 +46,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -168,6 +172,28 @@ class V022ModernSingleWayEditPlanAdapterTest {
             }
         }
         assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void T116b_changedVisibleEvidenceRejectsInitialLockedApplyWithoutUndoEntry() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.PROBABILISTIC);
+        AlignmentEditPlan plan = plan(computed);
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdtValue(() ->
+            NetworkSnapshotCapture.captureBound(fixture.dataSet(), computed.captured().specification()));
+        LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, plan,
+            () -> plan.before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+            new VisibleSourceLockedApplyValidator(network, new LiveBPreviewService(), computed.captured(),
+                V022ModernSingleWayEditPlanAdapterTest::rasterWithChangedEvidence),
+            "Apply modern visible alignment");
+        List<String> before = state(fixture);
+
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> UndoRedoHandler.getInstance().add(command)));
+
+        assertEquals(before, state(fixture));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
     }
 
@@ -351,6 +377,17 @@ class V022ModernSingleWayEditPlanAdapterTest {
             OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
     }
 
+    private static LiveBPreviewService.VisibleRaster rasterWithChangedEvidence() {
+        LiveBPreviewService.VisibleRaster original = raster();
+        int[] changed = original.argb();
+        changed[288 * original.width() + original.width() / 2] = 0xff000000;
+        return new LiveBPreviewService.VisibleRaster(original.width(), original.height(), changed,
+            original.minimumEast(), original.minimumNorth(), original.maximumEast(),
+            original.maximumNorth(), original.projectionUnitsPerViewPixel(),
+            original.groundMetersPerViewPixel(), original.nativePitchMeters(),
+            original.sourceIdentity(), original.projectionCode());
+    }
+
     private static AlignmentConfig config(TrackerMode mode) {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("", "", "", "", "all", "hot", "", ".*",
             AlignmentMode.PRECISE_SHAPE, mode, false, false,
@@ -380,8 +417,29 @@ class V022ModernSingleWayEditPlanAdapterTest {
             .sorted().toList();
     }
 
+    private static <T> T onEdtValue(java.util.concurrent.Callable<T> operation) throws Exception {
+        Object[] value = new Object[1];
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                value[0] = operation.call();
+            } catch (Exception exception) {
+                throw new IllegalStateException(exception);
+            }
+        });
+        @SuppressWarnings("unchecked")
+        T result = (T) value[0];
+        return result;
+    }
+
     private static void onEdt(Runnable operation) throws Exception {
-        SwingUtilities.invokeAndWait(operation);
+        try {
+            SwingUtilities.invokeAndWait(operation);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw exception;
+        }
     }
 
     private record Fixture(DataSet dataSet, Way way, SelectionContext selection) {
