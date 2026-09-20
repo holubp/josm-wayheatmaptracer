@@ -42,6 +42,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebu
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
@@ -51,6 +52,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
@@ -60,12 +62,18 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionIntegrit
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.TileHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ReplaceWaySegmentCommand;
@@ -476,6 +484,14 @@ public class AlignWayAction extends JosmAction {
         JLabel quality = new JLabel(liveBQualitySummary(computed, 0));
         JLabel diagnostics = new JLabel(tr(
                 "Modern Format-15 debug export is unavailable for this experimental preview."));
+        ModernSingleWayEditPlanAdapter planAdapter = new ModernSingleWayEditPlanAdapter();
+        AlignmentEditPlan[] plan = {null};
+        PreviewReviewState[] review = {null};
+        boolean[] applying = {false};
+        JButton confirm = new JButton(tr("Confirm review"));
+        JButton apply = new JButton(tr("Apply"));
+        confirm.setEnabled(false);
+        apply.setEnabled(false);
         JButton close = new JButton(tr("Close preview"));
         JPanel panel = new JPanel();
         panel.add(new JLabel(tr("Experimental read-only {0} final geometry",
@@ -485,6 +501,8 @@ public class AlignWayAction extends JosmAction {
         }
         panel.add(quality);
         panel.add(diagnostics);
+        panel.add(confirm);
+        panel.add(apply);
         panel.add(close);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("Experimental {0} Preview (Read Only)",
@@ -513,6 +531,20 @@ public class AlignWayAction extends JosmAction {
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
             }, false, PluginPreferences.isDebugEnabled());
             quality.setText(liveBQualitySummary(computed, index));
+            plan[0] = null;
+            review[0] = null;
+            if (supportsModernVisibleApply(computed.captured(), slideConfig)) {
+                try {
+                    plan[0] = planAdapter.adapt(computed, index);
+                    review[0] = PreviewReviewState.fromEditPlan(candidate.id(), plan[0]);
+                } catch (IllegalArgumentException unsupported) {
+                    PluginLog.verbose("Modern Apply is unavailable for candidate %s: %s", candidate.id(),
+                            unsupported.getMessage());
+                }
+            }
+            confirm.setEnabled(review[0] != null && review[0].disposition()
+                    == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED);
+            apply.setEnabled(review[0] != null && review[0].canApply() && !applying[0]);
         };
         choices.addActionListener(event -> {
             try {
@@ -545,6 +577,56 @@ public class AlignWayAction extends JosmAction {
                 }
             }
         });
+        confirm.addActionListener(event -> {
+            try {
+                refresh.run();
+                if (review[0] == null || review[0].disposition()
+                        != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED) {
+                    throw new IllegalStateException("This candidate does not require a confirmable review");
+                }
+                review[0] = review[0].confirm();
+                confirm.setEnabled(false);
+                apply.setEnabled(true);
+            } catch (RuntimeException exception) {
+                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                showError(tr("Experimental preview became stale: {0}", exception.getMessage()));
+            }
+        });
+        apply.addActionListener(event -> {
+            if (applying[0]) {
+                return;
+            }
+            applying[0] = true;
+            apply.setEnabled(false);
+            try {
+                if (!livePreviewSession.isCurrentWindow(previewOwner, dialog, activePreviewDialog,
+                        dialog.isDisplayable())) {
+                    throw new IllegalStateException("The preview window no longer owns this attempt");
+                }
+                int index = Math.max(0, choices.getSelectedIndex());
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, computed.captured());
+                AlignmentEditPlan currentPlan = planAdapter.adapt(computed, index);
+                PreviewReviewState currentReview = PreviewReviewState.fromEditPlan(candidates.get(index).id(), currentPlan);
+                if (review[0] == null || !(review[0].equals(currentReview)
+                        || review[0].matches(currentReview)) || !review[0].canApply()) {
+                    throw new IllegalStateException("The reviewed candidate plan is stale");
+                }
+                NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
+                        dataSet, computed.captured().specification());
+                LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, currentPlan,
+                        () -> currentPlan.before().sourceGeneration());
+                UndoRedoHandler.getInstance().add(new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
+                        new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
+                                () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
+                                        slideConfig, liveLayerIdentity(imageryLayer))),
+                        tr("Apply modern visible alignment")));
+                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+            } catch (RuntimeException exception) {
+                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                showError(tr("Experimental Apply failed: {0}", exception.getMessage()));
+            }
+        });
         close.addActionListener(event -> dialog.dispatchEvent(
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
         try {
@@ -554,6 +636,21 @@ public class AlignWayAction extends JosmAction {
             dialog.dispose();
             throw exception;
         }
+    }
+
+    static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
+            AlignmentConfig config) {
+        if (captured == null || config == null || captured.managedRaster() != null
+                || !"EPSG:3857".equals(captured.projectionCode()) || !config.cleanup().isDisabled()) {
+            return false;
+        }
+        ManagedHeatmapConfig heatmap = config.effectiveHeatmap();
+        return (captured.engine() == TrackerMode.PROBABILISTIC
+                    || captured.engine() == TrackerMode.CORRIDOR_AWARE)
+                && heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE
+                && heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
+                && !heatmap.simplifyEnabled() && !heatmap.adjustJunctionNodes()
+                && !heatmap.multiColorDetection() && !heatmap.aggregateAllColorSchemes();
     }
 
     private AlignmentResult liveBDisplayResult(SelectionContext selection,
