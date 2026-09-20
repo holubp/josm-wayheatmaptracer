@@ -192,6 +192,23 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void visibleSourceFreshnessRejectsChangedEvidencePixels() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config()));
+
+        LiveBPreviewService.VisibleRaster changed = rasterWithChangedEvidence();
+        SwingUtilities.invokeAndWait(() -> {
+            assertDoesNotThrow(() -> service.requireCurrent(fixture.dataSet(), captured[0], raster()));
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> service.requireCurrent(fixture.dataSet(), captured[0], changed));
+            assertTrue(failure.getMessage().contains("evidence"));
+        });
+    }
+
+    @Test
     void managedCandidateSwitchRejectsProjectionChangedAfterCapture() throws Exception {
         Fixture fixture = fixture();
         LiveBPreviewService service = new LiveBPreviewService();
@@ -298,6 +315,18 @@ class V022LiveBPreviewServiceTest {
         return new LiveBPreviewService.VisibleRaster(width, height, argb,
                 -50.0, -50.0, 50.0, 50.0, 1.0, 1.0,
                 OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster rasterWithChangedEvidence() {
+        LiveBPreviewService.VisibleRaster original = raster();
+        int[] changed = original.argb();
+        int center = 288 * original.width() + original.width() / 2;
+        changed[center] = 0xff000000;
+        return new LiveBPreviewService.VisibleRaster(original.width(), original.height(), changed,
+                original.minimumEast(), original.minimumNorth(), original.maximumEast(),
+                original.maximumNorth(), original.projectionUnitsPerViewPixel(),
+                original.groundMetersPerViewPixel(), original.nativePitchMeters(),
+                original.sourceIdentity(), original.projectionCode());
     }
 
     private static AlignmentConfig config() {

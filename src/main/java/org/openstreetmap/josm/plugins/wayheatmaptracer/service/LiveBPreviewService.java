@@ -344,6 +344,41 @@ public final class LiveBPreviewService {
                 captured.raster().projectionCode());
     }
 
+    /** Repeats the same visible frame and rejects changed scalar evidence before use. */
+    public void requireCurrent(DataSet dataSet, Captured captured, VisibleRaster currentRaster) {
+        if (captured == null || captured.managedRaster() != null || currentRaster == null) {
+            throw new IllegalStateException("Live preview visible source is stale");
+        }
+        VisibleRaster capturedRaster = captured.raster();
+        if (!sameVisibleFrame(capturedRaster, currentRaster)) {
+            throw new IllegalStateException("Live preview visible source frame is stale");
+        }
+        requireCurrent(dataSet, captured, currentRaster.sourceIdentity(), currentRaster.projectionCode());
+        Captured refreshed = new Captured(currentRaster, null, captured.specification(), captured.network(),
+                captured.sourceGeographic(), captured.sourceMetric(), captured.outputGrid(), captured.palette(),
+                captured.searchRadiusMeters(), captured.sampleStepMeters(), captured.settingsHash(),
+                captured.parameterHash(), captured.engine(), captured.projectionCode());
+        if (!captureEvidence(captured, CancellationProbe.NONE).canonicalHash().equals(
+                captureEvidence(refreshed, CancellationProbe.NONE).canonicalHash())) {
+            throw new IllegalStateException("Live preview visible evidence is stale");
+        }
+    }
+
+    private static boolean sameVisibleFrame(VisibleRaster captured, VisibleRaster current) {
+        return captured.width() == current.width() && captured.height() == current.height()
+                && Double.compare(captured.minimumEast(), current.minimumEast()) == 0
+                && Double.compare(captured.minimumNorth(), current.minimumNorth()) == 0
+                && Double.compare(captured.maximumEast(), current.maximumEast()) == 0
+                && Double.compare(captured.maximumNorth(), current.maximumNorth()) == 0
+                && Double.compare(captured.projectionUnitsPerViewPixel(),
+                        current.projectionUnitsPerViewPixel()) == 0
+                && Double.compare(captured.groundMetersPerViewPixel(),
+                        current.groundMetersPerViewPixel()) == 0
+                && captured.nativePitchMeters().equals(current.nativePitchMeters())
+                && captured.sourceIdentity().equals(current.sourceIdentity())
+                && captured.projectionCode().equals(current.projectionCode());
+    }
+
     /** Revalidates network, layer identity, and projection before publication or candidate switch. */
     public void requireCurrent(DataSet dataSet, Captured captured,
             String sourceIdentity, String projectionCode) {

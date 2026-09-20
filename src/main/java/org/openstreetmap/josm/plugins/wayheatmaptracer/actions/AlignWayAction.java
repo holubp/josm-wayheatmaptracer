@@ -398,8 +398,8 @@ public class AlignWayAction extends JosmAction {
                             ManagedModernPreviewSource.selectedOnly(seed[0].sourceGeographic(),
                                     slideConfig.heatmap(), sourceIdentity), credentials, context);
                     return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
-                }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
-                        imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
+                }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
+                        slideConfig, persistedSlideConfig, attempt.result()));
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
                     LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
@@ -411,8 +411,8 @@ public class AlignWayAction extends JosmAction {
                             captured.network().canonicalHash());
                     return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
                 }, (captured, context) -> livePreviewService.compute(captured, context),
-                        attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
-                                imageryLayer, slideConfig, persistedSlideConfig, attempt.result()));
+                        attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
+                                slideConfig, persistedSlideConfig, attempt.result()));
             }
         } catch (RuntimeException exception) {
             livePreviewSession.close(previewOwner);
@@ -424,15 +424,15 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void publishLiveBPreview(PreviewSessionController.Owner previewOwner, JDialog progress, DataSet dataSet,
-            SelectionContext selection,
-            ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
+            SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed) {
         if (!livePreviewSession.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
         try {
-            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, persistedSlideConfig,
+            requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     computed.captured());
             List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
@@ -443,7 +443,7 @@ public class AlignWayAction extends JosmAction {
                         + " returned no previewable final route");
             }
             progress.dispose();
-            showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer,
+            showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
                     slideConfig, persistedSlideConfig, computed, candidates);
         } catch (RuntimeException exception) {
             boolean closed = livePreviewSession.close(previewOwner);
@@ -458,8 +458,8 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void showLiveBReadOnlyDialog(PreviewSessionController.Owner previewOwner, DataSet dataSet,
-            SelectionContext selection,
-            ImageryLayer imageryLayer, AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
+            SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates) {
         JComboBox<CenterlineCandidate> choices = new JComboBox<>(
                 candidates.toArray(CenterlineCandidate[]::new));
@@ -501,7 +501,7 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException("The preview window no longer owns this attempt");
             }
             int index = Math.max(0, choices.getSelectedIndex());
-            requireLiveBCurrent(dataSet, imageryLayer, slideConfig, persistedSlideConfig,
+            requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     computed.captured());
             CenterlineCandidate candidate = candidates.get(index);
             AlignmentResult display = liveBDisplayResult(selection, computed, candidates, candidate);
@@ -579,9 +579,9 @@ public class AlignWayAction extends JosmAction {
                 String.format(Locale.ROOT, "%.1f", quality.totalLengthMeters()));
     }
 
-    private void requireLiveBCurrent(DataSet dataSet, ImageryLayer imageryLayer,
-            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
-            LiveBPreviewService.Captured captured) {
+    private void requireLiveBCurrent(DataSet dataSet, SelectionContext selection,
+            ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
+            AlignmentConfig persistedSlideConfig, LiveBPreviewService.Captured captured) {
         AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
                 PluginPreferences.loadGeometryCleanup());
         boolean managed = captured.managedRaster() != null;
@@ -596,8 +596,9 @@ public class AlignWayAction extends JosmAction {
         if (managed) {
             livePreviewService.requireCurrent(dataSet, captured);
         } else {
-            livePreviewService.requireCurrent(dataSet, captured, liveLayerIdentity(imageryLayer),
-                    ProjectionRegistry.getProjection().toCode());
+            LiveBPreviewService.VisibleRaster currentRaster = alignmentService.captureLiveBVisibleRaster(
+                    selection, imageryLayer, mapView, slideConfig, liveLayerIdentity(imageryLayer));
+            livePreviewService.requireCurrent(dataSet, captured, currentRaster);
         }
     }
 
