@@ -85,16 +85,7 @@ class V022ModernTracePipelineTest {
     @Test
     void unavailableReviewRouteSurvivesAndOutranksFiniteHardBlockedSibling() {
         Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
-        ScalarEvidenceField original = base.evidence.fields().get("native");
-        double[] values = original.copiedValues();
-        boolean[] valid = original.copiedValidity();
-        values[5 * 15 + 6] = Double.NaN;
-        valid[5 * 15 + 6] = false;
-        EvidenceSnapshot evidence = new EvidenceSnapshot("unavailable-evidence",
-                base.evidence.coordinateFrame(), base.evidence.transform(), base.evidence.resolution(),
-                base.evidence.decisionRegion(), base.evidence.evidenceRegion(), Map.of("native",
-                        new ScalarEvidenceField(15, 15, values, valid,
-                                base.evidence.fields().get("native").lineage())), "source");
+        EvidenceSnapshot evidence = evidenceWithUnavailableCells(base, 5 * 15 + 6);
         TraceHypothesis hard = new TraceHypothesis("a-hard", "a-hard",
                 List.of(new MetricPoint(0, 2), new MetricPoint(3, 2),
                         new MetricPoint(2, 2), new MetricPoint(4, 2)),
@@ -112,6 +103,59 @@ class V022ModernTracePipelineTest {
         assertTrue(result.routes().get(0).quality().has(
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
                         .FindingCode.UNAVAILABLE_IMAGE_QUALITY));
+    }
+
+    @Test
+    void unavailableReviewRouteOutranksUnavailableHardBlockedRoute() {
+        Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
+        EvidenceSnapshot evidence = evidenceWithUnavailableCells(base, 5 * 15 + 7, 7 * 15 + 8);
+        TraceHypothesis hard = new TraceHypothesis("a-unavailable-hard", "a-unavailable-hard",
+                List.of(new MetricPoint(0, 2), new MetricPoint(3, 2),
+                        new MetricPoint(2, 2), new MetricPoint(4, 2)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED),
+                1.0, 0.4, Map.of());
+        TraceEngine engine = (request, ignored, network, cancellation) -> routes(request.engine(),
+                hard, route("z-unavailable-review", 0));
+
+        ModernTracePipeline.Result result = new ModernTracePipeline(engine).run(base.request, evidence,
+                base.network, options(GeometryCleanupConfig.disabled()), CancellationProbe.NONE);
+
+        assertEquals(List.of("z-unavailable-review", "a-unavailable-hard"), result.routes().stream()
+                .map(route -> route.hypothesis().id()).toList());
+        assertTrue(result.routes().stream().allMatch(route -> route.quality().has(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .FindingCode.UNAVAILABLE_IMAGE_QUALITY)));
+        assertFalse(hasHardBlock(result.routes().get(0)));
+        assertTrue(hasHardBlock(result.routes().get(1)));
+    }
+
+    @Test
+    void finiteValidRouteOutranksUnavailableHardBlockedRoute() {
+        Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
+        EvidenceSnapshot evidence = evidenceWithUnavailableCells(base, 5 * 15 + 7, 7 * 15 + 8);
+        TraceHypothesis hard = new TraceHypothesis("z-unavailable-hard", "z-unavailable-hard",
+                List.of(new MetricPoint(0, 2), new MetricPoint(3, 2),
+                        new MetricPoint(2, 2), new MetricPoint(4, 2)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED, ObservationOwnership.DIRECT_TWO_SIDED),
+                1.0, 0.4, Map.of());
+        TraceEngine engine = (request, ignored, network, cancellation) -> routes(request.engine(),
+                hard, route("a-finite-valid", -2));
+
+        ModernTracePipeline.Result result = new ModernTracePipeline(engine).run(base.request, evidence,
+                base.network, options(GeometryCleanupConfig.disabled()), CancellationProbe.NONE);
+
+        assertEquals(List.of("a-finite-valid", "z-unavailable-hard"), result.routes().stream()
+                .map(route -> route.hypothesis().id()).toList());
+        assertFalse(result.routes().get(0).quality().has(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .FindingCode.UNAVAILABLE_IMAGE_QUALITY));
+        assertTrue(result.routes().get(1).quality().has(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .FindingCode.UNAVAILABLE_IMAGE_QUALITY));
+        assertFalse(hasHardBlock(result.routes().get(0)));
+        assertTrue(hasHardBlock(result.routes().get(1)));
     }
 
     @Test
@@ -351,6 +395,26 @@ class V022ModernTracePipelineTest {
                 List.of(ObservationOwnership.DIRECT_TWO_SIDED,
                         ObservationOwnership.DIRECT_TWO_SIDED,
                         ObservationOwnership.DIRECT_TWO_SIDED), 1.0, 0.4, Map.of());
+    }
+
+    private static EvidenceSnapshot evidenceWithUnavailableCells(Fixture base, int... rasterIndices) {
+        ScalarEvidenceField original = base.evidence.fields().get("native");
+        double[] values = original.copiedValues();
+        boolean[] valid = original.copiedValidity();
+        for (int index : rasterIndices) {
+            values[index] = Double.NaN;
+            valid[index] = false;
+        }
+        return new EvidenceSnapshot("unavailable-evidence", base.evidence.coordinateFrame(),
+                base.evidence.transform(), base.evidence.resolution(), base.evidence.decisionRegion(),
+                base.evidence.evidenceRegion(), Map.of("native", new ScalarEvidenceField(15, 15,
+                        values, valid, original.lineage())), "source");
+    }
+
+    private static boolean hasHardBlock(ModernTracePipeline.Route route) {
+        return route.quality().findings().stream().anyMatch(finding -> finding.severity()
+                == org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .Severity.HARD_BLOCK);
     }
 
     private static TraceHypothesisSet routes(TrackerMode mode, TraceHypothesis... routes) {
