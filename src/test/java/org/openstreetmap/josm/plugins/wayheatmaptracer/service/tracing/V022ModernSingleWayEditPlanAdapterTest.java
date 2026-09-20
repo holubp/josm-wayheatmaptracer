@@ -104,7 +104,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @Test
-    void T115b_selectedSubrangeRetainsExactPrefixSuffixInFinalPreview() throws Exception {
+    void t165SelectedSubrangeRetainsExactPrefixSuffixInFinalPreview() throws Exception {
         Fixture fixture = fixtureWithPrefixAndSuffix();
         LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.PROBABILISTIC);
         ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
