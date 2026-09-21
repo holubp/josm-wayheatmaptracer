@@ -278,6 +278,42 @@ def test_retained_scannable_text_is_bounded_or_streamed():
     assert inspection.scannable_members == ()
 
 
+def test_streaming_scanner_accepts_text_above_the_retention_limit(tmp_path):
+    """Privacy callbacks scan oversized text in chunks instead of retaining it."""
+    payload = b"privacy-scan-me" * 32
+    path = tmp_path / "outer.zip"
+    path.write_bytes(make([("notes.txt", payload)]))
+    chunks: list[str] = []
+
+    inspection = SafeArchiveReader(ArchiveLimits(max_text_member_bytes=16)).inspect(
+        path, on_member=lambda member: chunks.append(member.text))
+
+    assert inspection.scannable_members == ()
+    assert "".join(chunks) == payload.decode()
+
+
+def test_oversized_text_is_rejected_when_retained_but_cookie_split_is_streamed(tmp_path):
+    """Large text is never retained, while a split privacy marker is observable."""
+    marker = b"Cookie: private-value"
+    boundary = 1024 * 1024
+    payload = b"A" * (boundary - 2) + marker + b"\n" + b"B" * 128
+    path = tmp_path / "boundary.zip"
+    path.write_bytes(make([("notes.txt", payload)]))
+    limits = ArchiveLimits(max_text_member_bytes=1024, max_member_bytes=2 * boundary,
+                           max_ratio=10_000.0)
+
+    with pytest.raises(ArchiveError) as caught:
+        SafeArchiveReader(limits).inspect(path)
+    assert caught.value.code == "TEXT_SIZE"
+
+    chunks: list[str] = []
+    inspection = SafeArchiveReader(limits).inspect(
+        path, on_member=lambda member: chunks.append(member.text) if member.text else None)
+    assert inspection.scannable_members == ()
+    assert any("Cookie: private-value" in chunk for chunk in chunks)
+    assert sum(len(chunk) for chunk in chunks) <= len(payload.decode()) + 1024
+
+
 def test_retained_member_names_and_zip_inventory_are_peak_bounded(monkeypatch):
     """Long member names cannot evade the peak-materialization limit."""
 
@@ -327,6 +363,34 @@ def test_nonstreaming_discovery_charges_retained_bundle_payloads():
                 max_peak_materialized_bytes=len(output.getvalue()) + len(nested) * 2,
                 max_uncompressed_bytes=100_000,
             )).discover(path)
+
+    assert caught.value.code == "MEMORY_LIMIT"
+
+
+def test_nested_payload_copy_is_counted_before_the_mutable_buffer_is_released(tmp_path):
+    """A nested ZIP's mutable buffer and immutable callback value coexist briefly."""
+    nested_buffer = io.BytesIO()
+    with zipfile.ZipFile(nested_buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("candidate-metrics.csv", b"candidate_id\na\n")
+        archive.writestr("evidence.png", bytes(range(256)) * 600)
+    nested = nested_buffer.getvalue()
+    outer_buffer = io.BytesIO()
+    with zipfile.ZipFile(outer_buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("bundle.zip", nested)
+    outer = outer_buffer.getvalue()
+    path = tmp_path / "outer.zip"
+    path.write_bytes(outer)
+
+    SafeArchiveReader(ArchiveLimits(
+        max_peak_materialized_bytes=len(outer) + 2 * len(nested) + 128 * 1024,
+        max_ratio=10_000.0,
+    )).for_each_bundle(path, lambda found: None)
+
+    with pytest.raises(ArchiveError) as caught:
+        SafeArchiveReader(ArchiveLimits(
+            max_peak_materialized_bytes=len(outer) + len(nested) + 128 * 1024,
+            max_ratio=10_000.0,
+        )).for_each_bundle(path, lambda found: None)
 
     assert caught.value.code == "MEMORY_LIMIT"
 

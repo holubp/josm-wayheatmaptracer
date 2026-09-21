@@ -262,8 +262,12 @@ class SafeArchiveReader:
                         if info.is_dir():
                             continue
                         member_name = f"{name}!{info.filename}"
-                        text_member = (self._is_text(info.filename)
-                            and info.file_size <= self.limits.max_text_member_bytes)
+                        text_member = self._is_text(info.filename)
+                        if (text_member
+                                and info.file_size > self.limits.max_text_member_bytes
+                                and on_member is None):
+                            raise ArchiveError(
+                                "TEXT_SIZE", "text-like member exceeds retention limit")
                         if not text_member:
                             self._record_scannable(
                                 ScannableMember(member_name, ""), members, on_member, budget)
@@ -371,6 +375,9 @@ class SafeArchiveReader:
                 self._reserve(len(chunk), budget)
                 payload.write(chunk)
         payload_size = payload.tell()
+        # ``getvalue`` copies the mutable BytesIO storage. Charge both objects
+        # before closing the buffer so a nested callback value cannot bypass the
+        # peak-materialization limit during that hand-off.
         self._reserve(payload_size, budget)
         value = payload.getvalue()
         payload.close()
@@ -510,8 +517,6 @@ class SafeArchiveReader:
             raise ArchiveError("UNSUPPORTED_COMPRESSION", "unsupported ZIP compression")
         if info.file_size > self.limits.max_member_bytes:
             raise ArchiveError("MEMBER_SIZE", "member size limit exceeded")
-        if self._is_text(info.filename) and info.file_size > self.limits.max_text_member_bytes:
-            raise ArchiveError("TEXT_SIZE", "text-like member exceeds privacy scan limit")
         if info.file_size / max(1, info.compress_size) > self.limits.max_ratio:
             raise ArchiveError("COMPRESSION_RATIO", "compression-ratio limit exceeded")
         budget.entries += 1

@@ -29,18 +29,15 @@ def inventory(inputs: Path, require_reference_set: bool) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for path in paths:
-        try:
-            inspection = SafeArchiveReader().inspect(path)
-        except ArchiveError as error:
-            errors.append({"source": _safe_path(path), "code": error.code})
-            continue
-        for bundle in inspection.bundles:
+        pending: list[dict[str, Any]] = []
+        contains_private_text = False
+
+        def collect_bundle(bundle: BundleSource) -> None:
+            """Keep only one manifest-ready record after validation completes."""
+
             digest = hashlib.sha256(bundle.data).hexdigest()
             metadata = _bundle_metadata(bundle)
-            cases.append({
-                "caseId": f"case-{len(cases) + 1:03d}",
-                "sourcePath": str(path.resolve()),
-                "outerSha256": inspection.sha256,
+            pending.append({
                 "bundleName": safe_label(bundle.name, digest),
                 "bundleSha256": digest,
                 "byteSize": len(bundle.data),
@@ -48,6 +45,34 @@ def inventory(inputs: Path, require_reference_set: bool) -> dict[str, Any]:
                 "pluginVersion": safe_scalar(metadata.get("pluginVersion")),
                 "replayCapability": _replay_capability(metadata),
                 "missingInputs": _missing_inputs(metadata),
+            })
+
+        def scan_member(member: Any) -> None:
+            """Remember only whether one validated text chunk is private."""
+
+            nonlocal contains_private_text
+            contains_private_text |= bool(
+                findings(member.name, identity=member.name)
+                or findings(member.text, identity=member.name)
+            )
+
+        try:
+            inspection = SafeArchiveReader().inspect(
+                path,
+                on_bundle=collect_bundle,
+                on_member=scan_member,
+            )
+            if contains_private_text:
+                raise ArchiveError("PRIVACY", "archive contains credential-like material")
+        except ArchiveError as error:
+            errors.append({"source": _safe_path(path), "code": error.code})
+            continue
+        for bundle in pending:
+            cases.append({
+                "caseId": f"case-{len(cases) + 1:03d}",
+                "sourcePath": str(path.resolve()),
+                "outerSha256": inspection.sha256,
+                **bundle,
             })
     cases.sort(key=lambda case: (case["bundleSha256"], case["caseId"]))
     for index, case in enumerate(cases, 1):
@@ -69,11 +94,28 @@ def verify(manifest_path: Path) -> dict[str, Any]:
         by_path.setdefault(path, []).append(case)
     verified = 0
     for path, expected_cases in by_path.items():
-        inspection = SafeArchiveReader().inspect(path)
+        actual_bundles: set[str] = set()
+        contains_private_text = False
+
+        def scan_member(member: Any) -> None:
+            """Retain only the privacy verdict while the archive reader streams chunks."""
+
+            nonlocal contains_private_text
+            contains_private_text |= bool(
+                findings(member.name, identity=member.name)
+                or findings(member.text, identity=member.name)
+            )
+
+        inspection = SafeArchiveReader().inspect(
+            path,
+            on_bundle=lambda bundle: actual_bundles.add(hashlib.sha256(bundle.data).hexdigest()),
+            on_member=scan_member,
+        )
+        if contains_private_text:
+            raise CorpusError("archive contains credential-like material")
         expected_outer = {case.get("outerSha256") for case in expected_cases}
         if expected_outer != {inspection.sha256}:
             raise CorpusError("outer archive checksum mismatch")
-        actual_bundles = {hashlib.sha256(bundle.data).hexdigest() for bundle in inspection.bundles}
         expected_bundles = {case.get("bundleSha256") for case in expected_cases}
         if not expected_bundles.issubset(actual_bundles):
             raise CorpusError("nested bundle checksum mismatch")
@@ -115,8 +157,11 @@ def _bundle_metadata(bundle: BundleSource) -> dict[str, Any]:
 
     with zipfile.ZipFile(io.BytesIO(bundle.data)) as archive:
         names = set(archive.namelist())
+        text_limit = SafeArchiveReader().limits.max_text_member_bytes
         for name in ("diagnostics.json", "status.json", "replay-manifest.json"):
             if name in names:
+                if archive.getinfo(name).file_size > text_limit:
+                    raise ArchiveError("TEXT_SIZE", "text-like member exceeds retention limit")
                 raw = archive.read(name)
                 if findings(raw.decode("utf-8", "replace")):
                     raise CorpusError("bundle metadata contains credential-like material")
