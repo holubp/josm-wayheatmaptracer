@@ -90,6 +90,7 @@ class V022CollisionEnvelopeQueryTest {
                 MetricRegion.rectangle(-50.0, -50.0, 50.0, 50.0)));
 
         assertTrue(failure.getMessage().contains("incomplete geometry"));
+        assertTrue(failure.getMessage().contains("unknown-node-9001"));
     }
 
     @Test

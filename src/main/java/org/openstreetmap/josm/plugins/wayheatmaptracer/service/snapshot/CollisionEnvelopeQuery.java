@@ -107,9 +107,17 @@ public final class CollisionEnvelopeQuery {
             List<Node> nodes = way.getNodes();
             boolean intersects = false;
             boolean incompleteGeometry = way.isIncomplete() || way.hasIncompleteNodes() || nodes.size() < 2;
+            StringBuilder incompleteDetail = new StringBuilder();
+            if (way.isIncomplete()) {
+                incompleteDetail.append("way-incomplete");
+            }
+            if (nodes.size() < 2) {
+                appendIncompleteDetail(incompleteDetail, "fewer-than-two-nodes");
+            }
             for (Node node : nodes) {
                 if (!node.isLatLonKnown()) {
                     incompleteGeometry = true;
+                    appendIncompleteDetail(incompleteDetail, "unknown-node-" + node.getUniqueId());
                 }
             }
             for (int index = 1; index < nodes.size(); index++) {
@@ -134,13 +142,21 @@ public final class CollisionEnvelopeQuery {
             }
             if (incompleteGeometry) {
                 throw new IllegalStateException("Collision query indeterminate: incomplete geometry "
-                    + "prevents proving exclusion for live way: " + way.getUniqueId());
+                    + "prevents proving exclusion for live way: " + way.getUniqueId()
+                    + " (" + (incompleteDetail.isEmpty() ? "has-incomplete-nodes" : incompleteDetail) + ")");
             }
             if (intersects) {
                 intersectingWays.add(PrimitiveKey.existing(PrimitiveKey.Type.WAY, way.getUniqueId()));
             }
         }
         return new Result(intersectingWays, primitiveCount, segmentCount, definition);
+    }
+
+    private static void appendIncompleteDetail(StringBuilder detail, String value) {
+        if (!detail.isEmpty()) {
+            detail.append(",");
+        }
+        detail.append(value);
     }
 
     private static int chargedIncrement(int current, int maximum, String unit) {
