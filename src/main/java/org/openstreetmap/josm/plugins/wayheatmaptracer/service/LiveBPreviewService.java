@@ -58,6 +58,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCan
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Experimental read-only live producer for the explicitly supported B preview. */
 public final class LiveBPreviewService {
@@ -200,6 +201,8 @@ public final class LiveBPreviewService {
         if (!grid.footprint().containsRegion(decision)) {
             throw new IllegalArgumentException("Visible capture does not contain the complete B decision corridor");
         }
+        PluginLog.verbose("Live B metric corridor accepted before worker: geometry=%s.",
+                RasterEvidenceCapture.handoffFingerprint(grid, metric, radius));
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
                 selection.way().getUniqueId());
         OccurrenceRange range = new OccurrenceRange(selection.startIndex(), selection.endIndex());

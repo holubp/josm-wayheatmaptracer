@@ -61,6 +61,20 @@ class V022MetricRasterCaptureFallbackTest {
     }
 
     @Test
+    void decisionCorridorFailureReportsCoordinateFreeHandoffFingerprint() {
+        LocalMetricFrame frame = frame();
+        MetricRasterGrid grid = grid(frame, new MetricPoint(-2, -2),
+                1, 0, 0, 1, 1, 4, 4);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> capture(solidImage(20, 20, 0xffffffff), allValid(20, 20),
+                        List.of(metric(frame, -2, 0), metric(frame, 2, 0)),
+                        SupportedInputRasterTransform.localMetricAffine(frame, new RasterPoint(10, 10), 1, 0, 0, 1),
+                        grid, EvidenceResolution.renderedOnly(1), 1, direct(), CancellationProbe.NONE));
+
+        assertTrue(failure.getMessage().contains("geometry="));
+    }
+
+    @Test
     void capturedMetricSourceOwnsDecisionCorridorAtTheOutputBoundary() {
         LocalMetricFrame frame = frame();
         MetricRasterGrid grid = grid(frame, new MetricPoint(-4.5, -4.5),

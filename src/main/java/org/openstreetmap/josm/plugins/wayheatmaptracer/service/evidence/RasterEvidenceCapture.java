@@ -46,6 +46,19 @@ public final class RasterEvidenceCapture {
     // FieldSpec validates kernels to at most 63 finite doubles; this bounds Arrays.toString.
     private static final long SEPARABLE_OPERATION_MAX_CHARS = 4_096L;
 
+    /** Returns a bounded coordinate-free identity for one metric evidence handoff. */
+    public static String handoffFingerprint(MetricRasterGrid grid, List<MetricPoint> metricSource,
+            double decisionRadiusMeters) {
+        if (grid == null || metricSource == null || !Double.isFinite(decisionRadiusMeters)) {
+            return "invalid";
+        }
+        String sourceHash = Integer.toUnsignedString(metricSource.hashCode(), 16);
+        return "g=" + grid.width() + "x" + grid.height()
+                + "@" + String.format(java.util.Locale.ROOT, "%.6f", grid.pitchMeters())
+                + "m;r=" + String.format(java.util.Locale.ROOT, "%.6f", decisionRadiusMeters)
+                + "m;n=" + metricSource.size() + ";h=" + sourceHash;
+    }
+
     /** One scalar field mapping and its immutable provenance. */
     public record FieldSpec(String name, IntToDoubleFunction argbMapping,
             EvidenceFieldLineage lineage, List<Double> separableKernel) {
@@ -171,7 +184,8 @@ public final class RasterEvidenceCapture {
         }
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metricSource, decisionRadiusMeters);
         if (!footprint.containsRegion(decision)) {
-            throw new IllegalArgumentException("Metric output grid and evidence halo do not cover the decision corridor");
+            throw new IllegalArgumentException("Metric output grid and evidence halo do not cover the decision corridor"
+                    + " [geometry=" + handoffFingerprint(outputGrid, metricSource, decisionRadiusMeters) + "]");
         }
 
         boolean[] inputValid = acquisitionValidity.clone();
