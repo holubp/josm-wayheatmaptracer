@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,13 +15,15 @@ from .safe_zip import ArchiveError, BundleSource, SafeArchiveReader
 
 SCHEMA = "wayheatmaptracer-v022-corpus-1"
 EXPECTED_REFERENCE_CASES = 14
+REFERENCE_SCHEMA = "wayheatmaptracer-v022-reference-1"
 
 
 class CorpusError(ValueError):
     """A safe user-facing corpus validation failure."""
 
 
-def inventory(inputs: Path, require_reference_set: bool) -> dict[str, Any]:
+def inventory(inputs: Path, require_reference_set: bool, reference_manifest: Path | None = None,
+              reference_manifest_sha256: str | None = None) -> dict[str, Any]:
     """Inventory validated debug bundles below one explicitly supplied directory."""
 
     if not inputs.is_dir():
@@ -43,6 +46,7 @@ def inventory(inputs: Path, require_reference_set: bool) -> dict[str, Any]:
                 "byteSize": len(bundle.data),
                 "debugFormat": safe_scalar(metadata.get("formatVersion")),
                 "pluginVersion": safe_scalar(metadata.get("pluginVersion")),
+                "selectionWayId": _selection_way_id(metadata),
                 "replayCapability": _replay_capability(metadata),
                 "missingInputs": _missing_inputs(metadata),
             })
@@ -71,23 +75,44 @@ def inventory(inputs: Path, require_reference_set: bool) -> dict[str, Any]:
             cases.append({
                 "caseId": f"case-{len(cases) + 1:03d}",
                 "sourcePath": str(path.resolve()),
+                "sourceFilename": path.name,
+                "exportId": _export_id(path.name),
+                "selectionWayId": bundle.get("selectionWayId"),
                 "outerSha256": inspection.sha256,
                 **bundle,
             })
     cases.sort(key=lambda case: (case["bundleSha256"], case["caseId"]))
     for index, case in enumerate(cases, 1):
         case["caseId"] = f"case-{index:03d}"
-    if require_reference_set and len(cases) != EXPECTED_REFERENCE_CASES:
-        raise CorpusError(f"required reference set has {len(cases)} cases; expected {EXPECTED_REFERENCE_CASES}")
+    if require_reference_set:
+        if reference_manifest is None:
+            raise CorpusError("strict inventory requires --reference-manifest")
+        if reference_manifest_sha256 is None:
+            raise CorpusError("strict inventory requires --reference-manifest-sha256")
+        if errors:
+            raise CorpusError("strict inventory rejects quarantined archives")
+        if len(cases) != EXPECTED_REFERENCE_CASES:
+            raise CorpusError(f"required reference set has {len(cases)} cases; expected {EXPECTED_REFERENCE_CASES}")
+        _assert_reference_binding(cases, _read_reference_manifest(reference_manifest, reference_manifest_sha256))
     return {"schema": SCHEMA, "inputRoot": str(inputs.resolve()), "cases": cases, "errors": errors}
 
 
-def verify(manifest_path: Path) -> dict[str, Any]:
+def verify(manifest_path: Path, require_reference_set: bool = False,
+           reference_manifest: Path | None = None,
+           reference_manifest_sha256: str | None = None) -> dict[str, Any]:
     """Verify outer and nested bundle hashes from a previously written manifest."""
 
     manifest = _read_json(manifest_path)
     if manifest.get("schema") != SCHEMA or not isinstance(manifest.get("cases"), list):
         raise CorpusError("unsupported or malformed corpus manifest")
+    if require_reference_set:
+        if reference_manifest is None:
+            raise CorpusError("strict verification requires --reference-manifest")
+        if reference_manifest_sha256 is None:
+            raise CorpusError("strict verification requires --reference-manifest-sha256")
+        if len(manifest["cases"]) != EXPECTED_REFERENCE_CASES:
+            raise CorpusError(f"required reference set has {len(manifest['cases'])} cases; expected {EXPECTED_REFERENCE_CASES}")
+        _assert_reference_binding(manifest["cases"], _read_reference_manifest(reference_manifest, reference_manifest_sha256))
     by_path: dict[Path, list[dict[str, Any]]] = {}
     for case in manifest["cases"]:
         path = Path(case.get("sourcePath", ""))
@@ -117,7 +142,7 @@ def verify(manifest_path: Path) -> dict[str, Any]:
         if expected_outer != {inspection.sha256}:
             raise CorpusError("outer archive checksum mismatch")
         expected_bundles = {case.get("bundleSha256") for case in expected_cases}
-        if not expected_bundles.issubset(actual_bundles):
+        if expected_bundles != actual_bundles:
             raise CorpusError("nested bundle checksum mismatch")
         verified += len(expected_cases)
     return {"schema": SCHEMA, "verifiedCases": verified, "verified": True}
@@ -168,6 +193,73 @@ def _bundle_metadata(bundle: BundleSource) -> dict[str, Any]:
                 value = json.loads(raw)
                 return value if isinstance(value, dict) else {}
     return {}
+
+
+def _selection_way_id(bundle: dict[str, Any]) -> Any:
+    """Extract the selected way identity from validated bundle metadata."""
+
+    selection = bundle.get("selection")
+    if isinstance(selection, dict):
+        return selection.get("wayId")
+    return None
+
+
+def _export_id(filename: str) -> str:
+    """Derive the export identity from the stable debug-export filename."""
+
+    match = re.match(r"^last-slide-debug-(.+?)(?:\(\d+\))?\.zip$", filename)
+    return match.group(1) if match else Path(filename).stem
+
+
+def _read_reference_manifest(path: Path, expected_sha256: str) -> list[dict[str, Any]]:
+    if re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256) is None:
+        raise CorpusError("reference manifest SHA-256 must be a 64-character hexadecimal digest")
+    try:
+        raw = path.read_bytes()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise CorpusError("cannot read JSON input") from error
+    if hashlib.sha256(raw).hexdigest() != expected_sha256.lower():
+        raise CorpusError("reference manifest SHA-256 mismatch")
+    if not isinstance(value, dict):
+        raise CorpusError("JSON input must be an object")
+    if value.get("schema") != REFERENCE_SCHEMA or not isinstance(value.get("cases"), list):
+        raise CorpusError("unsupported or malformed reference manifest")
+    required = ("sourceFilename", "exportId", "selectionWayId", "outerSha256", "bundleSha256")
+    cases = value["cases"]
+    if any(not isinstance(case, dict) or any(field not in case for field in required) for case in cases):
+        raise CorpusError("reference manifest case is missing required identity fields")
+    if any(not isinstance(case["sourceFilename"], str) or not isinstance(case["exportId"], str)
+           or not isinstance(case["selectionWayId"], int)
+           or isinstance(case["selectionWayId"], bool)
+           or not isinstance(case["outerSha256"], str) or not isinstance(case["bundleSha256"], str)
+           or re.fullmatch(r"[0-9a-fA-F]{64}", case["outerSha256"]) is None
+           or re.fullmatch(r"[0-9a-fA-F]{64}", case["bundleSha256"]) is None
+           for case in cases):
+        raise CorpusError("reference manifest contains invalid identity fields")
+    return cases
+
+
+def _identity(case: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(case.get(field) for field in
+                 ("sourceFilename", "exportId", "selectionWayId", "outerSha256", "bundleSha256"))
+
+
+def _assert_reference_binding(actual: list[dict[str, Any]], reference: list[dict[str, Any]]) -> None:
+    for case in actual:
+        source_path = case.get("sourcePath")
+        source_filename = case.get("sourceFilename")
+        if (not isinstance(source_path, str) or not isinstance(source_filename, str)
+                or Path(source_path).name != source_filename):
+            raise CorpusError("reference binding requires sourcePath/sourceFilename agreement")
+    actual_ids = [_identity(case) for case in actual]
+    reference_ids = [_identity(case) for case in reference]
+    if len(set(reference_ids)) != len(reference_ids):
+        raise CorpusError("duplicate reference identity")
+    if len(set(actual_ids)) != len(actual_ids):
+        raise CorpusError("duplicate corpus identity")
+    if set(actual_ids) != set(reference_ids):
+        raise CorpusError("reference identity mismatch")
 
 
 def _replay_capability(metadata: dict[str, Any]) -> str:

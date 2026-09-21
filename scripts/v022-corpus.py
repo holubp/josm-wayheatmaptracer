@@ -20,8 +20,13 @@ def parser() -> argparse.ArgumentParser:
     inventory_command.add_argument("--inputs", type=Path, required=True)
     inventory_command.add_argument("--output", type=Path, required=True)
     inventory_command.add_argument("--require-reference-set", action="store_true")
+    inventory_command.add_argument("--reference-manifest", type=Path)
+    inventory_command.add_argument("--reference-manifest-sha256")
     verify_command = commands.add_parser("verify")
     verify_command.add_argument("--manifest", type=Path, required=True)
+    verify_command.add_argument("--require-reference-set", action="store_true")
+    verify_command.add_argument("--reference-manifest", type=Path)
+    verify_command.add_argument("--reference-manifest-sha256")
     report_command = commands.add_parser("report")
     report_command.add_argument("--manifest", type=Path, required=True)
     report_command.add_argument("--results", type=Path, required=True)
@@ -35,10 +40,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser().parse_args(argv)
     try:
         if arguments.command == "inventory":
-            value = inventory(arguments.inputs, arguments.require_reference_set)
+            value = inventory(arguments.inputs, arguments.require_reference_set, arguments.reference_manifest,
+                              arguments.reference_manifest_sha256)
             output = json.dumps(value, indent=2, sort_keys=True) + "\n"
         elif arguments.command == "verify":
-            value = verify(arguments.manifest)
+            value = verify(arguments.manifest, arguments.require_reference_set, arguments.reference_manifest,
+                           arguments.reference_manifest_sha256)
             output = json.dumps(value, indent=2, sort_keys=True) + "\n"
             print(output, end="")
             return 0

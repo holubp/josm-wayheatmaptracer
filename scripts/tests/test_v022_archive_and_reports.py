@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -35,11 +36,46 @@ def archive(entries: list[tuple[str, bytes]]) -> bytes:
     return output.getvalue()
 
 
-def debug_bundle() -> bytes:
+def debug_bundle(way_id: int | None = None) -> bytes:
     """Build the smallest recognizable safe debug bundle."""
 
-    diagnostics = json.dumps({"formatVersion": 14, "pluginVersion": "0.21.5", "profileCount": 3}).encode()
-    return archive([("diagnostics.json", diagnostics), ("candidate-metrics.csv", b"candidate_id\na\n")])
+    diagnostics = {"formatVersion": 14, "pluginVersion": "0.21.5", "profileCount": 3}
+    if way_id is not None:
+        diagnostics["selection"] = {"wayId": way_id}
+    return archive([("diagnostics.json", json.dumps(diagnostics).encode()),
+                    ("candidate-metrics.csv", b"candidate_id\na\n")])
+
+
+def reference_cases(inputs: Path, count: int = 14) -> list[dict[str, object]]:
+    """Create a synthetic strict reference manifest and its matching archives."""
+
+    cases = []
+    for index in range(1, count + 1):
+        export_id = f"synthetic-{index:03d}"
+        source = inputs / f"last-slide-debug-{export_id}(1).zip"
+        bundle = debug_bundle(10_000 + index)
+        source.write_bytes(archive([("bundle.zip", bundle)]))
+        cases.append({
+            "sourceFilename": source.name,
+            "exportId": export_id,
+            "selectionWayId": 10_000 + index,
+            "outerSha256": sha256(source.read_bytes()).hexdigest(),
+            "bundleSha256": sha256(bundle).hexdigest(),
+        })
+    return cases
+
+
+def write_reference_manifest(path: Path, cases: list[dict[str, object]]) -> Path:
+    """Write a synthetic external reference manifest for strict corpus tests."""
+
+    path.write_text(json.dumps({"schema": "wayheatmaptracer-v022-reference-1", "cases": cases}))
+    return path
+
+
+def reference_anchor(path: Path) -> str:
+    """Return the externally supplied test anchor for a reference manifest."""
+
+    return sha256(path.read_bytes()).hexdigest()
 
 
 def test_t139_zip_traversal_duplicate_and_symlink_rejection(tmp_path: Path) -> None:
@@ -110,6 +146,161 @@ def test_t142_strict_inventory_rejects_missing_reference_set(tmp_path: Path) -> 
         capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert not (tmp_path / "manifest.json").exists()
+
+
+def test_strict_inventory_requires_a_matching_external_reference_manifest(tmp_path: Path) -> None:
+    """Strict inventory accepts all fourteen cases only when every identity matches."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    reference = write_reference_manifest(tmp_path / "reference.json", reference_cases(inputs))
+
+    result = inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                       reference_manifest_sha256=reference_anchor(reference))
+
+    assert len(result["cases"]) == 14
+    assert all("selectionWayId" in case for case in result["cases"])
+
+
+def test_strict_inventory_rejects_substitute_reference_manifest_with_wrong_anchor(tmp_path: Path) -> None:
+    """A count-correct substitute corpus and manifest cannot choose their own anchor."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    substitute = write_reference_manifest(tmp_path / "substitute-reference.json", reference_cases(inputs))
+
+    with pytest.raises(CorpusError, match="SHA-256 mismatch"):
+        inventory(inputs, require_reference_set=True, reference_manifest=substitute,
+                  reference_manifest_sha256="0" * 64)
+
+
+def test_strict_inventory_matches_no_suffix_source_filename(tmp_path: Path) -> None:
+    """Strict matching accepts a debug export filename without the optional suffix."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    suffixed = inputs / cases[0]["sourceFilename"]
+    unsuffixed = inputs / "last-slide-debug-synthetic-001.zip"
+    suffixed.rename(unsuffixed)
+    cases[0]["sourceFilename"] = unsuffixed.name
+    cases[0]["outerSha256"] = sha256(unsuffixed.read_bytes()).hexdigest()
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+
+    result = inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                       reference_manifest_sha256=reference_anchor(reference))
+
+    assert len(result["cases"]) == 14
+    assert next(case for case in result["cases"] if case["sourceFilename"] == unsuffixed.name)["exportId"] == "synthetic-001"
+
+
+def test_strict_inventory_rejects_mismatched_selected_way_identity(tmp_path: Path) -> None:
+    """A matching filename and checksums cannot substitute a different selected way."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    cases[0]["selectionWayId"] = 99_999
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+
+    with pytest.raises(CorpusError, match="reference identity"):
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))
+
+
+def test_strict_inventory_rejects_count_correct_wrong_identity_set(tmp_path: Path) -> None:
+    """Fourteen arbitrary archives are not the required fourteen reference exports."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    cases[0]["exportId"] = "different-export"
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+
+    with pytest.raises(CorpusError, match="reference identity"):
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))
+
+
+def test_strict_inventory_rejects_duplicate_or_extra_reference_identities(tmp_path: Path) -> None:
+    """Strict matching fails closed for duplicate reference rows and extra inputs."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    duplicate = [*cases[:-1], dict(cases[0])]
+    reference = write_reference_manifest(tmp_path / "duplicate.json", duplicate)
+
+    with pytest.raises(CorpusError, match="duplicate"):
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))
+
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+    extra_bundle = debug_bundle(20_000)
+    (inputs / "last-slide-debug-synthetic-extra(1).zip").write_bytes(archive([("bundle.zip", extra_bundle)]))
+    with pytest.raises(CorpusError, match="expected 14"):
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))
+
+
+def test_strict_verify_rechecks_reference_identity_binding(tmp_path: Path) -> None:
+    """Strict verification rejects a manifest that was not bound to its reference rows."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+    inventory_manifest = tmp_path / "inventory.json"
+    inventory_manifest.write_text(json.dumps(
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference)),
+    ))
+
+    assert verify(inventory_manifest, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))["verified"]
+    cases[0]["bundleSha256"] = "0" * 64
+    mismatch = write_reference_manifest(tmp_path / "mismatch.json", cases)
+    with pytest.raises(CorpusError, match="reference identity"):
+        verify(inventory_manifest, require_reference_set=True, reference_manifest=mismatch,
+               reference_manifest_sha256=reference_anchor(mismatch))
+
+
+def test_strict_verify_requires_source_path_filename_agreement(tmp_path: Path) -> None:
+    """Strict verification refuses a reference row bound to a different source basename."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    cases = reference_cases(inputs)
+    reference = write_reference_manifest(tmp_path / "reference.json", cases)
+    inventory_manifest = tmp_path / "inventory.json"
+    value = inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                      reference_manifest_sha256=reference_anchor(reference))
+    value["cases"][0]["sourceFilename"] = "other-debug-export.zip"
+    inventory_manifest.write_text(json.dumps(value))
+
+    with pytest.raises(CorpusError, match="sourcePath/sourceFilename agreement"):
+        verify(inventory_manifest, require_reference_set=True, reference_manifest=reference,
+               reference_manifest_sha256=reference_anchor(reference))
+
+
+@pytest.mark.parametrize("extra_contents", [
+    archive([("bundle.zip", archive([
+        ("diagnostics.json", b'{"formatVersion": 14}'),
+        ("unrelated-notes.txt", b"Cookie: private-value"),
+    ]))]),
+    b"not a ZIP archive",
+])
+def test_strict_inventory_rejects_quarantined_extra_zip(tmp_path: Path, extra_contents: bytes) -> None:
+    """Strict inventory fails even when fourteen valid cases accompany one bad ZIP."""
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    reference = write_reference_manifest(tmp_path / "reference.json", reference_cases(inputs))
+    (inputs / "last-slide-debug-extra.zip").write_bytes(extra_contents)
+
+    with pytest.raises(CorpusError, match="quarantined archives"):
+        inventory(inputs, require_reference_set=True, reference_manifest=reference,
+                  reference_manifest_sha256=reference_anchor(reference))
 
 
 def test_t143_report_escapes_untrusted_fields(tmp_path: Path) -> None:
