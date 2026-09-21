@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -41,8 +42,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -418,6 +422,66 @@ class V022EndToEndTest {
                 multipleFailure::getMessage);
     }
 
+    @Test
+    void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
+        JunctionFixture fixture = reconstructionFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        Map<PrimitiveKey, List<Node>> originalWays = plan.finalPreviewWays().keySet().stream()
+                .collect(java.util.stream.Collectors.toMap(key -> key, key -> List.copyOf(
+                        ((Way) fixture.dataSet().getPrimitiveById(
+                                key.id(), OsmPrimitiveType.WAY)).getNodes())));
+        Map<PrimitiveKey, List<LatLon>> originalCoordinates = originalWays.entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                        entry -> entry.getValue().stream()
+                                .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(
+                        fixture.dataSet(), computed.captured().specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt, plan, () -> plan.before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), plan, validator, "Apply reviewed all-way alignment");
+
+        onEdt(command::executeCommand);
+
+        assertEquals(Set.of(computed.request().selectedWayKey(),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                        fixture.receiver().getUniqueId())), plan.finalPreviewWays().keySet());
+        for (Map.Entry<PrimitiveKey, List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint>>
+                entry : plan.finalPreviewWays().entrySet()) {
+            Way applied = (Way) fixture.dataSet().getPrimitiveById(
+                    entry.getKey().id(), OsmPrimitiveType.WAY);
+            List<LatLon> expected = entry.getValue().stream()
+                    .map(point -> new LatLon(point.latitudeDegrees(),
+                            point.longitudeDegrees())).toList();
+            List<LatLon> actual = applied.getNodes().stream()
+                    .map(node -> new LatLon(node.lat(), node.lon())).toList();
+            assertNotEquals(originalCoordinates.get(entry.getKey()), expected,
+                    "T170 fixture must materially change " + entry.getKey());
+            assertEquals(expected, actual, entry.getKey().toString());
+        }
+
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        originalWays.forEach((key, nodes) -> assertEquals(nodes,
+                ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes(), key.toString()));
+        originalCoordinates.forEach((key, coordinates) -> assertEquals(coordinates,
+                ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes().stream()
+                        .map(node -> new LatLon(node.lat(), node.lon())).toList(), key.toString()));
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node a = loadedNode(1, 0.0, longitude(-8));
@@ -444,6 +508,27 @@ class V022EndToEndTest {
                 captured[0], CancellationProbe.NONE);
         assertFalse(computed.pipeline().routes().isEmpty());
         return computed;
+    }
+
+    private static <T> T onEdt(java.util.concurrent.Callable<T> operation) throws Exception {
+        java.util.concurrent.atomic.AtomicReference<T> value =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> {
+            try {
+                value.set(operation.call());
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            }
+        });
+        if (failure.get() instanceof Exception exception) {
+            throw exception;
+        }
+        if (failure.get() instanceof Error error) {
+            throw error;
+        }
+        return value.get();
     }
 
     private static JunctionFixture junctionFixture(double receiverEastOffset, boolean crossing) {
