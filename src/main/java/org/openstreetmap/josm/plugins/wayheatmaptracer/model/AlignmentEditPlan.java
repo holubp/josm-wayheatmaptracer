@@ -25,6 +25,9 @@ public record AlignmentEditPlan(
     Map<PrimitiveKey, List<GeographicPoint>> finalPreviewWays,
     ValidationReport validation
 ) {
+    private static final double MAXIMUM_JUNCTION_RELOCATION_METERS = 20.0;
+    private static final double MOVEMENT_DISTANCE_EPSILON_METERS = 1.0e-6;
+
     /** Copies state and proves identity, authority, geometry, preview, and permission invariants. */
     public AlignmentEditPlan {
         if (selectedWayKey == null || selectedWayKey.type() != PrimitiveKey.Type.WAY || selectedRange == null
@@ -53,14 +56,15 @@ public record AlignmentEditPlan(
             throw new IllegalArgumentException("An edit plan must contain a material change");
         }
         validateCreatedAndRemoved(before, after, writeSet);
-        validateNodeMovementAuthority(before, after, selectedWayKey, selectedRange, permissions);
+        validateNodeMovementAuthority(before, after, selectedWayKey, selectedRange, permissions,
+            metricFrame);
         Set<PrimitiveKey> changedExisting = writeSet.stream()
             .filter(before.primitives()::containsKey).collect(Collectors.toUnmodifiableSet());
         if (!before.closure().editableExistingKeys().containsAll(changedExisting)) {
             throw new IllegalArgumentException("Structural diff exceeds explicit primitive edit authority");
         }
         validateSemanticChanges(before, after, writeSet, permissions, selectedWayKey);
-        validateOccurrenceAuthority(before, after, writeSet);
+        validateOccurrenceAuthority(before, after, writeSet, permissions);
         validateMetricAuthority(before, after, writeSet, metricFrame);
         Set<PrimitiveKey> affectedWays = affectedWayKeys(before, after, writeSet);
         validateDecisionReferrerPayload(before, after, writeSet, affectedWays,
@@ -194,7 +198,8 @@ public record AlignmentEditPlan(
     }
 
     private static void validateNodeMovementAuthority(NetworkSnapshot before, NetworkSnapshot after,
-        PrimitiveKey selectedWayKey, OccurrenceRange selectedRange, RecoveryPermissions permissions) {
+        PrimitiveKey selectedWayKey, OccurrenceRange selectedRange, RecoveryPermissions permissions,
+        LocalMetricFrame metricFrame) {
         Set<PrimitiveKey> movable = before.closure().movableExistingNodeKeys();
         Set<PrimitiveKey> protectedNodes = before.closure().protectedExistingNodeKeys();
         for (Map.Entry<PrimitiveKey, DetachedPrimitive> entry : before.primitives().entrySet()) {
@@ -221,6 +226,19 @@ public record AlignmentEditPlan(
                     if (!occurrenceEditable
                         || selectedBoundary && permissions.junctionPolicy() == JunctionPolicy.FIXED) {
                         throw new IllegalArgumentException("Moved node occurrence is fixed by selection authority");
+                    }
+                    if (selectedBoundary && permissions.junctionPolicy() == JunctionPolicy.REATTACH
+                            && !nodeSharedWithSelected(before, nodeKey, selectedWayKey)) {
+                        throw new IllegalArgumentException(
+                                "Junction reattachment cannot move an ordinary selected endpoint");
+                    }
+                    if (selectedBoundary && permissions.junctionPolicy() == JunctionPolicy.REATTACH
+                            && metricFrame.toMetric(oldNode.coordinate()).distanceTo(
+                                    metricFrame.toMetric(newNode.coordinate()))
+                                > MAXIMUM_JUNCTION_RELOCATION_METERS
+                                    + MOVEMENT_DISTANCE_EPSILON_METERS) {
+                        throw new IllegalArgumentException(
+                                "Junction reattachment exceeds the 20 metre relocation bound");
                     }
                     if (!way.key().equals(selectedWayKey) && !permissions.reconstructIncidentWays()
                         && !nodeSharedWithSelected(before, nodeKey, selectedWayKey)) {
@@ -331,7 +349,7 @@ public record AlignmentEditPlan(
     }
 
     private static void validateOccurrenceAuthority(NetworkSnapshot before, NetworkSnapshot after,
-        Set<PrimitiveKey> writes) {
+        Set<PrimitiveKey> writes, RecoveryPermissions permissions) {
         for (PrimitiveKey key : writes) {
             DetachedPrimitive oldValue = before.primitives().get(key);
             DetachedPrimitive newValue = after.primitives().get(key);
@@ -339,7 +357,8 @@ public record AlignmentEditPlan(
                 && !oldWay.nodeKeys().equals(newWay.nodeKeys())) {
                 List<OccurrenceRange> ranges = before.closure().editableWayOccurrences().get(key);
                 if (ranges == null || !sequenceChangesAuthorized(oldWay.nodeKeys(), newWay.nodeKeys(), ranges,
-                    before.closure().protectedExistingNodeKeys())) {
+                    before.closure().protectedExistingNodeKeys(),
+                    before.closure().movableExistingNodeKeys(), permissions.junctionPolicy())) {
                     throw new IllegalArgumentException("Way node-list change exceeds editable occurrence ranges");
                 }
             }
@@ -347,7 +366,8 @@ public record AlignmentEditPlan(
     }
 
     private static boolean sequenceChangesAuthorized(List<PrimitiveKey> before, List<PrimitiveKey> after,
-        List<OccurrenceRange> ranges, Set<PrimitiveKey> protectedNodes) {
+        List<OccurrenceRange> ranges, Set<PrimitiveKey> protectedNodes,
+        Set<PrimitiveKey> movableNodes, JunctionPolicy junctionPolicy) {
         if (new HashSet<>(before).size() != before.size() || new HashSet<>(after).size() != after.size()) {
             return false;
         }
@@ -372,19 +392,21 @@ public record AlignmentEditPlan(
             int afterIndex = after.indexOf(before.get(beforeIndex));
             if (afterIndex <= previousAfter || !authorizedGap(before, editable, ranges,
                 previousBefore + 1, beforeIndex - 1, after.subList(previousAfter + 1, afterIndex),
-                before.subList(previousBefore + 1, beforeIndex))) {
+                before.subList(previousBefore + 1, beforeIndex), movableNodes, junctionPolicy)) {
                 return false;
             }
             previousBefore = beforeIndex;
             previousAfter = afterIndex;
         }
         return authorizedGap(before, editable, ranges, previousBefore + 1, before.size() - 1,
-            after.subList(previousAfter + 1, after.size()), before.subList(previousBefore + 1, before.size()));
+            after.subList(previousAfter + 1, after.size()), before.subList(previousBefore + 1, before.size()),
+            movableNodes, junctionPolicy);
     }
 
     private static boolean authorizedGap(List<PrimitiveKey> before, boolean[] editable,
         List<OccurrenceRange> ranges, int from, int to, List<PrimitiveKey> afterGap,
-        List<PrimitiveKey> beforeGap) {
+        List<PrimitiveKey> beforeGap, Set<PrimitiveKey> movableNodes,
+        JunctionPolicy junctionPolicy) {
         boolean canChange = false;
         for (int index = from; index <= to; index++) {
             canChange |= editable[index];
@@ -395,7 +417,9 @@ public record AlignmentEditPlan(
         if (!beforeGap.isEmpty() || afterGap.isEmpty() || from != to + 1
             || from <= 0 || from >= before.size()
             || afterGap.stream().anyMatch(key -> key.type() != PrimitiveKey.Type.NODE
-                || key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL)) {
+                || key.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
+                    && (junctionPolicy != JunctionPolicy.REATTACH || !movableNodes.contains(key)
+                        || !before.contains(key)))) {
             return false;
         }
         int leftOccurrence = from - 1;

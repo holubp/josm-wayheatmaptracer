@@ -273,12 +273,18 @@ public final class NetworkSnapshotCapture {
             throw new IllegalStateException("Capture node authority is inconsistent");
         }
         validateOccurrenceAuthority(specification, inventory);
+        boolean incidentOccurrenceAuthority = specification.editableWayOccurrences().keySet().stream()
+            .anyMatch(key -> !key.equals(specification.selectedWayKey()));
         if (specification.editableExistingKeys().stream().anyMatch(key ->
             key.type() == PrimitiveKey.Type.RELATION
                 && specification.permissions().junctionPolicy() != JunctionPolicy.REATTACH)
-            || specification.editableWayOccurrences().keySet().stream().anyMatch(key ->
-                !key.equals(specification.selectedWayKey()))
-                && specification.permissions().junctionPolicy() != JunctionPolicy.REATTACH) {
+            || incidentOccurrenceAuthority
+                && specification.permissions().junctionPolicy() == JunctionPolicy.FIXED
+            || incidentOccurrenceAuthority
+                && specification.permissions().junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE
+                && !legacyIncidentMoveAuthority(specification, inventory, selected)
+            || specification.permissions().junctionPolicy() == JunctionPolicy.REATTACH
+                && !boundedReattachmentAuthority(specification, inventory, selected)) {
             throw new IllegalStateException("Capture authority exceeds accepted recovery permissions");
         }
         if (specification.permissions().junctionPolicy() == JunctionPolicy.FIXED) {
@@ -289,6 +295,99 @@ public final class NetworkSnapshotCapture {
                 throw new IllegalStateException("Fixed selected boundaries cannot be movable");
             }
         }
+    }
+
+    private static boolean legacyIncidentMoveAuthority(Specification specification,
+            Inventory inventory, Way selected) {
+        Set<PrimitiveKey> selectedBoundaries = Set.of(
+            key(selected.getNode(specification.selectedRange().firstIndex())),
+            key(selected.getNode(specification.selectedRange().lastIndex())));
+        for (Map.Entry<PrimitiveKey, List<OccurrenceRange>> entry
+                : specification.editableWayOccurrences().entrySet()) {
+            if (entry.getKey().equals(specification.selectedWayKey())) {
+                continue;
+            }
+            Way incident = (Way) inventory.require(entry.getKey());
+            for (OccurrenceRange range : entry.getValue()) {
+                if (range.size() != 1) {
+                    return false;
+                }
+                PrimitiveKey node = key(incident.getNode(range.firstIndex()));
+                if (!selectedBoundaries.contains(node)
+                        || !specification.movableExistingNodeKeys().contains(node)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static boolean boundedReattachmentAuthority(Specification specification,
+            Inventory inventory, Way selected) {
+        Set<PrimitiveKey> selectedBoundaries = Set.of(
+                key(selected.getNode(specification.selectedRange().firstIndex())),
+                key(selected.getNode(specification.selectedRange().lastIndex())));
+        Set<PrimitiveKey> selectedRangeNodes = new LinkedHashSet<>();
+        for (int index = specification.selectedRange().firstIndex();
+                index <= specification.selectedRange().lastIndex(); index++) {
+            selectedRangeNodes.add(key(selected.getNode(index)));
+        }
+        Set<PrimitiveKey> movableSharedJunctions = selectedBoundaries.stream()
+                .filter(specification.movableExistingNodeKeys()::contains)
+                .filter(node -> inventory.referrers(node).stream()
+                        .filter(key -> key.type() == PrimitiveKey.Type.WAY).count() > 1)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (specification.movableExistingNodeKeys().stream()
+                .filter(selectedRangeNodes::contains)
+                .anyMatch(node -> !movableSharedJunctions.contains(node))) {
+            return false;
+        }
+        for (PrimitiveKey editable : specification.editableExistingKeys()) {
+            if (editable.type() == PrimitiveKey.Type.WAY
+                    && !editable.equals(specification.selectedWayKey())
+                    && !specification.editableWayOccurrences().containsKey(editable)) {
+                return false;
+            }
+        }
+        Set<PrimitiveKey> locallyAuthorizedNodes = new LinkedHashSet<>(movableSharedJunctions);
+        for (Map.Entry<PrimitiveKey, List<OccurrenceRange>> entry
+                : specification.editableWayOccurrences().entrySet()) {
+            if (entry.getKey().equals(specification.selectedWayKey())) {
+                continue;
+            }
+            Way incident = (Way) inventory.require(entry.getKey());
+            Map<PrimitiveKey, Node> junctions = new LinkedHashMap<>();
+            for (Node node : incident.getNodes()) {
+                if (movableSharedJunctions.contains(key(node))) {
+                    junctions.put(key(node), node);
+                }
+            }
+            if (junctions.isEmpty()) {
+                return false;
+            }
+            List<OccurrenceRange> expected = List.of();
+            try {
+                for (Node junction : junctions.values()) {
+                    expected = JunctionAuthorityBounds.mergeOccurrenceRanges(expected,
+                            List.of(JunctionAuthorityBounds.localOccurrenceRange(
+                                    incident, junction, specification.metricFrame())));
+                }
+            } catch (IllegalArgumentException failure) {
+                return false;
+            }
+            List<OccurrenceRange> supplied = JunctionAuthorityBounds.mergeOccurrenceRanges(
+                    List.of(), entry.getValue());
+            if (!expected.equals(supplied)) {
+                return false;
+            }
+            for (OccurrenceRange range : expected) {
+                for (int index = range.firstIndex(); index <= range.lastIndex(); index++) {
+                    locallyAuthorizedNodes.add(key(incident.getNode(index)));
+                }
+            }
+        }
+        return specification.movableExistingNodeKeys().stream()
+                .allMatch(locallyAuthorizedNodes::contains);
     }
 
     private static void validateOccurrenceAuthority(Specification specification, Inventory inventory) {

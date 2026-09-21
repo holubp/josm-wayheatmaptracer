@@ -135,7 +135,8 @@ class V022NetworkSnapshotCaptureTest {
         NetworkSnapshotCapture.Specification specification = specification("relation", selected,
             new OccurrenceRange(0, 2), Map.of(way(10), List.of(new OccurrenceRange(0, 2))),
             Set.of(way(10), node(2)), Set.of(node(2)), Set.of(), Set.of(), false,
-            new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.REATTACH, true));
+            new RecoveryPermissions(false, 7.01, 7.01,
+                    JunctionPolicy.LEGACY_BOUNDED_MOVE, false));
 
         NetworkSnapshot snapshot = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, specification));
 
@@ -254,12 +255,12 @@ class V022NetworkSnapshotCaptureTest {
         Way receiving = loadedWay(11, List.of(b, shape, d));
         add(dataSet, selected, receiving);
         Map<PrimitiveKey, List<OccurrenceRange>> occurrences = Map.of(
-            way(10), List.of(new OccurrenceRange(0, 2)),
+            way(10), List.of(new OccurrenceRange(0, 1)),
             way(11), List.of(new OccurrenceRange(0, 2)));
         RecoveryPermissions reattachOnly = new RecoveryPermissions(false, 7.01, 7.01,
             JunctionPolicy.REATTACH, false);
         NetworkSnapshotCapture.Specification frozenReceiver = specification("frozen-receiver", selected,
-            new OccurrenceRange(0, 2), occurrences, Set.of(way(10), way(11), node(2)),
+            new OccurrenceRange(0, 1), occurrences, Set.of(way(10), way(11), node(2)),
             Set.of(node(2)), Set.of(), Set.of(node(1), node(3), node(4), node(5)), false,
             reattachOnly);
 
@@ -268,12 +269,134 @@ class V022NetworkSnapshotCaptureTest {
 
         assertEquals(occurrences, snapshot.closure().editableWayOccurrences());
         NetworkSnapshotCapture.Specification movingShape = specification("moving-shape", selected,
-            new OccurrenceRange(0, 2), occurrences, Set.of(way(10), way(11), node(4)),
+            new OccurrenceRange(0, 1), occurrences, Set.of(way(10), way(11), node(4)),
             Set.of(node(4)), Set.of(), Set.of(node(1), node(2), node(3), node(5)), false,
             reattachOnly);
         IllegalStateException failure = assertThrows(IllegalStateException.class,
             () -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, movingShape)));
-        assertTrue(failure.getMessage().contains("reconstruction"));
+        assertTrue(failure.getMessage().contains("authority"));
+    }
+
+    @Test
+    void legacyBoundedMoveAuthorizesOnlySharedBoundaryOccurrencesOnIncidentWays() {
+        DataSet dataSet = new DataSet();
+        Node a = loadedNode(1, 0, -0.0001);
+        Node junction = loadedNode(2, 0, 0);
+        Node north = loadedNode(3, 0.0001, 0);
+        Node farNorth = loadedNode(4, 0.0002, 0);
+        add(dataSet, a, junction, north, farNorth);
+        Way selected = loadedWay(10, List.of(a, junction));
+        Way incident = loadedWay(11, List.of(junction, north, farNorth));
+        add(dataSet, selected, incident);
+        RecoveryPermissions legacyMove = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        Set<PrimitiveKey> editable = Set.of(way(10), way(11), node(2));
+        Set<PrimitiveKey> protectedNodes = Set.of(node(1), node(3), node(4));
+        NetworkSnapshotCapture.Specification exact = specification("legacy-shared-boundary", selected,
+                new OccurrenceRange(0, 1), Map.of(
+                        way(10), List.of(new OccurrenceRange(0, 1)),
+                        way(11), List.of(new OccurrenceRange(0, 0))),
+                editable, Set.of(node(2)), Set.of(), protectedNodes, false, legacyMove);
+
+        assertDoesNotThrow(() -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, exact)));
+
+        NetworkSnapshotCapture.Specification overbroad = specification("legacy-overbroad", selected,
+                new OccurrenceRange(0, 1), Map.of(
+                        way(10), List.of(new OccurrenceRange(0, 1)),
+                        way(11), List.of(new OccurrenceRange(0, 2))),
+                editable, Set.of(node(2)), Set.of(), protectedNodes, false, legacyMove);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, overbroad)));
+    }
+
+    @Test
+    void reattachmentRequiresASharedBoundaryAndBoundedLocalIncidentAuthority() {
+        RecoveryPermissions reattach = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, false);
+        DataSet ordinaryData = new DataSet();
+        Node ordinaryA = loadedNode(1, 0, -0.0001);
+        Node ordinaryB = loadedNode(2, 0, 0);
+        add(ordinaryData, ordinaryA, ordinaryB);
+        Way ordinarySelected = loadedWay(10, List.of(ordinaryA, ordinaryB));
+        add(ordinaryData, ordinarySelected);
+        NetworkSnapshotCapture.Specification nonshared = specification("reattach-nonshared",
+                ordinarySelected, new OccurrenceRange(0, 1),
+                Map.of(way(10), List.of(new OccurrenceRange(0, 1))),
+                Set.of(way(10), node(2)), Set.of(node(2)), Set.of(), Set.of(node(1)),
+                false, reattach);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(ordinaryData, nonshared)));
+
+        DataSet junctionData = new DataSet();
+        Node west = loadedNode(11, 0, -0.0001);
+        Node junction = loadedNode(12, 0, 0);
+        Node north11 = loadedNode(13, 0.0001, 0);
+        Node north22 = loadedNode(14, 0.0002, 0);
+        Node north33 = loadedNode(15, 0.0003, 0);
+        Node north78 = loadedNode(16, 0.0007, 0);
+        add(junctionData, west, junction, north11, north22, north33, north78);
+        Way selected = loadedWay(20, List.of(west, junction));
+        Way incident = loadedWay(21, List.of(junction, north11, north22, north33, north78));
+        add(junctionData, selected, incident);
+        Set<PrimitiveKey> editable = Set.of(way(20), way(21), node(12));
+        Set<PrimitiveKey> protectedNodes = Set.of(node(11), node(13), node(14), node(15), node(16));
+        NetworkSnapshotCapture.Specification local = specification("reattach-local", selected,
+                new OccurrenceRange(0, 1), Map.of(
+                        way(20), List.of(new OccurrenceRange(0, 1)),
+                        way(21), List.of(new OccurrenceRange(0, 3))),
+                editable, Set.of(node(12)), Set.of(), protectedNodes, false, reattach);
+        assertDoesNotThrow(() -> onEdt(() -> NetworkSnapshotCapture.capture(junctionData, local)));
+
+        NetworkSnapshotCapture.Specification overbroad = specification("reattach-overbroad", selected,
+                new OccurrenceRange(0, 1), Map.of(
+                        way(20), List.of(new OccurrenceRange(0, 1)),
+                        way(21), List.of(new OccurrenceRange(0, 4))),
+                editable, Set.of(node(12)), Set.of(), protectedNodes, false, reattach);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(junctionData, overbroad)));
+
+        DataSet portData = new DataSet();
+        Node portWest = loadedNode(31, 0, -0.0001);
+        Node portJunction = loadedNode(32, 0, 0);
+        Node firstPort = loadedNode(33, 0.00036, 0);
+        Node beyondMaximum = loadedNode(34, 0.00072, 0);
+        add(portData, portWest, portJunction, firstPort, beyondMaximum);
+        Way portSelected = loadedWay(30, List.of(portWest, portJunction));
+        Way portIncident = loadedWay(31, List.of(portJunction, firstPort, beyondMaximum));
+        add(portData, portSelected, portIncident);
+        Set<PrimitiveKey> portEditable = Set.of(way(30), way(31), node(32));
+        Set<PrimitiveKey> portProtected = Set.of(node(31), node(33), node(34));
+        NetworkSnapshotCapture.Specification completePort = specification("reattach-first-port",
+                portSelected, new OccurrenceRange(0, 1), Map.of(
+                        way(30), List.of(new OccurrenceRange(0, 1)),
+                        way(31), List.of(new OccurrenceRange(0, 1))),
+                portEditable, Set.of(node(32)), Set.of(), portProtected, false, reattach);
+        assertDoesNotThrow(() -> onEdt(() -> NetworkSnapshotCapture.capture(portData, completePort)));
+        NetworkSnapshotCapture.Specification missingPort = specification("reattach-missing-port",
+                portSelected, new OccurrenceRange(0, 1), Map.of(
+                        way(30), List.of(new OccurrenceRange(0, 1)),
+                        way(31), List.of(new OccurrenceRange(0, 0))),
+                portEditable, Set.of(node(32)), Set.of(), portProtected, false, reattach);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(portData, missingPort)));
+
+        DataSet repeatedData = new DataSet();
+        Node repeatedWest = loadedNode(41, 0, -0.0001);
+        Node repeatedJunction = loadedNode(42, 0, 0);
+        Node repeatedNorth = loadedNode(43, 0.0001, 0);
+        add(repeatedData, repeatedWest, repeatedJunction, repeatedNorth);
+        Way repeatedSelected = loadedWay(40, List.of(repeatedWest, repeatedJunction));
+        Way repeatedIncident = loadedWay(41,
+                List.of(repeatedJunction, repeatedNorth, repeatedJunction));
+        add(repeatedData, repeatedSelected, repeatedIncident);
+        NetworkSnapshotCapture.Specification repeated = specification("reattach-repeated",
+                repeatedSelected, new OccurrenceRange(0, 1), Map.of(
+                        way(40), List.of(new OccurrenceRange(0, 1)),
+                        way(41), List.of(new OccurrenceRange(0, 2))),
+                Set.of(way(40), way(41), node(42)), Set.of(node(42)), Set.of(),
+                Set.of(node(41), node(43)), false, reattach);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(repeatedData, repeated)));
     }
 
     @Test

@@ -278,6 +278,27 @@ public final class JunctionReattachmentPlanner {
             retainedShapes, changed)), List.of());
     }
 
+    /**
+     * Revalidates one complete proposed component against its true captured before-state.
+     *
+     * <p>This seam is used when an engine-owned selected route is combined with the topology
+     * planner's receiver edits. It deliberately recomputes changed identities from the supplied
+     * before-state so selected-route crossings cannot be mistaken for pre-existing defects.</p>
+     *
+     * @param before exact captured component before any route or topology edit
+     * @param after complete combined proposal
+     * @return typed fail-closed findings, or an empty list when the component remains valid
+     */
+    public List<Finding> validateWholeComponent(TopologyNetwork before, TopologyNetwork after) {
+        Objects.requireNonNull(before, "before");
+        Objects.requireNonNull(after, "after");
+        Set<Id> changed = changedPrimitiveIds(before, after);
+        List<Finding> findings = new ArrayList<>(RelationSafetyValidator.validate(before, after,
+                changed, Map.of(), Set.of()));
+        validateNewAtGradeCrossings(before, after, changed).ifPresent(findings::add);
+        return List.copyOf(findings);
+    }
+
     private static Optional<Finding> validateEligibility(ReattachmentRequest request) {
         if (!request.permissions().relocateExistingJunctions()) {
             return finding(FindingCode.RELOCATION_PERMISSION_REQUIRED,

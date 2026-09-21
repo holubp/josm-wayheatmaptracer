@@ -4,8 +4,10 @@ import java.awt.image.BufferedImage;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +21,7 @@ import javax.swing.SwingUtilities;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -31,6 +34,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
@@ -46,6 +50,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.JunctionAuthorityBounds;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
@@ -57,6 +62,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 /** Experimental read-only live producer for the explicitly supported B preview. */
 public final class LiveBPreviewService {
     private static final double WEB_MERCATOR_RADIUS = 6_378_137.0;
+    private static final double MAXIMUM_JUNCTION_RELOCATION_METERS = 20.0;
     private static final String FIELD = "selected-visible-source";
 
     /** Immutable visible-render pixels and exact slide-time sampling metadata. */
@@ -142,12 +148,29 @@ public final class LiveBPreviewService {
     /** Captures the bounded network and exact visible-render frame on the EDT without mutation. */
     public Captured capture(DataSet dataSet, SelectionContext selection,
             VisibleRaster raster, AlignmentConfig config) {
-        return capture(dataSet, selection, raster, config, false);
+        return captureInternal(dataSet, selection, raster, config, false, null);
     }
 
     /** Captures a visible source explicitly selected for this read-only preview session. */
     public Captured capture(DataSet dataSet, SelectionContext selection,
             VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource) {
+        return captureInternal(dataSet, selection, raster, config, explicitVisibleSource, null);
+    }
+
+    /** Captures a visible source with explicit detached junction/edit permissions. */
+    public Captured capture(DataSet dataSet, SelectionContext selection,
+            VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource,
+            RecoveryPermissions permissions) {
+        if (permissions == null) {
+            throw new IllegalArgumentException("Live preview recovery permissions are required");
+        }
+        return captureInternal(dataSet, selection, raster, config, explicitVisibleSource,
+                permissions);
+    }
+
+    private Captured captureInternal(DataSet dataSet, SelectionContext selection,
+            VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource,
+            RecoveryPermissions requestedPermissions) {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Live preview capture must execute on the EDT");
         }
@@ -166,6 +189,12 @@ public final class LiveBPreviewService {
         MetricRasterGrid grid = grid(frame, southWest, northEast, pitch);
         double radius = config.heatmap().crossSectionHalfWidthPx()
                 * raster.groundMetersPerViewPixel();
+        RecoveryPermissions permissions = requestedPermissions == null
+                ? RecoveryPermissions.disabled(radius) : requestedPermissions;
+        if (permissions.ordinaryRadiusMeters() > radius + 1.0e-9) {
+            throw new IllegalArgumentException(
+                    "Live preview recovery radius exceeds the captured decision corridor");
+        }
         double step = config.heatmap().crossSectionStepPx() * raster.groundMetersPerViewPixel();
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
         if (!grid.footprint().containsRegion(decision)) {
@@ -174,25 +203,113 @@ public final class LiveBPreviewService {
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
                 selection.way().getUniqueId());
         OccurrenceRange range = new OccurrenceRange(selection.startIndex(), selection.endIndex());
-        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>();
-        for (Node node : selection.segmentNodes()) {
-            protectedNodes.add(PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId()));
-        }
+        CaptureAuthority authority = captureAuthority(dataSet, selection, way, range, frame,
+                decision, permissions);
         TrackerMode engine = config.heatmap().trackerMode();
-        String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson());
+        String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
+                permissions.toString());
         String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT) + "-v1");
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(
                 snapshotId, "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)),
-                0L, way, range, frame, decision, decision,
-                Map.of(way, List.of(range)), Set.of(way), Set.of(), Set.of(), protectedNodes,
-                true, RecoveryPermissions.disabled(radius));
+                0L, way, range, frame, authority.collisionEnvelope(), authority.editRegion(),
+                authority.editableWayOccurrences(), authority.editableExistingKeys(),
+                authority.movableNodes(), Set.of(), authority.protectedNodes(),
+                true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         return new Captured(raster, null, specification, network, source, metric, grid,
                 config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(), engine,
                 raster.projectionCode());
     }
+
+    private static CaptureAuthority captureAuthority(DataSet dataSet, SelectionContext selection,
+            PrimitiveKey selectedWay, OccurrenceRange selectedRange, LocalMetricFrame frame,
+            MetricRegion decision, RecoveryPermissions permissions) {
+        Map<PrimitiveKey, List<OccurrenceRange>> occurrences = new LinkedHashMap<>();
+        occurrences.put(selectedWay, List.of(selectedRange));
+        Set<PrimitiveKey> editable = new LinkedHashSet<>();
+        editable.add(selectedWay);
+        Set<PrimitiveKey> movable = new LinkedHashSet<>();
+        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>();
+        selection.segmentNodes().stream()
+                .map(LiveBPreviewService::key).forEach(protectedNodes::add);
+        List<List<MetricPoint>> editPolygons = new ArrayList<>(decision.polygons());
+        List<List<MetricPoint>> collisionPolygons = new ArrayList<>(decision.polygons());
+        if (permissions.junctionPolicy() != JunctionPolicy.FIXED) {
+            List<Node> boundaries = List.of(selection.segmentNodes().get(0),
+                    selection.segmentNodes().get(selection.segmentNodes().size() - 1));
+            for (Node boundary : boundaries) {
+                List<Way> incidentWays = dataSet.getWays().stream()
+                        .filter(incident -> !incident.isDeleted() && !incident.isIncomplete()
+                                && incident.getNodes().contains(boundary))
+                        .toList();
+                boolean reattachableJunction = incidentWays.size() > 1;
+                if (permissions.junctionPolicy() == JunctionPolicy.REATTACH
+                        && !reattachableJunction) {
+                    continue;
+                }
+                PrimitiveKey boundaryKey = key(boundary);
+                movable.add(boundaryKey);
+                editable.add(boundaryKey);
+                protectedNodes.remove(boundaryKey);
+                for (Way incident : incidentWays) {
+                    PrimitiveKey incidentKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                            incident.getUniqueId());
+                    editable.add(incidentKey);
+                    if (!incidentKey.equals(selectedWay)) {
+                        List<OccurrenceRange> localGeometry = List.of(
+                                JunctionAuthorityBounds.localOccurrenceRange(
+                                        incident, boundary, frame));
+                        List<OccurrenceRange> authorized = permissions.junctionPolicy()
+                                == JunctionPolicy.REATTACH ? localGeometry
+                                : occurrenceRanges(incident, boundary);
+                        occurrences.merge(incidentKey, authorized,
+                                JunctionAuthorityBounds::mergeOccurrenceRanges);
+                        for (OccurrenceRange local : localGeometry) {
+                            List<MetricPoint> incidentMetric = incident.getNodes().subList(
+                                    local.firstIndex(), local.lastIndex() + 1).stream()
+                                    .map(LiveBPreviewService::geographic).map(frame::toMetric).toList();
+                            MetricRegion localRegion = incidentMetric.size() == 1
+                                    ? aroundPoint(incidentMetric.get(0),
+                                            MAXIMUM_JUNCTION_RELOCATION_METERS)
+                                    : MetricCorridorRegion.aroundPolyline(incidentMetric,
+                                            MAXIMUM_JUNCTION_RELOCATION_METERS);
+                            editPolygons.addAll(localRegion.polygons());
+                            collisionPolygons.addAll(localRegion.polygons());
+                        }
+                    }
+                }
+            }
+        }
+        return new CaptureAuthority(Map.copyOf(occurrences), Set.copyOf(editable),
+                Set.copyOf(movable), Set.copyOf(protectedNodes),
+                new MetricRegion(collisionPolygons), new MetricRegion(editPolygons));
+    }
+
+    private static MetricRegion aroundPoint(MetricPoint point, double radius) {
+        return MetricRegion.rectangle(point.xMeters() - radius, point.yMeters() - radius,
+                point.xMeters() + radius, point.yMeters() + radius);
+    }
+
+    private static List<OccurrenceRange> occurrenceRanges(Way way, Node node) {
+        List<OccurrenceRange> result = new ArrayList<>();
+        for (int index = 0; index < way.getNodesCount(); index++) {
+            if (way.getNode(index) == node) {
+                result.add(new OccurrenceRange(index, index));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static PrimitiveKey key(Node node) {
+        return PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+    }
+
+    private record CaptureAuthority(Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
+            Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableNodes,
+            Set<PrimitiveKey> protectedNodes, MetricRegion collisionEnvelope,
+            MetricRegion editRegion) { }
 
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
