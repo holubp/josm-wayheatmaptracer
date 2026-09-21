@@ -205,6 +205,14 @@ public final class ProbabilisticInference {
                         if (!transitionAllowed(profiles, currentProfile, currentState, next, decisionRegion)) {
                             continue;
                         }
+                        transitions++;
+                        if ((transitions & 1023L) == 0L) {
+                            cancellation.checkpoint();
+                        }
+                        if (transitions > budgets.maximumTransitions()) {
+                            return GraphMessages.limit(pairVisits, transitions,
+                                "transition budget exceeded during backward inference");
+                        }
                         double increment = profileEnergy(profiles, nextProfile, next, parameters)
                             + pairEnergy(profiles, currentProfile, currentState, next, parameters)
                             + tripleEnergy(profiles, nextProfile, before, currentState, next, parameters);
@@ -274,16 +282,8 @@ public final class ProbabilisticInference {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion)) {
                             continue;
                         }
-                        transitions++;
-                        if ((transitions & 1023L) == 0L) {
-                            cancellation.checkpoint();
-                        }
-                        if (transitions > budgets.maximumTransitions()) {
-                            return new KBestResult(List.of(), true, true, transitions,
-                                "transition budget exceeded during k-best");
-                        }
                         List<PathRecord> prefixes = current[before][prior];
-                        if (prefixes == null) {
+                        if (prefixes == null || prefixes.isEmpty()) {
                             continue;
                         }
                         double increment = profileEnergy(profiles, profileIndex, state, parameters)
@@ -291,6 +291,14 @@ public final class ProbabilisticInference {
                             + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
                         double measure = logMeasure(profiles.get(profileIndex).cells().get(state));
                         for (PathRecord prefix : prefixes) {
+                            transitions++;
+                            if ((transitions & 1023L) == 0L) {
+                                cancellation.checkpoint();
+                            }
+                            if (transitions > budgets.maximumTransitions()) {
+                                return new KBestResult(List.of(), true, true, transitions,
+                                    "transition budget exceeded during k-best");
+                            }
                             candidates.add(prefix.extend(state, increment, measure));
                         }
                     }

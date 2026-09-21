@@ -59,6 +59,7 @@ class V022LiveBPreviewServiceTest {
                 "synthetic visible raster must contain localized B evidence");
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
+        assertEquals(TraceBudgets.interactiveProbabilisticPreview(), result.request().budgets());
         assertFalse(result.pipeline().routes().isEmpty(),
                 "supported visible evidence must produce a final B route");
         var route = result.pipeline().routes().get(0);

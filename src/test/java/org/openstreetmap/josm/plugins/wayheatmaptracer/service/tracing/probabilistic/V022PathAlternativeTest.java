@@ -142,6 +142,18 @@ class V022PathAlternativeTest {
     }
 
     @Test
+    void kBestChargesEveryRetainedPrefixExtensionAgainstTheTransitionBudget() {
+        TraceBudgets budget = new TraceBudgets(96, 8_000_000, 190, 32, 8);
+        ProbabilisticInferenceResult result = new ProbabilisticInference().solve(
+            profiles(5, new double[] {-2, 0, 2}, new double[] {0, 0, 0},
+                new String[] {"left", "center", "right"}),
+            EvidenceModelParameters.defaults(), budget);
+
+        assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, result.status());
+        assertTrue(result.explanation().contains("k-best"));
+    }
+
+    @Test
     void hardAlternativeCeilingsCannotBeRaisedByCallerBudget() {
         double[] offsets = java.util.stream.IntStream.range(0, 16).mapToDouble(index -> index * 2.0).toArray();
         double[] costs = new double[16];

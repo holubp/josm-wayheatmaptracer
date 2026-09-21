@@ -402,7 +402,9 @@ public final class LiveBPreviewService {
                 captured.specification().selectedRange(), captured.engine(),
                 AlignmentMode.PRECISE_SHAPE, captured.specification().permissions(),
                 captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
-                        : TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
+                        : captured.engine() == TrackerMode.PROBABILISTIC
+                                ? TraceBudgets.interactiveProbabilisticPreview()
+                                : TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",

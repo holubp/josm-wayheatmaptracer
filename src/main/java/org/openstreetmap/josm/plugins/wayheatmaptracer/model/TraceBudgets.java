@@ -20,6 +20,17 @@ public record TraceBudgets(int maximumStatesPerProfile, long maximumPairVisits,
         return new TraceBudgets(96, 24_000_000L, 384_000_000L, 96, 24);
     }
 
+    /**
+     * Returns the explicit interactive limit for the experimental B preview.
+     *
+     * <p>The offline/replay default retains its wider alternative envelope. The UI preview must
+     * remain interruptible on the JOSM host, so it requests fewer retained alternatives while
+     * preserving the same admitted lateral state space and pair-visit bound.</p>
+     */
+    public static TraceBudgets interactiveProbabilisticPreview() {
+        return new TraceBudgets(96, 8_000_000L, 48_000_000L, 8, 4);
+    }
+
     /** Returns the initial bounded v0.22.0 limits. */
     public static TraceBudgets defaults() {
         return new TraceBudgets(96, 8_000_000L, 128_000_000L, 32, 8);
