@@ -162,6 +162,20 @@ class V022AlignmentJobTest {
     }
 
     @Test
+    void workerArgumentFailureRetainsItsBoundedDiagnosticForThePreviewDialog() throws Exception {
+        AlignmentJob<String> job = job(EventDispatcher.direct());
+
+        job.start(() -> snapshot("invalid-worker"), (input, context) -> {
+            throw new IllegalArgumentException("Selected node has no geographic coordinate");
+        }, ignored -> { });
+        awaitTerminal(job);
+
+        assertEquals(AlignmentJob.State.FAILED, job.currentAttempt().state());
+        assertEquals("IllegalArgumentException: Selected node has no geographic coordinate",
+            job.currentAttempt().failureReason());
+    }
+
+    @Test
     void t130PreviewAndSettingsStateHaveNoApplicationCallback() throws Exception {
         CountDownLatch done = new CountDownLatch(1);
         AtomicReference<AlignmentJob.Attempt<String>> attempt = new AtomicReference<>();

@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
+import org.openstreetmap.josm.tools.Logging;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
@@ -334,7 +335,9 @@ public final class AlignmentJob<R> implements AutoCloseable {
             Thread.currentThread().interrupt();
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
-            transitionIfCurrent(started.sequence(), State.FAILED, null, safeFailure(exception));
+            String failure = safeFailure(exception);
+            Logging.warn("[WayHeatmapTracer] Preview worker failed safely: " + failure);
+            transitionIfCurrent(started.sequence(), State.FAILED, null, failure);
         } finally {
             contexts.remove(started.sequence(), context);
         }
@@ -369,7 +372,9 @@ public final class AlignmentJob<R> implements AutoCloseable {
             Thread.currentThread().interrupt();
             cancelAttempt(started, "interrupted");
         } catch (Exception exception) {
-            transitionIfCurrent(started.sequence(), State.FAILED, null, safeFailure(exception));
+            String failure = safeFailure(exception);
+            Logging.warn("[WayHeatmapTracer] Preview worker failed safely: " + failure);
+            transitionIfCurrent(started.sequence(), State.FAILED, null, failure);
         } finally {
             contexts.remove(started.sequence(), context);
         }
@@ -423,7 +428,21 @@ public final class AlignmentJob<R> implements AutoCloseable {
 
     private static String safeFailure(Exception exception) {
         String type = exception.getClass().getSimpleName();
-        return type == null || type.isBlank() ? "alignment-failure" : type;
+        if (type == null || type.isBlank()) {
+            return "alignment-failure";
+        }
+        if (!(exception instanceof IllegalArgumentException)) {
+            return type;
+        }
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return type;
+        }
+        String normalized = message.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').strip();
+        if (normalized.length() > 240) {
+            normalized = normalized.substring(0, 237) + "...";
+        }
+        return type + ": " + normalized;
     }
 
     private static final class JobThreadFactory implements ThreadFactory {
