@@ -59,6 +59,25 @@ class V022CollisionEnvelopeQueryTest {
     }
 
     @Test
+    void incompleteWayWithoutAnySegmentsDoesNotBlockCollisionCapture() {
+        LocalMetricFrame frame = frameAtZero();
+        DataSet dataSet = new DataSet();
+        Way placeholder = new Way(1548442848L);
+        Node loneNode = new Node(new LatLon(0.0, 0.0));
+        Way oneNodePlaceholder = new Way(1548442849L);
+        oneNodePlaceholder.setNodes(List.of(loneNode));
+        dataSet.addPrimitive(placeholder);
+        dataSet.addPrimitive(loneNode);
+        dataSet.addPrimitive(oneNodePlaceholder);
+
+        CollisionEnvelopeQuery.Result result = CollisionEnvelopeQuery.execute(
+            dataSet, frame, MetricRegion.rectangle(-50.0, -50.0, 50.0, 50.0));
+
+        assertTrue(result.intersectingWayKeys().isEmpty());
+        assertEquals(0, result.examinedSegments());
+    }
+
+    @Test
     void antimeridianSegmentIsClippedBeforeCertifiedMetricConversion() {
         LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(
             new GeographicPoint(10.0, 179.95), new GeographicPoint(9.99, 179.8),

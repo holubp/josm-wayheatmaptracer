@@ -31,7 +31,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 public final class CollisionEnvelopeQuery {
     /** The one query contract understood by the v0.22 live validator. */
     public static final Definition DEFINITION = new Definition(
-        "live-collision-envelope-v1", 250_000, 1_000_000);
+        "live-collision-envelope-v2", 250_000, 1_000_000);
 
     private static final double DEGREES_EPSILON = 1e-12;
     private static final double[] LONGITUDE_SHIFTS = {-360.0, 0.0, 360.0};
@@ -105,8 +105,13 @@ public final class CollisionEnvelopeQuery {
             }
             segmentCount += waySegmentCount;
             List<Node> nodes = way.getNodes();
+            // The envelope is segment-based. A zero-segment placeholder has no spatial
+            // extent that can intersect it.
+            if (nodes.size() < 2) {
+                continue;
+            }
             boolean intersects = false;
-            boolean incompleteGeometry = way.isIncomplete() || way.hasIncompleteNodes() || nodes.size() < 2;
+            boolean incompleteGeometry = way.isIncomplete() || way.hasIncompleteNodes();
             StringBuilder incompleteDetail = new StringBuilder();
             if (way.isIncomplete()) {
                 incompleteDetail.append("way-incomplete");
