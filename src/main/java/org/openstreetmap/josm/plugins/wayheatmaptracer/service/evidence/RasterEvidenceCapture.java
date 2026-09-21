@@ -109,6 +109,36 @@ public final class RasterEvidenceCapture {
             double decisionRadiusMeters, String sourceIdentity,
             EvidenceFieldLineage.AcquisitionKind acquisitionKind, List<FieldSpec> fieldSpecs,
             CancellationProbe cancellation) {
+        return captureInternal(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, null,
+                inputTransform, outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity,
+                acquisitionKind, fieldSpecs, cancellation);
+    }
+
+    /**
+     * Captures evidence using metric source positions already validated by the owning slide capture.
+     * Geographic source points remain retained provenance; this avoids a boundary-changing retransform.
+     */
+    public EvidenceSnapshot captureWithMetricSource(String snapshotId, BufferedImage inputRaster,
+            boolean[] acquisitionValidity, List<GeographicPoint> sourcePolyline,
+            List<MetricPoint> metricSource,
+            SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid, EvidenceResolution sourceResolution,
+            double decisionRadiusMeters, String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind, List<FieldSpec> fieldSpecs,
+            CancellationProbe cancellation) {
+        return captureInternal(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, metricSource,
+                inputTransform, outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity,
+                acquisitionKind, fieldSpecs, cancellation);
+    }
+
+    private EvidenceSnapshot captureInternal(String snapshotId, BufferedImage inputRaster,
+            boolean[] acquisitionValidity, List<GeographicPoint> sourcePolyline,
+            List<MetricPoint> suppliedMetricSource,
+            SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid, EvidenceResolution sourceResolution,
+            double decisionRadiusMeters, String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind, List<FieldSpec> fieldSpecs,
+            CancellationProbe cancellation) {
         validateInputs(snapshotId, inputRaster, acquisitionValidity, sourcePolyline,
                 inputTransform, outputGrid, sourceResolution, decisionRadiusMeters,
                 sourceIdentity, acquisitionKind, fieldSpecs, cancellation);
@@ -133,7 +163,12 @@ public final class RasterEvidenceCapture {
         MetricRegion footprint = outputGrid.footprint();
         footprint.polygons().forEach(polygon -> polygon.forEach(frame::toGeographic));
         inputTransform.boundsForMetricCell(frame, footprint.polygons().get(0));
-        List<MetricPoint> metricSource = sourcePolyline.stream().map(frame::toMetric).toList();
+        List<MetricPoint> metricSource = suppliedMetricSource == null
+                ? sourcePolyline.stream().map(frame::toMetric).toList()
+                : List.copyOf(suppliedMetricSource);
+        if (metricSource.size() != sourcePolyline.size() || metricSource.stream().anyMatch(java.util.Objects::isNull)) {
+            throw new IllegalArgumentException("Metric source polyline does not match geographic source occurrences");
+        }
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metricSource, decisionRadiusMeters);
         if (!footprint.containsRegion(decision)) {
             throw new IllegalArgumentException("Metric output grid and evidence halo do not cover the decision corridor");

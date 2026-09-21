@@ -435,9 +435,9 @@ public final class LiveBPreviewService {
         SupportedInputRasterTransform transform = SupportedInputRasterTransform.visibleWebMercator(
                 captured.raster().minimumEast(), captured.raster().maximumNorth(),
                 captured.raster().projectionUnitsPerViewPixel(), RenderedHeatmapSampler.RASTER_SCALE);
-        return new RasterEvidenceCapture().capture(
+        return new RasterEvidenceCapture().captureWithMetricSource(
                 captured.network().snapshotId() + "-evidence", captured.raster().image(), valid,
-                captured.sourceGeographic(), transform, captured.outputGrid(), resolution,
+                captured.sourceGeographic(), captured.sourceMetric(), transform, captured.outputGrid(), resolution,
                 captured.searchRadiusMeters(), captured.raster().sourceIdentity(),
                 EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER, List.of(field), cancellation);
     }
@@ -454,8 +454,8 @@ public final class LiveBPreviewService {
                 captured.palette(), EvidenceCorrelationGroup.STRAVA_RENDERINGS, false);
         RasterEvidenceCapture.FieldSpec field = RasterEvidenceCapture.FieldSpec.direct(FIELD,
                 argb -> intensity(argb, captured.palette()), lineage);
-        return new RasterEvidenceCapture().capture(captured.network().snapshotId() + "-evidence",
-                raster.image(), raster.validity(), captured.sourceGeographic(), raster.transform(),
+        return new RasterEvidenceCapture().captureWithMetricSource(captured.network().snapshotId() + "-evidence",
+                raster.image(), raster.validity(), captured.sourceGeographic(), captured.sourceMetric(), raster.transform(),
                 captured.outputGrid(), resolution, captured.searchRadiusMeters(), raster.sourceIdentity(),
                 EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE, List.of(field), cancellation);
     }

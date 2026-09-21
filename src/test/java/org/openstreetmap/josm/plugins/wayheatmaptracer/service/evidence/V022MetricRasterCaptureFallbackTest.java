@@ -61,6 +61,25 @@ class V022MetricRasterCaptureFallbackTest {
     }
 
     @Test
+    void capturedMetricSourceOwnsDecisionCorridorAtTheOutputBoundary() {
+        LocalMetricFrame frame = frame();
+        MetricRasterGrid grid = grid(frame, new MetricPoint(-4.5, -4.5),
+                1, 0, 0, 1, 1, 10, 10);
+        List<GeographicPoint> geographic = List.of(metric(frame, -4.5, 0), metric(frame, 4.5, 0));
+        List<MetricPoint> capturedMetric = List.of(new MetricPoint(-3, 0), new MetricPoint(3, 0));
+        SupportedInputRasterTransform transform = SupportedInputRasterTransform.localMetricAffine(
+                frame, new RasterPoint(10, 10), 1, 0, 0, 1);
+
+        EvidenceSnapshot snapshot = new RasterEvidenceCapture().captureWithMetricSource("boundary",
+                solidImage(20, 20, 0xffffffff), allValid(20, 20), geographic, capturedMetric,
+                transform, grid, EvidenceResolution.renderedOnly(1), 1, "safe-source",
+                EvidenceFieldLineage.AcquisitionKind.SYNTHETIC, direct(), CancellationProbe.NONE);
+
+        assertTrue(snapshot.decisionRegion().contains(new MetricPoint(4, 0)));
+        assertTrue(!snapshot.decisionRegion().contains(new MetricPoint(4.1, 0)));
+    }
+
+    @Test
     void nonlinearWebMercatorMappingIsUsedExactlyAtFractionalOutputCenters() {
         LocalMetricFrame frame = frame();
         int zoom = 20;
