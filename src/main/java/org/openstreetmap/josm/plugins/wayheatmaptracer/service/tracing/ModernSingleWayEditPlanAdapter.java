@@ -311,16 +311,21 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         Map<PrimitiveKey, DetachedPrimitive> combined = new LinkedHashMap<>(conversion.toDetached(
                 planned.plan().orElseThrow().after(), before.primitives()));
-        baseValues.entrySet().stream()
-                .filter(entry -> !before.primitives().containsKey(entry.getKey()))
-                .forEach(entry -> {
-                    DetachedPrimitive displaced = combined.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (displaced != null && !displaced.equals(entry.getValue())) {
-                        throw new IllegalArgumentException(
-                                "Topology planning collided with a route-local primitive identity");
-                    }
-                });
+        for (Map.Entry<PrimitiveKey, DetachedPrimitive> entry : baseValues.entrySet()) {
+            if (before.primitives().containsKey(entry.getKey())) {
+                continue;
+            }
+            DetachedPrimitive displaced = combined.putIfAbsent(entry.getKey(), entry.getValue());
+            if (displaced != null && !displaced.equals(entry.getValue())) {
+                throw new IllegalArgumentException(
+                        "Topology planning collided with a route-local primitive identity");
+            }
+        }
         combined.put(request.selectedWayKey(), baseValues.get(request.selectedWayKey()));
+        if (request.permissions().reconstructIncidentWays()) {
+            combined = new LinkedHashMap<>(IncidentWayReconstructor.reconstruct(before, combined,
+                    evidence, request.selectedWayKey(), sharedJunctions));
+        }
         for (PrimitiveKey junction : sharedJunctions) {
             ExistingWayNodeOccurrence occurrence = route.pointIds().stream()
                     .filter(ExistingWayNodeOccurrence.class::isInstance)
@@ -331,7 +336,7 @@ public final class ModernSingleWayEditPlanAdapter {
             MetricPoint actual = evidence.coordinateFrame().toMetric(finalNode.coordinate());
             if (actual.distanceTo(expected) > 1.0e-9) {
                 throw new IllegalArgumentException(
-                        "Frozen receiver adjustment would make the edit plan differ from the reviewed route");
+                        "Topology adjustment would make the edit plan differ from the reviewed route");
             }
         }
         TopologyNetwork combinedTopology = new TopologyConversion(combined, evidence).toTopology();

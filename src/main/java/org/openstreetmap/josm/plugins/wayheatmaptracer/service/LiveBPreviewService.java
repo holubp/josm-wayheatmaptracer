@@ -267,6 +267,23 @@ public final class LiveBPreviewService {
                         occurrences.merge(incidentKey, authorized,
                                 JunctionAuthorityBounds::mergeOccurrenceRanges);
                         for (OccurrenceRange local : localGeometry) {
+                            if (permissions.reconstructIncidentWays()) {
+                                for (int index = local.firstIndex(); index <= local.lastIndex(); index++) {
+                                    Node localNode = incident.getNode(index);
+                                    PrimitiveKey localKey = key(localNode);
+                                    boolean receiverShapeNode = index > local.firstIndex()
+                                            && index < local.lastIndex()
+                                            && localNode != boundary
+                                            && !localNode.hasKeys()
+                                            && localNode.getReferrers().stream()
+                                                .allMatch(referrer -> referrer == incident);
+                                    if (receiverShapeNode) {
+                                        movable.add(localKey);
+                                        editable.add(localKey);
+                                        protectedNodes.remove(localKey);
+                                    }
+                                }
+                            }
                             List<MetricPoint> incidentMetric = incident.getNodes().subList(
                                     local.firstIndex(), local.lastIndex() + 1).stream()
                                     .map(LiveBPreviewService::geographic).map(frame::toMetric).toList();

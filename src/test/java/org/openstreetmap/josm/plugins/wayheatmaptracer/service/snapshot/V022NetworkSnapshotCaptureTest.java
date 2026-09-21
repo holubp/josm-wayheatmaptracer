@@ -400,6 +400,85 @@ class V022NetworkSnapshotCaptureTest {
     }
 
     @Test
+    void incidentReconstructionAuthorityKeepsPortsAndSharedShapesFixed() {
+        RecoveryPermissions reconstruct = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        DataSet portData = new DataSet();
+        Node west = loadedNode(1, 0, -0.0001);
+        Node junction = loadedNode(2, 0, 0);
+        Node shape11 = loadedNode(3, 0.0001, 0);
+        Node shape22 = loadedNode(4, 0.0002, 0);
+        Node port33 = loadedNode(5, 0.0003, 0);
+        Node far78 = loadedNode(6, 0.0007, 0);
+        add(portData, west, junction, shape11, shape22, port33, far78);
+        Way selected = loadedWay(10, List.of(west, junction));
+        Way incident = loadedWay(11, List.of(junction, shape11, shape22, port33, far78));
+        add(portData, selected, incident);
+        NetworkSnapshotCapture.Specification movablePort = specification("reconstruct-port",
+                selected, new OccurrenceRange(0, 1), Map.of(
+                        way(10), List.of(new OccurrenceRange(0, 1)),
+                        way(11), List.of(new OccurrenceRange(0, 3))),
+                Set.of(way(10), way(11), node(2), node(5)), Set.of(node(2), node(5)),
+                Set.of(), Set.of(node(1), node(3), node(4), node(6)), false, reconstruct);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(portData, movablePort)));
+
+        DataSet sharedData = new DataSet();
+        Node sharedWest = loadedNode(21, 0, -0.0001);
+        Node sharedJunction = loadedNode(22, 0, 0);
+        Node sharedShape = loadedNode(23, 0.0001, 0);
+        Node portA = loadedNode(24, 0.00035, 0);
+        Node portB = loadedNode(25, 0.00035, 0.00002);
+        add(sharedData, sharedWest, sharedJunction, sharedShape, portA, portB);
+        Way sharedSelected = loadedWay(20, List.of(sharedWest, sharedJunction));
+        Way firstIncident = loadedWay(21, List.of(sharedJunction, sharedShape, portA));
+        Way secondIncident = loadedWay(22, List.of(sharedJunction, sharedShape, portB));
+        add(sharedData, sharedSelected, firstIncident, secondIncident);
+        NetworkSnapshotCapture.Specification movableSharedShape = specification(
+                "reconstruct-shared-shape", sharedSelected, new OccurrenceRange(0, 1), Map.of(
+                        way(20), List.of(new OccurrenceRange(0, 1)),
+                        way(21), List.of(new OccurrenceRange(0, 2)),
+                        way(22), List.of(new OccurrenceRange(0, 2))),
+                Set.of(way(20), way(21), way(22), node(22), node(23)),
+                Set.of(node(22), node(23)), Set.of(),
+                Set.of(node(21), node(24), node(25)), false, reconstruct);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(sharedData,
+                        movableSharedShape)));
+    }
+
+    @Test
+    void incidentReconstructionRejectsRepeatedNonJunctionOccurrences() {
+        RecoveryPermissions reconstruct = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(31, 0, -0.0001);
+        Node junction = loadedNode(32, 0, 0);
+        Node repeated = loadedNode(33, 0.00005, 0);
+        Node middle = loadedNode(34, 0.0001, 0);
+        Node port = loadedNode(35, 0.00025, 0);
+        Node far = loadedNode(36, 0.0007, 0);
+        add(dataSet, west, junction, repeated, middle, port, far);
+        Way selected = loadedWay(30, List.of(west, junction));
+        Way incident = loadedWay(31,
+                List.of(junction, repeated, middle, repeated, port, far));
+        add(dataSet, selected, incident);
+        IllegalArgumentException occurrenceFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> JunctionAuthorityBounds.localOccurrenceRange(incident, junction, FRAME));
+        assertTrue(occurrenceFailure.getMessage().contains("repeated"));
+        NetworkSnapshotCapture.Specification repeatedShape = specification(
+                "reconstruct-repeated-shape", selected, new OccurrenceRange(0, 1), Map.of(
+                        way(30), List.of(new OccurrenceRange(0, 1)),
+                        way(31), List.of(new OccurrenceRange(0, 4))),
+                Set.of(way(30), way(31), node(32), node(33)),
+                Set.of(node(32), node(33)), Set.of(),
+                Set.of(node(31), node(34), node(35), node(36)), false, reconstruct);
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, repeatedShape)));
+    }
+
+    @Test
     void completeDeepNecessaryRelationPayloadIsMaterializedWithoutRecursiveTraversal() {
         DataSet smallData = new DataSet();
         Node smallA = loadedNode(1, 0, 0);

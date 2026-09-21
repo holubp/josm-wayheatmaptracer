@@ -356,6 +356,9 @@ public final class NetworkSnapshotCapture {
                 continue;
             }
             Way incident = (Way) inventory.require(entry.getKey());
+            if (new LinkedHashSet<>(incident.getNodes()).size() != incident.getNodesCount()) {
+                return false;
+            }
             Map<PrimitiveKey, Node> junctions = new LinkedHashMap<>();
             for (Node node : incident.getNodes()) {
                 if (movableSharedJunctions.contains(key(node))) {
@@ -382,7 +385,14 @@ public final class NetworkSnapshotCapture {
             }
             for (OccurrenceRange range : expected) {
                 for (int index = range.firstIndex(); index <= range.lastIndex(); index++) {
-                    locallyAuthorizedNodes.add(key(incident.getNode(index)));
+                    PrimitiveKey node = key(incident.getNode(index));
+                    locallyAuthorizedNodes.add(node);
+                    if (specification.movableExistingNodeKeys().contains(node)
+                            && !movableSharedJunctions.contains(node)
+                            && (index == range.firstIndex() || index == range.lastIndex()
+                                || !inventory.referrers(node).equals(Set.of(entry.getKey())))) {
+                        return false;
+                    }
                 }
             }
         }

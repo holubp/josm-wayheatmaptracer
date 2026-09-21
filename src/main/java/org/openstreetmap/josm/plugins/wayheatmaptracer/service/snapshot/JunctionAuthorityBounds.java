@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 
 import org.openstreetmap.josm.data.osm.Node;
@@ -34,6 +35,10 @@ public final class JunctionAuthorityBounds {
             LocalMetricFrame frame) {
         if (way == null || junction == null || frame == null || way.getNodesCount() < 2) {
             throw new IllegalArgumentException("Junction authority input is incomplete");
+        }
+        if (new HashSet<>(way.getNodes()).size() != way.getNodesCount()) {
+            throw new IllegalArgumentException(
+                    "Reattachment rejects repeated incident-way node occurrences");
         }
         int junctionIndex = -1;
         for (int index = 0; index < way.getNodesCount(); index++) {

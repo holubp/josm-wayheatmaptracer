@@ -258,6 +258,166 @@ class V022EndToEndTest {
         assertTrue(failure.getMessage().contains("UNCONNECTED_AT_GRADE_CROSSING"));
     }
 
+    @Test
+    void T169_incidentReconstructionUsesEachReceiverArmEvidence() throws Exception {
+        JunctionFixture fixture = reconstructionFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                fixture.receiver().getUniqueId());
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.junction().getUniqueId());
+        List<PrimitiveKey> reconstructedNodes = List.of(fixture.south(), fixture.middle(), fixture.north())
+                .stream().map(node -> PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                        node.getUniqueId())).toList();
+        assertTrue(computed.captured().network().closure().movableExistingNodeKeys()
+                .containsAll(reconstructedNodes));
+        var beforeJunction = computed.evidence().coordinateFrame().toMetric(
+                ((DetachedNode) plan.before().primitives().get(junction)).coordinate());
+        var afterJunction = computed.evidence().coordinateFrame().toMetric(
+                ((DetachedNode) plan.after().primitives().get(junction)).coordinate());
+        for (PrimitiveKey node : reconstructedNodes) {
+            var before = computed.evidence().coordinateFrame().toMetric(
+                    ((DetachedNode) plan.before().primitives().get(node)).coordinate());
+            var after = computed.evidence().coordinateFrame().toMetric(
+                    ((DetachedNode) plan.after().primitives().get(node)).coordinate());
+            assertNotEquals(before, after, "Each incident arm must be fit from its own evidence");
+            assertTrue(Math.abs(after.xMeters() - afterJunction.xMeters())
+                    < Math.abs(before.xMeters() - beforeJunction.xMeters()));
+        }
+        DetachedWay afterReceiver = (DetachedWay) plan.after().primitives().get(receiver);
+        assertEquals(afterReceiver.nodeKeys().stream()
+                        .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
+                        .toList(),
+                plan.finalPreviewWays().get(receiver));
+        var expectedSelected = computed.pipeline().routes().get(0).hypothesis().points().stream()
+                .map(computed.evidence().coordinateFrame()::toGeographic).toList();
+        assertEquals(expectedSelected,
+                plan.finalPreviewWays().get(computed.request().selectedWayKey()));
+        for (var port : computed.captured().network().closure().externalPorts().stream()
+                .filter(value -> value.wayKey().equals(receiver)).toList()) {
+            assertEquals(plan.before().primitives().get(port.boundaryNodeKey()),
+                    plan.after().primitives().get(port.boundaryNodeKey()));
+        }
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
+                plan.validation().disposition());
+
+        JunctionFixture missingEvidence = reconstructionFixture();
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                missingEvidence.dataSet(), missingEvidence.selection(),
+                junctionReconstructionRaster(false), visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(failure.getMessage().contains("incident approach evidence"),
+                failure::getMessage);
+    }
+
+    @Test
+    void T169_displacedProtectedIncidentShapeFailsClosed() throws Exception {
+        JunctionFixture fixture = reconstructionFixture(true);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+        PrimitiveKey protectedShape = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.middle().getUniqueId());
+        assertFalse(captured[0].network().closure().movableExistingNodeKeys()
+                .contains(protectedShape));
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys()
+                .contains(protectedShape));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
+        assertTrue(failure.getMessage().contains("protected incident control"),
+                failure::getMessage);
+    }
+
+    @Test
+    void T169_partialAndAmbiguousIncidentEvidenceFailClosed() throws Exception {
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        for (ReceiverEvidence evidence : List.of(ReceiverEvidence.NORTH_ONLY,
+                ReceiverEvidence.AMBIGUOUS)) {
+            JunctionFixture fixture = reconstructionFixture();
+            LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+            SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                    fixture.dataSet(), fixture.selection(),
+                    junctionReconstructionRaster(evidence, 2.0), visibleConfig(), false,
+                    permissions));
+            LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                    captured[0], CancellationProbe.NONE);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0),
+                    evidence.name());
+            assertTrue(failure.getMessage().contains("incident approach evidence"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
+    void T169_incidentOccurrenceOrderInversionFailsClosed() throws Exception {
+        JunctionFixture fixture = orderInversionFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(),
+                junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 6.0),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
+        assertTrue(failure.getMessage().contains("incident occurrence order"),
+                failure::getMessage);
+    }
+
+    @Test
+    void T169_unreviewedTopologyShapesFailClosed() throws Exception {
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        JunctionFixture selectedInterior = selectedInteriorReconstructionFixture();
+        LiveBPreviewService.Captured[] interiorCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> interiorCaptured[0] = new LiveBPreviewService().capture(
+                selectedInterior.dataSet(), selectedInterior.selection(),
+                junctionReconstructionRaster(true), visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed interiorComputed = new LiveBPreviewService().compute(
+                interiorCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException interiorFailure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(interiorComputed, 0));
+        assertTrue(interiorFailure.getMessage().contains("bounded terminal-through topology"),
+                interiorFailure::getMessage);
+
+        JunctionFixture multipleReceivers = reconstructionFixture();
+        Way duplicateReceiver = loadedWay(112,
+                multipleReceivers.receiver().getNodes().toArray(Node[]::new));
+        multipleReceivers.dataSet().addPrimitive(duplicateReceiver);
+        LiveBPreviewService.Captured[] multipleCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> multipleCaptured[0] = new LiveBPreviewService().capture(
+                multipleReceivers.dataSet(), multipleReceivers.selection(),
+                junctionReconstructionRaster(true), visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed multipleComputed = new LiveBPreviewService().compute(
+                multipleCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException multipleFailure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(multipleComputed, 0));
+        assertTrue(multipleFailure.getMessage().contains("bounded terminal-through topology"),
+                multipleFailure::getMessage);
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node a = loadedNode(1, 0.0, longitude(-8));
@@ -320,12 +480,134 @@ class V022EndToEndTest {
                 receiver, west, junction, south, middle, north);
     }
 
+    private static JunctionFixture reconstructionFixture() {
+        return reconstructionFixture(false);
+    }
+
+    private static JunctionFixture reconstructionFixture(boolean protectMiddle) {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(101, 0.0, longitude(-8));
+        Node junction = loadedNode(102, 0.0, longitude(8));
+        Node farSouth = loadedNode(103, latitude(-49), longitude(10));
+        Node southPort = loadedNode(104, latitude(-31), longitude(10));
+        Node south = loadedNode(105, latitude(-8), longitude(10));
+        Node middle = loadedNode(106, latitude(8), longitude(10));
+        if (protectMiddle) {
+            middle.put("barrier", "gate");
+        }
+        Node north = loadedNode(107, latitude(18), longitude(10));
+        Node northPort = loadedNode(108, latitude(31), longitude(10));
+        Node farNorth = loadedNode(109, latitude(49), longitude(10));
+        Way selected = loadedWay(110, west, junction);
+        Way receiver = loadedWay(111, farSouth, southPort, south, junction, middle, north,
+                northPort, farNorth);
+        for (Node node : List.of(west, junction, farSouth, southPort, south, middle, north,
+                northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        return new JunctionFixture(dataSet,
+                new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
+                receiver, west, junction, south, middle, north);
+    }
+
+    private static JunctionFixture orderInversionFixture() {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(201, 0.0, longitude(-8));
+        Node junction = loadedNode(202, 0.0, longitude(8));
+        Node farSouth = loadedNode(203, latitude(-49), longitude(10));
+        Node southPort = loadedNode(204, latitude(-31), longitude(10));
+        Node south = loadedNode(205, latitude(-8), longitude(10));
+        Node middle = loadedNode(206, latitude(3), longitude(10));
+        Node north = loadedNode(207, latitude(18), longitude(10));
+        Node northPort = loadedNode(208, latitude(31), longitude(10));
+        Node farNorth = loadedNode(209, latitude(49), longitude(10));
+        Way selected = loadedWay(210, west, junction);
+        Way receiver = loadedWay(211, farSouth, southPort, south, junction, middle, north,
+                northPort, farNorth);
+        for (Node node : List.of(west, junction, farSouth, southPort, south, middle, north,
+                northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        return new JunctionFixture(dataSet,
+                new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
+                receiver, west, junction, south, middle, north);
+    }
+
+    private static JunctionFixture selectedInteriorReconstructionFixture() {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(301, 0.0, longitude(-8));
+        Node junction = loadedNode(302, 0.0, longitude(8));
+        Node selectedContinuation = loadedNode(303, 0.0, longitude(18));
+        Node farSouth = loadedNode(304, latitude(-49), longitude(10));
+        Node southPort = loadedNode(305, latitude(-31), longitude(10));
+        Node south = loadedNode(306, latitude(-8), longitude(10));
+        Node middle = loadedNode(307, latitude(8), longitude(10));
+        Node north = loadedNode(308, latitude(18), longitude(10));
+        Node northPort = loadedNode(309, latitude(31), longitude(10));
+        Node farNorth = loadedNode(310, latitude(49), longitude(10));
+        Way selected = loadedWay(310, west, junction, selectedContinuation);
+        Way receiver = loadedWay(311, farSouth, southPort, south, junction, middle, north,
+                northPort, farNorth);
+        for (Node node : List.of(west, junction, selectedContinuation, farSouth, southPort,
+                south, middle, north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        return new JunctionFixture(dataSet,
+                new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
+                receiver, west, junction, south, middle, north);
+    }
+
     private static LiveBPreviewService.VisibleRaster visibleRaster() {
         return visibleRaster(600, 50.0, 288.0);
     }
 
     private static LiveBPreviewService.VisibleRaster junctionRaster() {
         return visibleRaster(720, 60.0, 348.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
+            boolean includeReceiver) {
+        return junctionReconstructionRaster(includeReceiver
+                ? ReceiverEvidence.COMPLETE : ReceiverEvidence.NONE, 2.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
+            ReceiverEvidence receiverEvidence, double selectedNorthMeters) {
+        int size = 720;
+        int[] argb = new int[size * size];
+        double selectedRow = (60.0 - selectedNorthMeters)
+                * RenderedHeatmapSampler.RASTER_SCALE;
+        double receiverColumn = 408.0;
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                double selectedDistance = (y - selectedRow) / RenderedHeatmapSampler.RASTER_SCALE;
+                double receiverDistance = (x - receiverColumn) / RenderedHeatmapSampler.RASTER_SCALE;
+                double selected = Math.exp(-0.5 * selectedDistance * selectedDistance / 1.44);
+                double receiver = switch (receiverEvidence) {
+                    case NONE -> 0.0;
+                    case COMPLETE -> Math.exp(-0.5 * receiverDistance * receiverDistance / 1.44);
+                    case NORTH_ONLY -> y < selectedRow - 6.0
+                            ? Math.exp(-0.5 * receiverDistance * receiverDistance / 1.44) : 0.0;
+                    case AMBIGUOUS -> Math.max(
+                            Math.exp(-0.5 * receiverDistance * receiverDistance / 1.44),
+                            Math.exp(-0.5 * Math.pow((x - 432.0)
+                                    / RenderedHeatmapSampler.RASTER_SCALE, 2.0) / 1.44));
+                };
+                int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.max(selected, receiver)));
+                argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(size, size, argb, -60.0, -60.0,
+                60.0, 60.0, 1.0, 1.0, OptionalDouble.of(1.0),
+                "visible-junction-" + receiverEvidence.name().toLowerCase()
+                    + "-" + selectedNorthMeters,
+                "EPSG:3857");
     }
 
     private static LiveBPreviewService.VisibleRaster visibleRaster(int size, double extent,
@@ -388,4 +670,6 @@ class V022EndToEndTest {
     private record JunctionFixture(DataSet dataSet, SelectionContext selection, Way receiver,
             Node west, Node junction, Node south, Node middle, Node north) {
     }
+
+    private enum ReceiverEvidence { NONE, COMPLETE, NORTH_ONLY, AMBIGUOUS }
 }
