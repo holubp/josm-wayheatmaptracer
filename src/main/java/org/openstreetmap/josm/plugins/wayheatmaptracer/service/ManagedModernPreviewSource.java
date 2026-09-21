@@ -11,8 +11,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileAddress;
@@ -176,14 +178,15 @@ public final class ManagedModernPreviewSource {
             int zoom, double radius) {
         double pitch = TileHeatmapSampler.metersPerPixel(zoom,
                 frame.origin().latitudeDegrees());
-        double minX = source.stream().mapToDouble(MetricPoint::xMeters).min().orElseThrow()
-                - radius - pitch;
-        double maxX = source.stream().mapToDouble(MetricPoint::xMeters).max().orElseThrow()
-                + radius + pitch;
-        double minY = source.stream().mapToDouble(MetricPoint::yMeters).min().orElseThrow()
-                - radius - pitch;
-        double maxY = source.stream().mapToDouble(MetricPoint::yMeters).max().orElseThrow()
-                + radius + pitch;
+        MetricRegion decision = MetricCorridorRegion.aroundPolyline(source, radius);
+        double minX = decision.polygons().stream().flatMap(List::stream)
+                .mapToDouble(MetricPoint::xMeters).min().orElseThrow() - pitch;
+        double maxX = decision.polygons().stream().flatMap(List::stream)
+                .mapToDouble(MetricPoint::xMeters).max().orElseThrow() + pitch;
+        double minY = decision.polygons().stream().flatMap(List::stream)
+                .mapToDouble(MetricPoint::yMeters).min().orElseThrow() - pitch;
+        double maxY = decision.polygons().stream().flatMap(List::stream)
+                .mapToDouble(MetricPoint::yMeters).max().orElseThrow() + pitch;
         int width = Math.max(2, checkedCeil((maxX - minX) / pitch));
         int height = Math.max(2, checkedCeil((maxY - minY) / pitch));
         return new MetricRasterGrid(frame, new MetricPoint(minX + 0.5 * pitch,

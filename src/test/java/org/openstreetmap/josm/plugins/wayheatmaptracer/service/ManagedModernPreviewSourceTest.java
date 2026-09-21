@@ -23,6 +23,10 @@ import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
@@ -63,6 +67,20 @@ class ManagedModernPreviewSourceTest {
             assertEquals(-0.5, raster.transform().toRasterCenter(
                     new GeographicPoint(0.0, -180.0)).x(), 1.0e-12);
         }
+    }
+
+    @Test
+    void managedGridContainsDiagonalDecisionCorridorCorners() {
+        List<GeographicPoint> source = List.of(
+                new GeographicPoint(42.7234, 19.2914),
+                new GeographicPoint(42.7238, 19.2920));
+        double radius = 7.01;
+        LocalMetricFrame frame = ManagedModernPreviewSource.managedFrame(source, 15, radius);
+        List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
+        MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(frame, metric, 15, radius);
+
+        assertTrue(grid.footprint().containsRegion(
+                MetricCorridorRegion.aroundPolyline(metric, radius)));
     }
 
     @Test
