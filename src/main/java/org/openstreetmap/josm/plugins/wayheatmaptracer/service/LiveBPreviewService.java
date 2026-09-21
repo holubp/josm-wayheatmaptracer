@@ -29,6 +29,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineag
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
@@ -100,14 +101,14 @@ public final class LiveBPreviewService {
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, MetricRasterGrid outputGrid,
             String palette, double searchRadiusMeters, double sampleStepMeters,
-            String settingsHash, String parameterHash, TrackerMode engine, String projectionCode) {
+            String settingsHash, String parameterHash, GeometryCleanupConfig cleanup, TrackerMode engine, String projectionCode) {
         public Captured {
             if ((raster == null) == (managedRaster == null)) {
                 throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
             }
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
-            if (engine == null || projectionCode == null || projectionCode.isBlank()) {
+            if (cleanup == null || engine == null || projectionCode == null || projectionCode.isBlank()) {
                 throw new IllegalArgumentException("Live preview engine is required");
             }
         }
@@ -118,7 +119,7 @@ public final class LiveBPreviewService {
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
             double searchRadiusMeters, double sampleStepMeters, String settingsHash,
-            String parameterHash, TrackerMode engine, String sourceIdentity, String projectionCode) {
+            String parameterHash, GeometryCleanupConfig cleanup, TrackerMode engine, String sourceIdentity, String projectionCode) {
         public ManagedCaptureSeed {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
@@ -126,7 +127,7 @@ public final class LiveBPreviewService {
                     || sourceMetric.size() != sourceGeographic.size() || palette == null || palette.isBlank()
                     || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0.0
                     || !Double.isFinite(sampleStepMeters) || sampleStepMeters <= 0.0
-                    || settingsHash == null || parameterHash == null || engine == null
+                    || settingsHash == null || parameterHash == null || cleanup == null || engine == null
                     || sourceIdentity == null || sourceIdentity.isBlank()
                     || projectionCode == null || projectionCode.isBlank()) {
                 throw new IllegalArgumentException("Managed preview seed is incomplete");
@@ -189,7 +190,7 @@ public final class LiveBPreviewService {
                 true, RecoveryPermissions.disabled(radius));
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         return new Captured(raster, null, specification, network, source, metric, grid,
-                config.heatmap().color(), radius, step, settingsHash, parameterHash, engine,
+                config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(), engine,
                 raster.projectionCode());
     }
 
@@ -224,7 +225,7 @@ public final class LiveBPreviewService {
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
                 hash("managed-live-" + config.heatmap().trackerMode().name().toLowerCase(java.util.Locale.ROOT)),
-                config.heatmap().trackerMode(), sourceIdentity,
+                config.cleanup(), config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode());
     }
 
@@ -238,7 +239,7 @@ public final class LiveBPreviewService {
                 seed.sourceMetric(), raster.zoom(), seed.searchRadiusMeters());
         return new Captured(null, raster, seed.specification(), seed.network(), seed.sourceGeographic(),
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
-                seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.engine(),
+                seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(), seed.engine(),
                 seed.projectionCode());
     }
 
@@ -272,7 +273,7 @@ public final class LiveBPreviewService {
         ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
                 .run(request, evidence, captured.network(),
                         new ModernTracePipeline.Options(FIELD,
-                                org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig.disabled(),
+                                captured.cleanup(),
                                 "selected-visible", 0), cancellation);
         return new Computed(captured, evidence, request, pipeline);
     }
@@ -357,7 +358,7 @@ public final class LiveBPreviewService {
         Captured refreshed = new Captured(currentRaster, null, captured.specification(), captured.network(),
                 captured.sourceGeographic(), captured.sourceMetric(), captured.outputGrid(), captured.palette(),
                 captured.searchRadiusMeters(), captured.sampleStepMeters(), captured.settingsHash(),
-                captured.parameterHash(), captured.engine(), captured.projectionCode());
+                captured.parameterHash(), captured.cleanup(), captured.engine(), captured.projectionCode());
         if (!captureEvidence(captured, CancellationProbe.NONE).canonicalHash().equals(
                 captureEvidence(refreshed, CancellationProbe.NONE).canonicalHash())) {
             throw new IllegalStateException("Live preview visible evidence is stale");
@@ -434,8 +435,8 @@ public final class LiveBPreviewService {
         if (heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
             throw new IllegalArgumentException("Experimental live preview requires Precise Shape");
         }
-        if (!config.cleanup().isDisabled() || heatmap.simplifyEnabled()) {
-            throw new IllegalArgumentException("Experimental live preview requires cleanup and simplification Off");
+        if (heatmap.simplifyEnabled()) {
+            throw new IllegalArgumentException("Experimental live preview requires simplification Off");
         }
         if ((heatmap.hasManagedAccessValues() && !explicitVisibleSource)
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
@@ -465,7 +466,7 @@ public final class LiveBPreviewService {
         if (heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
                 && heatmap.trackerMode() != TrackerMode.PROBABILISTIC
                 || heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE
-                || !config.cleanup().isDisabled() || heatmap.simplifyEnabled()
+                || heatmap.simplifyEnabled()
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
                 || heatmap.parallelWayAwareness() || heatmap.adjustJunctionNodes()
                 || config.searchHalfWidthMetersOverride().isPresent()

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -78,6 +82,22 @@ class AlignWayActionTest {
         assertEquals(TrackerMode.DIRECTIONAL_IMAGE, preview.trackerMode());
         assertEquals(AlignmentMode.PRECISE_SHAPE, preview.alignmentMode());
         assertEquals(configured.keyPairId(), preview.keyPairId());
+    }
+
+    @Test
+    void cleanupEnabledPreviewCannotEnterModernVisibleApplyGate() {
+        ManagedHeatmapConfig precise = configuredCorridor().withAlignmentMode(AlignmentMode.PRECISE_SHAPE);
+        AlignmentConfig disabled = new AlignmentConfig(precise, GeometryCleanupConfig.disabled());
+        AlignmentConfig enabled = new AlignmentConfig(precise, GeometryCleanupPreset.BALANCED
+                .apply(GeometryCleanupMode.REDUCE_POINTS_ONLY));
+        LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(12, 12,
+                new int[144], 0.0, 0.0, 2.0, 2.0, 1.0, 1.0, OptionalDouble.empty(), "test", "EPSG:3857");
+        LiveBPreviewService.Captured captured = new LiveBPreviewService.Captured(raster, null, null, null,
+                List.of(), List.of(), null, "hot", 1.0, 1.0, "settings", "parameters",
+                GeometryCleanupConfig.disabled(), TrackerMode.PROBABILISTIC, "EPSG:3857");
+
+        assertTrue(AlignWayAction.supportsModernVisibleApply(captured, disabled));
+        assertFalse(AlignWayAction.supportsModernVisibleApply(captured, enabled));
     }
 
     @Test

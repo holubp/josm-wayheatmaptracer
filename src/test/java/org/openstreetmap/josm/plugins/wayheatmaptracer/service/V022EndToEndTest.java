@@ -21,12 +21,15 @@ import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -67,6 +70,52 @@ class V022EndToEndTest {
         assertFalse(managed.raster() != null);
     }
 
+    @Test
+    void T167_previewCarriesRequestedCleanupModeIntoDetachedPipelineInput() throws Exception {
+        Fixture fixture = fixture();
+        GeometryCleanupConfig cleanup = GeometryCleanupPreset.BALANCED
+                .apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
+        AlignmentConfig config = new AlignmentConfig(visibleConfig().heatmap(), cleanup);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), visibleRaster(), config));
+
+        assertEquals(cleanup, captured[0].cleanup());
+        GeometryCleanupConfig smooth = GeometryCleanupPreset.BALANCED
+                .apply(GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE);
+        LiveBPreviewService.Captured[] smoothed = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managedSeed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> {
+            smoothed[0] = new LiveBPreviewService().capture(fixture.dataSet(), fixture.selection(),
+                    visibleRaster(), new AlignmentConfig(visibleConfig().heatmap(), smooth));
+            managedSeed[0] = new LiveBPreviewService().captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    new AlignmentConfig(managedConfig().heatmap(), cleanup), "managed-cleanup");
+        });
+        LiveBPreviewService.Captured managed = new LiveBPreviewService().attachManagedRaster(managedSeed[0],
+                new ManagedModernPreviewSource.Raster(new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB),
+                        new boolean[] {true, true, true, true},
+                        SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0), "hot", 15,
+                        "managed-cleanup"));
+        assertEquals(cleanup, managedSeed[0].cleanup());
+        assertEquals(cleanup, managed.cleanup());
+        LiveBPreviewService.Captured[] off = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> off[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), visibleRaster(), visibleConfig()));
+        var offResult = new LiveBPreviewService().compute(off[0], CancellationProbe.NONE);
+        var reducedResult = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        var smoothResult = new LiveBPreviewService().compute(smoothed[0], CancellationProbe.NONE);
+        assertFalse(offResult.pipeline().routes().isEmpty());
+        assertFalse(reducedResult.pipeline().routes().isEmpty());
+        assertFalse(smoothResult.pipeline().routes().isEmpty());
+        assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED,
+                offResult.pipeline().routes().get(0).cleanupStatus());
+        assertFalse(ImageSupportedLocalCleanup.Status.SKIPPED ==
+                reducedResult.pipeline().routes().get(0).cleanupStatus());
+        assertFalse(ImageSupportedLocalCleanup.Status.SKIPPED ==
+                smoothResult.pipeline().routes().get(0).cleanupStatus());
+    }
+
     private static Fixture fixture() {
         DataSet dataSet = new DataSet();
         Node a = loadedNode(1, 0.0, longitude(-8));
@@ -84,7 +133,14 @@ class V022EndToEndTest {
     private static LiveBPreviewService.VisibleRaster visibleRaster() {
         int width = 600;
         int height = 600;
-        return new LiveBPreviewService.VisibleRaster(width, height, new int[width * height], -50.0, -50.0,
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distance = (y - 288.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44)));
+            int pixel = 0xff000000 | gray << 16 | gray << 8 | gray;
+            java.util.Arrays.fill(argb, y * width, (y + 1) * width, pixel);
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb, -50.0, -50.0,
                 50.0, 50.0, 1.0, 1.0, OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
     }
 

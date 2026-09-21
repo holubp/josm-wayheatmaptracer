@@ -280,7 +280,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
         LiveBPreviewService.Captured captured = new LiveBPreviewService.Captured(
             source.raster(), source.managedRaster(), source.specification(), source.network(),
             source.sourceGeographic(), source.sourceMetric(), source.outputGrid(), source.palette(),
-            source.searchRadiusMeters(), source.sampleStepMeters(), settingsHash, parameterHash,
+            source.searchRadiusMeters(), source.sampleStepMeters(), settingsHash, parameterHash, source.cleanup(),
             source.engine(), source.projectionCode());
         return new LiveBPreviewService.Computed(captured, computed.evidence(),
             computed.request(), computed.pipeline());
