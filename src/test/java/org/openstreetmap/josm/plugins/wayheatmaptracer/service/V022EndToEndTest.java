@@ -2,6 +2,8 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
 import java.util.List;
@@ -19,6 +21,7 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
@@ -31,6 +34,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -114,6 +118,26 @@ class V022EndToEndTest {
                 reducedResult.pipeline().routes().get(0).cleanupStatus());
         assertFalse(ImageSupportedLocalCleanup.Status.SKIPPED ==
                 smoothResult.pipeline().routes().get(0).cleanupStatus());
+
+        var cleanedRoute = reducedResult.pipeline().routes().get(0);
+        assertTrue(cleanedRoute.geometryChanged(),
+                "T167 requires a live fixture whose final geometry was changed by cleanup");
+        assertNotEquals(cleanedRoute.rawHypothesis().points(), cleanedRoute.hypothesis().points());
+        var expectedGeographic = cleanedRoute.hypothesis().points().stream()
+                .map(reducedResult.evidence().coordinateFrame()::toGeographic).toList();
+        var expectedProjected = expectedGeographic.stream()
+                .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                        new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
+                .toList();
+        var displayed = new LiveBPreviewService().adapt(reducedResult,
+                point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                        new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
+                .get(0);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(reducedResult, 0);
+
+        assertEquals(expectedProjected, displayed.finalPreviewPoints());
+        assertEquals(expectedGeographic,
+                plan.finalPreviewWays().get(reducedResult.request().selectedWayKey()));
     }
 
     private static Fixture fixture() {
