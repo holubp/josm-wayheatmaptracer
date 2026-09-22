@@ -267,6 +267,39 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void productionBMovesOrdinaryInteriorsTowardAnOffsetRidgeWithoutReturnSpikes() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        for (int index = 1; index < fixture.selection().segmentNodes().size() - 1; index++) {
+            Node node = fixture.selection().segmentNodes().get(index);
+            node.setCoor(new LatLon(latitude(3.0), node.lon()));
+        }
+        List<String> before = state(fixture.dataSet());
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), rasterAt(300.0), config()));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        var route = computed.pipeline().routes().get(0);
+        assertEquals(5, route.existingAssignments().size());
+        for (int index = 1; index < 4; index++) {
+            Node node = fixture.selection().segmentNodes().get(index);
+            var id = route.existingAssignments().keySet().stream().filter(value ->
+                    value.nodeKey().equals(PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId())))
+                    .findFirst().orElseThrow();
+            MetricPoint moved = route.existingAssignments().get(id);
+            assertTrue(Math.abs(moved.yMeters() - captured[0].sourceMetric().get(0).yMeters())
+                    < Math.abs(captured[0].sourceMetric().get(index).yMeters()
+                            - captured[0].sourceMetric().get(0).yMeters()),
+                    "ordinary interior must improve toward ridge");
+            assertTrue(moved.distanceTo(captured[0].sourceMetric().get(index)) > 1.0e-6,
+                    "ordinary interior must not return to source coordinate");
+        }
+        assertTrue(route.quality().findings().stream().noneMatch(finding ->
+                finding.code() == org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.
+                        FinalGeometryEvaluator.FindingCode.ADJACENT_BACKTRACK));
+        assertEquals(before, state(fixture.dataSet()));
+    }
+
+    @Test
     void taggedAndRelationReferencedEndpointsRemainProtectedUnderJunctionPermission() throws Exception {
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
                 JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
@@ -361,11 +394,15 @@ class V022LiveBPreviewServiceTest {
     }
 
     private static LiveBPreviewService.VisibleRaster raster() {
+        return rasterAt(288.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster rasterAt(double centerY) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
         for (int y = 0; y < height; y++) {
-            double distance = (y - 288.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double distance = (y - centerY) / RenderedHeatmapSampler.RASTER_SCALE;
             double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / (1.2 * 1.2));
             int gray = (int) Math.round(255.0 * intensity);
             int pixel = 0xff000000 | gray << 16 | gray << 8 | gray;
@@ -409,6 +446,10 @@ class V022LiveBPreviewServiceTest {
                 InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
         return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static double latitude(double meters) {
+        return Math.toDegrees(meters / 6_378_137.0);
     }
 
     private static double longitude(double meters) {
