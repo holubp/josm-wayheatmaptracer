@@ -19,6 +19,7 @@ import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
@@ -46,6 +47,7 @@ public final class HeatmapSettingsDialog {
     private final JComboBox<String> manualLayer = new JComboBox<>();
     private final JComboBox<AlignmentMode> alignmentMode = new JComboBox<>(AlignmentMode.values());
     private final JComboBox<TrackerMode> trackerMode = new JComboBox<>(TrackerMode.selectableValues());
+    private final JComboBox<AlignmentSourceMode> sourceMode = new JComboBox<>(AlignmentSourceMode.values());
     private final JComboBox<InferenceMode> inferenceMode = new JComboBox<>(InferenceMode.values());
     private final JComboBox<IntensitySamplingMode> intensitySamplingMode = new JComboBox<>(IntensitySamplingMode.values());
     private final JTextField regex = new JTextField(36);
@@ -114,6 +116,7 @@ public final class HeatmapSettingsDialog {
 
         TracingSettings tracing = PluginPreferences.loadTracingSettings();
         trackerMode.setSelectedItem(tracing.engine());
+        sourceMode.setSelectedItem(tracing.sourceMode());
         widerDiscovery.setSelected(tracing.recovery().widerDiscovery());
         maximumDiscoveryRadiusMeters.setText(Double.toString(
             tracing.recovery().maximumDiscoveryRadiusMeters()));
@@ -173,6 +176,8 @@ public final class HeatmapSettingsDialog {
         panel.add(alignmentMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Ridge tracker")), GBC.std());
         panel.add(trackerMode, GBC.eol().fill(GBC.HORIZONTAL));
+        panel.add(new JLabel(tr("Alignment source")), GBC.std());
+        panel.add(sourceMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Inference mode")), GBC.std());
         panel.add(inferenceMode, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(new JLabel(tr("Intensity source")), GBC.std());
@@ -277,7 +282,8 @@ public final class HeatmapSettingsDialog {
                     maximumDiscoveryRadiusMeters.getText(),
                     RecoverySettings.DEFAULT_MAXIMUM_DISCOVERY_RADIUS_METERS)) : ordinaryRadius,
                 selectedJunctionPolicy, selectedJunctionPolicy == JunctionPolicy.REATTACH
-                    && reconstructIncidentWays.isSelected()), diagnosticComparisons.isSelected()));
+                    && reconstructIncidentWays.isSelected()), diagnosticComparisons.isSelected(),
+            (AlignmentSourceMode) sourceMode.getSelectedItem()));
         return true;
     }
 

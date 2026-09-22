@@ -45,6 +45,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebu
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -55,6 +56,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
@@ -278,27 +281,31 @@ public class AlignWayAction extends JosmAction {
             }
 
             ManagedHeatmapConfig persistedConfig = PluginPreferences.load();
-            config = effectiveConfig(persistedConfig);
+            TracingSettings tracing = PluginPreferences.loadTracingSettings();
+            config = effectiveConfig(forcedLivePreviewEngine == null
+                ? persistedConfig.withTrackerMode(tracing.engine()) : persistedConfig);
             SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
             if (!config.allowUndownloadedAlignment()) {
                 requireDownloadedAreaCoverage(selection, dataSet);
             } else {
                 PluginLog.verbose("Downloaded-area coverage checks are disabled by settings.");
             }
-            ManagedHeatmapConfig selectedConfig = config;
-            ImageryLayer imageryLayer = forcedManagedPreview ? null : selectVisibleSource(
-                    forcedLivePreviewEngine != null, HeatmapLayerResolver::resolve,
-                    () -> selectedConfig.hasManagedAccessValues()
-                            ? HeatmapLayerResolver.resolveOptional().orElse(null)
-                            : HeatmapLayerResolver.resolve());
-            MapView mapView = MainApplication.getMap().mapView;
-
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
             AlignmentConfig persistedSlideConfig = new AlignmentConfig(persistedConfig, cleanupConfig);
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
-            if (forcedLivePreviewEngine != null || requiresLiveModernPreview(config.trackerMode())) {
+            boolean modern = forcedLivePreviewEngine != null || requiresLiveModernPreview(config.trackerMode());
+            AlignmentSourceMode sourceMode = forcedManagedPreview ? AlignmentSourceMode.MANAGED_TILES
+                : forcedLivePreviewEngine != null ? AlignmentSourceMode.VISIBLE_LAYER
+                : modern ? ModernAlignmentInvocation.resolve(tracing, slideConfig,
+                    supportsManagedModernSource(config.trackerMode())).resolvedSourceMode()
+                : AlignmentSourceMode.VISIBLE_LAYER;
+            ImageryLayer imageryLayer = sourceMode == AlignmentSourceMode.MANAGED_TILES ? null
+                : selectVisibleSource(true, HeatmapLayerResolver::resolve, HeatmapLayerResolver::resolve);
+            MapView mapView = MainApplication.getMap().mapView;
+            if (modern) {
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, forcedLivePreviewEngine != null, forcedManagedPreview);
+                        persistedSlideConfig, sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
+                        sourceMode == AlignmentSourceMode.MANAGED_TILES);
                 return;
             }
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
@@ -652,8 +659,13 @@ public class AlignWayAction extends JosmAction {
 
     /** Routes persisted modern engines through their detached live pipeline. */
     static boolean requiresLiveModernPreview(TrackerMode engine) {
-        return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
-                || engine == TrackerMode.DIRECTIONAL_IMAGE;
+        return engine != TrackerMode.LEGACY_V02;
+    }
+
+    /** Returns whether the declared engine can consume an authenticated managed tile raster. */
+    static boolean supportsManagedModernSource(TrackerMode engine) {
+        return engine == TrackerMode.CORRIDOR_AWARE || engine == TrackerMode.PROBABILISTIC
+                || engine == TrackerMode.HYBRID;
     }
 
     static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,

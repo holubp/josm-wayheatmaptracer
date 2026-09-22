@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.config;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -53,6 +58,49 @@ class PluginPreferencesTest {
         Config.getPref().put(PREFIX + "trackerMode", "removed-future-mode");
 
         assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.load().trackerMode());
+    }
+
+    @Test
+    void missingOrMalformedModernSourceModeMigratesToAutomatic() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", 1);
+        Config.getPref().put(PREFIX + "tracing.sourceMode", "no-longer-valid");
+
+        assertEquals(AlignmentSourceMode.AUTOMATIC,
+            PluginPreferences.loadTracingSettings().sourceMode());
+
+        PluginPreferences.saveTracingSettings(PluginPreferences.loadTracingSettings());
+        assertEquals(AlignmentSourceMode.AUTOMATIC.name(),
+            Config.getPref().get(PREFIX + "tracing.sourceMode", ""));
+    }
+
+    @Test
+    void sourcePolicyKeepsCredentialsWhenVisibleLayerIsExplicit() {
+        assertEquals(AlignmentSourceMode.VISIBLE_LAYER,
+            AlignmentSourceMode.VISIBLE_LAYER.resolve(true, true));
+        assertEquals(AlignmentSourceMode.MANAGED_TILES,
+            AlignmentSourceMode.AUTOMATIC.resolve(true, true));
+        assertEquals(AlignmentSourceMode.VISIBLE_LAYER,
+            AlignmentSourceMode.AUTOMATIC.resolve(false, true));
+        assertThrows(IllegalStateException.class,
+            () -> AlignmentSourceMode.MANAGED_TILES.resolve(false, true));
+        assertThrows(IllegalStateException.class,
+            () -> AlignmentSourceMode.MANAGED_TILES.resolve(true, false));
+    }
+
+    @Test
+    void invocationFreezesTheResolvedSourceRatherThanConsultingPreferencesAgain() {
+        ManagedHeatmapConfig heatmap = withCredentials(PluginPreferences.load(), "key", "policy",
+            "signature", "session", 2L);
+        TracingSettings settings = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+            TrackerMode.PROBABILISTIC, org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings
+                .defaults(7.01), false, AlignmentSourceMode.AUTOMATIC);
+
+        ModernAlignmentInvocation invocation = ModernAlignmentInvocation.resolve(settings,
+            new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled()), true);
+
+        assertEquals(AlignmentSourceMode.MANAGED_TILES, invocation.resolvedSourceMode());
+        assertEquals(TrackerMode.PROBABILISTIC, invocation.engine());
+        assertEquals(heatmap.cacheBuster(), invocation.config().heatmap().cacheBuster());
     }
 
     @Test

@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.config;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupChoice;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
@@ -55,6 +56,7 @@ public final class PluginPreferences {
     private static final String TRACING_SCHEMA_VERSION = PREFIX + "tracing.schemaVersion";
     private static final String TRACING_ENGINE = PREFIX + "tracing.engine";
     private static final String TRACING_DIAGNOSTIC_COMPARISONS = PREFIX + "tracing.diagnosticComparisons";
+    private static final String TRACING_SOURCE_MODE = PREFIX + "tracing.sourceMode";
     private static final String RECOVERY_SCHEMA_VERSION = PREFIX + "recovery.schemaVersion";
     private static final String RECOVERY_WIDER_DISCOVERY = PREFIX + "recovery.widerDiscovery";
     private static final String RECOVERY_MAXIMUM_RADIUS_METERS = PREFIX + "recovery.maximumRadiusMeters";
@@ -139,7 +141,8 @@ public final class PluginPreferences {
                 ? JunctionPolicy.LEGACY_BOUNDED_MOVE : JunctionPolicy.FIXED;
             return new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, legacy.trackerMode(),
                 new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION, false,
-                    legacy.searchHalfWidthMeters(), legacy.searchHalfWidthMeters(), policy, false), false);
+                    legacy.searchHalfWidthMeters(), legacy.searchHalfWidthMeters(), policy, false), false,
+                AlignmentSourceMode.AUTOMATIC);
         }
         TrackerMode engine = TrackerMode.fromPreference(pref.get(TRACING_ENGINE, legacy.trackerMode().name()));
         double ordinary = legacy.searchHalfWidthMeters();
@@ -154,7 +157,9 @@ public final class PluginPreferences {
                 TracingSettings.CURRENT_SCHEMA_VERSION)), engine,
                 new RecoverySettings(Math.max(1, pref.getInt(RECOVERY_SCHEMA_VERSION,
                     RecoverySettings.CURRENT_SCHEMA_VERSION)), wider, ordinary, maximum, policy, reconstruct),
-                pref.getBoolean(TRACING_DIAGNOSTIC_COMPARISONS, false));
+                pref.getBoolean(TRACING_DIAGNOSTIC_COMPARISONS, false),
+                AlignmentSourceMode.fromPreference(pref.get(TRACING_SOURCE_MODE,
+                    AlignmentSourceMode.AUTOMATIC.name())));
         } catch (IllegalArgumentException exception) {
             return TracingSettings.defaults(ordinary);
         }
@@ -167,6 +172,7 @@ public final class PluginPreferences {
         pref.putInt(TRACING_SCHEMA_VERSION, TracingSettings.CURRENT_SCHEMA_VERSION);
         pref.put(TRACING_ENGINE, settings.engine().name());
         pref.putBoolean(TRACING_DIAGNOSTIC_COMPARISONS, settings.diagnosticComparisons());
+        pref.put(TRACING_SOURCE_MODE, settings.sourceMode().name());
         RecoverySettings recovery = settings.recovery();
         pref.putInt(RECOVERY_SCHEMA_VERSION, RecoverySettings.CURRENT_SCHEMA_VERSION);
         pref.putBoolean(RECOVERY_WIDER_DISCOVERY, recovery.widerDiscovery());

@@ -114,11 +114,15 @@ class AlignWayActionTest {
 
     @Test
     void persistedModernEnginesUseTheLivePipelineRatherThanLegacyProfileTracking() {
+        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.CORRIDOR_AWARE));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.PROBABILISTIC));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.HYBRID));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.DIRECTIONAL_IMAGE));
-        assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.CORRIDOR_AWARE));
         assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.LEGACY_V02));
+        assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.CORRIDOR_AWARE));
+        assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.PROBABILISTIC));
+        assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.HYBRID));
+        assertFalse(AlignWayAction.supportsManagedModernSource(TrackerMode.DIRECTIONAL_IMAGE));
     }
 
     @Test
