@@ -162,6 +162,22 @@ class V022FinalGeometryTest {
     }
 
     @Test
+    void denseOverlappingWindowsRetainOrderedSupportAndFindings() {
+        List<MetricPoint> geometry = List.of(p(0, 0), p(4, 0), p(8, 1.2), p(12, 0),
+            p(16, 1.2), p(20, 0), p(24, 1.2), p(28, 0), p(32, 1.2), p(36, 0));
+        FinalGeometryEvaluator.Request request = new FinalGeometryEvaluator.Request(
+            "dense-overlap", geometry, QualityTestFixtures.constantImage(0.1), 0.5,
+            Set.of(0, geometry.size() - 1), List.of(), false, false, false, false);
+
+        FinalGeometryEvaluator.Result first = evaluator.evaluate(request);
+        FinalGeometryEvaluator.Result second = evaluator.evaluate(request);
+
+        assertEquals(first, second);
+        assertTrue(first.has(FinalGeometryEvaluator.FindingCode.INSUFFICIENT_DIRECT_SUPPORT));
+        assertTrue(first.has(FinalGeometryEvaluator.FindingCode.UNSUPPORTED_ISOLATED_EXCURSION));
+    }
+
+    @Test
     void T074_genuineSharpImageSupportedBendIsPreserved() {
         SyntheticHeatmapScene scene = V022SceneCatalog.scene("S05", 83);
         FinalGeometryEvaluator.Result result = evaluate(scene, points(scene), false);

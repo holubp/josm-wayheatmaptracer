@@ -162,10 +162,11 @@ public final class FinalGeometryEvaluator {
     /** Evaluates topology, localized excursions, image support and deterministic eligibility. */
     public Result evaluate(Request request) {
         List<Finding> findings = new ArrayList<>();
+        DirectedSamplingMemo sampling = new DirectedSamplingMemo(2_048);
         inspectProtectedAssignments(request, findings);
         inspectIntersections(request, findings);
         inspectBacktracks(request.points(), findings);
-        inspectLocalExcursions(request, findings);
+        inspectLocalExcursions(request, findings, sampling);
         inspectIncidentCrossings(request, findings);
         if (request.branchAmbiguous()) {
             findings.add(review(FindingCode.AMBIGUOUS_BRANCH, 0, request.points().size() - 1, 0));
@@ -177,7 +178,7 @@ public final class FinalGeometryEvaluator {
             findings.add(review(FindingCode.OPTIMIZER_FAILURE, 0, request.points().size() - 1, 0));
         }
 
-        SupportMetrics support = supportMetrics(request.points(), request.image(), request.sourcePitchMeters());
+        SupportMetrics support = supportMetrics(request.points(), request.image(), request.sourcePitchMeters(), sampling);
         double meanImageCenterCost = request.image().meanRoutePolylineCost(request.points());
         if (meanImageCenterCost == Double.POSITIVE_INFINITY) {
             findings.add(review(FindingCode.UNAVAILABLE_IMAGE_QUALITY, 0,
@@ -267,7 +268,8 @@ public final class FinalGeometryEvaluator {
         }
     }
 
-    private static void inspectLocalExcursions(Request request, List<Finding> findings) {
+    private static void inspectLocalExcursions(Request request, List<Finding> findings,
+            DirectedSamplingMemo sampling) {
         double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
         double[] chainage = chainage(request.points());
         int reversalCount = 0;
@@ -309,7 +311,7 @@ public final class FinalGeometryEvaluator {
                 double chordCost = request.image().meanRouteSegmentCost(request.points().get(first),
                         request.points().get(last));
                 SupportMetrics localSupport = supportMetrics(local, request.image(),
-                        request.sourcePitchMeters());
+                        request.sourcePitchMeters(), sampling);
                 boolean directlySupported = localSupport.directLength >= 0.95 * localSupport.totalLength;
                 boolean costsFinite = Double.isFinite(routeCost) && Double.isFinite(chordCost);
                 boolean routeUnknownWithinSourceUncertainty = !Double.isFinite(routeCost)
@@ -326,13 +328,13 @@ public final class FinalGeometryEvaluator {
         }
 
         if (request.points().size() >= 3) {
-            inspectTerminalKink(request.points(), request.image(), onset, false, findings);
-            inspectTerminalKink(request.points(), request.image(), onset, true, findings);
+            inspectTerminalKink(request.points(), request.image(), onset, false, findings, sampling);
+            inspectTerminalKink(request.points(), request.image(), onset, true, findings, sampling);
         }
     }
 
     private static void inspectTerminalKink(List<MetricPoint> points, ImageCostField image,
-            double onset, boolean start, List<Finding> findings) {
+            double onset, boolean start, List<Finding> findings, DirectedSamplingMemo sampling) {
         int endIndex = start ? 0 : points.size() - 1;
         int apexIndex = start ? 1 : points.size() - 2;
         int approachIndex = start ? 2 : points.size() - 3;
@@ -343,7 +345,7 @@ public final class FinalGeometryEvaluator {
         List<MetricPoint> route = start ? List.of(end, apex, approach) : List.of(approach, apex, end);
         double routeCost = image.meanRoutePolylineCost(route);
         double chordCost = image.meanRouteSegmentCost(approach, end);
-        SupportMetrics support = supportMetrics(route, image, image.sourcePitchMeters());
+        SupportMetrics support = supportMetrics(route, image, image.sourcePitchMeters(), sampling);
         boolean directlySupported = support.directLength >= 0.95 * support.totalLength;
         boolean costsFinite = Double.isFinite(routeCost) && Double.isFinite(chordCost);
         boolean routeUnknownWithinSourceUncertainty = !Double.isFinite(routeCost)
@@ -390,37 +392,72 @@ public final class FinalGeometryEvaluator {
         return candidateEnds.contains(incident.get(0)) || candidateEnds.contains(incident.get(incident.size() - 1));
     }
 
-    private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image, double pitch) {
+    private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image,
+            double pitch, DirectedSamplingMemo sampling) {
         double total = 0.0;
         double direct = 0.0;
         double currentUnsupported = 0.0;
         double worstUnsupported = 0.0;
-        double step = Math.min(1.0, pitch / 2.0);
         for (int segment = 0; segment < points.size() - 1; segment++) {
-            MetricPoint start = points.get(segment);
-            MetricPoint end = points.get(segment + 1);
-            double length = start.distanceTo(end);
-            if (length <= 1.0e-12) {
-                continue;
-            }
-            MetricPoint tangent = subtract(end, start);
-            int samples = Math.max(1, (int) Math.ceil(length / step));
-            double piece = length / samples;
-            for (int sampleIndex = 0; sampleIndex < samples; sampleIndex++) {
-                MetricPoint point = interpolate(start, end, (sampleIndex + 0.5) / samples);
-                boolean supported = image.sampleRoute(point, tangent)
-                        .map(ImageCostField.RouteSample::directlyLocalized).orElse(false);
-                total += piece;
+            SupportSamples samples = sampling.support(points.get(segment), points.get(segment + 1),
+                image, pitch);
+            for (boolean supported : samples.directlyLocalized()) {
+                total += samples.pieceMeters();
                 if (supported) {
-                    direct += piece;
+                    direct += samples.pieceMeters();
                     currentUnsupported = 0.0;
                 } else {
-                    currentUnsupported += piece;
+                    currentUnsupported += samples.pieceMeters();
                     worstUnsupported = Math.max(worstUnsupported, currentUnsupported);
                 }
             }
         }
         return new SupportMetrics(total, direct, worstUnsupported);
+    }
+
+    /** Evaluation-local bounded cache which preserves directed support sample order. */
+    private static final class DirectedSamplingMemo {
+        private final int capacity;
+        private final Map<SupportKey, SupportSamples> supports;
+
+        DirectedSamplingMemo(int capacity) {
+            this.capacity = capacity;
+            this.supports = new LinkedHashMap<>(capacity + 1, 0.75f, true);
+        }
+
+        SupportSamples support(MetricPoint start, MetricPoint end, ImageCostField image, double pitch) {
+            if (start.distanceTo(end) <= 1.0e-12) {
+                return SupportSamples.EMPTY;
+            }
+            SupportKey key = new SupportKey(start, end, pitch);
+            SupportSamples cached = supports.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            double step = Math.min(1.0, pitch / 2.0);
+            double length = start.distanceTo(end);
+            int count = Math.max(1, (int) Math.ceil(length / step));
+            double piece = length / count;
+            MetricPoint tangent = subtract(end, start);
+            boolean[] direct = new boolean[count];
+            for (int index = 0; index < count; index++) {
+                MetricPoint point = interpolate(start, end, (index + 0.5) / count);
+                direct[index] = image.sampleRoute(point, tangent)
+                    .map(ImageCostField.RouteSample::directlyLocalized).orElse(false);
+            }
+            SupportSamples value = new SupportSamples(direct, piece);
+            supports.put(key, value);
+            if (supports.size() > capacity) {
+                supports.remove(supports.keySet().iterator().next());
+            }
+            return value;
+        }
+    }
+
+    private record SupportKey(MetricPoint start, MetricPoint end, double pitch) { }
+
+    private record SupportSamples(boolean[] directlyLocalized, double pieceMeters) {
+        private static final SupportSamples EMPTY = new SupportSamples(new boolean[0], 0.0);
     }
 
     private static double roughness(List<MetricPoint> points) {
