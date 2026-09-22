@@ -15,6 +15,8 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.OsmPrimitive;
+import org.openstreetmap.josm.data.osm.Relation;
+import org.openstreetmap.josm.data.osm.RelationMember;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -26,6 +28,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
@@ -238,6 +243,59 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void visibleCaptureMakesOrdinaryInteriorIdentitiesMovable() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config()));
+
+        assertOrdinaryInteriorAuthority(captured[0].network().closure(), fixture.selection());
+    }
+
+    @Test
+    void managedCaptureUsesTheSameOrdinaryInteriorAuthority() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] captured = new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), managedConfig(), "managed-authority-test"));
+
+        assertOrdinaryInteriorAuthority(captured[0].network().closure(), fixture.selection());
+    }
+
+    @Test
+    void taggedAndRelationReferencedEndpointsRemainProtectedUnderJunctionPermission() throws Exception {
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        Fixture tagged = fiveNodeFixture();
+        tagged.selection().segmentNodes().get(0).put("barrier", "gate");
+        LiveBPreviewService.Captured[] taggedCapture = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> taggedCapture[0] = new LiveBPreviewService().capture(
+                tagged.dataSet(), tagged.selection(), raster(), config(), true, permissions));
+        PrimitiveKey taggedKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                tagged.selection().segmentNodes().get(0).getUniqueId());
+        assertTrue(taggedCapture[0].network().closure().protectedExistingNodeKeys().contains(taggedKey));
+        assertFalse(taggedCapture[0].network().closure().movableExistingNodeKeys().contains(taggedKey));
+
+        Fixture related = fiveNodeFixture();
+        Relation relation = new Relation();
+        relation.setOsmId(190, 1);
+        relation.setModified(false);
+        related.dataSet().addPrimitive(relation);
+        relation.setMembers(List.of(new RelationMember("via", related.selection().segmentNodes().get(0))));
+        LiveBPreviewService.Captured[] relatedCapture = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> relatedCapture[0] = new LiveBPreviewService().capture(
+                related.dataSet(), related.selection(), raster(), config(), true, permissions));
+        PrimitiveKey relatedKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                related.selection().segmentNodes().get(0).getUniqueId());
+        assertTrue(relatedCapture[0].network().closure().protectedExistingNodeKeys().contains(relatedKey));
+        assertFalse(relatedCapture[0].network().closure().movableExistingNodeKeys().contains(relatedKey));
+    }
+
+    @Test
     void unsupportedControlsFailExplicitlyBeforeRasterOrNetworkWork() throws Exception {
         Fixture fixture = fixture();
         ManagedHeatmapConfig unsupported = config().heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
@@ -387,5 +445,41 @@ class V022LiveBPreviewServiceTest {
                 + ":tags=" + primitive.getKeys() + ":" + payload;
     }
 
+    private static Fixture fiveNodeFixture() {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = List.of(
+                loadedNode(101, 0.0, longitude(-8)),
+                loadedNode(102, 0.0, longitude(-4)),
+                loadedNode(103, 0.0, longitude(0)),
+                loadedNode(104, 0.0, longitude(4)),
+                loadedNode(105, 0.0, longitude(8)));
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(110, 1);
+        way.setModified(false);
+        nodes.forEach(dataSet::addPrimitive);
+        dataSet.addPrimitive(way);
+        return new Fixture(dataSet, new SelectionContext(way, 0, 4, nodes,
+                Set.of(nodes.get(0), nodes.get(nodes.size() - 1))));
+    }
+
+    private static void assertOrdinaryInteriorAuthority(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor closure,
+            SelectionContext selection) {
+        List<PrimitiveKey> keys = selection.segmentNodes().stream()
+                .map(node -> PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId())).toList();
+        Set<PrimitiveKey> interiors = Set.copyOf(keys.subList(1, keys.size() - 1));
+        Set<PrimitiveKey> boundaries = Set.of(keys.get(0), keys.get(keys.size() - 1));
+        assertTrue(closure.editableExistingKeys().contains(PrimitiveKey.existing(
+                PrimitiveKey.Type.WAY, selection.way().getUniqueId())));
+        assertEquals(interiors, closure.movableExistingNodeKeys());
+        assertEquals(Set.of(), closure.removableExistingNodeKeys());
+        assertEquals(boundaries, closure.protectedExistingNodeKeys());
+        Set<PrimitiveKey> all = new java.util.LinkedHashSet<>();
+        all.addAll(closure.movableExistingNodeKeys());
+        all.addAll(closure.protectedExistingNodeKeys());
+        all.addAll(closure.removableExistingNodeKeys());
+        assertEquals(Set.copyOf(keys), all);
+    }
     private record Fixture(DataSet dataSet, SelectionContext selection) { }
 }

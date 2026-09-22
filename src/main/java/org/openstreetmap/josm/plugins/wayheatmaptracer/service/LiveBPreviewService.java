@@ -52,6 +52,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEv
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.JunctionAuthorityBounds;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority.NodeAuthorityReason;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCandidateAdapter;
@@ -231,18 +233,23 @@ public final class LiveBPreviewService {
             MetricRegion decision, RecoveryPermissions permissions) {
         Map<PrimitiveKey, List<OccurrenceRange>> occurrences = new LinkedHashMap<>();
         occurrences.put(selectedWay, List.of(selectedRange));
-        Set<PrimitiveKey> editable = new LinkedHashSet<>();
-        editable.add(selectedWay);
-        Set<PrimitiveKey> movable = new LinkedHashSet<>();
-        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>();
-        selection.segmentNodes().stream()
-                .map(LiveBPreviewService::key).forEach(protectedNodes::add);
+        SelectedSegmentNodeAuthority.Result base = SelectedSegmentNodeAuthority.classify(selection);
+        Set<PrimitiveKey> editable = new LinkedHashSet<>(base.editableExistingKeys());
+        Set<PrimitiveKey> movable = new LinkedHashSet<>(base.movableNodeKeys());
+        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>(base.protectedNodeKeys());
+        Map<PrimitiveKey, NodeAuthorityReason> reasons = new LinkedHashMap<>(base.reasons());
         List<List<MetricPoint>> editPolygons = new ArrayList<>(decision.polygons());
         List<List<MetricPoint>> collisionPolygons = new ArrayList<>(decision.polygons());
         if (permissions.junctionPolicy() != JunctionPolicy.FIXED) {
             List<Node> boundaries = List.of(selection.segmentNodes().get(0),
                     selection.segmentNodes().get(selection.segmentNodes().size() - 1));
             for (Node boundary : boundaries) {
+                if (boundary.hasKeys() || boundary.getReferrers().stream()
+                        .anyMatch(referrer -> !(referrer instanceof Way))
+                        || dataSet.getRelations().stream().anyMatch(relation -> relation.getMembers().stream()
+                                .anyMatch(member -> member.getMember() == boundary))) {
+                    continue;
+                }
                 List<Way> incidentWays = dataSet.getWays().stream()
                         .filter(incident -> !incident.isDeleted() && !incident.isIncomplete()
                                 && incident.getNodes().contains(boundary))
@@ -256,6 +263,7 @@ public final class LiveBPreviewService {
                 movable.add(boundaryKey);
                 editable.add(boundaryKey);
                 protectedNodes.remove(boundaryKey);
+                reasons.put(boundaryKey, NodeAuthorityReason.AUTHORIZED_JUNCTION_BOUNDARY);
                 for (Way incident : incidentWays) {
                     PrimitiveKey incidentKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
                             incident.getUniqueId());
@@ -284,6 +292,7 @@ public final class LiveBPreviewService {
                                         movable.add(localKey);
                                         editable.add(localKey);
                                         protectedNodes.remove(localKey);
+                                        reasons.put(localKey, NodeAuthorityReason.AUTHORIZED_RECEIVER_SHAPE);
                                     }
                                 }
                             }
@@ -303,7 +312,7 @@ public final class LiveBPreviewService {
             }
         }
         return new CaptureAuthority(Map.copyOf(occurrences), Set.copyOf(editable),
-                Set.copyOf(movable), Set.copyOf(protectedNodes),
+                Set.copyOf(movable), Set.copyOf(protectedNodes), Map.copyOf(reasons),
                 new MetricRegion(collisionPolygons), new MetricRegion(editPolygons));
     }
 
@@ -328,8 +337,22 @@ public final class LiveBPreviewService {
 
     private record CaptureAuthority(Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
             Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableNodes,
-            Set<PrimitiveKey> protectedNodes, MetricRegion collisionEnvelope,
-            MetricRegion editRegion) { }
+            Set<PrimitiveKey> protectedNodes, Map<PrimitiveKey, NodeAuthorityReason> reasons, MetricRegion collisionEnvelope,
+            MetricRegion editRegion) {
+        CaptureAuthority {
+            editableWayOccurrences = Map.copyOf(editableWayOccurrences);
+            editableExistingKeys = Set.copyOf(editableExistingKeys);
+            movableNodes = Set.copyOf(movableNodes);
+            protectedNodes = Set.copyOf(protectedNodes);
+            reasons = Map.copyOf(reasons);
+            Set<PrimitiveKey> authority = new LinkedHashSet<>(movableNodes);
+            authority.addAll(protectedNodes);
+            if (!java.util.Collections.disjoint(movableNodes, protectedNodes)
+                    || !reasons.keySet().equals(authority)) {
+                throw new IllegalArgumentException("Live capture node authority reasons are inconsistent");
+            }
+        }
+    }
 
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
@@ -346,18 +369,15 @@ public final class LiveBPreviewService {
         double radius = config.heatmap().searchHalfWidthMeters();
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, selection.way().getUniqueId());
         OccurrenceRange range = new OccurrenceRange(selection.startIndex(), selection.endIndex());
-        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>();
-        for (Node node : selection.segmentNodes()) {
-            protectedNodes.add(PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId()));
-        }
+        SelectedSegmentNodeAuthority.Result authority = SelectedSegmentNodeAuthority.classify(selection);
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson());
         String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
                 "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)), 0L, way, range,
-                frame, decision, decision, Map.of(way, List.of(range)), Set.of(way), Set.of(), Set.of(),
-                protectedNodes, true, RecoveryPermissions.disabled(radius));
+                frame, decision, decision, Map.of(way, List.of(range)), authority.editableExistingKeys(), authority.movableNodeKeys(),
+                authority.removableNodeKeys(), authority.protectedNodeKeys(), true, RecoveryPermissions.disabled(radius));
         return new ManagedCaptureSeed(specification, NetworkSnapshotCapture.capture(dataSet, specification),
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
