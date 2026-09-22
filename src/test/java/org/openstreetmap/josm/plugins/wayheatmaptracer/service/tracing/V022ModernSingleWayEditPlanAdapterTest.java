@@ -72,7 +72,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC", "CORRIDOR_AWARE"})
+    @EnumSource(value = TrackerMode.class, mode = EnumSource.Mode.EXCLUDE, names = {"LEGACY_V02"})
     void t164RasterEvidenceProducesOneDeterministicDetachedPlanWithoutMutation(
             TrackerMode mode) throws Exception {
         Fixture fixture = fixture();
@@ -320,7 +320,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
-            fixture.dataSet(), fixture.selection(), raster(), config(mode)));
+            fixture.dataSet(), fixture.selection(), raster(), config(mode),
+            mode == TrackerMode.DIRECTIONAL_IMAGE));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
         assertFalse(computed.pipeline().routes().isEmpty(),
             "supported production fixture must produce a final route");

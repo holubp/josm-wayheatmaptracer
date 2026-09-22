@@ -141,8 +141,7 @@ public final class ModernSingleWayEditPlanAdapter {
             TraceRequest request, NetworkSnapshot before) {
         ClosureDescriptor closure = before.closure();
         if (before.role() != SnapshotRole.CAPTURED_BEFORE
-                || request.engine() != TrackerMode.PROBABILISTIC
-                    && request.engine() != TrackerMode.CORRIDOR_AWARE
+                || request.engine() == TrackerMode.LEGACY_V02
                 || request.geometryMode() != AlignmentMode.PRECISE_SHAPE
                 || request.permissions().widerDiscovery()
                 || request.permissions().junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE
