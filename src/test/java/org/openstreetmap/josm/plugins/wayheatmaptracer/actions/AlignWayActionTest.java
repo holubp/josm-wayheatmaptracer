@@ -16,12 +16,16 @@ import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
@@ -121,15 +125,90 @@ class AlignWayActionTest {
         assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.LEGACY_V02));
         assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.CORRIDOR_AWARE));
         assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.PROBABILISTIC));
-        assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.HYBRID));
+        assertFalse(AlignWayAction.supportsManagedModernSource(TrackerMode.HYBRID));
         assertFalse(AlignWayAction.supportsManagedModernSource(TrackerMode.DIRECTIONAL_IMAGE));
+    }
+
+    @Test
+    void ordinaryRoutingSeamCoversEverySupportedEngineAndSourceCombination() {
+        assertOrdinaryActionRoute(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.VISIBLE_LAYER,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
+        assertOrdinaryActionRoute(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.MANAGED_TILES,
+                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED, null);
+        assertOrdinaryActionRoute(TrackerMode.PROBABILISTIC, AlignmentSourceMode.VISIBLE_LAYER,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
+        assertOrdinaryActionRoute(TrackerMode.PROBABILISTIC, AlignmentSourceMode.MANAGED_TILES,
+                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED, null);
+        assertOrdinaryActionRoute(TrackerMode.HYBRID, AlignmentSourceMode.VISIBLE_LAYER,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
+        assertOrdinaryActionRoute(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.VISIBLE_LAYER,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
+    }
+
+    @Test
+    void automaticRoutingUsesManagedOnlyWhenTheProductionCaptureSupportsIt() {
+        assertOrdinaryRoute(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.AUTOMATIC,
+                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED);
+        assertOrdinaryRoute(TrackerMode.PROBABILISTIC, AlignmentSourceMode.AUTOMATIC,
+                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED);
+        assertOrdinaryRoute(TrackerMode.HYBRID, AlignmentSourceMode.AUTOMATIC,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE);
+        assertOrdinaryRoute(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.AUTOMATIC,
+                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE);
+
+        assertThrows(IllegalStateException.class, () -> ordinaryRoute(
+                TrackerMode.HYBRID, AlignmentSourceMode.MANAGED_TILES));
+        assertThrows(IllegalStateException.class, () -> ordinaryRoute(
+                TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.MANAGED_TILES));
+    }
+
+    @Test
+    void legacyWithManagedCredentialsKeepsItsCompatibilitySourceResolver() {
+        AlignWayAction.OrdinaryRoute route = ordinaryRoute(
+                TrackerMode.LEGACY_V02, AlignmentSourceMode.AUTOMATIC);
+        AtomicBoolean requiredVisibleUsed = new AtomicBoolean();
+        AtomicBoolean optionalVisibleUsed = new AtomicBoolean();
+
+        String selected = AlignWayAction.selectOrdinarySource(route, configuredCorridor(), () -> {
+            requiredVisibleUsed.set(true);
+            return "required-visible";
+        }, () -> {
+            optionalVisibleUsed.set(true);
+            return null;
+        });
+
+        assertEquals(AlignWayAction.OrdinaryPipeline.LEGACY_COMPATIBILITY, route.pipeline());
+        assertEquals(null, selected);
+        assertFalse(requiredVisibleUsed.get());
+        assertTrue(optionalVisibleUsed.get());
+    }
+
+    @Test
+    void ordinaryPreviewFreshnessIncludesFrozenRecoveryAndJunctionPolicy() {
+        ManagedHeatmapConfig heatmap = configuredCorridor();
+        AlignmentConfig persisted = new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+        RecoverySettings recovery = new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION,
+                true, 7.01, 14.0, JunctionPolicy.REATTACH, true);
+        TracingSettings captured = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.CORRIDOR_AWARE, recovery, false, AlignmentSourceMode.VISIBLE_LAYER);
+        TracingSettings changed = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.CORRIDOR_AWARE,
+                new RecoverySettings(RecoverySettings.CURRENT_SCHEMA_VERSION, true, 7.01, 14.0,
+                        JunctionPolicy.LEGACY_BOUNDED_MOVE, false),
+                false, AlignmentSourceMode.VISIBLE_LAYER);
+
+        assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, persisted, persisted,
+                captured, captured, null, null));
+        assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, persisted, persisted,
+                captured, changed, null, null));
     }
 
     @Test
     void explicitVisibleSourceRequiresALayerBeforePreviewUiCanOpen() {
         AtomicBoolean ordinaryResolverUsed = new AtomicBoolean();
 
-        assertThrows(NullPointerException.class, () -> AlignWayAction.selectVisibleSource(true,
+        assertThrows(NullPointerException.class, () -> ordinaryAction(
+                TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.VISIBLE_LAYER,
                 () -> null, () -> {
                     ordinaryResolverUsed.set(true);
                     return "ordinary";
@@ -335,6 +414,50 @@ class AlignWayActionTest {
             TrackerMode.CORRIDOR_AWARE, false, false, false, false, false, false,
             false, false, false, false, 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION,
             15, 15, 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
+    }
+
+    private static AlignWayAction.OrdinaryRoute ordinaryRoute(TrackerMode engine,
+            AlignmentSourceMode sourceMode) {
+        RecoverySettings recovery = RecoverySettings.defaults(7.01);
+        TracingSettings settings = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                engine, recovery, false, sourceMode);
+        ManagedHeatmapConfig heatmap = configuredCorridor().withTrackerMode(engine);
+        return AlignWayAction.resolveOrdinaryRoute(settings,
+                new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled()));
+    }
+
+    private static void assertOrdinaryRoute(TrackerMode engine, AlignmentSourceMode sourceMode,
+            AlignWayAction.OrdinaryPipeline expected) {
+        assertEquals(expected, ordinaryRoute(engine, sourceMode).pipeline());
+    }
+
+    private static void assertOrdinaryActionRoute(TrackerMode engine,
+            AlignmentSourceMode sourceMode, AlignWayAction.OrdinaryPipeline expectedPipeline,
+            String expectedSource) {
+        AtomicBoolean requiredVisibleUsed = new AtomicBoolean();
+        AlignWayAction.OrdinaryActionRouting<String> routing = ordinaryAction(engine, sourceMode,
+                () -> {
+                    requiredVisibleUsed.set(true);
+                    return "visible";
+                }, () -> "legacy");
+
+        assertEquals(expectedPipeline, routing.route().pipeline());
+        assertEquals(engine, routing.route().invocation().engine());
+        assertEquals(expectedSource, routing.visibleSource());
+        assertEquals(expectedSource != null, requiredVisibleUsed.get());
+    }
+
+    private static AlignWayAction.OrdinaryActionRouting<String> ordinaryAction(
+            TrackerMode engine, AlignmentSourceMode sourceMode,
+            java.util.function.Supplier<String> requiredVisible,
+            java.util.function.Supplier<String> legacyVisible) {
+        RecoverySettings recovery = RecoverySettings.defaults(7.01);
+        TracingSettings settings = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                engine, recovery, false, sourceMode);
+        ManagedHeatmapConfig heatmap = configuredCorridor().withTrackerMode(engine);
+        return AlignWayAction.resolveOrdinaryAction(settings,
+                new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled()),
+                requiredVisible, legacyVisible);
     }
 
     private static CenterlineCandidate candidate(String id) {

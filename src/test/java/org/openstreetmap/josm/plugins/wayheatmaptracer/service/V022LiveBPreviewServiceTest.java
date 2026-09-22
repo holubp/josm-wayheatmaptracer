@@ -350,6 +350,43 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void managedCaptureCarriesFrozenRecoveryIntoTraceRequest() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(true, 7.01, 14.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), managedConfig(), "managed-recovery-test", permissions));
+        BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        LiveBPreviewService.Captured captured = service.attachManagedRaster(seed[0],
+                new ManagedModernPreviewSource.Raster(image,
+                        new boolean[] {true, true, true, true},
+                        SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
+                        "hot", 15, "managed-recovery-test"));
+
+        LiveBPreviewService.Computed computed = service.compute(captured, CancellationProbe.NONE);
+
+        assertEquals(permissions, seed[0].specification().permissions());
+        assertEquals(permissions, computed.request().permissions());
+    }
+
+    @Test
+    void legacyAdjustCheckboxCannotOverrideFrozenModernJunctionPolicy() throws Exception {
+        Fixture fixture = fixture();
+        RecoveryPermissions permissions = RecoveryPermissions.disabled(7.0);
+        AlignmentConfig configured = withLegacyJunctionCheckbox(
+                config(TrackerMode.CORRIDOR_AWARE));
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), raster(), configured, true, permissions));
+
+        assertEquals(JunctionPolicy.FIXED,
+                captured[0].specification().permissions().junctionPolicy());
+    }
+
+    @Test
     void unsupportedControlsFailExplicitlyBeforeRasterOrNetworkWork() throws Exception {
         Fixture fixture = fixture();
         ManagedHeatmapConfig unsupported = config().heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
@@ -467,6 +504,21 @@ class V022LiveBPreviewServiceTest {
                 InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
         return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static AlignmentConfig withLegacyJunctionCheckbox(AlignmentConfig config) {
+        ManagedHeatmapConfig value = config.heatmap();
+        return new AlignmentConfig(new ManagedHeatmapConfig(value.keyPairId(), value.policy(),
+                value.signature(), value.sessionToken(), value.activity(), value.color(),
+                value.manualLayerName(), value.layerRegex(), value.alignmentMode(), value.trackerMode(),
+                value.verbose(), value.debug(), value.multiColorDetection(),
+                value.aggregateAllColorSchemes(), value.showAggregateIntensityLayer(),
+                value.candidateRatingEnabled(), value.parallelWayAwareness(),
+                value.allowUndownloadedAlignment(), true, value.simplifyEnabled(),
+                value.crossSectionHalfWidthPx(), value.crossSectionStepPx(),
+                value.simplifyTolerancePx(), value.inferenceMode(), value.inferenceZoom(),
+                value.validationZoom(), value.searchHalfWidthMeters(), value.sampleStepMeters(),
+                value.intensitySamplingMode(), value.cacheBuster()), config.cleanup());
     }
 
     private static double latitude(double meters) {

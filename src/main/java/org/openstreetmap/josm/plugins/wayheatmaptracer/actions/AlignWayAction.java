@@ -57,6 +57,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -102,6 +103,32 @@ public class AlignWayAction extends JosmAction {
     private static final String FEATURE_UNNECESSARY_KINKS = "unnecessary-kinks";
     private static final String FEATURE_BAD_JUNCTION_SHAPES = "bad-junction-shapes";
 
+
+    /** Production route selected by the ordinary action before source acquisition. */
+    enum OrdinaryPipeline { LEGACY_COMPATIBILITY, MODERN_VISIBLE, MODERN_MANAGED }
+
+    /** Immutable ordinary-action route; modern routes retain their complete frozen invocation. */
+    record OrdinaryRoute(OrdinaryPipeline pipeline, ModernAlignmentInvocation invocation) {
+        OrdinaryRoute {
+            Objects.requireNonNull(pipeline, "pipeline");
+            if ((pipeline == OrdinaryPipeline.LEGACY_COMPATIBILITY) != (invocation == null)) {
+                throw new IllegalArgumentException("Ordinary route and modern invocation disagree");
+            }
+        }
+    }
+
+    /** Complete source-routing decision used directly by the ordinary action. */
+    record OrdinaryActionRouting<T>(OrdinaryRoute route, T visibleSource) {
+        OrdinaryActionRouting {
+            Objects.requireNonNull(route, "route");
+            if ((route.pipeline() == OrdinaryPipeline.MODERN_VISIBLE) != (visibleSource != null)) {
+                if (route.pipeline() != OrdinaryPipeline.LEGACY_COMPATIBILITY) {
+                    throw new IllegalArgumentException("Ordinary action route and visible source disagree");
+                }
+            }
+        }
+    }
+
     /** Stateless alignment orchestrator shared by action invocations. */
     private final AlignmentService alignmentService = new AlignmentService();
     /** Map overlay used for candidate preview. */
@@ -130,6 +157,11 @@ public class AlignWayAction extends JosmAction {
         this(null, null, false, new PreviewSessionController<>(SwingUtilities::invokeLater), true);
     }
 
+    /** Creates the default action with a plugin-owned shared modern-attempt authority. */
+    public AlignWayAction(PreviewSessionController<LiveBPreviewService.Computed> session) {
+        this(null, null, false, session, false);
+    }
+
     /**
      * Creates an alignment action with an optional one-shot mode override.
      *
@@ -138,6 +170,12 @@ public class AlignWayAction extends JosmAction {
     public AlignWayAction(AlignmentMode forcedAlignmentMode) {
         this(forcedAlignmentMode, null, false,
                 new PreviewSessionController<>(SwingUtilities::invokeLater), true);
+    }
+
+    /** Creates a mode override with a plugin-owned shared modern-attempt authority. */
+    public AlignWayAction(AlignmentMode forcedAlignmentMode,
+            PreviewSessionController<LiveBPreviewService.Computed> session) {
+        this(forcedAlignmentMode, null, false, session, false);
     }
 
     /** Creates the explicit session-local visible-source Engine A preview action. */
@@ -285,7 +323,9 @@ public class AlignWayAction extends JosmAction {
             TracingSettings tracing = PluginPreferences.loadTracingSettings();
             config = effectiveConfig(forcedLivePreviewEngine == null
                 ? persistedConfig.withTrackerMode(tracing.engine()) : persistedConfig);
-            SelectionContext selection = SelectionResolver.resolve(dataSet, config.adjustJunctionNodes());
+            boolean legacySelection = !config.trackerMode().capabilities().requiresEvidenceSnapshot();
+            SelectionContext selection = SelectionResolver.resolve(dataSet,
+                    legacySelection && config.adjustJunctionNodes());
             if (!config.allowUndownloadedAlignment()) {
                 requireDownloadedAreaCoverage(selection, dataSet);
             } else {
@@ -294,18 +334,26 @@ public class AlignWayAction extends JosmAction {
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
             AlignmentConfig persistedSlideConfig = new AlignmentConfig(persistedConfig, cleanupConfig);
             AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
-            boolean modern = forcedLivePreviewEngine != null || requiresLiveModernPreview(config.trackerMode());
+            OrdinaryActionRouting<ImageryLayer> ordinaryRouting = forcedLivePreviewEngine == null
+                    ? resolveOrdinaryAction(tracing, slideConfig, HeatmapLayerResolver::resolve,
+                            () -> HeatmapLayerResolver.resolveOptional().orElse(null)) : null;
+            OrdinaryRoute ordinaryRoute = ordinaryRouting == null ? null : ordinaryRouting.route();
+            boolean modern = forcedLivePreviewEngine != null
+                    || ordinaryRoute.pipeline() != OrdinaryPipeline.LEGACY_COMPATIBILITY;
             AlignmentSourceMode sourceMode = forcedManagedPreview ? AlignmentSourceMode.MANAGED_TILES
                 : forcedLivePreviewEngine != null ? AlignmentSourceMode.VISIBLE_LAYER
-                : modern ? ModernAlignmentInvocation.resolve(tracing, slideConfig,
-                    supportsManagedModernSource(config.trackerMode())).resolvedSourceMode()
-                : AlignmentSourceMode.VISIBLE_LAYER;
-            ImageryLayer imageryLayer = sourceMode == AlignmentSourceMode.MANAGED_TILES ? null
-                : selectVisibleSource(true, HeatmapLayerResolver::resolve, HeatmapLayerResolver::resolve);
+                : ordinaryRoute.pipeline() == OrdinaryPipeline.MODERN_MANAGED
+                    ? AlignmentSourceMode.MANAGED_TILES : AlignmentSourceMode.VISIBLE_LAYER;
+            ImageryLayer imageryLayer = forcedLivePreviewEngine != null
+                    ? (forcedManagedPreview ? null : HeatmapLayerResolver.resolve())
+                    : ordinaryRouting.visibleSource();
             MapView mapView = MainApplication.getMap().mapView;
             if (modern) {
+                RecoveryPermissions recovery = ordinaryRoute == null ? null
+                        : ordinaryRoute.invocation().recovery().toPermissions();
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
+                        persistedSlideConfig, tracing, recovery,
+                        sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
                         sourceMode == AlignmentSourceMode.MANAGED_TILES);
                 return;
             }
@@ -341,7 +389,8 @@ public class AlignWayAction extends JosmAction {
 
     private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
-            AlignmentConfig persistedSlideConfig, boolean explicitVisibleSource, boolean managedSource) {
+            AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
+            RecoveryPermissions recoveryPermissions, boolean explicitVisibleSource, boolean managedSource) {
         if (!managedSource) {
             LiveBPreviewService.requireSupported(selection,
                     ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
@@ -410,7 +459,10 @@ public class AlignWayAction extends JosmAction {
                 final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
                 final TileFetchCoordinator coordinator = ManagedTileRuntime.initializedCoordinator();
                 livePreviewSession.start(previewOwner, () -> {
-                    seed[0] = livePreviewService.captureManagedSeed(dataSet, selection, slideConfig, sourceIdentity);
+                    seed[0] = recoveryPermissions == null
+                            ? livePreviewService.captureManagedSeed(dataSet, selection, slideConfig, sourceIdentity)
+                            : livePreviewService.captureManagedSeed(dataSet, selection, slideConfig,
+                                    sourceIdentity, recoveryPermissions);
                     return new AlignmentJob.AttemptSnapshot(seed[0].network().snapshotId(), sourceIdentity,
                             seed[0].settingsHash(), seed[0].network().canonicalHash());
                 }, (snapshot, context) -> {
@@ -420,20 +472,23 @@ public class AlignWayAction extends JosmAction {
                                     slideConfig.heatmap(), sourceIdentity), credentials, context);
                     return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
                 }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
-                        slideConfig, persistedSlideConfig, attempt.result()));
+                        slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result()));
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
                     LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
                             selection, imageryLayer, mapView, slideConfig, sourceIdentity);
-                    LiveBPreviewService.Captured captured = livePreviewService.capture(
-                            dataSet, selection, raster, slideConfig, explicitVisibleSource);
+                    LiveBPreviewService.Captured captured = recoveryPermissions == null
+                            ? livePreviewService.capture(dataSet, selection, raster, slideConfig,
+                                    explicitVisibleSource)
+                            : livePreviewService.capture(dataSet, selection, raster, slideConfig,
+                                    explicitVisibleSource, recoveryPermissions);
                     AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
                             captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
                             captured.network().canonicalHash());
                     return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
                 }, (captured, context) -> livePreviewService.compute(captured, context),
                         attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
-                                slideConfig, persistedSlideConfig, attempt.result()));
+                                slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result()));
             }
         } catch (RuntimeException exception) {
             livePreviewSession.close(previewOwner);
@@ -447,14 +502,14 @@ public class AlignWayAction extends JosmAction {
     private void publishLiveBPreview(PreviewSessionController.Owner previewOwner, JDialog progress, DataSet dataSet,
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
-            LiveBPreviewService.Computed computed) {
+            TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed) {
         if (!livePreviewSession.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
         try {
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                    computed.captured());
+                    tracingAtCapture, computed.captured());
             List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                             new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
@@ -465,7 +520,7 @@ public class AlignWayAction extends JosmAction {
             }
             progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
-                    slideConfig, persistedSlideConfig, computed, candidates);
+                    slideConfig, persistedSlideConfig, tracingAtCapture, computed, candidates);
         } catch (RuntimeException exception) {
             boolean closed = livePreviewSession.close(previewOwner);
             progress.dispose();
@@ -481,7 +536,8 @@ public class AlignWayAction extends JosmAction {
     private void showLiveBReadOnlyDialog(PreviewSessionController.Owner previewOwner, DataSet dataSet,
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
-            LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates) {
+            TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
+            List<CenterlineCandidate> candidates) {
         JComboBox<CenterlineCandidate> choices = new JComboBox<>(
                 candidates.toArray(CenterlineCandidate[]::new));
         choices.setRenderer(new DefaultListCellRenderer() {
@@ -539,7 +595,7 @@ public class AlignWayAction extends JosmAction {
             }
             int index = Math.max(0, choices.getSelectedIndex());
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                    computed.captured());
+                    tracingAtCapture, computed.captured());
             CenterlineCandidate candidate = candidates.get(index);
             AlignmentResult display = liveBDisplayResult(selection, computed, candidates, candidate);
             FinalGeometryEvaluator.Disposition disposition =
@@ -625,7 +681,7 @@ public class AlignWayAction extends JosmAction {
                 }
                 int index = Math.max(0, choices.getSelectedIndex());
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, computed.captured());
+                        persistedSlideConfig, tracingAtCapture, computed.captured());
                 AlignmentEditPlan currentPlan = planAdapter.adapt(computed, index);
                 PreviewReviewState currentReview = PreviewReviewState.fromEditPlan(candidates.get(index).id(), currentPlan);
                 if (review[0] == null || !(review[0].equals(currentReview)
@@ -662,13 +718,12 @@ public class AlignWayAction extends JosmAction {
 
     /** Routes persisted modern engines through their detached live pipeline. */
     static boolean requiresLiveModernPreview(TrackerMode engine) {
-        return engine != TrackerMode.LEGACY_V02;
+        return Objects.requireNonNull(engine, "engine").capabilities().requiresEvidenceSnapshot();
     }
 
     /** Returns whether the declared engine can consume an authenticated managed tile raster. */
     static boolean supportsManagedModernSource(TrackerMode engine) {
-        return engine == TrackerMode.CORRIDOR_AWARE || engine == TrackerMode.PROBABILISTIC
-                || engine == TrackerMode.HYBRID;
+        return Objects.requireNonNull(engine, "engine").capabilities().supportsManagedSource();
     }
 
     static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
@@ -713,13 +768,15 @@ public class AlignWayAction extends JosmAction {
 
     private void requireLiveBCurrent(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
-            AlignmentConfig persistedSlideConfig, LiveBPreviewService.Captured captured) {
+            AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
+            LiveBPreviewService.Captured captured) {
         AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
                 PluginPreferences.loadGeometryCleanup());
+        TracingSettings currentTracing = PluginPreferences.loadTracingSettings();
         boolean managed = captured.managedRaster() != null;
         if (MainApplication.getLayerManager().getEditDataSet() != dataSet
                 || !matchesLivePreviewSettings(persistedSlideConfig, slideConfig, currentPersisted,
-                        forcedAlignmentMode, forcedLivePreviewEngine)
+                        tracingAtCapture, currentTracing, forcedAlignmentMode, forcedLivePreviewEngine)
                 || managed && !slideConfig.heatmap().hasSameManagedSource(currentPersisted.heatmap())
                 || !managed && (!imageryLayer.isVisible()
                         || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer)) {
@@ -784,6 +841,46 @@ public class AlignWayAction extends JosmAction {
                 : ordinarySource.get();
     }
 
+    /** Resolves the persisted engine and source policy into one immutable production route. */
+    static OrdinaryRoute resolveOrdinaryRoute(TracingSettings tracing, AlignmentConfig config) {
+        Objects.requireNonNull(tracing, "tracing");
+        Objects.requireNonNull(config, "config");
+        if (!tracing.engine().capabilities().requiresEvidenceSnapshot()) {
+            return new OrdinaryRoute(OrdinaryPipeline.LEGACY_COMPATIBILITY, null);
+        }
+        ModernAlignmentInvocation invocation = ModernAlignmentInvocation.resolve(tracing, config);
+        OrdinaryPipeline pipeline = switch (invocation.resolvedSourceMode()) {
+            case VISIBLE_LAYER -> OrdinaryPipeline.MODERN_VISIBLE;
+            case MANAGED_TILES -> OrdinaryPipeline.MODERN_MANAGED;
+            case AUTOMATIC -> throw new IllegalStateException("Modern source resolution remained automatic");
+        };
+        return new OrdinaryRoute(pipeline, invocation);
+    }
+
+    /** Executes the exact source-routing seam consumed by the ordinary action. */
+    static <T> OrdinaryActionRouting<T> resolveOrdinaryAction(TracingSettings tracing,
+            AlignmentConfig config, Supplier<T> requiredVisibleSource,
+            Supplier<T> legacyVisibleSource) {
+        OrdinaryRoute route = resolveOrdinaryRoute(tracing, config);
+        return new OrdinaryActionRouting<>(route, selectOrdinarySource(route, config.heatmap(),
+                requiredVisibleSource, legacyVisibleSource));
+    }
+
+    /** Acquires only the source required by the frozen ordinary route. */
+    static <T> T selectOrdinarySource(OrdinaryRoute route, ManagedHeatmapConfig ignoredConfig,
+            Supplier<T> requiredVisibleSource, Supplier<T> legacyVisibleSource) {
+        Objects.requireNonNull(route, "route");
+        Objects.requireNonNull(ignoredConfig, "ignoredConfig");
+        Objects.requireNonNull(requiredVisibleSource, "requiredVisibleSource");
+        Objects.requireNonNull(legacyVisibleSource, "legacyVisibleSource");
+        return switch (route.pipeline()) {
+            case LEGACY_COMPATIBILITY -> legacyVisibleSource.get();
+            case MODERN_VISIBLE -> Objects.requireNonNull(requiredVisibleSource.get(),
+                    "Modern visible alignment requires a current rendered heatmap layer");
+            case MODERN_MANAGED -> null;
+        };
+    }
+
     static boolean matchesLivePreviewSettings(AlignmentConfig persistedAtCapture,
             AlignmentConfig effectiveAtCapture, AlignmentConfig currentPersisted,
             AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
@@ -793,6 +890,26 @@ public class AlignWayAction extends JosmAction {
         AlignmentConfig currentEffective = new AlignmentConfig(
                 effectiveConfig(currentPersisted.heatmap(), forcedAlignmentMode,
                         forcedLivePreviewEngine), currentPersisted.cleanup());
+        return effectiveAtCapture.equals(currentEffective);
+    }
+
+    static boolean matchesLivePreviewSettings(AlignmentConfig persistedAtCapture,
+            AlignmentConfig effectiveAtCapture, AlignmentConfig currentPersisted,
+            TracingSettings tracingAtCapture, TracingSettings currentTracing,
+            AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
+        if (!persistedAtCapture.equals(currentPersisted)) {
+            return false;
+        }
+        if (forcedLivePreviewEngine == null
+                && !Objects.equals(tracingAtCapture, currentTracing)) {
+            return false;
+        }
+        ManagedHeatmapConfig currentBase = forcedLivePreviewEngine == null
+                ? currentPersisted.heatmap().withTrackerMode(currentTracing.engine())
+                : currentPersisted.heatmap();
+        AlignmentConfig currentEffective = new AlignmentConfig(
+                effectiveConfig(currentBase, forcedAlignmentMode, forcedLivePreviewEngine),
+                currentPersisted.cleanup());
         return effectiveAtCapture.equals(currentEffective);
     }
 

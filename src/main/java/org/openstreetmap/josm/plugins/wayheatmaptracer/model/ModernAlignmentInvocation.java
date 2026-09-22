@@ -25,15 +25,17 @@ public record ModernAlignmentInvocation(
         if (resolvedSourceMode == AlignmentSourceMode.AUTOMATIC) {
             throw new IllegalArgumentException("An invocation must contain a resolved source");
         }
+        if (config.heatmap().trackerMode() != engine) {
+            throw new IllegalArgumentException("Invocation engine and effective configuration differ");
+        }
     }
 
     /** Resolves a source from the saved policy and the actual attempt capabilities. */
-    public static ModernAlignmentInvocation resolve(TracingSettings settings, AlignmentConfig config,
-            boolean managedSourceSupported) {
+    public static ModernAlignmentInvocation resolve(TracingSettings settings, AlignmentConfig config) {
         Objects.requireNonNull(settings, "settings");
         Objects.requireNonNull(config, "config");
         AlignmentSourceMode resolved = settings.sourceMode().resolve(
-            config.heatmap().hasManagedAccessValues(), managedSourceSupported);
+            config.heatmap().hasManagedAccessValues(), settings.engine().capabilities().supportsManagedSource());
         return new ModernAlignmentInvocation(settings.engine(), settings.sourceMode(), resolved, config,
             settings.recovery());
     }

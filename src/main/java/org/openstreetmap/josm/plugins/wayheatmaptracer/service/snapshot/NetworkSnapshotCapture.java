@@ -338,7 +338,7 @@ public final class NetworkSnapshotCapture {
                         .filter(key -> key.type() == PrimitiveKey.Type.WAY).count() > 1)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         if (specification.movableExistingNodeKeys().stream()
-                .filter(selectedRangeNodes::contains)
+                .filter(selectedBoundaries::contains)
                 .anyMatch(node -> !movableSharedJunctions.contains(node))) {
             return false;
         }
@@ -349,7 +349,7 @@ public final class NetworkSnapshotCapture {
                 return false;
             }
         }
-        Set<PrimitiveKey> locallyAuthorizedNodes = new LinkedHashSet<>(movableSharedJunctions);
+        Set<PrimitiveKey> locallyAuthorizedNodes = new LinkedHashSet<>(selectedRangeNodes);
         for (Map.Entry<PrimitiveKey, List<OccurrenceRange>> entry
                 : specification.editableWayOccurrences().entrySet()) {
             if (entry.getKey().equals(specification.selectedWayKey())) {

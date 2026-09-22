@@ -157,7 +157,7 @@ public final class PluginPreferences {
                 TracingSettings.CURRENT_SCHEMA_VERSION)), engine,
                 new RecoverySettings(Math.max(1, pref.getInt(RECOVERY_SCHEMA_VERSION,
                     RecoverySettings.CURRENT_SCHEMA_VERSION)), wider, ordinary, maximum, policy, reconstruct),
-                pref.getBoolean(TRACING_DIAGNOSTIC_COMPARISONS, false),
+                false,
                 AlignmentSourceMode.fromPreference(pref.get(TRACING_SOURCE_MODE,
                     AlignmentSourceMode.AUTOMATIC.name())));
         } catch (IllegalArgumentException exception) {
@@ -171,7 +171,6 @@ public final class PluginPreferences {
         IPreferences pref = Config.getPref();
         pref.putInt(TRACING_SCHEMA_VERSION, TracingSettings.CURRENT_SCHEMA_VERSION);
         pref.put(TRACING_ENGINE, settings.engine().name());
-        pref.putBoolean(TRACING_DIAGNOSTIC_COMPARISONS, settings.diagnosticComparisons());
         pref.put(TRACING_SOURCE_MODE, settings.sourceMode().name());
         RecoverySettings recovery = settings.recovery();
         pref.putInt(RECOVERY_SCHEMA_VERSION, RecoverySettings.CURRENT_SCHEMA_VERSION);

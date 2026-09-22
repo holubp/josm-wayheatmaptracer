@@ -64,14 +64,24 @@ public class WayHeatmapTracerPlugin extends Plugin {
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
         ManagedTileRuntime.initialize(PluginPreferences.load());
-        this.alignWayAction = new AlignWayAction();
-        this.alignPreciseAction = new AlignWayAction(AlignmentMode.PRECISE_SHAPE);
-        this.alignMoveNodesAction = new AlignWayAction(AlignmentMode.MOVE_EXISTING_NODES);
         this.modernPreviewSession = new PreviewSessionController<>(javax.swing.SwingUtilities::invokeLater);
-        this.actions = List.of(
-            alignWayAction,
-            alignPreciseAction,
-            alignMoveNodesAction,
+        this.actions = createRegisteredActions(modernPreviewSession);
+        this.alignWayAction = (AlignWayAction) actions.get(0);
+        this.alignPreciseAction = (AlignWayAction) actions.get(1);
+        this.alignMoveNodesAction = (AlignWayAction) actions.get(2);
+
+        for (JosmAction action : actions) {
+            MainMenu.add(MainApplication.getMenu().moreToolsMenu, action);
+        }
+        scheduleShortcutInstall();
+    }
+
+    static List<JosmAction> createRegisteredActions(
+            PreviewSessionController<LiveBPreviewService.Computed> modernPreviewSession) {
+        return List.of(
+            new AlignWayAction(modernPreviewSession),
+            new AlignWayAction(AlignmentMode.PRECISE_SHAPE, modernPreviewSession),
+            new AlignWayAction(AlignmentMode.MOVE_EXISTING_NODES, modernPreviewSession),
             AlignWayAction.experimentalCorridorAwareVisiblePreview(modernPreviewSession),
             AlignWayAction.experimentalProbabilisticVisiblePreview(modernPreviewSession),
             AlignWayAction.experimentalHybridVisiblePreview(modernPreviewSession),
@@ -84,11 +94,6 @@ public class WayHeatmapTracerPlugin extends Plugin {
             new ExportCalibrationTilesAction(),
             new ExportDiagnosticsAction()
         );
-
-        for (JosmAction action : actions) {
-            MainMenu.add(MainApplication.getMenu().moreToolsMenu, action);
-        }
-        scheduleShortcutInstall();
     }
 
     /**

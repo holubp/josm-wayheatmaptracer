@@ -71,6 +71,25 @@ class PluginPreferencesTest {
         PluginPreferences.saveTracingSettings(PluginPreferences.loadTracingSettings());
         assertEquals(AlignmentSourceMode.AUTOMATIC.name(),
             Config.getPref().get(PREFIX + "tracing.sourceMode", ""));
+        assertEquals(TracingSettings.CURRENT_SCHEMA_VERSION,
+            Config.getPref().getInt(PREFIX + "tracing.schemaVersion", 0));
+    }
+
+    @Test
+    void legacyAnalysisComparisonPreferenceIsInertAndIsNotWrittenForNewSettings() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", 2);
+        Config.getPref().putBoolean(PREFIX + "tracing.diagnosticComparisons", true);
+
+        TracingSettings migrated = PluginPreferences.loadTracingSettings();
+
+        assertFalse(migrated.diagnosticComparisons());
+        PluginPreferences.saveTracingSettings(migrated);
+        assertTrue(Config.getPref().getBoolean(PREFIX + "tracing.diagnosticComparisons", false),
+            "The old key remains readable for downgrade diagnostics but cannot affect production tracing");
+
+        Config.setPreferencesInstance(new MemoryPreferences());
+        PluginPreferences.saveTracingSettings(TracingSettings.defaults(7.01));
+        assertFalse(Config.getPref().getKeySet().contains(PREFIX + "tracing.diagnosticComparisons"));
     }
 
     @Test
@@ -88,6 +107,26 @@ class PluginPreferencesTest {
     }
 
     @Test
+    void automaticSourceUsesVisibleLayerForEnginesWithoutManagedCapture() {
+        ManagedHeatmapConfig heatmap = withCredentials(PluginPreferences.load(), "key", "policy",
+            "signature", "session", 2L);
+
+        ModernAlignmentInvocation hybrid = ModernAlignmentInvocation.resolve(new TracingSettings(
+            TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.HYBRID,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings.defaults(7.01), false,
+            AlignmentSourceMode.AUTOMATIC), new AlignmentConfig(
+                heatmap.withTrackerMode(TrackerMode.HYBRID), GeometryCleanupConfig.disabled()));
+        ModernAlignmentInvocation image = ModernAlignmentInvocation.resolve(new TracingSettings(
+            TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.DIRECTIONAL_IMAGE,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings.defaults(7.01), false,
+            AlignmentSourceMode.AUTOMATIC), new AlignmentConfig(
+                heatmap.withTrackerMode(TrackerMode.DIRECTIONAL_IMAGE), GeometryCleanupConfig.disabled()));
+
+        assertEquals(AlignmentSourceMode.VISIBLE_LAYER, hybrid.resolvedSourceMode());
+        assertEquals(AlignmentSourceMode.VISIBLE_LAYER, image.resolvedSourceMode());
+    }
+
+    @Test
     void invocationFreezesTheResolvedSourceRatherThanConsultingPreferencesAgain() {
         ManagedHeatmapConfig heatmap = withCredentials(PluginPreferences.load(), "key", "policy",
             "signature", "session", 2L);
@@ -96,7 +135,8 @@ class PluginPreferencesTest {
                 .defaults(7.01), false, AlignmentSourceMode.AUTOMATIC);
 
         ModernAlignmentInvocation invocation = ModernAlignmentInvocation.resolve(settings,
-            new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled()), true);
+            new AlignmentConfig(heatmap.withTrackerMode(TrackerMode.PROBABILISTIC),
+                GeometryCleanupConfig.disabled()));
 
         assertEquals(AlignmentSourceMode.MANAGED_TILES, invocation.resolvedSourceMode());
         assertEquals(TrackerMode.PROBABILISTIC, invocation.engine());

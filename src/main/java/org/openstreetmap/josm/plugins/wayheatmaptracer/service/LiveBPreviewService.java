@@ -360,8 +360,18 @@ public final class LiveBPreviewService {
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
             AlignmentConfig config, String sourceIdentity) {
+        return captureManagedSeed(dataSet, selection, config, sourceIdentity,
+                RecoveryPermissions.disabled(config.heatmap().searchHalfWidthMeters()));
+    }
+
+    /** Captures a managed seed with the frozen recovery and junction permissions. */
+    public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
+            AlignmentConfig config, String sourceIdentity, RecoveryPermissions permissions) {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Managed preview seed capture must execute on the EDT");
+        }
+        if (permissions == null) {
+            throw new IllegalArgumentException("Managed preview recovery permissions are required");
         }
         requireManagedSupported(selection, config);
         List<GeographicPoint> source = selection.segmentNodes().stream()
@@ -370,17 +380,24 @@ public final class LiveBPreviewService {
                 config.heatmap().inferenceZoom(), config.heatmap().searchHalfWidthMeters());
         List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
         double radius = config.heatmap().searchHalfWidthMeters();
+        if (permissions.ordinaryRadiusMeters() > radius + 1.0e-9) {
+            throw new IllegalArgumentException(
+                    "Managed preview recovery radius exceeds the captured decision corridor");
+        }
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, selection.way().getUniqueId());
         OccurrenceRange range = new OccurrenceRange(selection.startIndex(), selection.endIndex());
-        SelectedSegmentNodeAuthority.Result authority = SelectedSegmentNodeAuthority.classify(selection);
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
-        String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson());
+        CaptureAuthority authority = captureAuthority(dataSet, selection, way, range, frame,
+                decision, permissions);
+        String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
+                permissions.toString());
         String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
                 "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)), 0L, way, range,
-                frame, decision, decision, Map.of(way, List.of(range)), authority.editableExistingKeys(), authority.movableNodeKeys(),
-                authority.removableNodeKeys(), authority.protectedNodeKeys(), true, RecoveryPermissions.disabled(radius));
+                frame, authority.collisionEnvelope(), authority.editRegion(),
+                authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
+                Set.of(), authority.protectedNodes(), true, permissions);
         return new ManagedCaptureSeed(specification, NetworkSnapshotCapture.capture(dataSet, specification),
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
@@ -586,10 +603,7 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Live preview inputs are incomplete");
         }
         var heatmap = config.heatmap();
-        if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC
-                && heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
-                && heatmap.trackerMode() != TrackerMode.HYBRID
-                && heatmap.trackerMode() != TrackerMode.DIRECTIONAL_IMAGE) {
+        if (!heatmap.trackerMode().capabilities().requiresEvidenceSnapshot()) {
             throw new IllegalArgumentException("Experimental live preview supports only Corridor-aware A, "
                     + "Probabilistic B, visible Hybrid A+B, or visible Directional Image");
         }
@@ -605,7 +619,7 @@ public final class LiveBPreviewService {
         if ((heatmap.hasManagedAccessValues() && !explicitVisibleSource)
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
                 || heatmap.parallelWayAwareness()
-                || heatmap.adjustJunctionNodes() || config.searchHalfWidthMetersOverride().isPresent()) {
+                || config.searchHalfWidthMetersOverride().isPresent()) {
             throw new IllegalArgumentException("Experimental live preview does not support managed acquisition, expanded, or junction options");
         }
         if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
@@ -627,12 +641,11 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Managed preview requires configured managed source access");
         }
         var heatmap = config.heatmap();
-        if (heatmap.trackerMode() != TrackerMode.CORRIDOR_AWARE
-                && heatmap.trackerMode() != TrackerMode.PROBABILISTIC
+        if (!heatmap.trackerMode().capabilities().supportsManagedSource()
                 || heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE
                 || heatmap.simplifyEnabled()
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
-                || heatmap.parallelWayAwareness() || heatmap.adjustJunctionNodes()
+                || heatmap.parallelWayAwareness()
                 || config.searchHalfWidthMetersOverride().isPresent()
                 || heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
             throw new IllegalArgumentException("Managed experimental preview supports selected-palette Precise Shape only");
