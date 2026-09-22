@@ -14,6 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Evaluates the exact final-preview polyline with physical local and topology checks. */
 public final class FinalGeometryEvaluator {
@@ -163,11 +164,21 @@ public final class FinalGeometryEvaluator {
     public Result evaluate(Request request) {
         List<Finding> findings = new ArrayList<>();
         DirectedSamplingMemo sampling = new DirectedSamplingMemo(2_048);
+        long protectedStarted = System.nanoTime();
         inspectProtectedAssignments(request, findings);
+        long protectedNanos = System.nanoTime() - protectedStarted;
+        long intersectionsStarted = System.nanoTime();
         inspectIntersections(request, findings);
+        long intersectionsNanos = System.nanoTime() - intersectionsStarted;
+        long backtracksStarted = System.nanoTime();
         inspectBacktracks(request.points(), findings);
+        long backtracksNanos = System.nanoTime() - backtracksStarted;
+        long excursionsStarted = System.nanoTime();
         inspectLocalExcursions(request, findings, sampling);
+        long excursionsNanos = System.nanoTime() - excursionsStarted;
+        long incidentsStarted = System.nanoTime();
         inspectIncidentCrossings(request, findings);
+        long incidentsNanos = System.nanoTime() - incidentsStarted;
         if (request.branchAmbiguous()) {
             findings.add(review(FindingCode.AMBIGUOUS_BRANCH, 0, request.points().size() - 1, 0));
         }
@@ -178,8 +189,12 @@ public final class FinalGeometryEvaluator {
             findings.add(review(FindingCode.OPTIMIZER_FAILURE, 0, request.points().size() - 1, 0));
         }
 
+        long supportStarted = System.nanoTime();
         SupportMetrics support = supportMetrics(request.points(), request.image(), request.sourcePitchMeters(), sampling);
+        long supportNanos = System.nanoTime() - supportStarted;
+        long routeCostStarted = System.nanoTime();
         double meanImageCenterCost = request.image().meanRoutePolylineCost(request.points());
+        long routeCostNanos = System.nanoTime() - routeCostStarted;
         if (meanImageCenterCost == Double.POSITIVE_INFINITY) {
             findings.add(review(FindingCode.UNAVAILABLE_IMAGE_QUALITY, 0,
                     request.points().size() - 1, support.worstUnsupportedSpan));
@@ -193,9 +208,21 @@ public final class FinalGeometryEvaluator {
         Disposition disposition = findings.stream().anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
                 ? Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? Disposition.APPLICABLE : Disposition.REVIEW_REQUIRED;
+        long roughnessStarted = System.nanoTime();
+        double roughness = roughness(request.points());
+        long roughnessNanos = System.nanoTime() - roughnessStarted;
+        if (request.id().startsWith("probabilistic-")) {
+            PluginLog.verbose("B_PERF finalEvaluator protectedMs=%d intersectionsMs=%d backtracksMs=%d excursionsMs=%d incidentsMs=%d supportMs=%d routeCostMs=%d roughnessMs=%d findings=%d points=%d",
+                millis(protectedNanos), millis(intersectionsNanos), millis(backtracksNanos),
+                millis(excursionsNanos), millis(incidentsNanos), millis(supportNanos),
+                millis(routeCostNanos), millis(roughnessNanos), findings.size(), request.points().size());
+        }
         return new Result(request.id(), disposition, findings, support.totalLength, support.directLength,
-                support.worstUnsupportedSpan, meanImageCenterCost,
-                roughness(request.points()));
+                support.worstUnsupportedSpan, meanImageCenterCost, roughness);
+    }
+
+    private static long millis(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     private static void inspectProtectedAssignments(Request request, List<Finding> findings) {
