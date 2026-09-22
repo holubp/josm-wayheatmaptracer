@@ -349,8 +349,8 @@ public class AlignWayAction extends JosmAction {
         overlay.hide();
         String engineLabel = livePreviewEngineLabel(slideConfig.heatmap().trackerMode());
         JDialog progress = new JDialog(MainApplication.getMainFrame(),
-                tr("Experimental {0} Preview", engineLabel), false);
-        JLabel status = new JLabel(tr("Capturing the visible source and computing a read-only {0} preview...",
+                tr("{0} alignment preview", engineLabel), false);
+        JLabel status = new JLabel(tr("Capturing the selected source and computing a {0} preview...",
                 engineLabel));
         JButton cancel = new JButton(tr("Cancel"));
         JPanel panel = new JPanel();
@@ -501,7 +501,7 @@ public class AlignWayAction extends JosmAction {
         JScrollPane qualityScroll = new JScrollPane(quality);
         qualityScroll.setPreferredSize(new Dimension(640, 110));
         JLabel diagnostics = new JLabel(tr(
-                "Modern Format-15 debug export is unavailable for this experimental preview."));
+                "This preview is bound to its captured source and network snapshot."));
         ModernSingleWayEditPlanAdapter planAdapter = new ModernSingleWayEditPlanAdapter();
         AlignmentEditPlan[] plan = {null};
         PreviewReviewState[] review = {null};
@@ -512,7 +512,7 @@ public class AlignWayAction extends JosmAction {
         apply.setEnabled(false);
         JButton close = new JButton(tr("Close preview"));
         JPanel panel = new JPanel();
-        panel.add(new JLabel(tr("Experimental read-only {0} final geometry",
+        panel.add(new JLabel(tr("{0} final geometry",
                 livePreviewEngineLabel(slideConfig.heatmap().trackerMode()))));
         if (candidates.size() > 1) {
             panel.add(choices);
@@ -523,7 +523,7 @@ public class AlignWayAction extends JosmAction {
         panel.add(apply);
         panel.add(close);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
-                tr("Experimental {0} Preview (Read Only)",
+                tr("{0} Alignment Preview",
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode())), false);
         dialog.setContentPane(panel);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
