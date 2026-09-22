@@ -193,7 +193,7 @@ public final class FinalGeometryEvaluator {
         SupportMetrics support = supportMetrics(request.points(), request.image(), request.sourcePitchMeters(), sampling);
         long supportNanos = System.nanoTime() - supportStarted;
         long routeCostStarted = System.nanoTime();
-        double meanImageCenterCost = request.image().meanRoutePolylineCost(request.points());
+        double meanImageCenterCost = sampling.routePolylineCost(request.points(), request.image());
         long routeCostNanos = System.nanoTime() - routeCostStarted;
         if (meanImageCenterCost == Double.POSITIVE_INFINITY) {
             findings.add(review(FindingCode.UNAVAILABLE_IMAGE_QUALITY, 0,
@@ -334,7 +334,7 @@ public final class FinalGeometryEvaluator {
                     continue;
                 }
                 List<MetricPoint> local = request.points().subList(first, last + 1);
-                double routeCost = request.image().meanRoutePolylineCost(local);
+                double routeCost = sampling.routePolylineCost(local, request.image());
                 double chordCost = request.image().meanRouteSegmentCost(request.points().get(first),
                         request.points().get(last));
                 SupportMetrics localSupport = supportMetrics(local, request.image(),
@@ -370,7 +370,7 @@ public final class FinalGeometryEvaluator {
         MetricPoint approach = points.get(approachIndex);
         double amplitude = pointSegmentDistance(apex, approach, end);
         List<MetricPoint> route = start ? List.of(end, apex, approach) : List.of(approach, apex, end);
-        double routeCost = image.meanRoutePolylineCost(route);
+        double routeCost = sampling.routePolylineCost(route, image);
         double chordCost = image.meanRouteSegmentCost(approach, end);
         SupportMetrics support = supportMetrics(route, image, image.sourcePitchMeters(), sampling);
         boolean directlySupported = support.directLength >= 0.95 * support.totalLength;
@@ -443,13 +443,49 @@ public final class FinalGeometryEvaluator {
     }
 
     /** Evaluation-local bounded cache which preserves directed support sample order. */
-    private static final class DirectedSamplingMemo {
+    static final class DirectedSamplingMemo {
         private final int capacity;
         private final Map<SupportKey, SupportSamples> supports;
+        private final Map<RouteCostKey, Double> routeCosts;
 
         DirectedSamplingMemo(int capacity) {
             this.capacity = capacity;
             this.supports = new LinkedHashMap<>(capacity + 1, 0.75f, true);
+            this.routeCosts = new LinkedHashMap<>(capacity + 1, 0.75f, true);
+        }
+
+        double routePolylineCost(List<MetricPoint> points, ImageCostField image) {
+            double weighted = 0.0;
+            double length = 0.0;
+            for (int index = 1; index < points.size(); index++) {
+                MetricPoint start = points.get(index - 1);
+                MetricPoint end = points.get(index);
+                double segmentLength = start.distanceTo(end);
+                if (segmentLength <= 1.0e-12) {
+                    continue;
+                }
+                double cost = routeSegmentCost(start, end, image);
+                if (!Double.isFinite(cost)) {
+                    return Double.POSITIVE_INFINITY;
+                }
+                weighted += segmentLength * cost;
+                length += segmentLength;
+            }
+            return length > 0.0 ? weighted / length : Double.POSITIVE_INFINITY;
+        }
+
+        private double routeSegmentCost(MetricPoint start, MetricPoint end, ImageCostField image) {
+            RouteCostKey key = new RouteCostKey(start, end);
+            Double cached = routeCosts.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            double cost = image.meanRouteSegmentCost(start, end);
+            routeCosts.put(key, cost);
+            if (routeCosts.size() > capacity) {
+                routeCosts.remove(routeCosts.keySet().iterator().next());
+            }
+            return cost;
         }
 
         SupportSamples support(MetricPoint start, MetricPoint end, ImageCostField image, double pitch) {
@@ -482,6 +518,8 @@ public final class FinalGeometryEvaluator {
     }
 
     private record SupportKey(MetricPoint start, MetricPoint end, double pitch) { }
+
+    private record RouteCostKey(MetricPoint start, MetricPoint end) { }
 
     private record SupportSamples(boolean[] directlyLocalized, double pieceMeters) {
         private static final SupportSamples EMPTY = new SupportSamples(new boolean[0], 0.0);

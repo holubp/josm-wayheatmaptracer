@@ -162,6 +162,17 @@ class V022FinalGeometryTest {
     }
 
     @Test
+    void directedRouteCostMemoReplaysTheExactPolylineCost() {
+        ImageCostField image = QualityTestFixtures.constantImage(0.8);
+        List<MetricPoint> route = List.of(p(-10, 0), p(-4, 1), p(2, -1), p(8, 0));
+        FinalGeometryEvaluator.DirectedSamplingMemo memo =
+            new FinalGeometryEvaluator.DirectedSamplingMemo(8);
+
+        assertEquals(image.meanRoutePolylineCost(route), memo.routePolylineCost(route, image), 0.0);
+        assertEquals(image.meanRoutePolylineCost(route), memo.routePolylineCost(route, image), 0.0);
+    }
+
+    @Test
     void denseOverlappingWindowsRetainOrderedSupportAndFindings() {
         List<MetricPoint> geometry = List.of(p(0, 0), p(4, 0), p(8, 1.2), p(12, 0),
             p(16, 1.2), p(20, 0), p(24, 1.2), p(28, 0), p(32, 1.2), p(36, 0));
