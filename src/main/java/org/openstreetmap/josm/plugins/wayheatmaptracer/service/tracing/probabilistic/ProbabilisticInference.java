@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
@@ -56,8 +57,10 @@ public final class ProbabilisticInference {
                 "state budget exceeded", profiles);
         }
         try {
+            long inferenceStarted = System.nanoTime();
             TransitionAdmissionMemo admissions = new TransitionAdmissionMemo(ADMISSION_MEMO_CAPACITY);
             GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion, cancellation, admissions);
+            long forwardBackwardNanos = System.nanoTime() - inferenceStarted;
             if (messages.resourceLimited()) {
                 return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
                     messages.pairVisits(), messages.transitions(), messages.explanation(), profiles);
@@ -70,17 +73,21 @@ public final class ProbabilisticInference {
                 return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,
                     messages.pairVisits(), messages.transitions(), "non-finite partition function", profiles);
             }
+            long kBestStarted = System.nanoTime();
             KBestResult kBest = enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation, admissions);
+            long kBestNanos = System.nanoTime() - kBestStarted;
             if (kBest.resourceLimited()) {
                 return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
                     messages.pairVisits(), kBest.transitions(), kBest.explanation(), profiles);
             }
+            long alternativesStarted = System.nanoTime();
             List<ProbabilisticPath> rawPaths = materialize(kBest.paths(), profiles, parameters,
                 messages.logPartition());
             double pitch = representativePitch(profiles);
             int distinctCap = Math.min(8, budgets.maximumDistinctAlternatives());
             List<ProbabilisticPath> distinct = new PathAlternativeSelector().select(rawPaths, profiles,
                 pitch, distinctCap);
+            long alternativesNanos = System.nanoTime() - alternativesStarted;
             boolean alternativeTruncated = kBest.truncated()
                 || distinct.size() == distinctCap
                     && rawPaths.stream().anyMatch(path -> distinct.stream().noneMatch(path::equals));
@@ -95,12 +102,17 @@ public final class ProbabilisticInference {
             List<double[]> marginals = positionalMarginals(profiles, messages);
             List<double[]> componentMarginals = componentMarginals(profiles, marginals);
             List<CredibleLateralSet> credibleSets = credibleSets(profiles, marginals, 0.95);
-            return new ProbabilisticInferenceResult(status,
+            ProbabilisticInferenceResult result = new ProbabilisticInferenceResult(status,
                 rawPaths.isEmpty() ? Optional.empty() : Optional.of(rawPaths.get(0)), rawPaths, distinct,
                 messages.logPartition(), marginals, componentMarginals, marginals, marginals, credibleSets, !allMissing,
                 alternativeTruncated, messages.pairVisits(), messages.transitions(), gaps,
                 allMissing ? "all profiles lack localized evidence" : alternativeTruncated
                     ? "ALTERNATIVE_SEARCH_TRUNCATED" : "complete retained graph");
+            PluginLog.verbose("B_PERF inference fbMs=%d kBestMs=%d alternativesMs=%d profiles=%d states=%d pairVisits=%d transitions=%d raw=%d distinct=%d status=%s",
+                nanosToMillis(forwardBackwardNanos), nanosToMillis(kBestNanos), nanosToMillis(alternativesNanos),
+                profiles.size(), stateCount, result.evaluatedPairVisits(), result.evaluatedTransitions(),
+                result.rawPaths().size(), result.distinctPaths().size(), result.status());
+            return result;
         } catch (ArithmeticException exception) {
             return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE, stateCount, 0,
                 "numeric failure", profiles);
@@ -587,6 +599,10 @@ public final class ProbabilisticInference {
                 throw new IllegalArgumentException("Profile chainage must increase strictly");
             }
         }
+    }
+
+    private static long nanosToMillis(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     private static double logMeasure(LateralStateCell cell) {

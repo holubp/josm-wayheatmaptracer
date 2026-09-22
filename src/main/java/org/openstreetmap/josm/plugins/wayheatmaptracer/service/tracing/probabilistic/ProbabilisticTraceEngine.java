@@ -22,6 +22,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
 public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceEngine {
@@ -77,6 +78,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation,
         ProbabilisticStructuralGuide guide) {
+        long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
         ScalarEvidenceField field = evidence.fields().get(fieldName);
@@ -85,17 +87,22 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         }
         List<MetricPoint> source = selectedPolyline(request, evidence, network);
         boolean fixedEndpoints = request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
+        long profileSamplingStarted = System.nanoTime();
         List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
             evidence, field, parameters, cancellation);
+        long profileSamplingNanos = System.nanoTime() - profileSamplingStarted;
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
             return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
                 TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
                 "orientation descriptor resource limit"), 0, 0);
         }
+        long stateObservationStarted = System.nanoTime();
         List<InferenceProfile> evaluated = new ArrayList<>(profiles.size());
         long stateCount = 0;
+        int minimumStates = Integer.MAX_VALUE;
+        int maximumStates = 0;
         ProbabilisticStateBuilder stateBuilder = new ProbabilisticStateBuilder();
         ProbabilisticObservationModel observationModel = new ProbabilisticObservationModel();
         for (ProbabilisticProfile profile : profiles) {
@@ -109,17 +116,24 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
             stateCount += lattice.cells().size();
+            minimumStates = Math.min(minimumStates, lattice.cells().size());
+            maximumStates = Math.max(maximumStates, lattice.cells().size());
             InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters);
             evaluated.add(guide == null ? evaluatedProfile
                 : guide.apply(evaluatedProfile, profile.sourcePitchMeters()));
         }
+        long stateObservationNanos = System.nanoTime() - stateObservationStarted;
+        long inferenceStarted = System.nanoTime();
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
             parameters, request.budgets(), evidence.decisionRegion(), cancellation);
+        long inferenceNanos = System.nanoTime() - inferenceStarted;
         boolean usableRoutes = inference.status() == ProbabilisticInferenceResult.Status.COMPLETE
                 || inference.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
                 || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
+        long materializationStarted = System.nanoTime();
         List<TraceHypothesis> hypotheses = usableRoutes
                 ? toHypotheses(inference, evaluated, evidence, field, guide) : List.of();
+        long materializationNanos = System.nanoTime() - materializationStarted;
         TraceHypothesisSet.Status status = switch (inference.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;
             case AMBIGUOUS, REVIEW_REQUIRED -> TraceHypothesisSet.Status.AMBIGUOUS;
@@ -130,6 +144,11 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             hypotheses, status, inference.alternativeSearchTruncated(), stateCount,
             inference.evaluatedTransitions(), guide == null ? inference.explanation()
                 : inference.explanation() + "; capped same-image structural guide applied");
+        PluginLog.verbose("B_PERF trace profileMs=%d stateObservationMs=%d inferenceMs=%d materializeMs=%d totalMs=%d profiles=%d states=%d minStates=%d maxStates=%d hypotheses=%d status=%s truncated=%s",
+            millis(profileSamplingNanos), millis(stateObservationNanos), millis(inferenceNanos),
+            millis(materializationNanos), millis(System.nanoTime() - started), profiles.size(), stateCount,
+            minimumStates == Integer.MAX_VALUE ? 0 : minimumStates, maximumStates, hypotheses.size(),
+            status, inference.alternativeSearchTruncated());
         return run(result, inference.evaluatedPairVisits(), inference.rawPaths().size());
     }
 
@@ -219,6 +238,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             || network.role() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole.CAPTURED_BEFORE) {
             throw new IllegalArgumentException("Probabilistic request does not match immutable snapshots");
         }
+    }
+
+    private static long millis(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     private static TraceEngineRun run(TraceHypothesisSet result,
