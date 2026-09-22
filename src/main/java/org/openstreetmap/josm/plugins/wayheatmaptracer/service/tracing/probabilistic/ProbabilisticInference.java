@@ -240,7 +240,7 @@ public final class ProbabilisticInference {
             List<PathRecord> paths = new ArrayList<>();
             InferenceProfile profile = profiles.get(0);
             for (int state = 0; state < profile.cells().size(); state++) {
-                paths.add(new PathRecord(new int[] {state}, profileEnergy(profiles, 0, state, parameters),
+                paths.add(PathRecord.start(state, profileEnergy(profiles, 0, state, parameters),
                     logMeasure(profile.cells().get(state))));
             }
             paths.sort(PATH_ORDER);
@@ -262,11 +262,12 @@ public final class ProbabilisticInference {
                 double energy = profileEnergy(profiles, 0, first, parameters)
                     + profileEnergy(profiles, 1, second, parameters)
                     + pairEnergy(profiles, 0, first, second, parameters);
-                current[first][second] = List.of(new PathRecord(new int[] {first, second}, energy,
+                current[first][second] = List.of(PathRecord.initial(first, second, energy,
                     logMeasure(profiles.get(0).cells().get(first))
                         + logMeasure(profiles.get(1).cells().get(second))));
             }
         }
+        assignLexicalRanks(current);
         long transitions = 0;
         boolean truncated = false;
         for (int profileIndex = 2; profileIndex < profiles.size(); profileIndex++) {
@@ -310,6 +311,7 @@ public final class ProbabilisticInference {
                     next[prior][state] = List.copyOf(candidates);
                 }
             }
+            assignLexicalRanks(next);
             current = next;
         }
         List<PathRecord> result = new ArrayList<>();
@@ -332,8 +334,8 @@ public final class ProbabilisticInference {
         List<InferenceProfile> profiles, EvidenceModelParameters parameters, double logPartition) {
         List<ProbabilisticPath> result = new ArrayList<>(paths.size());
         for (PathRecord record : paths) {
-            List<MetricPoint> points = new ArrayList<>(record.states().length);
-            for (int index = 0; index < record.states().length; index++) {
+            List<MetricPoint> points = new ArrayList<>(record.length());
+            for (int index = 0; index < record.length(); index++) {
                 points.add(profiles.get(index).point(record.states()[index]));
             }
             double mass = Math.exp(-record.energy() / parameters.temperature()
@@ -649,26 +651,45 @@ public final class ProbabilisticInference {
 
     private static final Comparator<PathRecord> PATH_ORDER = (first, second) -> {
         int energy = Double.compare(first.energy(), second.energy());
-        if (energy != 0) {
-            return energy;
-        }
-        int[] left = first.states();
-        int[] right = second.states();
-        for (int index = 0; index < Math.min(left.length, right.length); index++) {
-            int comparison = Integer.compare(left[index], right[index]);
-            if (comparison != 0) {
-                return comparison;
-            }
-        }
-        return Integer.compare(left.length, right.length);
+        return energy != 0 ? energy : compareLexical(first, second);
     };
 
-    private record PathRecord(int[] states, double energy, double logMeasure) {
-        PathRecord extend(int state, double energyIncrement, double logMeasureIncrement) {
-            int[] extended = Arrays.copyOf(states, states.length + 1);
-            extended[states.length] = state;
-            return new PathRecord(extended, energy + energyIncrement, logMeasure + logMeasureIncrement);
+    private static int compareLexical(PathRecord first, PathRecord second) {
+        if (first == second) return 0;
+        int parent = Long.compare(first.parentRank(), second.parentRank());
+        return parent != 0 ? parent : Integer.compare(first.state(), second.state());
+    }
+
+    private static void assignLexicalRanks(List<PathRecord>[][] paths) {
+        List<PathRecord> ordered = new ArrayList<>();
+        for (List<PathRecord>[] row : paths) for (List<PathRecord> cell : row) if (cell != null) ordered.addAll(cell);
+        ordered.sort(ProbabilisticInference::compareLexical);
+        for (int index = 0; index < ordered.size(); index++) ordered.get(index).lexicalRank = index;
+    }
+
+    private static final class PathRecord {
+        private final PathRecord parent;
+        private final int state;
+        private final int length;
+        private long lexicalRank;
+        private final double energy;
+        private final double logMeasure;
+        private PathRecord(PathRecord parent, int state, int length, double energy, double logMeasure) {
+            this.parent = parent; this.state = state; this.length = length; this.energy = energy; this.logMeasure = logMeasure;
         }
+        static PathRecord start(int state, double energy, double logMeasure) { return new PathRecord(null, state, 1, energy, logMeasure); }
+        static PathRecord initial(int first, int second, double energy, double logMeasure) {
+            PathRecord parent = start(first, 0.0, 0.0);
+            parent.lexicalRank = first;
+            return new PathRecord(parent, second, 2, energy, logMeasure);
+        }
+        PathRecord extend(int state, double energyIncrement, double logMeasureIncrement) { return new PathRecord(this, state, length + 1, energy + energyIncrement, logMeasure + logMeasureIncrement); }
+        int[] states() { int[] result = new int[length]; for (PathRecord value = this; value != null; value = value.parent) result[value.length - 1] = value.state; return result; }
+        int state() { return state; }
+        int length() { return length; }
+        long parentRank() { return parent == null ? -1L : parent.lexicalRank; }
+        double energy() { return energy; }
+        double logMeasure() { return logMeasure; }
     }
 
     private record KBestResult(List<PathRecord> paths, boolean truncated, boolean resourceLimited,
