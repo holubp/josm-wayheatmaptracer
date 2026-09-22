@@ -59,7 +59,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorE
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCandidateAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Experimental read-only live producer for the explicitly supported B preview. */
@@ -213,7 +215,8 @@ public final class LiveBPreviewService {
         TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
                 permissions.toString());
-        String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT) + "-v1");
+        String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT)
+                + "-v2", parameterIdentity(engine));
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(
@@ -381,7 +384,9 @@ public final class LiveBPreviewService {
         return new ManagedCaptureSeed(specification, NetworkSnapshotCapture.capture(dataSet, specification),
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
-                hash("managed-live-" + config.heatmap().trackerMode().name().toLowerCase(java.util.Locale.ROOT)),
+                hash("managed-live-" + config.heatmap().trackerMode().name()
+                        .toLowerCase(java.util.Locale.ROOT) + "-v2",
+                        parameterIdentity(config.heatmap().trackerMode())),
                 config.cleanup(), config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode());
     }
@@ -671,6 +676,21 @@ public final class LiveBPreviewService {
         }
         return RenderedHeatmapSampler.colorIntensity((argb >>> 16) & 0xff,
                 (argb >>> 8) & 0xff, argb & 0xff, palette);
+    }
+
+    static String parameterIdentity(TrackerMode engine) {
+        if (engine == null) {
+            throw new IllegalArgumentException("Live parameter identity requires an engine");
+        }
+        return switch (engine) {
+            case PROBABILISTIC -> EvidenceModelParameters.defaults().version() + "/"
+                    + ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2;
+            case HYBRID -> EvidenceModelParameters.defaults().version() + "/"
+                    + ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE;
+            case CORRIDOR_AWARE -> "corridor-aware-v1";
+            case DIRECTIONAL_IMAGE -> "directional-image-v1";
+            case LEGACY_V02 -> "legacy-v02";
+        };
     }
 
     private static String hash(String... values) {

@@ -32,6 +32,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageC
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
@@ -181,7 +182,8 @@ public final class ModernTracePipeline {
             case CORRIDOR_AWARE -> corridorProposalEngine;
             case PROBABILISTIC -> new ProbabilisticTraceEngine(fieldName);
             case HYBRID -> new HybridTraceEngine(corridorProposalEngine,
-                    new ProbabilisticTraceEngine(fieldName));
+                    new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
+                        ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE));
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new IllegalArgumentException(
                     "Legacy tracing does not use the modern detached pipeline");
@@ -192,7 +194,9 @@ public final class ModernTracePipeline {
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
             TraceRequest request, Options options, double pitch, CancellationProbe cancellation) {
         SeedGeometry seed = seedGeometry(source, evidence, network, request);
-        ImageSupportedLocalCleanup.Mode mode = cleanupMode(options.cleanup().mode());
+        ImageSupportedLocalCleanup.Mode mode = request.engine() == TrackerMode.PROBABILISTIC
+                ? ImageSupportedLocalCleanup.Mode.OFF
+                : cleanupMode(options.cleanup().mode());
         long cleanupStarted = System.nanoTime();
         ImageSupportedLocalCleanup.Result cleanup = new ImageSupportedLocalCleanup().clean(
                 new ImageSupportedLocalCleanup.Request(seed.pointIds(), seed.points(),
@@ -218,6 +222,9 @@ public final class ModernTracePipeline {
         diagnostics.put("commonFinalProcessing", 1.0);
         diagnostics.put("cleanupChanged", changed ? 1.0 : 0.0);
         diagnostics.put("cleanupStatus", (double) cleanup.status().ordinal());
+        if (request.engine() == TrackerMode.PROBABILISTIC && !options.cleanup().isDisabled()) {
+            diagnostics.put("cleanupSuppressedForDirectReliability", 1.0);
+        }
         diagnostics.put("retainedExistingOccurrences",
                 (double) cleanup.occurrenceIds().stream()
                     .filter(ExistingWayNodeOccurrence.class::isInstance).count());

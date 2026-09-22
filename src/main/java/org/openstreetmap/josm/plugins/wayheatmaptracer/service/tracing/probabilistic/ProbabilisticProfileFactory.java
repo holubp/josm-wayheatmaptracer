@@ -3,10 +3,13 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabil
 import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.function.LongConsumer;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
@@ -55,6 +58,14 @@ public final class ProbabilisticProfileFactory {
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
         EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation) {
+        return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters,
+                fixedEndpoints, evidence, field, parameters, cancellation, true);
+    }
+
+    List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
+        EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        CancellationProbe cancellation, boolean directLongitudinalReliability) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
             || !positive(searchHalfWidthMeters) || evidence == null || field == null
             || parameters == null || cancellation == null) {
@@ -88,7 +99,7 @@ public final class ProbabilisticProfileFactory {
             ExtractedModes extracted = adaptModes(scalarFeatures, index);
             List<ProbabilisticProfile.Mode> orientedModes = bindOrientationToModes(
                 extracted.modes(), anchor, normal, sourcePitch, evidence, field, parameters,
-                cancellation, orientationDescriptor);
+                cancellation, orientationDescriptor, directLongitudinalReliability);
             ImageOrientationSupport orientation = aggregateOrientation(orientedModes);
             OptionalDouble exact = fixedEndpoints && (index == 0 || index == curve.points().size() - 1)
                 ? OptionalDouble.of(0.0) : OptionalDouble.empty();
@@ -97,7 +108,10 @@ public final class ProbabilisticProfileFactory {
                 scalarFeatures.noiseFloor(),
                 samples, orientedModes, extracted.censoredModes(), exact, orientation));
         }
-        return List.copyOf(result);
+        return directLongitudinalReliability
+                ? LongitudinalModeReliability.apply(result,
+                        new RasterIntervalEvidence(evidence, field), cancellation).profiles()
+                : List.copyOf(result);
     }
 
     /** Samples profiles and proves that engine sampling matches the request-owned measured chainage. */
@@ -114,11 +128,21 @@ public final class ProbabilisticProfileFactory {
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
         double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
         ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation) {
+        return create(sourcePolyline, profileChainage, searchHalfWidthMeters,
+                fixedEndpoints, evidence, field, parameters, cancellation, true);
+    }
+
+    List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
+        ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
+        boolean directLongitudinalReliability) {
         if (profileChainage == null) {
             throw new IllegalArgumentException("Measured profile chainage is required");
         }
         List<ProbabilisticProfile> result = create(sourcePolyline, profileChainage.configuredStepMeters(),
-            searchHalfWidthMeters, fixedEndpoints, evidence, field, parameters, cancellation);
+            searchHalfWidthMeters, fixedEndpoints, evidence, field, parameters, cancellation,
+            directLongitudinalReliability);
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }
@@ -135,21 +159,26 @@ public final class ProbabilisticProfileFactory {
         List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
         double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
         EvidenceModelParameters parameters, CancellationProbe cancellation,
-        ImageOrientationDescriptor descriptor) {
+        ImageOrientationDescriptor descriptor, boolean directLongitudinalReliability) {
         List<ProbabilisticProfile.Mode> result = new ArrayList<>(modes.size());
         for (ProbabilisticProfile.Mode mode : modes) {
             cancellation.checkpoint();
             MetricPoint center = offset(anchor, normal, mode.coreCenterMeters());
             ImageOrientationSupport support = descriptor.describe(evidence, field, center,
                 sourcePitch, parameters, cancellation).support();
+            double corroboration = directLongitudinalReliability
+                    ? mode.localizationConfidence()
+                    : mode.localizationConfidence() * support.certainty();
+            double reliability = directLongitudinalReliability
+                    ? ProbabilisticProfile.Mode.combineReliability(
+                            mode.scalarAmplitudeReliability(), corroboration)
+                    : mode.scalarAmplitudeReliability()
+                            + (1.0 - mode.scalarAmplitudeReliability()) * corroboration;
             result.add(new ProbabilisticProfile.Mode(mode.id(), mode.evidenceLineage(),
                 mode.coreMinimumMeters(), mode.coreMaximumMeters(), mode.localizationSigmaMeters(),
                 mode.existenceConfidence(), mode.localizationConfidence(), mode.peakOffsetsMeters(),
                 mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support,
-                mode.scalarAmplitudeReliability(),
-                mode.localizationConfidence() * support.certainty(),
-                ProbabilisticProfile.Mode.combineReliability(mode.scalarAmplitudeReliability(),
-                    mode.localizationConfidence() * support.certainty())));
+                mode.scalarAmplitudeReliability(), corroboration, reliability));
         }
         return List.copyOf(result);
     }
@@ -292,6 +321,201 @@ public final class ProbabilisticProfileFactory {
     private static MetricPoint offset(MetricPoint anchor, MetricPoint normal, double offset) {
         return new MetricPoint(anchor.xMeters() + normal.xMeters() * offset,
             anchor.yMeters() + normal.yMeters() * offset);
+    }
+
+    /**
+     * Visits every interpolation cell used anywhere along a raster segment.
+     *
+     * <p>Integer grid events and every open interval between them are checked. This catches cells
+     * crossed for less than the regular prominence-sampling step and uses the field's deterministic
+     * floor-cell ownership at grid boundaries and corners.</p>
+     */
+    static boolean supportsEveryCrossedInterpolationCell(ScalarEvidenceField field,
+            RasterMetricTransform transform, MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission) {
+        if (field == null || transform == null || start == null || end == null
+                || cancellation == null || admission == null) {
+            throw new IllegalArgumentException("Raster interval traversal inputs are incomplete");
+        }
+        RasterPoint rasterStart = transform.metricToPixelCenter(start);
+        RasterPoint rasterEnd = transform.metricToPixelCenter(end);
+        if (!checkInterpolationPoint(field, rasterStart.x(), rasterStart.y(), cancellation)
+                || !checkInterpolationPoint(field, rasterEnd.x(), rasterEnd.y(), cancellation)) {
+            return false;
+        }
+        long xCrossings = gridCrossingCount(rasterStart.x(), rasterEnd.x());
+        long yCrossings = gridCrossingCount(rasterStart.y(), rasterEnd.y());
+        long eventCount = Math.addExact(2L, Math.addExact(xCrossings, yCrossings));
+        long conservativeChecks = Math.multiplyExact(2L, eventCount);
+        admission.accept(conservativeChecks);
+        if (eventCount > Integer.MAX_VALUE) {
+            throw new LongitudinalModeReliability.ResourceLimitException();
+        }
+
+        List<Double> events = new ArrayList<>((int) eventCount);
+        events.add(0.0);
+        events.add(1.0);
+        addGridCrossings(rasterStart.x(), rasterEnd.x(), events, cancellation);
+        addGridCrossings(rasterStart.y(), rasterEnd.y(), events, cancellation);
+        events.sort(Double::compare);
+
+        double previous = events.get(0);
+        for (int index = 1; index < events.size(); index++) {
+            double current = events.get(index);
+            if (current > previous) {
+                double midpoint = 0.5 * (previous + current);
+                if (!checkInterpolationPoint(field,
+                        rasterStart.x() + midpoint * (rasterEnd.x() - rasterStart.x()),
+                        rasterStart.y() + midpoint * (rasterEnd.y() - rasterStart.y()),
+                        cancellation)) {
+                    return false;
+                }
+            }
+            if (Double.compare(current, previous) != 0
+                    && !checkInterpolationPoint(field,
+                            rasterStart.x() + current * (rasterEnd.x() - rasterStart.x()),
+                            rasterStart.y() + current * (rasterEnd.y() - rasterStart.y()),
+                            cancellation)) {
+                return false;
+            }
+            previous = current;
+        }
+        return true;
+    }
+
+    private static boolean checkInterpolationPoint(ScalarEvidenceField field, double x, double y,
+            CancellationProbe cancellation) {
+        cancellation.checkpoint();
+        return field.supportsInterpolationAt(x, y);
+    }
+
+    private static long gridCrossingCount(double start, double end) {
+        if (Double.doubleToLongBits(start) == Double.doubleToLongBits(end)) {
+            return 0L;
+        }
+        double minimum = Math.min(start, end);
+        double maximum = Math.max(start, end);
+        int first = (int) Math.floor(minimum) + 1;
+        int last = (int) Math.ceil(maximum) - 1;
+        return Math.max(0L, (long) last - first + 1L);
+    }
+
+    private static void addGridCrossings(double start, double end, List<Double> events,
+            CancellationProbe cancellation) {
+        if (Double.doubleToLongBits(start) == Double.doubleToLongBits(end)) {
+            return;
+        }
+        double minimum = Math.min(start, end);
+        double maximum = Math.max(start, end);
+        int first = (int) Math.floor(minimum) + 1;
+        int last = (int) Math.ceil(maximum) - 1;
+        for (int boundary = first; boundary <= last; boundary++) {
+            cancellation.checkpoint();
+            double fraction = (boundary - start) / (end - start);
+            if (fraction > 0.0 && fraction < 1.0) {
+                events.add(fraction);
+            }
+        }
+    }
+
+    /**
+     * Proves that adjacent localized centers are joined by directly measured scalar evidence.
+     *
+     * <p>Validity and the exact decision-region union are hard ownership boundaries. Inside those
+     * boundaries the minimum prominence ratio remains continuous, so a faint but concentrated
+     * corridor can retain full coherence while a blank interval receives none.</p>
+     */
+    private static final class RasterIntervalEvidence
+            implements LongitudinalModeReliability.DirectIntervalEvidence {
+        private static final long MAXIMUM_SAMPLES = 2_000_000L;
+        private static final double EPSILON = 1e-12;
+
+        private final EvidenceSnapshot evidence;
+        private final ScalarEvidenceField field;
+        private long samples;
+
+        RasterIntervalEvidence(EvidenceSnapshot evidence, ScalarEvidenceField field) {
+            this.evidence = evidence;
+            this.field = field;
+        }
+
+        @Override
+        public double support(ProbabilisticProfile leftProfile,
+                ProbabilisticProfile.Mode leftMode, ProbabilisticProfile rightProfile,
+                ProbabilisticProfile.Mode rightMode, CancellationProbe cancellation) {
+            MetricPoint left = modeCenter(leftProfile, leftMode);
+            MetricPoint right = modeCenter(rightProfile, rightMode);
+            if (!evidence.routeSegmentAuthorized(left, right)) {
+                return 0.0;
+            }
+            double distance = left.distanceTo(right);
+            if (!(distance > 0.0)) {
+                return 0.0;
+            }
+            double leftProminence = directProminence(leftProfile, leftMode);
+            double rightProminence = directProminence(rightProfile, rightMode);
+            double referenceProminence = Math.min(leftProminence, rightProminence);
+            if (!(referenceProminence > EPSILON)) {
+                return 0.0;
+            }
+            if (!supportsEveryCrossedInterpolationCell(field, evidence.transform(), left, right,
+                    cancellation, this::charge)) {
+                return 0.0;
+            }
+            double samplingStep = 0.5 * evidence.resolution().outputRasterPitchMeters();
+            long intervals = Math.max(1L, (long) Math.ceil(distance / samplingStep));
+            charge(intervals + 1L);
+            double minimumRatio = 1.0;
+            for (long index = 0L; index <= intervals; index++) {
+                cancellation.checkpoint();
+                double fraction = (double) index / intervals;
+                MetricPoint point = new MetricPoint(
+                        left.xMeters() + fraction * (right.xMeters() - left.xMeters()),
+                        left.yMeters() + fraction * (right.yMeters() - left.yMeters()));
+                OptionalDouble sampled = StrictScalarSampler.sample(
+                        field, evidence.transform(), evidence.evidenceRegion(), point);
+                if (sampled.isEmpty()) {
+                    return 0.0;
+                }
+                double noiseFloor = leftProfile.noiseFloor()
+                        + fraction * (rightProfile.noiseFloor() - leftProfile.noiseFloor());
+                double ratio = (sampled.getAsDouble() - noiseFloor) / referenceProminence;
+                if (!(ratio > 0.0)) {
+                    return 0.0;
+                }
+                minimumRatio = Math.min(minimumRatio, ratio);
+            }
+            return Math.min(1.0, minimumRatio);
+        }
+
+        private void charge(long requested) {
+            if (requested < 0L || requested > MAXIMUM_SAMPLES - samples) {
+                throw new LongitudinalModeReliability.ResourceLimitException();
+            }
+            samples += requested;
+        }
+
+        private static MetricPoint modeCenter(ProbabilisticProfile profile,
+                ProbabilisticProfile.Mode mode) {
+            double offset = mode.coreCenterMeters();
+            return new MetricPoint(
+                    profile.anchor().xMeters() + profile.normalUnit().xMeters() * offset,
+                    profile.anchor().yMeters() + profile.normalUnit().yMeters() * offset);
+        }
+
+        private static double directProminence(ProbabilisticProfile profile,
+                ProbabilisticProfile.Mode mode) {
+            double tolerance = 1e-9 * Math.max(1.0, profile.sourcePitchMeters());
+            double maximum = 0.0;
+            for (ProbabilisticProfile.Sample sample : profile.samples()) {
+                if (sample.valid()
+                        && sample.offsetMeters() + tolerance >= mode.coreMinimumMeters()
+                        && sample.offsetMeters() - tolerance <= mode.coreMaximumMeters()) {
+                    maximum = Math.max(maximum, sample.intensity() - profile.noiseFloor());
+                }
+            }
+            return maximum;
+        }
     }
 
     private static boolean positive(double value) {

@@ -48,6 +48,27 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void liveParameterIdentitySeparatesDirectBFromBaselineHybrid() throws Exception {
+        String direct = LiveBPreviewService.parameterIdentity(TrackerMode.PROBABILISTIC);
+        String hybrid = LiveBPreviewService.parameterIdentity(TrackerMode.HYBRID);
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[2];
+        SwingUtilities.invokeAndWait(() -> {
+            captured[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                    config(TrackerMode.PROBABILISTIC));
+            captured[1] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                    config(TrackerMode.HYBRID));
+        });
+
+        assertTrue(direct.contains("direct-longitudinal-2"));
+        assertTrue(direct.contains("DIRECT_LONGITUDINAL_V2"));
+        assertTrue(hybrid.contains("BASELINE"));
+        assertNotEquals(direct, hybrid);
+        assertNotEquals(captured[0].parameterHash(), captured[1].parameterHash());
+    }
+
+    @Test
     void realProductionBReturnsFinalReadOnlyGeometryAndPreservesDataSet() throws Exception {
         Fixture fixture = fixture();
         List<String> before = state(fixture.dataSet());

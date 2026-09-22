@@ -33,15 +33,20 @@ public record EvidenceModelParameters(
             turnScaleRadians, temperature, ambiguityEnergyDelta, Localization.defaults());
     }
 
+    /** Returns the version of the direct longitudinal weak-signal policy. */
+    public static String reliabilityPolicyVersion() {
+        return "direct-longitudinal-2";
+    }
+
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
-        return new EvidenceModelParameters("probabilistic-v0.22-localization-2", 1.0, 1.0, 2.0,
+        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion(), 1.0, 1.0, 2.0,
             0.5, 0.5, Math.toRadians(30.0), 1.0, 2.0, Localization.defaults());
     }
 
     /** Returns a deterministic data-only parameter set used by exact solver tests. */
     public static EvidenceModelParameters withoutShapeTerms() {
-        return new EvidenceModelParameters("probabilistic-v0.22-localization-1-data-only", 1.0,
+        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion() + "-data-only", 1.0,
             1.0, 0.0, 0.0, 0.0, Math.toRadians(30.0), 1.0, 1e-9,
             Localization.defaults());
     }

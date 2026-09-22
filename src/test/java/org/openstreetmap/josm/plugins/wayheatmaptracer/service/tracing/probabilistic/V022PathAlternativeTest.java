@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 
 class V022PathAlternativeTest {
@@ -29,6 +30,17 @@ class V022PathAlternativeTest {
         assertTrue(result.rawPaths().size() > result.distinctPaths().size());
         assertEquals(1, result.distinctPaths().stream()
             .filter(path -> path.branchSignature().equals("left")).count());
+    }
+
+    @Test
+    void geometricallyDistinctSameLabelAlternativesReceiveUniqueExportBranches() {
+        ProbabilisticPath left = new ProbabilisticPath(new int[] {0},
+                List.of(new MetricPoint(0.0, -3.0)), "shared", 0.0, 0.0, 0.5);
+        ProbabilisticPath right = new ProbabilisticPath(new int[] {1},
+                List.of(new MetricPoint(0.0, 3.0)), "shared", 0.1, 0.0, 0.5);
+
+        assertEquals(List.of("shared", "shared#alternative-1"),
+                ProbabilisticTraceEngine.exportedBranchSignatures(List.of(left, right)));
     }
 
     @Test

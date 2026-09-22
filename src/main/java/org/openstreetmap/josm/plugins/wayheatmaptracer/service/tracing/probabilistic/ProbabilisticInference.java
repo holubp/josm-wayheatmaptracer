@@ -526,6 +526,7 @@ public final class ProbabilisticInference {
         double heading = Math.atan2(second.yMeters() - first.yMeters(), second.xMeters() - first.xMeters());
         double span = end.chainageMeters() - start.chainageMeters();
         return parameters.orientationWeight() * span * support.certainty()
+            * end.orientationReliability(endState)
             * support.mismatchSquared(heading);
     }
 

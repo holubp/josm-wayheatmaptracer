@@ -17,6 +17,7 @@ public final class InferenceProfile {
     private final List<LateralStateCell> cells;
     private final double[] unaryCosts;
     private final Map<String, ImageOrientationSupport> orientationByBranch;
+    private final Map<String, Double> orientationReliabilityByBranch;
     private final ObservationOwnership ownership;
     private final boolean entirelyMissing;
     private final double[] structuralGuideCosts;
@@ -41,6 +42,7 @@ public final class InferenceProfile {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells,
                 ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
+            uniformReliability(cells, 1.0),
             ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
             new double[cells == null ? 0 : cells.size()][0]);
     }
@@ -51,6 +53,7 @@ public final class InferenceProfile {
         ObservationOwnership ownership, boolean entirelyMissing) {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells, orientationSupport),
+            uniformReliability(cells, 1.0),
             ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
             new double[cells == null ? 0 : cells.size()][0]);
     }
@@ -63,6 +66,7 @@ public final class InferenceProfile {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts,
             uniformOrientation(cells,
                 ImageOrientationSupport.legacy(supportedDirectionsRadians, orientationCertainty)),
+            uniformReliability(cells, 1.0),
             ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
             componentResponsibilities);
     }
@@ -74,13 +78,27 @@ public final class InferenceProfile {
         ObservationOwnership ownership, boolean entirelyMissing,
         double[][] componentResponsibilities) {
         this(chainageMeters, anchor, normalUnit, cells, unaryCosts, orientationByBranch,
+            uniformReliability(cells, 1.0),
             ownership, entirelyMissing, new double[cells == null ? 0 : cells.size()],
             componentResponsibilities);
+    }
+
+    /** Creates a fully evaluated profile with independently weighted branch orientation. */
+    public InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
+        List<LateralStateCell> cells, double[] unaryCosts,
+        Map<String, ImageOrientationSupport> orientationByBranch,
+        Map<String, Double> orientationReliabilityByBranch,
+        ObservationOwnership ownership, boolean entirelyMissing,
+        double[][] componentResponsibilities) {
+        this(chainageMeters, anchor, normalUnit, cells, unaryCosts, orientationByBranch,
+            orientationReliabilityByBranch, ownership, entirelyMissing,
+            new double[cells == null ? 0 : cells.size()], componentResponsibilities);
     }
 
     private InferenceProfile(double chainageMeters, MetricPoint anchor, MetricPoint normalUnit,
         List<LateralStateCell> cells, double[] unaryCosts,
         Map<String, ImageOrientationSupport> orientationByBranch,
+        Map<String, Double> orientationReliabilityByBranch,
         ObservationOwnership ownership, boolean entirelyMissing, double[] structuralGuideCosts,
         double[][] componentResponsibilities) {
         if (!Double.isFinite(chainageMeters) || chainageMeters < 0.0 || anchor == null || normalUnit == null
@@ -88,9 +106,16 @@ public final class InferenceProfile {
             || structuralGuideCosts == null || structuralGuideCosts.length != cells.size()
             || orientationByBranch == null || orientationByBranch.entrySet().stream().anyMatch(entry ->
                 entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null)
+            || orientationReliabilityByBranch == null
+            || orientationReliabilityByBranch.entrySet().stream().anyMatch(entry ->
+                entry.getKey() == null || entry.getKey().isBlank() || entry.getValue() == null
+                    || !unit(entry.getValue()))
             || cells != null && orientationByBranch != null && cells.stream().anyMatch(cell ->
                 !cell.branchLabel().equals("unlocalized")
                     && !orientationByBranch.containsKey(cell.branchLabel()))
+            || cells != null && orientationReliabilityByBranch != null && cells.stream().anyMatch(cell ->
+                !cell.branchLabel().equals("unlocalized")
+                    && !orientationReliabilityByBranch.containsKey(cell.branchLabel()))
             || ownership == null
             || componentResponsibilities == null || componentResponsibilities.length != cells.size()) {
             throw new IllegalArgumentException("Inference profile is incomplete");
@@ -107,6 +132,8 @@ public final class InferenceProfile {
         this.unaryCosts = unaryCosts.clone();
         this.orientationByBranch = java.util.Collections.unmodifiableMap(
             new LinkedHashMap<>(orientationByBranch));
+        this.orientationReliabilityByBranch = java.util.Collections.unmodifiableMap(
+            new LinkedHashMap<>(orientationReliabilityByBranch));
         this.ownership = ownership;
         this.entirelyMissing = entirelyMissing;
         this.structuralGuideCosts = structuralGuideCosts.clone();
@@ -169,6 +196,11 @@ public final class InferenceProfile {
                 ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
     }
 
+    /** Returns the branch-local multiplier for image-orientation pair energy. */
+    public double orientationReliability(int stateIndex) {
+        return orientationReliabilityByBranch.getOrDefault(cells.get(stateIndex).branchLabel(), 0.0);
+    }
+
     /** Returns whether any admitted branch exhausted configured orientation work. */
     public boolean orientationResourceLimited() {
         return orientationByBranch.values().stream().anyMatch(support -> support.status()
@@ -196,7 +228,8 @@ public final class InferenceProfile {
             throw new IllegalArgumentException("Structural guide costs must match the state lattice");
         }
         return new InferenceProfile(chainageMeters, anchor, normalUnit, cells, unaryCosts,
-            orientationByBranch, ownership, entirelyMissing, costs, componentResponsibilities);
+            orientationByBranch, orientationReliabilityByBranch, ownership, entirelyMissing, costs,
+            componentResponsibilities);
     }
 
     /** Returns a defensive copy of component responsibilities. */
@@ -227,5 +260,19 @@ public final class InferenceProfile {
         Map<String, ImageOrientationSupport> result = new LinkedHashMap<>();
         cells.forEach(cell -> result.put(cell.branchLabel(), support));
         return result;
+    }
+
+    private static Map<String, Double> uniformReliability(
+        List<LateralStateCell> cells, double reliability) {
+        if (cells == null) {
+            return Map.of();
+        }
+        Map<String, Double> result = new LinkedHashMap<>();
+        cells.forEach(cell -> result.put(cell.branchLabel(), reliability));
+        return result;
+    }
+
+    private static boolean unit(double value) {
+        return Double.isFinite(value) && value >= 0.0 && value <= 1.0;
     }
 }

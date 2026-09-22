@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.HybridTra
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 
 /** Strict offline runner that always invokes an actual production engine on frozen inputs. */
@@ -153,7 +154,8 @@ public final class Format15ReplayRunner {
             case CORRIDOR_AWARE -> new CorridorEngineAdapter(fieldName);
             case PROBABILISTIC -> new ProbabilisticTraceEngine(fieldName);
             case HYBRID -> new HybridTraceEngine(new CorridorEngineAdapter(fieldName),
-                new ProbabilisticTraceEngine(fieldName));
+                new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
+                        ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE));
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new ReplayMismatchException(
                 "Legacy engine has no modern frozen replay route");

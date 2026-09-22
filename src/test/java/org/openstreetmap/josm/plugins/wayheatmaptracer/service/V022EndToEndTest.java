@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -87,7 +88,7 @@ class V022EndToEndTest {
     }
 
     @Test
-    void T167_previewCarriesRequestedCleanupModeIntoDetachedPipelineInput() throws Exception {
+    void T167_previewCarriesRequestedCleanupWhileDirectBSuppressesIncompatibleRefit() throws Exception {
         Fixture fixture = fixture();
         GeometryCleanupConfig cleanup = GeometryCleanupPreset.BALANCED
                 .apply(GeometryCleanupMode.REDUCE_POINTS_ONLY);
@@ -126,15 +127,16 @@ class V022EndToEndTest {
         assertFalse(smoothResult.pipeline().routes().isEmpty());
         assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED,
                 offResult.pipeline().routes().get(0).cleanupStatus());
-        assertFalse(ImageSupportedLocalCleanup.Status.SKIPPED ==
+        assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED,
                 reducedResult.pipeline().routes().get(0).cleanupStatus());
-        assertFalse(ImageSupportedLocalCleanup.Status.SKIPPED ==
+        assertEquals(ImageSupportedLocalCleanup.Status.SKIPPED,
                 smoothResult.pipeline().routes().get(0).cleanupStatus());
 
         var cleanedRoute = reducedResult.pipeline().routes().get(0);
-        assertTrue(cleanedRoute.geometryChanged(),
-                "T167 requires a live fixture whose final geometry was changed by cleanup");
-        assertNotEquals(cleanedRoute.rawHypothesis().points(), cleanedRoute.hypothesis().points());
+        assertFalse(cleanedRoute.geometryChanged());
+        assertEquals(cleanedRoute.rawHypothesis().points(), cleanedRoute.hypothesis().points());
+        assertEquals(1.0, cleanedRoute.hypothesis().diagnostics()
+                .get("cleanupSuppressedForDirectReliability"));
         var expectedGeographic = cleanedRoute.hypothesis().points().stream()
                 .map(reducedResult.evidence().coordinateFrame()::toGeographic).toList();
         var expectedProjected = expectedGeographic.stream()
@@ -373,7 +375,7 @@ class V022EndToEndTest {
     }
 
     @Test
-    void T169_incidentOccurrenceOrderInversionFailsClosed() throws Exception {
+    void T169_reliabilityChangedRouteKeepsIncidentOccurrenceOrderValid() throws Exception {
         JunctionFixture fixture = orderInversionFixture();
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
                 JunctionPolicy.REATTACH, true);
@@ -384,10 +386,11 @@ class V022EndToEndTest {
                 visibleConfig(), false, permissions));
         LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
                 captured[0], CancellationProbe.NONE);
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+        AlignmentEditPlan plan = assertDoesNotThrow(
                 () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
-        assertTrue(failure.getMessage().contains("incident occurrence order"),
-                failure::getMessage);
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                fixture.receiver().getUniqueId());
+        assertTrue(plan.finalPreviewWays().containsKey(receiver));
     }
 
     @Test

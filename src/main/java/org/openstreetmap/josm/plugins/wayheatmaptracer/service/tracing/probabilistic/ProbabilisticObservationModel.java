@@ -23,6 +23,12 @@ public final class ProbabilisticObservationModel {
      */
     public InferenceProfile evaluate(ProbabilisticProfile profile, ProbabilisticStateLattice lattice,
         EvidenceModelParameters parameters) {
+        return evaluate(profile, lattice, parameters, true);
+    }
+
+    /** Evaluates with an explicit caller-owned orientation-reliability capability. */
+    InferenceProfile evaluate(ProbabilisticProfile profile, ProbabilisticStateLattice lattice,
+        EvidenceModelParameters parameters, boolean attenuateOrientation) {
         if (profile == null || lattice == null || parameters == null) {
             throw new IllegalArgumentException("Observation evaluation requires complete inputs");
         }
@@ -73,6 +79,7 @@ public final class ProbabilisticObservationModel {
                 : ObservationOwnership.CORE_CENSORED;
         return new InferenceProfile(profile.chainageMeters(), profile.anchor(), profile.normalUnit(),
             lattice.cells(), unary, orientationByBranch(profile),
+            orientationReliabilityByBranch(profile, attenuateOrientation),
             ownership, !localized, responsibilities);
     }
 
@@ -89,9 +96,10 @@ public final class ProbabilisticObservationModel {
             ObservationComponent component = components.get(index);
             if (component.kind() != ObservationComponent.Kind.MEASURED) continue;
             ProbabilisticProfile.Mode mode = findMode(profile, component);
-            double transferred = result[index] * (1.0 - mode.positionalReliability());
-            result[index] -= transferred;
-            result[uniform] += transferred;
+            double original = result[index];
+            double retained = original * mode.positionalReliability();
+            result[index] = retained;
+            result[uniform] += original - retained;
         }
         return result;
     }
@@ -108,6 +116,14 @@ public final class ProbabilisticObservationModel {
             }
             result.put(mode.id(), support);
         });
+        return java.util.Collections.unmodifiableMap(result);
+    }
+
+    private static Map<String, Double> orientationReliabilityByBranch(
+        ProbabilisticProfile profile, boolean attenuateOrientation) {
+        Map<String, Double> result = new LinkedHashMap<>();
+        profile.modes().forEach(mode -> result.put(mode.id(),
+                attenuateOrientation ? mode.positionalReliability() : 1.0));
         return java.util.Collections.unmodifiableMap(result);
     }
 

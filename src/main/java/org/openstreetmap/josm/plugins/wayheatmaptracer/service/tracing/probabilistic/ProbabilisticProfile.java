@@ -87,14 +87,24 @@ public record ProbabilisticProfile(
             return 0.5 * (coreMinimumMeters + coreMaximumMeters);
         }
 
-        /** Combines absolute scalar evidence with optional branch-local corroboration. */
+        /**
+         * Combines scalar amplitude with direct longitudinal corroboration while keeping amplitude
+         * as a continuous upper bound. For amplitude {@code a}, the result stays in
+         * {@code [a^64,a^4]}.
+         */
         public static double combineReliability(double scalarAmplitudeReliability,
                 double branchCoherence) {
             if (!unit(scalarAmplitudeReliability) || !unit(branchCoherence)) {
                 throw new IllegalArgumentException("Reliability inputs must be unit values");
             }
-            return scalarAmplitudeReliability
-                    + (1.0 - scalarAmplitudeReliability) * branchCoherence;
+            double amplitudeSquared = scalarAmplitudeReliability * scalarAmplitudeReliability;
+            double amplitudeFourth = amplitudeSquared * amplitudeSquared;
+            double unsupportedFloor = amplitudeFourth;
+            for (int power = 4; power < 64; power *= 2) {
+                unsupportedFloor *= unsupportedFloor;
+            }
+            return unsupportedFloor
+                    + branchCoherence * (amplitudeFourth - unsupportedFloor);
         }
 
         /** Returns the specified direct localization strength. */

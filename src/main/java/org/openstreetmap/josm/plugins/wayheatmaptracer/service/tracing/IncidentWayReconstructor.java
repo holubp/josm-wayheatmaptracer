@@ -232,7 +232,7 @@ final class IncidentWayReconstructor {
         }
     }
 
-    private static void requireMonotonicOccurrenceOrder(List<MetricPoint> points) {
+    static void requireMonotonicOccurrenceOrder(List<MetricPoint> points) {
         MetricPoint start = points.get(0);
         MetricPoint end = points.get(points.size() - 1);
         double dx = end.xMeters() - start.xMeters();

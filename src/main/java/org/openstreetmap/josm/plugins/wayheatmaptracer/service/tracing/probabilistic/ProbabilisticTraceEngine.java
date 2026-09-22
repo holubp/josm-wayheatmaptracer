@@ -26,21 +26,34 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
 public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceEngine {
+    /** Caller-owned capability boundary for B's experimental weak-signal semantics. */
+    public enum ReliabilityPolicy { DIRECT_LONGITUDINAL_V2, BASELINE }
+
     private final String fieldName;
     private final EvidenceModelParameters parameters;
+    private final ReliabilityPolicy reliabilityPolicy;
 
     /** Creates B for one named scalar field and the normative v0 parameter set. */
     public ProbabilisticTraceEngine(String fieldName) {
-        this(fieldName, EvidenceModelParameters.defaults());
+        this(fieldName, EvidenceModelParameters.defaults(),
+                ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
     }
 
     /** Creates B for one named scalar field and explicit versioned parameters. */
     public ProbabilisticTraceEngine(String fieldName, EvidenceModelParameters parameters) {
-        if (fieldName == null || fieldName.isBlank() || parameters == null) {
+        this(fieldName, parameters, ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
+    }
+
+    /** Creates a probabilistic engine with an explicit reliability capability. */
+    public ProbabilisticTraceEngine(String fieldName, EvidenceModelParameters parameters,
+            ReliabilityPolicy reliabilityPolicy) {
+        if (fieldName == null || fieldName.isBlank() || parameters == null
+                || reliabilityPolicy == null) {
             throw new IllegalArgumentException("Probabilistic engine configuration is incomplete");
         }
         this.fieldName = fieldName;
         this.parameters = parameters;
+        this.reliabilityPolicy = reliabilityPolicy;
     }
 
     @Override
@@ -57,6 +70,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         } catch (java.util.concurrent.CancellationException exception) {
             return run(new TraceHypothesisSet(request.engine(), List.of(),
                 TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
+        } catch (LongitudinalModeReliability.ResourceLimitException exception) {
+            return run(new TraceHypothesisSet(request.engine(), List.of(),
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                exception.getMessage()), 0, 0);
         }
     }
 
@@ -72,6 +89,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         } catch (java.util.concurrent.CancellationException exception) {
             return run(new TraceHypothesisSet(request.engine(), List.of(),
                 TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
+        } catch (LongitudinalModeReliability.ResourceLimitException exception) {
+            return run(new TraceHypothesisSet(request.engine(), List.of(),
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                exception.getMessage()), 0, 0);
         }
     }
 
@@ -90,8 +111,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         long profileSamplingStarted = System.nanoTime();
         List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
-            evidence, field, parameters, cancellation);
+            evidence, field, parameters, cancellation,
+            reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
         long profileSamplingNanos = System.nanoTime() - profileSamplingStarted;
+        logReliability(profiles);
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
             return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
@@ -118,7 +141,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             stateCount += lattice.cells().size();
             minimumStates = Math.min(minimumStates, lattice.cells().size());
             maximumStates = Math.max(maximumStates, lattice.cells().size());
-            InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters);
+            InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters,
+                    reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
             evaluated.add(guide == null ? evaluatedProfile
                 : guide.apply(evaluatedProfile, profile.sourcePitchMeters()));
         }
@@ -132,7 +156,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
         long materializationStarted = System.nanoTime();
         List<TraceHypothesis> hypotheses = usableRoutes
-                ? toHypotheses(inference, evaluated, evidence, field, guide) : List.of();
+                ? toHypotheses(inference, profiles, evaluated, evidence, guide) : List.of();
         long materializationNanos = System.nanoTime() - materializationStarted;
         TraceHypothesisSet.Status status = switch (inference.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;
@@ -152,13 +176,46 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         return run(result, inference.evaluatedPairVisits(), inference.rawPaths().size());
     }
 
+    private void logReliability(List<ProbabilisticProfile> profiles) {
+        int count = 0;
+        double minimumAmplitude = 1.0, totalAmplitude = 0.0, maximumAmplitude = 0.0;
+        double minimumCorroboration = 1.0, totalCorroboration = 0.0, maximumCorroboration = 0.0;
+        double minimumPosition = 1.0, totalPosition = 0.0, maximumPosition = 0.0;
+        for (ProbabilisticProfile profile : profiles) {
+            for (ProbabilisticProfile.Mode mode : profile.modes()) {
+                count++;
+                minimumAmplitude = Math.min(minimumAmplitude, mode.scalarAmplitudeReliability());
+                totalAmplitude += mode.scalarAmplitudeReliability();
+                maximumAmplitude = Math.max(maximumAmplitude, mode.scalarAmplitudeReliability());
+                minimumCorroboration = Math.min(minimumCorroboration, mode.branchCoherence());
+                totalCorroboration += mode.branchCoherence();
+                maximumCorroboration = Math.max(maximumCorroboration, mode.branchCoherence());
+                minimumPosition = Math.min(minimumPosition, mode.positionalReliability());
+                totalPosition += mode.positionalReliability();
+                maximumPosition = Math.max(maximumPosition, mode.positionalReliability());
+            }
+        }
+        if (count == 0) {
+            PluginLog.verbose("B_RELIABILITY policy=%s/%s modes=0",
+                    parameters.version(), reliabilityPolicy);
+            return;
+        }
+        PluginLog.verbose("B_RELIABILITY policy=%s/%s modes=%d amplitude=%.3f/%.3f/%.3f corroboration=%.3f/%.3f/%.3f positional=%.3f/%.3f/%.3f",
+                parameters.version(), reliabilityPolicy, count,
+                minimumAmplitude, totalAmplitude / count, maximumAmplitude,
+                minimumCorroboration, totalCorroboration / count, maximumCorroboration,
+                minimumPosition, totalPosition / count, maximumPosition);
+    }
+
     private List<TraceHypothesis> toHypotheses(ProbabilisticInferenceResult inference,
-        List<InferenceProfile> profiles, EvidenceSnapshot evidence, ScalarEvidenceField field,
-        ProbabilisticStructuralGuide guide) {
+        List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
+        EvidenceSnapshot evidence, ProbabilisticStructuralGuide guide) {
         List<TraceHypothesis> result = new ArrayList<>();
+        List<ProbabilisticPath> distinctPaths = inference.distinctPaths();
+        List<String> exportedBranches = exportedBranchSignatures(distinctPaths);
         int index = 0;
-        for (ProbabilisticPath path : inference.distinctPaths()) {
-            List<ObservationOwnership> support = supportOnFinalCurve(path.points(), profiles, evidence, field);
+        for (ProbabilisticPath path : distinctPaths) {
+            List<ObservationOwnership> support = supportOnFinalCurve(path, sampledProfiles, profiles, evidence);
             Map<String, Double> diagnostics = new LinkedHashMap<>();
             diagnostics.put("logPartition", inference.logPartition());
             diagnostics.put("logBaseMeasure", path.logBaseMeasure());
@@ -175,35 +232,63 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 diagnostics.put("structuralGuideSameImage", 1.0);
                 diagnostics.put("structuralGuideSectionCount", (double) guide.sectionCount());
             }
-            result.add(new TraceHypothesis("probabilistic-" + index++, path.branchSignature(),
+            String exportedBranch = exportedBranches.get(index);
+            result.add(new TraceHypothesis("probabilistic-" + index++, exportedBranch,
                 path.points(), support, path.energy(), path.conditionalPosteriorMass(), diagnostics));
         }
         return List.copyOf(result);
     }
 
-    private static List<ObservationOwnership> supportOnFinalCurve(List<MetricPoint> points,
-        List<InferenceProfile> profiles, EvidenceSnapshot evidence, ScalarEvidenceField field) {
-        ProbabilisticProfileFactory sampler = new ProbabilisticProfileFactory();
+    private static List<ObservationOwnership> supportOnFinalCurve(ProbabilisticPath path,
+        List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
+        EvidenceSnapshot evidence) {
+        List<MetricPoint> points = path.points();
+        int[] states = path.stateIndices();
         List<ObservationOwnership> result = new ArrayList<>(points.size());
         for (int index = 0; index < points.size(); index++) {
             MetricPoint point = points.get(index);
+            InferenceProfile evaluated = profiles.get(index);
+            ObservationOwnership profileOwnership = evaluated.ownership();
             if (!evidence.routePositionAuthorized(point)) {
                 result.add(ObservationOwnership.NO_RASTER);
-                continue;
-            }
-            java.util.OptionalDouble center = sampler.sample(evidence, field, point);
-            if (center.isEmpty()) {
-                result.add(ObservationOwnership.NO_RASTER);
-            } else if (profiles.get(index).ownership() == ObservationOwnership.CORE_CENSORED
-                || profiles.get(index).ownership() == ObservationOwnership.SHOULDER_CENSORED) {
-                result.add(profiles.get(index).ownership());
-            } else if (center.getAsDouble() > 0.0) {
+            } else if (profileOwnership == ObservationOwnership.CORE_CENSORED
+                    || profileOwnership == ObservationOwnership.SHOULDER_CENSORED
+                    || profileOwnership == ObservationOwnership.NO_RASTER
+                    || profileOwnership == ObservationOwnership.NO_SIGNAL_VALID_RASTER) {
+                result.add(profileOwnership);
+            } else if (directlyOwnedByMeasuredMode(sampledProfiles.get(index), evaluated,
+                    states[index])) {
                 result.add(ObservationOwnership.DIRECT_TWO_SIDED);
             } else {
-                result.add(ObservationOwnership.NO_SIGNAL_VALID_RASTER);
+                result.add(ObservationOwnership.INFERRED_GAP);
             }
         }
         return List.copyOf(result);
+    }
+
+    static List<String> exportedBranchSignatures(List<ProbabilisticPath> paths) {
+        if (paths == null) {
+            throw new IllegalArgumentException("Exported alternatives are missing");
+        }
+        Map<String, Integer> occurrences = new LinkedHashMap<>();
+        List<String> result = new ArrayList<>(paths.size());
+        for (ProbabilisticPath path : paths) {
+            int occurrence = occurrences.merge(path.branchSignature(), 1, Integer::sum) - 1;
+            result.add(occurrence == 0 ? path.branchSignature()
+                    : path.branchSignature() + "#alternative-" + occurrence);
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean directlyOwnedByMeasuredMode(ProbabilisticProfile sampled,
+            InferenceProfile evaluated, int stateIndex) {
+        LateralStateCell cell = evaluated.cells().get(stateIndex);
+        double offset = cell.offsetMeters();
+        double tolerance = 1e-9 * Math.max(1.0, sampled.sourcePitchMeters());
+        return sampled.modes().stream().anyMatch(mode ->
+                mode.id().equals(cell.branchLabel())
+                    && offset + tolerance >= mode.coreMinimumMeters()
+                    && offset - tolerance <= mode.coreMaximumMeters());
     }
 
     private static List<MetricPoint> selectedPolyline(TraceRequest request,
