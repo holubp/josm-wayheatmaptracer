@@ -278,7 +278,7 @@ public final class ProbabilisticInference {
             List<PathRecord>[][] next = new List[previousStates][nextStates];
             for (int prior = 0; prior < previousStates; prior++) {
                 for (int state = 0; state < nextStates; state++) {
-                    List<PathRecord> candidates = new ArrayList<>();
+                    TopKPaths candidates = new TopKPaths(cap);
                     for (int before = 0; before < current.length; before++) {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion)) {
                             continue;
@@ -300,15 +300,11 @@ public final class ProbabilisticInference {
                                 return new KBestResult(List.of(), true, true, transitions,
                                     "transition budget exceeded during k-best");
                             }
-                            candidates.add(prefix.extend(state, increment, measure));
+                            candidates.offer(prefix.extend(state, increment, measure));
                         }
                     }
-                    candidates.sort(PATH_ORDER);
-                    if (candidates.size() > cap) {
-                        truncated = true;
-                        candidates = new ArrayList<>(candidates.subList(0, cap));
-                    }
-                    next[prior][state] = List.copyOf(candidates);
+                    truncated |= candidates.truncated();
+                    next[prior][state] = candidates.paths();
                 }
             }
             assignLexicalRanks(next);
@@ -665,6 +661,22 @@ public final class ProbabilisticInference {
         for (List<PathRecord>[] row : paths) for (List<PathRecord> cell : row) if (cell != null) ordered.addAll(cell);
         ordered.sort(ProbabilisticInference::compareLexical);
         for (int index = 0; index < ordered.size(); index++) ordered.get(index).lexicalRank = index;
+    }
+
+    private static final class TopKPaths {
+        private final int cap;
+        private final List<PathRecord> paths = new ArrayList<>();
+        private boolean truncated;
+        TopKPaths(int cap) { this.cap = cap; }
+        void offer(PathRecord candidate) {
+            int index = 0;
+            while (index < paths.size() && PATH_ORDER.compare(paths.get(index), candidate) <= 0) index++;
+            if (index >= cap) { truncated = true; return; }
+            paths.add(index, candidate);
+            if (paths.size() > cap) { paths.remove(paths.size() - 1); truncated = true; }
+        }
+        boolean truncated() { return truncated; }
+        List<PathRecord> paths() { return List.copyOf(paths); }
     }
 
     private static final class PathRecord {
