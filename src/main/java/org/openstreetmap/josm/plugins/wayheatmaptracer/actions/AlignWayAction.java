@@ -80,6 +80,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ReplaceWaySegmentCommand;
@@ -636,7 +637,9 @@ public class AlignWayAction extends JosmAction {
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, currentPlan,
                         () -> currentPlan.before().sourceGeneration());
                 UndoRedoHandler.getInstance().add(new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
-                        new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
+                        computed.captured().managedRaster() != null
+                            ? new ManagedSourceLockedApplyValidator(network, livePreviewService, computed.captured())
+                            : new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
                                         slideConfig, liveLayerIdentity(imageryLayer))),
                         tr("Apply modern visible alignment")));
@@ -670,13 +673,15 @@ public class AlignWayAction extends JosmAction {
 
     static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
             AlignmentConfig config) {
-        if (captured == null || config == null || captured.managedRaster() != null
+        if (captured == null || config == null
                 || !"EPSG:3857".equals(captured.projectionCode()) || !config.cleanup().isDisabled()) {
             return false;
         }
         ManagedHeatmapConfig heatmap = config.effectiveHeatmap();
         return (captured.engine() == TrackerMode.PROBABILISTIC
-                    || captured.engine() == TrackerMode.CORRIDOR_AWARE)
+                    || captured.engine() == TrackerMode.CORRIDOR_AWARE
+                    || captured.engine() == TrackerMode.HYBRID
+                    || captured.engine() == TrackerMode.DIRECTIONAL_IMAGE)
                 && heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE
                 && heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
                 && !heatmap.simplifyEnabled() && !heatmap.adjustJunctionNodes()
