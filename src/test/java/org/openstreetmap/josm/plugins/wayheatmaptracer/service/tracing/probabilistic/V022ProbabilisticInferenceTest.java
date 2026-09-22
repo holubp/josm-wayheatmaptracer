@@ -4,17 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class V022ProbabilisticInferenceTest {
     @Test
@@ -142,6 +145,36 @@ class V022ProbabilisticInferenceTest {
     }
 
     @Test
+    void firstUseMemoPreservesTheOriginal1024TransitionCancellationCheckpoint() {
+        List<InferenceProfile> profiles = denseProfiles(3, 12);
+        int[] checkpoints = {0};
+        CancellationProbe cancellation = () -> ++checkpoints[0] >= 3;
+
+        assertThrows(CancellationException.class, () -> new ProbabilisticInference().solve(profiles,
+            EvidenceModelParameters.withoutShapeTerms(), TraceBudgets.defaults(), null, cancellation));
+        assertEquals(3, checkpoints[0]);
+    }
+
+    @Test
+    void firstUseMemoPreservesPairVisitBoundaryStatusAndCounters() {
+        List<InferenceProfile> profiles = denseProfiles(3, 2);
+        EvidenceModelParameters parameters = EvidenceModelParameters.withoutShapeTerms();
+        TraceBudgets justBelow = new TraceBudgets(96, 7, 1_000, 32, 8);
+        TraceBudgets atBoundary = new TraceBudgets(96, 8, 1_000, 32, 8);
+
+        ProbabilisticInferenceResult blocked = new ProbabilisticInference().solve(profiles, parameters,
+            justBelow);
+        ProbabilisticInferenceResult admitted = new ProbabilisticInference().solve(profiles, parameters,
+            atBoundary);
+
+        assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, blocked.status());
+        assertEquals(8, blocked.evaluatedPairVisits());
+        assertEquals("pair-visit budget exceeded", blocked.explanation());
+        assertEquals(ProbabilisticInferenceResult.Status.COMPLETE, admitted.status());
+        assertEquals(8, admitted.evaluatedPairVisits());
+    }
+
+    @Test
     void segmentInteriorCannotJumpAcrossAProhibitedDecisionRegionGap() {
         List<InferenceProfile> profiles = List.of(
             profile(0, new double[] {0}, new double[] {1}, new double[] {0}, new String[] {"route"}),
@@ -157,6 +190,23 @@ class V022ProbabilisticInferenceTest {
 
         assertEquals(ProbabilisticInferenceResult.Status.NO_ROUTE, result.status());
         assertTrue(result.mapPath().isEmpty());
+    }
+
+    private static List<InferenceProfile> denseProfiles(int profileCount, int states) {
+        List<InferenceProfile> profiles = new ArrayList<>();
+        double[] offsets = new double[states];
+        double[] widths = new double[states];
+        double[] unaries = new double[states];
+        String[] branches = new String[states];
+        for (int state = 0; state < states; state++) {
+            offsets[state] = state - 0.5 * (states - 1);
+            widths[state] = 1.0;
+            branches[state] = "dense";
+        }
+        for (int index = 0; index < profileCount; index++) {
+            profiles.add(profile(2.0 * index, offsets, widths, unaries, branches));
+        }
+        return List.copyOf(profiles);
     }
 
     static List<InferenceProfile> tinyProfiles() {
