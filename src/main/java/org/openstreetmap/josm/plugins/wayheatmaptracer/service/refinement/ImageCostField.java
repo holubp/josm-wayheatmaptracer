@@ -43,7 +43,18 @@ public final class ImageCostField {
             double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
             double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
             List<ImageOrientationSupport.AngularMode> orientationModes,
-            double orientationRadians, double orientationCertainty) {
+            double orientationRadians, double orientationCertainty, double positionalReliability) {
+        /** Retains fixtures that predate continuous image reliability. */
+        public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
+                double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
+                double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
+                List<ImageOrientationSupport.AngularMode> orientationModes,
+                double orientationRadians, double orientationCertainty) {
+            this(support, origin, normal, coreMinimumMeters, coreMaximumMeters,
+                localizationSigmaMeters, noiseFloor, peakIntensity, offsetsMeters, values,
+                orientationModes, orientationRadians, orientationCertainty, 1.0);
+        }
+
         /** Copies interpolation arrays and validates measured fields. */
         public FrozenProfile {
             offsetsMeters = offsetsMeters.clone();
@@ -53,7 +64,8 @@ public final class ImageCostField {
                     || offsetsMeters.length != values.length || offsetsMeters.length < 2
                     || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
                     || !Double.isFinite(orientationRadians) || !Double.isFinite(orientationCertainty)
-                    || orientationCertainty < 0.0 || orientationCertainty > 1.0) {
+                    || orientationCertainty < 0.0 || orientationCertainty > 1.0
+                    || positionalReliability < 0.0 || positionalReliability > 1.0) {
                 throw new IllegalArgumentException("Frozen profile is incomplete");
             }
         }
@@ -282,7 +294,9 @@ public final class ImageCostField {
                 extracted.noiseFloor(), extracted.maximumIntensity(),
                 offsets, values, orientation.modes(),
                 orientation.measured() ? orientation.radians() : routeBearing,
-                orientation.measured() ? orientation.certainty() : 0.0);
+                orientation.measured() ? orientation.certainty() : 0.0,
+                selected.scalarAmplitudeReliability() + (1.0 - selected.scalarAmplitudeReliability())
+                    * (orientation.measured() ? orientation.certainty() : 0.0));
     }
 
     /** Returns whether a point has complete bilinear image support inside the decision region. */

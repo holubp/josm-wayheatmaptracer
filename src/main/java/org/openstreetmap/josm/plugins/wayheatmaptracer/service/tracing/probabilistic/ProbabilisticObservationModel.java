@@ -46,12 +46,13 @@ public final class ProbabilisticObservationModel {
             }
         }
 
+        double[] priors = effectiveComponentPriors(profile, components);
         double[] unary = new double[states];
         double[][] responsibilities = new double[states][components.size()];
         for (int state = 0; state < states; state++) {
             double[] terms = new double[components.size()];
             for (int component = 0; component < components.size(); component++) {
-                double prior = components.get(component).priorWeight();
+                double prior = priors[component];
                 terms[component] = prior == 0.0 ? Double.NEGATIVE_INFINITY
                     : Math.log(prior) + logDensity[component][state];
             }
@@ -73,6 +74,26 @@ public final class ProbabilisticObservationModel {
         return new InferenceProfile(profile.chainageMeters(), profile.anchor(), profile.normalUnit(),
             lattice.cells(), unary, orientationByBranch(profile),
             ownership, !localized, responsibilities);
+    }
+
+    /** Applies frozen mode reliability after baseline mixture construction. */
+    static double[] effectiveComponentPriors(ProbabilisticProfile profile,
+            List<ObservationComponent> components) {
+        double[] result = components.stream().mapToDouble(ObservationComponent::priorWeight).toArray();
+        int uniform = -1;
+        for (int index = 0; index < components.size(); index++) {
+            if (components.get(index).kind() == ObservationComponent.Kind.MISSING) uniform = index;
+        }
+        if (uniform < 0) throw new IllegalArgumentException("Observation mixture has no uniform component");
+        for (int index = 0; index < components.size(); index++) {
+            ObservationComponent component = components.get(index);
+            if (component.kind() != ObservationComponent.Kind.MEASURED) continue;
+            ProbabilisticProfile.Mode mode = findMode(profile, component);
+            double transferred = result[index] * (1.0 - mode.positionalReliability());
+            result[index] -= transferred;
+            result[uniform] += transferred;
+        }
+        return result;
     }
 
     private static Map<String, ImageOrientationSupport> orientationByBranch(

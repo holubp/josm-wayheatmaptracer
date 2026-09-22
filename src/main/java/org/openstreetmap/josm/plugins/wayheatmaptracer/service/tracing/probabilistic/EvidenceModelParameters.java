@@ -35,7 +35,7 @@ public record EvidenceModelParameters(
 
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
-        return new EvidenceModelParameters("probabilistic-v0.22-localization-1", 1.0, 1.0, 2.0,
+        return new EvidenceModelParameters("probabilistic-v0.22-localization-2", 1.0, 1.0, 2.0,
             0.5, 0.5, Math.toRadians(30.0), 1.0, 2.0, Localization.defaults());
     }
 
@@ -65,7 +65,8 @@ public record EvidenceModelParameters(
         double localModeProminenceFraction,
         double localModeShoulderFraction,
         double localModeCoreFraction,
-        double routeProfileHalfWidthMeters
+        double routeProfileHalfWidthMeters,
+        double scalarAmplitudeHalfResponse
     ) {
         /** Finest supported angular resolution for this descriptor version. */
         public static final int MAXIMUM_ORIENTATION_HEADING_COUNT = 180;
@@ -83,7 +84,7 @@ public record EvidenceModelParameters(
                 || maximumOrientationSampleCount < (long) orientationHeadingCount * 2L
                 || !unit(localModeProminenceFraction) || !unit(localModeShoulderFraction)
                 || !unit(localModeCoreFraction) || localModeCoreFraction < localModeShoulderFraction
-                || !positive(routeProfileHalfWidthMeters)) {
+                || !positive(routeProfileHalfWidthMeters) || !positive(scalarAmplitudeHalfResponse)) {
                 throw new IllegalArgumentException("Localization parameters are invalid");
             }
         }
@@ -91,7 +92,21 @@ public record EvidenceModelParameters(
         /** Returns the initial 18-heading physical descriptor and local-mode extraction policy. */
         public static Localization defaults() {
             return new Localization(18, 6.0, 4.0, 0.5, 0.75, 0.2, 0.1,
-                16_384, 0.1, 0.72, 0.92, 8.0);
+                16_384, 0.1, 0.72, 0.92, 8.0, 0.08);
+        }
+
+        /** Retains the pre-v0.22.0-alpha.9 localization constructor for fixtures. */
+        public Localization(int orientationHeadingCount, double minimumOrientationRayMeters,
+            double orientationRayLengthPitches, double maximumOrientationStepPitches,
+            double minimumOrientationValidFraction, double orientationBackgroundQuantile,
+            double orientationProminenceFraction, int maximumOrientationSampleCount,
+            double localModeProminenceFraction, double localModeShoulderFraction,
+            double localModeCoreFraction, double routeProfileHalfWidthMeters) {
+            this(orientationHeadingCount, minimumOrientationRayMeters, orientationRayLengthPitches,
+                maximumOrientationStepPitches, minimumOrientationValidFraction,
+                orientationBackgroundQuantile, orientationProminenceFraction,
+                maximumOrientationSampleCount, localModeProminenceFraction,
+                localModeShoulderFraction, localModeCoreFraction, routeProfileHalfWidthMeters, 0.08);
         }
     }
 

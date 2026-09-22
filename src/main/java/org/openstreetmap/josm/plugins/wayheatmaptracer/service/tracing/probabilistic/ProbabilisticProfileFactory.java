@@ -145,7 +145,11 @@ public final class ProbabilisticProfileFactory {
             result.add(new ProbabilisticProfile.Mode(mode.id(), mode.evidenceLineage(),
                 mode.coreMinimumMeters(), mode.coreMaximumMeters(), mode.localizationSigmaMeters(),
                 mode.existenceConfidence(), mode.localizationConfidence(), mode.peakOffsetsMeters(),
-                mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support));
+                mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support,
+                mode.scalarAmplitudeReliability(),
+                mode.localizationConfidence() * support.certainty(),
+                ProbabilisticProfile.Mode.combineReliability(mode.scalarAmplitudeReliability(),
+                    mode.localizationConfidence() * support.certainty())));
         }
         return List.copyOf(result);
     }
@@ -208,7 +212,10 @@ public final class ProbabilisticProfileFactory {
             modes.add(new ProbabilisticProfile.Mode(id, lineage, mode.coreMinimumMeters(),
                     mode.coreMaximumMeters(), mode.localizationSigmaMeters(),
                     mode.existenceConfidence(), mode.localizationConfidence(), mode.peakOffsetsMeters(),
-                    mode.nestedCenterOffsetsMeters(), false));
+                    mode.nestedCenterOffsetsMeters(), false,
+                    ImageOrientationSupport.unknown(
+                        ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT),
+                    mode.scalarAmplitudeReliability(), 0.0, mode.scalarAmplitudeReliability()));
         }
         for (LocalScalarProfileExtractor.CensoredMode mode : extracted.censoredModes()) {
             String id = "p" + profileIndex + "-m" + modeIndex++;

@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.openstreetmap.josm.tools.I18n.tr;
 
+import java.awt.Dimension;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.WindowAdapter;
@@ -20,6 +21,8 @@ import javax.swing.JComboBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
@@ -85,6 +88,8 @@ import org.openstreetmap.josm.tools.Shortcut;
  * JOSM action that samples the selected way against the heatmap, opens candidate preview, and applies the chosen result.
  */
 public class AlignWayAction extends JosmAction {
+    static final int MAXIMUM_PREVIEW_FAILURE_CHARACTERS = 1_200;
+    private static final String PREVIEW_FAILURE_LOG_SUFFIX = "…\n\nSee the JOSM log for full details.";
     private static final String[] RATING_VALUES = {"", "++", "+", "0", "-", "--"};
     /** Largest half-width offered by ordinary search-edge recovery. */
     private static final double MAX_ORDINARY_SEARCH_HALF_WIDTH_METERS = 14.0;
@@ -1712,12 +1717,27 @@ public class AlignWayAction extends JosmAction {
     }
 
     private void showError(String message) {
+        JTextArea text = new JTextArea(previewFailureText(message), 7, 76);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setCaretPosition(0);
+        JScrollPane scroll = new JScrollPane(text);
+        scroll.setPreferredSize(new Dimension(640, 180));
         JOptionPane.showMessageDialog(
             MainApplication.getMainFrame(),
-            message,
+            scroll,
             tr("WayHeatmapTracer"),
             JOptionPane.ERROR_MESSAGE
         );
+    }
+
+    static String previewFailureText(String message) {
+        String safe = message == null || message.isBlank() ? tr("Unknown error") : message;
+        if (safe.length() <= MAXIMUM_PREVIEW_FAILURE_CHARACTERS) {
+            return safe;
+        }
+        return safe.substring(0, MAXIMUM_PREVIEW_FAILURE_CHARACTERS) + PREVIEW_FAILURE_LOG_SUFFIX;
     }
 
     private void requireDownloadedAreaCoverage(SelectionContext selection, DataSet dataSet) {

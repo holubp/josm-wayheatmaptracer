@@ -47,8 +47,10 @@ class V022ImageRefitterTest {
         ImageCostField image = straightGaussianImage(false);
         ImageSupportedRefitter.Config config = new ImageSupportedRefitter.Config(1.0, 0.0, 0.0,
                 1.25, 150, 20, 1.0e-4, 1.0e-5, 1.0e-6, 1.0e-3, 3);
-        double density = image.freezeProfile(new MetricPoint(10, 0.5), new MetricPoint(1, 0))
-                .evaluate(new MetricPoint(10, 0.5)).orElseThrow().cost();
+        ImageCostField.FrozenProfile frozen = image.freezeProfile(new MetricPoint(10, 0.5),
+                new MetricPoint(1, 0));
+        double density = frozen.positionalReliability()
+                * frozen.evaluate(new MetricPoint(10, 0.5)).orElseThrow().cost();
 
         for (double length : List.of(20.0, 40.0)) {
             List<MetricPoint> points = List.of(new MetricPoint(10, 0.5),

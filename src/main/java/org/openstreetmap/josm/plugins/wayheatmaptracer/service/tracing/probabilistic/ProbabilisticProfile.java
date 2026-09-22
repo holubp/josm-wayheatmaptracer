@@ -40,7 +40,8 @@ public record ProbabilisticProfile(
         double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
         double localizationConfidence, List<Double> peakOffsetsMeters,
         List<Double> nestedCenterOffsetsMeters, boolean groupedParent,
-        ImageOrientationSupport orientationSupport) {
+        ImageOrientationSupport orientationSupport, double scalarAmplitudeReliability,
+        double branchCoherence, double positionalReliability) {
         /** Retains mode fixtures that predate branch-local image orientation. */
         public Mode(String id, String evidenceLineage, double coreMinimumMeters,
             double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
@@ -50,7 +51,18 @@ public record ProbabilisticProfile(
                 localizationSigmaMeters, existenceConfidence, localizationConfidence,
                 peakOffsetsMeters, nestedCenterOffsetsMeters, groupedParent,
                 ImageOrientationSupport.unknown(
-                    ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
+                    ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT), 1.0, 0.0, 1.0);
+        }
+
+        /** Retains orientation fixtures that predate continuous reliability. */
+        public Mode(String id, String evidenceLineage, double coreMinimumMeters,
+            double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
+            double localizationConfidence, List<Double> peakOffsetsMeters,
+            List<Double> nestedCenterOffsetsMeters, boolean groupedParent,
+            ImageOrientationSupport orientationSupport) {
+            this(id, evidenceLineage, coreMinimumMeters, coreMaximumMeters, localizationSigmaMeters,
+                existenceConfidence, localizationConfidence, peakOffsetsMeters,
+                nestedCenterOffsetsMeters, groupedParent, orientationSupport, 1.0, 0.0, 1.0);
         }
 
         /** Validates a finite core, confidence and immutable modal positions. */
@@ -60,7 +72,8 @@ public record ProbabilisticProfile(
                 || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
                 || !unit(existenceConfidence) || !unit(localizationConfidence)
                 || peakOffsetsMeters == null || nestedCenterOffsetsMeters == null
-                || orientationSupport == null
+                || orientationSupport == null || !unit(scalarAmplitudeReliability)
+                || !unit(branchCoherence) || !unit(positionalReliability)
                 || peakOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))
                 || nestedCenterOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))) {
                 throw new IllegalArgumentException("Measured mode is invalid");
@@ -72,6 +85,16 @@ public record ProbabilisticProfile(
         /** Returns the deterministic center of the observed high-core interval. */
         public double coreCenterMeters() {
             return 0.5 * (coreMinimumMeters + coreMaximumMeters);
+        }
+
+        /** Combines absolute scalar evidence with optional branch-local corroboration. */
+        public static double combineReliability(double scalarAmplitudeReliability,
+                double branchCoherence) {
+            if (!unit(scalarAmplitudeReliability) || !unit(branchCoherence)) {
+                throw new IllegalArgumentException("Reliability inputs must be unit values");
+            }
+            return scalarAmplitudeReliability
+                    + (1.0 - scalarAmplitudeReliability) * branchCoherence;
         }
 
         /** Returns the specified direct localization strength. */

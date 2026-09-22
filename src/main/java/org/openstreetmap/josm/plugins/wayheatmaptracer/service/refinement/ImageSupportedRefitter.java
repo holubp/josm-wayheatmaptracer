@@ -307,7 +307,9 @@ public final class ImageSupportedRefitter {
             if (first.isEmpty() || second.isEmpty()) return unsupported(points.size());
             FrozenSample a = first.orElseThrow();
             FrozenSample b = second.orElseThrow();
-            double density = 0.5 * (a.cost() + b.cost());
+            double reliability = Math.sqrt(firstProfile.positionalReliability()
+                    * secondProfile.positionalReliability());
+            double density = reliability * 0.5 * (a.cost() + b.cost());
             double ex = delta.xMeters();
             double ey = delta.yMeters();
             double expected = averageUndirected(firstProfile.orientationRadians(),
@@ -315,7 +317,7 @@ public final class ImageSupportedRefitter {
             double ux = Math.cos(expected);
             double uy = Math.sin(expected);
             double cross = ex * uy - ey * ux;
-            double certainty = Math.min(firstProfile.orientationCertainty(),
+            double certainty = reliability * Math.min(firstProfile.orientationCertainty(),
                     secondProfile.orientationCertainty());
             double orientationNumerator = 0.5 * certainty * cross * cross;
             objective += (length * density + orientationNumerator / length) / referenceLength;
@@ -325,10 +327,10 @@ public final class ImageSupportedRefitter {
             double commonY = (ey / length * density
                     - certainty * cross * ux / length
                     - orientationNumerator * ey / (length * length * length)) / referenceLength;
-            meshGx[segment] += -commonX + 0.5 * length * a.gradientX() / referenceLength;
-            meshGy[segment] += -commonY + 0.5 * length * a.gradientY() / referenceLength;
-            meshGx[segment + 1] += commonX + 0.5 * length * b.gradientX() / referenceLength;
-            meshGy[segment + 1] += commonY + 0.5 * length * b.gradientY() / referenceLength;
+            meshGx[segment] += -commonX + reliability * 0.5 * length * a.gradientX() / referenceLength;
+            meshGy[segment] += -commonY + reliability * 0.5 * length * a.gradientY() / referenceLength;
+            meshGx[segment + 1] += commonX + reliability * 0.5 * length * b.gradientX() / referenceLength;
+            meshGy[segment + 1] += commonY + reliability * 0.5 * length * b.gradientY() / referenceLength;
         }
 
         for (CurvatureBlock block : problem.curvatureBlocks) {

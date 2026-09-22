@@ -31,11 +31,24 @@ public final class LocalScalarProfileExtractor {
     public record Mode(double coreMinimumMeters, double coreMaximumMeters,
             double localizationSigmaMeters, double existenceConfidence,
             double localizationConfidence, List<Double> peakOffsetsMeters,
-            List<Double> nestedCenterOffsetsMeters) {
+            List<Double> nestedCenterOffsetsMeters, double scalarAmplitudeReliability) {
+        /** Retains scalar mode fixtures that predate continuous amplitude reliability. */
+        public Mode(double coreMinimumMeters, double coreMaximumMeters,
+                double localizationSigmaMeters, double existenceConfidence,
+                double localizationConfidence, List<Double> peakOffsetsMeters,
+                List<Double> nestedCenterOffsetsMeters) {
+            this(coreMinimumMeters, coreMaximumMeters, localizationSigmaMeters, existenceConfidence,
+                localizationConfidence, peakOffsetsMeters, nestedCenterOffsetsMeters, 1.0);
+        }
+
         /** Copies all mode evidence. */
         public Mode {
             peakOffsetsMeters = List.copyOf(peakOffsetsMeters);
             nestedCenterOffsetsMeters = List.copyOf(nestedCenterOffsetsMeters);
+            if (!Double.isFinite(scalarAmplitudeReliability) || scalarAmplitudeReliability < 0.0
+                    || scalarAmplitudeReliability > 1.0) {
+                throw new IllegalArgumentException("Scalar amplitude reliability is invalid");
+            }
         }
 
         /** Returns the deterministic midpoint of the measured high-core center set. */
@@ -126,9 +139,11 @@ public final class LocalScalarProfileExtractor {
             double sigma = Math.max(sourcePitchMeters * 0.5, deviation);
             double halfCenter = Math.min(sourcePitchMeters * 0.5,
                     Math.max(sourcePitchMeters * 0.25, deviation));
+            double amplitudeReliability = prominence / (prominence
+                    + parameters.scalarAmplitudeHalfResponse());
             modes.add(new Mode(center - halfCenter, center + halfCenter, sigma, existence,
                     agreementConfidence(centers, sourcePitchMeters),
-                    List.of(samples.get(peakIndex).offsetMeters()), centers));
+                    List.of(samples.get(peakIndex).offsetMeters()), centers, amplitudeReliability));
         }
         return new Result(noiseFloor, maximum, modes, censored);
     }

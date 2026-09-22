@@ -33,6 +33,18 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionCon
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
+    void previewFailureTextBoundsLongMessagesWithoutDiscardingThePrefix() {
+        String suffix = "\u2026\n\nSee the JOSM log for full details.";
+        String message = "failure-prefix " + "x".repeat(AlignWayAction.MAXIMUM_PREVIEW_FAILURE_CHARACTERS + 80);
+
+        String displayed = AlignWayAction.previewFailureText(message);
+
+        assertTrue(displayed.startsWith("failure-prefix "));
+        assertTrue(displayed.endsWith(suffix));
+        assertTrue(displayed.length() <= AlignWayAction.MAXIMUM_PREVIEW_FAILURE_CHARACTERS + suffix.length());
+    }
+
+    @Test
     void explicitAVisiblePreviewIsSessionLocalAndLeavesOrdinaryCorridorActionUnchanged() {
         ManagedHeatmapConfig configured = configuredCorridor();
         assertSame(configured, AlignWayAction.effectiveConfig(configured, null, null));
