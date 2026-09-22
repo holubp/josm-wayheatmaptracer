@@ -17,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
     private static final double LOG_ZERO = Double.NEGATIVE_INFINITY;
+    private static final int ADMISSION_MEMO_CAPACITY = 32_768;
 
     /**
      * Solves one complete admitted state graph without score-based beam pruning.
@@ -55,7 +56,8 @@ public final class ProbabilisticInference {
                 "state budget exceeded", profiles);
         }
         try {
-            GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion, cancellation);
+            TransitionAdmissionMemo admissions = new TransitionAdmissionMemo(ADMISSION_MEMO_CAPACITY);
+            GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion, cancellation, admissions);
             if (messages.resourceLimited()) {
                 return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
                     messages.pairVisits(), messages.transitions(), messages.explanation(), profiles);
@@ -68,7 +70,7 @@ public final class ProbabilisticInference {
                 return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,
                     messages.pairVisits(), messages.transitions(), "non-finite partition function", profiles);
             }
-            KBestResult kBest = enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation);
+            KBestResult kBest = enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation, admissions);
             if (kBest.resourceLimited()) {
                 return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
                     messages.pairVisits(), kBest.transitions(), kBest.explanation(), profiles);
@@ -107,7 +109,7 @@ public final class ProbabilisticInference {
 
     private static GraphMessages forwardBackward(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
-        CancellationProbe cancellation) {
+        CancellationProbe cancellation, TransitionAdmissionMemo admissions) {
         cancellation.checkpoint();
         if (profiles.size() == 1) {
             InferenceProfile profile = profiles.get(0);
@@ -132,7 +134,7 @@ public final class ProbabilisticInference {
         double[][] initial = matrix(firstStates, secondStates, LOG_ZERO);
         for (int first = 0; first < firstStates; first++) {
             for (int second = 0; second < secondStates; second++) {
-                if (!transitionAllowed(profiles, 0, first, second, decisionRegion)) {
+                if (!transitionAllowed(profiles, 0, first, second, decisionRegion, admissions)) {
                     continue;
                 }
                 double energy = profileEnergy(profiles, 0, first, parameters)
@@ -163,7 +165,7 @@ public final class ProbabilisticInference {
                         continue;
                     }
                     for (int state = 0; state < currentStates; state++) {
-                        if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion)) {
+                        if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
                         }
                         transitions++;
@@ -202,7 +204,7 @@ public final class ProbabilisticInference {
                 for (int currentState = 0; currentState < currentStates; currentState++) {
                     double accumulated = LOG_ZERO;
                     for (int next = 0; next < nextStates; next++) {
-                        if (!transitionAllowed(profiles, currentProfile, currentState, next, decisionRegion)) {
+                        if (!transitionAllowed(profiles, currentProfile, currentState, next, decisionRegion, admissions)) {
                             continue;
                         }
                         transitions++;
@@ -233,7 +235,7 @@ public final class ProbabilisticInference {
 
     private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
-        CancellationProbe cancellation) {
+        CancellationProbe cancellation, TransitionAdmissionMemo admissions) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
         if (profiles.size() == 1) {
@@ -255,7 +257,7 @@ public final class ProbabilisticInference {
         List<PathRecord>[][] current = new List[firstStates][secondStates];
         for (int first = 0; first < firstStates; first++) {
             for (int second = 0; second < secondStates; second++) {
-                if (!transitionAllowed(profiles, 0, first, second, decisionRegion)) {
+                if (!transitionAllowed(profiles, 0, first, second, decisionRegion, admissions)) {
                     current[first][second] = List.of();
                     continue;
                 }
@@ -280,7 +282,7 @@ public final class ProbabilisticInference {
                 for (int state = 0; state < nextStates; state++) {
                     TopKPaths candidates = new TopKPaths(cap);
                     for (int before = 0; before < current.length; before++) {
-                        if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion)) {
+                        if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
                         }
                         List<PathRecord> prefixes = current[before][prior];
@@ -564,14 +566,8 @@ public final class ProbabilisticInference {
     }
 
     private static boolean transitionAllowed(List<InferenceProfile> profiles, int startProfile,
-        int startState, int endState, MetricRegion decisionRegion) {
-        if (decisionRegion == null) {
-            return true;
-        }
-        MetricPoint start = profiles.get(startProfile).point(startState);
-        MetricPoint end = profiles.get(startProfile + 1).point(endState);
-        return decisionRegion.contains(start) && decisionRegion.contains(end)
-            && decisionRegion.containsSegment(start, end);
+        int startState, int endState, MetricRegion decisionRegion, TransitionAdmissionMemo admissions) {
+        return admissions.allowed(startProfile, startState, endState, profiles, decisionRegion);
     }
 
     private static ProbabilisticInferenceResult failure(ProbabilisticInferenceResult.Status status,
