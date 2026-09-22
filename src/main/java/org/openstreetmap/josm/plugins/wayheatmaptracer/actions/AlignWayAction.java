@@ -486,7 +486,13 @@ public class AlignWayAction extends JosmAction {
                 return this;
             }
         });
-        JLabel quality = new JLabel(liveBQualitySummary(computed, 0));
+        JTextArea quality = new JTextArea(liveBQualitySummary(computed, 0), 5, 76);
+        quality.setEditable(false);
+        quality.setLineWrap(true);
+        quality.setWrapStyleWord(true);
+        quality.setCaretPosition(0);
+        JScrollPane qualityScroll = new JScrollPane(quality);
+        qualityScroll.setPreferredSize(new Dimension(640, 110));
         JLabel diagnostics = new JLabel(tr(
                 "Modern Format-15 debug export is unavailable for this experimental preview."));
         ModernSingleWayEditPlanAdapter planAdapter = new ModernSingleWayEditPlanAdapter();
@@ -504,7 +510,7 @@ public class AlignWayAction extends JosmAction {
         if (candidates.size() > 1) {
             panel.add(choices);
         }
-        panel.add(quality);
+        panel.add(qualityScroll);
         panel.add(diagnostics);
         panel.add(confirm);
         panel.add(apply);
@@ -536,6 +542,7 @@ public class AlignWayAction extends JosmAction {
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
             }, false, PluginPreferences.isDebugEnabled());
             quality.setText(liveBQualitySummary(computed, index));
+            quality.setCaretPosition(0);
             plan[0] = null;
             review[0] = null;
             if (supportsModernVisibleApply(computed.captured(), slideConfig)) {
