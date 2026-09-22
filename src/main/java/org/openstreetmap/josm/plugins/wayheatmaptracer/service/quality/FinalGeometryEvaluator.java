@@ -290,7 +290,10 @@ public final class FinalGeometryEvaluator {
         for (int first = 0; first < request.points().size() - 2; first++) {
             for (int last = first + 2; last < request.points().size(); last++) {
                 double span = chainage[last] - chainage[first];
-                if (span < 4.0 || span > 20.0) {
+                if (span > 20.0) {
+                    break;
+                }
+                if (span < 4.0) {
                     continue;
                 }
                 double amplitude = 0.0;
