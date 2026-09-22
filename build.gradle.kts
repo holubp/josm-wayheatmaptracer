@@ -83,3 +83,17 @@ tasks.jar {
         )
     }
 }
+
+tasks.register<JavaExec>("v022ProbabilisticBenchmark") {
+    group = "verification"
+    description = "Runs the local v0.22 probabilistic benchmark from an explicit manifest"
+    classpath = sourceSets["tools"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022ProbabilisticBenchmarkTool")
+    val manifest = providers.gradleProperty("v022BenchmarkManifest")
+    doFirst {
+        if (!manifest.isPresent || manifest.get().isBlank()) {
+            throw GradleException("v022ProbabilisticBenchmark requires -Pv022BenchmarkManifest=<local path>")
+        }
+    }
+    args("--manifest", manifest.orNull ?: "")
+}

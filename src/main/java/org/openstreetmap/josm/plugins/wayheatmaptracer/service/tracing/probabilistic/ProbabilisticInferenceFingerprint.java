@@ -20,18 +20,18 @@ public final class ProbabilisticInferenceFingerprint {
                 .append(result.alternativeSearchTruncated()).append('|')
                 .append(result.evaluatedPairVisits()).append('|').append(result.evaluatedTransitions())
                 .append('|').append(result.gapSummary());
-        appendPaths(value, result.rawPaths());
-        appendPaths(value, result.distinctPaths());
-        appendArrays(value, result.positionMarginals());
-        appendArrays(value, result.componentMarginals());
-        appendArrays(value, result.forwardPositionMarginals());
-        appendArrays(value, result.backwardPositionMarginals());
+        appendPaths(value, "raw", result.rawPaths());
+        appendPaths(value, "distinct", result.distinctPaths());
+        appendArrays(value, "position", result.positionMarginals());
+        appendArrays(value, "component", result.componentMarginals());
+        appendArrays(value, "forward", result.forwardPositionMarginals());
+        appendArrays(value, "backward", result.backwardPositionMarginals());
         value.append('|').append(result.credibleSets()).append('|').append(result.explanation());
         return value.toString();
     }
 
-    private static void appendPaths(StringBuilder value, java.util.List<ProbabilisticPath> paths) {
-        value.append('|');
+    private static void appendPaths(StringBuilder value, String label, java.util.List<ProbabilisticPath> paths) {
+        value.append('|').append(label).append('#').append(paths.size()).append('=');
         for (ProbabilisticPath path : paths) {
             appendPath(value, path);
             value.append(';');
@@ -44,12 +44,14 @@ public final class ProbabilisticInferenceFingerprint {
         append(value, path.logBaseMeasure());
         append(value, path.conditionalPosteriorMass());
         value.append(path.branchSignature()).append(':');
+        value.append("|points#").append(path.points().size()).append('=');
         path.points().forEach(point -> { append(value, point.xMeters()); append(value, point.yMeters()); });
     }
 
-    private static void appendArrays(StringBuilder value, java.util.List<double[]> arrays) {
-        value.append('|');
+    private static void appendArrays(StringBuilder value, String label, java.util.List<double[]> arrays) {
+        value.append('|').append(label).append('#').append(arrays.size()).append('=');
         for (double[] array : arrays) {
+            value.append('[').append(array.length).append(']');
             for (double number : array) {
                 append(value, number);
             }
