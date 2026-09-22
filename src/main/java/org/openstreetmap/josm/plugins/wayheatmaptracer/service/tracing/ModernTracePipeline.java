@@ -33,6 +33,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageS
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedRefitter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
  * Runs one modern detached engine through common image refinement, final-geometry assessment,
@@ -138,7 +139,9 @@ public final class ModernTracePipeline {
             throw new IllegalArgumentException("Modern pipeline inputs are incomplete");
         }
         TraceEngine engine = engine(request.engine(), options.fieldName());
+        long inferenceStarted = System.nanoTime();
         TraceHypothesisSet inference = engine.trace(request, evidence, network, cancellation);
+        long inferenceNanos = System.nanoTime() - inferenceStarted;
         if (inference.hypotheses().isEmpty()) {
             return new Result(inference, List.of());
         }
@@ -150,12 +153,27 @@ public final class ModernTracePipeline {
         ImageCostField image = new ImageCostField(scalar, evidence.transform(),
                 evidence.decisionRegion(), pitch);
         List<Route> routes = new ArrayList<>();
+        long finalizationNanos = 0L;
         for (TraceHypothesis hypothesis : inference.hypotheses()) {
             cancellation.checkpoint();
+            long routeStarted = System.nanoTime();
             routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
                     request, options, pitch, cancellation));
+            finalizationNanos += System.nanoTime() - routeStarted;
         }
-        return new Result(inference, rank(routes, request.engine(), options));
+        long rankingStarted = System.nanoTime();
+        List<Route> ranked = rank(routes, request.engine(), options);
+        long rankingNanos = System.nanoTime() - rankingStarted;
+        if (request.engine() == TrackerMode.PROBABILISTIC) {
+            PluginLog.verbose("B_PERF pipeline inferenceMs=%d finalizationMs=%d rankingMs=%d routes=%d status=%s",
+                millis(inferenceNanos), millis(finalizationNanos), millis(rankingNanos), ranked.size(),
+                inference.status());
+        }
+        return new Result(inference, ranked);
+    }
+
+    private static long millis(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     private TraceEngine engine(TrackerMode mode, String fieldName) {
@@ -175,12 +193,14 @@ public final class ModernTracePipeline {
             TraceRequest request, Options options, double pitch, CancellationProbe cancellation) {
         SeedGeometry seed = seedGeometry(source, evidence, network, request);
         ImageSupportedLocalCleanup.Mode mode = cleanupMode(options.cleanup().mode());
+        long cleanupStarted = System.nanoTime();
         ImageSupportedLocalCleanup.Result cleanup = new ImageSupportedLocalCleanup().clean(
                 new ImageSupportedLocalCleanup.Request(seed.pointIds(), seed.points(),
                     seed.retainedIndices(), seed.protectedIndices(), image,
                     evidence.decisionRegion(), mode, ImageSupportedRefitter.Config.defaults(pitch),
                     options.cleanup().simplificationDeviationMeters(), seed.assignments(), List.of()),
                 cancellation);
+        long cleanupNanos = System.nanoTime() - cleanupStarted;
         cancellation.checkpoint();
         List<MetricPoint> finalPoints = cleanup.points();
         validateFinalProvenance(seed, cleanup, network.closure().removableExistingNodeKeys());
@@ -189,8 +209,10 @@ public final class ModernTracePipeline {
             retainedSource.put(id, seed.sourceOwnership().get(id));
         }
         Map<Integer, MetricPoint> protectedAssignments = protectedAssignments(seed, cleanup);
+        long supportStarted = System.nanoTime();
         List<ObservationOwnership> support = freshSupport(finalPoints,
                 protectedAssignments.keySet(), image);
+        long supportNanos = System.nanoTime() - supportStarted;
         boolean changed = !finalPoints.equals(source.points());
         Map<String, Double> diagnostics = new LinkedHashMap<>(source.diagnostics());
         diagnostics.put("commonFinalProcessing", 1.0);
@@ -202,12 +224,19 @@ public final class ModernTracePipeline {
         diagnostics.put("protectedExistingOccurrences", (double) protectedAssignments.size());
         TraceHypothesis finalized = new TraceHypothesis(source.id(), source.branchSignature(),
                 finalPoints, support, source.objective(), source.posteriorProbability(), diagnostics);
+        long finalGeometryStarted = System.nanoTime();
         FinalGeometryEvaluator.Result quality = new FinalGeometryEvaluator().evaluate(
                 new FinalGeometryEvaluator.Request(finalized.id(), finalized.points(),
                     cleanup.occurrenceIds(), image, pitch, protectedAssignments, List.of(), changed,
                     inference.status() == TraceHypothesisSet.Status.AMBIGUOUS,
                     inference.alternativesTruncated(),
                     inference.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+        long finalGeometryNanos = System.nanoTime() - finalGeometryStarted;
+        if (request.engine() == TrackerMode.PROBABILISTIC) {
+            PluginLog.verbose("B_PERF final cleanupMs=%d supportMs=%d geometryMs=%d rawPoints=%d finalPoints=%d cleanup=%s findings=%d disposition=%s",
+                millis(cleanupNanos), millis(supportNanos), millis(finalGeometryNanos), source.points().size(),
+                finalPoints.size(), cleanup.status(), quality.findings().size(), quality.disposition());
+        }
         return new Route(source, finalized, cleanup.occurrenceIds(), cleanup.assignments(),
                 retainedSource, quality, cleanup.status(), changed);
     }
