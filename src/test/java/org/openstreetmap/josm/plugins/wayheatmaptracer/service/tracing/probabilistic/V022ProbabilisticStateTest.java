@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -63,6 +64,39 @@ class V022ProbabilisticStateTest {
         InferenceProfile conditioned = new ProbabilisticObservationModel().evaluate(profile, lattice,
             EvidenceModelParameters.defaults());
         assertEquals(0.0, conditioned.unaryCost(0), 0.0);
+    }
+
+    @Test
+    void multiModeStateEvidenceRetainsInvalidInterpolationAndSeparateResponsibilities() {
+        List<ProbabilisticProfile.Sample> samples = List.of(
+            new ProbabilisticProfile.Sample(-2.0, 0.1, true),
+            new ProbabilisticProfile.Sample(0.0, 0.0, false),
+            new ProbabilisticProfile.Sample(2.0, 0.9, true));
+        ProbabilisticProfile profile = new ProbabilisticProfile(0, 0.0,
+            new MetricPoint(0.0, 0.0), new MetricPoint(0.0, 1.0), -2.0, 2.0, 1.0,
+            true, 0.02, samples, List.of(mode("left", -1.0), mode("right", 1.0),
+                mode("center", 0.0)), List.of(), OptionalDouble.empty(), List.of(0.0), 1.0);
+        ProbabilisticStateLattice lattice = new ProbabilisticStateBuilder().build(profile, 96)
+            .lattice().orElseThrow();
+
+        InferenceProfile first = new ProbabilisticObservationModel().evaluate(profile, lattice,
+            EvidenceModelParameters.defaults());
+        InferenceProfile second = new ProbabilisticObservationModel().evaluate(profile, lattice,
+            EvidenceModelParameters.defaults());
+
+        assertArrayEquals(first.unaryCosts(), second.unaryCosts(), 0.0);
+        assertEquals(first.componentResponsibilities().length, second.componentResponsibilities().length);
+        for (int state = 0; state < first.componentResponsibilities().length; state++) {
+            assertArrayEquals(first.componentResponsibilities()[state],
+                second.componentResponsibilities()[state], 0.0);
+        }
+        assertEquals(4, first.componentResponsibilities()[0].length);
+        assertEquals(3, lattice.components().stream()
+            .filter(component -> component.kind() == ObservationComponent.Kind.MEASURED).count());
+        for (double[] responsibilities : first.componentResponsibilities()) {
+            assertEquals(1.0, java.util.Arrays.stream(responsibilities).sum(), 1e-12);
+        }
+        assertTrue(java.util.Arrays.stream(first.unaryCosts()).allMatch(Double::isFinite));
     }
 
     @Test

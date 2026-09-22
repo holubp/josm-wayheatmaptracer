@@ -28,6 +28,7 @@ public final class ProbabilisticObservationModel {
         }
         List<ObservationComponent> components = lattice.components();
         int states = lattice.cells().size();
+        ProfileStateEvidence evidence = ProfileStateEvidence.capture(profile, lattice.cells());
         double[][] logDensity = new double[components.size()][states];
         for (double[] row : logDensity) {
             java.util.Arrays.fill(row, Double.NEGATIVE_INFINITY);
@@ -37,7 +38,7 @@ public final class ProbabilisticObservationModel {
             ObservationComponent component = components.get(componentIndex);
             switch (component.kind()) {
                 case MISSING -> fillUniform(logDensity[componentIndex], lattice.cells());
-                case MEASURED -> fillMeasured(logDensity[componentIndex], profile, lattice.cells(),
+                case MEASURED -> fillMeasured(logDensity[componentIndex], profile, lattice.cells(), evidence,
                     findMode(profile, component), parameters);
                 case CENSORED -> fillCensored(logDensity[componentIndex], profile, lattice.cells(),
                     findCensored(profile, component));
@@ -90,21 +91,19 @@ public final class ProbabilisticObservationModel {
     }
 
     private static void fillMeasured(double[] output, ProbabilisticProfile profile,
-        List<LateralStateCell> cells, ProbabilisticProfile.Mode mode,
+        List<LateralStateCell> cells, ProfileStateEvidence evidence, ProbabilisticProfile.Mode mode,
         EvidenceModelParameters parameters) {
-        double peak = profile.samples().stream().filter(ProbabilisticProfile.Sample::valid)
-            .mapToDouble(ProbabilisticProfile.Sample::intensity).max().orElse(profile.noiseFloor());
-        if (peak <= profile.noiseFloor()) {
+        if (evidence.peak() <= profile.noiseFloor()) {
             return;
         }
         for (int state = 0; state < cells.size(); state++) {
             double offset = cells.get(state).offsetMeters();
-            double intensity = interpolate(profile.samples(), offset);
+            double intensity = evidence.intensityAt(state);
             if (!Double.isFinite(intensity)) {
                 continue;
             }
             double response = clamp((intensity - profile.noiseFloor())
-                / Math.max(peak - profile.noiseFloor(), 1e-12), 0.0, 1.0);
+                / Math.max(evidence.peak() - profile.noiseFloor(), 1e-12), 0.0, 1.0);
             double presenceCost = -Math.log(Math.max(1e-6, response));
             double distance = distanceToInterval(offset, mode.coreMinimumMeters(), mode.coreMaximumMeters());
             double centerScale = Math.max(profile.sourcePitchMeters() * 0.5, mode.localizationSigmaMeters());
@@ -112,6 +111,36 @@ public final class ProbabilisticObservationModel {
             output[state] = -presenceCost - parameters.centerWeight() * centerCost;
         }
         normalizeDensity(output, cells);
+    }
+
+    /** Exact per-profile/state scalar terms shared by measured mixture components. */
+    private static final class ProfileStateEvidence {
+        private final double peak;
+        private final double[] intensities;
+
+        private ProfileStateEvidence(double peak, double[] intensities) {
+            this.peak = peak;
+            this.intensities = intensities;
+        }
+
+        static ProfileStateEvidence capture(ProbabilisticProfile profile,
+            List<LateralStateCell> cells) {
+            double peak = profile.samples().stream().filter(ProbabilisticProfile.Sample::valid)
+                .mapToDouble(ProbabilisticProfile.Sample::intensity).max().orElse(profile.noiseFloor());
+            double[] intensities = new double[cells.size()];
+            for (int state = 0; state < cells.size(); state++) {
+                intensities[state] = interpolate(profile.samples(), cells.get(state).offsetMeters());
+            }
+            return new ProfileStateEvidence(peak, intensities);
+        }
+
+        double peak() {
+            return peak;
+        }
+
+        double intensityAt(int state) {
+            return intensities[state];
+        }
     }
 
     private static void fillCensored(double[] output, ProbabilisticProfile profile,
