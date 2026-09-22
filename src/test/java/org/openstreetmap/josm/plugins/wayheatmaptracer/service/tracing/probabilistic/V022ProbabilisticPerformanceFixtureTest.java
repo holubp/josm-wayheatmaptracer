@@ -44,6 +44,21 @@ class V022ProbabilisticPerformanceFixtureTest {
         assertEquals("c6398e6fa30a0945fd685ef08b29e041e590cc70d35fda07fa3e00bd0b8d3a83", sha256(fingerprint));
     }
 
+    @Test
+    void ancestryPreservesLexicalFirstPathAcrossRawAlternativeCaps() {
+        List<InferenceProfile> profiles = List.of(
+            V022ProbabilisticInferenceTest.profile(0, new double[] {-1, 1}, new double[] {1, 1}, new double[] {0, 0}, new String[] {"a", "b"}),
+            V022ProbabilisticInferenceTest.profile(1, new double[] {-1, 0, 1}, new double[] {1, 1, 1}, new double[] {0, 0, 0}, new String[] {"a", "b", "c"}),
+            V022ProbabilisticInferenceTest.profile(2, new double[] {0}, new double[] {1}, new double[] {0}, new String[] {"a"}),
+            V022ProbabilisticInferenceTest.profile(3, new double[] {-2, -1, 1, 2}, new double[] {1, 1, 1, 1}, new double[] {0, 0, 0, 0}, new String[] {"a", "b", "c", "d"}));
+        for (int cap : new int[] {1, 8, 32}) {
+            TraceBudgets budgets = new TraceBudgets(96, 8_000_000, 128_000_000, cap, Math.min(cap, 8));
+            ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
+                EvidenceModelParameters.withoutShapeTerms(), budgets);
+            assertArrayEquals(new int[] {0, 0, 0, 0}, result.rawPaths().get(0).stateIndices());
+        }
+    }
+
     private static String sha256(String value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
