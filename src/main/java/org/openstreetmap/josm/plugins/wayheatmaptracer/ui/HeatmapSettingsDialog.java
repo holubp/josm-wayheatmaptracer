@@ -64,7 +64,6 @@ public final class HeatmapSettingsDialog {
     private final JTextField maximumDiscoveryRadiusMeters = new JTextField(8);
     private final JComboBox<JunctionPolicy> junctionPolicy = new JComboBox<>(JunctionPolicy.values());
     private final JCheckBox reconstructIncidentWays = new JCheckBox(tr("Reconstruct incident-way geometry"));
-    private final JCheckBox diagnosticComparisons = new JCheckBox(tr("Run additional experimental engines for comparison"));
     private final JTextField halfWidth = new JTextField(8);
     private final JTextField step = new JTextField(8);
     private final JTextField inferenceZoom = new JTextField(8);
@@ -122,7 +121,6 @@ public final class HeatmapSettingsDialog {
             tracing.recovery().maximumDiscoveryRadiusMeters()));
         junctionPolicy.setSelectedItem(tracing.recovery().junctionPolicy());
         reconstructIncidentWays.setSelected(tracing.recovery().reconstructIncidentWays());
-        diagnosticComparisons.setSelected(tracing.diagnosticComparisons());
         junctionPolicy.addActionListener(event -> updateRecoveryControlState());
         adjustJunctionNodes.addActionListener(event -> {
             if (adjustJunctionNodes.isSelected()
@@ -222,9 +220,6 @@ public final class HeatmapSettingsDialog {
         panel.add(junctionPolicy, GBC.eol().fill(GBC.HORIZONTAL));
         panel.add(reconstructIncidentWays, GBC.eol());
         panel.add(new JLabel(tr("Legacy junction adjustment moves existing endpoints only; reattachment is a separate explicit network edit.")), GBC.eol().fill(GBC.HORIZONTAL));
-        panel.add(diagnosticComparisons, GBC.eol());
-
-
         int answer = JOptionPane.showConfirmDialog(
             parent,
             panel,
@@ -282,7 +277,7 @@ public final class HeatmapSettingsDialog {
                     maximumDiscoveryRadiusMeters.getText(),
                     RecoverySettings.DEFAULT_MAXIMUM_DISCOVERY_RADIUS_METERS)) : ordinaryRadius,
                 selectedJunctionPolicy, selectedJunctionPolicy == JunctionPolicy.REATTACH
-                    && reconstructIncidentWays.isSelected()), diagnosticComparisons.isSelected(),
+                    && reconstructIncidentWays.isSelected()), false,
             (AlignmentSourceMode) sourceMode.getSelectedItem()));
         return true;
     }

@@ -144,6 +144,8 @@ public final class PluginPreferences {
                     legacy.searchHalfWidthMeters(), legacy.searchHalfWidthMeters(), policy, false), false,
                 AlignmentSourceMode.AUTOMATIC);
         }
+        int tracingSchemaVersion = Math.max(1, pref.getInt(TRACING_SCHEMA_VERSION,
+            TracingSettings.CURRENT_SCHEMA_VERSION));
         TrackerMode engine = TrackerMode.fromPreference(pref.get(TRACING_ENGINE, legacy.trackerMode().name()));
         double ordinary = legacy.searchHalfWidthMeters();
         boolean wider = pref.getBoolean(RECOVERY_WIDER_DISCOVERY, false);
@@ -153,13 +155,14 @@ public final class PluginPreferences {
         boolean reconstruct = policy == JunctionPolicy.REATTACH
             && pref.getBoolean(RECOVERY_RECONSTRUCT_INCIDENT_WAYS, false);
         try {
-            return new TracingSettings(Math.max(1, pref.getInt(TRACING_SCHEMA_VERSION,
-                TracingSettings.CURRENT_SCHEMA_VERSION)), engine,
+            return new TracingSettings(tracingSchemaVersion, engine,
                 new RecoverySettings(Math.max(1, pref.getInt(RECOVERY_SCHEMA_VERSION,
                     RecoverySettings.CURRENT_SCHEMA_VERSION)), wider, ordinary, maximum, policy, reconstruct),
                 false,
-                AlignmentSourceMode.fromPreference(pref.get(TRACING_SOURCE_MODE,
-                    AlignmentSourceMode.AUTOMATIC.name())));
+                tracingSchemaVersion < TracingSettings.CURRENT_SCHEMA_VERSION
+                    ? AlignmentSourceMode.AUTOMATIC
+                    : AlignmentSourceMode.fromPreference(pref.get(TRACING_SOURCE_MODE,
+                        AlignmentSourceMode.AUTOMATIC.name())));
         } catch (IllegalArgumentException exception) {
             return TracingSettings.defaults(ordinary);
         }

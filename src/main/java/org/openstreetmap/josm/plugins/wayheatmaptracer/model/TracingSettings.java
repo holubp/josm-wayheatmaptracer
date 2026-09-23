@@ -6,7 +6,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
  * @param schemaVersion persisted schema revision
  * @param engine selected tracing engine
  * @param recovery explicit recovery and network-edit permissions
- * @param diagnosticComparisons whether additional experimental engines may run for preview comparison
+ * @param diagnosticComparisons retained only for binary preference compatibility; production ignores it
  * @param sourceMode persisted source acquisition policy
  */
 public record TracingSettings(

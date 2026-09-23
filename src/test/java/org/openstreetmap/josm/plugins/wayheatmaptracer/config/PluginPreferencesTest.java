@@ -76,6 +76,33 @@ class PluginPreferencesTest {
     }
 
     @Test
+    void schemaOneCannotActivateAStoredManagedSourcePolicy() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", 1);
+        Config.getPref().put(PREFIX + "tracing.sourceMode", AlignmentSourceMode.MANAGED_TILES.name());
+
+        TracingSettings migrated = PluginPreferences.loadTracingSettings();
+
+        assertEquals(AlignmentSourceMode.AUTOMATIC, migrated.sourceMode());
+        PluginPreferences.saveTracingSettings(migrated);
+        assertEquals(AlignmentSourceMode.AUTOMATIC.name(),
+            Config.getPref().get(PREFIX + "tracing.sourceMode", ""));
+    }
+
+    @Test
+    void missingTracingSchemaPreservesLegacyEngineAndBoundedJunctionCompatibility() {
+        Config.getPref().put(PREFIX + "trackerMode", TrackerMode.LEGACY_V02.name());
+        Config.getPref().putBoolean(PREFIX + "adjustJunctionNodes", true);
+
+        TracingSettings migrated = PluginPreferences.loadTracingSettings();
+
+        assertEquals(TrackerMode.LEGACY_V02, migrated.engine());
+        assertEquals(AlignmentSourceMode.AUTOMATIC, migrated.sourceMode());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.LEGACY_BOUNDED_MOVE,
+            migrated.recovery().junctionPolicy());
+        assertFalse(migrated.recovery().reconstructIncidentWays());
+    }
+
+    @Test
     void legacyAnalysisComparisonPreferenceIsInertAndIsNotWrittenForNewSettings() {
         Config.getPref().putInt(PREFIX + "tracing.schemaVersion", 2);
         Config.getPref().putBoolean(PREFIX + "tracing.diagnosticComparisons", true);
