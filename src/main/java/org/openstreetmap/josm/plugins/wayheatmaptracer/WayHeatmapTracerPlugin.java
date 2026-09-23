@@ -35,6 +35,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 
 /**
  * Plugin entry point that registers WayHeatmapTracer menu actions and global shortcuts in JOSM.
@@ -101,7 +102,8 @@ public class WayHeatmapTracerPlugin extends Plugin {
      */
     public void destroy() {
         AggregateIntensityLayer.removeExisting();
-        modernPreviewSession.closeThen(ManagedTileRuntime::close);
+        closeModernPreviewRuntime(modernPreviewSession,
+                () -> PreviewOverlay.getInstance().hide(), ManagedTileRuntime::close);
         JMenu menu = MainApplication.getMenu().moreToolsMenu;
         Map<Action, Component> byAction = Arrays.stream(menu.getMenuComponents())
             .filter(JMenuItem.class::isInstance)
@@ -120,6 +122,16 @@ public class WayHeatmapTracerPlugin extends Plugin {
             shortcutInstallRetryTimer.stop();
             shortcutInstallRetryTimer = null;
         }
+    }
+
+    static void closeModernPreviewRuntime(
+            PreviewSessionController<LiveBPreviewService.Computed> session,
+            Runnable hideOverlay,
+            Runnable closeRuntime) {
+        session.closeThen(() -> {
+            hideOverlay.run();
+            closeRuntime.run();
+        });
     }
 
     private void scheduleShortcutInstall() {

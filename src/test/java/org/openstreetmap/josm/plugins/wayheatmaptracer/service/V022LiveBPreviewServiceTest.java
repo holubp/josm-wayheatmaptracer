@@ -6,11 +6,13 @@ import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.ProjectionBounds;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -391,15 +393,52 @@ class V022LiveBPreviewServiceTest {
         Fixture fixture = fixture();
         RecoveryPermissions permissions = RecoveryPermissions.disabled(7.01);
         AlignmentConfig configured = withVisibleHalfWidth(config(TrackerMode.CORRIDOR_AWARE), 18);
-        LiveBPreviewService.VisibleRaster roundedScaleRaster = rasterAtGroundScale(0.389);
+        AtomicInteger requestedHalfWidthPixels = new AtomicInteger();
+        LiveBPreviewService.VisibleRaster[] roundedScaleRaster = new LiveBPreviewService.VisibleRaster[1];
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
 
-        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
-                fixture.dataSet(), fixture.selection(), roundedScaleRaster,
-                configured, true, permissions));
+        SwingUtilities.invokeAndWait(() -> {
+            roundedScaleRaster[0] = new AlignmentService().captureLiveBVisibleRaster(
+                    fixture.selection(), configured, "ordinary-rounded-visible", permissions,
+                    (source, halfWidthPixels) -> {
+                        requestedHalfWidthPixels.set(halfWidthPixels);
+                        double extent = 50.0 * 0.389;
+                        return new AlignmentService.VisibleCaptureFrame(
+                                rasterAtGroundScale(0.389).image(),
+                                new ProjectionBounds(-extent, -extent, extent, extent),
+                                0.389, OptionalDouble.of(1.0));
+                    });
+            captured[0] = new LiveBPreviewService().capture(
+                    fixture.dataSet(), fixture.selection(), roundedScaleRaster[0],
+                    configured, true, permissions);
+        });
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
 
+        assertEquals(19, requestedHalfWidthPixels.get());
+        assertEquals(0.389, roundedScaleRaster[0].groundMetersPerViewPixel(), 1.0e-9);
         assertEquals(7.01, captured[0].searchRadiusMeters(), 0.0);
         assertEquals(permissions, captured[0].specification().permissions());
+        assertEquals(permissions, computed.request().permissions());
+    }
+
+    @Test
+    void ordinaryVisibleCaptureRejectsPhysicallyUndersizedFootprint() throws Exception {
+        Fixture fixture = fixture();
+        RecoveryPermissions permissions = RecoveryPermissions.disabled(7.01);
+        AlignmentConfig configured = withVisibleHalfWidth(config(TrackerMode.CORRIDOR_AWARE), 18);
+        LiveBPreviewService.VisibleRaster undersized = new LiveBPreviewService.VisibleRaster(
+                120, 60, new int[120 * 60], -10.0, -5.0, 10.0, 5.0,
+                1.0, 0.389, OptionalDouble.empty(), "undersized-visible", "EPSG:3857");
+        IllegalArgumentException[] failure = new IllegalArgumentException[1];
+
+        SwingUtilities.invokeAndWait(() -> failure[0] = assertThrows(
+                IllegalArgumentException.class, () -> new LiveBPreviewService().capture(
+                        fixture.dataSet(), fixture.selection(), undersized,
+                        configured, true, permissions)));
+
+        assertTrue(failure[0].getMessage().contains(
+                "recovery radius exceeds the captured decision corridor"));
     }
 
     @Test

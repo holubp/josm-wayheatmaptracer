@@ -6,12 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -131,68 +127,6 @@ class AlignWayActionTest {
         assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.PROBABILISTIC));
         assertFalse(AlignWayAction.supportsManagedModernSource(TrackerMode.HYBRID));
         assertFalse(AlignWayAction.supportsManagedModernSource(TrackerMode.DIRECTIONAL_IMAGE));
-    }
-
-    @Test
-    void ordinaryActionSeamCapturesAndPublishesEverySupportedEngineAndSourceCombination()
-            throws Exception {
-        assertOrdinaryAttempt(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.VISIBLE_LAYER,
-                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
-        assertOrdinaryAttempt(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.MANAGED_TILES,
-                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED, "managed");
-        assertOrdinaryAttempt(TrackerMode.PROBABILISTIC, AlignmentSourceMode.VISIBLE_LAYER,
-                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
-        assertOrdinaryAttempt(TrackerMode.PROBABILISTIC, AlignmentSourceMode.MANAGED_TILES,
-                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED, "managed");
-        assertOrdinaryAttempt(TrackerMode.HYBRID, AlignmentSourceMode.VISIBLE_LAYER,
-                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
-        assertOrdinaryAttempt(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.VISIBLE_LAYER,
-                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE, "visible");
-    }
-
-    @Test
-    void ordinaryActionSeamDiscardsLatePublicationFromSupersededAttempt() throws Exception {
-        List<String> published = java.util.Collections.synchronizedList(new ArrayList<>());
-        CountDownLatch firstStarted = new CountDownLatch(1);
-        CountDownLatch releaseFirst = new CountDownLatch(1);
-        CountDownLatch secondPublished = new CountDownLatch(1);
-        try (PreviewSessionController<String> session =
-                new PreviewSessionController<>(Runnable::run)) {
-            var firstRouting = ordinaryAction(TrackerMode.CORRIDOR_AWARE,
-                    AlignmentSourceMode.VISIBLE_LAYER, () -> "first-source", () -> "legacy");
-            var firstOwner = session.open(() -> { });
-            AlignWayAction.startOrdinaryModernAttempt(session, firstOwner, firstRouting,
-                    (decision, invocation) -> capturedOrdinaryAttempt(
-                            "visible", decision, invocation),
-                    (decision, invocation) -> capturedOrdinaryAttempt(
-                            "managed", decision, invocation),
-                    (input, context) -> {
-                        firstStarted.countDown();
-                        releaseFirst.await(5, TimeUnit.SECONDS);
-                        return input;
-                    }, attempt -> published.add(attempt.result()));
-            assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
-
-            var secondRouting = ordinaryAction(TrackerMode.PROBABILISTIC,
-                    AlignmentSourceMode.VISIBLE_LAYER, () -> "second-source", () -> "legacy");
-            var secondOwner = session.open(() -> { });
-            AlignWayAction.startOrdinaryModernAttempt(session, secondOwner, secondRouting,
-                    (decision, invocation) -> capturedOrdinaryAttempt(
-                            "visible", decision, invocation),
-                    (decision, invocation) -> capturedOrdinaryAttempt(
-                            "managed", decision, invocation),
-                    (input, context) -> input,
-                    attempt -> {
-                        published.add(attempt.result());
-                        secondPublished.countDown();
-                    });
-            releaseFirst.countDown();
-
-            assertTrue(secondPublished.await(5, TimeUnit.SECONDS));
-            assertEquals(List.of("visible:second-source:PROBABILISTIC:7.01"), published);
-        } finally {
-            releaseFirst.countDown();
-        }
     }
 
     @Test
@@ -479,60 +413,6 @@ class AlignWayActionTest {
     private static void assertOrdinaryRoute(TrackerMode engine, AlignmentSourceMode sourceMode,
             AlignWayAction.OrdinaryPipeline expected) {
         assertEquals(expected, ordinaryRoute(engine, sourceMode).pipeline());
-    }
-
-    private static void assertOrdinaryAttempt(TrackerMode engine,
-            AlignmentSourceMode sourceMode, AlignWayAction.OrdinaryPipeline expectedPipeline,
-            String expectedCapture) throws Exception {
-        AtomicBoolean requiredVisibleUsed = new AtomicBoolean();
-        AtomicReference<AlignWayAction.OrdinaryPipeline> capturedPipeline = new AtomicReference<>();
-        AtomicReference<RecoverySettings> capturedRecovery = new AtomicReference<>();
-        AtomicReference<String> published = new AtomicReference<>();
-        CountDownLatch ready = new CountDownLatch(1);
-        AlignWayAction.OrdinaryActionRouting<String> routing = ordinaryAction(engine, sourceMode,
-                () -> {
-                    requiredVisibleUsed.set(true);
-                    return "visible-source";
-                }, () -> "legacy");
-        try (PreviewSessionController<String> session =
-                new PreviewSessionController<>(Runnable::run)) {
-            var owner = session.open(() -> { });
-            AlignWayAction.startOrdinaryModernAttempt(session, owner, routing,
-                    (decision, invocation) -> {
-                        capturedPipeline.set(decision.route().pipeline());
-                        capturedRecovery.set(invocation.recovery());
-                        return capturedOrdinaryAttempt("visible", decision, invocation);
-                    }, (decision, invocation) -> {
-                        capturedPipeline.set(decision.route().pipeline());
-                        capturedRecovery.set(invocation.recovery());
-                        return capturedOrdinaryAttempt("managed", decision, invocation);
-                    }, (input, context) -> input, attempt -> {
-                        published.set(attempt.result());
-                        ready.countDown();
-                    });
-
-            assertTrue(ready.await(5, TimeUnit.SECONDS));
-        }
-
-        assertEquals(expectedPipeline, capturedPipeline.get());
-        assertEquals(RecoverySettings.defaults(7.01), capturedRecovery.get());
-        assertEquals(expectedCapture + ":"
-                + (routing.visibleSource() == null ? "none" : routing.visibleSource())
-                + ":" + engine.name() + ":7.01", published.get());
-        assertEquals(expectedPipeline == AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE,
-                requiredVisibleUsed.get());
-    }
-
-    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.CapturedAttempt<String>
-            capturedOrdinaryAttempt(String captureKind,
-                    AlignWayAction.OrdinaryActionRouting<String> decision,
-                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation invocation) {
-        String source = decision.visibleSource() == null ? "none" : decision.visibleSource();
-        String value = captureKind + ":" + source + ":" + invocation.engine().name() + ":"
-                + invocation.recovery().ordinaryRadiusMeters();
-        return new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.CapturedAttempt<>(
-                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.AttemptSnapshot(
-                        value, source, "settings", "content"), value);
     }
 
     private static AlignWayAction.OrdinaryActionRouting<String> ordinaryAction(

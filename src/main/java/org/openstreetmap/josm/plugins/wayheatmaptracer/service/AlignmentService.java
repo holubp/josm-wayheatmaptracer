@@ -107,6 +107,30 @@ public final class AlignmentService {
         // Stage services are initialized in field declarations.
     }
 
+    @FunctionalInterface
+    interface VisibleCaptureBackend {
+        VisibleCaptureFrame capture(List<EastNorth> sourcePolyline, int visibleHalfWidthPixels);
+    }
+
+    record VisibleCaptureFrame(
+        BufferedImage raster,
+        ProjectionBounds bounds,
+        double projectionUnitsPerViewPixel,
+        OptionalDouble nativePitchMeters
+    ) {
+        VisibleCaptureFrame {
+            nativePitchMeters = nativePitchMeters == null ? OptionalDouble.empty() : nativePitchMeters;
+            if (raster == null || bounds == null
+                    || !Double.isFinite(projectionUnitsPerViewPixel)
+                    || projectionUnitsPerViewPixel <= 0.0
+                    || nativePitchMeters.isPresent()
+                        && (!Double.isFinite(nativePitchMeters.getAsDouble())
+                            || nativePitchMeters.getAsDouble() <= 0.0)) {
+                throw new IllegalArgumentException("Visible capture frame metadata is incomplete");
+            }
+        }
+    }
+
     /**
      * Returns the physical half-width currently used by the visible rendered-layer sampler.
      *
@@ -203,27 +227,44 @@ public final class AlignmentService {
     public LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, String sourceIdentity, RecoveryPermissions permissions) {
-        if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
-            throw new IllegalStateException("Visible B raster capture must execute on the EDT");
-        }
         if (selection == null || imageryLayer == null || mapView == null || slideConfig == null
                 || sourceIdentity == null || sourceIdentity.isBlank()) {
             throw new IllegalArgumentException("Visible B raster capture inputs are incomplete");
         }
-        ManagedHeatmapConfig config = slideConfig.effectiveHeatmap();
+        return captureLiveBVisibleRaster(selection, slideConfig, sourceIdentity, permissions,
+                (source, halfWidth) -> {
+                    RenderedCapture capture = captureVisibleHeatmap(
+                            imageryLayer, mapView, source, halfWidth);
+                    return new VisibleCaptureFrame(capture.raster(), capture.bounds(),
+                            capture.projectionUnitsPerViewPixel(),
+                            capture.sourceResolution().metersPerPixel());
+                });
+    }
+
+    LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
+            SelectionContext selection, AlignmentConfig slideConfig, String sourceIdentity,
+            RecoveryPermissions permissions, VisibleCaptureBackend captureBackend) {
+        if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Visible B raster capture must execute on the EDT");
+        }
+        if (selection == null || slideConfig == null || sourceIdentity == null
+                || sourceIdentity.isBlank() || captureBackend == null) {
+            throw new IllegalArgumentException("Visible B raster capture inputs are incomplete");
+        }
         List<EastNorth> source = toEastNorth(selection.segmentNodes());
         int halfWidth = visibleSearchHalfWidthPixels(slideConfig, source, permissions);
-        RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, source, halfWidth);
-        EffectiveSampling sampling = effectiveSampling(config, capture, source, halfWidth);
+        VisibleCaptureFrame capture = captureBackend.capture(source, halfWidth);
         BufferedImage image = capture.raster();
         int[] pixels = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0,
                 image.getWidth());
         ProjectionBounds bounds = capture.bounds();
-        OptionalDouble nativePitch = capture.sourceResolution().metersPerPixel();
+        double groundMetersPerViewPixel = capture.projectionUnitsPerViewPixel()
+                * ProjectionGroundScale.measure(source, capture.projectionUnitsPerViewPixel())
+                    .representativeMetersPerProjectionUnit();
         return new LiveBPreviewService.VisibleRaster(image.getWidth(), image.getHeight(), pixels,
                 bounds.minEast, bounds.minNorth, bounds.maxEast, bounds.maxNorth,
                 capture.projectionUnitsPerViewPixel(),
-                sampling.samplingScale().groundMetersPerViewPixel(), nativePitch,
+                groundMetersPerViewPixel, capture.nativePitchMeters(),
                 sourceIdentity, ProjectionRegistry.getProjection().toCode());
     }
 
