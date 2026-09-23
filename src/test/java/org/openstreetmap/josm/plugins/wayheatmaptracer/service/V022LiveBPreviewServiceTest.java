@@ -387,6 +387,22 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void ordinaryVisibleCaptureHonorsRecoveryRadiusAcrossViewScaleRounding() throws Exception {
+        Fixture fixture = fixture();
+        RecoveryPermissions permissions = RecoveryPermissions.disabled(7.01);
+        AlignmentConfig configured = withVisibleHalfWidth(config(TrackerMode.CORRIDOR_AWARE), 18);
+        LiveBPreviewService.VisibleRaster roundedScaleRaster = rasterAtGroundScale(0.389);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), roundedScaleRaster,
+                configured, true, permissions));
+
+        assertEquals(7.01, captured[0].searchRadiusMeters(), 0.0);
+        assertEquals(permissions, captured[0].specification().permissions());
+    }
+
+    @Test
     void unsupportedControlsFailExplicitlyBeforeRasterOrNetworkWork() throws Exception {
         Fixture fixture = fixture();
         ManagedHeatmapConfig unsupported = config().heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
@@ -483,6 +499,15 @@ class V022LiveBPreviewServiceTest {
                 original.sourceIdentity(), original.projectionCode());
     }
 
+    private static LiveBPreviewService.VisibleRaster rasterAtGroundScale(double groundMetersPerViewPixel) {
+        LiveBPreviewService.VisibleRaster original = raster();
+        return new LiveBPreviewService.VisibleRaster(original.width(), original.height(), original.argb(),
+                original.minimumEast(), original.minimumNorth(), original.maximumEast(),
+                original.maximumNorth(), original.projectionUnitsPerViewPixel(),
+                groundMetersPerViewPixel, original.nativePitchMeters(),
+                original.sourceIdentity(), original.projectionCode());
+    }
+
     private static AlignmentConfig config() {
         return config(TrackerMode.PROBABILISTIC);
     }
@@ -518,6 +543,21 @@ class V022LiveBPreviewServiceTest {
                 value.crossSectionHalfWidthPx(), value.crossSectionStepPx(),
                 value.simplifyTolerancePx(), value.inferenceMode(), value.inferenceZoom(),
                 value.validationZoom(), value.searchHalfWidthMeters(), value.sampleStepMeters(),
+                value.intensitySamplingMode(), value.cacheBuster()), config.cleanup());
+    }
+
+    private static AlignmentConfig withVisibleHalfWidth(AlignmentConfig config, int halfWidthPixels) {
+        ManagedHeatmapConfig value = config.heatmap();
+        return new AlignmentConfig(new ManagedHeatmapConfig(value.keyPairId(), value.policy(),
+                value.signature(), value.sessionToken(), value.activity(), value.color(),
+                value.manualLayerName(), value.layerRegex(), value.alignmentMode(), value.trackerMode(),
+                value.verbose(), value.debug(), value.multiColorDetection(),
+                value.aggregateAllColorSchemes(), value.showAggregateIntensityLayer(),
+                value.candidateRatingEnabled(), value.parallelWayAwareness(),
+                value.allowUndownloadedAlignment(), value.adjustJunctionNodes(), value.simplifyEnabled(),
+                halfWidthPixels, value.crossSectionStepPx(), value.simplifyTolerancePx(),
+                value.inferenceMode(), value.inferenceZoom(), value.validationZoom(),
+                value.searchHalfWidthMeters(), value.sampleStepMeters(),
                 value.intensitySamplingMode(), value.cacheBuster()), config.cleanup());
     }
 

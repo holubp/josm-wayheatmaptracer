@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,8 +17,10 @@ import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.GeometryCleanupSettingsAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -64,5 +67,22 @@ class WayHeatmapTracerPluginTest {
             actions.forEach(JosmAction::destroy);
             session.close();
         }
+    }
+
+    @Test
+    void pluginUnloadClearsPreviewOverlayAfterSharedOwnerWasAlreadyClosed() throws Exception {
+        PreviewSessionController<LiveBPreviewService.Computed> session =
+                new PreviewSessionController<>(Runnable::run);
+        List<JosmAction> actions = WayHeatmapTracerPlugin.createRegisteredActions(session);
+        PreviewOverlay overlay = PreviewOverlay.getInstance();
+        Field chosenCandidate = PreviewOverlay.class.getDeclaredField("chosenCandidate");
+        chosenCandidate.setAccessible(true);
+        chosenCandidate.set(overlay, new CenterlineCandidate("active-preview", 0.0,
+                List.of(), List.of()));
+
+        session.closeThen(() -> { });
+        actions.forEach(JosmAction::destroy);
+
+        assertNull(chosenCandidate.get(overlay));
     }
 }

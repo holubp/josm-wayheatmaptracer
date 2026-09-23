@@ -41,6 +41,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionSafetyFinding;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NodeMove;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -168,11 +169,22 @@ public final class AlignmentService {
         AlignmentConfig slideConfig,
         List<EastNorth> sourcePolyline
     ) {
-        if (slideConfig.searchHalfWidthMetersOverride().isEmpty()) {
+        return visibleSearchHalfWidthPixels(slideConfig, sourcePolyline, null);
+    }
+
+    private static int visibleSearchHalfWidthPixels(
+        AlignmentConfig slideConfig,
+        List<EastNorth> sourcePolyline,
+        RecoveryPermissions permissions
+    ) {
+        if (slideConfig.searchHalfWidthMetersOverride().isEmpty() && permissions == null) {
             return slideConfig.heatmap().crossSectionHalfWidthPx();
         }
-        int pixels = (int) Math.ceil(visibleSearchHalfWidthMeters(slideConfig, sourcePolyline)
-            / visibleGroundMetersPerViewPixel(sourcePolyline));
+        double requiredMeters = visibleSearchHalfWidthMeters(slideConfig, sourcePolyline);
+        if (permissions != null) {
+            requiredMeters = Math.max(requiredMeters, permissions.ordinaryRadiusMeters());
+        }
+        int pixels = (int) Math.ceil(requiredMeters / visibleGroundMetersPerViewPixel(sourcePolyline));
         if (pixels > MAX_EFFECTIVE_HALF_WIDTH_PX) {
             throw new IllegalArgumentException("Requested wider search exceeds the visible sampler profile limit");
         }
@@ -183,6 +195,14 @@ public final class AlignmentService {
     public LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, String sourceIdentity) {
+        return captureLiveBVisibleRaster(selection, imageryLayer, mapView, slideConfig,
+                sourceIdentity, null);
+    }
+
+    /** Captures a visible raster large enough for the frozen ordinary recovery radius. */
+    public LiveBPreviewService.VisibleRaster captureLiveBVisibleRaster(
+            SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, String sourceIdentity, RecoveryPermissions permissions) {
         if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Visible B raster capture must execute on the EDT");
         }
@@ -192,7 +212,7 @@ public final class AlignmentService {
         }
         ManagedHeatmapConfig config = slideConfig.effectiveHeatmap();
         List<EastNorth> source = toEastNorth(selection.segmentNodes());
-        int halfWidth = visibleSearchHalfWidthPixels(slideConfig, source);
+        int halfWidth = visibleSearchHalfWidthPixels(slideConfig, source, permissions);
         RenderedCapture capture = captureVisibleHeatmap(imageryLayer, mapView, source, halfWidth);
         EffectiveSampling sampling = effectiveSampling(config, capture, source, halfWidth);
         BufferedImage image = capture.raster();

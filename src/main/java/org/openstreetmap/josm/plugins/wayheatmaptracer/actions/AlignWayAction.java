@@ -129,6 +129,37 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Captures the detached payload selected by one frozen ordinary invocation. */
+    @FunctionalInterface
+    interface OrdinaryModernCapture<S, I> {
+        AlignmentJob.CapturedAttempt<I> capture(OrdinaryActionRouting<S> routing,
+                ModernAlignmentInvocation invocation);
+    }
+
+    /**
+     * Starts the source-specific detached capture consumed by the production ordinary action.
+     */
+    static <S, I, R> AlignmentJob.StartResult<R> startOrdinaryModernAttempt(
+            PreviewSessionController<R> session, PreviewSessionController.Owner owner,
+            OrdinaryActionRouting<S> routing,
+            OrdinaryModernCapture<S, I> visibleCapture,
+            OrdinaryModernCapture<S, I> managedCapture,
+            AlignmentJob.DetachedWorker<I, R> worker,
+            AlignmentJob.PreviewPublisher<R> publisher) {
+        Objects.requireNonNull(session, "session");
+        Objects.requireNonNull(routing, "routing");
+        ModernAlignmentInvocation invocation = Objects.requireNonNull(
+                routing.route().invocation(), "Ordinary modern invocation");
+        OrdinaryModernCapture<S, I> capture = switch (routing.route().pipeline()) {
+            case MODERN_VISIBLE -> Objects.requireNonNull(visibleCapture, "visibleCapture");
+            case MODERN_MANAGED -> Objects.requireNonNull(managedCapture, "managedCapture");
+            case LEGACY_COMPATIBILITY -> throw new IllegalArgumentException(
+                    "Legacy compatibility alignment cannot enter the modern attempt seam");
+        };
+        return session.startDetached(owner, () -> capture.capture(routing, invocation),
+                worker, publisher);
+    }
+
     /** Stateless alignment orchestrator shared by action invocations. */
     private final AlignmentService alignmentService = new AlignmentService();
     /** Map overlay used for candidate preview. */
@@ -352,7 +383,7 @@ public class AlignWayAction extends JosmAction {
                 RecoveryPermissions recovery = ordinaryRoute == null ? null
                         : ordinaryRoute.invocation().recovery().toPermissions();
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, tracing, recovery,
+                        persistedSlideConfig, tracing, recovery, ordinaryRouting,
                         sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
                         sourceMode == AlignmentSourceMode.MANAGED_TILES);
                 return;
@@ -390,7 +421,9 @@ public class AlignWayAction extends JosmAction {
     private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
             AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
-            RecoveryPermissions recoveryPermissions, boolean explicitVisibleSource, boolean managedSource) {
+            RecoveryPermissions recoveryPermissions,
+            OrdinaryActionRouting<ImageryLayer> ordinaryRouting,
+            boolean explicitVisibleSource, boolean managedSource) {
         if (!managedSource) {
             LiveBPreviewService.requireSupported(selection,
                     ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
@@ -454,7 +487,52 @@ public class AlignWayAction extends JosmAction {
         cancel.addActionListener(event -> progress.dispatchEvent(
                 new WindowEvent(progress, WindowEvent.WINDOW_CLOSING)));
         try {
-            if (managedSource) {
+            if (ordinaryRouting != null && managedSource) {
+                final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
+                final TileFetchCoordinator coordinator = ManagedTileRuntime.initializedCoordinator();
+                startOrdinaryModernAttempt(livePreviewSession, previewOwner, ordinaryRouting,
+                        (routing, invocation) -> {
+                            throw new IllegalStateException("Managed ordinary route selected visible capture");
+                        }, (routing, invocation) -> {
+                            LiveBPreviewService.ManagedCaptureSeed seed = livePreviewService.captureManagedSeed(
+                                    dataSet, selection, invocation.config(), sourceIdentity,
+                                    invocation.recovery().toPermissions());
+                            AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
+                                    seed.network().snapshotId(), sourceIdentity, seed.settingsHash(),
+                                    seed.network().canonicalHash());
+                            return new AlignmentJob.CapturedAttempt<>(snapshot, seed);
+                        }, (seed, context) -> {
+                            ManagedModernPreviewSource source = new ManagedModernPreviewSource(coordinator);
+                            ManagedModernPreviewSource.Raster raster = source.acquire(
+                                    ManagedModernPreviewSource.selectedOnly(seed.sourceGeographic(),
+                                            ordinaryRouting.route().invocation().config().heatmap(),
+                                            sourceIdentity), credentials, context);
+                            return livePreviewService.compute(
+                                    livePreviewService.attachManagedRaster(seed, raster), context);
+                        }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                                imageryLayer, mapView, slideConfig, persistedSlideConfig,
+                                tracingAtCapture, attempt.result()));
+            } else if (ordinaryRouting != null) {
+                startOrdinaryModernAttempt(livePreviewSession, previewOwner, ordinaryRouting,
+                        (routing, invocation) -> {
+                            ImageryLayer frozenSource = routing.visibleSource();
+                            LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
+                                    selection, frozenSource, mapView, invocation.config(), sourceIdentity,
+                                    invocation.recovery().toPermissions());
+                            LiveBPreviewService.Captured captured = livePreviewService.capture(
+                                    dataSet, selection, raster, invocation.config(), true,
+                                    invocation.recovery().toPermissions());
+                            AlignmentJob.AttemptSnapshot snapshot = new AlignmentJob.AttemptSnapshot(
+                                    captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
+                                    captured.network().canonicalHash());
+                            return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
+                        }, (routing, invocation) -> {
+                            throw new IllegalStateException("Visible ordinary route selected managed capture");
+                        }, (captured, context) -> livePreviewService.compute(captured, context),
+                        attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                                imageryLayer, mapView, slideConfig, persistedSlideConfig,
+                                tracingAtCapture, attempt.result()));
+            } else if (managedSource) {
                 final LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
                 final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
                 final TileFetchCoordinator coordinator = ManagedTileRuntime.initializedCoordinator();
@@ -476,7 +554,8 @@ public class AlignWayAction extends JosmAction {
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
                     LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
-                            selection, imageryLayer, mapView, slideConfig, sourceIdentity);
+                            selection, imageryLayer, mapView, slideConfig, sourceIdentity,
+                            recoveryPermissions);
                     LiveBPreviewService.Captured captured = recoveryPermissions == null
                             ? livePreviewService.capture(dataSet, selection, raster, slideConfig,
                                     explicitVisibleSource)
@@ -786,7 +865,8 @@ public class AlignWayAction extends JosmAction {
             livePreviewService.requireCurrent(dataSet, captured);
         } else {
             LiveBPreviewService.VisibleRaster currentRaster = alignmentService.captureLiveBVisibleRaster(
-                    selection, imageryLayer, mapView, slideConfig, liveLayerIdentity(imageryLayer));
+                    selection, imageryLayer, mapView, slideConfig, liveLayerIdentity(imageryLayer),
+                    captured.specification().permissions());
             livePreviewService.requireCurrent(dataSet, captured, currentRaster);
         }
     }
@@ -798,9 +878,8 @@ public class AlignWayAction extends JosmAction {
 
     @Override
     public void destroy() {
-        if (livePreviewSession.close(activeLivePreviewOwner)) {
-            overlay.hide();
-        }
+        livePreviewSession.close(activeLivePreviewOwner);
+        overlay.hide();
         if (ownsLivePreviewSession) {
             livePreviewSession.close();
         }

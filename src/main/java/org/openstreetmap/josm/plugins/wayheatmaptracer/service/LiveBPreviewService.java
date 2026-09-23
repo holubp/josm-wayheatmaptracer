@@ -192,18 +192,20 @@ public final class LiveBPreviewService {
         List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
         double pitch = raster.groundMetersPerViewPixel() / RenderedHeatmapSampler.RASTER_SCALE;
         MetricRasterGrid grid = grid(frame, southWest, northEast, pitch);
-        double radius = config.heatmap().crossSectionHalfWidthPx()
+        double configuredRadius = config.heatmap().crossSectionHalfWidthPx()
                 * raster.groundMetersPerViewPixel();
         RecoveryPermissions permissions = requestedPermissions == null
-                ? RecoveryPermissions.disabled(radius) : requestedPermissions;
-        if (permissions.ordinaryRadiusMeters() > radius + 1.0e-9) {
-            throw new IllegalArgumentException(
-                    "Live preview recovery radius exceeds the captured decision corridor");
-        }
+                ? RecoveryPermissions.disabled(configuredRadius) : requestedPermissions;
+        double radius = Math.max(configuredRadius, permissions.ordinaryRadiusMeters());
         double step = config.heatmap().crossSectionStepPx() * raster.groundMetersPerViewPixel();
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
         if (!grid.footprint().containsRegion(decision)) {
-            throw new IllegalArgumentException("Visible capture does not contain the complete B decision corridor");
+            if (permissions.ordinaryRadiusMeters() > configuredRadius + 1.0e-9) {
+                throw new IllegalArgumentException(
+                        "Live preview recovery radius exceeds the captured decision corridor");
+            }
+            throw new IllegalArgumentException(
+                    "Visible capture does not contain the complete B decision corridor");
         }
         PluginLog.verbose("Live B metric corridor accepted before worker: geometry=%s.",
                 RasterEvidenceCapture.handoffFingerprint(grid, metric, radius));
