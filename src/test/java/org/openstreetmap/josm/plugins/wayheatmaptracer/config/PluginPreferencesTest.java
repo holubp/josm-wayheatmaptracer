@@ -76,6 +76,20 @@ class PluginPreferencesTest {
     }
 
     @Test
+    void currentSchemaMalformedSourceModeMigratesToCanonicalAutomatic() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion",
+            TracingSettings.CURRENT_SCHEMA_VERSION);
+        Config.getPref().put(PREFIX + "tracing.sourceMode", "no-longer-valid");
+
+        TracingSettings migrated = PluginPreferences.loadTracingSettings();
+
+        assertEquals(AlignmentSourceMode.AUTOMATIC, migrated.sourceMode());
+        PluginPreferences.saveTracingSettings(migrated);
+        assertEquals(AlignmentSourceMode.AUTOMATIC.name(),
+            Config.getPref().get(PREFIX + "tracing.sourceMode", ""));
+    }
+
+    @Test
     void schemaOneCannotActivateAStoredManagedSourcePolicy() {
         Config.getPref().putInt(PREFIX + "tracing.schemaVersion", 1);
         Config.getPref().put(PREFIX + "tracing.sourceMode", AlignmentSourceMode.MANAGED_TILES.name());
