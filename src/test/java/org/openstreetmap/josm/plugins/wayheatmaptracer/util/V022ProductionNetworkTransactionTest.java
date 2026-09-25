@@ -88,8 +88,32 @@ class V022ProductionNetworkTransactionTest {
     }
 
     @Test
+    void staleRouteMembershipRejectsLockedRealInteriorJunctionApply() throws Exception {
+        Fixture fixture = fixture();
+        List<RelationMember> original = List.copyOf(fixture.route().getMembers());
+        V022AtomicApplyTest.onEdt(() -> fixture.route().setMembers(
+                List.of(original.get(1), original.get(0))));
+        V022AtomicApplyTest.LiveState changed =
+                V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(), fixture.validator(),
+                "Reject stale route membership");
+        assertThrows(IllegalStateException.class, () -> V022AtomicApplyTest.onEdt(() ->
+                UndoRedoHandler.getInstance().add(command)));
+        changed.assertMatches(fixture.dataSet());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
     void realInteriorJunctionPlanRetainsOneHostEntryThroughTwentyCycles() throws Exception {
         Fixture fixture = fixture();
+        assertTrue(!fixture.plan().createdPrimitives().isEmpty(),
+                "The real route must exercise plan-local node creation");
+        assertTrue(fixture.plan().writePrimitiveKeys().stream().anyMatch(key ->
+                key.type() == PrimitiveKey.Type.NODE
+                        && fixture.plan().before().primitives().containsKey(key)),
+                "The real route must reuse and mutate an existing node identity");
         V022AtomicApplyTest.LiveState before =
                 V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
         List<RelationMember> relationMembers = List.copyOf(fixture.route().getMembers());
@@ -99,6 +123,8 @@ class V022ProductionNetworkTransactionTest {
         V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
         V022AtomicApplyTest.LiveState after =
                 V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        assertEquals(before.nodes().size() + fixture.plan().createdPrimitives().size(),
+                after.nodes().size());
         assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
         assertEquals(relationMembers, fixture.route().getMembers());
         for (int cycle = 0; cycle < 20; cycle++) {
@@ -203,6 +229,147 @@ class V022ProductionNetworkTransactionTest {
                         .contains(middleKey), variant);
             }
         }
+    }
+
+    @Test
+    void sameReceiverAtTwoSelectedJunctionsUsesTwoCompleteMeasuredRanges() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node left = node(751, 0, -40);
+        Node right = node(752, 0, 40);
+        Way selected = way(753, left, right);
+        Node farLeftSouth = node(754, -50, -42);
+        Node leftSouthPort = node(755, -35, -42);
+        Node leftSouth = node(756, -10, -42);
+        Node leftNorth = node(757, 10, -42);
+        Node leftNorthPort = node(758, 35, -42);
+        Node topLeft = node(759, 50, -42);
+        Node topRight = node(760, 50, 42);
+        Node rightNorthPort = node(761, 35, 42);
+        Node rightNorth = node(762, 10, 42);
+        Node rightSouth = node(763, -10, 42);
+        Node rightSouthPort = node(764, -35, 42);
+        Node farRightSouth = node(765, -50, 42);
+        Way receiver = way(766, farLeftSouth, leftSouthPort, leftSouth, left,
+                leftNorth, leftNorthPort, topLeft, topRight, rightNorthPort,
+                rightNorth, right, rightSouth, rightSouthPort, farRightSouth);
+        for (Node node : List.of(left, right, farLeftSouth, leftSouthPort, leftSouth,
+                leftNorth, leftNorthPort, topLeft, topRight, rightNorthPort,
+                rightNorth, rightSouth, rightSouthPort, farRightSouth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("bridge", selected),
+                new RelationMember("loop", receiver)));
+        route.put("type", "route");
+        route.setOsmId(767, 1);
+        route.setModified(false);
+        dataSet.addPrimitive(route);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(left, right), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, sameReceiverRaster(), config(), false, permissions));
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 766);
+        assertEquals(2, captured[0].network().closure().editableWayOccurrences()
+                .get(receiverKey).size());
+        assertEquals(4, captured[0].network().closure().externalPorts().stream()
+                .filter(port -> port.wayKey().equals(receiverKey)).count());
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 753), receiverKey),
+                plan.finalPreviewWays().keySet());
+        assertTrue(plan.validation().findingCodes().stream()
+                .noneMatch(code -> code.startsWith("final-topology:")));
+        PrimitiveKey routeKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 767);
+        assertEquals(plan.before().primitives().get(routeKey), plan.after().primitives().get(routeKey));
+        for (var port : captured[0].network().closure().externalPorts()) {
+            if (port.wayKey().equals(receiverKey)) {
+                assertEquals(plan.before().primitives().get(port.boundaryNodeKey()),
+                        plan.after().primitives().get(port.boundaryNodeKey()));
+            }
+        }
+        for (Node connector : List.of(topLeft, topRight)) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                    connector.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, sameReceiverRaster(false), config(), false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(missing.getMessage().contains("incident approach evidence"),
+                missing::getMessage);
+        NetworkSnapshotCapture.CapturedSnapshot[] receipt =
+                new NetworkSnapshotCapture.CapturedSnapshot[1];
+        SwingUtilities.invokeAndWait(() -> receipt[0] = NetworkSnapshotCapture.captureBound(
+                dataSet, captured[0].specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt[0], plan, () -> plan.before().sourceGeneration());
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(dataSet);
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(
+                new ApplyAlignmentEditPlanCommand(dataSet, plan, validator, "Apply coupled loop")));
+        for (var entry : plan.finalPreviewWays().entrySet()) {
+            Way live = entry.getKey().equals(receiverKey) ? receiver : selected;
+            assertEquals(entry.getValue().size(), live.getNodesCount());
+            for (int index = 0; index < live.getNodesCount(); index++) {
+                assertEquals(entry.getValue().get(index).latitudeDegrees(),
+                        live.getNode(index).lat(), 1.0e-9);
+                assertEquals(entry.getValue().get(index).longitudeDegrees(),
+                        live.getNode(index).lon(), 1.0e-9);
+            }
+        }
+        V022AtomicApplyTest.LiveState after = V022AtomicApplyTest.LiveState.capture(dataSet);
+        for (int cycle = 0; cycle < 20; cycle++) {
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+            before.assertMatches(dataSet);
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+            after.assertMatches(dataSet);
+            assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        }
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        before.assertMatches(dataSet);
+        UndoRedoHandler.getInstance().clean();
+        for (ApplyAlignmentEditPlanCommand.MutationPoint point
+                : ApplyAlignmentEditPlanCommand.MutationPoint.values()) {
+            ApplyAlignmentEditPlanCommand failureCommand = new ApplyAlignmentEditPlanCommand(
+                    dataSet, plan, validator, "Inject coupled loop failure", reached -> {
+                        if (reached == point) {
+                            throw new InjectedFailure(point);
+                        }
+                    });
+            assertThrows(IllegalStateException.class, () -> V022AtomicApplyTest.onEdt(() ->
+                    UndoRedoHandler.getInstance().add(failureCommand)), point.name());
+            before.assertMatches(dataSet);
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+        }
+        Node spur = node(768, -12, -55);
+        Way extraIncident = way(769, left, spur);
+        dataSet.addPrimitive(spur);
+        dataSet.addPrimitive(extraIncident);
+        V022AtomicApplyTest.LiveState changed = V022AtomicApplyTest.LiveState.capture(dataSet);
+        ApplyAlignmentEditPlanCommand stale = new ApplyAlignmentEditPlanCommand(
+                dataSet, plan, validator, "Reject new incident after review");
+        assertThrows(IllegalStateException.class, () -> V022AtomicApplyTest.onEdt(() ->
+                UndoRedoHandler.getInstance().add(stale)));
+        changed.assertMatches(dataSet);
+        LiveBPreviewService.Captured[] extraCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> extraCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, sameReceiverRaster(), config(), false, permissions));
+        LiveBPreviewService.Computed extraComputed = new LiveBPreviewService().compute(
+                extraCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException extra = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(extraComputed, 0));
+        assertTrue(extra.getMessage().contains("bounded terminal-through topology"),
+                extra::getMessage);
     }
 
     private static CleanupFixture cleanupFixture(boolean uploaded) throws Exception {
@@ -326,6 +493,32 @@ class V022ProductionNetworkTransactionTest {
         return new LiveBPreviewService.VisibleRaster(size, size, argb,
                 -60.0, -60.0, 60.0, 60.0, 1.0, 1.0, OptionalDouble.of(1.0),
                 "production-cleanup-deletion", "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster sameReceiverRaster() {
+        return sameReceiverRaster(true);
+    }
+
+    private static LiveBPreviewService.VisibleRaster sameReceiverRaster(boolean rightCorridor) {
+        int size = 1440;
+        int[] argb = new int[size * size];
+        for (int y = 0; y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                double selectedDistance = (y - 720.0) / 6.0;
+                double leftDistance = (x - 456.0) / 6.0;
+                double rightDistance = (x - 984.0) / 6.0;
+                double selected = Math.exp(-0.5 * selectedDistance * selectedDistance / 1.44);
+                double left = Math.exp(-0.5 * leftDistance * leftDistance / 1.44);
+                double right = rightCorridor
+                        ? Math.exp(-0.5 * rightDistance * rightDistance / 1.44) : 0.0;
+                int gray = (int) Math.round(255.0 * (0.02 + 0.80
+                        * Math.max(selected, Math.max(left, right))));
+                argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(size, size, argb,
+                -120.0, -120.0, 120.0, 120.0, 1.0, 1.0, OptionalDouble.of(1.0),
+                "production-coupled-same-receiver", "EPSG:3857");
     }
 
     private static AlignmentConfig config() {
