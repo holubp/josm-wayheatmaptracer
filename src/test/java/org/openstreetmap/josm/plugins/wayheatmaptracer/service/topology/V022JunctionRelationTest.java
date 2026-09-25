@@ -231,6 +231,89 @@ class V022JunctionRelationTest {
         assertRelationSemanticsRefusal(result);
     }
 
+    @Test
+    void t101ViaWayRestrictionRejectsFinalTraversalReversedAgainstOneway() {
+        long from = 264;
+        long via = 265;
+        long to = 266;
+        Relation restriction = relation(309,
+            Map.of("type", "restriction", "restriction", "only_straight_on"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(wayId(via), "via"), member(wayId(to), "to"));
+        List<TopologyNetwork.Node> nodes = List.of(node(L, -10, 0), node(J, 0, 0),
+            node(K, 20, 0), node(T, 30, 0), node(A, 10, 20));
+        TopologyNetwork before = network(nodes,
+            List.of(way(from, A, J),
+                way(via, Map.of("highway", "path", "oneway", "yes"), L, J, K),
+                way(to, K, T)), List.of(restriction));
+        TopologyNetwork after = network(nodes,
+            List.of(way(from, A, J),
+                way(via, Map.of("highway", "path", "oneway", "yes"), L, K, J),
+                way(to, K, T)), List.of(restriction));
+
+        assertTrue(RelationSafetyValidator.validate(before, after, Set.of(wayId(via)),
+            Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
+    }
+
+    @Test
+    void t102ViaNodeRestrictionRejectsFinalOnewayApproachReversal() {
+        long from = 267;
+        long to = 268;
+        Relation restriction = relation(310,
+            Map.of("type", "restriction", "restriction", "no_left_turn"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(nodeId(J), "via"), member(wayId(to), "to"));
+        List<TopologyNetwork.Node> nodes = List.of(node(J, 0, 0), node(A, 10, 20), node(T, 30, 0));
+        TopologyNetwork before = network(nodes,
+            List.of(way(from, Map.of("highway", "path", "oneway", "yes"), A, J),
+                way(to, Map.of("highway", "path", "oneway", "yes"), J, T)),
+            List.of(restriction));
+        TopologyNetwork after = network(nodes,
+            List.of(way(from, Map.of("highway", "path", "oneway", "yes"), J, A),
+                way(to, Map.of("highway", "path", "oneway", "yes"), J, T)),
+            List.of(restriction));
+
+        assertTrue(RelationSafetyValidator.validate(before, after, Set.of(wayId(from)),
+            Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
+    }
+
+    @Test
+    void t103ViaWayRestrictionAllowsOrderedReverseOnewayTraversal() {
+        long from = 269;
+        long via = 270;
+        long to = 271;
+        Relation restriction = relation(311,
+            Map.of("type", "restriction", "restriction", "only_straight_on"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(wayId(via), "via"), member(wayId(to), "to"));
+        TopologyNetwork network = network(
+            List.of(node(L, -10, 0), node(J, 0, 0), node(K, 20, 0),
+                node(T, 30, 0), node(A, 10, 20)),
+            List.of(way(from, Map.of("highway", "path", "oneway", "-1"), J, A),
+                way(via, Map.of("highway", "path", "oneway", "-1"), K, J, L),
+                way(to, Map.of("highway", "path", "oneway", "-1"), T, K)),
+            List.of(restriction));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(network, network,
+            Set.of(wayId(via)), Map.of(), Set.of()));
+    }
+
+    @Test
+    void t104ViaNodeRestrictionAllowsOnewayApproachAndDeparture() {
+        long from = 272;
+        long to = 273;
+        Relation restriction = relation(312,
+            Map.of("type", "restriction", "restriction", "no_left_turn"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(nodeId(J), "via"), member(wayId(to), "to"));
+        TopologyNetwork network = network(
+            List.of(node(J, 0, 0), node(A, 10, 20), node(T, 30, 0)),
+            List.of(way(from, Map.of("highway", "path", "oneway", "yes"), A, J),
+                way(to, Map.of("highway", "path", "oneway", "yes"), J, T)),
+            List.of(restriction));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(network, network,
+            Set.of(wayId(from)), Map.of(), Set.of()));
+    }
+
     private static void assertRelationSemanticsRefusal(PlanningResult result) {
         assertFalse(result.accepted(), () -> "expected a relation-semantics refusal, got "
             + result.findings());

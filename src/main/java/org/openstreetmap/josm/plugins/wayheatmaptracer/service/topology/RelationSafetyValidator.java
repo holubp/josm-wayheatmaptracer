@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -100,10 +101,10 @@ final class RelationSafetyValidator {
         boolean viaWays = via.stream().allMatch(member -> member.memberId().type() == PrimitiveType.WAY);
         if (viaNodes && via.size() == 1) {
             Id viaNode = via.get(0).memberId();
-            if (!after.way(from.get(0).memberId()).nodeIds().contains(viaNode)
-                || !after.way(to.get(0).memberId()).nodeIds().contains(viaNode)) {
+            if (!viaNodeTraversalConnected(after, from.get(0).memberId(), viaNode,
+                to.get(0).memberId())) {
                 findings.add(finding(FindingCode.RELATION_SEMANTICS_INVALID,
-                    "Via-node restriction lost from/via/to incidence: " + oldRelation.id()));
+                    "Via-node restriction lost directed from/via/to traversal: " + oldRelation.id()));
             }
         } else if (viaWays) {
             List<Id> traversal = new ArrayList<>();
@@ -135,8 +136,8 @@ final class RelationSafetyValidator {
         if (via.stream().allMatch(member -> member.memberId().type() == PrimitiveType.NODE)
             && via.size() == 1) {
             Id viaNode = via.get(0).memberId();
-            return before.way(from.get(0).memberId()).nodeIds().contains(viaNode)
-                && before.way(to.get(0).memberId()).nodeIds().contains(viaNode);
+            return viaNodeTraversalConnected(before, from.get(0).memberId(), viaNode,
+                to.get(0).memberId());
         }
         if (via.stream().allMatch(member -> member.memberId().type() == PrimitiveType.WAY)) {
             List<Id> traversal = new ArrayList<>();
@@ -169,12 +170,86 @@ final class RelationSafetyValidator {
     }
 
     private static boolean orderedWayTraversalConnected(TopologyNetwork network, List<Id> wayIds) {
-        for (int index = 1; index < wayIds.size(); index++) {
-            if (!waysShareNode(network, wayIds.get(index - 1), wayIds.get(index))) {
-                return false;
+        Way previous = network.way(wayIds.get(0));
+        Set<Id> possibleExits = new HashSet<>();
+        for (int index = 0; index < previous.nodeIds().size(); index++) {
+            if (hasApproach(previous, index)) {
+                possibleExits.add(previous.nodeIds().get(index));
             }
         }
-        return true;
+        for (int index = 1; index < wayIds.size(); index++) {
+            Way current = network.way(wayIds.get(index));
+            Set<Id> nextExits = new HashSet<>();
+            for (int entry = 0; entry < current.nodeIds().size(); entry++) {
+                if (!possibleExits.contains(current.nodeIds().get(entry))) {
+                    continue;
+                }
+                if (index == wayIds.size() - 1) {
+                    if (hasDeparture(current, entry)) {
+                        return true;
+                    }
+                } else {
+                    for (int exit = 0; exit < current.nodeIds().size(); exit++) {
+                        if (canTraverse(current, entry, exit)) {
+                            nextExits.add(current.nodeIds().get(exit));
+                        }
+                    }
+                }
+            }
+            if (nextExits.isEmpty()) {
+                return false;
+            }
+            possibleExits = nextExits;
+        }
+        return false;
+    }
+
+    private static boolean viaNodeTraversalConnected(TopologyNetwork network, Id fromWayId,
+        Id viaNode, Id toWayId) {
+        Way from = network.way(fromWayId);
+        Way to = network.way(toWayId);
+        for (int index = 0; index < from.nodeIds().size(); index++) {
+            if (from.nodeIds().get(index).equals(viaNode) && hasApproach(from, index)) {
+                for (int departure = 0; departure < to.nodeIds().size(); departure++) {
+                    if (to.nodeIds().get(departure).equals(viaNode)
+                        && hasDeparture(to, departure)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasApproach(Way way, int at) {
+        for (int start = 0; start < way.nodeIds().size(); start++) {
+            if (canTraverse(way, start, at)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasDeparture(Way way, int at) {
+        for (int end = 0; end < way.nodeIds().size(); end++) {
+            if (canTraverse(way, at, end)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean canTraverse(Way way, int start, int end) {
+        if (start == end) {
+            return false;
+        }
+        String oneway = way.tags().getOrDefault("oneway", "no");
+        return switch (oneway) {
+            case "yes", "1", "true" -> start < end;
+            case "-1" -> start > end;
+            case "no", "0", "false" -> true;
+            default -> false;
+        };
     }
 
     private static boolean waysShareNode(TopologyNetwork network, Id firstWayId, Id secondWayId) {
