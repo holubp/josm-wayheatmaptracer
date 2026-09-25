@@ -285,9 +285,11 @@ public final class LiveBPreviewService {
         List<List<MetricPoint>> editPolygons = new ArrayList<>(decision.polygons());
         List<List<MetricPoint>> collisionPolygons = new ArrayList<>(decision.polygons());
         if (permissions.junctionPolicy() != JunctionPolicy.FIXED) {
-            List<Node> boundaries = List.of(selection.segmentNodes().get(0),
-                    selection.segmentNodes().get(selection.segmentNodes().size() - 1));
-            for (Node boundary : boundaries) {
+            List<Node> candidates = permissions.junctionPolicy() == JunctionPolicy.REATTACH
+                    ? selection.segmentNodes()
+                    : List.of(selection.segmentNodes().get(0),
+                            selection.segmentNodes().get(selection.segmentNodes().size() - 1));
+            for (Node boundary : candidates) {
                 if (boundary.hasKeys() || boundary.getReferrers().stream()
                         .anyMatch(referrer -> !(referrer instanceof Way))
                         || dataSet.getRelations().stream().anyMatch(relation -> relation.getMembers().stream()

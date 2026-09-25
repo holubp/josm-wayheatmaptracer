@@ -75,6 +75,18 @@ class V022CoordinateFrameTest {
     }
 
     @Test
+    void t004CertifiedWestEdgeRoundTripAllowsItsDeclaredNumericalTolerance() {
+        GeographicPoint southWest = new GeographicPoint(-0.001, -0.001);
+        LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(
+                new GeographicPoint(0.0, 0.0), southWest,
+                new GeographicPoint(0.001, 0.001));
+        MetricPoint west = frame.toMetric(southWest);
+        GeographicPoint restored = frame.toGeographic(
+                new MetricPoint(west.xMeters() - 1.0e-8, west.yMeters()));
+        assertEquals(southWest.longitudeDegrees(), restored.longitudeDegrees(), 1.0e-12);
+    }
+
+    @Test
     void t005UnknownNativePitchDisablesNativeClaimsAndRequiresReview() {
         EvidenceResolution resolution = EvidenceResolution.renderedOnly(0.42);
 

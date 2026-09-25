@@ -131,7 +131,8 @@ public final class JunctionReattachmentPlanner {
     public record ReattachmentRequest(TopologyNetwork before, List<JunctionCandidate> candidates,
         Set<Id> editableWayIds, Bounds editRegion, Permissions permissions,
         Map<Id, LocationFeatureDecision> locationFeatureDecisions,
-        Set<Id> approvedRelationNodeRemaps, double existingNodeCollisionToleranceMeters) {
+        Set<Id> approvedRelationNodeRemaps, double existingNodeCollisionToleranceMeters,
+        Map<Id, Point> evidencedNodePositions, long minimumNextPlanNodeId) {
         public ReattachmentRequest {
             Objects.requireNonNull(before, "before");
             Objects.requireNonNull(candidates, "candidates");
@@ -162,6 +163,39 @@ public final class JunctionReattachmentPlanner {
                 || existingNodeCollisionToleranceMeters < 0.0) {
                 throw new IllegalArgumentException("Collision tolerance must be finite and nonnegative");
             }
+            Objects.requireNonNull(evidencedNodePositions, "evidencedNodePositions");
+            if (evidencedNodePositions.entrySet().stream().anyMatch(entry ->
+                    entry.getKey() == null || entry.getValue() == null
+                            || !before.nodes().containsKey(entry.getKey()))) {
+                throw new IllegalArgumentException("Evidenced receiver positions require captured nodes");
+            }
+            evidencedNodePositions = Map.copyOf(evidencedNodePositions);
+            if (minimumNextPlanNodeId < 1) {
+                throw new IllegalArgumentException("Plan node identity reservation is invalid");
+            }
+        }
+
+        /** Preserves the prior evidence-aware constructor with no additional ID reservation. */
+        public ReattachmentRequest(TopologyNetwork before, List<JunctionCandidate> candidates,
+                Set<Id> editableWayIds, Bounds editRegion, Permissions permissions,
+                Map<Id, LocationFeatureDecision> locationFeatureDecisions,
+                Set<Id> approvedRelationNodeRemaps,
+                double existingNodeCollisionToleranceMeters,
+                Map<Id, Point> evidencedNodePositions) {
+            this(before, candidates, editableWayIds, editRegion, permissions,
+                    locationFeatureDecisions, approvedRelationNodeRemaps,
+                    existingNodeCollisionToleranceMeters, evidencedNodePositions, 1L);
+        }
+
+        /** Compatibility path for the existing frozen-locus and coordinate-only callers. */
+        public ReattachmentRequest(TopologyNetwork before, List<JunctionCandidate> candidates,
+                Set<Id> editableWayIds, Bounds editRegion, Permissions permissions,
+                Map<Id, LocationFeatureDecision> locationFeatureDecisions,
+                Set<Id> approvedRelationNodeRemaps,
+                double existingNodeCollisionToleranceMeters) {
+            this(before, candidates, editableWayIds, editRegion, permissions,
+                    locationFeatureDecisions, approvedRelationNodeRemaps,
+                    existingNodeCollisionToleranceMeters, Map.of(), 1L);
         }
     }
 
@@ -220,7 +254,8 @@ public final class JunctionReattachmentPlanner {
         }
 
         TopologyNetwork before = request.before();
-        IdAllocator allocator = new IdAllocator(before.nodes().keySet());
+        IdAllocator allocator = new IdAllocator(before.nodes().keySet(),
+                request.minimumNextPlanNodeId());
         Map<Id, CandidateState> states = createCandidateStates(request, allocator);
         Optional<Finding> collisionFailure = validateExistingNodeCollisions(request, states);
         if (collisionFailure.isPresent()) {
@@ -228,6 +263,10 @@ public final class JunctionReattachmentPlanner {
         }
 
         Map<Id, Node> nodes = new LinkedHashMap<>(before.nodes());
+        request.evidencedNodePositions().forEach((id, position) -> {
+            Node original = before.node(id);
+            nodes.put(id, new Node(id, position, original.tags()));
+        });
         Map<Id, Way> ways = new LinkedHashMap<>(before.ways());
         Map<Id, Relation> relations = new LinkedHashMap<>(before.relations());
         Map<Id, List<Id>> retainedShapes = new LinkedHashMap<>();
@@ -237,10 +276,10 @@ public final class JunctionReattachmentPlanner {
             }
         }
 
-        Map<ReceiverGroup, List<CandidateState>> frozenGroups = frozenGroups(states.values());
-        Set<Id> frozenReceiverWays = new LinkedHashSet<>();
-        for (Map.Entry<ReceiverGroup, List<CandidateState>> entry : frozenGroups.entrySet()) {
-            frozenReceiverWays.addAll(entry.getKey().wayIds());
+        Map<ReceiverGroup, List<CandidateState>> orderedGroups = receiverGroups(states.values());
+        Set<Id> rebuiltReceiverWays = new LinkedHashSet<>();
+        for (Map.Entry<ReceiverGroup, List<CandidateState>> entry : orderedGroups.entrySet()) {
+            rebuiltReceiverWays.addAll(entry.getKey().wayIds());
             Optional<Finding> failure = entry.getKey().wayIds().size() == 1
                 ? rebuildSingleReceiver(before, nodes, ways, entry.getKey().wayIds().get(0),
                     entry.getValue(), retainedShapes, allocator)
@@ -256,7 +295,7 @@ public final class JunctionReattachmentPlanner {
                 putNodeAtTarget(nodes, state);
             }
         }
-        replaceJunctionOccurrences(before, ways, states, frozenReceiverWays);
+        replaceJunctionOccurrences(before, ways, states, rebuiltReceiverWays);
         applyApprovedRelationRemaps(relations, states, request.approvedRelationNodeRemaps());
 
         TopologyNetwork after = TopologyNetwork.fromMaps(nodes, ways, relations);
@@ -429,12 +468,9 @@ public final class JunctionReattachmentPlanner {
             candidateWays.stream().allMatch(candidateWay -> gradeSeparated(candidateWay, collisionWay)));
     }
 
-    private static Map<ReceiverGroup, List<CandidateState>> frozenGroups(Collection<CandidateState> states) {
+    private static Map<ReceiverGroup, List<CandidateState>> receiverGroups(Collection<CandidateState> states) {
         Map<ReceiverGroup, List<CandidateState>> groups = new LinkedHashMap<>();
         for (CandidateState state : states) {
-            if (state.candidate.receiverPolicy() != ReceiverPolicy.FROZEN_LOCUS) {
-                continue;
-            }
             for (ReceiverGroup group : state.candidate.receiverGroups()) {
                 groups.computeIfAbsent(group, ignored -> new ArrayList<>()).add(state);
             }
@@ -456,7 +492,8 @@ public final class JunctionReattachmentPlanner {
                 base.add(nodeId);
             } else if (!state.finalNodeId.equals(nodeId)) {
                 base.add(nodeId);
-            } else if (retainsShapeAtOccurrence(before, originalWay, index)) {
+            } else if (state.candidate.receiverPolicy() == ReceiverPolicy.FROZEN_LOCUS
+                    && retainsShapeAtOccurrence(before, originalWay, index)) {
                 Id shapeId = allocator.nextNodeId();
                 nodes.put(shapeId, new Node(shapeId, before.node(nodeId).point(), Map.of()));
                 base.add(shapeId);
@@ -525,7 +562,8 @@ public final class JunctionReattachmentPlanner {
         int oldIndex = combined.indexOf(state.candidate.originalJunctionNodeId());
         List<Id> base = new ArrayList<>(combined);
         base.remove(oldIndex);
-        if (retainsShapeAtCombinedOccurrence(before, combined, oldIndex)) {
+        if (state.candidate.receiverPolicy() == ReceiverPolicy.FROZEN_LOCUS
+                && retainsShapeAtCombinedOccurrence(before, combined, oldIndex)) {
             Id shapeId = allocator.nextNodeId();
             nodes.put(shapeId, new Node(shapeId,
                 before.node(state.candidate.originalJunctionNodeId()).point(), Map.of()));
@@ -928,11 +966,11 @@ public final class JunctionReattachmentPlanner {
     private static final class IdAllocator {
         private long next;
 
-        private IdAllocator(Collection<Id> existingNodes) {
-            next = existingNodes.stream()
+        private IdAllocator(Collection<Id> existingNodes, long minimumNext) {
+            next = Math.max(minimumNext, existingNodes.stream()
                 .filter(id -> id.type() == PrimitiveType.NODE
                     && id.identityNamespace() == IdentityNamespace.PLAN_LOCAL)
-                .mapToLong(Id::value).max().orElse(0L) + 1L;
+                .mapToLong(Id::value).max().orElse(0L) + 1L);
         }
 
         private Id nextNodeId() {

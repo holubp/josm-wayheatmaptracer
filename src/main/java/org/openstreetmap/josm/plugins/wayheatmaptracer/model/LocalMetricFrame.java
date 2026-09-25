@@ -60,9 +60,9 @@ public record LocalMetricFrame(String projectionId, GeographicPoint origin,
         GeographicPoint northEast = certificate.northEast();
         boolean latitude = point.latitudeDegrees() >= southWest.latitudeDegrees() - 1e-12
             && point.latitudeDegrees() <= northEast.latitudeDegrees() + 1e-12;
-        double offset = positiveLongitudeSpan(southWest.longitudeDegrees(), point.longitudeDegrees());
+        double offset = normalizeDelta(point.longitudeDegrees() - southWest.longitudeDegrees());
         double span = positiveLongitudeSpan(southWest.longitudeDegrees(), northEast.longitudeDegrees());
-        return latitude && offset <= span + 1e-12;
+        return latitude && offset >= -1e-12 && offset <= span + 1e-12;
     }
 
     private static double positiveLongitudeSpan(double west, double east) {

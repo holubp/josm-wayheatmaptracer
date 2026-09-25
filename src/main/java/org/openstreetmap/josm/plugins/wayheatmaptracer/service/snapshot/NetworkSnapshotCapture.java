@@ -324,21 +324,18 @@ public final class NetworkSnapshotCapture {
 
     private static boolean boundedReattachmentAuthority(Specification specification,
             Inventory inventory, Way selected) {
-        Set<PrimitiveKey> selectedBoundaries = Set.of(
-                key(selected.getNode(specification.selectedRange().firstIndex())),
-                key(selected.getNode(specification.selectedRange().lastIndex())));
         Set<PrimitiveKey> selectedRangeNodes = new LinkedHashSet<>();
         for (int index = specification.selectedRange().firstIndex();
                 index <= specification.selectedRange().lastIndex(); index++) {
             selectedRangeNodes.add(key(selected.getNode(index)));
         }
-        Set<PrimitiveKey> movableSharedJunctions = selectedBoundaries.stream()
+        Set<PrimitiveKey> movableSharedJunctions = selectedRangeNodes.stream()
                 .filter(specification.movableExistingNodeKeys()::contains)
                 .filter(node -> inventory.referrers(node).stream()
                         .filter(key -> key.type() == PrimitiveKey.Type.WAY).count() > 1)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         if (specification.movableExistingNodeKeys().stream()
-                .filter(selectedBoundaries::contains)
+                .filter(selectedRangeNodes::contains)
                 .anyMatch(node -> !movableSharedJunctions.contains(node))) {
             return false;
         }

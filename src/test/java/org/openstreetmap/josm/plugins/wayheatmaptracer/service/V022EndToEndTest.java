@@ -417,10 +417,15 @@ class V022EndToEndTest {
                         .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
                         .toList(),
                 plan.finalPreviewWays().get(receiver));
-        var expectedSelected = computed.pipeline().routes().get(0).hypothesis().points().stream()
-                .map(computed.evidence().coordinateFrame()::toGeographic).toList();
-        assertEquals(expectedSelected,
-                plan.finalPreviewWays().get(computed.request().selectedWayKey()));
+        var afterSouth = computed.evidence().coordinateFrame().toMetric(
+                ((DetachedNode) plan.after().primitives().get(reconstructedNodes.get(0))).coordinate());
+        assertEquals(afterSouth.xMeters(), afterJunction.xMeters(), 0.5,
+                "the joint junction must meet the measured receiver core");
+        DetachedWay afterSelected = (DetachedWay) plan.after().primitives().get(
+                computed.request().selectedWayKey());
+        assertEquals(afterSelected.nodeKeys().stream()
+                .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
+                .toList(), plan.finalPreviewWays().get(computed.request().selectedWayKey()));
         for (var port : computed.captured().network().closure().externalPorts().stream()
                 .filter(value -> value.wayKey().equals(receiver)).toList()) {
             assertEquals(plan.before().primitives().get(port.boundaryNodeKey()),
@@ -561,6 +566,164 @@ class V022EndToEndTest {
                 missingFailure::getMessage);
         assertFalse(missingFailure.getMessage().contains("bounded terminal-through topology"),
                 missingFailure::getMessage);
+    }
+
+    @Test
+    void T169_fullSelectedRangeCapturesStrictlyInteriorSharedJunction() throws Exception {
+        JunctionFixture fixture = selectedInteriorReconstructionFixture();
+        Way selected = fixture.selection().way();
+        SelectionContext fullRange = new SelectionContext(selected, 0, 2,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fullRange, junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                fixture.receiver().getUniqueId());
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.junction().getUniqueId());
+        assertEquals(List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 6)),
+                captured[0].network().closure().editableWayOccurrences().get(receiver));
+        assertTrue(captured[0].network().closure().movableExistingNodeKeys().contains(junction));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(Set.of(computed.request().selectedWayKey(), receiver),
+                plan.finalPreviewWays().keySet());
+    }
+
+    @Test
+    void T169_receiverCrossingLaterRequiresNodeResequencing() throws Exception {
+        JunctionFixture fixture = displacedInteriorJunctionFixture();
+        Way selected = fixture.selection().way();
+        SelectionContext fullRange = new SelectionContext(selected, 0, 2,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fullRange,
+                junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 12.0),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                fixture.receiver().getUniqueId());
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.junction().getUniqueId());
+        PrimitiveKey middle = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.middle().getUniqueId());
+        DetachedWay proposedReceiver = (DetachedWay) plan.after().primitives().get(receiver);
+        assertEquals(List.of(604L, 605L, 606L, 607L, 602L, 608L, 609L, 610L),
+                proposedReceiver.nodeKeys().stream().map(PrimitiveKey::id).toList(),
+                "supported X beyond M must produce L-M-X-R, not L-X-M-R");
+        assertTrue(((DetachedNode) plan.after().primitives().get(junction)).coordinate()
+                .latitudeDegrees() > ((DetachedNode) plan.after().primitives().get(middle))
+                        .coordinate().latitudeDegrees());
+        assertEquals(proposedReceiver.nodeKeys().stream()
+                .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
+                .toList(), plan.finalPreviewWays().get(receiver));
+        List<Long> originalOrder = fixture.receiver().getNodes().stream()
+                .map(Node::getUniqueId).toList();
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(fixture.dataSet(),
+                        computed.captured().specification()));
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), plan, new LiveNetworkSnapshotValidator(receipt, plan,
+                        () -> plan.before().sourceGeneration()), "Apply interior junction sequence");
+        onEdt(command::executeCommand);
+        assertEquals(proposedReceiver.nodeKeys().stream().map(PrimitiveKey::id).toList(),
+                fixture.receiver().getNodes().stream().map(Node::getUniqueId).toList());
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        assertEquals(originalOrder, fixture.receiver().getNodes().stream()
+                .map(Node::getUniqueId).toList());
+    }
+
+    @Test
+    void T169_splitReceiverTransfersOrdinaryMiddleToEarlierHalf() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(701, latitude(6), longitude(-8));
+        Node junction = loadedNode(702, latitude(0), longitude(10));
+        Node farSouth = loadedNode(703, latitude(-49), longitude(10));
+        Node southPort = loadedNode(704, latitude(-31), longitude(10));
+        Node south = loadedNode(705, latitude(-8), longitude(10));
+        Node middle = loadedNode(706, latitude(2), longitude(10));
+        Node north = loadedNode(707, latitude(18), longitude(10));
+        Node northPort = loadedNode(708, latitude(37), longitude(10));
+        Node farNorth = loadedNode(709, latitude(49), longitude(10));
+        Way selected = loadedWay(711, west, junction);
+        Way first = loadedWay(712, farSouth, southPort, south, junction);
+        Way second = loadedWay(713, junction, middle, north, northPort, farNorth);
+        for (Node node : List.of(west, junction, farSouth, southPort, south,
+                middle, north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        for (Way way : List.of(selected, first, second)) {
+            dataSet.addPrimitive(way);
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection,
+                junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 6.0),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        DetachedWay firstAfter = (DetachedWay) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 712));
+        DetachedWay secondAfter = (DetachedWay) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 713));
+        assertEquals(List.of(703L, 704L, 705L, 706L, 702L),
+                firstAfter.nodeKeys().stream().map(PrimitiveKey::id).toList());
+        assertEquals(List.of(702L, 707L, 708L, 709L),
+                secondAfter.nodeKeys().stream().map(PrimitiveKey::id).toList());
+        assertEquals(1, java.util.stream.Stream.concat(firstAfter.nodeKeys().stream(),
+                        secondAfter.nodeKeys().stream())
+                .filter(key -> key.id() == 706L).count());
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 711),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 712),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 713)),
+                plan.finalPreviewWays().keySet());
+        List<Long> originalFirst = first.getNodes().stream().map(Node::getUniqueId).toList();
+        List<Long> originalSecond = second.getNodes().stream().map(Node::getUniqueId).toList();
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                dataSet, plan, new LiveNetworkSnapshotValidator(receipt, plan,
+                        () -> plan.before().sourceGeneration()), "Apply split transfer");
+        onEdt(command::executeCommand);
+        assertEquals(firstAfter.nodeKeys().stream().map(PrimitiveKey::id).toList(),
+                first.getNodes().stream().map(Node::getUniqueId).toList());
+        assertEquals(secondAfter.nodeKeys().stream().map(PrimitiveKey::id).toList(),
+                second.getNodes().stream().map(Node::getUniqueId).toList());
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        assertEquals(originalFirst, first.getNodes().stream().map(Node::getUniqueId).toList());
+        assertEquals(originalSecond, second.getNodes().stream().map(Node::getUniqueId).toList());
+        second.put("maxspeed", "30");
+        LiveBPreviewService.Captured[] boundaryCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> boundaryCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection,
+                junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 6.0),
+                visibleConfig(), false, permissions));
+        var boundaryComputed = new LiveBPreviewService().compute(boundaryCaptured[0],
+                CancellationProbe.NONE);
+        IllegalArgumentException boundary = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(boundaryComputed, 0));
+        assertTrue(boundary.getMessage().contains("SEMANTIC_BOUNDARY_RELOCATION_UNSUPPORTED"),
+                boundary::getMessage);
+        assertEquals(originalFirst, first.getNodes().stream().map(Node::getUniqueId).toList());
+        assertEquals(originalSecond, second.getNodes().stream().map(Node::getUniqueId).toList());
     }
 
     @Test
@@ -1200,6 +1363,32 @@ class V022EndToEndTest {
         dataSet.addPrimitive(receiver);
         return new JunctionFixture(dataSet,
                 new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
+                receiver, west, junction, south, middle, north);
+    }
+
+    private static JunctionFixture displacedInteriorJunctionFixture() {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(601, latitude(12), longitude(-8));
+        Node junction = loadedNode(602, latitude(6), longitude(8));
+        Node east = loadedNode(603, latitude(12), longitude(18));
+        Node farSouth = loadedNode(604, latitude(-49), longitude(10));
+        Node southPort = loadedNode(605, latitude(-31), longitude(10));
+        Node south = loadedNode(606, latitude(-8), longitude(10));
+        Node middle = loadedNode(607, latitude(8), longitude(10));
+        Node north = loadedNode(608, latitude(18), longitude(10));
+        Node northPort = loadedNode(609, latitude(37), longitude(10));
+        Node farNorth = loadedNode(610, latitude(49), longitude(10));
+        Way selected = loadedWay(611, west, junction, east);
+        Way receiver = loadedWay(612, farSouth, southPort, south, junction, middle, north,
+                northPort, farNorth);
+        for (Node node : List.of(west, junction, east, farSouth, southPort,
+                south, middle, north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        return new JunctionFixture(dataSet,
+                new SelectionContext(selected, 0, 2, selected.getNodes(), Set.of()),
                 receiver, west, junction, south, middle, north);
     }
 
