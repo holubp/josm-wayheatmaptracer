@@ -42,6 +42,8 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
@@ -60,6 +62,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
@@ -399,15 +402,21 @@ public class AlignWayAction extends JosmAction {
             return;
         }
         ManagedHeatmapConfig config = null;
+        String diagnosticAttemptIdentity = beginDiagnosticAttempt();
+        String diagnosticSourceLineage = "unavailable";
         PluginLog.beginSlideSession();
         try {
             PluginLog.verbose("Align Way to Heatmap invoked.");
             DataSet dataSet = MainApplication.getLayerManager().getEditDataSet();
             if (dataSet == null) {
+                recordModernUnavailable("failed", "unavailable", diagnosticAttemptIdentity);
+                PluginLog.endSlideSession();
                 showError(tr("No editable data layer is active."));
                 return;
             }
             if (MainApplication.getMap() == null || MainApplication.getMap().mapView == null) {
+                recordModernUnavailable("failed", "unavailable", diagnosticAttemptIdentity);
+                PluginLog.endSlideSession();
                 showError(tr("No map view is available."));
                 return;
             }
@@ -437,6 +446,8 @@ public class AlignWayAction extends JosmAction {
                 : forcedLivePreviewEngine != null ? AlignmentSourceMode.VISIBLE_LAYER
                 : ordinaryRoute.pipeline() == OrdinaryPipeline.MODERN_MANAGED
                     ? AlignmentSourceMode.MANAGED_TILES : AlignmentSourceMode.VISIBLE_LAYER;
+            diagnosticSourceLineage = sourceMode == AlignmentSourceMode.MANAGED_TILES
+                    ? "managed-tiles" : "visible-layer";
             ImageryLayer imageryLayer = forcedLivePreviewEngine != null
                     ? (forcedManagedPreview ? null : HeatmapLayerResolver.resolve())
                     : ordinaryRouting.visibleSource();
@@ -447,7 +458,8 @@ public class AlignWayAction extends JosmAction {
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracing, recovery, ordinaryRouting,
                         sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
-                        sourceMode == AlignmentSourceMode.MANAGED_TILES);
+                        sourceMode == AlignmentSourceMode.MANAGED_TILES,
+                        diagnosticAttemptIdentity);
                 return;
             }
             AlignmentResult result = alignmentService.align(selection, imageryLayer, mapView, slideConfig);
@@ -463,15 +475,22 @@ public class AlignWayAction extends JosmAction {
             }
             Logging.warn("WayHeatmapTracer alignment failed without applying geometry: " + ex.getMessage());
             PluginLog.verbose("Alignment failed without applying geometry: %s", ex.toString());
-            DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
-                ex.partialResult(),
-                ex.partialResult().candidates().isEmpty() ? null : ex.partialResult().candidates().get(0),
-                "failed",
-                PluginLog.currentSlideLog()
-            ));
+            if (config != null && config.trackerMode().capabilities().requiresEvidenceSnapshot()) {
+                recordModernUnavailable("failed", diagnosticSourceLineage,
+                        diagnosticAttemptIdentity);
+            } else {
+                DiagnosticsRegistry.setLastBundle(LastSlideDebugBundle.fromResult(
+                    ex.partialResult(),
+                    ex.partialResult().candidates().isEmpty() ? null : ex.partialResult().candidates().get(0),
+                    "failed",
+                    PluginLog.currentSlideLog()
+                ));
+            }
             PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         } catch (Exception ex) {
+            recordModernUnavailable("failed", diagnosticSourceLineage,
+                    diagnosticAttemptIdentity);
             overlay.hide();
             Logging.error(ex);
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
@@ -485,12 +504,12 @@ public class AlignWayAction extends JosmAction {
             AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
             RecoveryPermissions recoveryPermissions,
             OrdinaryActionRouting<ImageryLayer> ordinaryRouting,
-            boolean explicitVisibleSource, boolean managedSource) {
+            boolean explicitVisibleSource, boolean managedSource,
+            String diagnosticAttemptIdentity) {
         if (!managedSource) {
             LiveBPreviewService.requireSupported(selection,
                     ProjectionRegistry.getProjection().toCode(), slideConfig, explicitVisibleSource);
         }
-        DiagnosticsRegistry.setLastBundle(null);
         overlay.hide();
         String engineLabel = livePreviewEngineLabel(slideConfig.heatmap().trackerMode());
         JDialog progress = new JDialog(MainApplication.getMainFrame(),
@@ -510,6 +529,10 @@ public class AlignWayAction extends JosmAction {
         activeLivePreviewOwner = previewOwner;
         String sourceIdentity = managedSource ? "managed-selected-" + slideConfig.heatmap().color()
                 + "-g" + slideConfig.heatmap().cacheBuster() : liveLayerIdentity(imageryLayer);
+        String sourceLineage = managedSource ? "managed-tiles" : "visible-layer";
+        DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createUnavailableLive(
+                LastSlideDebugBundle.buildIdentity(), "started", sourceLineage,
+                diagnosticAttemptIdentity));
         javax.swing.Timer failureMonitor = new javax.swing.Timer(150, event -> {
             AlignmentJob.Attempt<LiveBPreviewService.Computed> current = livePreviewSession.currentAttempt();
             if (!livePreviewSession.isCurrent(previewOwner)
@@ -520,6 +543,12 @@ public class AlignWayAction extends JosmAction {
                 boolean closed = livePreviewSession.close(previewOwner);
                 progress.dispose();
                 if (closed) {
+                    String failureReason = current.failureReason() == null ? ""
+                            : current.failureReason().toLowerCase(java.util.Locale.ROOT);
+                    recordModernUnavailable(failureReason.contains("budget")
+                                    || failureReason.contains("resource")
+                                    ? "resource-limited" : "failed",
+                            sourceLineage, diagnosticAttemptIdentity);
                     overlay.hide();
                     PluginLog.endSlideSession();
                     showError(tr("{0} alignment preview failed safely: {1}", engineLabel,
@@ -528,6 +557,7 @@ public class AlignWayAction extends JosmAction {
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
                 ((javax.swing.Timer) event.getSource()).stop();
                 livePreviewSession.close(previewOwner);
+                recordModernUnavailable("cancelled", sourceLineage, diagnosticAttemptIdentity);
                 progress.dispose();
             }
         });
@@ -535,6 +565,7 @@ public class AlignWayAction extends JosmAction {
             @Override public void windowClosing(WindowEvent event) {
                 boolean closed = livePreviewSession.close(previewOwner);
                 if (closed) {
+                    recordModernUnavailable("cancelled", sourceLineage, diagnosticAttemptIdentity);
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
@@ -566,7 +597,7 @@ public class AlignWayAction extends JosmAction {
                                     credentials, context);
                         }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
                                 imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                                tracingAtCapture, attempt.result()));
+                                tracingAtCapture, attempt.result(), diagnosticAttemptIdentity));
             } else if (managedSource) {
                 final LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
                 final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
@@ -585,7 +616,8 @@ public class AlignWayAction extends JosmAction {
                                     slideConfig.heatmap(), sourceIdentity), credentials, context);
                     return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
                 }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
-                        slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result()));
+                        slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
+                        diagnosticAttemptIdentity));
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
                     LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
@@ -602,9 +634,11 @@ public class AlignWayAction extends JosmAction {
                     return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
                 }, (captured, context) -> livePreviewService.compute(captured, context),
                         attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
-                                slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result()));
+                                slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
+                                diagnosticAttemptIdentity));
             }
         } catch (RuntimeException exception) {
+            recordModernUnavailable("failed", sourceLineage, diagnosticAttemptIdentity);
             livePreviewSession.close(previewOwner);
             progress.dispose();
             throw exception;
@@ -616,26 +650,51 @@ public class AlignWayAction extends JosmAction {
     private void publishLiveBPreview(PreviewSessionController.Owner previewOwner, JDialog progress, DataSet dataSet,
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
-            TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed) {
+            TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
+            String diagnosticAttemptIdentity) {
         if (!livePreviewSession.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
+        String terminalStatus = "failed";
         try {
+            ValidationReport.Disposition initialDisposition = computed.pipeline().routes().isEmpty()
+                    ? ValidationReport.Disposition.HARD_BLOCKED
+                    : switch (computed.pipeline().routes().get(0).quality().disposition()) {
+                        case APPLICABLE -> ValidationReport.Disposition.APPLICABLE;
+                        case REVIEW_REQUIRED -> ValidationReport.Disposition.REVIEW_REQUIRED;
+                        case HARD_BLOCKED -> ValidationReport.Disposition.HARD_BLOCKED;
+                    };
+            recordModernDiagnostics(computed, modernPreviewStatus(
+                    computed.pipeline().inference().status(), initialDisposition),
+                    0, null, false, false,
+                    diagnosticAttemptIdentity);
+            PluginLog.verbose("Modern support engine=%s source=%s inference=%s states=%d transitions=%d routes=%d counters=%d",
+                    computed.request().engine(),
+                    computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
+                    computed.pipeline().inference().status(),
+                    computed.pipeline().inference().evaluatedStates(),
+                    computed.pipeline().inference().evaluatedTransitions(),
+                    computed.pipeline().routes().size(), computed.counters().size());
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     tracingAtCapture, computed.captured());
             List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                             new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
             if (candidates.isEmpty()) {
+                terminalStatus = modernPreviewStatus(computed.pipeline().inference().status(),
+                        initialDisposition);
                 throw new IllegalStateException("Production "
                         + livePreviewEngineLabel(slideConfig.heatmap().trackerMode())
                         + " returned no previewable final route");
             }
             progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
-                    slideConfig, persistedSlideConfig, tracingAtCapture, computed, candidates);
+                    slideConfig, persistedSlideConfig, tracingAtCapture, computed, candidates,
+                    diagnosticAttemptIdentity);
         } catch (RuntimeException exception) {
+            recordModernDiagnostics(computed, terminalStatus, 0, null, false, false,
+                    diagnosticAttemptIdentity);
             boolean closed = livePreviewSession.close(previewOwner);
             progress.dispose();
             if (closed) {
@@ -651,7 +710,7 @@ public class AlignWayAction extends JosmAction {
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
-            List<CenterlineCandidate> candidates) {
+            List<CenterlineCandidate> candidates, String diagnosticAttemptIdentity) {
         JComboBox<CenterlineCandidate> choices = new JComboBox<>(
                 candidates.toArray(CenterlineCandidate[]::new));
         choices.setRenderer(new DefaultListCellRenderer() {
@@ -678,6 +737,7 @@ public class AlignWayAction extends JosmAction {
         PreviewReviewState[] review = {null};
         ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
         boolean[] applying = {false};
+        boolean[] completed = {false};
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
         confirm.setEnabled(false);
@@ -752,6 +812,9 @@ public class AlignWayAction extends JosmAction {
                     : plan[0].validation().findingCodes();
             String finalDisposition = plan[0] == null ? disposition.name()
                     : plan[0].validation().disposition().name();
+            recordModernDiagnostics(computed, modernPreviewStatus(
+                    computed.pipeline().inference().status(), displayedDisposition),
+                    index, plan[0], false, false, diagnosticAttemptIdentity);
             String sourceLabel = computed.captured().managedRaster() == null
                     ? tr("visible layer") : tr("managed tiles");
             quality.setText(liveBQualitySummary(computed, index) + "\n\n"
@@ -772,6 +835,9 @@ public class AlignWayAction extends JosmAction {
             try {
                 refresh.run();
             } catch (RuntimeException exception) {
+                completed[0] = true;
+                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                        plan[0], false, false, diagnosticAttemptIdentity);
                 boolean closed = livePreviewSession.close(previewOwner);
                 dialog.dispose();
                 if (closed) {
@@ -784,6 +850,12 @@ public class AlignWayAction extends JosmAction {
         });
         dialog.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
+                if (!completed[0]) {
+                    completed[0] = true;
+                    recordModernDiagnostics(computed, "cancelled", Math.max(0, choices.getSelectedIndex()),
+                            plan[0], review[0] != null && review[0].confirmed(), false,
+                            diagnosticAttemptIdentity);
+                }
                 boolean closed = livePreviewSession.close(previewOwner);
                 if (closed) {
                     overlay.hide();
@@ -807,9 +879,11 @@ public class AlignWayAction extends JosmAction {
                     throw new IllegalStateException("This candidate does not require a confirmable review");
                 }
                 review[0] = review[0].confirm();
+                int index = Math.max(0, choices.getSelectedIndex());
+                recordModernDiagnostics(computed, "confirmed", index, plan[0], true, false,
+                        diagnosticAttemptIdentity);
                 confirm.setEnabled(false);
                 apply.setEnabled(true);
-                int index = Math.max(0, choices.getSelectedIndex());
                 CenterlineCandidate candidate = candidates.get(index);
                 AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
                         candidate, plan[0]);
@@ -829,6 +903,9 @@ public class AlignWayAction extends JosmAction {
                                 plan[0].validation().findingCodes(), true,
                                 tr("review confirmed; Apply available")));
             } catch (RuntimeException exception) {
+                completed[0] = true;
+                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                        plan[0], false, false, diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
             }
@@ -869,8 +946,15 @@ public class AlignWayAction extends JosmAction {
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
                                         slideConfig, liveLayerIdentity(imageryLayer))),
                         tr("Apply modern alignment")));
+                completed[0] = true;
+                recordModernDiagnostics(computed, "applied", index, currentPlan,
+                        review[0].confirmed(), true, diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
             } catch (RuntimeException exception) {
+                completed[0] = true;
+                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                        plan[0], review[0] != null && review[0].confirmed(), false,
+                        diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment Apply failed: {0}", exception.getMessage()));
             }
@@ -1010,7 +1094,67 @@ public class AlignWayAction extends JosmAction {
 
     private static String liveLayerIdentity(ImageryLayer layer) {
         return layer.getClass().getName() + "@"
-                + Integer.toUnsignedString(System.identityHashCode(layer)) + ":" + layer.getName();
+                + Integer.toUnsignedString(System.identityHashCode(layer)) + ":"
+                + safeLayerNameIdentity(layer.getName());
+    }
+
+    static String safeLayerNameIdentity(String name) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                String.valueOf(name).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is required for source identity", exception);
+        }
+    }
+
+    static String modernPreviewStatus(TraceHypothesisSet.Status inference,
+            ValidationReport.Disposition disposition) {
+        if (inference == null || disposition == null) {
+            throw new IllegalArgumentException("Modern diagnostic status is incomplete");
+        }
+        if (inference == TraceHypothesisSet.Status.RESOURCE_LIMIT) return "resource-limited";
+        if (inference == TraceHypothesisSet.Status.CANCELLED) return "cancelled";
+        if (inference == TraceHypothesisSet.Status.NO_ROUTE
+                || disposition == ValidationReport.Disposition.HARD_BLOCKED) return "blocked";
+        return disposition == ValidationReport.Disposition.REVIEW_REQUIRED
+                ? "review-required" : "preview-open";
+    }
+
+    static void recordModernUnavailable(String status, String sourceLineage,
+            String attemptIdentity) {
+        DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createUnavailableLive(
+                LastSlideDebugBundle.buildIdentity(), status, sourceLineage, attemptIdentity));
+    }
+
+    static String beginDiagnosticAttempt() {
+        String identity = java.util.UUID.randomUUID().toString();
+        recordModernUnavailable("started", "unavailable", identity);
+        return identity;
+    }
+
+    static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
+            String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
+            boolean applied, String attemptIdentity) {
+        String sourceLineage = computed.captured().managedRaster() == null
+                ? "visible-layer" : "managed-tiles";
+        try {
+            FrozenReplayInput input = new FrozenReplayInput(computed.request(),
+                    computed.evidence(), computed.captured().network(), computed.options());
+            int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
+            DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createLive(
+                    LastSlideDebugBundle.buildIdentity(), input, computed.pipeline(), status,
+                    sourceLineage, selectedRoute, plan, reviewed, applied,
+                    computed.counters()));
+        } catch (RuntimeException failure) {
+            String reason = failure.getMessage() == null ? "" : failure.getMessage()
+                    .toLowerCase(java.util.Locale.ROOT);
+            String diagnosticStatus = reason.contains("budget") || reason.contains("limit")
+                    || reason.contains("large") ? "resource-limited" : "failed";
+            recordModernUnavailable(diagnosticStatus, sourceLineage, attemptIdentity);
+            PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
+                    diagnosticStatus, failure.getClass().getSimpleName());
+        }
     }
 
     @Override

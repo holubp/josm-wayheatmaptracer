@@ -35,7 +35,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageS
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /**
  * Runs one modern detached engine through common image refinement, final-geometry assessment,
@@ -167,9 +166,14 @@ public final class ModernTracePipeline {
         List<Route> ranked = rank(routes, request.engine(), options);
         long rankingNanos = System.nanoTime() - rankingStarted;
         if (request.engine() == TrackerMode.PROBABILISTIC) {
-            PluginLog.verbose("B_PERF pipeline inferenceMs=%d finalizationMs=%d rankingMs=%d routes=%d status=%s",
-                millis(inferenceNanos), millis(finalizationNanos), millis(rankingNanos), ranked.size(),
-                inference.status());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "pipeline.inferenceMs", millis(inferenceNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "pipeline.finalizationMs", millis(finalizationNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "pipeline.rankingMs", millis(rankingNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "pipeline.routes", ranked.size());
         }
         return new Result(inference, ranked);
     }
@@ -271,9 +275,18 @@ public final class ModernTracePipeline {
         }
         long finalGeometryNanos = System.nanoTime() - finalGeometryStarted;
         if (request.engine() == TrackerMode.PROBABILISTIC) {
-            PluginLog.verbose("B_PERF final cleanupMs=%d supportMs=%d geometryMs=%d rawPoints=%d finalPoints=%d cleanup=%s findings=%d disposition=%s",
-                millis(cleanupNanos), millis(supportNanos), millis(finalGeometryNanos), source.points().size(),
-                finalPoints.size(), cleanup.status(), quality.findings().size(), quality.disposition());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.cleanupMs", millis(cleanupNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.supportMs", millis(supportNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.geometryMs", millis(finalGeometryNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.rawPoints", source.points().size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.finalPoints", finalPoints.size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "final.findings", quality.findings().size());
         }
         return new Route(source, finalized, finalIds, finalAssignments,
                 retainedSource, quality, cleanup.status(), changed);

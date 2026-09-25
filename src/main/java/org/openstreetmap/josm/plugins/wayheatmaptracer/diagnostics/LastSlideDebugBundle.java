@@ -917,7 +917,8 @@ public final class LastSlideDebugBundle {
         return version == null || version.isBlank() ? "development" : version;
     }
 
-    private static String buildIdentity() {
+    /** Returns the immutable jar identity when running from a packaged plugin. */
+    public static String buildIdentity() {
         try {
             var codeSource = WayHeatmapTracerPlugin.class.getProtectionDomain().getCodeSource();
             if (codeSource != null && codeSource.getLocation() != null) {

@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -19,6 +21,9 @@ import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -53,7 +58,7 @@ class OrdinaryModernAttemptAssemblyTest {
     }
 
     @Test
-    void productionAssemblyCapturesComputesAndPublishesAllOrdinaryModernRoutes()
+    void productionAssemblyCapturesComputesAndPublishesAllOrdinaryModernRoutes(@TempDir Path directory)
             throws Exception {
         List<RouteCase> cases = List.of(
                 new RouteCase(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.VISIBLE_LAYER, false),
@@ -115,6 +120,27 @@ class OrdinaryModernAttemptAssemblyTest {
             } else {
                 assertNotNull(computed.captured().raster());
                 assertNull(computed.captured().managedRaster());
+            }
+            if (routeCase.engine() == TrackerMode.PROBABILISTIC && !routeCase.managed()) {
+                for (String status : List.of("preview-open", "failed", "cancelled")) {
+                    AlignWayAction.recordModernDiagnostics(computed, status, 0, null,
+                        false, false, "ordinary-attempt");
+                    Path path = directory.resolve(status + ".zip");
+                    DiagnosticsRegistry.writeLatest(path.toFile());
+                    var archive = Format15ArchiveReader.read(path);
+                    assertTrue(new String(archive.artifact("attempt-status.json")
+                        .orElseThrow().bytes(), StandardCharsets.UTF_8).contains(status));
+                    assertTrue(archive.artifact("frozen-input.bin").isPresent());
+                    String counters = new String(archive.artifact("performance-counters.json")
+                        .orElseThrow().bytes(), StandardCharsets.UTF_8);
+                    assertTrue(counters.contains("inference.pairVisits"));
+                    assertTrue(counters.contains("evaluatedTransitions"));
+                }
+                AlignWayAction.recordModernUnavailable("resource-limited", "visible-layer",
+                    "ordinary-attempt");
+                Path path = directory.resolve("resource-limited.zip");
+                DiagnosticsRegistry.writeLatest(path.toFile());
+                assertTrue(Format15ArchiveReader.read(path).artifact("frozen-input.bin").isEmpty());
             }
         }
     }

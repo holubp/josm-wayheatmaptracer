@@ -35,6 +35,9 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
@@ -94,6 +97,45 @@ class V022ModernSingleWayEditPlanAdapterTest {
         AlignmentEditPlan repeat = adapter.adapt(computed, 0);
 
         assertEquals(first.canonicalHash(), repeat.canonicalHash());
+        assertTrue(computed.evidence().fields().values().stream()
+            .mapToLong(field -> (long) field.width() * field.height()).sum() > 250_000,
+            "production-sized scalar evidence must cross the v1 array limit");
+        assertEquals(first, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(first)));
+        var live = Format15ProductionBundleFactory.createLive("test",
+            new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options()), computed.pipeline(),
+            "applied", "visible-layer", 0, first, true, true);
+        assertEquals(computed.evidence().canonicalHash(), FrozenReplayCodec.decode(
+            live.artifact("frozen-input.bin").bytes()).evidence().canonicalHash());
+        assertEquals(first, FrozenReplayCodec.decodeEditPlan(
+            live.artifact("frozen-edit-plan.bin").bytes()));
+        assertTrue(live.artifactNames().containsAll(Set.of("original-geometry.json",
+            "raw-route.json", "final-route.json", "reviewed-route.json",
+            "planned-geometry.json", "applied-geometry.json", "edit-plan-identity.json")));
+        if (mode == TrackerMode.CORRIDOR_AWARE) {
+            FrozenReplayInput captured = new FrozenReplayInput(computed.request(),
+                computed.evidence(), computed.captured().network(), computed.options());
+            var review = Format15ProductionBundleFactory.createLive("test", captured,
+                computed.pipeline(), "review-required", "visible-layer", 0, first, false, false);
+            var confirmed = Format15ProductionBundleFactory.createLive("test", captured,
+                computed.pipeline(), "confirmed", "visible-layer", 0, first, true, false);
+            assertTrue(review.artifactNames().contains("planned-geometry.json"));
+            assertFalse(review.artifactNames().contains("reviewed-route.json"));
+            assertTrue(confirmed.artifactNames().contains("reviewed-route.json"));
+            assertFalse(confirmed.artifactNames().contains("applied-geometry.json"));
+        }
+        AlignmentEditPlan wrongRoute = new AlignmentEditPlan(first.selectedWayKey(),
+            first.selectedRange(), first.before(), first.after(), first.metricFrame(),
+            first.permissions(), first.settingsHash(), first.evidenceHash(),
+            first.parameterHash(), "wrong-route", first.finalPreviewWays(), first.validation());
+        FrozenReplayInput frozen = new FrozenReplayInput(computed.request(), computed.evidence(),
+            computed.captured().network(), computed.options());
+        assertThrows(IllegalArgumentException.class, () -> Format15ProductionBundleFactory.createLive(
+            "test", frozen, computed.pipeline(), "applied", "visible-layer", 0,
+            wrongRoute, true, true));
+        assertThrows(IllegalArgumentException.class, () -> Format15ProductionBundleFactory.createLive(
+            "test", frozen, computed.pipeline(), "applied", "visible-layer", 0,
+            null, false, true));
         assertEquals(computed.captured().network(), first.before());
         assertEquals(computed.captured().network().sourceGeneration(),
             first.after().sourceGeneration());

@@ -17,7 +17,6 @@ import javax.swing.JTextField;
 import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.tools.GBC;
 import org.openstreetmap.josm.tools.Shortcut;
@@ -31,9 +30,9 @@ public class ExportDiagnosticsAction extends JosmAction {
      */
     public ExportDiagnosticsAction() {
         super(
-            tr("Export Last Slide Debug Bundle"),
+            tr("Export Last Alignment Diagnostics"),
             null,
-            tr("Export the last redacted WayHeatmapTracer slide debug bundle"),
+            tr("Export the latest WayHeatmapTracer alignment attempt diagnostics"),
             Shortcut.registerShortcut(
                 "wayheatmaptracer:export-diagnostics",
                 tr("WayHeatmapTracer: Export Diagnostics"),
@@ -46,11 +45,10 @@ public class ExportDiagnosticsAction extends JosmAction {
 
     @Override
     public void actionPerformed(ActionEvent e) {
-        LastSlideDebugBundle bundle = DiagnosticsRegistry.getLastBundle();
-        if (bundle == null) {
+        if (!DiagnosticsRegistry.hasLatest()) {
             JOptionPane.showMessageDialog(
                 MainApplication.getMainFrame(),
-                tr("No debug bundle is available yet. Run an alignment first."),
+                tr("No alignment diagnostics are available yet. Run an alignment first."),
                 tr("WayHeatmapTracer"),
                 JOptionPane.WARNING_MESSAGE
             );
@@ -59,8 +57,8 @@ public class ExportDiagnosticsAction extends JosmAction {
 
         try {
             File dir = PluginDirectories.ensurePluginDataDirectory();
-            File file = new File(dir, "last-slide-debug-" + System.currentTimeMillis() + ".zip");
-            bundle.writeTo(file);
+            File file = new File(dir, "last-alignment-diagnostics-" + System.currentTimeMillis() + ".zip");
+            DiagnosticsRegistry.writeLatest(file);
             showExportedDialog(file);
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(

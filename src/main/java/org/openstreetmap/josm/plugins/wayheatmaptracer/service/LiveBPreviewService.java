@@ -58,6 +58,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCandidateAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
@@ -152,7 +153,27 @@ public final class LiveBPreviewService {
 
     /** Detached result from the actual common modern final pipeline. */
     public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
-            ModernTracePipeline.Result pipeline) { }
+            ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
+            Map<String, Number> counters) {
+        public Computed {
+            counters = Map.copyOf(counters);
+        }
+        /** Compatibility constructor for tests that replace only a computed route. */
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline) {
+            this(captured, evidence, request, pipeline, optionsFor(captured), Map.of());
+        }
+
+        /** Compatibility constructor for callers that supply the exact pipeline options. */
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options) {
+            this(captured, evidence, request, pipeline, options, Map.of());
+        }
+    }
+
+    private static ModernTracePipeline.Options optionsFor(Captured captured) {
+        return new ModernTracePipeline.Options(FIELD, captured.cleanup(), "selected-visible", 0);
+    }
 
     /** Captures the bounded network and exact visible-render frame on the EDT without mutation. */
     public Captured capture(DataSet dataSet, SelectionContext selection,
@@ -438,6 +459,8 @@ public final class LiveBPreviewService {
         if (captured == null || cancellation == null) {
             throw new IllegalArgumentException("Live preview computation is incomplete");
         }
+        ModernDiagnosticCounters.begin();
+        try {
         EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
@@ -459,12 +482,14 @@ public final class LiveBPreviewService {
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput);
+        ModernTracePipeline.Options options = optionsFor(captured);
         ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
-                .run(request, evidence, captured.network(),
-                        new ModernTracePipeline.Options(FIELD,
-                                captured.cleanup(),
-                                "selected-visible", 0), cancellation);
-        return new Computed(captured, evidence, request, pipeline);
+                .run(request, evidence, captured.network(), options, cancellation);
+        return new Computed(captured, evidence, request, pipeline, options,
+                ModernDiagnosticCounters.snapshot());
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {

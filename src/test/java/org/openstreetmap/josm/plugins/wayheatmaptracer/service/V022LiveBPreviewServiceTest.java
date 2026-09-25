@@ -90,6 +90,10 @@ class V022LiveBPreviewServiceTest {
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
         assertEquals(TraceBudgets.interactiveProbabilisticPreview(), result.request().budgets());
+        assertEquals("selected-visible", result.options().sourceTier());
+        assertEquals(captured[0].cleanup(), result.options().cleanup());
+        assertTrue(result.counters().containsKey("pipeline.inferenceMs"));
+        assertTrue(result.counters().containsKey("inference.pairVisits"));
         assertFalse(result.pipeline().routes().isEmpty(),
                 "supported visible evidence must produce a final B route");
         var route = result.pipeline().routes().get(0);

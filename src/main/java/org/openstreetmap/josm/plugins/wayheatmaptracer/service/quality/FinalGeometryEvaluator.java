@@ -14,7 +14,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Evaluates the exact final-preview polyline with physical local and topology checks. */
 public final class FinalGeometryEvaluator {
@@ -213,10 +212,26 @@ public final class FinalGeometryEvaluator {
         double roughness = roughness(request.points());
         long roughnessNanos = System.nanoTime() - roughnessStarted;
         if (request.id().startsWith("probabilistic-")) {
-            PluginLog.verbose("B_PERF finalEvaluator protectedMs=%d intersectionsMs=%d backtracksMs=%d excursionsMs=%d incidentsMs=%d supportMs=%d routeCostMs=%d roughnessMs=%d findings=%d points=%d",
-                millis(protectedNanos), millis(intersectionsNanos), millis(backtracksNanos),
-                millis(excursionsNanos), millis(incidentsNanos), millis(supportNanos),
-                millis(routeCostNanos), millis(roughnessNanos), findings.size(), request.points().size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.protectedMs", millis(protectedNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.intersectionsMs", millis(intersectionsNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.backtracksMs", millis(backtracksNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.excursionsMs", millis(excursionsNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.incidentsMs", millis(incidentsNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.supportMs", millis(supportNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.routeCostMs", millis(routeCostNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.roughnessMs", millis(roughnessNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.findings", findings.size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                "finalEvaluator.points", request.points().size());
         }
         return new Result(request.id(), disposition, findings, support.totalLength, support.directLength,
                 support.worstUnsupportedSpan, meanImageCenterCost, roughness);

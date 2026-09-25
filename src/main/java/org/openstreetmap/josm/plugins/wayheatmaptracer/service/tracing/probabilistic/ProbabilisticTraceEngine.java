@@ -22,7 +22,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
 public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceEngine {
@@ -168,11 +167,26 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             hypotheses, status, inference.alternativeSearchTruncated(), stateCount,
             inference.evaluatedTransitions(), guide == null ? inference.explanation()
                 : inference.explanation() + "; capped same-image structural guide applied");
-        PluginLog.verbose("B_PERF trace profileMs=%d stateObservationMs=%d inferenceMs=%d materializeMs=%d totalMs=%d profiles=%d states=%d minStates=%d maxStates=%d hypotheses=%d status=%s truncated=%s",
-            millis(profileSamplingNanos), millis(stateObservationNanos), millis(inferenceNanos),
-            millis(materializationNanos), millis(System.nanoTime() - started), profiles.size(), stateCount,
-            minimumStates == Integer.MAX_VALUE ? 0 : minimumStates, maximumStates, hypotheses.size(),
-            status, inference.alternativeSearchTruncated());
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.profileMs", millis(profileSamplingNanos));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.stateObservationMs", millis(stateObservationNanos));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.inferenceMs", millis(inferenceNanos));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.materializeMs", millis(materializationNanos));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.totalMs", millis(System.nanoTime() - started));
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.profiles", profiles.size());
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.states", stateCount);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.minStates", minimumStates == Integer.MAX_VALUE ? 0 : minimumStates);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.maxStates", maximumStates);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.hypotheses", hypotheses.size());
         return run(result, inference.evaluatedPairVisits(), inference.rawPaths().size());
     }
 
@@ -196,15 +210,30 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             }
         }
         if (count == 0) {
-            PluginLog.verbose("B_RELIABILITY policy=%s/%s modes=0",
-                    parameters.version(), reliabilityPolicy);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "reliability.modes", 0);
             return;
         }
-        PluginLog.verbose("B_RELIABILITY policy=%s/%s modes=%d amplitude=%.3f/%.3f/%.3f corroboration=%.3f/%.3f/%.3f positional=%.3f/%.3f/%.3f",
-                parameters.version(), reliabilityPolicy, count,
-                minimumAmplitude, totalAmplitude / count, maximumAmplitude,
-                minimumCorroboration, totalCorroboration / count, maximumCorroboration,
-                minimumPosition, totalPosition / count, maximumPosition);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.modes", count);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.amplitudeMin", minimumAmplitude);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.amplitudeMean", totalAmplitude / count);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.amplitudeMax", maximumAmplitude);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.corroborationMin", minimumCorroboration);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.corroborationMean", totalCorroboration / count);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.corroborationMax", maximumCorroboration);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.positionMin", minimumPosition);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.positionMean", totalPosition / count);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "reliability.positionMax", maximumPosition);
     }
 
     private List<TraceHypothesis> toHypotheses(ProbabilisticInferenceResult inference,

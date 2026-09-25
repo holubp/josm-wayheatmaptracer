@@ -8,7 +8,6 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Bounded direct-observation continuation for Engine B weak-signal reliability. */
 final class LongitudinalModeReliability {
@@ -98,8 +97,12 @@ final class LongitudinalModeReliability {
             }
             result.add(copy(profile, modes));
         }
-        PluginLog.verbose("B_RELIABILITY associationPairs=%d supportEdgeVisits=%d windowMeters=%.1f",
-                pairEvaluations, workBudget.edgeVisits(), WINDOW_METERS);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "reliability.associationPairs", pairEvaluations);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "reliability.supportEdgeVisits", workBudget.edgeVisits());
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "reliability.windowMeters", WINDOW_METERS);
         return new Result(result, pairEvaluations, workBudget.edgeVisits());
     }
 

@@ -8,11 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
@@ -27,6 +33,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
@@ -36,6 +44,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @Test
+    void preCaptureFailureSupersedesPreviousExport(@TempDir Path directory) throws Exception {
+        DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory
+            .createUnavailableLive("test", "applied", "visible-layer", "old-attempt"));
+        String attemptIdentity = AlignWayAction.beginDiagnosticAttempt();
+        AlignWayAction.recordModernUnavailable("failed", "unavailable", attemptIdentity);
+        Path exported = directory.resolve("latest.zip");
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        String status = new String(Format15ArchiveReader.read(exported)
+            .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"failed\""));
+        assertFalse(status.contains("old-attempt"));
+    }
+
+    @Test
+    void modernAttemptStatusDistinguishesBlockedReviewAndResourceLimits() {
+        assertEquals("preview-open", AlignWayAction.modernPreviewStatus(
+            TraceHypothesisSet.Status.COMPLETE, ValidationReport.Disposition.APPLICABLE));
+        assertEquals("review-required", AlignWayAction.modernPreviewStatus(
+            TraceHypothesisSet.Status.COMPLETE, ValidationReport.Disposition.REVIEW_REQUIRED));
+        assertEquals("blocked", AlignWayAction.modernPreviewStatus(
+            TraceHypothesisSet.Status.NO_ROUTE, ValidationReport.Disposition.HARD_BLOCKED));
+        assertEquals("resource-limited", AlignWayAction.modernPreviewStatus(
+            TraceHypothesisSet.Status.RESOURCE_LIMIT, ValidationReport.Disposition.APPLICABLE));
+    }
+    @Test
+    void modernSourceIdentityHashesLayerNamesWithoutExportingSignedValues() {
+        String first = AlignWayAction.safeLayerNameIdentity(
+            "Heatmap?Signature=private-signature&Policy=private-policy");
+        String second = AlignWayAction.safeLayerNameIdentity(
+            "Heatmap?Signature=changed-signature&Policy=private-policy");
+        assertTrue(first.matches("[0-9a-f]{64}"));
+        assertFalse(first.contains("private"));
+        assertFalse(first.equals(second));
+    }
+
     @Test
     void previewFailureTextBoundsLongMessagesWithoutDiscardingThePrefix() {
         String suffix = "\u2026\n\nSee the JOSM log for full details.";

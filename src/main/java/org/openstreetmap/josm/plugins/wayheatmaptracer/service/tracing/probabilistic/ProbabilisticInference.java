@@ -13,7 +13,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
@@ -108,10 +107,24 @@ public final class ProbabilisticInference {
                 alternativeTruncated, messages.pairVisits(), messages.transitions(), gaps,
                 allMissing ? "all profiles lack localized evidence" : alternativeTruncated
                     ? "ALTERNATIVE_SEARCH_TRUNCATED" : "complete retained graph");
-            PluginLog.verbose("B_PERF inference fbMs=%d kBestMs=%d alternativesMs=%d profiles=%d states=%d pairVisits=%d transitions=%d raw=%d distinct=%d status=%s",
-                nanosToMillis(forwardBackwardNanos), nanosToMillis(kBestNanos), nanosToMillis(alternativesNanos),
-                profiles.size(), stateCount, result.evaluatedPairVisits(), result.evaluatedTransitions(),
-                result.rawPaths().size(), result.distinctPaths().size(), result.status());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.forwardBackwardMs", nanosToMillis(forwardBackwardNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.kBestMs", nanosToMillis(kBestNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.alternativesMs", nanosToMillis(alternativesNanos));
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.profiles", profiles.size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.states", stateCount);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.pairVisits", result.evaluatedPairVisits());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.transitions", result.evaluatedTransitions());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.rawPaths", result.rawPaths().size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.distinctPaths", result.distinctPaths().size());
             return result;
         } catch (ArithmeticException exception) {
             return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE, stateCount, 0,

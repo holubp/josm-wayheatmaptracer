@@ -20,6 +20,7 @@ import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.TreeMap;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
@@ -53,6 +54,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
@@ -61,7 +63,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     private static final int MAX_BYTES = 64 * 1024 * 1024;
     private static final int MAX_TEXT = 1_000_000;
     private static final int MAX_ENTRIES = 250_000;
@@ -81,7 +83,8 @@ public final class FrozenReplayCodec {
         }
         admit(input, new Admission());
         try {
-            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(MAX_BYTES);
+            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
+                Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57545250);
                 out.writeInt(VERSION);
@@ -108,10 +111,14 @@ public final class FrozenReplayCodec {
         Admission admission = new Admission();
         DECODE_ADMISSION.set(admission);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != 0x57545250 || in.readInt() != VERSION) {
+            if (in.readInt() != 0x57545250) {
                 throw new IllegalArgumentException("Unsupported frozen replay codec version");
             }
-            EvidenceSnapshot evidence = evidence(in);
+            int version = in.readInt();
+            if (version != 1 && version != VERSION) {
+                throw new IllegalArgumentException("Unsupported frozen replay codec version");
+            }
+            EvidenceSnapshot evidence = evidence(in, version);
             TraceRequest request = request(in, evidence.coordinateFrame(), evidence.transform());
             NetworkSnapshot network = network(in);
             ModernTracePipeline.Options options = options(in);
@@ -123,6 +130,101 @@ public final class FrozenReplayCodec {
             return decoded;
         } catch (IOException | RuntimeException exception) {
             throw new IllegalArgumentException("Malformed frozen replay input", exception);
+        } finally {
+            DECODE_ADMISSION.remove();
+        }
+    }
+
+    /** Encodes the exact immutable reviewed edit plan in a separate bounded artifact. */
+    public static byte[] encodeEditPlan(AlignmentEditPlan plan) {
+        if (plan == null) {
+            throw new IllegalArgumentException("Edit plan is required");
+        }
+        try {
+            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
+                Format15Safety.MAX_ARTIFACT_BYTES);
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                out.writeInt(0x57544550);
+                out.writeInt(1);
+                key(out, plan.selectedWayKey());
+                range(out, plan.selectedRange());
+                network(out, plan.before());
+                network(out, plan.after());
+                frame(out, plan.metricFrame());
+                RecoveryPermissions permissions = plan.permissions();
+                out.writeBoolean(permissions.widerDiscovery());
+                out.writeDouble(permissions.ordinaryRadiusMeters());
+                out.writeDouble(permissions.maximumDiscoveryRadiusMeters());
+                en(out, permissions.junctionPolicy());
+                out.writeBoolean(permissions.reconstructIncidentWays());
+                str(out, plan.settingsHash());
+                str(out, plan.evidenceHash());
+                str(out, plan.parameterHash());
+                str(out, plan.routeIdentity());
+                count(out, plan.finalPreviewWays().size());
+                for (PrimitiveKey way : orderedKeys(plan.finalPreviewWays().keySet())) {
+                    key(out, way);
+                    List<GeographicPoint> points = plan.finalPreviewWays().get(way);
+                    count(out, points.size());
+                    for (GeographicPoint point : points) geo(out, point);
+                }
+                en(out, plan.validation().disposition());
+                strings(out, plan.validation().findingCodes());
+                str(out, plan.canonicalHash());
+            }
+            return bytes.toByteArray();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("Edit plan exceeds diagnostic budget", error);
+        }
+    }
+
+    /** Decodes through the production plan constructor and verifies its canonical identity. */
+    public static AlignmentEditPlan decodeEditPlan(byte[] bytes) {
+        if (bytes == null || bytes.length < 8
+                || bytes.length > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Edit plan artifact is outside budget");
+        }
+        DECODE_ADMISSION.set(new Admission());
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            if (in.readInt() != 0x57544550 || in.readInt() != 1) {
+                throw new IllegalArgumentException("Unsupported edit plan codec version");
+            }
+            PrimitiveKey selectedWay = key(in);
+            OccurrenceRange selectedRange = range(in);
+            NetworkSnapshot before = network(in);
+            NetworkSnapshot after = network(in);
+            LocalMetricFrame metricFrame = frame(in);
+            RecoveryPermissions permissions = new RecoveryPermissions(in.readBoolean(),
+                in.readDouble(), in.readDouble(), en(in, JunctionPolicy.class), in.readBoolean());
+            String settings = str(in), evidence = str(in), parameters = str(in), route = str(in);
+            int wayCount = count(in);
+            Map<PrimitiveKey, List<GeographicPoint>> previews = new LinkedHashMap<>();
+            for (int index = 0; index < wayCount; index++) {
+                PrimitiveKey way = key(in);
+                int pointCount = count(in);
+                List<GeographicPoint> points = new ArrayList<>(pointCount);
+                for (int pointIndex = 0; pointIndex < pointCount; pointIndex++) {
+                    points.add(geo(in));
+                }
+                if (previews.put(way, List.copyOf(points)) != null) {
+                    throw new IllegalArgumentException("Duplicate planned way");
+                }
+            }
+            ValidationReport validation = new ValidationReport(
+                en(in, ValidationReport.Disposition.class), strings(in));
+            String expectedHash = Format15Safety.requiredHash(str(in), "planHash");
+            if (in.read() != -1) {
+                throw new IllegalArgumentException("Edit plan artifact has trailing data");
+            }
+            AlignmentEditPlan plan = new AlignmentEditPlan(selectedWay, selectedRange,
+                before, after, metricFrame, permissions, settings, evidence,
+                parameters, route, previews, validation);
+            if (!expectedHash.equals(plan.canonicalHash())) {
+                throw new IllegalArgumentException("Edit plan artifact identity mismatch");
+            }
+            return plan;
+        } catch (IOException | RuntimeException error) {
+            throw new IllegalArgumentException("Malformed frozen edit plan", error);
         } finally {
             DECODE_ADMISSION.remove();
         }
@@ -217,24 +319,32 @@ public final class FrozenReplayCodec {
             lineage(output, field.lineage());
             double[] values = field.copiedValues();
             boolean[] valid = field.copiedValidity();
-            count(output, values.length);
-            for (int index = 0; index < values.length; index++) {
-                if (!Double.isFinite(values[index])) {
+            scalarTotal(output, values.length, 9);
+            for (int start = 0; start < values.length; start += MAX_ENTRIES) {
+                int end = Math.min(values.length, start + MAX_ENTRIES);
+                count(output, end - start);
+                for (int index = start; index < end; index++) {
+                if (valid[index] && !Double.isFinite(values[index])) {
                     throw new IllegalArgumentException(
                             "Replay scalar evidence contains a nonfinite value");
                 }
                 output.writeBoolean(valid[index]);
                 output.writeDouble(values[index]);
+                }
             }
             boolean[] interpolation = field.copiedInterpolationValidity();
-            count(output, interpolation.length);
-            for (boolean supported : interpolation) {
-                output.writeBoolean(supported);
+            scalarTotal(output, interpolation.length, 1);
+            for (int start = 0; start < interpolation.length; start += MAX_ENTRIES) {
+                int end = Math.min(interpolation.length, start + MAX_ENTRIES);
+                count(output, end - start);
+                for (int index = start; index < end; index++) {
+                    output.writeBoolean(interpolation[index]);
+                }
             }
         }
     }
 
-    private static EvidenceSnapshot evidence(DataInputStream input) throws IOException {
+    private static EvidenceSnapshot evidence(DataInputStream input, int version) throws IOException {
         String id = str(input);
         LocalMetricFrame frame = frame(input);
         RasterMetricTransform transform = transform(input);
@@ -250,33 +360,43 @@ public final class FrozenReplayCodec {
             int width = input.readInt();
             int height = input.readInt();
             long product = Math.multiplyExact((long) width, height);
-            if (width < 2 || height < 2 || product > MAX_ENTRIES) {
+            if (width < 2 || height < 2 || product > Format15Safety.MAX_ARTIFACT_BYTES / 9) {
                 throw new IllegalArgumentException("Invalid evidence dimensions");
             }
             EvidenceFieldLineage fieldLineage = lineage(input);
-            int length = count(input);
+            int length = version == 1 ? count(input) : scalarTotal(input, 9);
             if (length != product) {
                 throw new IllegalArgumentException("Evidence value count mismatch");
             }
-            admission().bytes(Math.multiplyExact(2L, Math.multiplyExact(length, 9L)));
+            admission().bytes(Math.multiplyExact(version == 1 ? 2L : 4L,
+                Math.multiplyExact(length, 9L)));
             double[] values = new double[length];
             boolean[] valid = new boolean[length];
-            for (int index = 0; index < length; index++) {
-                valid[index] = input.readBoolean();
-                values[index] = input.readDouble();
-                if (!Double.isFinite(values[index])) {
+            int valueIndex = 0;
+            while (valueIndex < length) {
+                int chunk = version == 1 ? length : scalarChunk(input, length - valueIndex);
+                for (int remaining = chunk; remaining > 0; remaining--, valueIndex++) {
+                valid[valueIndex] = input.readBoolean();
+                values[valueIndex] = input.readDouble();
+                if ((version == 1 || valid[valueIndex])
+                        && !Double.isFinite(values[valueIndex])) {
                     throw new IllegalArgumentException(
                             "Replay scalar evidence contains a nonfinite value");
                 }
+                }
             }
-            int cellCount = count(input);
+            int cellCount = version == 1 ? count(input) : scalarTotal(input, 1);
             if (cellCount != Math.multiplyExact(width - 1, height - 1)) {
                 throw new IllegalArgumentException("Interpolation validity count mismatch");
             }
-            admission().bytes(Math.multiplyExact(2L, cellCount));
+            admission().bytes(Math.multiplyExact(version == 1 ? 2L : 4L, cellCount));
             boolean[] interpolation = new boolean[cellCount];
-            for (int index = 0; index < cellCount; index++) {
-                interpolation[index] = input.readBoolean();
+            int cellIndex = 0;
+            while (cellIndex < cellCount) {
+                int chunk = version == 1 ? cellCount : scalarChunk(input, cellCount - cellIndex);
+                for (int remaining = chunk; remaining > 0; remaining--, cellIndex++) {
+                    interpolation[cellIndex] = input.readBoolean();
+                }
             }
             ScalarEvidenceField field = new ScalarEvidenceField(
                     width, height, values, valid, interpolation, fieldLineage);
@@ -683,6 +803,32 @@ public final class FrozenReplayCodec {
         output.writeInt(count);
     }
 
+    /** Total primitive-array length; the 16 MiB output and 64 MiB peak gates remain independent. */
+    private static void scalarTotal(DataOutputStream output, int count, int bytesPerCell)
+            throws IOException {
+        if (count < 0 || (long) count * bytesPerCell > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Replay scalar field exceeds artifact budget");
+        }
+        output.writeInt(count);
+    }
+
+    private static int scalarTotal(DataInputStream input, int bytesPerCell) throws IOException {
+        int count = input.readInt();
+        if (count < 0 || (long) count * bytesPerCell > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Replay scalar field exceeds artifact budget");
+        }
+        return count;
+    }
+
+    /** One v2 primitive chunk stays under the unchanged generic 250k component limit. */
+    private static int scalarChunk(DataInputStream input, int remaining) throws IOException {
+        int count = input.readInt();
+        if (count <= 0 || count > MAX_ENTRIES || count > remaining) {
+            throw new IllegalArgumentException("Replay scalar chunk is invalid");
+        }
+        return count;
+    }
+
     private static int count(DataInputStream input) throws IOException {
         int count = input.readInt();
         if (count < 0 || count > MAX_ENTRIES) {
@@ -766,10 +912,11 @@ public final class FrozenReplayCodec {
             }
             long values = Math.multiplyExact((long) field.width(), field.height());
             long cells = Math.multiplyExact((long) field.width() - 1L, (long) field.height() - 1L);
-            admission.entries(values);
-            admission.entries(cells);
-            admission.bytes(
-                    Math.multiplyExact(2L, Math.addExact(Math.multiplyExact(values, 9L), cells)));
+            if (values > Format15Safety.MAX_ARTIFACT_BYTES / 9) {
+                throw new IllegalArgumentException("Replay scalar field exceeds artifact budget");
+            }
+            admission.bytes(Math.multiplyExact(4L,
+                    Math.addExact(Math.multiplyExact(values, 9L), cells)));
         }
         TraceRequest request = input.request();
         admitMetadata(request.evidenceSnapshotId(), admission);

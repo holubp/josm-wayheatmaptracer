@@ -64,6 +64,68 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
     @Test
+    void liveBundleBindsActualFinalOutputAndKeepsUnimplementedLevelsUnavailable(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+            ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        ModernTracePipeline.Result pipeline = new ModernTracePipeline.Result(
+            actual.inference(), actual.routes());
+        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+            pipeline, "preview-open", "visible-layer", 0, null, false, false);
+        assertThrows(IllegalArgumentException.class, () -> Format15ProductionBundleFactory.createLive(
+            "test", input, pipeline, "preview-open", "visible-layer?Signature=private",
+            0, null, false, false));
+        Path path = directory.resolve("live.zip");
+        Format15BundleWriter.write(live, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        assertTrue(archive.capability().supports(ReplayLevel.SCALAR_INFERENCE));
+        assertTrue(archive.capability().supports(ReplayLevel.FINAL_GEOMETRY));
+        assertFalse(archive.capability().supports(ReplayLevel.RASTER_INFERENCE));
+        assertFalse(archive.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
+        assertTrue(live.artifactNames().contains("original-geometry.json"));
+        assertTrue(live.artifactNames().contains("raw-route.json"));
+        assertTrue(live.artifactNames().contains("final-route.json"));
+        assertTrue(live.artifactNames().contains("attempt-status.json"));
+        assertTrue(new String(live.artifact("attempt-status.json").bytes(),
+            StandardCharsets.UTF_8).contains("preview-open"));
+        assertEquals(FinalReplayFingerprint.sha256(actual),
+            FinalReplayFingerprint.sha256(Format15ReplayRunner.replay(archive,
+                ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
+                archive.parameterHash())));
+    }
+
+    @Test
+    void unavailableLiveStatusesRemainExportableWithoutFalseReplayClaims(
+            @TempDir Path directory) throws Exception {
+        for (String status : List.of("failed", "cancelled", "resource-limited")) {
+            Format15Bundle live = Format15ProductionBundleFactory.createUnavailableLive(
+                "test", status, "managed-tiles", "attempt-1");
+            Path path = directory.resolve(status + ".zip");
+            Format15BundleWriter.write(live, path);
+            Format15Archive archive = Format15ArchiveReader.read(path);
+            assertFalse(archive.capability().supports(ReplayLevel.SCALAR_INFERENCE));
+            assertFalse(archive.capability().supports(ReplayLevel.FINAL_GEOMETRY));
+            assertTrue(new String(live.artifact("attempt-status.json").bytes(),
+                StandardCharsets.UTF_8).contains(status));
+        }
+    }
+
+    @Test
+    void blockedLiveResultKeepsFrozenInputWithoutInventingRoute() {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.NO_SIGNAL);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+            ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        assertTrue(actual.routes().isEmpty());
+        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+            new ModernTracePipeline.Result(actual.inference(), actual.routes()),
+            "blocked", "visible-layer", -1, null, false, false);
+        assertTrue(live.artifactNames().contains("frozen-input.bin"));
+        assertFalse(live.artifactNames().contains("final-route.json"));
+        assertTrue(new String(live.artifact("attempt-status.json").bytes(),
+            StandardCharsets.UTF_8).contains("blocked"));
+    }
+    @Test
     void finalFingerprintPreservesCompleteOrderedRouteSemanticsAndCanonicalMaps() {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
         Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
@@ -598,10 +660,10 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void codecRejectsAggregateCollectionsBeforeSerializingThem() {
+    void codecRejectsPackedScalarArraysBeyondPeakMaterializationBudget() {
         FrozenReplayInput base = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
-        int width = 500;
-        int height = 300;
+        int width = 930;
+        int height = 930;
         double[] values = new double[width * height];
         boolean[] valid = new boolean[values.length];
         Arrays.fill(values, 0.1);
@@ -614,13 +676,13 @@ class V022ProductionReplayTest {
             base.evidence().coordinateFrame(),
             RasterMetricTransform.metricGrid(new MetricPoint(0, 0), 1, 0, 0, 1),
             base.evidence().resolution(), MetricRegion.rectangle(1, 1, 160, 100),
-            MetricRegion.rectangle(-0.5, -0.5, 499.5, 299.5),
+            MetricRegion.rectangle(-0.5, -0.5, 929.5, 929.5),
             Map.of("one", first, "two", second), "bounded-source");
         FrozenReplayInput large = withEvidence(base, evidence);
 
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
             () -> FrozenReplayCodec.encode(large));
-        assertTrue(allMessages(failure).contains("aggregate"));
+        assertTrue(allMessages(failure).contains("retained-memory budget"));
     }
 
     @Test
