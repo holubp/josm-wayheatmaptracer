@@ -740,6 +740,96 @@ class V022EndToEndTest {
     }
 
     @Test
+    void T169_twoThroughReceiversRequireDirectEvidenceForEveryArm() throws Exception {
+        JunctionFixture fixture = reconstructionFixture();
+        Node farSouth = loadedNode(120, latitude(-49), longitude(23.4));
+        Node southPort = loadedNode(121, latitude(-31), longitude(23.4));
+        Node south = loadedNode(122, latitude(-8), longitude(15.4));
+        Node middle = loadedNode(123, latitude(8), longitude(2.6));
+        Node north = loadedNode(124, latitude(18), longitude(-5.4));
+        Node northPort = loadedNode(125, latitude(31), longitude(-5.4));
+        Node farNorth = loadedNode(126, latitude(49), longitude(-5.4));
+        Way diagonal = loadedWay(127, farSouth, southPort, south,
+                fixture.junction(), middle, north, northPort, farNorth);
+        for (Node node : List.of(farSouth, southPort, south, middle, north,
+                northPort, farNorth)) {
+            fixture.dataSet().addPrimitive(node);
+        }
+        fixture.dataSet().addPrimitive(diagonal);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionMultipleReceiverRaster(),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(Set.of(computed.request().selectedWayKey(),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, fixture.receiver().getUniqueId()),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, diagonal.getUniqueId())),
+                plan.finalPreviewWays().keySet());
+        assertTrue(plan.validation().findingCodes().stream()
+                .noneMatch(code -> code.startsWith("final-topology:")));
+        for (Way receiver : List.of(fixture.receiver(), diagonal)) {
+            PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                    receiver.getUniqueId());
+            DetachedWay after = (DetachedWay) plan.after().primitives().get(receiverKey);
+            assertEquals(after.nodeKeys().stream()
+                    .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
+                    .toList(), plan.finalPreviewWays().get(receiverKey));
+            for (var port : computed.captured().network().closure().externalPorts().stream()
+                    .filter(value -> value.wayKey().equals(receiverKey)).toList()) {
+                assertEquals(plan.before().primitives().get(port.boundaryNodeKey()),
+                        plan.after().primitives().get(port.boundaryNodeKey()));
+            }
+        }
+
+        Map<PrimitiveKey, List<LatLon>> original = plan.finalPreviewWays().keySet().stream()
+                .collect(java.util.stream.Collectors.toMap(key -> key, key ->
+                        ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                                .getNodes().stream()
+                                .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(
+                        fixture.dataSet(), computed.captured().specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt, plan, () -> plan.before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), plan, validator, "Apply two through receivers");
+        onEdt(command::executeCommand);
+        for (var entry : plan.finalPreviewWays().entrySet()) {
+            Way applied = (Way) fixture.dataSet().getPrimitiveById(entry.getKey().id(),
+                    OsmPrimitiveType.WAY);
+            assertEquals(entry.getValue().stream()
+                    .map(point -> new LatLon(point.latitudeDegrees(), point.longitudeDegrees()))
+                    .toList(), applied.getNodes().stream()
+                            .map(node -> new LatLon(node.lat(), node.lon())).toList());
+        }
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        original.forEach((key, coordinates) -> assertEquals(coordinates,
+                ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes().stream()
+                        .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(missing.getMessage().contains("incident approach evidence"),
+                missing::getMessage);
+        assertFalse(missing.getMessage().contains("bounded terminal-through topology"),
+                missing::getMessage);
+    }
+
+    @Test
     void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
         assertAtomicCommandAppliesPreviewWaysExactly(reconstructionFixture());
         assertAtomicCommandAppliesPreviewWaysExactly(selectedInteriorReconstructionFixture());
@@ -1004,11 +1094,22 @@ class V022EndToEndTest {
 
     private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
             ReceiverEvidence receiverEvidence, double selectedNorthMeters) {
+        return junctionReconstructionRaster(receiverEvidence, selectedNorthMeters, false);
+    }
+
+    private static LiveBPreviewService.VisibleRaster junctionMultipleReceiverRaster() {
+        return junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 2.0, true);
+    }
+
+    private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
+            ReceiverEvidence receiverEvidence, double selectedNorthMeters,
+            boolean includeDiagonal) {
         int size = 720;
+        double extent = 60.0;
         int[] argb = new int[size * size];
-        double selectedRow = (60.0 - selectedNorthMeters)
+        double selectedRow = (extent - selectedNorthMeters)
                 * RenderedHeatmapSampler.RASTER_SCALE;
-        double receiverColumn = 408.0;
+        double receiverColumn = (extent + 8.0) * RenderedHeatmapSampler.RASTER_SCALE;
         for (int y = 0; y < size; y++) {
             for (int x = 0; x < size; x++) {
                 double selectedDistance = (y - selectedRow) / RenderedHeatmapSampler.RASTER_SCALE;
@@ -1024,12 +1125,20 @@ class V022EndToEndTest {
                             Math.exp(-0.5 * Math.pow((x - 432.0)
                                     / RenderedHeatmapSampler.RASTER_SCALE, 2.0) / 1.44));
                 };
-                int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.max(selected, receiver)));
+                double worldNorth = extent - y / RenderedHeatmapSampler.RASTER_SCALE;
+                double diagonalEast = 9.0 - 0.8
+                        * Math.max(-18.0, Math.min(18.0, worldNorth));
+                double diagonalDistance = (x / RenderedHeatmapSampler.RASTER_SCALE
+                        - extent - diagonalEast) / Math.sqrt(1.64);
+                double diagonal = includeDiagonal
+                        ? Math.exp(-0.5 * diagonalDistance * diagonalDistance / 1.44) : 0.0;
+                int gray = (int) Math.round(255.0 * (0.02 + 0.80
+                        * Math.max(selected, Math.max(receiver, diagonal))));
                 argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }
         }
-        return new LiveBPreviewService.VisibleRaster(size, size, argb, -60.0, -60.0,
-                60.0, 60.0, 1.0, 1.0, OptionalDouble.of(1.0),
+        return new LiveBPreviewService.VisibleRaster(size, size, argb, -extent, -extent,
+                extent, extent, 1.0, 1.0, OptionalDouble.of(1.0),
                 "visible-junction-" + receiverEvidence.name().toLowerCase()
                     + "-" + selectedNorthMeters,
                 "EPSG:3857");

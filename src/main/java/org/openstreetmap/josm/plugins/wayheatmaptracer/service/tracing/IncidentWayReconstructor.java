@@ -39,6 +39,8 @@ final class IncidentWayReconstructor {
                 before, evidence, selectedWayKey, sharedJunctions);
         if (!splitReceiver
                 && !isBoundedSelectedInteriorThroughTopology(before, selectedWayKey,
+                    sharedJunctions)
+                && !isBoundedTwoThroughReceiverTopology(before, selectedWayKey,
                     sharedJunctions)) {
             requireBoundedTerminalThroughTopology(before, selectedWayKey, sharedJunctions);
         }
@@ -268,6 +270,65 @@ final class IncidentWayReconstructor {
         return firstLength > 1.0e-9 && secondLength > 1.0e-9
                 && first.xMeters() * second.xMeters() + first.yMeters() * second.yMeters()
                     <= -0.75 * firstLength * secondLength;
+    }
+
+    /** One terminal selected way and exactly two complete two-port through receivers. */
+    private static boolean isBoundedTwoThroughReceiverTopology(NetworkSnapshot before,
+            PrimitiveKey selectedWayKey, Set<PrimitiveKey> sharedJunctions) {
+        if (sharedJunctions.size() != 1
+                || !(before.primitives().get(selectedWayKey) instanceof DetachedWay selected)) {
+            return false;
+        }
+        PrimitiveKey junction = sharedJunctions.iterator().next();
+        int selectedOccurrence = selected.nodeKeys().indexOf(junction);
+        if (selected.nodeKeys().stream().filter(junction::equals).count() != 1
+                || selectedOccurrence != 0
+                    && selectedOccurrence != selected.nodeKeys().size() - 1) {
+            return false;
+        }
+        List<PrimitiveKey> receivers = before.closure().editableWayOccurrences().keySet().stream()
+                .filter(key -> !key.equals(selectedWayKey)).sorted().toList();
+        if (receivers.size() != 2) {
+            return false;
+        }
+        Set<PrimitiveKey> incidentWays = before.incomingReferrerWatches()
+                .getOrDefault(junction, Set.of()).stream()
+                .filter(key -> key.type() == PrimitiveKey.Type.WAY)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (!incidentWays.equals(Set.of(selectedWayKey, receivers.get(0), receivers.get(1)))) {
+            return false;
+        }
+        Set<PrimitiveKey> receiverShapeNodes = new LinkedHashSet<>();
+        for (PrimitiveKey receiverKey : receivers) {
+            if (!(before.primitives().get(receiverKey) instanceof DetachedWay receiver)
+                    || new LinkedHashSet<>(receiver.nodeKeys()).size() != receiver.nodeKeys().size()
+                    || receiver.nodeKeys().stream().filter(junction::equals).count() != 1) {
+                return false;
+            }
+            for (PrimitiveKey node : receiver.nodeKeys()) {
+                if (!node.equals(junction) && !receiverShapeNodes.add(node)) {
+                    return false;
+                }
+            }
+            int occurrence = receiver.nodeKeys().indexOf(junction);
+            List<OccurrenceRange> ranges = before.closure().editableWayOccurrences()
+                    .get(receiverKey);
+            if (occurrence <= 0 || occurrence >= receiver.nodeKeys().size() - 1
+                    || ranges == null || ranges.size() != 1
+                    || occurrence <= ranges.get(0).firstIndex()
+                    || occurrence >= ranges.get(0).lastIndex()) {
+                return false;
+            }
+            Set<PrimitiveKey> ports = before.closure().externalPorts().stream()
+                    .filter(port -> port.wayKey().equals(receiverKey))
+                    .map(port -> port.boundaryNodeKey())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            if (!ports.equals(Set.of(receiver.nodeKeys().get(ranges.get(0).firstIndex()),
+                    receiver.nodeKeys().get(ranges.get(0).lastIndex())))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int reconstructArm(NetworkSnapshot before,
