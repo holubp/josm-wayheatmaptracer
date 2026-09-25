@@ -429,7 +429,7 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private record SelectedReceiverIntersection(MetricPoint point,
             PrimitiveKey selectedPredecessor, double routeDistanceMeters,
-            int selectedSegment, int receiverSegment) {
+            int selectedSegment, int receiverSegment, PrimitiveKey receiverVertex) {
     }
 
     private static List<PrimitiveKey> splitReceiverSpan(NetworkSnapshot before,
@@ -539,8 +539,13 @@ public final class ModernSingleWayEditPlanAdapter {
                 FinalRoutePointId predecessor = selected.get(selectedIndex);
                 PrimitiveKey predecessorKey = predecessor instanceof ExistingWayNodeOccurrence existing
                         ? existing.nodeKey() : plannedKey((GeneratedCandidatePoint) predecessor);
+                PrimitiveKey receiverVertex = arithmeticallySamePoint(crossing, receiverStart)
+                        ? receiving.get(receiverIndex)
+                        : arithmeticallySamePoint(crossing, receiverEnd)
+                                ? receiving.get(receiverIndex + 1) : null;
                 result.add(new SelectedReceiverIntersection(crossing, predecessorKey,
-                        crossing.distanceTo(proposed), selectedIndex, receiverIndex));
+                        crossing.distanceTo(proposed), selectedIndex, receiverIndex,
+                        receiverVertex));
             }
         }
     }
@@ -554,7 +559,10 @@ public final class ModernSingleWayEditPlanAdapter {
         List<SelectedReceiverIntersection> distinct = new ArrayList<>();
         for (SelectedReceiverIntersection candidate : result) {
             boolean repeatedVertex = distinct.stream().anyMatch(existing ->
-                    candidate.point().equals(existing.point())
+                    (candidate.point().equals(existing.point())
+                        || candidate.receiverVertex() != null
+                            && candidate.receiverVertex().equals(existing.receiverVertex())
+                            && arithmeticallySamePoint(candidate.point(), existing.point()))
                     && Math.abs(candidate.selectedSegment() - existing.selectedSegment()) <= 1
                     && Math.abs(candidate.receiverSegment() - existing.receiverSegment()) <= 1);
             if (!repeatedVertex) {
@@ -562,6 +570,13 @@ public final class ModernSingleWayEditPlanAdapter {
             }
         }
         return List.copyOf(distinct.subList(0, Math.min(8, distinct.size())));
+    }
+
+    private static boolean arithmeticallySamePoint(MetricPoint first, MetricPoint second) {
+        double magnitude = Math.max(1.0, Math.max(
+                Math.max(Math.abs(first.xMeters()), Math.abs(first.yMeters())),
+                Math.max(Math.abs(second.xMeters()), Math.abs(second.yMeters()))));
+        return first.distanceTo(second) <= 64.0 * Math.ulp(magnitude);
     }
 
     private static MetricPoint segmentCrossing(MetricPoint a, MetricPoint b,
@@ -856,7 +871,69 @@ public final class ModernSingleWayEditPlanAdapter {
                 findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
             }
         }
+        DetachedWay sourceSelected = (DetachedWay) before.primitives().get(request.selectedWayKey());
+        List<MetricSegment> receiverArms = junctions.stream()
+                .flatMap(junction -> capturedReceiverArms(before, evidence,
+                        request.selectedWayKey(), junction).stream())
+                .toList();
+        for (int index = 0; index + 1 < selected.nodeKeys().size(); index++) {
+            PrimitiveKey left = selected.nodeKeys().get(index);
+            PrimitiveKey right = selected.nodeKeys().get(index + 1);
+            if (routeOwnedNodes.contains(left) == routeOwnedNodes.contains(right)
+                    || unchangedSelectedEdge(before, after, sourceSelected, left, right)) {
+                continue;
+            }
+            if (unsupportedBoundaryConnector(recoveryImage, receiverArms,
+                    metric(after, left, evidence), metric(after, right, evidence), pitch)) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+            }
+        }
         return List.copyOf(findings);
+    }
+
+    private static boolean unchangedSelectedEdge(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay sourceSelected,
+            PrimitiveKey left, PrimitiveKey right) {
+        int index = sourceSelected.nodeKeys().indexOf(left);
+        if (index < 0 || index + 1 >= sourceSelected.nodeKeys().size()
+                || !sourceSelected.nodeKeys().get(index + 1).equals(right)
+                || !(before.primitives().get(left) instanceof DetachedNode oldLeft)
+                || !(before.primitives().get(right) instanceof DetachedNode oldRight)) {
+            return false;
+        }
+        return oldLeft.coordinate().equals(((DetachedNode) after.get(left)).coordinate())
+                && oldRight.coordinate().equals(((DetachedNode) after.get(right)).coordinate());
+    }
+
+    private static boolean unsupportedBoundaryConnector(ImageCostField image,
+            List<MetricSegment> receiverArms, MetricPoint start, MetricPoint end,
+            double pitch) {
+        double length = start.distanceTo(end);
+        if (!(length > 1.0e-9)) {
+            return true;
+        }
+        double allowance = Math.max(2.0, pitch);
+        int count = Math.max(1, (int) Math.ceil(length / Math.min(1.0, pitch * 0.5)));
+        MetricPoint tangent = new MetricPoint(end.xMeters() - start.xMeters(),
+                end.yMeters() - start.yMeters());
+        double unsupported = 0.0;
+        boolean directlyObserved = false;
+        for (int sample = 0; sample < count; sample++) {
+            double t = (sample + 0.5) / count;
+            MetricPoint point = new MetricPoint(start.xMeters() + t * tangent.xMeters(),
+                    start.yMeters() + t * tangent.yMeters());
+            boolean direct = image.sampleRoute(point, tangent)
+                    .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
+                    .orElse(false)
+                    && receiverArms.stream()
+                        .noneMatch(segment -> distanceToSegment(point, segment) <= pitch);
+            directlyObserved |= direct;
+            unsupported = direct ? 0.0 : unsupported + length / count;
+            if (unsupported > allowance) {
+                return true;
+            }
+        }
+        return !directlyObserved;
     }
 
     private static List<MetricSegment> capturedReceiverArms(NetworkSnapshot before,
