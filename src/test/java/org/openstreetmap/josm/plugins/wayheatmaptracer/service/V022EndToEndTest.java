@@ -18,10 +18,12 @@ import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.OsmPrimitive;
 import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
 import org.openstreetmap.josm.data.osm.Relation;
 import org.openstreetmap.josm.data.osm.RelationMember;
@@ -694,6 +696,7 @@ class V022EndToEndTest {
                 plan.finalPreviewWays().keySet());
         List<Long> originalFirst = first.getNodes().stream().map(Node::getUniqueId).toList();
         List<Long> originalSecond = second.getNodes().stream().map(Node::getUniqueId).toList();
+        Map<PrimitiveKey, DatasetPrimitiveState> originalState = snapshot(dataSet);
         NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
                 NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
@@ -704,12 +707,14 @@ class V022EndToEndTest {
                 first.getNodes().stream().map(Node::getUniqueId).toList());
         assertEquals(secondAfter.nodeKeys().stream().map(PrimitiveKey::id).toList(),
                 second.getNodes().stream().map(Node::getUniqueId).toList());
+        assertAppliedPreviewWays(plan, dataSet, command);
         onEdt(() -> {
             command.undoCommand();
             return null;
         });
         assertEquals(originalFirst, first.getNodes().stream().map(Node::getUniqueId).toList());
         assertEquals(originalSecond, second.getNodes().stream().map(Node::getUniqueId).toList());
+        assertEquals(originalState, snapshot(dataSet));
         second.put("maxspeed", "30");
         LiveBPreviewService.Captured[] boundaryCaptured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> boundaryCaptured[0] = new LiveBPreviewService().capture(
@@ -929,6 +934,7 @@ class V022EndToEndTest {
                         ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
                                 .getNodes().stream()
                                 .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        Map<PrimitiveKey, DatasetPrimitiveState> originalState = snapshot(dataSet);
         NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
                 NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
         LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
@@ -944,6 +950,7 @@ class V022EndToEndTest {
                     .toList(), applied.getNodes().stream()
                             .map(node -> new LatLon(node.lat(), node.lon())).toList());
         }
+        assertAppliedPreviewWays(plan, dataSet, command);
         onEdt(() -> {
             command.undoCommand();
             return null;
@@ -952,6 +959,7 @@ class V022EndToEndTest {
                 ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
                         .getNodes().stream()
                         .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        assertEquals(originalState, snapshot(dataSet));
 
         LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
@@ -1056,6 +1064,7 @@ class V022EndToEndTest {
                         ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
                                 .getNodes().stream()
                                 .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        Map<PrimitiveKey, DatasetPrimitiveState> originalState = snapshot(fixture.dataSet());
         NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
                 NetworkSnapshotCapture.captureBound(
                         fixture.dataSet(), computed.captured().specification()));
@@ -1072,6 +1081,7 @@ class V022EndToEndTest {
                     .toList(), applied.getNodes().stream()
                             .map(node -> new LatLon(node.lat(), node.lon())).toList());
         }
+        assertAppliedPreviewWays(plan, fixture.dataSet(), command);
         onEdt(() -> {
             command.undoCommand();
             return null;
@@ -1080,6 +1090,7 @@ class V022EndToEndTest {
                 ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
                         .getNodes().stream()
                         .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        assertEquals(originalState, snapshot(fixture.dataSet()));
 
         LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
@@ -1224,6 +1235,118 @@ class V022EndToEndTest {
         assertAtomicCommandAppliesPreviewWaysExactly(selectedInteriorReconstructionFixture());
     }
 
+    @Test
+    void T170_ambiguousReceiverEvidenceBlocksApplyWithoutChangingDatasetOrUndoHistory()
+            throws Exception {
+        JunctionFixture fixture = reconstructionFixture();
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        List<org.openstreetmap.josm.command.Command> undoBefore = onEdt(() ->
+                List.copyOf(UndoRedoHandler.getInstance().getUndoCommands()));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(),
+                junctionReconstructionRaster(ReceiverEvidence.AMBIGUOUS, 2.0),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        var adapter = new ModernSingleWayEditPlanAdapter();
+        var assessment = adapter.assess(computed, 0);
+
+        boolean applyAttempted = false;
+        if (assessment.applyAvailable()) {
+            applyAttempted = true;
+            AlignmentEditPlan plan = assessment.plan().orElseThrow();
+            NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                    NetworkSnapshotCapture.captureBound(
+                            fixture.dataSet(), computed.captured().specification()));
+            ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                    fixture.dataSet(), plan,
+                    new LiveNetworkSnapshotValidator(receipt, plan,
+                            () -> plan.before().sourceGeneration()),
+                    "Apply ambiguous receiver candidate");
+            onEdt(() -> {
+                UndoRedoHandler.getInstance().add(command);
+                return null;
+            });
+        }
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE,
+                assessment.availability());
+        assertFalse(assessment.applyAvailable());
+        assertFalse(applyAttempted);
+        assertEquals(before, snapshot(fixture.dataSet()));
+        assertEquals(undoBefore, onEdt(() ->
+                List.copyOf(UndoRedoHandler.getInstance().getUndoCommands())));
+    }
+
+    @Test
+    void T170_oppositeOrientationSplitReceiverMovesOrdinaryMiddleExactlyOnce()
+            throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(741, latitude(6), longitude(-8));
+        Node junction = loadedNode(742, latitude(0), longitude(10));
+        Node farSouth = loadedNode(743, latitude(-49), longitude(10));
+        Node southPort = loadedNode(744, latitude(-31), longitude(10));
+        Node south = loadedNode(745, latitude(-8), longitude(10));
+        Node north = loadedNode(747, latitude(18), longitude(10));
+        Node northPort = loadedNode(748, latitude(37), longitude(10));
+        Node farNorth = loadedNode(749, latitude(49), longitude(10));
+        Node middle = loadedNode(746, latitude(2), longitude(10));
+        Way selected = loadedWay(751, west, junction);
+        Way w1 = loadedWay(752, junction, south, southPort, farSouth);
+        Way w2 = loadedWay(753, farNorth, northPort, north, middle, junction);
+        for (Node node : List.of(west, junction, farSouth, southPort, south, middle,
+                north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        for (Way way : List.of(selected, w1, w2)) {
+            dataSet.addPrimitive(way);
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection,
+                junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 6.0),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+
+        PrimitiveKey selectedKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 751);
+        PrimitiveKey w1Key = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 752);
+        PrimitiveKey w2Key = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 753);
+        assertEquals(Set.of(selectedKey, w1Key, w2Key), plan.finalPreviewWays().keySet());
+        assertEquals(List.of(742L, 746L, 745L, 744L, 743L),
+                ((DetachedWay) plan.after().primitives().get(w1Key)).nodeKeys().stream()
+                        .map(PrimitiveKey::id).toList(),
+                "the junction-to-south receiver takes M before its measured arm");
+        assertEquals(List.of(749L, 748L, 747L, 742L),
+                ((DetachedWay) plan.after().primitives().get(w2Key)).nodeKeys().stream()
+                        .map(PrimitiveKey::id).toList(),
+                "the north receiver ends at the joint junction after M transfers");
+        assertEquals(1, java.util.stream.Stream.concat(
+                        ((DetachedWay) plan.after().primitives().get(w1Key)).nodeKeys().stream(),
+                        ((DetachedWay) plan.after().primitives().get(w2Key)).nodeKeys().stream())
+                .filter(key -> key.id() == 746L).count());
+        var movedMiddle = ((DetachedNode) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 746))).coordinate();
+        assertEquals(2.0, Math.toRadians(movedMiddle.latitudeDegrees()) * 6_378_137.0,
+                0.01, "the ordinary transferred middle node keeps its original northing");
+        assertEquals(8.0, Math.toRadians(movedMiddle.longitudeDegrees()) * 6_378_137.0,
+                1.0, "the ordinary transferred middle node follows the selected approach near easting 8 m");
+        var proposedJunction = ((DetachedNode) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 742))).coordinate();
+        assertEquals(6.0, Math.toRadians(proposedJunction.latitudeDegrees()) * 6_378_137.0,
+                1.5, "the shared junction must meet the captured horizontal ridge near northing 6 m");
+        assertEquals(8.0, Math.toRadians(proposedJunction.longitudeDegrees()) * 6_378_137.0,
+                1.0, "the shared junction must meet the selected approach near easting 8 m");
+
+        assertAtomicApplyAndUndoMatchesPreview(dataSet, plan, computed);
+    }
+
     private static void assertAtomicCommandAppliesPreviewWaysExactly(JunctionFixture fixture)
             throws Exception {
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
@@ -1243,6 +1366,7 @@ class V022EndToEndTest {
                 .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
                         entry -> entry.getValue().stream()
                                 .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        Map<PrimitiveKey, DatasetPrimitiveState> originalState = snapshot(fixture.dataSet());
         NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
                 NetworkSnapshotCapture.captureBound(
                         fixture.dataSet(), computed.captured().specification()));
@@ -1269,6 +1393,7 @@ class V022EndToEndTest {
                     "T170 fixture must materially change " + entry.getKey());
             assertEquals(expected, actual, entry.getKey().toString());
         }
+        assertAppliedPreviewWays(plan, fixture.dataSet(), command);
 
         onEdt(() -> {
             command.undoCommand();
@@ -1279,8 +1404,102 @@ class V022EndToEndTest {
                         .getNodes(), key.toString()));
         originalCoordinates.forEach((key, coordinates) -> assertEquals(coordinates,
                 ((Way) fixture.dataSet().getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
-                        .getNodes().stream()
-                        .map(node -> new LatLon(node.lat(), node.lon())).toList(), key.toString()));
+                .getNodes().stream()
+                .map(node -> new LatLon(node.lat(), node.lon())).toList(), key.toString()));
+        assertEquals(originalState, snapshot(fixture.dataSet()));
+    }
+
+    private static void assertAtomicApplyAndUndoMatchesPreview(DataSet dataSet,
+            AlignmentEditPlan plan, LiveBPreviewService.Computed computed) throws Exception {
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(dataSet);
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, plan,
+                new LiveNetworkSnapshotValidator(receipt, plan,
+                        () -> plan.before().sourceGeneration()), "Apply opposite split receiver");
+
+        onEdt(command::executeCommand);
+        assertAppliedPreviewWays(plan, dataSet, command);
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        assertEquals(before, snapshot(dataSet), "Undo must restore all primitive state");
+    }
+
+    private static void assertAppliedPreviewWays(AlignmentEditPlan plan, DataSet dataSet,
+            ApplyAlignmentEditPlanCommand command) {
+        Map<PrimitiveKey, Long> actualNodeIds = new java.util.HashMap<>();
+        plan.before().primitives().keySet().stream()
+                .filter(key -> key.type() == PrimitiveKey.Type.NODE)
+                .forEach(key -> actualNodeIds.put(key, key.id()));
+        List<PrimitiveKey> createdKeys = plan.createdPrimitives().keySet().stream()
+                .filter(key -> key.type() == PrimitiveKey.Type.NODE).sorted().toList();
+        Set<Long> existingNodeIds = plan.before().primitives().keySet().stream()
+                .filter(key -> key.type() == PrimitiveKey.Type.NODE)
+                .map(PrimitiveKey::id).collect(java.util.stream.Collectors.toSet());
+        List<Node> createdNodes = command.getParticipatingPrimitives().stream()
+                .filter(Node.class::isInstance).map(Node.class::cast)
+                .filter(node -> !existingNodeIds.contains(node.getUniqueId())).toList();
+        assertEquals(createdKeys.size(), createdNodes.size(), "command-owned preview nodes");
+        List<Node> unmatchedCreated = new java.util.ArrayList<>(createdNodes);
+        for (PrimitiveKey key : createdKeys) {
+            DetachedNode planned = (DetachedNode) plan.after().primitives().get(key);
+            LatLon expectedCoordinate = new LatLon(planned.coordinate().latitudeDegrees(),
+                    planned.coordinate().longitudeDegrees());
+            List<Node> matches = unmatchedCreated.stream()
+                    .filter(node -> new LatLon(node.lat(), node.lon()).equals(expectedCoordinate))
+                    .toList();
+            assertEquals(1, matches.size(), key + " must map to one created JOSM node");
+            Node node = matches.get(0);
+            unmatchedCreated.remove(node);
+            actualNodeIds.put(key, node.getUniqueId());
+            assertEquals(new LatLon(planned.coordinate().latitudeDegrees(),
+                            planned.coordinate().longitudeDegrees()),
+                    new LatLon(node.lat(), node.lon()), key + " created-node coordinate");
+        }
+        assertTrue(unmatchedCreated.isEmpty(), "every created JOSM node maps to one preview key");
+        assertEquals(createdNodes.size(), createdNodes.stream().map(Node::getUniqueId).distinct().count(),
+                "created JOSM IDs must be unique");
+        for (Map.Entry<PrimitiveKey, List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint>>
+                entry : plan.finalPreviewWays().entrySet()) {
+            Way applied = (Way) dataSet.getPrimitiveById(entry.getKey().id(), OsmPrimitiveType.WAY);
+            DetachedWay planned = (DetachedWay) plan.after().primitives().get(entry.getKey());
+            assertEquals(planned.nodeKeys().stream().map(key -> actualNodeIds.get(key)).toList(),
+                    applied.getNodes().stream().map(Node::getUniqueId).toList(),
+                    entry.getKey() + " preview node identity/order");
+            assertEquals(entry.getValue().stream()
+                    .map(point -> new LatLon(point.latitudeDegrees(), point.longitudeDegrees()))
+                    .toList(), applied.getNodes().stream()
+                            .map(node -> new LatLon(node.lat(), node.lon())).toList(),
+                    entry.getKey() + " preview coordinates/order");
+        }
+    }
+
+    private static Map<PrimitiveKey, DatasetPrimitiveState> snapshot(DataSet dataSet) {
+        Map<PrimitiveKey, DatasetPrimitiveState> state = new java.util.TreeMap<>();
+        for (OsmPrimitive primitive : dataSet.allPrimitives()) {
+            PrimitiveKey key = PrimitiveKey.existing(
+                    PrimitiveKey.Type.valueOf(primitive.getType().name()),
+                    primitive.getUniqueId());
+            LatLon coordinate = primitive instanceof Node node
+                    ? new LatLon(node.lat(), node.lon()) : null;
+            List<Long> nodeIds = primitive instanceof Way way
+                    ? way.getNodes().stream().map(Node::getUniqueId).toList() : List.of();
+            List<String> members = primitive instanceof Relation relation
+                    ? relation.getMembers().stream().map(member -> member.getRole() + ":"
+                            + member.getMember().getType().name() + ":"
+                            + member.getMember().getUniqueId()).toList() : List.of();
+            state.put(key, new DatasetPrimitiveState(coordinate, nodeIds, members,
+                    Map.copyOf(new java.util.TreeMap<>(primitive.getKeys())),
+                    primitive.isModified(), primitive.isDeleted()));
+        }
+        return Map.copyOf(state);
+    }
+
+    private record DatasetPrimitiveState(LatLon coordinate, List<Long> nodeIds,
+            List<String> relationMembers, Map<String, String> tags, boolean modified,
+            boolean deleted) {
     }
 
     private static Fixture fixture() {
