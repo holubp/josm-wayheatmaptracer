@@ -518,7 +518,7 @@ class V022EndToEndTest {
     }
 
     @Test
-    void T169_unreviewedTopologyShapesFailClosed() throws Exception {
+    void T169_selectedInteriorWithOneCapturedThroughReceiverUsesDirectEvidence() throws Exception {
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
                 JunctionPolicy.REATTACH, true);
         JunctionFixture selectedInterior = selectedInteriorReconstructionFixture();
@@ -528,10 +528,64 @@ class V022EndToEndTest {
                 junctionReconstructionRaster(true), visibleConfig(), false, permissions));
         LiveBPreviewService.Computed interiorComputed = new LiveBPreviewService().compute(
                 interiorCaptured[0], CancellationProbe.NONE);
-        IllegalArgumentException interiorFailure = assertThrows(IllegalArgumentException.class,
-                () -> new ModernSingleWayEditPlanAdapter().adapt(interiorComputed, 0));
-        assertTrue(interiorFailure.getMessage().contains("bounded terminal-through topology"),
-                interiorFailure::getMessage);
+        AlignmentEditPlan interiorPlan = new ModernSingleWayEditPlanAdapter()
+                .adapt(interiorComputed, 0);
+        PrimitiveKey interiorReceiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                selectedInterior.receiver().getUniqueId());
+        assertEquals(Set.of(interiorComputed.request().selectedWayKey(), interiorReceiver),
+                interiorPlan.finalPreviewWays().keySet());
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
+                interiorPlan.validation().disposition());
+        assertEquals(((DetachedWay) interiorPlan.after().primitives().get(interiorReceiver))
+                .nodeKeys().stream()
+                .map(key -> ((DetachedNode) interiorPlan.after().primitives().get(key)).coordinate())
+                .toList(), interiorPlan.finalPreviewWays().get(interiorReceiver));
+        for (var port : interiorComputed.captured().network().closure().externalPorts().stream()
+                .filter(value -> value.wayKey().equals(interiorReceiver)).toList()) {
+            assertEquals(interiorPlan.before().primitives().get(port.boundaryNodeKey()),
+                    interiorPlan.after().primitives().get(port.boundaryNodeKey()));
+        }
+
+        JunctionFixture missingEvidence = selectedInteriorReconstructionFixture();
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                missingEvidence.dataSet(), missingEvidence.selection(),
+                junctionReconstructionRaster(false), visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException missingFailure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(missingFailure.getMessage().contains("incident approach evidence"),
+                missingFailure::getMessage);
+        assertFalse(missingFailure.getMessage().contains("bounded terminal-through topology"),
+                missingFailure::getMessage);
+    }
+
+    @Test
+    void T169_selectedInteriorWithAdditionalIncidentWayFailsClosed() throws Exception {
+        JunctionFixture fixture = selectedInteriorReconstructionFixture();
+        Node additionalEndpoint = loadedNode(312, latitude(18), longitude(8));
+        Way additional = loadedWay(313, fixture.junction(), additionalEndpoint);
+        fixture.dataSet().addPrimitive(additionalEndpoint);
+        fixture.dataSet().addPrimitive(additional);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionReconstructionRaster(true),
+                visibleConfig(), false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
+        assertTrue(failure.getMessage().contains("bounded terminal-through topology"),
+                failure::getMessage);
+    }
+
+    @Test
+    void T169_multipleReceiversRemainOutsideBoundedTopology() throws Exception {
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
 
         JunctionFixture multipleReceivers = reconstructionFixture();
         Way duplicateReceiver = loadedWay(112,
@@ -551,7 +605,12 @@ class V022EndToEndTest {
 
     @Test
     void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
-        JunctionFixture fixture = reconstructionFixture();
+        assertAtomicCommandAppliesPreviewWaysExactly(reconstructionFixture());
+        assertAtomicCommandAppliesPreviewWaysExactly(selectedInteriorReconstructionFixture());
+    }
+
+    private static void assertAtomicCommandAppliesPreviewWaysExactly(JunctionFixture fixture)
+            throws Exception {
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
                 JunctionPolicy.REATTACH, true);
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
