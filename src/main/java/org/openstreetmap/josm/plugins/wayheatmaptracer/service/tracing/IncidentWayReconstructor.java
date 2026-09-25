@@ -41,6 +41,8 @@ final class IncidentWayReconstructor {
                 && !isBoundedSelectedInteriorThroughTopology(before, selectedWayKey,
                     sharedJunctions)
                 && !isBoundedTwoThroughReceiverTopology(before, selectedWayKey,
+                    sharedJunctions)
+                && !isBoundedCoupledEndpointsTopology(before, selectedWayKey,
                     sharedJunctions)) {
             requireBoundedTerminalThroughTopology(before, selectedWayKey, sharedJunctions);
         }
@@ -329,6 +331,66 @@ final class IncidentWayReconstructor {
             }
         }
         return true;
+    }
+
+    /** Two selected endpoints, each with its own fully captured through receiver. */
+    private static boolean isBoundedCoupledEndpointsTopology(NetworkSnapshot before,
+            PrimitiveKey selectedWayKey, Set<PrimitiveKey> sharedJunctions) {
+        if (sharedJunctions.size() != 2
+                || !(before.primitives().get(selectedWayKey) instanceof DetachedWay selected)
+                || selected.nodeKeys().size() != 2
+                || !sharedJunctions.equals(Set.copyOf(selected.nodeKeys()))) {
+            return false;
+        }
+        List<PrimitiveKey> receivers = before.closure().editableWayOccurrences().keySet().stream()
+                .filter(key -> !key.equals(selectedWayKey)).sorted().toList();
+        if (receivers.size() != 2) {
+            return false;
+        }
+        Set<PrimitiveKey> assignedJunctions = new LinkedHashSet<>();
+        Set<PrimitiveKey> receiverShapeNodes = new LinkedHashSet<>();
+        for (PrimitiveKey receiverKey : receivers) {
+            if (!(before.primitives().get(receiverKey) instanceof DetachedWay receiver)
+                    || new LinkedHashSet<>(receiver.nodeKeys()).size() != receiver.nodeKeys().size()) {
+                return false;
+            }
+            List<PrimitiveKey> junctions = receiver.nodeKeys().stream()
+                    .filter(sharedJunctions::contains).toList();
+            if (junctions.size() != 1 || !assignedJunctions.add(junctions.get(0))) {
+                return false;
+            }
+            PrimitiveKey junction = junctions.get(0);
+            Set<PrimitiveKey> incidentWays = before.incomingReferrerWatches()
+                    .getOrDefault(junction, Set.of()).stream()
+                    .filter(key -> key.type() == PrimitiveKey.Type.WAY)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            if (!incidentWays.equals(Set.of(selectedWayKey, receiverKey))) {
+                return false;
+            }
+            for (PrimitiveKey node : receiver.nodeKeys()) {
+                if (!node.equals(junction) && !receiverShapeNodes.add(node)) {
+                    return false;
+                }
+            }
+            int occurrence = receiver.nodeKeys().indexOf(junction);
+            List<OccurrenceRange> ranges = before.closure().editableWayOccurrences()
+                    .get(receiverKey);
+            if (occurrence <= 0 || occurrence >= receiver.nodeKeys().size() - 1
+                    || ranges == null || ranges.size() != 1
+                    || occurrence <= ranges.get(0).firstIndex()
+                    || occurrence >= ranges.get(0).lastIndex()) {
+                return false;
+            }
+            Set<PrimitiveKey> ports = before.closure().externalPorts().stream()
+                    .filter(port -> port.wayKey().equals(receiverKey))
+                    .map(port -> port.boundaryNodeKey())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            if (!ports.equals(Set.of(receiver.nodeKeys().get(ranges.get(0).firstIndex()),
+                    receiver.nodeKeys().get(ranges.get(0).lastIndex())))) {
+                return false;
+            }
+        }
+        return assignedJunctions.equals(sharedJunctions);
     }
 
     private static int reconstructArm(NetworkSnapshot before,

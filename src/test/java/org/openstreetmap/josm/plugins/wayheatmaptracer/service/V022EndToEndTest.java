@@ -23,6 +23,8 @@ import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
+import org.openstreetmap.josm.data.osm.Relation;
+import org.openstreetmap.josm.data.osm.RelationMember;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -830,6 +832,129 @@ class V022EndToEndTest {
     }
 
     @Test
+    void T169_coupledSelectedEndpointsReconstructDistinctMeasuredReceivers() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node leftJunction = loadedNode(601, 0.0, longitude(-8));
+        Node rightJunction = loadedNode(602, 0.0, longitude(8));
+        Way selected = loadedWay(610, leftJunction, rightJunction);
+        Node leftFarSouth = loadedNode(603, latitude(-49), longitude(-10));
+        Node leftSouthPort = loadedNode(604, latitude(-31), longitude(-10));
+        Node leftSouth = loadedNode(605, latitude(-8), longitude(-10));
+        Node leftMiddle = loadedNode(606, latitude(8), longitude(-10));
+        Node leftNorth = loadedNode(607, latitude(18), longitude(-10));
+        Node leftNorthPort = loadedNode(608, latitude(31), longitude(-10));
+        Node leftFarNorth = loadedNode(609, latitude(49), longitude(-10));
+        Way leftReceiver = loadedWay(611, leftFarSouth, leftSouthPort, leftSouth,
+                leftJunction, leftMiddle, leftNorth, leftNorthPort, leftFarNorth);
+        Node rightFarSouth = loadedNode(613, latitude(-49), longitude(10));
+        Node rightSouthPort = loadedNode(614, latitude(-31), longitude(10));
+        Node rightSouth = loadedNode(615, latitude(-8), longitude(10));
+        Node rightMiddle = loadedNode(616, latitude(8), longitude(10));
+        Node rightNorth = loadedNode(617, latitude(18), longitude(10));
+        Node rightNorthPort = loadedNode(618, latitude(31), longitude(10));
+        Node rightFarNorth = loadedNode(619, latitude(49), longitude(10));
+        Way rightReceiver = loadedWay(612, rightFarSouth, rightSouthPort, rightSouth,
+                rightJunction, rightMiddle, rightNorth, rightNorthPort, rightFarNorth);
+        for (Node node : List.of(leftJunction, rightJunction, leftFarSouth, leftSouthPort,
+                leftSouth, leftMiddle, leftNorth, leftNorthPort, leftFarNorth,
+                rightFarSouth, rightSouthPort, rightSouth, rightMiddle, rightNorth,
+                rightNorthPort, rightFarNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(leftReceiver);
+        dataSet.addPrimitive(rightReceiver);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("forward", selected),
+                new RelationMember("left", leftReceiver),
+                new RelationMember("right", rightReceiver)));
+        route.put("type", "route");
+        route.put("route", "bicycle");
+        route.setOsmId(630, 1);
+        route.setModified(false);
+        dataSet.addPrimitive(route);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(leftJunction, rightJunction), Set.of());
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionCoupledRaster(), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 610),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 611),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 612)),
+                plan.finalPreviewWays().keySet());
+        assertTrue(plan.validation().findingCodes().stream()
+                .noneMatch(code -> code.startsWith("final-topology:")));
+        PrimitiveKey routeKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 630);
+        assertEquals(plan.before().primitives().get(routeKey),
+                plan.after().primitives().get(routeKey));
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionReconstructionRaster(true), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(missing.getMessage().contains("incident approach evidence"),
+                missing::getMessage);
+        assertFalse(missing.getMessage().contains("bounded terminal-through topology"),
+                missing::getMessage);
+        List<RelationMember> originalMembers = List.copyOf(route.getMembers());
+        Map<PrimitiveKey, List<LatLon>> original = plan.finalPreviewWays().keySet().stream()
+                .collect(java.util.stream.Collectors.toMap(key -> key, key ->
+                        ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                                .getNodes().stream()
+                                .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt, plan, () -> plan.before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                dataSet, plan, validator, "Apply coupled receiver alignment");
+        onEdt(command::executeCommand);
+        for (var entry : plan.finalPreviewWays().entrySet()) {
+            Way applied = (Way) dataSet.getPrimitiveById(entry.getKey().id(),
+                    OsmPrimitiveType.WAY);
+            assertEquals(entry.getValue().stream()
+                    .map(point -> new LatLon(point.latitudeDegrees(), point.longitudeDegrees()))
+                    .toList(), applied.getNodes().stream()
+                            .map(node -> new LatLon(node.lat(), node.lon())).toList());
+        }
+        assertEquals(originalMembers, route.getMembers());
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        original.forEach((key, coordinates) -> assertEquals(coordinates,
+                ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes().stream()
+                        .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        assertEquals(originalMembers, route.getMembers());
+
+        Node entrantSouth = loadedNode(640, latitude(-10), longitude(0));
+        Node entrantNorth = loadedNode(641, latitude(10), longitude(0));
+        Way entrant = loadedWay(642, entrantSouth, entrantNorth);
+        dataSet.addPrimitive(entrantSouth);
+        dataSet.addPrimitive(entrantNorth);
+        dataSet.addPrimitive(entrant);
+        ApplyAlignmentEditPlanCommand stale = new ApplyAlignmentEditPlanCommand(
+                dataSet, plan, validator, "Reject stale coupled alignment");
+        assertThrows(IllegalStateException.class, () -> onEdt(stale::executeCommand));
+        original.forEach((key, coordinates) -> assertEquals(coordinates,
+                ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes().stream()
+                        .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        assertEquals(originalMembers, route.getMembers());
+        assertEquals(List.of(entrantSouth, entrantNorth), entrant.getNodes());
+    }
+
+    @Test
     void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
         assertAtomicCommandAppliesPreviewWaysExactly(reconstructionFixture());
         assertAtomicCommandAppliesPreviewWaysExactly(selectedInteriorReconstructionFixture());
@@ -1101,9 +1226,20 @@ class V022EndToEndTest {
         return junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 2.0, true);
     }
 
+    private static LiveBPreviewService.VisibleRaster junctionCoupledRaster() {
+        return junctionReconstructionRaster(ReceiverEvidence.COMPLETE, 2.0, false, true);
+    }
+
     private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
             ReceiverEvidence receiverEvidence, double selectedNorthMeters,
             boolean includeDiagonal) {
+        return junctionReconstructionRaster(receiverEvidence, selectedNorthMeters,
+                includeDiagonal, false);
+    }
+
+    private static LiveBPreviewService.VisibleRaster junctionReconstructionRaster(
+            ReceiverEvidence receiverEvidence, double selectedNorthMeters,
+            boolean includeDiagonal, boolean includeLeftReceiver) {
         int size = 720;
         double extent = 60.0;
         int[] argb = new int[size * size];
@@ -1114,6 +1250,9 @@ class V022EndToEndTest {
             for (int x = 0; x < size; x++) {
                 double selectedDistance = (y - selectedRow) / RenderedHeatmapSampler.RASTER_SCALE;
                 double receiverDistance = (x - receiverColumn) / RenderedHeatmapSampler.RASTER_SCALE;
+                double leftReceiverDistance = (x - (extent - 8.0)
+                        * RenderedHeatmapSampler.RASTER_SCALE)
+                        / RenderedHeatmapSampler.RASTER_SCALE;
                 double selected = Math.exp(-0.5 * selectedDistance * selectedDistance / 1.44);
                 double receiver = switch (receiverEvidence) {
                     case NONE -> 0.0;
@@ -1132,8 +1271,12 @@ class V022EndToEndTest {
                         - extent - diagonalEast) / Math.sqrt(1.64);
                 double diagonal = includeDiagonal
                         ? Math.exp(-0.5 * diagonalDistance * diagonalDistance / 1.44) : 0.0;
+                double leftReceiver = includeLeftReceiver
+                        ? Math.exp(-0.5 * leftReceiverDistance * leftReceiverDistance / 1.44)
+                        : 0.0;
                 int gray = (int) Math.round(255.0 * (0.02 + 0.80
-                        * Math.max(selected, Math.max(receiver, diagonal))));
+                        * Math.max(selected, Math.max(receiver,
+                                Math.max(diagonal, leftReceiver)))));
                 argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }
         }
