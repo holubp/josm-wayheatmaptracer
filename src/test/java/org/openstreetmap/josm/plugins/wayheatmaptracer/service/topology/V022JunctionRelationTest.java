@@ -511,6 +511,64 @@ class V022JunctionRelationTest {
             .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
     }
 
+    @Test
+    void t116RouteRejectsTwoDistinctDirectedTransferPortsAfterWayEdits() {
+        long first = 301;
+        long second = 302;
+        Relation route = relation(324, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(second), "forward"));
+        List<TopologyNetwork.Node> nodes = List.of(node(A, -10, 0), node(J, 0, 0),
+            node(K, 10, 0), node(T, 20, 0));
+        TopologyNetwork before = network(nodes,
+            List.of(way(first, Map.of("oneway", "yes"), A, J),
+                way(second, Map.of("oneway", "yes"), J, T)), List.of(route));
+        TopologyNetwork after = network(nodes,
+            List.of(way(first, Map.of("oneway", "yes"), A, J, K),
+                way(second, Map.of("oneway", "yes"), J, K, T)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(before, before,
+            Set.of(wayId(first), wayId(second)), Map.of(), Set.of()));
+        assertTrue(RelationSafetyValidator.validate(before, after,
+            Set.of(wayId(first), wayId(second)), Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
+    }
+
+    @Test
+    void t117RouteAllowsTwoSharedNodesWhenOnlyOneDirectedPortCanContinue() {
+        long first = 303;
+        long second = 304;
+        Relation route = relation(325, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(second), "forward"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(K, 10, 0), node(T, 20, 0)),
+            List.of(way(first, Map.of("oneway", "yes"), A, J, K),
+                way(second, Map.of("oneway", "yes"), J, T, K)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(network, network,
+            Set.of(wayId(first), wayId(second)), Map.of(), Set.of()));
+    }
+
+    @Test
+    void t118RouteCountsOnlyPortsThatReachTheFinalOrderedMember() {
+        long first = 305;
+        long middle = 306;
+        long last = 307;
+        Relation route = relation(326, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(middle), "forward"), member(wayId(last), "forward"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(K, 10, 0),
+                node(M, 15, 0), node(T, 20, 0)),
+            List.of(way(first, Map.of("oneway", "yes"), A, J, K),
+                way(middle, Map.of("oneway", "yes"), J, K, M),
+                way(last, Map.of("oneway", "yes"), K, T)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(network, network,
+            Set.of(wayId(first), wayId(middle), wayId(last)), Map.of(), Set.of()));
+    }
+
     private static void assertRelationSemanticsRefusal(TopologyNetwork before,
         TopologyNetwork after, Id changedWay) {
         assertTrue(RelationSafetyValidator.validate(before, after, Set.of(changedWay),

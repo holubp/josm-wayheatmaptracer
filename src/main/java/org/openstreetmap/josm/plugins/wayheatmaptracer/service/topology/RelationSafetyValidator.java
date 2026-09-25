@@ -184,37 +184,75 @@ final class RelationSafetyValidator {
         if (hasAmbiguousTransferPort(network, wayIds)) {
             return false;
         }
+        List<Set<Id>> reachableExits = new ArrayList<>(members.size());
         RelationMember firstMember = members.get(0);
         Way first = network.way(firstMember.memberId());
-        Set<Id> possibleExits = new HashSet<>();
-        for (int end = 0; end < first.nodeIds().size(); end++) {
-            for (int start = 0; start < first.nodeIds().size(); start++) {
-                if (canTraverseRoute(first, firstMember.role(), start, end)) {
-                    possibleExits.add(first.nodeIds().get(end));
-                    break;
-                }
-            }
-        }
+        reachableExits.add(routeExits(first, firstMember.role(), new HashSet<>(first.nodeIds())));
         for (int memberIndex = 1; memberIndex < members.size(); memberIndex++) {
             RelationMember member = members.get(memberIndex);
             Way current = network.way(member.memberId());
-            Set<Id> nextExits = new HashSet<>();
-            for (int entry = 0; entry < current.nodeIds().size(); entry++) {
-                if (!possibleExits.contains(current.nodeIds().get(entry))) {
-                    continue;
-                }
-                for (int exit = 0; exit < current.nodeIds().size(); exit++) {
-                    if (canTraverseRoute(current, member.role(), entry, exit)) {
-                        nextExits.add(current.nodeIds().get(exit));
-                    }
-                }
-            }
+            Set<Id> nextExits = routeExits(current, member.role(),
+                reachableExits.get(memberIndex - 1));
             if (nextExits.isEmpty()) {
                 return false;
             }
-            possibleExits = nextExits;
+            reachableExits.add(nextExits);
         }
-        return !possibleExits.isEmpty();
+        if (reachableExits.get(0).isEmpty()) {
+            return false;
+        }
+
+        List<Set<Id>> reachableEntries = new ArrayList<>(members.size());
+        for (int index = 0; index < members.size(); index++) {
+            reachableEntries.add(Set.of());
+        }
+        int lastIndex = members.size() - 1;
+        RelationMember lastMember = members.get(lastIndex);
+        Way last = network.way(lastMember.memberId());
+        reachableEntries.set(lastIndex, routeEntries(last, lastMember.role(),
+            new HashSet<>(last.nodeIds())));
+        for (int memberIndex = lastIndex - 1; memberIndex >= 0; memberIndex--) {
+            RelationMember member = members.get(memberIndex);
+            reachableEntries.set(memberIndex, routeEntries(network.way(member.memberId()),
+                member.role(), reachableEntries.get(memberIndex + 1)));
+        }
+        // A port is usable only when it lies on a complete ordered traversal in both directions.
+        for (int memberIndex = 0; memberIndex < lastIndex; memberIndex++) {
+            Set<Id> completeTransferPorts = new HashSet<>(reachableExits.get(memberIndex));
+            completeTransferPorts.retainAll(reachableEntries.get(memberIndex + 1));
+            if (completeTransferPorts.size() != 1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Set<Id> routeExits(Way way, String role, Set<Id> allowedEntries) {
+        Set<Id> exits = new HashSet<>();
+        for (int entry = 0; entry < way.nodeIds().size(); entry++) {
+            if (!allowedEntries.contains(way.nodeIds().get(entry))) {
+                continue;
+            }
+            for (int exit = 0; exit < way.nodeIds().size(); exit++) {
+                if (canTraverseRoute(way, role, entry, exit)) {
+                    exits.add(way.nodeIds().get(exit));
+                }
+            }
+        }
+        return exits;
+    }
+
+    private static Set<Id> routeEntries(Way way, String role, Set<Id> allowedExits) {
+        Set<Id> entries = new HashSet<>();
+        for (int entry = 0; entry < way.nodeIds().size(); entry++) {
+            for (int exit = 0; exit < way.nodeIds().size(); exit++) {
+                if (allowedExits.contains(way.nodeIds().get(exit))
+                    && canTraverseRoute(way, role, entry, exit)) {
+                    entries.add(way.nodeIds().get(entry));
+                }
+            }
+        }
+        return entries;
     }
 
     private static boolean canTraverseRoute(Way way, String role, int start, int end) {
