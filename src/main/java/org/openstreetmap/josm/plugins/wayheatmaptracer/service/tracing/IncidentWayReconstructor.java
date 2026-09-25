@@ -35,7 +35,11 @@ final class IncidentWayReconstructor {
                 || evidence.fields().size() != 1) {
             throw failure("requires one complete scalar field and a shared junction");
         }
-        if (!isBoundedSelectedInteriorThroughTopology(before, selectedWayKey, sharedJunctions)) {
+        boolean splitReceiver = isBoundedSplitReceiverTopology(
+                before, evidence, selectedWayKey, sharedJunctions);
+        if (!splitReceiver
+                && !isBoundedSelectedInteriorThroughTopology(before, selectedWayKey,
+                    sharedJunctions)) {
             requireBoundedTerminalThroughTopology(before, selectedWayKey, sharedJunctions);
         }
         ImageCostField image = new ImageCostField(evidence.fields().values().iterator().next(),
@@ -62,7 +66,15 @@ final class IncidentWayReconstructor {
                     .map(port -> port.boundaryNodeKey())
                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
             for (OccurrenceRange range : entry.getValue()) {
-                if (!portBoundaries.contains(way.nodeKeys().get(range.firstIndex()))
+                if (splitReceiver) {
+                    PrimitiveKey opposite = way.nodeKeys().get(
+                            way.nodeKeys().get(range.firstIndex())
+                                    .equals(sharedJunctions.iterator().next())
+                                ? range.lastIndex() : range.firstIndex());
+                    if (!portBoundaries.equals(Set.of(opposite))) {
+                        throw failure("requires one exact external port on each split arm");
+                    }
+                } else if (!portBoundaries.contains(way.nodeKeys().get(range.firstIndex()))
                         || !portBoundaries.contains(way.nodeKeys().get(range.lastIndex()))) {
                     throw failure("requires exact external ports on both sides of each reconstructed range");
                 }
@@ -76,13 +88,24 @@ final class IncidentWayReconstructor {
                     throw failure("requires one unambiguous junction occurrence per incident range");
                 }
                 int junctionIndex = junctionOccurrences.get(0);
-                if (junctionIndex <= range.firstIndex() || junctionIndex >= range.lastIndex()) {
-                    throw failure("requires a measured approach on both sides of the junction");
+                if (splitReceiver) {
+                    if (junctionIndex != range.firstIndex()
+                            && junctionIndex != range.lastIndex()) {
+                        throw failure("split receiver requires one terminal junction per arm");
+                    }
+                    reconstructedApproaches += reconstructArm(before, result, evidence, image,
+                            way, range.firstIndex(), range.lastIndex(),
+                            junctionIndex == range.firstIndex(), reconstructedMovableNodes);
+                } else {
+                    if (junctionIndex <= range.firstIndex()
+                            || junctionIndex >= range.lastIndex()) {
+                        throw failure("requires a measured approach on both sides of the junction");
+                    }
+                    reconstructedApproaches += reconstructArm(before, result, evidence, image, way,
+                            range.firstIndex(), junctionIndex, false, reconstructedMovableNodes);
+                    reconstructedApproaches += reconstructArm(before, result, evidence, image, way,
+                            junctionIndex, range.lastIndex(), true, reconstructedMovableNodes);
                 }
-                reconstructedApproaches += reconstructArm(before, result, evidence, image, way,
-                        range.firstIndex(), junctionIndex, false, reconstructedMovableNodes);
-                reconstructedApproaches += reconstructArm(before, result, evidence, image, way,
-                        junctionIndex, range.lastIndex(), true, reconstructedMovableNodes);
             }
             requireSimpleIncidentWay(result, evidence, way);
         }
@@ -173,6 +196,78 @@ final class IncidentWayReconstructor {
                 && receiverPorts.contains(receiver.nodeKeys().get(ranges.get(0).firstIndex()))
                 && receiverPorts.contains(receiver.nodeKeys().get(ranges.get(0).lastIndex()))
                 && incidentWays.equals(Set.of(selectedWayKey, receiver.key()));
+    }
+
+    /** One terminal selected way and two distinct, singly ported terminal receiver arms. */
+    private static boolean isBoundedSplitReceiverTopology(NetworkSnapshot before,
+            EvidenceSnapshot evidence, PrimitiveKey selectedWayKey,
+            Set<PrimitiveKey> sharedJunctions) {
+        if (sharedJunctions.size() != 1
+                || !(before.primitives().get(selectedWayKey) instanceof DetachedWay selected)) {
+            return false;
+        }
+        PrimitiveKey junction = sharedJunctions.iterator().next();
+        int selectedOccurrence = selected.nodeKeys().indexOf(junction);
+        if (selected.nodeKeys().stream().filter(junction::equals).count() != 1
+                || selectedOccurrence != 0
+                    && selectedOccurrence != selected.nodeKeys().size() - 1) {
+            return false;
+        }
+        List<PrimitiveKey> receivers = before.closure().editableWayOccurrences().keySet().stream()
+                .filter(key -> !key.equals(selectedWayKey)).sorted().toList();
+        if (receivers.size() != 2) {
+            return false;
+        }
+        Set<PrimitiveKey> incidentWays = before.incomingReferrerWatches()
+                .getOrDefault(junction, Set.of()).stream()
+                .filter(key -> key.type() == PrimitiveKey.Type.WAY)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (!incidentWays.equals(Set.of(selectedWayKey, receivers.get(0), receivers.get(1)))) {
+            return false;
+        }
+        MetricPoint junctionPoint = metricPoint(before.primitives(), evidence, junction);
+        List<MetricPoint> outgoing = new ArrayList<>();
+        for (PrimitiveKey receiverKey : receivers) {
+            if (!(before.primitives().get(receiverKey) instanceof DetachedWay receiver)
+                    || new LinkedHashSet<>(receiver.nodeKeys()).size() != receiver.nodeKeys().size()
+                    || receiver.nodeKeys().stream().filter(junction::equals).count() != 1) {
+                return false;
+            }
+            int occurrence = receiver.nodeKeys().indexOf(junction);
+            if (occurrence != 0 && occurrence != receiver.nodeKeys().size() - 1) {
+                return false;
+            }
+            PrimitiveKey adjacent = receiver.nodeKeys().get(occurrence == 0
+                    ? 1 : occurrence - 1);
+            MetricPoint adjacentPoint = metricPoint(before.primitives(), evidence, adjacent);
+            outgoing.add(new MetricPoint(adjacentPoint.xMeters() - junctionPoint.xMeters(),
+                    adjacentPoint.yMeters() - junctionPoint.yMeters()));
+            List<OccurrenceRange> ranges = before.closure().editableWayOccurrences()
+                    .get(receiverKey);
+            if (ranges == null || ranges.size() != 1) {
+                return false;
+            }
+            OccurrenceRange range = ranges.get(0);
+            if (occurrence != range.firstIndex() && occurrence != range.lastIndex()) {
+                return false;
+            }
+            PrimitiveKey opposite = receiver.nodeKeys().get(occurrence == range.firstIndex()
+                    ? range.lastIndex() : range.firstIndex());
+            Set<PrimitiveKey> ports = before.closure().externalPorts().stream()
+                    .filter(port -> port.wayKey().equals(receiverKey))
+                    .map(port -> port.boundaryNodeKey())
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            if (!ports.equals(Set.of(opposite))) {
+                return false;
+            }
+        }
+        MetricPoint first = outgoing.get(0);
+        MetricPoint second = outgoing.get(1);
+        double firstLength = Math.hypot(first.xMeters(), first.yMeters());
+        double secondLength = Math.hypot(second.xMeters(), second.yMeters());
+        return firstLength > 1.0e-9 && secondLength > 1.0e-9
+                && first.xMeters() * second.xMeters() + first.yMeters() * second.yMeters()
+                    <= -0.75 * firstLength * secondLength;
     }
 
     private static int reconstructArm(NetworkSnapshot before,

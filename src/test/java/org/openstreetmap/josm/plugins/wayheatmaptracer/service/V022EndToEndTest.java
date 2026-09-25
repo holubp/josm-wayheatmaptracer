@@ -604,6 +604,142 @@ class V022EndToEndTest {
     }
 
     @Test
+    void T169_splitReceiverUsesBothMeasuredArms() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(401, 0.0, longitude(-8));
+        Node junction = loadedNode(402, 0.0, longitude(8));
+        Node farSouth = loadedNode(403, latitude(-49), longitude(10));
+        Node southPort = loadedNode(404, latitude(-31), longitude(10));
+        Node south = loadedNode(405, latitude(-8), longitude(10));
+        Node middle = loadedNode(406, latitude(8), longitude(10));
+        Node north = loadedNode(407, latitude(18), longitude(10));
+        Node northPort = loadedNode(408, latitude(31), longitude(10));
+        Node farNorth = loadedNode(409, latitude(49), longitude(10));
+        Way selected = loadedWay(410, west, junction);
+        Way southReceiver = loadedWay(411, farSouth, southPort, south, junction);
+        Way northReceiver = loadedWay(412, junction, middle, north, northPort, farNorth);
+        for (Node node : List.of(west, junction, farSouth, southPort, south, middle,
+                north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(southReceiver);
+        dataSet.addPrimitive(northReceiver);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(west, junction), Set.of());
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionReconstructionRaster(true), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 410),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 411),
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 412)),
+                plan.finalPreviewWays().keySet());
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
+                plan.validation().disposition());
+        assertTrue(plan.validation().findingCodes().stream()
+                .noneMatch(code -> code.startsWith("final-topology:")));
+        for (Way receiver : List.of(southReceiver, northReceiver)) {
+            PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                    receiver.getUniqueId());
+            DetachedWay after = (DetachedWay) plan.after().primitives().get(receiverKey);
+            assertEquals(after.nodeKeys().stream()
+                    .map(key -> ((DetachedNode) plan.after().primitives().get(key)).coordinate())
+                    .toList(), plan.finalPreviewWays().get(receiverKey));
+            for (var port : computed.captured().network().closure().externalPorts().stream()
+                    .filter(value -> value.wayKey().equals(receiverKey)).toList()) {
+                assertEquals(plan.before().primitives().get(port.boundaryNodeKey()),
+                        plan.after().primitives().get(port.boundaryNodeKey()));
+            }
+        }
+
+        Map<PrimitiveKey, List<LatLon>> original = plan.finalPreviewWays().keySet().stream()
+                .collect(java.util.stream.Collectors.toMap(key -> key, key ->
+                        ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                                .getNodes().stream()
+                                .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+        NetworkSnapshotCapture.CapturedSnapshot receipt = onEdt(() ->
+                NetworkSnapshotCapture.captureBound(dataSet, computed.captured().specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt, plan, () -> plan.before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                dataSet, plan, validator, "Apply split receiver alignment");
+        onEdt(command::executeCommand);
+        for (var entry : plan.finalPreviewWays().entrySet()) {
+            Way applied = (Way) dataSet.getPrimitiveById(entry.getKey().id(),
+                    OsmPrimitiveType.WAY);
+            assertEquals(entry.getValue().stream()
+                    .map(point -> new LatLon(point.latitudeDegrees(), point.longitudeDegrees()))
+                    .toList(), applied.getNodes().stream()
+                            .map(node -> new LatLon(node.lat(), node.lon())).toList());
+        }
+        onEdt(() -> {
+            command.undoCommand();
+            return null;
+        });
+        original.forEach((key, coordinates) -> assertEquals(coordinates,
+                ((Way) dataSet.getPrimitiveById(key.id(), OsmPrimitiveType.WAY))
+                        .getNodes().stream()
+                        .map(node -> new LatLon(node.lat(), node.lon())).toList()));
+
+        LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> missingCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionReconstructionRaster(false), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed missingComputed = new LiveBPreviewService().compute(
+                missingCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(missingComputed, 0));
+        assertTrue(missing.getMessage().contains("incident approach evidence"),
+                missing::getMessage);
+        assertFalse(missing.getMessage().contains("bounded terminal-through topology"),
+                missing::getMessage);
+
+        List<Node> originalNorthNodes = List.copyOf(northReceiver.getNodes());
+        Node sameSideInner = loadedNode(415, latitude(-8), longitude(10));
+        Node sameSideMiddle = loadedNode(416, latitude(-18), longitude(10));
+        Node sameSidePort = loadedNode(417, latitude(-31), longitude(10));
+        Node sameSideFar = loadedNode(418, latitude(-49), longitude(10));
+        for (Node node : List.of(sameSideInner, sameSideMiddle,
+                sameSidePort, sameSideFar)) {
+            dataSet.addPrimitive(node);
+        }
+        northReceiver.setNodes(List.of(junction, sameSideInner, sameSideMiddle,
+                sameSidePort, sameSideFar));
+        LiveBPreviewService.Captured[] sameSideCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> sameSideCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionReconstructionRaster(true), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed sameSideComputed = new LiveBPreviewService().compute(
+                sameSideCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException sameSide = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(sameSideComputed, 0));
+        assertTrue(sameSide.getMessage().contains("bounded terminal-through topology"),
+                sameSide::getMessage);
+        northReceiver.setNodes(originalNorthNodes);
+
+        Node extraEndpoint = loadedNode(413, latitude(18), longitude(6));
+        Way extraIncident = loadedWay(414, junction, extraEndpoint);
+        dataSet.addPrimitive(extraEndpoint);
+        dataSet.addPrimitive(extraIncident);
+        LiveBPreviewService.Captured[] extraCaptured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> extraCaptured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionReconstructionRaster(true), visibleConfig(),
+                false, permissions));
+        LiveBPreviewService.Computed extraComputed = new LiveBPreviewService().compute(
+                extraCaptured[0], CancellationProbe.NONE);
+        IllegalArgumentException extra = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(extraComputed, 0));
+        assertTrue(extra.getMessage().contains("bounded terminal-through topology"),
+                extra::getMessage);
+    }
+
+    @Test
     void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
         assertAtomicCommandAppliesPreviewWaysExactly(reconstructionFixture());
         assertAtomicCommandAppliesPreviewWaysExactly(selectedInteriorReconstructionFixture());
