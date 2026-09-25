@@ -170,6 +170,9 @@ final class RelationSafetyValidator {
     }
 
     private static boolean orderedWayTraversalConnected(TopologyNetwork network, List<Id> wayIds) {
+        if (hasAmbiguousViaWayPort(network, wayIds)) {
+            return false;
+        }
         Way previous = network.way(wayIds.get(0));
         Set<Id> possibleExits = new HashSet<>();
         for (int index = 0; index < previous.nodeIds().size(); index++) {
@@ -200,6 +203,20 @@ final class RelationSafetyValidator {
                 return false;
             }
             possibleExits = nextExits;
+        }
+        return false;
+    }
+
+    private static boolean hasAmbiguousViaWayPort(TopologyNetwork network, List<Id> wayIds) {
+        for (int index = 1; index < wayIds.size() - 1; index++) {
+            Set<Id> adjacentPorts = new HashSet<>(network.way(wayIds.get(index - 1)).nodeIds());
+            adjacentPorts.addAll(network.way(wayIds.get(index + 1)).nodeIds());
+            Set<Id> seen = new HashSet<>();
+            for (Id nodeId : network.way(wayIds.get(index)).nodeIds()) {
+                if (!seen.add(nodeId) && adjacentPorts.contains(nodeId)) {
+                    return true;
+                }
+            }
         }
         return false;
     }

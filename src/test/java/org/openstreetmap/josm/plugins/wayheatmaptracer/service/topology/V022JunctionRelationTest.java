@@ -10,6 +10,7 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.J
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.node;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.nodeId;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.plan;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.reconstructedCandidate;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.relation;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.relationId;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionTopologyFixtures.way;
@@ -314,12 +315,54 @@ class V022JunctionRelationTest {
             Set.of(wayId(from)), Map.of(), Set.of()));
     }
 
+    @Test
+    void t105ViaWayRestrictionRejectsRepeatedAmbiguousTransferPort() {
+        long from = 274;
+        long via = 275;
+        long to = 276;
+        Relation restriction = relation(313,
+            Map.of("type", "restriction", "restriction", "only_straight_on"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(wayId(via), "via"), member(wayId(to), "to"));
+        TopologyNetwork network = network(
+            List.of(node(L, -10, 0), node(J, 0, 0), node(A, 10, 20),
+                node(K, 20, 0), node(T, 30, 0)),
+            List.of(way(from, L, J),
+                way(via, Map.of("highway", "path", "oneway", "yes"), J, A, J, K),
+                way(to, J, T)), List.of(restriction));
+
+        assertTrue(RelationSafetyValidator.validate(network, network, Set.of(wayId(via)),
+            Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
+    }
+
+    @Test
+    void t106PlannerRejectsRepeatedViaPortWhenDistinctJunctionMoves() {
+        long from = 277;
+        long via = 278;
+        long to = 279;
+        long receiver = 280;
+        Relation restriction = relation(314,
+            Map.of("type", "restriction", "restriction", "only_straight_on"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(wayId(via), "via"), member(wayId(to), "to"));
+        TopologyNetwork before = network(
+            List.of(node(L, -10, 0), node(J, 0, 0), node(A, 10, 10),
+                node(K, 20, 0), node(T, 0, -10), node(M, 20, 20)),
+            List.of(way(from, L, J),
+                way(via, Map.of("highway", "path", "oneway", "yes"), J, A, J, K),
+                way(to, J, T), way(receiver, K, M)), List.of(restriction));
+
+        PlanningResult result = plan(before,
+            List.of(reconstructedCandidate(K, 20, 1, via)), Map.of(), Set.of(), via, receiver);
+
+        assertRelationSemanticsRefusal(result);
+    }
+
     private static void assertRelationSemanticsRefusal(PlanningResult result) {
         assertFalse(result.accepted(), () -> "expected a relation-semantics refusal, got "
             + result.findings());
         assertTrue(result.hasFinding(FindingCode.RELATION_SEMANTICS_INVALID),
             () -> "expected RELATION_SEMANTICS_INVALID, got " + result.findings());
-        assertTrue(result.plan().isEmpty(), "a direction-invalid relation cannot produce a plan");
+        assertTrue(result.plan().isEmpty(), "an invalid relation cannot produce a plan");
     }
 
     private static TopologyNetwork narrowT(List<Relation> relations, Map<String, String> junctionTags,
