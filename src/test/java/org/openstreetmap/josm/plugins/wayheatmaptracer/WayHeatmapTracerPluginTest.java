@@ -57,12 +57,12 @@ class WayHeatmapTracerPluginTest {
                 assertSame(session, authority.get(actions.get(index)));
             }
             assertEquals(List.of(
-                    "Experimental Engine A Visible Preview (Read Only)",
-                    "Experimental Engine B Visible Preview (Read Only)",
-                    "Experimental Engine Hybrid A+B Visible Preview (Read Only)",
-                    "Experimental Engine Image Visible Preview (Read Only)",
-                    "Experimental Engine A Managed Preview (Read Only)",
-                    "Experimental Engine B Managed Preview (Read Only)"),
+                    "Engine A Visible Alignment",
+                    "Engine B Visible Alignment",
+                    "Engine Hybrid A+B Visible Alignment",
+                    "Engine Image Visible Alignment",
+                    "Engine A Managed Alignment",
+                    "Engine B Managed Alignment"),
                     actions.subList(3, 9).stream()
                             .map(action -> action.getValue(Action.NAME)).toList());
         } finally {

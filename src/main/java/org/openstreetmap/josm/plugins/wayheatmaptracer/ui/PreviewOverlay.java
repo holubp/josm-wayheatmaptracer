@@ -6,7 +6,9 @@ import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Point2D;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.openstreetmap.josm.data.Bounds;
 import org.openstreetmap.josm.data.coor.EastNorth;
@@ -16,6 +18,7 @@ import org.openstreetmap.josm.gui.layer.MapViewPaintable;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 
 /**
@@ -28,6 +31,7 @@ public final class PreviewOverlay implements MapViewPaintable {
     private AlignmentResult result;
     private CenterlineCandidate chosenCandidate;
     private CandidateAssessment.Disposition disposition;
+    private Map<PrimitiveKey, List<EastNorth>> finalPreviewWays = Map.of();
     private boolean reviewConfirmed;
     private boolean debugEnabled;
     private boolean attached;
@@ -64,12 +68,39 @@ public final class PreviewOverlay implements MapViewPaintable {
         boolean reviewConfirmed,
         boolean debugEnabled
     ) {
+        show(selection, result, chosenCandidate, disposition, reviewConfirmed, debugEnabled,
+                Map.of());
+    }
+
+    /**
+     * Attaches or refreshes the overlay using the exact complete all-way edit-plan geometry.
+     *
+     * @param selection slide-time selection metadata
+     * @param result alignment result whose source and alternative candidates should be drawn
+     * @param chosenCandidate currently selected candidate
+     * @param disposition typed candidate handling state
+     * @param reviewConfirmed whether this exact review-required preview was confirmed
+     * @param debugEnabled whether to show more candidate labels
+     * @param finalPreviewWays exact projected geometry for every affected plan way
+     */
+    public void show(
+        SelectionContext selection,
+        AlignmentResult result,
+        CenterlineCandidate chosenCandidate,
+        CandidateAssessment.Disposition disposition,
+        boolean reviewConfirmed,
+        boolean debugEnabled,
+        Map<PrimitiveKey, List<EastNorth>> finalPreviewWays
+    ) {
         this.selection = selection;
         this.result = result;
         this.chosenCandidate = chosenCandidate;
         this.disposition = disposition;
         this.reviewConfirmed = reviewConfirmed;
         this.debugEnabled = debugEnabled;
+        Map<PrimitiveKey, List<EastNorth>> copy = new LinkedHashMap<>();
+        finalPreviewWays.forEach((way, points) -> copy.put(way, List.copyOf(points)));
+        this.finalPreviewWays = Map.copyOf(copy);
         MapView mapView = MainApplication.getMap().mapView;
         if (!attached) {
             mapView.addTemporaryLayer(this);
@@ -90,6 +121,7 @@ public final class PreviewOverlay implements MapViewPaintable {
         result = null;
         chosenCandidate = null;
         disposition = null;
+        finalPreviewWays = Map.of();
         reviewConfirmed = false;
     }
 
@@ -107,9 +139,19 @@ public final class PreviewOverlay implements MapViewPaintable {
             ? new Color(0, 90, 255, 230)
             : reviewRequired ? new Color(220, 135, 0, 230) : new Color(210, 35, 35, 220);
         float[] selectedDash = applicable ? null : reviewRequired ? new float[] {10f, 4f} : new float[] {7f, 5f};
-        drawPolyline(g, mv, result.previewPolyline(), selectedColor, selectedDash,
-            applicable ? 3.5f : reviewRequired ? 3.2f : 2.8f);
+        previewPolylines(finalPreviewWays, result.previewPolyline()).forEach(polyline ->
+                drawPolyline(g, mv, polyline, selectedColor, selectedDash,
+                        applicable ? 3.5f : reviewRequired ? 3.2f : 2.8f));
         drawLegend(g);
+    }
+
+    static List<List<EastNorth>> previewPolylines(
+            Map<PrimitiveKey, List<EastNorth>> exactFinalPreviewWays,
+            List<EastNorth> fallbackPreview) {
+        if (exactFinalPreviewWays == null || exactFinalPreviewWays.isEmpty()) {
+            return List.of(List.copyOf(fallbackPreview));
+        }
+        return exactFinalPreviewWays.values().stream().map(List::copyOf).toList();
     }
 
     private void drawCandidateAlternatives(Graphics2D g, MapView mapView) {

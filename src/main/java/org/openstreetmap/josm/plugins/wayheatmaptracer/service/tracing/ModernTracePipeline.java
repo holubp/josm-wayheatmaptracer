@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
@@ -194,7 +195,9 @@ public final class ModernTracePipeline {
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
             TraceRequest request, Options options, double pitch, CancellationProbe cancellation) {
         SeedGeometry seed = seedGeometry(source, evidence, network, request);
-        ImageSupportedLocalCleanup.Mode mode = request.engine() == TrackerMode.PROBABILISTIC
+        ImageSupportedLocalCleanup.Mode mode = request.geometryMode()
+                == AlignmentMode.MOVE_EXISTING_NODES
+                || request.engine() == TrackerMode.PROBABILISTIC
                 ? ImageSupportedLocalCleanup.Mode.OFF
                 : cleanupMode(options.cleanup().mode());
         long cleanupStarted = System.nanoTime();
@@ -206,13 +209,29 @@ public final class ModernTracePipeline {
                 cancellation);
         long cleanupNanos = System.nanoTime() - cleanupStarted;
         cancellation.checkpoint();
-        List<MetricPoint> finalPoints = cleanup.points();
         validateFinalProvenance(seed, cleanup, network.closure().removableExistingNodeKeys());
+        List<FinalRoutePointId> finalIds = cleanup.occurrenceIds();
+        Map<FinalRoutePointId, MetricPoint> finalAssignments = cleanup.assignments();
+        List<MetricPoint> finalPoints = cleanup.points();
+        boolean preciseShapeRequired = false;
+        if (request.geometryMode() == AlignmentMode.MOVE_EXISTING_NODES) {
+            finalIds = cleanup.occurrenceIds().stream()
+                    .filter(ExistingWayNodeOccurrence.class::isInstance).toList();
+            Map<FinalRoutePointId, MetricPoint> sparseAssignments = new LinkedHashMap<>();
+            for (FinalRoutePointId id : finalIds) {
+                sparseAssignments.put(id, cleanup.assignments().get(id));
+            }
+            finalAssignments = Map.copyOf(sparseAssignments);
+            finalPoints = finalIds.stream().map(finalAssignments::get).toList();
+            preciseShapeRequired = maximumDistanceToPolyline(cleanup.points(), finalPoints)
+                    > pitch + 1.0e-9;
+        }
         Map<FinalRoutePointId, ObservationOwnership> retainedSource = new LinkedHashMap<>();
-        for (FinalRoutePointId id : cleanup.occurrenceIds()) {
+        for (FinalRoutePointId id : finalIds) {
             retainedSource.put(id, seed.sourceOwnership().get(id));
         }
-        Map<Integer, MetricPoint> protectedAssignments = protectedAssignments(seed, cleanup);
+        Map<Integer, MetricPoint> protectedAssignments = protectedAssignments(seed,
+                finalIds, finalAssignments);
         long supportStarted = System.nanoTime();
         List<ObservationOwnership> support = freshSupport(finalPoints,
                 protectedAssignments.keySet(), image);
@@ -234,17 +253,29 @@ public final class ModernTracePipeline {
         long finalGeometryStarted = System.nanoTime();
         FinalGeometryEvaluator.Result quality = new FinalGeometryEvaluator().evaluate(
                 new FinalGeometryEvaluator.Request(finalized.id(), finalized.points(),
-                    cleanup.occurrenceIds(), image, pitch, protectedAssignments, List.of(), changed,
+                    finalIds, image, pitch, protectedAssignments, List.of(), changed,
                     inference.status() == TraceHypothesisSet.Status.AMBIGUOUS,
                     inference.alternativesTruncated(),
                     inference.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+        if (preciseShapeRequired) {
+            List<FinalGeometryEvaluator.Finding> findings = new ArrayList<>(quality.findings());
+            findings.add(new FinalGeometryEvaluator.Finding(
+                    FinalGeometryEvaluator.FindingCode.PRECISE_SHAPE_REQUIRED,
+                    FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, finalPoints.size() - 1,
+                    maximumDistanceToPolyline(cleanup.points(), finalPoints)));
+            quality = new FinalGeometryEvaluator.Result(quality.id(),
+                    FinalGeometryEvaluator.Disposition.HARD_BLOCKED, findings,
+                    quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(),
+                    quality.bendPreservingRoughness());
+        }
         long finalGeometryNanos = System.nanoTime() - finalGeometryStarted;
         if (request.engine() == TrackerMode.PROBABILISTIC) {
             PluginLog.verbose("B_PERF final cleanupMs=%d supportMs=%d geometryMs=%d rawPoints=%d finalPoints=%d cleanup=%s findings=%d disposition=%s",
                 millis(cleanupNanos), millis(supportNanos), millis(finalGeometryNanos), source.points().size(),
                 finalPoints.size(), cleanup.status(), quality.findings().size(), quality.disposition());
         }
-        return new Route(source, finalized, cleanup.occurrenceIds(), cleanup.assignments(),
+        return new Route(source, finalized, finalIds, finalAssignments,
                 retainedSource, quality, cleanup.status(), changed);
     }
 
@@ -463,9 +494,10 @@ public final class ModernTracePipeline {
     }
 
     private static Map<Integer, MetricPoint> protectedAssignments(SeedGeometry seed,
-            ImageSupportedLocalCleanup.Result cleanup) {
+            List<FinalRoutePointId> finalIds,
+            Map<FinalRoutePointId, MetricPoint> finalAssignments) {
         Map<Integer, MetricPoint> result = new LinkedHashMap<>();
-        Map<FinalRoutePointId, Integer> finalIndices = indexByIdentity(cleanup.occurrenceIds());
+        Map<FinalRoutePointId, Integer> finalIndices = indexByIdentity(finalIds);
         for (int sourceIndex : seed.protectedIndices()) {
             FinalRoutePointId id = seed.pointIds().get(sourceIndex);
             int finalIndex = finalIndices.getOrDefault(id, -1);
@@ -476,12 +508,44 @@ public final class ModernTracePipeline {
                 }
                 continue;
             }
-            if (!expected.equals(cleanup.assignments().get(id))) {
+            if (!expected.equals(finalAssignments.get(id))) {
                 throw new IllegalStateException("Protected occurrence assignment changed");
             }
             result.put(finalIndex, expected);
         }
         return Map.copyOf(result);
+    }
+
+    private static double maximumDistanceToPolyline(List<MetricPoint> points,
+            List<MetricPoint> polyline) {
+        if (polyline.size() < 2) {
+            return Double.POSITIVE_INFINITY;
+        }
+        double maximum = 0.0;
+        for (MetricPoint point : points) {
+            double nearest = Double.POSITIVE_INFINITY;
+            for (int index = 1; index < polyline.size(); index++) {
+                nearest = Math.min(nearest, pointSegmentDistance(point,
+                        polyline.get(index - 1), polyline.get(index)));
+            }
+            maximum = Math.max(maximum, nearest);
+        }
+        return maximum;
+    }
+
+    private static double pointSegmentDistance(MetricPoint point, MetricPoint start,
+            MetricPoint end) {
+        double dx = end.xMeters() - start.xMeters();
+        double dy = end.yMeters() - start.yMeters();
+        double lengthSquared = dx * dx + dy * dy;
+        if (!(lengthSquared > 0.0)) {
+            return point.distanceTo(start);
+        }
+        double fraction = ((point.xMeters() - start.xMeters()) * dx
+                + (point.yMeters() - start.yMeters()) * dy) / lengthSquared;
+        fraction = Math.max(0.0, Math.min(1.0, fraction));
+        return point.distanceTo(new MetricPoint(start.xMeters() + fraction * dx,
+                start.yMeters() + fraction * dy));
     }
 
     private static Map<FinalRoutePointId, Integer> indexByIdentity(

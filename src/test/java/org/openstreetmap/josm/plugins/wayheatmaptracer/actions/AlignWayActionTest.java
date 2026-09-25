@@ -101,7 +101,7 @@ class AlignWayActionTest {
     }
 
     @Test
-    void cleanupEnabledPreviewCannotEnterModernVisibleApplyGate() {
+    void configurationPreflightKeepsBCleanupUnavailableWithoutBlockingACleanup() {
         ManagedHeatmapConfig precise = configuredCorridor().withAlignmentMode(AlignmentMode.PRECISE_SHAPE);
         AlignmentConfig disabled = new AlignmentConfig(precise, GeometryCleanupConfig.disabled());
         AlignmentConfig enabled = new AlignmentConfig(precise, GeometryCleanupPreset.BALANCED
@@ -110,10 +110,73 @@ class AlignWayActionTest {
                 new int[144], 0.0, 0.0, 2.0, 2.0, 1.0, 1.0, OptionalDouble.empty(), "test", "EPSG:3857");
         LiveBPreviewService.Captured captured = new LiveBPreviewService.Captured(raster, null, null, null,
                 List.of(), List.of(), null, "hot", 1.0, 1.0, "settings", "parameters",
-                GeometryCleanupConfig.disabled(), TrackerMode.PROBABILISTIC, "EPSG:3857");
+                GeometryCleanupConfig.disabled(), AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.PROBABILISTIC, "EPSG:3857");
 
-        assertTrue(AlignWayAction.supportsModernVisibleApply(captured, disabled));
-        assertFalse(AlignWayAction.supportsModernVisibleApply(captured, enabled));
+        assertEquals(AlignWayAction.ModernApplyPreflight.READY,
+                AlignWayAction.modernApplyPreflight(captured, disabled));
+        assertEquals(AlignWayAction.ModernApplyPreflight.CLEANUP_UNAVAILABLE_FOR_ENGINE,
+                AlignWayAction.modernApplyPreflight(captured, enabled));
+
+        LiveBPreviewService.Captured engineA = new LiveBPreviewService.Captured(raster, null, null, null,
+                List.of(), List.of(), null, "hot", 1.0, 1.0, "settings", "parameters",
+                GeometryCleanupConfig.disabled(), AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+        assertEquals(AlignWayAction.ModernApplyPreflight.READY,
+                AlignWayAction.modernApplyPreflight(engineA, enabled));
+    }
+
+    @Test
+    void configurationPreflightReturnsTypedSourceAndConfigurationReasons() {
+        ManagedHeatmapConfig precise = configuredCorridor()
+                .withAlignmentMode(AlignmentMode.PRECISE_SHAPE);
+        LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(12, 12,
+                new int[144], 0.0, 0.0, 2.0, 2.0, 1.0, 1.0,
+                OptionalDouble.empty(), "test", "EPSG:3857");
+        LiveBPreviewService.Captured captured = new LiveBPreviewService.Captured(raster, null,
+                null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+        ManagedHeatmapConfig directIntensity = new ManagedHeatmapConfig(
+                precise.keyPairId(), precise.policy(), precise.signature(), precise.sessionToken(),
+                precise.activity(), precise.color(), precise.manualLayerName(), precise.layerRegex(),
+                precise.alignmentMode(), precise.trackerMode(), precise.verbose(), precise.debug(),
+                precise.multiColorDetection(), precise.aggregateAllColorSchemes(),
+                precise.showAggregateIntensityLayer(), precise.candidateRatingEnabled(),
+                precise.parallelWayAwareness(), precise.allowUndownloadedAlignment(),
+                precise.adjustJunctionNodes(), precise.simplifyEnabled(),
+                precise.crossSectionHalfWidthPx(), precise.crossSectionStepPx(),
+                precise.simplifyTolerancePx(), precise.inferenceMode(), precise.inferenceZoom(),
+                precise.validationZoom(), precise.searchHalfWidthMeters(),
+                precise.sampleStepMeters(), IntensitySamplingMode.DIRECT_LUMINANCE,
+                precise.cacheBuster());
+
+        assertEquals(AlignWayAction.ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE,
+                AlignWayAction.modernApplyPreflight(captured,
+                        new AlignmentConfig(directIntensity, GeometryCleanupConfig.disabled())));
+        LiveBPreviewService.Captured wrongProjection = new LiveBPreviewService.Captured(raster,
+                null, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:4326");
+        assertEquals(AlignWayAction.ModernApplyPreflight.CONFIGURATION_UNSUPPORTED,
+                AlignWayAction.modernApplyPreflight(wrongProjection,
+                        new AlignmentConfig(precise, GeometryCleanupConfig.disabled())));
+    }
+
+    @Test
+    void productionPreviewSummaryNamesAuthorityAndApplyState() {
+        String summary = AlignWayAction.modernPreviewSummary("Corridor A", "visible layer",
+                "REVIEW_REQUIRED", 2, List.of("AMBIGUOUS_BRANCH"), true,
+                "review confirmed; Apply available");
+
+        assertTrue(summary.contains("Engine: Corridor A"));
+        assertTrue(summary.contains("Source: visible layer"));
+        assertTrue(summary.contains("Disposition: REVIEW_REQUIRED"));
+        assertTrue(summary.contains("Affected ways: 2"));
+        assertTrue(summary.contains("Reasons: AMBIGUOUS_BRANCH"));
+        assertTrue(summary.contains("Confirmation: confirmed"));
+        assertTrue(summary.contains("Apply: review confirmed; Apply available"));
+        assertFalse(summary.toLowerCase(java.util.Locale.ROOT).contains("experimental"));
     }
 
     @Test

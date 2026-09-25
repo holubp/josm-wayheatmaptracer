@@ -36,7 +36,8 @@ public final class FinalGeometryEvaluator {
         OPTIMIZER_FAILURE,
         INSUFFICIENT_DIRECT_SUPPORT,
         UNAVAILABLE_IMAGE_QUALITY,
-        PROTECTED_ASSIGNMENT_MISMATCH
+        PROTECTED_ASSIGNMENT_MISMATCH,
+        PRECISE_SHAPE_REQUIRED
     }
 
     /** Severity remains separate from empirical confidence or average fit. */

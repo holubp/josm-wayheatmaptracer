@@ -64,7 +64,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
-/** Experimental read-only live producer for the explicitly supported B preview. */
+/** Detached live producer for the supported modern alignment engines. */
 public final class LiveBPreviewService {
     private static final double WEB_MERCATOR_RADIUS = 6_378_137.0;
     private static final double MAXIMUM_JUNCTION_RELOCATION_METERS = 20.0;
@@ -112,14 +112,16 @@ public final class LiveBPreviewService {
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, MetricRasterGrid outputGrid,
             String palette, double searchRadiusMeters, double sampleStepMeters,
-            String settingsHash, String parameterHash, GeometryCleanupConfig cleanup, TrackerMode engine, String projectionCode) {
+            String settingsHash, String parameterHash, GeometryCleanupConfig cleanup,
+            AlignmentMode geometryMode, TrackerMode engine, String projectionCode) {
         public Captured {
             if ((raster == null) == (managedRaster == null)) {
                 throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
             }
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
-            if (cleanup == null || engine == null || projectionCode == null || projectionCode.isBlank()) {
+            if (cleanup == null || geometryMode == null || engine == null
+                    || projectionCode == null || projectionCode.isBlank()) {
                 throw new IllegalArgumentException("Live preview engine is required");
             }
         }
@@ -130,7 +132,8 @@ public final class LiveBPreviewService {
             NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
             List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
             double searchRadiusMeters, double sampleStepMeters, String settingsHash,
-            String parameterHash, GeometryCleanupConfig cleanup, TrackerMode engine, String sourceIdentity, String projectionCode) {
+            String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
+            TrackerMode engine, String sourceIdentity, String projectionCode) {
         public ManagedCaptureSeed {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
@@ -138,7 +141,8 @@ public final class LiveBPreviewService {
                     || sourceMetric.size() != sourceGeographic.size() || palette == null || palette.isBlank()
                     || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0.0
                     || !Double.isFinite(sampleStepMeters) || sampleStepMeters <= 0.0
-                    || settingsHash == null || parameterHash == null || cleanup == null || engine == null
+                    || settingsHash == null || parameterHash == null || cleanup == null
+                    || geometryMode == null || engine == null
                     || sourceIdentity == null || sourceIdentity.isBlank()
                     || projectionCode == null || projectionCode.isBlank()) {
                 throw new IllegalArgumentException("Managed preview seed is incomplete");
@@ -156,7 +160,7 @@ public final class LiveBPreviewService {
         return captureInternal(dataSet, selection, raster, config, false, null);
     }
 
-    /** Captures a visible source explicitly selected for this read-only preview session. */
+    /** Captures a visible source explicitly selected for this modern alignment session. */
     public Captured capture(DataSet dataSet, SelectionContext selection,
             VisibleRaster raster, AlignmentConfig config, boolean explicitVisibleSource) {
         return captureInternal(dataSet, selection, raster, config, explicitVisibleSource, null);
@@ -229,8 +233,8 @@ public final class LiveBPreviewService {
                 true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         return new Captured(raster, null, specification, network, source, metric, grid,
-                config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(), engine,
-                raster.projectionCode());
+                config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(),
+                config.heatmap().alignmentMode(), engine, raster.projectionCode());
     }
 
     private static CaptureAuthority captureAuthority(DataSet dataSet, SelectionContext selection,
@@ -406,7 +410,8 @@ public final class LiveBPreviewService {
                 hash("managed-live-" + config.heatmap().trackerMode().name()
                         .toLowerCase(java.util.Locale.ROOT) + "-v2",
                         parameterIdentity(config.heatmap().trackerMode())),
-                config.cleanup(), config.heatmap().trackerMode(), sourceIdentity,
+                config.cleanup(), config.heatmap().alignmentMode(),
+                config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode());
     }
 
@@ -420,7 +425,8 @@ public final class LiveBPreviewService {
                 seed.sourceMetric(), raster.zoom(), seed.searchRadiusMeters());
         return new Captured(null, raster, seed.specification(), seed.network(), seed.sourceGeographic(),
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
-                seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(), seed.engine(),
+                seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
+                seed.geometryMode(), seed.engine(),
                 seed.projectionCode());
     }
 
@@ -444,7 +450,7 @@ public final class LiveBPreviewService {
                 : Optional.empty();
         TraceRequest request = new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
-                AlignmentMode.PRECISE_SHAPE, captured.specification().permissions(),
+                captured.geometryMode(), captured.specification().permissions(),
                 captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
                         : captured.engine() == TrackerMode.PROBABILISTIC
                                 ? TraceBudgets.interactiveProbabilisticPreview()
@@ -541,7 +547,8 @@ public final class LiveBPreviewService {
         Captured refreshed = new Captured(currentRaster, null, captured.specification(), captured.network(),
                 captured.sourceGeographic(), captured.sourceMetric(), captured.outputGrid(), captured.palette(),
                 captured.searchRadiusMeters(), captured.sampleStepMeters(), captured.settingsHash(),
-                captured.parameterHash(), captured.cleanup(), captured.engine(), captured.projectionCode());
+                captured.parameterHash(), captured.cleanup(), captured.geometryMode(), captured.engine(),
+                captured.projectionCode());
         if (!captureEvidence(captured, CancellationProbe.NONE).canonicalHash().equals(
                 captureEvidence(refreshed, CancellationProbe.NONE).canonicalHash())) {
             throw new IllegalStateException("Live preview visible evidence is stale");
@@ -596,7 +603,7 @@ public final class LiveBPreviewService {
 
     /**
      * Rejects unsupported live settings before acquisition, allowing managed credentials only when a
-     * caller explicitly selected the rendered visible source for this one read-only session.
+     * caller explicitly selected the rendered visible source for this one alignment session.
      */
     public static void requireSupported(SelectionContext selection, String projectionCode,
             AlignmentConfig config, boolean explicitVisibleSource) {
@@ -606,34 +613,31 @@ public final class LiveBPreviewService {
         }
         var heatmap = config.heatmap();
         if (!heatmap.trackerMode().capabilities().requiresEvidenceSnapshot()) {
-            throw new IllegalArgumentException("Experimental live preview supports only Corridor-aware A, "
+            throw new IllegalArgumentException("Modern alignment supports only Corridor-aware A, "
                     + "Probabilistic B, visible Hybrid A+B, or visible Directional Image");
         }
         if (heatmap.trackerMode() == TrackerMode.DIRECTIONAL_IMAGE && !explicitVisibleSource) {
             throw new IllegalArgumentException("Directional Image preview is visible-source only");
         }
-        if (heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
-            throw new IllegalArgumentException("Experimental live preview requires Precise Shape");
-        }
-        if (heatmap.simplifyEnabled()) {
-            throw new IllegalArgumentException("Experimental live preview requires simplification Off");
+        if (heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()) {
+            throw new IllegalArgumentException("Modern Precise Shape alignment requires simplification Off");
         }
         if ((heatmap.hasManagedAccessValues() && !explicitVisibleSource)
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
                 || heatmap.parallelWayAwareness()
                 || config.searchHalfWidthMetersOverride().isPresent()) {
-            throw new IllegalArgumentException("Experimental live preview does not support managed acquisition, expanded, or junction options");
+            throw new IllegalArgumentException("This modern alignment route cannot prove exact source lineage for expanded or alternate-source options");
         }
         if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
-            throw new IllegalArgumentException("Experimental live preview supports Color mapping only");
+            throw new IllegalArgumentException("This modern alignment route supports Color mapping only");
         }
         if (!"EPSG:3857".equals(projectionCode)) {
-            throw new IllegalArgumentException("Experimental live preview requires EPSG:3857");
+            throw new IllegalArgumentException("Modern alignment requires EPSG:3857");
         }
         Set<Long> identities = new LinkedHashSet<>();
         for (Node node : selection.way().getNodes()) {
             if (!identities.add(node.getUniqueId())) {
-                throw new IllegalArgumentException("Experimental live preview rejects repeated node identities");
+                throw new IllegalArgumentException("Modern alignment rejects repeated node identities");
             }
         }
     }
@@ -644,13 +648,12 @@ public final class LiveBPreviewService {
         }
         var heatmap = config.heatmap();
         if (!heatmap.trackerMode().capabilities().supportsManagedSource()
-                || heatmap.alignmentMode() != AlignmentMode.PRECISE_SHAPE
-                || heatmap.simplifyEnabled()
+                || heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()
                 || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
                 || heatmap.parallelWayAwareness()
                 || config.searchHalfWidthMetersOverride().isPresent()
                 || heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
-            throw new IllegalArgumentException("Managed experimental preview supports selected-palette Precise Shape only");
+            throw new IllegalArgumentException("Managed modern alignment supports the selected palette only");
         }
     }
 

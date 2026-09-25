@@ -6,10 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
+import java.util.Map;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
@@ -97,6 +102,24 @@ class V022PreviewStateTest {
         assertThrows(IllegalStateException.class, blocked::confirm);
         assertFalse(blocked.canApply());
         assertTrue(applicable("candidate-a").confirm().canApply());
+    }
+
+    @Test
+    void exactAllWayOverlayGeometryReplacesTheSingleRouteFallback() {
+        PrimitiveKey selected = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10);
+        PrimitiveKey incident = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 20);
+        List<EastNorth> fallback = List.of(new EastNorth(-1, -1), new EastNorth(-2, -2));
+        List<EastNorth> selectedPreview = List.of(new EastNorth(1, 1), new EastNorth(2, 2));
+        List<EastNorth> incidentPreview = List.of(new EastNorth(2, 2), new EastNorth(3, 4));
+
+        List<List<EastNorth>> rendered = PreviewOverlay.previewPolylines(
+                Map.of(selected, selectedPreview, incident, incidentPreview), fallback);
+
+        assertEquals(2, rendered.size());
+        assertTrue(rendered.contains(selectedPreview));
+        assertTrue(rendered.contains(incidentPreview));
+        assertFalse(rendered.contains(fallback));
+        assertEquals(List.of(fallback), PreviewOverlay.previewPolylines(Map.of(), fallback));
     }
 
     private static PreviewReviewState applicable(String candidateId) {

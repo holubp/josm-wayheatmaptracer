@@ -37,7 +37,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -442,14 +444,28 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
-    void unsupportedControlsFailExplicitlyBeforeRasterOrNetworkWork() throws Exception {
+    void moveExistingReachesTheCommonPipelineForSparseFinalAssessment() throws Exception {
         Fixture fixture = fixture();
-        ManagedHeatmapConfig unsupported = config().heatmap().withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
-        IllegalArgumentException[] failure = new IllegalArgumentException[1];
-        SwingUtilities.invokeAndWait(() -> failure[0] = assertThrows(IllegalArgumentException.class,
-                () -> new LiveBPreviewService().capture(fixture.dataSet(), fixture.selection(), raster(),
-                        new AlignmentConfig(unsupported, GeometryCleanupConfig.disabled()))));
-        assertTrue(failure[0].getMessage().contains("Precise Shape"));
+        ManagedHeatmapConfig moveExisting = config().heatmap()
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), raster(),
+                new AlignmentConfig(moveExisting, GeometryCleanupConfig.disabled())));
+
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+
+        assertEquals(AlignmentMode.MOVE_EXISTING_NODES, computed.request().geometryMode());
+        assertFalse(computed.pipeline().routes().isEmpty());
+        assertTrue(computed.pipeline().routes().get(0).quality().has(
+                FinalGeometryEvaluator.FindingCode.PRECISE_SHAPE_REQUIRED));
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                assessment.availability());
+        assertTrue(assessment.plan().isEmpty());
+        assertFalse(assessment.applyAvailable());
     }
 
     @Test

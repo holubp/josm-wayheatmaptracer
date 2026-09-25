@@ -17,6 +17,7 @@ import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -47,6 +48,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetw
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -226,10 +228,20 @@ class V022EndToEndTest {
             assertEquals(expected, ((DetachedNode) plans.get(policy).after()
                     .primitives().get(junction)).coordinate());
             assertTrue(plans.get(policy).finalPreviewWays().containsKey(receiver));
-            assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
-                    plans.get(policy).validation().disposition());
+            ValidationReport.Disposition expectedDisposition = policy
+                    == JunctionPolicy.LEGACY_BOUNDED_MOVE
+                    ? ValidationReport.Disposition.HARD_BLOCKED
+                    : ValidationReport.Disposition.REVIEW_REQUIRED;
+            assertEquals(expectedDisposition, plans.get(policy).validation().disposition(),
+                    () -> policy + ": " + plans.get(policy).validation().findingCodes());
             assertTrue(plans.get(policy).validation().findingCodes()
                     .contains("network-review-required"));
+            if (policy == JunctionPolicy.LEGACY_BOUNDED_MOVE) {
+                assertTrue(plans.get(policy).validation().findingCodes()
+                        .contains("final-topology:VERTEX_TOUCH"));
+                assertTrue(plans.get(policy).validation().findingCodes()
+                        .contains("final-topology:COLLINEAR_OVERLAP"));
+            }
         }
 
         List<PrimitiveKey> receiverBefore = fixture.receiver().getNodes().stream()
@@ -241,6 +253,22 @@ class V022EndToEndTest {
                         junction, north, receiverBefore.get(6), receiverBefore.get(7)),
                 ((DetachedWay) plans.get(JunctionPolicy.REATTACH).after()
                         .primitives().get(receiver)).nodeKeys());
+        ModernSingleWayEditPlanAdapter.Assessment reattachAssessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        results.get(JunctionPolicy.REATTACH), 0);
+        AlignmentEditPlan exactReattachPlan = reattachAssessment.plan().orElseThrow();
+        Map<PrimitiveKey, List<EastNorth>> projected =
+                reattachAssessment.projectFinalPreviewWays(point ->
+                        new EastNorth(point.longitudeDegrees(), point.latitudeDegrees()));
+        assertEquals(Set.of(results.get(JunctionPolicy.REATTACH).request().selectedWayKey(), receiver),
+                exactReattachPlan.finalPreviewWays().keySet());
+        assertEquals(exactReattachPlan.finalPreviewWays().keySet(), projected.keySet());
+        exactReattachPlan.finalPreviewWays().forEach((way, points) -> assertEquals(
+                points.stream().map(point -> new EastNorth(point.longitudeDegrees(),
+                        point.latitudeDegrees())).toList(), projected.get(way)));
+        assertEquals(exactReattachPlan.canonicalHash(),
+                PreviewReviewState.fromEditPlan("reattach", exactReattachPlan)
+                        .exactEditPlanHash());
         assertEquals(receiverBefore, fixture.receiver().getNodes().stream()
                 .map(node -> PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId())).toList());
     }
@@ -259,9 +287,64 @@ class V022EndToEndTest {
     void T168_newSelectedRouteCrossingIsRejectedAgainstTrueBeforeTopology() throws Exception {
         LiveBPreviewService.Computed computed = compute(junctionFixture(0.0, true),
                 JunctionPolicy.REATTACH);
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
-        assertTrue(failure.getMessage().contains("UNCONNECTED_AT_GRADE_CROSSING"));
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                assessment.availability());
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED,
+                assessment.plan().orElseThrow().validation().disposition());
+        assertFalse(assessment.applyAvailable());
+    }
+
+    @Test
+    void fixedPolicyFinalPreviewIsBlockedByCapturedSurroundingCrossing() throws Exception {
+        LiveBPreviewService.Computed computed = compute(junctionFixture(0.0, true),
+                JunctionPolicy.FIXED);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                assessment.availability(), () -> assessment.plan()
+                        .map(plan -> plan.validation().findingCodes().toString())
+                        .orElse(assessment.detail()));
+        assertTrue(assessment.plan().isPresent(),
+                "blocked final geometry must remain inspectable as an exact immutable plan");
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED,
+                assessment.plan().orElseThrow().validation().disposition());
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
+                .contains("final-topology:CROSSING"));
+    }
+
+    @Test
+    void movedSubrangeBoundaryCannotHideAReversedUnselectedContinuation() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(401, 0.0, longitude(-8));
+        Node boundary = loadedNode(402, 0.0, longitude(8));
+        Node continuation = loadedNode(403, latitude(1), longitude(6));
+        Way selected = loadedWay(410, west, boundary, continuation);
+        for (Node node : List.of(west, boundary, continuation)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(west, boundary), Set.of());
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, junctionRaster(), visibleConfig(), false,
+                new RecoveryPermissions(false, 7.0, 7.0,
+                        JunctionPolicy.LEGACY_BOUNDED_MOVE, false)));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
+                .contains("final-topology:CONTINUATION"), () -> assessment.plan()
+                        .orElseThrow().validation().findingCodes().toString());
+        assertFalse(assessment.applyAvailable());
     }
 
     @Test
@@ -557,8 +640,8 @@ class V022EndToEndTest {
         dataSet.addPrimitive(selected);
         dataSet.addPrimitive(receiver);
         if (crossing) {
-            Node crossingSouth = loadedNode(20, latitude(1), longitude(0));
-            Node crossingNorth = loadedNode(21, latitude(3), longitude(0));
+            Node crossingSouth = loadedNode(20, latitude(-10), longitude(1));
+            Node crossingNorth = loadedNode(21, latitude(10), longitude(1));
             dataSet.addPrimitive(crossingSouth);
             dataSet.addPrimitive(crossingNorth);
             dataSet.addPrimitive(loadedWay(12, crossingSouth, crossingNorth));

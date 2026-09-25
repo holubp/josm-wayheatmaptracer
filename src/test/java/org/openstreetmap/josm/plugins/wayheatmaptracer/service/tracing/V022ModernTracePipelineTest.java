@@ -83,6 +83,38 @@ class V022ModernTracePipelineTest {
     }
 
     @Test
+    void nearbyForkRemainsASeparateReviewRequiredBranchAfterFinalProcessing() {
+        Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);
+        TraceHypothesis main = new TraceHypothesis("main", "main-lineage",
+                List.of(new MetricPoint(0, 0), new MetricPoint(2, 0), new MetricPoint(4, 0)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED), 1.0, 0.55, Map.of());
+        TraceHypothesis fork = new TraceHypothesis("nearby-fork", "fork-lineage",
+                List.of(new MetricPoint(0, 0), new MetricPoint(2, 0.8), new MetricPoint(4, 1.2)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED), 1.1, 0.45, Map.of());
+        TraceEngine engine = (request, evidence, network, cancellation) ->
+                routes(request.engine(), main, fork);
+
+        ModernTracePipeline.Result result = new ModernTracePipeline(engine).run(fixture.request,
+                fixture.evidence, fixture.network, options(GeometryCleanupConfig.disabled()),
+                CancellationProbe.NONE);
+
+        assertEquals(TraceHypothesisSet.Status.AMBIGUOUS, result.inference().status());
+        assertEquals(Set.of("main-lineage", "fork-lineage"), result.routes().stream()
+                .map(route -> route.hypothesis().branchSignature()).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(result.routes().stream().allMatch(route -> route.quality().disposition()
+                == org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator
+                        .Disposition.REVIEW_REQUIRED));
+        assertTrue(result.routes().stream().noneMatch(V022ModernTracePipelineTest::hasHardBlock));
+        assertEquals(0.8, result.routes().stream()
+                .filter(route -> route.hypothesis().id().equals("nearby-fork"))
+                .findFirst().orElseThrow().hypothesis().points().get(1).yMeters(), 1.0e-9);
+    }
+
+    @Test
     void unavailableReviewRouteSurvivesAndOutranksFiniteHardBlockedSibling() {
         Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
         EvidenceSnapshot evidence = evidenceWithUnavailableCells(base, 5 * 15 + 6);

@@ -57,11 +57,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
@@ -221,7 +223,7 @@ public class AlignWayAction extends JosmAction {
     private final AlignmentService alignmentService = new AlignmentService();
     /** Map overlay used for candidate preview. */
     private final PreviewOverlay overlay = PreviewOverlay.getInstance();
-    /** Plugin-wide owner for experimental preview work, windows, and overlay cleanup. */
+    /** Plugin-wide owner for modern alignment work, windows, and overlay cleanup. */
     private final PreviewSessionController<LiveBPreviewService.Computed> livePreviewSession;
     /** Whether this action created and therefore closes its private fallback preview session. */
     private final boolean ownsLivePreviewSession;
@@ -232,7 +234,7 @@ public class AlignWayAction extends JosmAction {
             new OrdinaryModernAttemptAssembly();
     /** Optional shortcut-specific mode override, or null for configured behavior. */
     private final AlignmentMode forcedAlignmentMode;
-    /** Explicit session-local read-only modern-preview engine, or null for ordinary alignment. */
+    /** Explicit session-local modern engine, or null for ordinary alignment. */
     private final TrackerMode forcedLivePreviewEngine;
     /** Explicit selected managed-source preview, or false for visible and ordinary actions. */
     private final boolean forcedManagedPreview;
@@ -520,7 +522,7 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("Experimental {0} preview failed safely: {1}", engineLabel,
+                    showError(tr("{0} alignment preview failed safely: {1}", engineLabel,
                             current.failureReason()));
                 }
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
@@ -639,7 +641,7 @@ public class AlignWayAction extends JosmAction {
             if (closed) {
                 overlay.hide();
                 PluginLog.endSlideSession();
-                showError(tr("Experimental {0} preview was rejected: {1}",
+                showError(tr("{0} alignment preview was rejected: {1}",
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
             }
         }
@@ -674,6 +676,7 @@ public class AlignWayAction extends JosmAction {
         ModernSingleWayEditPlanAdapter planAdapter = new ModernSingleWayEditPlanAdapter();
         AlignmentEditPlan[] plan = {null};
         PreviewReviewState[] review = {null};
+        ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
         boolean[] applying = {false};
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
@@ -709,26 +712,57 @@ public class AlignWayAction extends JosmAction {
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     tracingAtCapture, computed.captured());
             CenterlineCandidate candidate = candidates.get(index);
-            AlignmentResult display = liveBDisplayResult(selection, computed, candidates, candidate);
             FinalGeometryEvaluator.Disposition disposition =
                     computed.pipeline().routes().get(index).quality().disposition();
-            overlay.show(selection, display, candidate, switch (disposition) {
+            plan[0] = null;
+            review[0] = null;
+            assessment[0] = null;
+            ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
+            if (preflight == ModernApplyPreflight.READY) {
+                assessment[0] = planAdapter.assess(computed, index);
+                if (assessment[0].plan().isPresent()) {
+                    plan[0] = assessment[0].plan().orElseThrow();
+                    review[0] = PreviewReviewState.fromEditPlan(candidate.id(), plan[0]);
+                }
+            }
+            AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
+                    candidate, plan[0]);
+            ValidationReport.Disposition displayedDisposition = plan[0] == null
+                    ? switch (disposition) {
+                        case APPLICABLE -> ValidationReport.Disposition.APPLICABLE;
+                        case REVIEW_REQUIRED -> ValidationReport.Disposition.REVIEW_REQUIRED;
+                        case HARD_BLOCKED -> ValidationReport.Disposition.HARD_BLOCKED;
+                    } : plan[0].validation().disposition();
+            Map<PrimitiveKey, List<EastNorth>> projectedPreview =
+                    assessment[0] == null || assessment[0].plan().isEmpty()
+                        ? Map.of()
+                        : assessment[0].projectFinalPreviewWays(point -> ProjectionRegistry.getProjection()
+                                .latlon2eastNorth(new LatLon(point.latitudeDegrees(),
+                                        point.longitudeDegrees())));
+            overlay.show(selection, display, candidate, switch (displayedDisposition) {
                 case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
                 case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
-            }, false, PluginPreferences.isDebugEnabled());
-            quality.setText(liveBQualitySummary(computed, index));
+            }, false, PluginPreferences.isDebugEnabled(), projectedPreview);
+            String availability = assessment[0] == null ? preflight.name()
+                    : assessment[0].detail();
+            List<String> reasons = plan[0] == null
+                    ? computed.pipeline().routes().get(index).quality().findings().stream()
+                            .map(finding -> finding.code().name()).toList()
+                    : plan[0].validation().findingCodes();
+            String finalDisposition = plan[0] == null ? disposition.name()
+                    : plan[0].validation().disposition().name();
+            String sourceLabel = computed.captured().managedRaster() == null
+                    ? tr("visible layer") : tr("managed tiles");
+            quality.setText(liveBQualitySummary(computed, index) + "\n\n"
+                    + modernPreviewSummary(livePreviewEngineLabel(computed.request().engine()),
+                            sourceLabel, finalDisposition,
+                            plan[0] == null ? 0 : plan[0].affectedWayKeys().size(), reasons,
+                            review[0] != null && review[0].confirmed(), availability));
             quality.setCaretPosition(0);
-            plan[0] = null;
-            review[0] = null;
-            if (supportsModernVisibleApply(computed.captured(), slideConfig)) {
-                try {
-                    plan[0] = planAdapter.adapt(computed, index);
-                    review[0] = PreviewReviewState.fromEditPlan(candidate.id(), plan[0]);
-                } catch (IllegalArgumentException unsupported) {
-                    PluginLog.verbose("Modern Apply is unavailable for candidate %s: %s", candidate.id(),
-                            unsupported.getMessage());
-                }
+            if (assessment[0] != null && !assessment[0].applyAvailable()) {
+                PluginLog.verbose("Modern Apply is unavailable for candidate %s: %s",
+                        candidate.id(), assessment[0].detail());
             }
             confirm.setEnabled(review[0] != null && review[0].disposition()
                     == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED);
@@ -743,7 +777,7 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("Experimental {0} preview became stale: {1}",
+                    showError(tr("{0} alignment preview became stale: {1}",
                             livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
                 }
             }
@@ -775,9 +809,28 @@ public class AlignWayAction extends JosmAction {
                 review[0] = review[0].confirm();
                 confirm.setEnabled(false);
                 apply.setEnabled(true);
+                int index = Math.max(0, choices.getSelectedIndex());
+                CenterlineCandidate candidate = candidates.get(index);
+                AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
+                        candidate, plan[0]);
+                Map<PrimitiveKey, List<EastNorth>> projectedPreview =
+                        assessment[0].projectFinalPreviewWays(point -> ProjectionRegistry.getProjection()
+                                .latlon2eastNorth(new LatLon(point.latitudeDegrees(),
+                                        point.longitudeDegrees())));
+                overlay.show(selection, display, candidate,
+                        CandidateAssessment.Disposition.REVIEW_REQUIRED, true,
+                        PluginPreferences.isDebugEnabled(), projectedPreview);
+                quality.setText(liveBQualitySummary(computed, index) + "\n\n"
+                        + modernPreviewSummary(livePreviewEngineLabel(computed.request().engine()),
+                                computed.captured().managedRaster() == null
+                                        ? tr("visible layer") : tr("managed tiles"),
+                                plan[0].validation().disposition().name(),
+                                plan[0].affectedWayKeys().size(),
+                                plan[0].validation().findingCodes(), true,
+                                tr("review confirmed; Apply available")));
             } catch (RuntimeException exception) {
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
-                showError(tr("Experimental preview became stale: {0}", exception.getMessage()));
+                showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
             }
         });
         apply.addActionListener(event -> {
@@ -794,7 +847,12 @@ public class AlignWayAction extends JosmAction {
                 int index = Math.max(0, choices.getSelectedIndex());
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured());
-                AlignmentEditPlan currentPlan = planAdapter.adapt(computed, index);
+                ModernSingleWayEditPlanAdapter.Assessment currentAssessment =
+                        planAdapter.assess(computed, index);
+                if (!currentAssessment.applyAvailable()) {
+                    throw new IllegalStateException(currentAssessment.detail());
+                }
+                AlignmentEditPlan currentPlan = currentAssessment.plan().orElseThrow();
                 PreviewReviewState currentReview = PreviewReviewState.fromEditPlan(candidates.get(index).id(), currentPlan);
                 if (review[0] == null || !(review[0].equals(currentReview)
                         || review[0].matches(currentReview)) || !review[0].canApply()) {
@@ -810,11 +868,11 @@ public class AlignWayAction extends JosmAction {
                             : new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
                                         slideConfig, liveLayerIdentity(imageryLayer))),
-                        tr("Apply modern visible alignment")));
+                        tr("Apply modern alignment")));
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
             } catch (RuntimeException exception) {
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
-                showError(tr("Experimental Apply failed: {0}", exception.getMessage()));
+                showError(tr("Alignment Apply failed: {0}", exception.getMessage()));
             }
         });
         close.addActionListener(event -> dialog.dispatchEvent(
@@ -838,32 +896,66 @@ public class AlignWayAction extends JosmAction {
         return Objects.requireNonNull(engine, "engine").capabilities().supportsManagedSource();
     }
 
-    static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
+    /** Typed configuration-only gate used before exact route-to-plan assessment. */
+    enum ModernApplyPreflight {
+        READY,
+        CLEANUP_UNAVAILABLE_FOR_ENGINE,
+        SOURCE_LINEAGE_UNAVAILABLE,
+        CONFIGURATION_UNSUPPORTED
+    }
+
+    static ModernApplyPreflight modernApplyPreflight(LiveBPreviewService.Captured captured,
             AlignmentConfig config) {
         if (captured == null || config == null
-                || !"EPSG:3857".equals(captured.projectionCode()) || !config.cleanup().isDisabled()) {
-            return false;
+                || !"EPSG:3857".equals(captured.projectionCode())) {
+            return ModernApplyPreflight.CONFIGURATION_UNSUPPORTED;
         }
         ManagedHeatmapConfig heatmap = config.effectiveHeatmap();
-        return (captured.engine() == TrackerMode.PROBABILISTIC
-                    || captured.engine() == TrackerMode.CORRIDOR_AWARE
-                    || captured.engine() == TrackerMode.HYBRID
-                    || captured.engine() == TrackerMode.DIRECTIONAL_IMAGE)
-                && heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE
-                && heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
-                && !heatmap.simplifyEnabled() && !heatmap.adjustJunctionNodes()
-                && !heatmap.multiColorDetection() && !heatmap.aggregateAllColorSchemes();
+        if (captured.engine() == TrackerMode.PROBABILISTIC && !config.cleanup().isDisabled()) {
+            return ModernApplyPreflight.CLEANUP_UNAVAILABLE_FOR_ENGINE;
+        }
+        if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING
+                || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()) {
+            return ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE;
+        }
+        boolean engineSupported = captured.engine().capabilities().requiresEvidenceSnapshot();
+        boolean geometrySupported = captured.geometryMode() == heatmap.alignmentMode()
+                && (heatmap.alignmentMode() == AlignmentMode.MOVE_EXISTING_NODES
+                    || !heatmap.simplifyEnabled());
+        return engineSupported && geometrySupported
+                ? ModernApplyPreflight.READY : ModernApplyPreflight.CONFIGURATION_UNSUPPORTED;
+    }
+
+    static boolean supportsModernVisibleApply(LiveBPreviewService.Captured captured,
+            AlignmentConfig config) {
+        return modernApplyPreflight(captured, config) == ModernApplyPreflight.READY;
+    }
+
+    static String modernPreviewSummary(String engine, String source, String disposition,
+            int affectedWayCount, List<String> reasons, boolean confirmed,
+            String applyAvailability) {
+        String reasonText = reasons == null || reasons.isEmpty() ? tr("none")
+                : String.join(", ", reasons);
+        return tr("Engine: {0}\nSource: {1}\nDisposition: {2}\nAffected ways: {3}"
+                        + "\nReasons: {4}\nConfirmation: {5}\nApply: {6}",
+                engine, source, disposition, affectedWayCount, reasonText,
+                confirmed ? tr("confirmed") : tr("not confirmed"), applyAvailability);
     }
 
     private AlignmentResult liveBDisplayResult(SelectionContext selection,
             LiveBPreviewService.Computed computed, List<CenterlineCandidate> candidates,
-            CenterlineCandidate selected) {
+            CenterlineCandidate selected, AlignmentEditPlan exactPlan) {
         List<EastNorth> source = computed.captured().sourceGeographic().stream()
                 .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                         new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
                 .toList();
+        List<EastNorth> preview = exactPlan == null ? selected.finalPreviewPoints()
+                : exactPlan.finalPreviewWays().get(exactPlan.selectedWayKey()).stream()
+                        .map(point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                                new LatLon(point.latitudeDegrees(), point.longitudeDegrees())))
+                        .toList();
         return new AlignmentResult(selection, null, candidates, source,
-                selected.finalPreviewPoints(), List.of(), null, null, List.of(), List.of());
+                preview, List.of(), null, null, List.of(), List.of());
     }
 
     private String liveBQualitySummary(LiveBPreviewService.Computed computed, int index) {
@@ -929,7 +1021,7 @@ public class AlignWayAction extends JosmAction {
             PluginLog.verbose("Using one-shot alignment mode override: %s.", forcedAlignmentMode);
         }
         if (forcedLivePreviewEngine != null) {
-            PluginLog.verbose("Using explicit read-only visible-source modern preview: %s.",
+            PluginLog.verbose("Using explicit visible-source modern alignment: %s.",
                     forcedLivePreviewEngine);
         }
         return effectiveConfig(config, forcedAlignmentMode, forcedLivePreviewEngine);
@@ -950,7 +1042,7 @@ public class AlignWayAction extends JosmAction {
         Objects.requireNonNull(requiredVisibleSource, "requiredVisibleSource");
         Objects.requireNonNull(ordinarySource, "ordinarySource");
         return explicitVisibleSource ? Objects.requireNonNull(requiredVisibleSource.get(),
-                "Experimental visible preview requires a current rendered heatmap layer")
+                "Visible alignment requires a current rendered heatmap layer")
                 : ordinarySource.get();
     }
 
@@ -1056,9 +1148,9 @@ public class AlignWayAction extends JosmAction {
             TrackerMode forcedLivePreviewEngine, boolean managedSource) {
         if (forcedLivePreviewEngine != null) {
             return managedSource
-                ? tr("Experimental Engine {0} Managed Preview (Read Only)",
+                ? tr("Engine {0} Managed Alignment",
                         livePreviewEngineShortLabel(forcedLivePreviewEngine))
-                : tr("Experimental Engine {0} Visible Preview (Read Only)",
+                : tr("Engine {0} Visible Alignment",
                         livePreviewEngineShortLabel(forcedLivePreviewEngine));
         }
         if (forcedAlignmentMode == AlignmentMode.PRECISE_SHAPE) {
@@ -1094,7 +1186,7 @@ public class AlignWayAction extends JosmAction {
             String engine = livePreviewEngineShortLabel(forcedLivePreviewEngine).toLowerCase(Locale.ROOT);
             String source = managedSource ? "managed" : "visible";
             return Shortcut.registerShortcut("wayheatmaptracer:experimental-" + engine + "-" + source + "-preview",
-                    tr("WayHeatmapTracer: Experimental Engine {0} {1} Preview",
+                    tr("WayHeatmapTracer: Engine {0} {1} Alignment",
                             livePreviewEngineShortLabel(forcedLivePreviewEngine),
                             managedSource ? tr("Managed") : tr("Visible")),
                     KeyEvent.VK_UNDEFINED, Shortcut.NONE);

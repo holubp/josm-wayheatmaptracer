@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.data.UndoRedoHandler;
+import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -35,6 +36,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -48,6 +50,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -124,6 +127,63 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 .map(computed.evidence().coordinateFrame()::toGeographic)
                 .map(point -> new LatLon(point.latitudeDegrees(), point.longitudeDegrees())).toList(),
             preview.subList(1, preview.size() - 1));
+    }
+
+    @Test
+    void cleanupEnabledAProducesAnExactImmutablePlanWhileBCleanupIsTypedUnavailable()
+            throws Exception {
+        Fixture fixture = fixture();
+        GeometryCleanupConfig cleanup = GeometryCleanupPreset.BALANCED
+                .apply(org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode.REDUCE_POINTS_ONLY);
+        LiveBPreviewService.Computed engineA = compute(fixture, TrackerMode.CORRIDOR_AWARE,
+                new AlignmentConfig(config(TrackerMode.CORRIDOR_AWARE).heatmap(), cleanup));
+        LiveBPreviewService.Computed engineB = compute(fixture, TrackerMode.PROBABILISTIC,
+                new AlignmentConfig(config(TrackerMode.PROBABILISTIC).heatmap(), cleanup));
+        ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
+
+        ModernSingleWayEditPlanAdapter.Assessment a = adapter.assess(engineA, 0);
+        ModernSingleWayEditPlanAdapter.Assessment b = adapter.assess(engineB, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                a.availability());
+        assertTrue(a.plan().isPresent());
+        assertEquals(engineA.pipeline().routes().get(0).hypothesis().points().stream()
+                        .map(engineA.evidence().coordinateFrame()::toGeographic).toList(),
+                a.plan().orElseThrow().finalPreviewWays().get(engineA.request().selectedWayKey()));
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.CLEANUP_UNAVAILABLE_FOR_ENGINE,
+                b.availability());
+        assertTrue(b.plan().isEmpty());
+    }
+
+    @Test
+    void projectedPreviewContainsExactlyEveryImmutablePlanWay() throws Exception {
+        LiveBPreviewService.Computed computed = compute(fixture(), TrackerMode.CORRIDOR_AWARE);
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+
+        Map<PrimitiveKey, List<EastNorth>> projected = assessment.projectFinalPreviewWays(point ->
+                new EastNorth(point.longitudeDegrees(), point.latitudeDegrees()));
+
+        assertEquals(plan.finalPreviewWays().keySet(), projected.keySet());
+        plan.finalPreviewWays().forEach((way, points) -> assertEquals(points.stream()
+                .map(point -> new EastNorth(point.longitudeDegrees(), point.latitudeDegrees())).toList(),
+                projected.get(way)));
+        assertThrows(UnsupportedOperationException.class,
+                () -> projected.put(computed.request().selectedWayKey(), List.of()));
+        assertThrows(UnsupportedOperationException.class,
+                () -> projected.values().iterator().next().add(new EastNorth(0.0, 0.0)));
+        PreviewReviewState review = PreviewReviewState.fromEditPlan("candidate", plan);
+        assertEquals(plan.canonicalHash(), review.exactEditPlanHash());
+        assertTrue(review.confirm().confirmed());
+    }
+
+    @Test
+    void selectedSubrangeContinuationRejectsAReversalAtItsStoredFinalBoundary() {
+        assertTrue(ModernSingleWayEditPlanAdapter.continuationReverses(
+                new MetricPoint(-2, 0), new MetricPoint(0, 0), new MetricPoint(-1, 0)));
+        assertFalse(ModernSingleWayEditPlanAdapter.continuationReverses(
+                new MetricPoint(-2, 0), new MetricPoint(0, 0), new MetricPoint(1, 0)));
     }
 
     @Test
@@ -241,8 +301,17 @@ class V022ModernSingleWayEditPlanAdapterTest {
             route.quality().meanImageCenterCost(), route.quality().bendPreservingRoughness());
         ModernTracePipeline.Route blockedRoute = copy(route, route.pointIds(),
             route.assignments(), route.sourceOwnership(), blocked);
-        assertThrows(IllegalArgumentException.class,
-            () -> adapter.adapt(withRoute(computed, blockedRoute), 0));
+        AlignmentEditPlan blockedPlan = adapter.adapt(withRoute(computed, blockedRoute), 0);
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.HARD_BLOCKED,
+                blockedPlan.validation().disposition());
+        assertTrue(blockedPlan.validation().findingCodes()
+                .contains("modern-final:PROTECTED_ASSIGNMENT_MISMATCH"));
+        ModernSingleWayEditPlanAdapter.Assessment blockedAssessment =
+                adapter.assess(withRoute(computed, blockedRoute), 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED,
+                blockedAssessment.availability());
+        assertTrue(blockedAssessment.plan().isPresent());
+        assertFalse(blockedAssessment.applyAvailable());
         assertThrows(IllegalArgumentException.class, () -> adapter.adapt(computed, -1));
         assertThrows(IllegalArgumentException.class,
             () -> adapter.adapt(computed, computed.pipeline().routes().size()));
@@ -281,7 +350,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
             source.raster(), source.managedRaster(), source.specification(), source.network(),
             source.sourceGeographic(), source.sourceMetric(), source.outputGrid(), source.palette(),
             source.searchRadiusMeters(), source.sampleStepMeters(), settingsHash, parameterHash, source.cleanup(),
-            source.engine(), source.projectionCode());
+            source.geometryMode(), source.engine(), source.projectionCode());
         return new LiveBPreviewService.Computed(captured, computed.evidence(),
             computed.request(), computed.pipeline());
     }
@@ -317,10 +386,15 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
     private static LiveBPreviewService.Computed compute(Fixture fixture, TrackerMode mode)
             throws Exception {
+        return compute(fixture, mode, config(mode));
+    }
+
+    private static LiveBPreviewService.Computed compute(Fixture fixture, TrackerMode mode,
+            AlignmentConfig config) throws Exception {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
-            fixture.dataSet(), fixture.selection(), raster(), config(mode),
+            fixture.dataSet(), fixture.selection(), raster(), config,
             mode == TrackerMode.DIRECTIONAL_IMAGE));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
         assertFalse(computed.pipeline().routes().isEmpty(),
