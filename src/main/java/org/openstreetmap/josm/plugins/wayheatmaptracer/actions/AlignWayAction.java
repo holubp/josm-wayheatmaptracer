@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
@@ -81,6 +82,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSin
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
@@ -89,6 +92,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ReplaceWaySegmentCommand;
@@ -944,23 +948,31 @@ public class AlignWayAction extends JosmAction {
                 NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
                         dataSet, computed.captured().specification());
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, currentPlan,
-                        () -> currentPlan.before().sourceGeneration());
+                        computed.captured().managedRaster() != null
+                            ? () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue()
+                            : () -> currentPlan.before().sourceGeneration());
+                ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
+                    : new ManagedSourceReceipt(previewSourceOwner, computed.captured(), slideConfig.heatmap(),
+                        ManagedTileRuntime::initializedCoordinator, PluginPreferences::load,
+                        () -> ProjectionRegistry.getProjection().toCode());
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
                         computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
-                                computed.captured(), () -> requireLiveBSourceOwnerCurrent(dataSet,
-                                    imageryLayer, slideConfig, persistedSlideConfig, tracingAtCapture,
-                                    computed.captured(), previewSourceOwner),
-                                message -> SwingUtilities.invokeLater(() ->
-                                        showError(tr("Alignment Redo failed: {0}", message))))
+                                computed.captured(), () -> {
+                                    managedReceipt.requireCurrent();
+                                    requireLiveBSourceOwnerCurrent(dataSet,
+                                        imageryLayer, slideConfig, persistedSlideConfig, tracingAtCapture,
+                                        computed.captured(), previewSourceOwner);
+                                },
+                                redoFailureReporter(this::showError))
                             : new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
                                         slideConfig, liveLayerIdentity(imageryLayer),
                                         computed.captured().specification().permissions()),
+                                visibleSourceEpoch(imageryLayer),
                                 () -> requireLiveBSourceOwnerCurrent(dataSet, imageryLayer, slideConfig,
                                         persistedSlideConfig, tracingAtCapture, computed.captured(), null),
-                                message -> SwingUtilities.invokeLater(() ->
-                                        showError(tr("Alignment Redo failed: {0}", message)))),
+                                redoFailureReporter(this::showError)),
                         tr("Apply modern alignment"));
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, "applied", index, currentPlan,
@@ -1134,6 +1146,24 @@ public class AlignWayAction extends JosmAction {
         return layer.getClass().getName() + "@"
                 + Integer.toUnsignedString(System.identityHashCode(layer)) + ":"
                 + safeLayerNameIdentity(layer.getName());
+    }
+
+    static VisibleSourceEpoch visibleSourceEpoch(ImageryLayer layer) {
+        if (layer instanceof ManagedHeatmapLayer managedLayer) {
+            return managedLayer.sourceEpoch();
+        }
+        return null;
+    }
+
+    static Consumer<String> redoFailureReporter(Consumer<String> showError) {
+        Objects.requireNonNull(showError, "showError");
+        return reason -> {
+            String safeReason = "This visible source cannot verify unchanged tiles for Redo; run a new alignment."
+                    .equals(reason)
+                ? "This visible source cannot verify unchanged tiles for Redo; run a new alignment."
+                : "The captured source or network changed; recompute alignment before applying.";
+            SwingUtilities.invokeLater(() -> showError.accept(tr("Alignment Redo failed: {0}", safeReason)));
+        };
     }
 
     static String safeLayerNameIdentity(String name) {

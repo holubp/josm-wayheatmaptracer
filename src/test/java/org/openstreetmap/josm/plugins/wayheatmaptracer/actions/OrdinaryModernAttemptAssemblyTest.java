@@ -225,7 +225,8 @@ class OrdinaryModernAttemptAssemblyTest {
         return new ManagedModernPreviewSource.Raster(image,
                 new boolean[] {true, true, true, true},
                 SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
-                "hot", 15, sourceIdentity);
+                "hot", 15, sourceIdentity,
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L));
     }
 
     private static AlignmentConfig config(TrackerMode engine) {

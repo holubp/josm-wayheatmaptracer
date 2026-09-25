@@ -34,8 +34,12 @@ public final class ManagedSourceLockedApplyValidator implements LockedApplyValid
 
     @Override public String datasetIdentity() { return network.datasetIdentity(); }
 
+    @Override public Runnable prepareExecution(DataSet dataSet, boolean redo) {
+        return requireSourceOwnerCurrent;
+    }
+
     @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean firstExecution) {
-        network.validateLocked(dataSet, plan, false);
+        network.validateLocked(dataSet, plan, true);
         requireSourceOwnerCurrent.run();
         previewService.requireCurrent(dataSet, captured);
     }

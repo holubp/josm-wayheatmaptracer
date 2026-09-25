@@ -48,11 +48,11 @@ public final class ManagedModernPreviewSource {
 
     public record Raster(BufferedImage image, boolean[] validity,
             SupportedInputRasterTransform transform, String palette, int zoom,
-            String sourceIdentity) {
+            String sourceIdentity, ManagedTileGeneration generation) {
         public Raster {
             if (image == null || validity == null || validity.length != image.getWidth() * image.getHeight()
                     || transform == null || palette == null || palette.isBlank() || zoom < 0
-                    || sourceIdentity == null || sourceIdentity.isBlank()) {
+                    || sourceIdentity == null || sourceIdentity.isBlank() || generation == null) {
                 throw new IllegalArgumentException("Managed preview raster is incomplete");
             }
             validity = validity.clone();
@@ -138,7 +138,7 @@ public final class ManagedModernPreviewSource {
         double originY = bounds.minimumY() * (double) TILE_SIZE;
         return new Raster(mosaic, valid, SupportedInputRasterTransform.webMercator(request.zoom(),
                 originX / 2.0, originY / 2.0, 2.0), request.palette(), request.zoom(),
-                request.sourceIdentity());
+                request.sourceIdentity(), request.generation());
     }
 
     private void requireActiveGeneration(Request request) {

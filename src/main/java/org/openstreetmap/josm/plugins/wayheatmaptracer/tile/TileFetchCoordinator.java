@@ -199,6 +199,11 @@ public final class TileFetchCoordinator implements AutoCloseable {
         return generation != null && generation.value() == activeGeneration;
     }
 
+    /** Returns the factual currently active generation without starting tile work. */
+    public long activeGenerationValue() {
+        return activeGeneration;
+    }
+
     /**
      * Schedules one non-blocking eligibility callback; closed coordinators ignore it.
      *

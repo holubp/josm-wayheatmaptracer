@@ -65,6 +65,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 
 /** Detached live producer for the supported modern alignment engines. */
 public final class LiveBPreviewService {
@@ -76,7 +77,16 @@ public final class LiveBPreviewService {
     public record VisibleRaster(int width, int height, int[] argb,
             double minimumEast, double minimumNorth, double maximumEast, double maximumNorth,
             double projectionUnitsPerViewPixel, double groundMetersPerViewPixel,
-            OptionalDouble nativePitchMeters, String sourceIdentity, String projectionCode) {
+            OptionalDouble nativePitchMeters, String sourceIdentity, String projectionCode,
+            VisibleSourceEpoch.Receipt sourceReceipt) {
+        public VisibleRaster(int width, int height, int[] argb,
+                double minimumEast, double minimumNorth, double maximumEast, double maximumNorth,
+                double projectionUnitsPerViewPixel, double groundMetersPerViewPixel,
+                OptionalDouble nativePitchMeters, String sourceIdentity, String projectionCode) {
+            this(width, height, argb, minimumEast, minimumNorth, maximumEast, maximumNorth,
+                projectionUnitsPerViewPixel, groundMetersPerViewPixel, nativePitchMeters,
+                sourceIdentity, projectionCode, null);
+        }
         public VisibleRaster {
             nativePitchMeters = nativePitchMeters == null ? OptionalDouble.empty() : nativePitchMeters;
             long pixels = (long) width * height;
@@ -459,7 +469,8 @@ public final class LiveBPreviewService {
         String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
-                "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)), 0L, way, range,
+                "josm-dataset-" + Integer.toUnsignedString(System.identityHashCode(dataSet)),
+                Math.max(0L, config.heatmap().cacheBuster()), way, range,
                 frame, authority.collisionEnvelope(), authority.editRegion(),
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
@@ -477,7 +488,8 @@ public final class LiveBPreviewService {
     /** Attaches immutable native pixels to an EDT-captured seed without retaining credentials. */
     public Captured attachManagedRaster(ManagedCaptureSeed seed, ManagedModernPreviewSource.Raster raster) {
         if (seed == null || raster == null || !seed.palette().equals(raster.palette())
-                || !seed.sourceIdentity().equals(raster.sourceIdentity())) {
+                || !seed.sourceIdentity().equals(raster.sourceIdentity())
+                || seed.specification().sourceGeneration() != raster.generation().value()) {
             throw new IllegalArgumentException("Managed raster does not match its captured seed");
         }
         MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
@@ -604,7 +616,7 @@ public final class LiveBPreviewService {
         }
         VisibleRaster capturedRaster = captured.raster();
         if (!sameVisibleFrame(capturedRaster, currentRaster)) {
-            throw new IllegalStateException("Live preview visible source frame is stale");
+            throw new IllegalStateException("Live preview visible source frame evidence is stale");
         }
         requireCurrent(dataSet, captured, currentRaster.sourceIdentity(), currentRaster.projectionCode());
         Captured refreshed = new Captured(currentRaster, null, captured.specification(), captured.network(),
@@ -630,7 +642,8 @@ public final class LiveBPreviewService {
                         current.groundMetersPerViewPixel()) == 0
                 && captured.nativePitchMeters().equals(current.nativePitchMeters())
                 && captured.sourceIdentity().equals(current.sourceIdentity())
-                && captured.projectionCode().equals(current.projectionCode());
+                && captured.projectionCode().equals(current.projectionCode())
+                && java.util.Arrays.equals(captured.argb(), current.argb());
     }
 
     /** Revalidates network, layer identity, and projection before publication or candidate switch. */

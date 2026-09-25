@@ -255,7 +255,8 @@ class V022LiveBPreviewServiceTest {
                 new ManagedModernPreviewSource.Raster(image,
                         new boolean[] {true, true, true, true},
                         SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
-                        "hot", 15, "managed-test"));
+                        "hot", 15, "managed-test",
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
 
         assertEquals("EPSG:3857", captured.projectionCode());
         try {
@@ -371,7 +372,8 @@ class V022LiveBPreviewServiceTest {
                 new ManagedModernPreviewSource.Raster(image,
                         new boolean[] {true, true, true, true},
                         SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
-                        "hot", 15, "managed-recovery-test"));
+                        "hot", 15, "managed-recovery-test",
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
 
         LiveBPreviewService.Computed computed = service.compute(captured, CancellationProbe.NONE);
 

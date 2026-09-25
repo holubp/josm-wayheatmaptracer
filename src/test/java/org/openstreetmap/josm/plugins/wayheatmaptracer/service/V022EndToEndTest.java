@@ -102,7 +102,8 @@ class V022EndToEndTest {
         LiveBPreviewService.Captured managed = service.attachManagedRaster(managedSeed[0],
                 new ManagedModernPreviewSource.Raster(image, new boolean[] {true, true, true, true},
                         SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0), "hot", 15,
-                        "managed-test"));
+                        "managed-test",
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
 
         assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER,
                 service.captureEvidence(visible[0], CancellationProbe.NONE).fields()
@@ -140,7 +141,8 @@ class V022EndToEndTest {
                 new ManagedModernPreviewSource.Raster(new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB),
                         new boolean[] {true, true, true, true},
                         SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0), "hot", 15,
-                        "managed-cleanup"));
+                        "managed-cleanup",
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
         assertEquals(cleanup, managedSeed[0].cleanup());
         assertEquals(cleanup, managed.cleanup());
         LiveBPreviewService.Captured[] off = new LiveBPreviewService.Captured[1];

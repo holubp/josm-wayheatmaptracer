@@ -246,7 +246,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
                     image, valid, SupportedInputRasterTransform.webMercator(
                             15, worldPixelsAtEquator - sourceHalfWidthWorldPixels,
                             worldPixelsAtEquator - sourceHalfWidthWorldPixels, 2.0),
-                    "hot", 15, "task-four-matrix"));
+                    "hot", 15, "task-four-matrix",
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
         } else {
             LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
             SwingUtilities.invokeAndWait(() -> visible[0] = service.capture(fixture.dataSet(),
@@ -437,7 +438,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
             new VisibleSourceLockedApplyValidator(network, new LiveBPreviewService(), computed.captured(),
                 V022ModernSingleWayEditPlanAdapterTest::rasterWithChangedEvidence,
-                () -> { }, message -> { }),
+                null, () -> { }, message -> { }),
             "Apply modern visible alignment");
         List<String> before = state(fixture);
 

@@ -116,8 +116,13 @@ public final class AlignmentService {
         BufferedImage raster,
         ProjectionBounds bounds,
         double projectionUnitsPerViewPixel,
-        OptionalDouble nativePitchMeters
+        OptionalDouble nativePitchMeters,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt sourceReceipt
     ) {
+        VisibleCaptureFrame(BufferedImage raster, ProjectionBounds bounds,
+                double projectionUnitsPerViewPixel, OptionalDouble nativePitchMeters) {
+            this(raster, bounds, projectionUnitsPerViewPixel, nativePitchMeters, null);
+        }
         VisibleCaptureFrame {
             nativePitchMeters = nativePitchMeters == null ? OptionalDouble.empty() : nativePitchMeters;
             if (raster == null || bounds == null
@@ -233,11 +238,18 @@ public final class AlignmentService {
         }
         return captureLiveBVisibleRaster(selection, slideConfig, sourceIdentity, permissions,
                 (source, halfWidth) -> {
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch epoch =
+                        imageryLayer instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer managed
+                            ? managed.sourceEpoch() : null;
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch.Receipt before =
+                        epoch == null ? null : epoch.captureStable();
                     RenderedCapture capture = captureVisibleHeatmap(
                             imageryLayer, mapView, source, halfWidth);
+                    if (epoch != null) epoch.requireCurrent(before);
                     return new VisibleCaptureFrame(capture.raster(), capture.bounds(),
                             capture.projectionUnitsPerViewPixel(),
-                            capture.sourceResolution().metersPerPixel());
+                            capture.sourceResolution().metersPerPixel(),
+                            epoch == null ? null : epoch.captureStable());
                 });
     }
 
@@ -265,7 +277,7 @@ public final class AlignmentService {
                 bounds.minEast, bounds.minNorth, bounds.maxEast, bounds.maxNorth,
                 capture.projectionUnitsPerViewPixel(),
                 groundMetersPerViewPixel, capture.nativePitchMeters(),
-                sourceIdentity, ProjectionRegistry.getProjection().toCode());
+                sourceIdentity, ProjectionRegistry.getProjection().toCode(), capture.sourceReceipt());
     }
 
     /**

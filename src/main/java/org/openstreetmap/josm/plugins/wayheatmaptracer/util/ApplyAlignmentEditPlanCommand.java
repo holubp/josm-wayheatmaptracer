@@ -152,38 +152,65 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         if (applied) {
             throw new IllegalStateException("Alignment edit plan is already applied");
         }
-        getAffectedDataSet().update(() -> {
-            if (lockedValidator != null) {
-                try {
-                    lockedValidator.validateLocked(getAffectedDataSet(), plan, true);
-                } catch (RuntimeException failure) {
-                    if (appliedSuccessfullyBefore) {
-                        try {
-                            lockedValidator.reportRejectedRedo(failure);
-                        } catch (RuntimeException reportingFailure) {
-                            failure.addSuppressed(reportingFailure);
-                        }
-                    }
-                    throw failure;
-                }
-            } else if (liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
-                throw new IllegalStateException("Alignment source generation changed before Apply or Redo");
-            }
-            if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
-                createdNodes = allocatePlanLocalNodes(plan);
-            }
-            prepareAndValidateBeforeState();
-            ApplyAlignmentEditPlanCommand.super.executeCommand();
+        Runnable sourceReceipt = () -> { };
+        if (lockedValidator != null) {
             try {
-                applyMutationPhases();
-                validateAfterState();
+                sourceReceipt = Objects.requireNonNull(lockedValidator.prepareExecution(
+                    getAffectedDataSet(), appliedSuccessfullyBefore),
+                    "prepared source receipt");
             } catch (RuntimeException failure) {
-                rollbackFailedExecution(failure);
+                reportRejectedRedo(failure);
+                throw failure;
             }
-        });
-        applied = true;
-        appliedSuccessfullyBefore = true;
+        }
+        Runnable preparedSourceReceipt = sourceReceipt;
+        Runnable transaction = () -> {
+            getAffectedDataSet().update(() -> {
+                if (lockedValidator != null) {
+                    try {
+                        preparedSourceReceipt.run();
+                        lockedValidator.validateLocked(getAffectedDataSet(), plan, true);
+                        preparedSourceReceipt.run();
+                    } catch (RuntimeException failure) {
+                        reportRejectedRedo(failure);
+                        throw failure;
+                    }
+                } else if (liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
+                    throw new IllegalStateException("Alignment source generation changed before Apply or Redo");
+                }
+                if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
+                    createdNodes = allocatePlanLocalNodes(plan);
+                }
+                prepareAndValidateBeforeState();
+                ApplyAlignmentEditPlanCommand.super.executeCommand();
+                try {
+                    applyMutationPhases();
+                    validateAfterState();
+                    preparedSourceReceipt.run();
+                } catch (RuntimeException failure) {
+                    reportRejectedRedo(failure);
+                    rollbackFailedExecution(failure);
+                }
+            });
+            applied = true;
+            appliedSuccessfullyBefore = true;
+        };
+        if (lockedValidator == null) {
+            transaction.run();
+        } else {
+            lockedValidator.executeWithPreparedSource(transaction);
+        }
         return true;
+    }
+
+    private void reportRejectedRedo(RuntimeException failure) {
+        if (appliedSuccessfullyBefore && lockedValidator != null) {
+            try {
+                lockedValidator.reportRejectedRedo(failure);
+            } catch (RuntimeException reportingFailure) {
+                failure.addSuppressed(reportingFailure);
+            }
+        }
     }
 
     /** Restores exact pre-Apply primitive state and removes command-owned plan-local nodes. */

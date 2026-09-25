@@ -46,6 +46,15 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionCon
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
     @Test
+    void redoFailureUiUsesOnlyFixedRedactedText() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<String> shown = new java.util.concurrent.atomic.AtomicReference<>();
+        AlignWayAction.redoFailureReporter(shown::set).accept("CloudFront-Signature=private-value");
+        javax.swing.SwingUtilities.invokeAndWait(() -> { });
+
+        assertTrue(shown.get().contains("Alignment Redo failed"));
+        assertFalse(shown.get().contains("private-value"));
+    }
+    @Test
     void preCaptureFailureSupersedesPreviousExport(@TempDir Path directory) throws Exception {
         DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory
             .createUnavailableLive("test", "applied", "visible-layer", "old-attempt"));
