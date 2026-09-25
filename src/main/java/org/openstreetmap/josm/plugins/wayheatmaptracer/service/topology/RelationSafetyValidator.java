@@ -46,7 +46,8 @@ final class RelationSafetyValidator {
             switch (type) {
                 case "restriction" -> validateRestriction(before, after, oldRelation, newRelation,
                     effectiveNodeRemaps, approvedRelationNodeRemaps, findings);
-                case "route" -> validateRoute(before, after, oldRelation, newRelation, findings);
+                case "route" -> validateRoute(before, after, oldRelation, newRelation,
+                    changedPrimitiveIds, findings);
                 case "multipolygon", "boundary" -> findings.add(finding(
                     FindingCode.UNSUPPORTED_RELATION,
                     "Area or boundary relation needs a dedicated topology handler: " + oldRelation.id()));
@@ -150,27 +151,83 @@ final class RelationSafetyValidator {
     }
 
     private static void validateRoute(TopologyNetwork before, TopologyNetwork after,
-        Relation oldRelation, Relation newRelation, List<Finding> findings) {
+        Relation oldRelation, Relation newRelation, Set<Id> changedPrimitiveIds,
+        List<Finding> findings) {
         if (!oldRelation.equals(newRelation)) {
             findings.add(finding(FindingCode.RELATION_SEMANTICS_INVALID,
                 "Route relation identity, tags, member order or roles changed: " + oldRelation.id()));
             return;
         }
-        List<Id> wayMembers = oldRelation.members().stream()
-            .map(RelationMember::memberId).filter(id -> id.type() == PrimitiveType.WAY).toList();
-        for (int index = 1; index < wayMembers.size(); index++) {
-            Id previous = wayMembers.get(index - 1);
-            Id current = wayMembers.get(index);
-            if (waysShareNode(before, previous, current) && !waysShareNode(after, previous, current)) {
-                findings.add(finding(FindingCode.RELATION_SEMANTICS_INVALID,
-                    "Route relation lost existing local continuity: " + oldRelation.id()));
-                return;
-            }
+        if (oldRelation.members().stream().anyMatch(member -> member.memberId().type()
+            != PrimitiveType.WAY && changedPrimitiveIds.contains(member.memberId()))) {
+            findings.add(finding(FindingCode.RELATION_SEMANTICS_INVALID,
+                "Route non-way member changed without a dedicated semantic handler: "
+                    + oldRelation.id()));
+            return;
+        }
+        List<RelationMember> wayMembers = oldRelation.members().stream()
+            .filter(member -> member.memberId().type() == PrimitiveType.WAY).toList();
+        if (wayMembers.isEmpty() || wayMembers.stream().anyMatch(member ->
+            !member.role().isEmpty() && !"forward".equals(member.role())
+                && !"backward".equals(member.role()))
+            || !orderedRouteTraversalConnected(before, wayMembers)
+            || !orderedRouteTraversalConnected(after, wayMembers)) {
+            findings.add(finding(FindingCode.RELATION_SEMANTICS_INVALID,
+                "Route lacks an unambiguous directed traversal through ordered members: "
+                    + oldRelation.id()));
         }
     }
 
+    private static boolean orderedRouteTraversalConnected(TopologyNetwork network,
+        List<RelationMember> members) {
+        List<Id> wayIds = members.stream().map(RelationMember::memberId).toList();
+        if (hasAmbiguousTransferPort(network, wayIds)) {
+            return false;
+        }
+        RelationMember firstMember = members.get(0);
+        Way first = network.way(firstMember.memberId());
+        Set<Id> possibleExits = new HashSet<>();
+        for (int end = 0; end < first.nodeIds().size(); end++) {
+            for (int start = 0; start < first.nodeIds().size(); start++) {
+                if (canTraverseRoute(first, firstMember.role(), start, end)) {
+                    possibleExits.add(first.nodeIds().get(end));
+                    break;
+                }
+            }
+        }
+        for (int memberIndex = 1; memberIndex < members.size(); memberIndex++) {
+            RelationMember member = members.get(memberIndex);
+            Way current = network.way(member.memberId());
+            Set<Id> nextExits = new HashSet<>();
+            for (int entry = 0; entry < current.nodeIds().size(); entry++) {
+                if (!possibleExits.contains(current.nodeIds().get(entry))) {
+                    continue;
+                }
+                for (int exit = 0; exit < current.nodeIds().size(); exit++) {
+                    if (canTraverseRoute(current, member.role(), entry, exit)) {
+                        nextExits.add(current.nodeIds().get(exit));
+                    }
+                }
+            }
+            if (nextExits.isEmpty()) {
+                return false;
+            }
+            possibleExits = nextExits;
+        }
+        return !possibleExits.isEmpty();
+    }
+
+    private static boolean canTraverseRoute(Way way, String role, int start, int end) {
+        return canTraverse(way, start, end) && switch (role) {
+            case "forward" -> start < end;
+            case "backward" -> start > end;
+            case "" -> true;
+            default -> false;
+        };
+    }
+
     private static boolean orderedWayTraversalConnected(TopologyNetwork network, List<Id> wayIds) {
-        if (hasAmbiguousViaWayPort(network, wayIds)) {
+        if (hasAmbiguousTransferPort(network, wayIds)) {
             return false;
         }
         Way previous = network.way(wayIds.get(0));
@@ -207,13 +264,14 @@ final class RelationSafetyValidator {
         return false;
     }
 
-    private static boolean hasAmbiguousViaWayPort(TopologyNetwork network, List<Id> wayIds) {
-        for (int index = 1; index < wayIds.size() - 1; index++) {
-            Set<Id> adjacentPorts = new HashSet<>(network.way(wayIds.get(index - 1)).nodeIds());
-            adjacentPorts.addAll(network.way(wayIds.get(index + 1)).nodeIds());
-            Set<Id> seen = new HashSet<>();
-            for (Id nodeId : network.way(wayIds.get(index)).nodeIds()) {
-                if (!seen.add(nodeId) && adjacentPorts.contains(nodeId)) {
+    private static boolean hasAmbiguousTransferPort(TopologyNetwork network, List<Id> wayIds) {
+        for (int index = 1; index < wayIds.size(); index++) {
+            Way previous = network.way(wayIds.get(index - 1));
+            Way current = network.way(wayIds.get(index));
+            Set<Id> sharedPorts = new HashSet<>(previous.nodeIds());
+            sharedPorts.retainAll(current.nodeIds());
+            for (Id port : sharedPorts) {
+                if (occurrenceCount(previous, port) != 1 || occurrenceCount(current, port) != 1) {
                     return true;
                 }
             }
@@ -225,6 +283,9 @@ final class RelationSafetyValidator {
         Id viaNode, Id toWayId) {
         Way from = network.way(fromWayId);
         Way to = network.way(toWayId);
+        if (occurrenceCount(from, viaNode) != 1 || occurrenceCount(to, viaNode) != 1) {
+            return false;
+        }
         for (int index = 0; index < from.nodeIds().size(); index++) {
             if (from.nodeIds().get(index).equals(viaNode) && hasApproach(from, index)) {
                 for (int departure = 0; departure < to.nodeIds().size(); departure++) {
@@ -236,6 +297,10 @@ final class RelationSafetyValidator {
             }
         }
         return false;
+    }
+
+    private static long occurrenceCount(Way way, Id nodeId) {
+        return way.nodeIds().stream().filter(nodeId::equals).count();
     }
 
     private static boolean hasApproach(Way way, int at) {
@@ -267,12 +332,6 @@ final class RelationSafetyValidator {
             case "no", "0", "false" -> true;
             default -> false;
         };
-    }
-
-    private static boolean waysShareNode(TopologyNetwork network, Id firstWayId, Id secondWayId) {
-        Way first = network.way(firstWayId);
-        Way second = network.way(secondWayId);
-        return first.nodeIds().stream().anyMatch(second.nodeIds()::contains);
     }
 
     private static List<RelationMember> membersWithRole(Relation relation, String role) {

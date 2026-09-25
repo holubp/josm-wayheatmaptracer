@@ -111,7 +111,7 @@ class V022JunctionRelationTest {
         long left = 221;
         long right = 222;
         Relation route = relation(304, Map.of("type", "route", "route", "hiking"), Completeness.COMPLETE,
-            member(wayId(left), "forward"), member(wayId(right), "backward"));
+            member(wayId(left), "forward"), member(wayId(right), "forward"));
         TopologyNetwork before = network(
             List.of(node(L, -60, 0), node(J, 0, 0), node(M, 10, 0), node(R, 60, 0), node(A, 20, 60)),
             List.of(way(left, L, J), way(right, J, M, R), way(SELECTED, A, J)), List.of(route));
@@ -355,6 +355,167 @@ class V022JunctionRelationTest {
             List.of(reconstructedCandidate(K, 20, 1, via)), Map.of(), Set.of(), via, receiver);
 
         assertRelationSemanticsRefusal(result);
+    }
+
+    @Test
+    void t107RouteRejectsFinalForwardMemberReversalDespiteSharedJunction() {
+        long first = 281;
+        long second = 282;
+        Relation route = relation(315, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(second), "forward"));
+        List<TopologyNetwork.Node> nodes = List.of(node(A, -10, 0), node(J, 0, 0),
+            node(T, 10, 0));
+        TopologyNetwork before = network(nodes, List.of(way(first, A, J), way(second, J, T)),
+            List.of(route));
+        TopologyNetwork after = network(nodes, List.of(way(first, A, J), way(second, T, J)),
+            List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(before, before,
+            Set.of(wayId(second)), Map.of(), Set.of()));
+        assertRelationSemanticsRefusal(before, after, wayId(second));
+    }
+
+    @Test
+    void t108RouteRejectsMiddleMemberThatMustExitThroughItsEntryPort() {
+        long first = 283;
+        long middle = 284;
+        long last = 285;
+        Relation route = relation(316, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(middle), "forward"), member(wayId(last), "forward"));
+        List<TopologyNetwork.Node> nodes = List.of(node(A, -10, 0), node(J, 0, 0),
+            node(K, 10, 0), node(T, 20, 0));
+        TopologyNetwork before = network(nodes,
+            List.of(way(first, A, J), way(middle, J, K), way(last, K, T)), List.of(route));
+        TopologyNetwork after = network(nodes,
+            List.of(way(first, A, J), way(middle, J, K), way(last, J, T)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(before, before,
+            Set.of(wayId(last)), Map.of(), Set.of()));
+        assertRelationSemanticsRefusal(before, after, wayId(last));
+    }
+
+    @Test
+    void t109RouteAllowsOrderedBackwardMembersWithReverseOneway() {
+        long first = 286;
+        long second = 287;
+        Relation route = relation(317, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "backward"),
+            member(wayId(second), "backward"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(T, 10, 0)),
+            List.of(way(first, Map.of("oneway", "-1"), J, A),
+                way(second, Map.of("oneway", "-1"), T, J)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(network, network,
+            Set.of(wayId(first)), Map.of(), Set.of()));
+    }
+
+    @Test
+    void t110RouteRejectsRepeatedTransferPortOccurrence() {
+        long first = 288;
+        long second = 289;
+        Relation route = relation(318, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(second), "forward"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(K, 10, 0), node(T, 20, 0)),
+            List.of(way(first, A, J), way(second, J, K, J, T)), List.of(route));
+
+        assertRelationSemanticsRefusal(network, network, wayId(second));
+    }
+
+    @Test
+    void t111ViaNodeRejectsRepeatedApproachPortOccurrence() {
+        long from = 290;
+        long to = 291;
+        Relation restriction = relation(319, Map.of("type", "restriction",
+            "restriction", "no_left_turn"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(nodeId(J), "via"),
+            member(wayId(to), "to"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(T, 10, 0)),
+            List.of(way(from, A, J, A, J), way(to, J, T)), List.of(restriction));
+
+        assertRelationSemanticsRefusal(network, network, wayId(from));
+    }
+
+    @Test
+    void t112ViaWayRejectsRepeatedFromTransferPortOccurrence() {
+        long from = 292;
+        long via = 293;
+        long to = 294;
+        Relation restriction = relation(320, Map.of("type", "restriction",
+            "restriction", "only_straight_on"), Completeness.COMPLETE,
+            member(wayId(from), "from"), member(wayId(via), "via"),
+            member(wayId(to), "to"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(K, 10, 0), node(T, 20, 0)),
+            List.of(way(from, A, J, A, J), way(via, J, K), way(to, K, T)),
+            List.of(restriction));
+
+        assertRelationSemanticsRefusal(network, network, wayId(from));
+    }
+
+    @Test
+    void t113RouteRejectsUnknownWayRoleInsteadOfAssumingEitherDirection() {
+        long first = 295;
+        long second = 296;
+        Relation route = relation(321, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(wayId(second), "side_platform"));
+        TopologyNetwork network = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(T, 10, 0)),
+            List.of(way(first, A, J), way(second, J, T)), List.of(route));
+
+        assertRelationSemanticsRefusal(network, network, wayId(second));
+    }
+
+    @Test
+    void t114RouteRejectsFinalOnewayDepartureReversalWithNeutralRoles() {
+        long first = 297;
+        long second = 298;
+        Relation route = relation(322, Map.of("type", "route", "route", "hiking"),
+            Completeness.COMPLETE, member(wayId(first), ""), member(wayId(second), ""));
+        List<TopologyNetwork.Node> nodes = List.of(node(A, -10, 0), node(J, 0, 0),
+            node(T, 10, 0));
+        TopologyNetwork before = network(nodes,
+            List.of(way(first, Map.of("oneway", "yes"), A, J),
+                way(second, Map.of("oneway", "yes"), J, T)), List.of(route));
+        TopologyNetwork after = network(nodes,
+            List.of(way(first, Map.of("oneway", "yes"), A, J),
+                way(second, Map.of("oneway", "yes"), T, J)), List.of(route));
+
+        assertEquals(List.of(), RelationSafetyValidator.validate(before, before,
+            Set.of(wayId(second)), Map.of(), Set.of()));
+        assertRelationSemanticsRefusal(before, after, wayId(second));
+    }
+
+    @Test
+    void t115RouteRefusesChangedStopMemberWithoutAStopFeatureHandler() {
+        long first = 299;
+        long second = 300;
+        Relation route = relation(323, Map.of("type", "route", "route", "bus"),
+            Completeness.COMPLETE, member(wayId(first), "forward"),
+            member(nodeId(J), "stop"), member(wayId(second), "forward"));
+        TopologyNetwork before = network(
+            List.of(node(A, -10, 0), node(J, 0, 0), node(T, 10, 0)),
+            List.of(way(first, A, J), way(second, J, T)), List.of(route));
+        TopologyNetwork after = network(
+            List.of(node(A, -10, 0), node(J, 1, 0), node(T, 10, 0)),
+            List.of(way(first, A, J), way(second, J, T)), List.of(route));
+
+        assertTrue(RelationSafetyValidator.validate(before, after, Set.of(nodeId(J)),
+            Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
+    }
+
+    private static void assertRelationSemanticsRefusal(TopologyNetwork before,
+        TopologyNetwork after, Id changedWay) {
+        assertTrue(RelationSafetyValidator.validate(before, after, Set.of(changedWay),
+            Map.of(), Set.of()).stream()
+            .anyMatch(finding -> finding.code() == FindingCode.RELATION_SEMANTICS_INVALID));
     }
 
     private static void assertRelationSemanticsRefusal(PlanningResult result) {
