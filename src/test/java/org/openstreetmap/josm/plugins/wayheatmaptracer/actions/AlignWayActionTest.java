@@ -180,6 +180,24 @@ class AlignWayActionTest {
     }
 
     @Test
+    void typedPreflightStatusesHaveProductionUserMessages() {
+        for (AlignWayAction.ModernApplyPreflight preflight
+                : AlignWayAction.ModernApplyPreflight.values()) {
+            String message = AlignWayAction.modernApplyPreflightMessage(preflight);
+
+            assertFalse(message.isBlank());
+            assertFalse(message.contains(preflight.name()), preflight.name());
+            assertFalse(message.contains("_"), message);
+        }
+        assertTrue(AlignWayAction.modernApplyPreflightMessage(
+                AlignWayAction.ModernApplyPreflight.CLEANUP_UNAVAILABLE_FOR_ENGINE)
+                .contains("Probabilistic B"));
+        assertTrue(AlignWayAction.modernApplyPreflightMessage(
+                AlignWayAction.ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE)
+                .contains("source lineage"));
+    }
+
+    @Test
     void persistedModernEnginesUseTheLivePipelineRatherThanLegacyProfileTracking() {
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.CORRIDOR_AWARE));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.PROBABILISTIC));

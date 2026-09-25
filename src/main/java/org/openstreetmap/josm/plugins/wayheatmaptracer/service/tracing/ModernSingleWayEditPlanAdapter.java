@@ -627,8 +627,11 @@ public final class ModernSingleWayEditPlanAdapter {
                 boolean sameWay = first.wayKey().equals(second.wayKey());
                 boolean adjacent = sameWay && Math.abs(first.index() - second.index()) == 1;
                 if (adjacent) {
-                    if (first.wayKey().equals(selectedWay)
-                            && first.insideSelectedRange() != second.insideSelectedRange()
+                    boolean selectedBoundary = first.wayKey().equals(selectedWay)
+                            && first.insideSelectedRange() != second.insideSelectedRange();
+                    boolean changedIncidentContinuation = !first.wayKey().equals(selectedWay)
+                            && (first.changed() || second.changed());
+                    if ((selectedBoundary || changedIncidentContinuation)
                             && continuationReverses(first, second)) {
                         findings.add("final-topology:CONTINUATION");
                     }

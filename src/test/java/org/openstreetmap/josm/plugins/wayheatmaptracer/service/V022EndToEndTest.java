@@ -348,6 +348,31 @@ class V022EndToEndTest {
     }
 
     @Test
+    void movedIncidentWayFoldbackIsHardBlockedBeforeReviewConfirmation() throws Exception {
+        JunctionFixture fixture = incidentFoldbackFixture();
+        LiveBPreviewService.Computed computed = compute(fixture, JunctionPolicy.LEGACY_BOUNDED_MOVE);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CONTINUATION,
+                assessment.availability(), () -> plan.validation().findingCodes().toString());
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED,
+                plan.validation().disposition());
+        assertTrue(plan.validation().findingCodes().contains("final-topology:CONTINUATION"));
+        assertEquals(Set.of(computed.request().selectedWayKey(),
+                        PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                                fixture.receiver().getUniqueId())),
+                plan.finalPreviewWays().keySet());
+        assertEquals(plan.canonicalHash(),
+                PreviewReviewState.fromEditPlan("incident-foldback", plan).exactEditPlanHash());
+        assertFalse(assessment.applyAvailable());
+        assertThrows(IllegalStateException.class,
+                () -> PreviewReviewState.fromEditPlan("incident-foldback", plan).confirm());
+    }
+
+    @Test
     void T169_incidentReconstructionUsesEachReceiverArmEvidence() throws Exception {
         JunctionFixture fixture = reconstructionFixture();
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
@@ -649,6 +674,24 @@ class V022EndToEndTest {
         return new JunctionFixture(dataSet,
                 new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
                 receiver, west, junction, south, middle, north);
+    }
+
+    private static JunctionFixture incidentFoldbackFixture() {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(501, 0.0, longitude(-8));
+        Node junction = loadedNode(502, 0.0, longitude(8));
+        Node south = loadedNode(503, latitude(-8), longitude(10));
+        Node north = loadedNode(504, latitude(1), longitude(10));
+        Way selected = loadedWay(510, west, junction);
+        Way receiver = loadedWay(511, south, junction, north);
+        for (Node node : List.of(west, junction, south, north)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        return new JunctionFixture(dataSet,
+                new SelectionContext(selected, 0, 1, List.of(west, junction), Set.of()),
+                receiver, west, junction, south, junction, north);
     }
 
     private static JunctionFixture reconstructionFixture() {

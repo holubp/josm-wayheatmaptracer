@@ -2,17 +2,20 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.InvocationTargetException;
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import javax.swing.SwingUtilities;
 
@@ -22,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
@@ -36,6 +40,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -46,7 +51,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
@@ -153,6 +160,109 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.CLEANUP_UNAVAILABLE_FOR_ENGINE,
                 b.availability());
         assertTrue(b.plan().isEmpty());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("taskFourAuthorityCases")
+    void taskFourMatrixRequiresExactPlanAuthorityOrTypedUnavailableReason(
+            TaskFourAuthorityCase testCase) throws Exception {
+        Fixture fixture = testCase.subrange() ? fixtureWithPrefixAndSuffix() : fixture();
+        TrackerMode engine = testCase.engine();
+        GeometryCleanupConfig cleanup = testCase.cleanupMode() == GeometryCleanupMode.NONE
+                ? GeometryCleanupConfig.disabled()
+                : GeometryCleanupPreset.BALANCED.apply(testCase.cleanupMode());
+        ManagedHeatmapConfig base = config(engine).heatmap();
+        boolean managed = testCase.managedSource();
+        ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig(managed ? "key" : "",
+                managed ? "policy" : "", managed ? "signature" : "", managed ? "session" : "",
+                base.activity(), base.color(), base.manualLayerName(), base.layerRegex(),
+                testCase.geometryMode(), engine, base.verbose(), base.debug(), base.multiColorDetection(),
+                base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(), base.allowUndownloadedAlignment(),
+                base.adjustJunctionNodes(), base.simplifyEnabled(), base.crossSectionHalfWidthPx(),
+                base.crossSectionStepPx(), base.simplifyTolerancePx(), base.inferenceMode(),
+                base.inferenceZoom(), base.validationZoom(), base.searchHalfWidthMeters(),
+                base.sampleStepMeters(), base.intensitySamplingMode(), base.cacheBuster());
+        AlignmentConfig attempt = new AlignmentConfig(heatmap, cleanup);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured captured;
+        if (managed) {
+            LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+            SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(
+                    fixture.dataSet(), fixture.selection(), attempt, "task-four-matrix"));
+            BufferedImage image = matrixRasterImage();
+            boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
+            java.util.Arrays.fill(valid, true);
+            captured = service.attachManagedRaster(seed[0], new ManagedModernPreviewSource.Raster(
+                    image, valid, SupportedInputRasterTransform.webMercator(
+                            15, 16384.0, 16384.0, 2.0), "hot", 15, "task-four-matrix"));
+        } else {
+            LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+            SwingUtilities.invokeAndWait(() -> visible[0] = service.capture(fixture.dataSet(),
+                    fixture.selection(), raster(), attempt, engine == TrackerMode.DIRECTIONAL_IMAGE));
+            captured = visible[0];
+        }
+        LiveBPreviewService.Computed computed = service.compute(captured, CancellationProbe.NONE);
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        if (assessment.plan().isPresent()) {
+            AlignmentEditPlan plan = assessment.plan().orElseThrow();
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                    assessment.availability());
+            Map<PrimitiveKey, List<EastNorth>> displayed = assessment.projectFinalPreviewWays(point ->
+                    new EastNorth(point.longitudeDegrees(), point.latitudeDegrees()));
+            assertEquals(plan.finalPreviewWays().keySet(), displayed.keySet());
+            plan.finalPreviewWays().forEach((way, points) -> assertEquals(points.stream()
+                    .map(point -> new EastNorth(point.longitudeDegrees(), point.latitudeDegrees())).toList(),
+                    displayed.get(way)));
+            assertEquals(plan.canonicalHash(),
+                    PreviewReviewState.fromEditPlan("task-four-matrix", plan).exactEditPlanHash());
+        } else {
+            assertNotEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                    assessment.availability(), testCase.toString());
+            assertTrue(assessment.detail() != null && !assessment.detail().isBlank(),
+                    () -> "Missing typed unavailable reason: " + testCase);
+        }
+    }
+
+    static Stream<TaskFourAuthorityCase> taskFourAuthorityCases() {
+        return Stream.of(
+                new TaskFourAuthorityCase(TrackerMode.CORRIDOR_AWARE, false,
+                        GeometryCleanupMode.NONE, false, AlignmentMode.PRECISE_SHAPE),
+                new TaskFourAuthorityCase(TrackerMode.CORRIDOR_AWARE, true,
+                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.PRECISE_SHAPE),
+                new TaskFourAuthorityCase(TrackerMode.PROBABILISTIC, false,
+                        GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, false,
+                        AlignmentMode.PRECISE_SHAPE),
+                new TaskFourAuthorityCase(TrackerMode.PROBABILISTIC, true,
+                        GeometryCleanupMode.NONE, true, AlignmentMode.MOVE_EXISTING_NODES),
+                new TaskFourAuthorityCase(TrackerMode.HYBRID, false,
+                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.MOVE_EXISTING_NODES),
+                new TaskFourAuthorityCase(TrackerMode.DIRECTIONAL_IMAGE, false,
+                        GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, false,
+                        AlignmentMode.MOVE_EXISTING_NODES));
+    }
+
+    private static BufferedImage matrixRasterImage() {
+        BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < image.getHeight(); y++) {
+            int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.exp(
+                    -0.5 * (y - 288.0) * (y - 288.0) / (1.2 * 1.2))));
+            for (int x = 0; x < image.getWidth(); x++) {
+                image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            }
+        }
+        return image;
+    }
+
+    private record TaskFourAuthorityCase(TrackerMode engine, boolean managedSource,
+            GeometryCleanupMode cleanupMode, boolean subrange, AlignmentMode geometryMode) {
+        @Override
+        public String toString() {
+            return engine + "/" + (managedSource ? "managed" : "visible") + "/"
+                    + cleanupMode + "/" + (subrange ? "subrange" : "full-way") + "/" + geometryMode;
+        }
     }
 
     @Test

@@ -744,7 +744,7 @@ public class AlignWayAction extends JosmAction {
                 case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
             }, false, PluginPreferences.isDebugEnabled(), projectedPreview);
-            String availability = assessment[0] == null ? preflight.name()
+            String availability = assessment[0] == null ? modernApplyPreflightMessage(preflight)
                     : assessment[0].detail();
             List<String> reasons = plan[0] == null
                     ? computed.pipeline().routes().get(index).quality().findings().stream()
@@ -902,6 +902,18 @@ public class AlignWayAction extends JosmAction {
         CLEANUP_UNAVAILABLE_FOR_ENGINE,
         SOURCE_LINEAGE_UNAVAILABLE,
         CONFIGURATION_UNSUPPORTED
+    }
+
+    static String modernApplyPreflightMessage(ModernApplyPreflight preflight) {
+        return switch (Objects.requireNonNull(preflight, "preflight")) {
+            case READY -> tr("Exact final-plan assessment is available");
+            case CLEANUP_UNAVAILABLE_FOR_ENGINE ->
+                tr("Cleanup is unavailable for Probabilistic B");
+            case SOURCE_LINEAGE_UNAVAILABLE ->
+                tr("Exact source lineage is unavailable for Apply");
+            case CONFIGURATION_UNSUPPORTED ->
+                tr("This engine, source, or geometry configuration is unavailable for Apply");
+        };
     }
 
     static ModernApplyPreflight modernApplyPreflight(LiveBPreviewService.Captured captured,
