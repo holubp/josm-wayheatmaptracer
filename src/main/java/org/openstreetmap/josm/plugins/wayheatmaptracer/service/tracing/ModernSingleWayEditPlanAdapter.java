@@ -484,7 +484,7 @@ public final class ModernSingleWayEditPlanAdapter {
             addSelectedReceiverIntersections(result, before, route, selected,
                     evidenced, evidence, receiving, junction, proposed);
         }
-        return bestIntersections(result, evidence.resolution().effectivePitchMeters());
+        return bestIntersections(result);
     }
 
     private static List<SelectedReceiverIntersection> selectedReceiverIntersections(
@@ -498,7 +498,7 @@ public final class ModernSingleWayEditPlanAdapter {
         List<SelectedReceiverIntersection> result = new ArrayList<>();
         addSelectedReceiverIntersections(result, before, route, selected,
                 evidenced, evidence, receiving, junction, proposed);
-        return bestIntersections(result, evidence.resolution().effectivePitchMeters());
+        return bestIntersections(result);
     }
 
     private static void addSelectedReceiverIntersections(
@@ -546,16 +546,15 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     private static List<SelectedReceiverIntersection> bestIntersections(
-            List<SelectedReceiverIntersection> result, double sourcePitchMeters) {
+            List<SelectedReceiverIntersection> result) {
         result.sort(java.util.Comparator.comparingDouble(
                     SelectedReceiverIntersection::routeDistanceMeters)
                 .thenComparingInt(SelectedReceiverIntersection::selectedSegment)
                 .thenComparingInt(SelectedReceiverIntersection::receiverSegment));
         List<SelectedReceiverIntersection> distinct = new ArrayList<>();
-        double sameVertexTolerance = Math.max(1.0e-6, sourcePitchMeters * 0.25);
         for (SelectedReceiverIntersection candidate : result) {
             boolean repeatedVertex = distinct.stream().anyMatch(existing ->
-                    candidate.point().distanceTo(existing.point()) <= sameVertexTolerance
+                    candidate.point().equals(existing.point())
                     && Math.abs(candidate.selectedSegment() - existing.selectedSegment()) <= 1
                     && Math.abs(candidate.receiverSegment() - existing.receiverSegment()) <= 1);
             if (!repeatedVertex) {
@@ -779,6 +778,8 @@ public final class ModernSingleWayEditPlanAdapter {
         return intersections.get(0);
     }
 
+    private record MetricSegment(MetricPoint start, MetricPoint end) { }
+
     private static List<String> unsupportedSelectedExtensions(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, ModernTracePipeline.Route route,
             TraceRequest request, EvidenceSnapshot evidence, String fieldName,
@@ -788,9 +789,17 @@ public final class ModernSingleWayEditPlanAdapter {
         if (field == null) {
             return List.of("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
         }
-        ImageCostField image = new ImageCostField(field, evidence.transform(),
+        // Recovery pixels outside the original selected decision corridor are considered
+        // only along the final selected span, after a direct seed inside that corridor.
+        ImageCostField recoveryImage = new ImageCostField(field, evidence.transform(),
                 before.closure().editRegion(), pitch);
+        ImageCostField selectedDecisionImage = new ImageCostField(field, evidence.transform(),
+                evidence.decisionRegion(), pitch);
         DetachedWay selected = (DetachedWay) after.get(request.selectedWayKey());
+        Set<PrimitiveKey> routeOwnedNodes = route.pointIds().stream().map(id ->
+                id instanceof ExistingWayNodeOccurrence occurrence
+                        ? occurrence.nodeKey() : plannedKey((GeneratedCandidatePoint) id))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         List<String> findings = new ArrayList<>();
         for (PrimitiveKey junction : junctions) {
             int routeIndex = -1;
@@ -813,58 +822,129 @@ public final class ModernSingleWayEditPlanAdapter {
                 findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
                 continue;
             }
-            int neighborIndex = selectedIndex + (routeIndex == 0 ? 1 : -1);
-            if (neighborIndex < 0 || neighborIndex >= selected.nodeKeys().size()) {
+            MetricPoint target = metric(after, junction, evidence);
+            MetricPoint original = route.assignments().get(route.pointIds().get(routeIndex));
+            if (original == null) {
                 findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
                 continue;
             }
-            MetricPoint neighbor = metric(after, selected.nodeKeys().get(neighborIndex), evidence);
-            MetricPoint target = metric(after, junction, evidence);
-            MetricPoint original = route.assignments().get(route.pointIds().get(routeIndex));
             if (original.distanceTo(target) <= pitch) {
                 continue;
             }
-            double dx = target.xMeters() - neighbor.xMeters();
-            double dy = target.yMeters() - neighbor.yMeters();
-            double squaredLength = dx * dx + dy * dy;
-            if (!(squaredLength > 1.0e-12)) {
+            if (original.distanceTo(target) > 20.0 + pitch) {
                 findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
                 continue;
             }
-            double fraction = ((original.xMeters() - neighbor.xMeters()) * dx
-                    + (original.yMeters() - neighbor.yMeters()) * dy) / squaredLength;
-            MetricPoint projected = new MetricPoint(neighbor.xMeters() + fraction * dx,
-                    neighbor.yMeters() + fraction * dy);
-            if (fraction >= 1.0 && original.distanceTo(projected) <= pitch) {
-                continue;
+            List<MetricSegment> receiverArms = capturedReceiverArms(before, evidence,
+                    request.selectedWayKey(), junction);
+            boolean inspected = false;
+            for (int side : new int[] {-1, 1}) {
+                int neighborIndex = selectedIndex + side;
+                if (neighborIndex < 0 || neighborIndex >= selected.nodeKeys().size()
+                        || !routeOwnedNodes.contains(selected.nodeKeys().get(neighborIndex))) {
+                    continue;
+                }
+                inspected = true;
+                MetricPoint neighbor = metric(after, selected.nodeKeys().get(neighborIndex), evidence);
+                if (unsupportedSelectedInterval(selectedDecisionImage, recoveryImage,
+                        receiverArms, original, neighbor, target, pitch)) {
+                    findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+                    break;
+                }
             }
-            double allowance = Math.max(2.0, pitch);
-            MetricPoint start = fraction >= 0.0 && fraction < 1.0
-                    && original.distanceTo(projected) <= pitch ? projected : neighbor;
-            double extension = start.distanceTo(target);
-            if (extension <= allowance) {
-                continue;
-            }
-            int count = Math.max(1, (int) Math.ceil(extension / Math.min(1.0, pitch * 0.5)));
-            MetricPoint tangent = new MetricPoint(dx, dy);
-            double unsupported = 0.0;
-            boolean excessiveGap = false;
-            for (int sample = 0; sample < count; sample++) {
-                double t = (sample + 0.5) / count;
-                MetricPoint point = new MetricPoint(start.xMeters()
-                        + t * (target.xMeters() - start.xMeters()),
-                        start.yMeters() + t * (target.yMeters() - start.yMeters()));
-                boolean direct = image.sampleRoute(point, tangent)
-                        .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
-                        .orElse(false);
-                unsupported = direct ? 0.0 : unsupported + extension / count;
-                excessiveGap |= unsupported > allowance;
-            }
-            if (excessiveGap) {
+            if (!inspected) {
                 findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
             }
         }
         return List.copyOf(findings);
+    }
+
+    private static List<MetricSegment> capturedReceiverArms(NetworkSnapshot before,
+            EvidenceSnapshot evidence, PrimitiveKey selectedWayKey, PrimitiveKey junction) {
+        List<MetricSegment> arms = new ArrayList<>();
+        for (Map.Entry<PrimitiveKey, List<OccurrenceRange>> entry
+                : before.closure().editableWayOccurrences().entrySet()) {
+            if (entry.getKey().equals(selectedWayKey)
+                    || !(before.primitives().get(entry.getKey()) instanceof DetachedWay receiver)
+                    || !receiver.nodeKeys().contains(junction)) {
+                continue;
+            }
+            for (OccurrenceRange range : entry.getValue()) {
+                for (int index = range.firstIndex(); index < range.lastIndex(); index++) {
+                    arms.add(new MetricSegment(
+                            metric(before.primitives(), receiver.nodeKeys().get(index), evidence),
+                            metric(before.primitives(), receiver.nodeKeys().get(index + 1), evidence)));
+                }
+            }
+        }
+        return List.copyOf(arms);
+    }
+
+    private static double distanceToSegment(MetricPoint point, MetricSegment segment) {
+        double dx = segment.end().xMeters() - segment.start().xMeters();
+        double dy = segment.end().yMeters() - segment.start().yMeters();
+        double squaredLength = dx * dx + dy * dy;
+        if (!(squaredLength > 1.0e-12)) {
+            return point.distanceTo(segment.start());
+        }
+        double fraction = Math.max(0.0, Math.min(1.0,
+                ((point.xMeters() - segment.start().xMeters()) * dx
+                        + (point.yMeters() - segment.start().yMeters()) * dy) / squaredLength));
+        return point.distanceTo(new MetricPoint(segment.start().xMeters() + fraction * dx,
+                segment.start().yMeters() + fraction * dy));
+    }
+
+    private static boolean unsupportedSelectedInterval(ImageCostField selectedDecisionImage,
+            ImageCostField recoveryImage, List<MetricSegment> receiverArms,
+            MetricPoint original, MetricPoint neighbor, MetricPoint target, double pitch) {
+        double dx = target.xMeters() - neighbor.xMeters();
+        double dy = target.yMeters() - neighbor.yMeters();
+        double squaredLength = dx * dx + dy * dy;
+        if (!(squaredLength > 1.0e-12)) {
+            return true;
+        }
+        double fraction = ((original.xMeters() - neighbor.xMeters()) * dx
+                + (original.yMeters() - neighbor.yMeters()) * dy) / squaredLength;
+        MetricPoint projected = new MetricPoint(neighbor.xMeters() + fraction * dx,
+                neighbor.yMeters() + fraction * dy);
+        if (fraction >= 1.0 && original.distanceTo(projected) <= pitch) {
+            return false;
+        }
+        double allowance = Math.max(2.0, pitch);
+        MetricPoint start = fraction >= 0.0 && fraction < 1.0
+                && original.distanceTo(projected) <= pitch ? projected : neighbor;
+        double extension = start.distanceTo(target);
+        if (extension <= allowance) {
+            return false;
+        }
+        MetricPoint tangent = new MetricPoint(dx, dy);
+        if (!selectedDecisionImage.sampleRoute(original, tangent)
+                .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
+                .orElse(false)) {
+            return true;
+        }
+        int count = Math.max(1, (int) Math.ceil(extension / Math.min(1.0, pitch * 0.5)));
+        double unsupported = 0.0;
+        for (int sample = 0; sample < count; sample++) {
+            double t = (sample + 0.5) / count;
+            MetricPoint point = new MetricPoint(start.xMeters()
+                    + t * (target.xMeters() - start.xMeters()),
+                    start.yMeters() + t * (target.yMeters() - start.yMeters()));
+            boolean direct = recoveryImage.sampleRoute(point, tangent)
+                    .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
+                    .orElse(false);
+            // A sustained nearby captured receiver arm makes the scalar mode's branch
+            // ownership ambiguous; ignore the shared junction core itself.
+            if (point.distanceTo(target) > allowance && receiverArms.stream()
+                    .anyMatch(segment -> distanceToSegment(point, segment) <= pitch)) {
+                direct = false;
+            }
+            unsupported = direct ? 0.0 : unsupported + extension / count;
+            if (unsupported > allowance) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static double[] bounds(org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion region) {

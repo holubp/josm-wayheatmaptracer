@@ -8,7 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
@@ -36,7 +40,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
@@ -44,9 +53,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
@@ -55,6 +69,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetw
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -758,8 +773,43 @@ class V022EndToEndTest {
                 "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"));
     }
 
+    @Test
+    void T169_nearbyParallelRidgeCannotSupplySelectedTerminalExtension() throws Exception {
+        LiveBPreviewService.Computed computed = terminalExtensionComputed(false, true);
+        PrimitiveKey selected = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 750);
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 742);
+        PrimitiveKey nearArm = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 752);
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 751);
+        NetworkSnapshot before = computed.captured().network();
+        assertTrue(((DetachedWay) before.primitives().get(receiver)).nodeKeys().contains(nearArm),
+                "the competing x10..24 arm belongs to the captured affected receiver");
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(before.primitives());
+        DetachedNode oldJunction = (DetachedNode) after.get(junction);
+        after.put(junction, new DetachedNode(junction,
+                new GeographicPoint(0.0, longitude(24)), oldJunction.tags(), false, true));
+        List<FinalRoutePointId> ids = List.of(
+                new ExistingWayNodeOccurrence(selected,
+                        PrimitiveKey.existing(PrimitiveKey.Type.NODE, 741), 0),
+                new ExistingWayNodeOccurrence(selected, junction, 1));
+        ModernTracePipeline.Route route = exactRoute(computed, ids);
+        assertTrue(supportFindings(computed, after, route, Set.of(junction)).contains(
+                "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"),
+                "a direct raster mode from the near-parallel receiver arm cannot authorize J");
+    }
+
     private static AlignmentEditPlan terminalExtensionPlan(boolean selectedContinues)
             throws Exception {
+        return terminalExtensionPlan(selectedContinues, false);
+    }
+
+    private static AlignmentEditPlan terminalExtensionPlan(boolean selectedContinues,
+            boolean nearbyParallelRidge) throws Exception {
+        return new ModernSingleWayEditPlanAdapter().adapt(
+                terminalExtensionComputed(selectedContinues, nearbyParallelRidge), 0);
+    }
+
+    private static LiveBPreviewService.Computed terminalExtensionComputed(
+            boolean selectedContinues, boolean nearbyParallelRidge) throws Exception {
         DataSet dataSet = new DataSet();
         Node west = loadedNode(741, 0.0, longitude(-8));
         Node junction = loadedNode(742, 0.0, longitude(10));
@@ -770,12 +820,19 @@ class V022EndToEndTest {
         Node north = loadedNode(747, latitude(18), longitude(25));
         Node northPort = loadedNode(748, latitude(31), longitude(25));
         Node farNorth = loadedNode(749, latitude(49), longitude(25));
+        Node nearReceiverArm = loadedNode(752, latitude(0.05), longitude(24));
         Way selected = loadedWay(750, west, junction);
-        Way receiver = loadedWay(751, farSouth, southPort, south, junction,
-                middle, north, northPort, farNorth);
+        Way receiver = nearbyParallelRidge
+                ? loadedWay(751, farSouth, southPort, south, junction,
+                        nearReceiverArm, middle, north, northPort, farNorth)
+                : loadedWay(751, farSouth, southPort, south, junction,
+                        middle, north, northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south,
                 middle, north, northPort, farNorth)) {
             dataSet.addPrimitive(node);
+        }
+        if (nearbyParallelRidge) {
+            dataSet.addPrimitive(nearReceiverArm);
         }
         dataSet.addPrimitive(selected);
         dataSet.addPrimitive(receiver);
@@ -785,10 +842,118 @@ class V022EndToEndTest {
                 JunctionPolicy.REATTACH, true);
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
-                dataSet, selection, terminalExtensionRaster(selectedContinues),
+                dataSet, selection, terminalExtensionRaster(selectedContinues,
+                        nearbyParallelRidge),
                 visibleConfig(), false, permissions));
-        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
-        return new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        return new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+    }
+
+    @Test
+    void T169_startBoundaryReinsertionChecksNewSelectedPredecessorSpan() throws Exception {
+        assertTrue(startBoundarySupportFindings(false).contains(
+                "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"),
+                "the final A→J span is unsupported even though old J lies beyond X on B→X");
+    }
+
+    @Test
+    void T169_measuredStartBoundaryReinsertionRemainsReviewable() throws Exception {
+        assertFalse(startBoundarySupportFindings(true).contains(
+                "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"));
+    }
+
+    private static List<String> startBoundarySupportFindings(boolean selectedContinues)
+            throws Exception {
+        // Fix the route and final order explicitly so this oracle reaches the final-support
+        // gate independently of the inference engine and topology planner's earlier guards.
+        LiveBPreviewService.Computed computed = startBoundaryReinsertionComputed(selectedContinues);
+        PrimitiveKey selected = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 789);
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 782);
+        PrimitiveKey predecessor = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 783);
+        PrimitiveKey end = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 784);
+        NetworkSnapshot before = computed.captured().network();
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(before.primitives());
+        DetachedNode oldJunction = (DetachedNode) after.get(junction);
+        after.put(junction, new DetachedNode(junction,
+                new GeographicPoint(0.0, longitude(25)), oldJunction.tags(), false, true));
+        DetachedWay oldSelected = (DetachedWay) after.get(selected);
+        after.put(selected, new DetachedWay(selected,
+                List.of(oldSelected.nodeKeys().get(0), predecessor, junction, end),
+                oldSelected.tags(), false, true));
+        List<FinalRoutePointId> ids = List.of(
+                new ExistingWayNodeOccurrence(selected, junction, 1),
+                new ExistingWayNodeOccurrence(selected, predecessor, 2),
+                new ExistingWayNodeOccurrence(selected, end, 3));
+        ModernTracePipeline.Route route = exactRoute(computed, ids);
+        return supportFindings(computed, after, route, Set.of(junction));
+    }
+
+    private static ModernTracePipeline.Route exactRoute(LiveBPreviewService.Computed computed,
+            List<FinalRoutePointId> ids) {
+        List<MetricPoint> points = ids.stream().map(id -> computed.evidence().coordinateFrame()
+                .toMetric(((DetachedNode) computed.captured().network().primitives().get(
+                        ((ExistingWayNodeOccurrence) id).nodeKey())).coordinate())).toList();
+        List<ObservationOwnership> ownership = java.util.Collections.nCopies(ids.size(),
+                ObservationOwnership.DIRECT_TWO_SIDED);
+        var sourceRoute = computed.pipeline().routes().get(0);
+        TraceHypothesis hypothesis = new TraceHypothesis(sourceRoute.hypothesis().id(),
+                "exact-final-order-fixture", points, ownership, 0.0, OptionalDouble.empty(), Map.of());
+        Map<FinalRoutePointId, MetricPoint> assignments = new LinkedHashMap<>();
+        Map<FinalRoutePointId, ObservationOwnership> sourceOwnership = new LinkedHashMap<>();
+        for (int index = 0; index < ids.size(); index++) {
+            assignments.put(ids.get(index), points.get(index));
+            sourceOwnership.put(ids.get(index), ownership.get(index));
+        }
+        return new ModernTracePipeline.Route(hypothesis, hypothesis, ids, assignments,
+                sourceOwnership, sourceRoute.quality(), sourceRoute.cleanupStatus(), false);
+    }
+
+    private static List<String> supportFindings(LiveBPreviewService.Computed computed,
+            Map<PrimitiveKey, DetachedPrimitive> after, ModernTracePipeline.Route route,
+            Set<PrimitiveKey> junctions) throws Exception {
+        Method support = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "unsupportedSelectedExtensions", NetworkSnapshot.class, Map.class,
+                ModernTracePipeline.Route.class, TraceRequest.class, EvidenceSnapshot.class,
+                String.class, Set.class);
+        support.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<String> findings = (List<String>) support.invoke(null,
+                computed.captured().network(), after, route, computed.request(),
+                computed.evidence(), computed.options().fieldName(), junctions);
+        return findings;
+    }
+
+    private static LiveBPreviewService.Computed startBoundaryReinsertionComputed(boolean selectedContinues)
+            throws Exception {
+        DataSet dataSet = new DataSet();
+        Node prefix = loadedNode(781, latitude(-20), longitude(15));
+        Node junction = loadedNode(782, 0.0, longitude(10));
+        Node predecessor = loadedNode(783, 0.0, longitude(15));
+        predecessor.put("barrier", "gate");
+        Node end = loadedNode(784, 0.0, longitude(32));
+        Node farSouth = loadedNode(785, latitude(-49), longitude(25));
+        Node southPort = loadedNode(786, latitude(-31), longitude(25));
+        Node south = loadedNode(787, latitude(-8), longitude(25));
+        Node north = loadedNode(788, latitude(8), longitude(25));
+        Node northPort = loadedNode(790, latitude(31), longitude(25));
+        Node farNorth = loadedNode(791, latitude(49), longitude(25));
+        Way selected = loadedWay(789, prefix, junction, predecessor, end);
+        Way receiver = loadedWay(792, farSouth, southPort, south, junction,
+                north, northPort, farNorth);
+        for (Node node : List.of(prefix, junction, predecessor, end, farSouth,
+                southPort, south, north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        SelectionContext selection = new SelectionContext(selected, 1, 3,
+                List.of(junction, predecessor, end), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, terminalExtensionRaster(selectedContinues, false),
+                visibleConfig(), false, permissions));
+        return new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
     }
 
     @Test
@@ -830,6 +995,51 @@ class V022EndToEndTest {
         assertEquals(List.of(west, junction), selected.getNodes());
         assertEquals(List.of(farWest, westPort, approach, nearWest, junction,
                 nearEast, dip, rise, eastPort, farEast), receiver.getNodes());
+    }
+
+    @Test
+    void T169_exactSharedVertexDuplicateRemainsOneJunctionChoice() throws Exception {
+        List<?> crossings = twoAdjacentSegmentCrossings(10.0);
+        assertEquals(1, crossings.size(),
+                "two segment-pair hits at the same physical vertex are one crossing");
+        assertEquals(crossings.get(0), chosenCrossing(crossings));
+    }
+
+    @Test
+    void T169_closeButDistinctCrossingsStillRequireJointEvidence() throws Exception {
+        List<?> crossings = twoAdjacentSegmentCrossings(10.02);
+        assertEquals(2, crossings.size(),
+                "2 cm is below a quarter source pitch but remains a distinct crossing");
+        InvocationTargetException failure = assertThrows(InvocationTargetException.class,
+                () -> chosenCrossing(crossings));
+        assertTrue(failure.getCause() instanceof IllegalArgumentException);
+        assertTrue(failure.getCause().getMessage().contains("AMBIGUOUS_JUNCTION_CROSSING"));
+    }
+
+    private static List<?> twoAdjacentSegmentCrossings(double secondEast) throws Exception {
+        Class<?> crossing = java.util.Arrays.stream(
+                        ModernSingleWayEditPlanAdapter.class.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals("SelectedReceiverIntersection"))
+                .findFirst().orElseThrow();
+        Constructor<?> constructor = crossing.getDeclaredConstructor(MetricPoint.class,
+                PrimitiveKey.class, double.class, int.class, int.class);
+        constructor.setAccessible(true);
+        PrimitiveKey predecessor = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 799);
+        Object first = constructor.newInstance(new MetricPoint(10.0, 0.0), predecessor,
+                0.0, 0, 0);
+        Object second = constructor.newInstance(new MetricPoint(secondEast, 0.0), predecessor,
+                0.02, 1, 1);
+        Method best = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "bestIntersections", List.class);
+        best.setAccessible(true);
+        return (List<?>) best.invoke(null, new java.util.ArrayList<>(List.of(first, second)));
+    }
+
+    private static Object chosenCrossing(List<?> crossings) throws Exception {
+        Method unique = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "uniqueIntersection", List.class);
+        unique.setAccessible(true);
+        return unique.invoke(null, crossings);
     }
 
     @Test
@@ -1797,7 +2007,7 @@ class V022EndToEndTest {
     }
 
     private static LiveBPreviewService.VisibleRaster terminalExtensionRaster(
-            boolean selectedContinues) {
+            boolean selectedContinues, boolean nearbyParallelRidge) {
         int size = 720;
         double extent = 60.0;
         int[] argb = new int[size * size];
@@ -1807,15 +2017,18 @@ class V022EndToEndTest {
                 double east = x / RenderedHeatmapSampler.RASTER_SCALE - extent;
                 double selected = selectedContinues || east <= 11.0
                         ? Math.exp(-0.5 * Math.pow(north / 1.2, 2)) : 0.0;
+                double parallel = nearbyParallelRidge && east > 11.0
+                        ? Math.exp(-0.5 * Math.pow((north - 0.05) / 1.2, 2)) : 0.0;
                 double receiver = Math.exp(-0.5 * Math.pow((east - 25.0) / 1.2, 2));
                 int gray = (int) Math.round(255.0
-                        * (0.02 + 0.80 * Math.max(selected, receiver)));
+                        * (0.02 + 0.80 * Math.max(Math.max(selected, parallel), receiver)));
                 argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }
         }
         return new LiveBPreviewService.VisibleRaster(size, size, argb, -extent, -extent,
                 extent, extent, 1.0, 1.0, OptionalDouble.of(1.0),
-                "visible-selected-terminal-" + selectedContinues, "EPSG:3857");
+                "visible-selected-terminal-" + selectedContinues + "-parallel-"
+                        + nearbyParallelRidge, "EPSG:3857");
     }
 
     private static LiveBPreviewService.VisibleRaster multiplyCrossedReceiverRaster() {
