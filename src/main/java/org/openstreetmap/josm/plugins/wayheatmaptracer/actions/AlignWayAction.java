@@ -932,6 +932,7 @@ public class AlignWayAction extends JosmAction {
                     throw new IllegalStateException("The preview window no longer owns this attempt");
                 }
                 int index = Math.max(0, choices.getSelectedIndex());
+                requireSupportedApplySource(computed.captured(), imageryLayer);
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 ModernSingleWayEditPlanAdapter.Assessment currentAssessment =
@@ -952,9 +953,8 @@ public class AlignWayAction extends JosmAction {
                             ? () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue()
                             : () -> currentPlan.before().sourceGeneration());
                 ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
-                    : new ManagedSourceReceipt(previewSourceOwner, computed.captured(), slideConfig.heatmap(),
-                        ManagedTileRuntime::initializedCoordinator, PluginPreferences::load,
-                        () -> ProjectionRegistry.getProjection().toCode());
+                    : ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner,
+                        computed.captured(), slideConfig.heatmap());
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
                         computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
@@ -1155,7 +1155,17 @@ public class AlignWayAction extends JosmAction {
         return null;
     }
 
-    static Consumer<String> redoFailureReporter(Consumer<String> showError) {
+    /** Refuses a rendered managed layer whose mutable JOSM filters bypass its source epoch. */
+    static void requireSupportedApplySource(LiveBPreviewService.Captured captured,
+            ImageryLayer layer) {
+        if (captured.managedRaster() == null && layer instanceof ManagedHeatmapLayer) {
+            throw new IllegalStateException("The managed rendered source cannot verify unchanged pixels; "
+                    + "use direct managed tiles for Apply.");
+        }
+    }
+
+    /** Queues one fixed, credential-free host Redo failure for the user-visible error surface. */
+    public static Consumer<String> redoFailureReporter(Consumer<String> showError) {
         Objects.requireNonNull(showError, "showError");
         return reason -> {
             String safeReason = "This visible source cannot verify unchanged tiles for Redo; run a new alignment."

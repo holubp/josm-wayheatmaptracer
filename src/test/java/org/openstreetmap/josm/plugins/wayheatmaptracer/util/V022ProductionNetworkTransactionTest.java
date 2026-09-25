@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 
 import javax.swing.SwingUtilities;
 
@@ -51,8 +52,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
@@ -426,6 +430,143 @@ class V022ProductionNetworkTransactionTest {
     }
 
     @Test
+    void productionManagedOwnerRejectsGenerationChangedAfterAssemblyBeforeFirstApply() throws Exception {
+        ManagedHeatmapConfig saved = initializeProductionManagedOwner();
+        ManagedFixture fixture = managedFixture(saved.cacheBuster(),
+                () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
+        try {
+            TileFetchCoordinator owner = ManagedTileRuntime.initializedCoordinator();
+            ManagedSourceReceipt receipt = ManagedSourceReceipt.forCurrentPlugin(owner,
+                    fixture.captured(), fixture.config().heatmap());
+            ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                    fixture.dataSet(), fixture.plan(),
+                    new ManagedSourceLockedApplyValidator(fixture.validator(),
+                            new LiveBPreviewService(), fixture.captured(), receipt::requireCurrent,
+                            message -> { }), "Apply production managed source");
+            V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+            owner.updateActiveGeneration(new ManagedTileGeneration(saved.cacheBuster() + 1L));
+
+            assertThrows(IllegalStateException.class,
+                    () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(alignment)));
+
+            before.assertMatches(fixture.dataSet());
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+        } finally {
+            ManagedTileRuntime.close();
+        }
+    }
+
+    @Test
+    void productionManagedOwnerSupportsTwentyHostCyclesAndRejectsChangedSavedSettingsOnRedo()
+            throws Exception {
+        ManagedHeatmapConfig saved = initializeProductionManagedOwner();
+        ManagedFixture fixture = managedFixture(saved.cacheBuster(),
+                () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
+        try {
+            TileFetchCoordinator owner = ManagedTileRuntime.initializedCoordinator();
+            ManagedSourceReceipt receipt = ManagedSourceReceipt.forCurrentPlugin(owner,
+                    fixture.captured(), fixture.config().heatmap());
+            AtomicReference<String> reported = new AtomicReference<>();
+            ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                    fixture.dataSet(), fixture.plan(),
+                    new ManagedSourceLockedApplyValidator(fixture.validator(),
+                            new LiveBPreviewService(), fixture.captured(), receipt::requireCurrent,
+                            reported::set), "Apply production managed source");
+            V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(alignment));
+            V022AtomicApplyTest.LiveState after = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+            for (int cycle = 0; cycle < 20; cycle++) {
+                V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+                before.assertMatches(fixture.dataSet());
+                V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+                after.assertMatches(fixture.dataSet());
+            }
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+            before.assertMatches(fixture.dataSet());
+            PluginPreferences.save(managedConfig(saved.cacheBuster(), "blue").heatmap());
+
+            assertThrows(IllegalStateException.class,
+                    () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo()));
+
+            before.assertMatches(fixture.dataSet());
+            assertTrue(reported.get() != null && reported.get().contains("recompute alignment"));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        } finally {
+            ManagedTileRuntime.close();
+        }
+    }
+
+    @Test
+    void productionManagedOwnerRejectsFirstApplyAndRedoForEverySourceClock() throws Exception {
+        for (String changed : List.of("generation", "settings", "projection")) {
+            for (boolean redo : List.of(false, true)) {
+                ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+                ManagedHeatmapConfig saved = initializeProductionManagedOwner();
+                ManagedFixture fixture = managedFixture(saved.cacheBuster(),
+                        () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
+                AtomicReference<String> shown = new AtomicReference<>();
+                try {
+                    TileFetchCoordinator owner = ManagedTileRuntime.initializedCoordinator();
+                    ManagedSourceReceipt receipt = ManagedSourceReceipt.forCurrentPlugin(owner,
+                            fixture.captured(), fixture.config().heatmap());
+                    ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                            fixture.dataSet(), fixture.plan(),
+                            new ManagedSourceLockedApplyValidator(fixture.validator(),
+                                    new LiveBPreviewService(), fixture.captured(),
+                                    receipt::requireCurrent,
+                                    AlignWayAction.redoFailureReporter(shown::set)),
+                            "Apply production managed source");
+                    Runnable mutate = switch (changed) {
+                        case "generation" -> () -> owner.updateActiveGeneration(
+                                new ManagedTileGeneration(saved.cacheBuster() + 1L));
+                        case "settings" -> () -> PluginPreferences.save(
+                                managedConfig(saved.cacheBuster(), "blue").heatmap());
+                        case "projection" -> () -> ProjectionRegistry.setProjection(
+                                Projections.getProjectionByCode("EPSG:4326"));
+                        default -> throw new AssertionError(changed);
+                    };
+                    if (redo) {
+                        assertSourceStaleRedoHistory(fixture.dataSet(), alignment, mutate);
+                        SwingUtilities.invokeAndWait(() -> { });
+                        assertTrue(shown.get() != null
+                                && shown.get().contains("Alignment Redo failed"), changed);
+                        assertTrue(!shown.get().contains("key")
+                                && !shown.get().contains("signature"), changed);
+                    } else {
+                        V022AtomicApplyTest.LiveState before =
+                                V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+                        mutate.run();
+                        assertThrows(IllegalStateException.class,
+                                () -> V022AtomicApplyTest.onEdt(() ->
+                                        UndoRedoHandler.getInstance().add(alignment)), changed);
+                        before.assertMatches(fixture.dataSet());
+                        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty(), changed);
+                        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty(), changed);
+                    }
+                } finally {
+                    UndoRedoHandler.getInstance().clean();
+                    ManagedTileRuntime.close();
+                    ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+                }
+            }
+        }
+    }
+
+    private ManagedHeatmapConfig initializeProductionManagedOwner() {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        Config.setBaseDirectoriesProvider(new IBaseDirectories() {
+            @Override public java.io.File getPreferencesDirectory(boolean create) { return temporary.toFile(); }
+            @Override public java.io.File getUserDataDirectory(boolean create) { return temporary.toFile(); }
+            @Override public java.io.File getCacheDirectory(boolean create) { return temporary.toFile(); }
+        });
+        PluginPreferences.save(managedConfig(36L, "hot").heatmap());
+        ManagedHeatmapConfig saved = PluginPreferences.load();
+        ManagedTileRuntime.initialize(saved);
+        return saved;
+    }
+
+    @Test
     void managedPlanRetainsTheNonzeroAcquisitionGeneration() throws Exception {
         ManagedFixture fixture = managedFixture();
         assertEquals(37L, fixture.captured().network().sourceGeneration());
@@ -548,6 +689,11 @@ class V022ProductionNetworkTransactionTest {
     }
 
     private static ManagedFixture managedFixture() throws Exception {
+        return managedFixture(37L, null);
+    }
+
+    private static ManagedFixture managedFixture(long generation, LongSupplier liveGeneration)
+            throws Exception {
         DataSet dataSet = new DataSet();
         Node west = node(771, 0, -8);
         Node east = node(772, 0, 8);
@@ -557,12 +703,12 @@ class V022ProductionNetworkTransactionTest {
         dataSet.addPrimitive(selected);
         SelectionContext selection = new SelectionContext(selected, 0, 1,
                 List.of(west, east), Set.of(west, east));
-        AlignmentConfig config = managedConfig(37L, "hot");
+        AlignmentConfig config = managedConfig(generation, "hot");
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.ManagedCaptureSeed[] seed =
                 new LiveBPreviewService.ManagedCaptureSeed[1];
         SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(
-                dataSet, selection, config, "managed-selected-hot-g37"));
+                dataSet, selection, config, "managed-selected-hot-g" + generation));
         BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < image.getHeight(); y++) {
             int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.exp(
@@ -579,8 +725,8 @@ class V022ProductionNetworkTransactionTest {
                 new ManagedModernPreviewSource.Raster(image, valid,
                         SupportedInputRasterTransform.webMercator(15,
                                 equator - halfWidth, equator - halfWidth, 2.0),
-                        "hot", 15, "managed-selected-hot-g37",
-                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(37L)));
+                        "hot", 15, "managed-selected-hot-g" + generation,
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(generation)));
         LiveBPreviewService.Computed computed = service.compute(captured, CancellationProbe.NONE);
         AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
         NetworkSnapshotCapture.CapturedSnapshot[] receipt =
@@ -588,7 +734,8 @@ class V022ProductionNetworkTransactionTest {
         SwingUtilities.invokeAndWait(() -> receipt[0] = NetworkSnapshotCapture.captureBound(
                 dataSet, captured.specification()));
         LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
-                receipt[0], plan, () -> plan.before().sourceGeneration());
+                receipt[0], plan, liveGeneration == null
+                        ? () -> plan.before().sourceGeneration() : liveGeneration);
         return new ManagedFixture(dataSet, config, captured, plan, validator);
     }
 

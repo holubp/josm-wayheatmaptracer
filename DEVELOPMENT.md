@@ -755,3 +755,19 @@ The live preview slice captures the existing chunked visible EPSG:3857 render an
 A derives `CorridorTraceInput` from the exact request `ProfileChainage`, frozen metric source polyline, and frozen geographic/metric/raster transforms. Its lateral step is the factual output-raster pitch. The explicit A and B actions may accept stored managed credentials solely to use the already rendered visible layer. It does not start managed acquisition, persist a routing override, or include credentials in the captured worker input. Publication and every candidate switch repeat dataset, layer, projection, effective session request, underlying stored settings, selected-source, and referrer checks. The modeless dialog is read-only and displays the selected `ModernTracePipeline.Route.quality()` disposition and findings directly; it has no Apply, confirmation, retry, or Format-15 export path. The action-owned window generation and job sequence jointly prevent a cancelled, closed, or superseded attempt from publishing late.
 
 This interim slice does not complete other modern engines or source modes, modern edit-plan construction, Apply/Undo/Redo, or release certification.
+
+### Modern source freshness in the current development build
+
+For modern managed-source Apply/Redo, the command receipt reads the current
+plugin-owned tile coordinator, its actual acquired generation, persisted source
+settings, and current projection on each execution. Direct managed acquisition
+copies tile pixels into a detached mosaic before inference; JOSM display filters
+do not own that mosaic. A visible-rendered capture of `ManagedHeatmapLayer` is
+preview-only for Apply: JOSM 19555 exposes a live mutable image-processor list,
+and filter/offset settings can mutate before their change callbacks acquire the
+plugin's visible epoch monitor. The epoch is therefore not an enforceable
+render-input lease. The action refuses that route before creating a command;
+source checks do not paint or fetch tiles while the dataset write lock is held.
+Generic third-party visible imagery still lacks a provider-wide render lease;
+its separate Apply/Redo policy must be resolved before claiming full source
+freshness or release readiness.

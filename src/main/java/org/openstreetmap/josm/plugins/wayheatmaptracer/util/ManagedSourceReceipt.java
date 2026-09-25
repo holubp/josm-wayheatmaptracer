@@ -4,9 +4,12 @@ import java.util.Objects;
 import java.util.function.Supplier;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
 /** Factual managed acquisition owner and generation retained for Apply and Redo. */
 public final class ManagedSourceReceipt {
@@ -17,6 +20,14 @@ public final class ManagedSourceReceipt {
     private final Supplier<TileFetchCoordinator> currentOwner;
     private final Supplier<ManagedHeatmapConfig> currentSettings;
     private final Supplier<String> currentProjection;
+
+    /** Binds direct managed acquisition to the live plugin runtime, saved settings, and projection. */
+    public static ManagedSourceReceipt forCurrentPlugin(TileFetchCoordinator owner,
+            LiveBPreviewService.Captured captured, ManagedHeatmapConfig settings) {
+        return new ManagedSourceReceipt(owner, captured, settings,
+                ManagedTileRuntime::initializedCoordinator, PluginPreferences::load,
+                () -> ProjectionRegistry.getProjection().toCode());
+    }
 
     /** Binds the actual raster request generation to current source-owner suppliers. */
     public ManagedSourceReceipt(TileFetchCoordinator owner, LiveBPreviewService.Captured captured,

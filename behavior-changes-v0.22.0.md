@@ -16,6 +16,12 @@ within its documented validation boundary. Detached component tests and these
 bounded live paths do not establish full modern refitting, network reconstruction,
 replay, calibration, or release-gate completion.
 
+A preview captured by rendering the plugin-managed Strava layer cannot Apply:
+JOSM rendering settings can change pixels outside the layer's revision guard.
+Use direct managed tile acquisition for an applicable managed-source preview.
+Generic visible-source Apply/Redo remains subject to its separate source
+freshness decision and is not certified by this managed-source guard.
+
 The modern behavior and safety boundaries below remain mandatory release
 requirements. They are not claims that this intermediate build implements them.
 Release requires the complete approved scope, independent review, production

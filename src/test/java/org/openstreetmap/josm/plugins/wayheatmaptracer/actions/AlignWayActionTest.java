@@ -43,8 +43,40 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.data.imagery.ImageryInfo;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.IBaseDirectories;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @Test
+    void managedRenderedCaptureCannotReachApplyWithoutAnAuthoritativePixelLease(@TempDir Path directory) {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        Config.setBaseDirectoriesProvider(new IBaseDirectories() {
+            @Override public java.io.File getPreferencesDirectory(boolean create) { return directory.toFile(); }
+            @Override public java.io.File getUserDataDirectory(boolean create) { return directory.toFile(); }
+            @Override public java.io.File getCacheDirectory(boolean create) { return directory.toFile(); }
+        });
+        ManagedHeatmapLayer layer = new ManagedHeatmapLayer(new ImageryInfo(
+            "Test heatmap", "https://example.invalid/{zoom}/{x}/{y}.png", "tms"));
+        try {
+            LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(12, 12,
+                new int[144], 0.0, 0.0, 2.0, 2.0, 1.0, 1.0, OptionalDouble.empty(),
+                "test", "EPSG:3857");
+            LiveBPreviewService.Captured captured = new LiveBPreviewService.Captured(raster,
+                null, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+
+            IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                () -> AlignWayAction.requireSupportedApplySource(captured, layer));
+
+            assertTrue(refusal.getMessage().contains("managed rendered"));
+        } finally {
+            layer.destroy();
+        }
+    }
     @Test
     void redoFailureUiUsesOnlyFixedRedactedText() throws Exception {
         java.util.concurrent.atomic.AtomicReference<String> shown = new java.util.concurrent.atomic.AtomicReference<>();
