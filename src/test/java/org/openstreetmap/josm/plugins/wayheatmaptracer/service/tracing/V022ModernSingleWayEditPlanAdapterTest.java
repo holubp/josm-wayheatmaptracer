@@ -2,13 +2,12 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.lang.reflect.InvocationTargetException;
 import java.awt.image.BufferedImage;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -193,9 +192,13 @@ class V022ModernSingleWayEditPlanAdapterTest {
             BufferedImage image = matrixRasterImage();
             boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
             java.util.Arrays.fill(valid, true);
+            double worldPixelsAtEquator = Math.scalb(256.0, 15) / 2.0;
+            double sourceHalfWidthWorldPixels = image.getWidth() / (2.0 * 2.0);
             captured = service.attachManagedRaster(seed[0], new ManagedModernPreviewSource.Raster(
                     image, valid, SupportedInputRasterTransform.webMercator(
-                            15, 16384.0, 16384.0, 2.0), "hot", 15, "task-four-matrix"));
+                            15, worldPixelsAtEquator - sourceHalfWidthWorldPixels,
+                            worldPixelsAtEquator - sourceHalfWidthWorldPixels, 2.0),
+                    "hot", 15, "task-four-matrix"));
         } else {
             LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
             SwingUtilities.invokeAndWait(() -> visible[0] = service.capture(fixture.dataSet(),
@@ -206,10 +209,11 @@ class V022ModernSingleWayEditPlanAdapterTest {
         ModernSingleWayEditPlanAdapter.Assessment assessment =
                 new ModernSingleWayEditPlanAdapter().assess(computed, 0);
 
-        if (assessment.plan().isPresent()) {
+        assertEquals(testCase.expectedAvailability(), assessment.availability(),
+                () -> testCase + ": " + assessment.detail());
+        if (testCase.expectedAvailability() == ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE) {
             AlignmentEditPlan plan = assessment.plan().orElseThrow();
-            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
-                    assessment.availability());
+            assertTrue(assessment.applyAvailable(), () -> testCase + ": " + plan.validation().findingCodes());
             Map<PrimitiveKey, List<EastNorth>> displayed = assessment.projectFinalPreviewWays(point ->
                     new EastNorth(point.longitudeDegrees(), point.latitudeDegrees()));
             assertEquals(plan.finalPreviewWays().keySet(), displayed.keySet());
@@ -218,37 +222,49 @@ class V022ModernSingleWayEditPlanAdapterTest {
                     displayed.get(way)));
             assertEquals(plan.canonicalHash(),
                     PreviewReviewState.fromEditPlan("task-four-matrix", plan).exactEditPlanHash());
+            assertEquals("Exact immutable plan available", assessment.detail());
         } else {
-            assertNotEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
-                    assessment.availability(), testCase.toString());
-            assertTrue(assessment.detail() != null && !assessment.detail().isBlank(),
-                    () -> "Missing typed unavailable reason: " + testCase);
+            assertTrue(assessment.plan().isEmpty(), testCase.toString());
+            assertEquals(testCase.expectedDetail(), assessment.detail(), testCase.toString());
         }
     }
 
     static Stream<TaskFourAuthorityCase> taskFourAuthorityCases() {
         return Stream.of(
                 new TaskFourAuthorityCase(TrackerMode.CORRIDOR_AWARE, false,
-                        GeometryCleanupMode.NONE, false, AlignmentMode.PRECISE_SHAPE),
+                        GeometryCleanupMode.NONE, false, AlignmentMode.PRECISE_SHAPE,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                        "Exact immutable plan available"),
                 new TaskFourAuthorityCase(TrackerMode.CORRIDOR_AWARE, true,
-                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.PRECISE_SHAPE),
+                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.PRECISE_SHAPE,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                        "Exact immutable plan available"),
                 new TaskFourAuthorityCase(TrackerMode.PROBABILISTIC, false,
                         GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, false,
-                        AlignmentMode.PRECISE_SHAPE),
+                        AlignmentMode.PRECISE_SHAPE,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.CLEANUP_UNAVAILABLE_FOR_ENGINE,
+                        "Probabilistic B cleanup is unavailable until its exact final pipeline is supported"),
                 new TaskFourAuthorityCase(TrackerMode.PROBABILISTIC, true,
-                        GeometryCleanupMode.NONE, true, AlignmentMode.MOVE_EXISTING_NODES),
+                        GeometryCleanupMode.NONE, true, AlignmentMode.PRECISE_SHAPE,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                        "Exact immutable plan available"),
                 new TaskFourAuthorityCase(TrackerMode.HYBRID, false,
-                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.MOVE_EXISTING_NODES),
+                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.MOVE_EXISTING_NODES,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                        "The existing nodes cannot safely represent the actual final route; use Precise Shape"),
                 new TaskFourAuthorityCase(TrackerMode.DIRECTIONAL_IMAGE, false,
                         GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, false,
-                        AlignmentMode.MOVE_EXISTING_NODES));
+                        AlignmentMode.MOVE_EXISTING_NODES,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                        "The existing nodes cannot safely represent the actual final route; use Precise Shape"));
     }
 
     private static BufferedImage matrixRasterImage() {
         BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
+        double centerRow = image.getHeight() / 2.0;
         for (int y = 0; y < image.getHeight(); y++) {
             int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.exp(
-                    -0.5 * (y - 288.0) * (y - 288.0) / (1.2 * 1.2))));
+                    -0.5 * (y - centerRow) * (y - centerRow) / (1.2 * 1.2))));
             for (int x = 0; x < image.getWidth(); x++) {
                 image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
             }
@@ -257,7 +273,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     private record TaskFourAuthorityCase(TrackerMode engine, boolean managedSource,
-            GeometryCleanupMode cleanupMode, boolean subrange, AlignmentMode geometryMode) {
+            GeometryCleanupMode cleanupMode, boolean subrange, AlignmentMode geometryMode,
+            ModernSingleWayEditPlanAdapter.ApplyAvailability expectedAvailability,
+            String expectedDetail) {
         @Override
         public String toString() {
             return engine + "/" + (managedSource ? "managed" : "visible") + "/"
