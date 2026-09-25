@@ -29,6 +29,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
@@ -37,6 +38,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.JunctionCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner.ReceiverGroup;
@@ -256,8 +258,13 @@ public final class ModernSingleWayEditPlanAdapter {
             SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
             before.closure(), afterValues, proposedWatches(before, afterValues));
         Map<PrimitiveKey, List<GeographicPoint>> preview = finalPreviewWays(before, afterValues);
-        List<String> topologyFindings = finalTopologyFindings(before, afterValues,
-                request.selectedWayKey(), request.selectedRange(), evidence);
+        List<String> topologyFindings = new ArrayList<>(finalTopologyFindings(before, afterValues,
+                request.selectedWayKey(), request.selectedRange(), evidence));
+        if (!sharedJunctions.isEmpty()
+                && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
+            topologyFindings.addAll(unsupportedSelectedExtensions(before, afterValues, route,
+                    request, evidence, computed.options().fieldName(), sharedJunctions));
+        }
         ValidationReport validation = validation(route.quality(),
                 request.permissions().junctionPolicy(), topologyFindings);
         return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
@@ -477,7 +484,7 @@ public final class ModernSingleWayEditPlanAdapter {
             addSelectedReceiverIntersections(result, before, route, selected,
                     evidenced, evidence, receiving, junction, proposed);
         }
-        return bestIntersections(result);
+        return bestIntersections(result, evidence.resolution().effectivePitchMeters());
     }
 
     private static List<SelectedReceiverIntersection> selectedReceiverIntersections(
@@ -491,7 +498,7 @@ public final class ModernSingleWayEditPlanAdapter {
         List<SelectedReceiverIntersection> result = new ArrayList<>();
         addSelectedReceiverIntersections(result, before, route, selected,
                 evidenced, evidence, receiving, junction, proposed);
-        return bestIntersections(result);
+        return bestIntersections(result, evidence.resolution().effectivePitchMeters());
     }
 
     private static void addSelectedReceiverIntersections(
@@ -539,12 +546,23 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     private static List<SelectedReceiverIntersection> bestIntersections(
-            List<SelectedReceiverIntersection> result) {
+            List<SelectedReceiverIntersection> result, double sourcePitchMeters) {
         result.sort(java.util.Comparator.comparingDouble(
                     SelectedReceiverIntersection::routeDistanceMeters)
                 .thenComparingInt(SelectedReceiverIntersection::selectedSegment)
                 .thenComparingInt(SelectedReceiverIntersection::receiverSegment));
-        return List.copyOf(result.subList(0, Math.min(8, result.size())));
+        List<SelectedReceiverIntersection> distinct = new ArrayList<>();
+        double sameVertexTolerance = Math.max(1.0e-6, sourcePitchMeters * 0.25);
+        for (SelectedReceiverIntersection candidate : result) {
+            boolean repeatedVertex = distinct.stream().anyMatch(existing ->
+                    candidate.point().distanceTo(existing.point()) <= sameVertexTolerance
+                    && Math.abs(candidate.selectedSegment() - existing.selectedSegment()) <= 1
+                    && Math.abs(candidate.receiverSegment() - existing.receiverSegment()) <= 1);
+            if (!repeatedVertex) {
+                distinct.add(candidate);
+            }
+        }
+        return List.copyOf(distinct.subList(0, Math.min(8, distinct.size())));
     }
 
     private static MetricPoint segmentCrossing(MetricPoint a, MetricPoint b,
@@ -628,7 +646,7 @@ public final class ModernSingleWayEditPlanAdapter {
                             selectedReceiverIntersections(before, route, evidenced, evidence,
                                     receiver, junction, proposed);
                     if (!intersections.isEmpty()) {
-                        SelectedReceiverIntersection intersection = intersections.get(0);
+                        SelectedReceiverIntersection intersection = uniqueIntersection(intersections);
                         proposed = intersection.point();
                         jointPositions.put(junction, proposed);
                         selectedInsertionAfter.put(junction, intersection.selectedPredecessor());
@@ -646,7 +664,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     if (intersections.isEmpty()) {
                         groups = List.of();
                     } else {
-                        SelectedReceiverIntersection intersection = intersections.get(0);
+                        SelectedReceiverIntersection intersection = uniqueIntersection(intersections);
                         proposed = intersection.point();
                         jointPositions.put(junction, proposed);
                         selectedInsertionAfter.put(junction, intersection.selectedPredecessor());
@@ -750,6 +768,103 @@ public final class ModernSingleWayEditPlanAdapter {
                             .distinct().toList());
         }
         return Map.copyOf(combined);
+    }
+
+    private static SelectedReceiverIntersection uniqueIntersection(
+            List<SelectedReceiverIntersection> intersections) {
+        if (intersections.size() != 1) {
+            throw new IllegalArgumentException(
+                    "AMBIGUOUS_JUNCTION_CROSSING: distinct receiver crossings need joint evidence");
+        }
+        return intersections.get(0);
+    }
+
+    private static List<String> unsupportedSelectedExtensions(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, ModernTracePipeline.Route route,
+            TraceRequest request, EvidenceSnapshot evidence, String fieldName,
+            Set<PrimitiveKey> junctions) {
+        double pitch = evidence.resolution().effectivePitchMeters();
+        var field = evidence.fields().get(fieldName);
+        if (field == null) {
+            return List.of("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+        }
+        ImageCostField image = new ImageCostField(field, evidence.transform(),
+                before.closure().editRegion(), pitch);
+        DetachedWay selected = (DetachedWay) after.get(request.selectedWayKey());
+        List<String> findings = new ArrayList<>();
+        for (PrimitiveKey junction : junctions) {
+            int routeIndex = -1;
+            for (int index = 0; index < route.pointIds().size(); index++) {
+                if (route.pointIds().get(index) instanceof ExistingWayNodeOccurrence occurrence
+                        && occurrence.nodeKey().equals(junction)) {
+                    routeIndex = index;
+                    break;
+                }
+            }
+            if (routeIndex < 0) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+                continue;
+            }
+            if (routeIndex != 0 && routeIndex != route.pointIds().size() - 1) {
+                continue;
+            }
+            int selectedIndex = selected.nodeKeys().indexOf(junction);
+            if (selectedIndex < 0) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+                continue;
+            }
+            int neighborIndex = selectedIndex + (routeIndex == 0 ? 1 : -1);
+            if (neighborIndex < 0 || neighborIndex >= selected.nodeKeys().size()) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+                continue;
+            }
+            MetricPoint neighbor = metric(after, selected.nodeKeys().get(neighborIndex), evidence);
+            MetricPoint target = metric(after, junction, evidence);
+            MetricPoint original = route.assignments().get(route.pointIds().get(routeIndex));
+            if (original.distanceTo(target) <= pitch) {
+                continue;
+            }
+            double dx = target.xMeters() - neighbor.xMeters();
+            double dy = target.yMeters() - neighbor.yMeters();
+            double squaredLength = dx * dx + dy * dy;
+            if (!(squaredLength > 1.0e-12)) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+                continue;
+            }
+            double fraction = ((original.xMeters() - neighbor.xMeters()) * dx
+                    + (original.yMeters() - neighbor.yMeters()) * dy) / squaredLength;
+            MetricPoint projected = new MetricPoint(neighbor.xMeters() + fraction * dx,
+                    neighbor.yMeters() + fraction * dy);
+            if (fraction >= 1.0 && original.distanceTo(projected) <= pitch) {
+                continue;
+            }
+            double allowance = Math.max(2.0, pitch);
+            MetricPoint start = fraction >= 0.0 && fraction < 1.0
+                    && original.distanceTo(projected) <= pitch ? projected : neighbor;
+            double extension = start.distanceTo(target);
+            if (extension <= allowance) {
+                continue;
+            }
+            int count = Math.max(1, (int) Math.ceil(extension / Math.min(1.0, pitch * 0.5)));
+            MetricPoint tangent = new MetricPoint(dx, dy);
+            double unsupported = 0.0;
+            boolean excessiveGap = false;
+            for (int sample = 0; sample < count; sample++) {
+                double t = (sample + 0.5) / count;
+                MetricPoint point = new MetricPoint(start.xMeters()
+                        + t * (target.xMeters() - start.xMeters()),
+                        start.yMeters() + t * (target.yMeters() - start.yMeters()));
+                boolean direct = image.sampleRoute(point, tangent)
+                        .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
+                        .orElse(false);
+                unsupported = direct ? 0.0 : unsupported + extension / count;
+                excessiveGap |= unsupported > allowance;
+            }
+            if (excessiveGap) {
+                findings.add("final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH");
+            }
+        }
+        return List.copyOf(findings);
     }
 
     private static double[] bounds(org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion region) {

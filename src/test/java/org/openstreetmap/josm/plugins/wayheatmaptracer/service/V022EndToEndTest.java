@@ -727,6 +727,107 @@ class V022EndToEndTest {
     }
 
     @Test
+    void T169_terminalExtensionWithoutSelectedImageSupportCannotApply() throws Exception {
+        AlignmentEditPlan plan = terminalExtensionPlan(false);
+        assertTrue(((DetachedNode) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 742))).coordinate()
+                .longitudeDegrees() > longitude(20),
+                "the counterexample must take the distant receiver crossing");
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED,
+                plan.validation().disposition(),
+                "the newly extended selected approach has no heatmap support");
+        assertTrue(plan.validation().findingCodes().contains(
+                "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"),
+                plan.validation()::toString);
+    }
+
+    @Test
+    void T169_directlyMeasuredSelectedExtensionCanReachReceiver() throws Exception {
+        AlignmentEditPlan plan = terminalExtensionPlan(true);
+        assertTrue(((DetachedNode) plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 742))).coordinate()
+                .longitudeDegrees() > longitude(20));
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
+                plan.validation().disposition(), plan.validation()::toString);
+        assertFalse(plan.validation().findingCodes().contains(
+                "final-support:UNSUPPORTED_REATTACHED_SELECTED_APPROACH"));
+    }
+
+    private static AlignmentEditPlan terminalExtensionPlan(boolean selectedContinues)
+            throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(741, 0.0, longitude(-8));
+        Node junction = loadedNode(742, 0.0, longitude(10));
+        Node farSouth = loadedNode(743, latitude(-49), longitude(25));
+        Node southPort = loadedNode(744, latitude(-31), longitude(25));
+        Node south = loadedNode(745, latitude(-8), longitude(25));
+        Node middle = loadedNode(746, latitude(8), longitude(25));
+        Node north = loadedNode(747, latitude(18), longitude(25));
+        Node northPort = loadedNode(748, latitude(31), longitude(25));
+        Node farNorth = loadedNode(749, latitude(49), longitude(25));
+        Way selected = loadedWay(750, west, junction);
+        Way receiver = loadedWay(751, farSouth, southPort, south, junction,
+                middle, north, northPort, farNorth);
+        for (Node node : List.of(west, junction, farSouth, southPort, south,
+                middle, north, northPort, farNorth)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, terminalExtensionRaster(selectedContinues),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        return new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+    }
+
+    @Test
+    void T169_distinctSupportedReceiverCrossingsRequireAnUnambiguousChoice() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = loadedNode(761, 0.0, longitude(-20));
+        Node junction = loadedNode(762, 0.0, longitude(10));
+        Node farWest = loadedNode(763, latitude(-18), longitude(-45));
+        Node westPort = loadedNode(764, latitude(-15), longitude(-35));
+        Node approach = loadedNode(765, latitude(-10), longitude(-20));
+        Node nearWest = loadedNode(766, latitude(-4), longitude(-5));
+        Node nearEast = loadedNode(767, latitude(5), longitude(14));
+        Node dip = loadedNode(768, latitude(-5), longitude(24));
+        Node rise = loadedNode(769, latitude(20), longitude(35));
+        Node eastPort = loadedNode(770, latitude(28), longitude(45));
+        Node farEast = loadedNode(771, latitude(30), longitude(50));
+        Way selected = loadedWay(772, west, junction);
+        Way receiver = loadedWay(773, farWest, westPort, approach, nearWest,
+                junction, nearEast, dip, rise, eastPort, farEast);
+        for (Node node : List.of(west, junction, farWest, westPort, approach,
+                nearWest, nearEast, dip, rise, eastPort, farEast)) {
+            dataSet.addPrimitive(node);
+        }
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                selected.getNodes(), Set.of());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, multiplyCrossedReceiverRaster(),
+                visibleConfig(), false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().adapt(computed, 0));
+        assertTrue(failure.getMessage().contains("AMBIGUOUS_JUNCTION_CROSSING"),
+                failure::getMessage);
+        assertEquals(List.of(west, junction), selected.getNodes());
+        assertEquals(List.of(farWest, westPort, approach, nearWest, junction,
+                nearEast, dip, rise, eastPort, farEast), receiver.getNodes());
+    }
+
+    @Test
     void T169_selectedInteriorWithAdditionalIncidentWayFailsClosed() throws Exception {
         JunctionFixture fixture = selectedInteriorReconstructionFixture();
         Node additionalEndpoint = loadedNode(312, latitude(18), longitude(8));
@@ -1474,6 +1575,62 @@ class V022EndToEndTest {
                 "visible-junction-" + receiverEvidence.name().toLowerCase()
                     + "-" + selectedNorthMeters,
                 "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster terminalExtensionRaster(
+            boolean selectedContinues) {
+        int size = 720;
+        double extent = 60.0;
+        int[] argb = new int[size * size];
+        for (int y = 0; y < size; y++) {
+            double north = extent - y / RenderedHeatmapSampler.RASTER_SCALE;
+            for (int x = 0; x < size; x++) {
+                double east = x / RenderedHeatmapSampler.RASTER_SCALE - extent;
+                double selected = selectedContinues || east <= 11.0
+                        ? Math.exp(-0.5 * Math.pow(north / 1.2, 2)) : 0.0;
+                double receiver = Math.exp(-0.5 * Math.pow((east - 25.0) / 1.2, 2));
+                int gray = (int) Math.round(255.0
+                        * (0.02 + 0.80 * Math.max(selected, receiver)));
+                argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(size, size, argb, -extent, -extent,
+                extent, extent, 1.0, 1.0, OptionalDouble.of(1.0),
+                "visible-selected-terminal-" + selectedContinues, "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster multiplyCrossedReceiverRaster() {
+        int size = 960;
+        double extent = 80.0;
+        double[][] path = {{-45, -18}, {-35, -15}, {-20, -10}, {-5, -4},
+                {10, 0}, {14, 5}, {24, -5}, {35, 20}, {45, 28}, {50, 30}};
+        int[] argb = new int[size * size];
+        for (int y = 0; y < size; y++) {
+            double north = extent - y / RenderedHeatmapSampler.RASTER_SCALE;
+            for (int x = 0; x < size; x++) {
+                double east = x / RenderedHeatmapSampler.RASTER_SCALE - extent;
+                double receiverDistance = Double.POSITIVE_INFINITY;
+                for (int segment = 1; segment < path.length; segment++) {
+                    double[] a = path[segment - 1];
+                    double[] b = path[segment];
+                    double dx = b[0] - a[0];
+                    double dy = b[1] - a[1];
+                    double fraction = Math.max(0.0, Math.min(1.0,
+                            ((east - a[0]) * dx + (north - a[1]) * dy)
+                                    / (dx * dx + dy * dy)));
+                    receiverDistance = Math.min(receiverDistance,
+                            Math.hypot(east - a[0] - fraction * dx,
+                                    north - a[1] - fraction * dy));
+                }
+                double selected = Math.exp(-0.5 * Math.pow(north / 1.2, 2));
+                double receiver = Math.exp(-0.5 * Math.pow(receiverDistance / 1.2, 2));
+                int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.max(selected, receiver)));
+                argb[y * size + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(size, size, argb, -extent, -extent,
+                extent, extent, 1.0, 1.0, OptionalDouble.of(1.0),
+                "visible-multiply-crossed-receiver", "EPSG:3857");
     }
 
     private static LiveBPreviewService.VisibleRaster visibleRaster(int size, double extent,
