@@ -20,6 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.command.AddCommand;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -282,6 +283,57 @@ class V022LockedClosureApplyTest {
 
         assertEquals(before, state(fixture.dataSet));
         assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+    }
+
+    @Test
+    void staleHostRedoConsumesOnlyAttemptedEntryAndPreservesUnrelatedHistory()
+            throws Exception {
+        Fixture fixture = fixture();
+        ApplyAlignmentEditPlanCommand alignment = fixture.command(() -> GENERATION,
+                point -> { });
+        Node unrelated = new Node(latLon(fixture.frame.toGeographic(
+                new MetricPoint(80.0, 80.0))));
+        AddCommand unrelatedHistory = new AddCommand(fixture.dataSet, unrelated);
+
+        onEdt(() -> {
+            UndoRedoHandler.getInstance().add(alignment);
+            UndoRedoHandler.getInstance().add(unrelatedHistory);
+            UndoRedoHandler.getInstance().undo();
+            UndoRedoHandler.getInstance().undo();
+        });
+        assertEquals(List.of(alignment, unrelatedHistory),
+                UndoRedoHandler.getInstance().getRedoCommands());
+        addCrossingWay(fixture);
+        List<String> beforeFailedRedo = state(fixture.dataSet);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> UndoRedoHandler.getInstance().redo()));
+
+        assertTrue(failure.getMessage() != null && !failure.getMessage().isBlank());
+        assertEquals(beforeFailedRedo, state(fixture.dataSet));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertEquals(List.of(unrelatedHistory),
+                UndoRedoHandler.getInstance().getRedoCommands());
+        assertFalse(unrelated.getDataSet() == fixture.dataSet);
+    }
+
+    @Test
+    void lockedClosureRemainsExactAcrossTwentyHostUndoRedoCycles() throws Exception {
+        Fixture fixture = fixture();
+        List<String> before = state(fixture.dataSet);
+        ApplyAlignmentEditPlanCommand command = fixture.command(() -> GENERATION,
+                point -> { });
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        List<String> after = state(fixture.dataSet);
+
+        for (int cycle = 0; cycle < 20; cycle++) {
+            onEdt(() -> UndoRedoHandler.getInstance().undo());
+            assertEquals(before, state(fixture.dataSet), "Undo cycle " + cycle);
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getRedoCommands());
+            onEdt(() -> UndoRedoHandler.getInstance().redo());
+            assertEquals(after, state(fixture.dataSet), "Redo cycle " + cycle);
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+        }
     }
 
     private static Fixture fixture() throws Exception {
