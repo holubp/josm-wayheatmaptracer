@@ -42,6 +42,7 @@ import org.openstreetmap.josm.gui.layer.ImageryLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
@@ -850,13 +851,14 @@ public class AlignWayAction extends JosmAction {
         });
         dialog.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
-                if (!completed[0]) {
-                    completed[0] = true;
-                    recordModernDiagnostics(computed, "cancelled", Math.max(0, choices.getSelectedIndex()),
-                            plan[0], review[0] != null && review[0].confirmed(), false,
-                            diagnosticAttemptIdentity);
-                }
-                boolean closed = livePreviewSession.close(previewOwner);
+                boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner, () -> {
+                    if (!completed[0]) {
+                        completed[0] = true;
+                        recordModernDiagnostics(computed, "cancelled", Math.max(0, choices.getSelectedIndex()),
+                                plan[0], review[0] != null && review[0].confirmed(), false,
+                                diagnosticAttemptIdentity);
+                    }
+                });
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
@@ -939,17 +941,24 @@ public class AlignWayAction extends JosmAction {
                         dataSet, computed.captured().specification());
                 LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, currentPlan,
                         () -> currentPlan.before().sourceGeneration());
-                UndoRedoHandler.getInstance().add(new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
+                ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
                         computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService, computed.captured())
                             : new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
                                         slideConfig, liveLayerIdentity(imageryLayer))),
-                        tr("Apply modern alignment")));
+                        tr("Apply modern alignment"));
+                applyWithPreparedDiagnostics(
+                    () -> createModernDiagnostics(computed, "applied", index, currentPlan,
+                            review[0].confirmed(), true),
+                    () -> UndoRedoHandler.getInstance().add(command));
                 completed[0] = true;
-                recordModernDiagnostics(computed, "applied", index, currentPlan,
-                        review[0].confirmed(), true, diagnosticAttemptIdentity);
-                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                try {
+                    dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                } catch (RuntimeException closeFailure) {
+                    PluginLog.verbose("Modern preview close after Apply failed: %s",
+                            closeFailure.getClass().getSimpleName());
+                }
             } catch (RuntimeException exception) {
                 completed[0] = true;
                 recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
@@ -1133,19 +1142,26 @@ public class AlignWayAction extends JosmAction {
         return identity;
     }
 
+    static boolean closeAndPublishIfCurrent(
+            PreviewSessionController<LiveBPreviewService.Computed> session,
+            PreviewSessionController.Owner owner, Runnable publish) {
+        synchronized (session) {
+            if (!session.close(owner)) {
+                return false;
+            }
+            publish.run();
+            return true;
+        }
+    }
+
     static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
             boolean applied, String attemptIdentity) {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
-            FrozenReplayInput input = new FrozenReplayInput(computed.request(),
-                    computed.evidence(), computed.captured().network(), computed.options());
-            int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
-            DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createLive(
-                    LastSlideDebugBundle.buildIdentity(), input, computed.pipeline(), status,
-                    sourceLineage, selectedRoute, plan, reviewed, applied,
-                    computed.counters()));
+            DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(computed,
+                    status, routeIndex, plan, reviewed, applied));
         } catch (RuntimeException failure) {
             String reason = failure.getMessage() == null ? "" : failure.getMessage()
                     .toLowerCase(java.util.Locale.ROOT);
@@ -1155,6 +1171,34 @@ public class AlignWayAction extends JosmAction {
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
                     diagnosticStatus, failure.getClass().getSimpleName());
         }
+    }
+
+    private static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed computed,
+            String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
+            boolean applied) {
+        FrozenReplayInput input = new FrozenReplayInput(computed.request(),
+                computed.evidence(), computed.captured().network(), computed.options());
+        int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
+        return Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
+                input, computed.pipeline(), status,
+                computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
+                selectedRoute, plan, reviewed, applied, computed.counters());
+    }
+
+    /** Builds the complete applied receipt before the real command can mutate the dataset. */
+    public static void applyWithPreparedDiagnostics(java.util.function.Supplier<Format15Bundle> prepare,
+            Runnable apply) {
+        Format15Bundle prepared = java.util.Objects.requireNonNull(prepare.get(),
+                "Prepared applied diagnostics are required");
+        if (!prepared.artifactNames().containsAll(java.util.Set.of("frozen-input.bin",
+                "frozen-edit-plan.bin", "edit-plan-identity.json", "applied-geometry.json",
+                "attempt-status.json"))
+                || !new String(prepared.artifact("attempt-status.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8).contains("\"status\":\"applied\"")) {
+            throw new IllegalArgumentException("Applied diagnostics lack exact plan or geometry evidence");
+        }
+        apply.run();
+        DiagnosticsRegistry.setLastModernBundle(prepared);
     }
 
     @Override

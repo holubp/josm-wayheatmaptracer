@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
@@ -104,8 +105,13 @@ public final class Format15ProductionBundleFactory {
             artifacts.put("final-route.json", Format15Artifact.text("final-route.json",
                 metricGeometry(route.hypothesis().points())));
             if (reviewed) {
+                String reviewedGeometry = geographicWays(plan.finalPreviewWays());
                 artifacts.put("reviewed-route.json", Format15Artifact.text("reviewed-route.json",
-                    metricGeometry(route.hypothesis().points())));
+                    reviewedGeometry));
+                artifacts.put("reviewed-route-identity.json", Format15Artifact.text(
+                    "reviewed-route-identity.json", "{\"editPlanHash\":" + quote(plan.canonicalHash())
+                        + ",\"reviewedGeometryHash\":" + quote(Format15Safety.sha256(
+                            reviewedGeometry.getBytes(StandardCharsets.UTF_8))) + "}\n"));
             }
         }
         if (plan != null) {

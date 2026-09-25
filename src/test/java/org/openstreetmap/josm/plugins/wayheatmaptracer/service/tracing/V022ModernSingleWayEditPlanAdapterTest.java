@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
 
 import javax.swing.SwingUtilities;
@@ -22,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -33,6 +36,9 @@ import org.openstreetmap.josm.data.osm.Node;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
@@ -357,7 +363,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @Test
-    void T116_realProductionPlanAppliesAndReplaysExactSingleWayStateTwentyTimes()
+    void T116_realProductionPlanAppliesAndReplaysExactSingleWayStateTwentyTimes(
+            @TempDir Path directory)
             throws Exception {
         Fixture fixture = fixture();
         LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.PROBABILISTIC);
@@ -370,7 +377,20 @@ class V022ModernSingleWayEditPlanAdapterTest {
             fixture.dataSet(), plan, plan.before().datasetIdentity(),
             () -> plan.before().sourceGeneration(), "Apply modern single-way alignment");
 
-        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        var prepared = Format15ProductionBundleFactory.createLive("test",
+            new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options()), computed.pipeline(),
+            "applied", "visible-layer", 0, plan, false, true);
+        onEdt(() -> AlignWayAction.applyWithPreparedDiagnostics(() -> prepared,
+            () -> UndoRedoHandler.getInstance().add(command)));
+        Path appliedArchive = directory.resolve("applied.zip");
+        DiagnosticsRegistry.writeLatest(appliedArchive.toFile());
+        var appliedStatus = Format15ArchiveReader.read(appliedArchive);
+        assertTrue(new String(appliedStatus.artifact("attempt-status.json").orElseThrow().bytes(),
+            StandardCharsets.UTF_8).contains("\"status\":\"applied\""));
+        assertTrue(new String(appliedStatus.artifact("edit-plan-identity.json").orElseThrow().bytes(),
+            StandardCharsets.UTF_8).contains(plan.canonicalHash()));
+        assertTrue(appliedStatus.artifact("applied-geometry.json").isPresent());
         List<Node> applied = List.copyOf(fixture.way().getNodes());
         List<LatLon> appliedCoordinates = applied.stream()
             .map(node -> new LatLon(node.lat(), node.lon())).toList();

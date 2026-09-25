@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 
@@ -56,6 +57,44 @@ class AlignWayActionTest {
             .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
         assertTrue(status.contains("\"status\":\"failed\""));
         assertFalse(status.contains("old-attempt"));
+    }
+
+    @Test
+    void staleWindowClosingCannotPublishCancellationOverNewerAttempt(@TempDir Path directory)
+            throws Exception {
+        PreviewSessionController<LiveBPreviewService.Computed> session =
+            new PreviewSessionController<>(Runnable::run);
+        var first = session.open(() -> { });
+        var second = session.open(() -> { });
+        AlignWayAction.recordModernUnavailable("started", "visible-layer", "newer-attempt");
+        assertFalse(AlignWayAction.closeAndPublishIfCurrent(session, first,
+            () -> AlignWayAction.recordModernUnavailable("cancelled", "visible-layer", "old-attempt")));
+        Path newest = directory.resolve("newest.zip");
+        DiagnosticsRegistry.writeLatest(newest.toFile());
+        String status = new String(Format15ArchiveReader.read(newest)
+            .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"started\""));
+        assertTrue(session.isCurrent(second));
+        assertTrue(AlignWayAction.closeAndPublishIfCurrent(session, second,
+            () -> AlignWayAction.recordModernUnavailable("cancelled", "visible-layer", "newer-attempt")));
+        assertFalse(session.isCurrent(second));
+        session.close();
+    }
+
+    @Test
+    void diagnosticBudgetFailureIsResolvedBeforePhysicalApply(@TempDir Path directory)
+            throws Exception {
+        AtomicInteger applied = new AtomicInteger();
+        AlignWayAction.recordModernUnavailable("started", "visible-layer", "budget-attempt");
+        assertThrows(IllegalArgumentException.class, () -> AlignWayAction.applyWithPreparedDiagnostics(
+            () -> { throw new IllegalArgumentException("diagnostic budget"); },
+            applied::incrementAndGet));
+        assertEquals(0, applied.get());
+        Path exported = directory.resolve("still-started.zip");
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        String status = new String(Format15ArchiveReader.read(exported)
+            .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"started\""));
     }
 
     @Test

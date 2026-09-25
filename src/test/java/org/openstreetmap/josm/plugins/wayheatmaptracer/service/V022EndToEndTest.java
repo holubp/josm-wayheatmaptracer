@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
@@ -26,6 +27,8 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
@@ -423,6 +426,19 @@ class V022EndToEndTest {
         }
         assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
                 plan.validation().disposition());
+        var confirmed = Format15ProductionBundleFactory.createLive("test",
+                new FrozenReplayInput(computed.request(), computed.evidence(),
+                        computed.captured().network(), computed.options()), computed.pipeline(),
+                "confirmed", "visible-layer", 0, plan, true, false);
+        assertEquals(new String(confirmed.artifact("planned-geometry.json").bytes(),
+                        StandardCharsets.UTF_8),
+                new String(confirmed.artifact("reviewed-route.json").bytes(), StandardCharsets.UTF_8));
+        assertTrue(new String(confirmed.artifact("reviewed-route.json").bytes(),
+                StandardCharsets.UTF_8).contains(receiver.toString()));
+        String reviewedIdentity = new String(confirmed.artifact("reviewed-route-identity.json").bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(reviewedIdentity.contains(plan.canonicalHash()));
+        assertTrue(reviewedIdentity.contains(confirmed.artifact("reviewed-route.json").sha256()));
 
         JunctionFixture missingEvidence = reconstructionFixture();
         LiveBPreviewService.Captured[] missingCaptured = new LiveBPreviewService.Captured[1];

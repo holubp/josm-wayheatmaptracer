@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -729,6 +730,40 @@ class V022ProductionReplayTest {
         ByteBuffer.wrap(nonfinite, offset, Double.BYTES).putDouble(Double.NaN);
         assertThrows(IllegalArgumentException.class,
             () -> FrozenReplayCodec.decode(nonfinite));
+    }
+
+    @Test
+    void codecReadsFixedPreV2Fixture() throws IOException {
+        byte[] original;
+        try (var stream = V022ProductionReplayTest.class.getResourceAsStream(
+                "/format15/frozen-replay-v1-ridge.bin")) {
+            assertTrue(stream != null, "checked-in pre-v2 fixture must exist");
+            original = stream.readAllBytes();
+        }
+        assertEquals(1, ByteBuffer.wrap(original, 4, 4).getInt());
+        assertEquals("ae4767db2a223eb743188aec4416c74f17534be2ec65c319295f0a4764c77072",
+            Format15Safety.sha256(original));
+        assertEquals(fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE).canonicalHash(),
+            FrozenReplayCodec.decode(original).canonicalHash());
+    }
+
+    @Test
+    void codecRejectsHostileV2ScalarChunkBoundaries() {
+        byte[] encoded = FrozenReplayCodec.encode(
+            fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE));
+        int values = 161 * 101;
+        byte[] first = ByteBuffer.allocate(17).putInt(values).putInt(values)
+            .put((byte) 1).putDouble(0.02).array();
+        int start = firstOccurrence(encoded, first);
+        assertTrue(start > 8, "first v2 chunk must be located independently of metadata length");
+        for (int hostileCount : List.of(0, 250_001, values + 1)) {
+            byte[] hostile = encoded.clone();
+            ByteBuffer.wrap(hostile, start + 4, 4).putInt(hostileCount);
+            assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.decode(hostile),
+                "hostile chunk count " + hostileCount);
+        }
+        byte[] truncated = Arrays.copyOf(encoded, start + 8 + 9);
+        assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.decode(truncated));
     }
 
     @Test
