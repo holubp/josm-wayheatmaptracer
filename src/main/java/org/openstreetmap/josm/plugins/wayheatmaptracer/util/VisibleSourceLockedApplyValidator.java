@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
@@ -14,15 +15,22 @@ public final class VisibleSourceLockedApplyValidator implements LockedApplyValid
     private final LiveBPreviewService previewService;
     private final LiveBPreviewService.Captured captured;
     private final Supplier<LiveBPreviewService.VisibleRaster> repeatCapture;
+    private final Runnable requireSourceOwnerCurrent;
+    private final Consumer<String> redoFailureReporter;
 
     /** Binds one immutable plan, its network receipt, and a same-frame visible repeat capture. */
     public VisibleSourceLockedApplyValidator(LiveNetworkSnapshotValidator network,
             LiveBPreviewService previewService, LiveBPreviewService.Captured captured,
-            Supplier<LiveBPreviewService.VisibleRaster> repeatCapture) {
+            Supplier<LiveBPreviewService.VisibleRaster> repeatCapture,
+            Runnable requireSourceOwnerCurrent, Consumer<String> redoFailureReporter) {
         this.network = Objects.requireNonNull(network, "network");
         this.previewService = Objects.requireNonNull(previewService, "previewService");
         this.captured = Objects.requireNonNull(captured, "captured");
         this.repeatCapture = Objects.requireNonNull(repeatCapture, "repeatCapture");
+        this.requireSourceOwnerCurrent = Objects.requireNonNull(requireSourceOwnerCurrent,
+                "requireSourceOwnerCurrent");
+        this.redoFailureReporter = Objects.requireNonNull(redoFailureReporter,
+                "redoFailureReporter");
         if (captured.managedRaster() != null) {
             throw new IllegalArgumentException("Visible source validator requires a visible capture");
         }
@@ -36,9 +44,12 @@ public final class VisibleSourceLockedApplyValidator implements LockedApplyValid
     @Override
     public void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean firstExecution) {
         network.validateLocked(dataSet, plan, false);
-        if (firstExecution) {
-            previewService.requireCurrent(dataSet, captured,
-                Objects.requireNonNull(repeatCapture.get(), "repeat visible raster"));
-        }
+        requireSourceOwnerCurrent.run();
+        previewService.requireCurrent(dataSet, captured,
+            Objects.requireNonNull(repeatCapture.get(), "repeat visible raster"));
+    }
+
+    @Override public void reportRejectedRedo(RuntimeException failure) {
+        redoFailureReporter.accept("The captured source or network changed; recompute alignment before applying.");
     }
 }

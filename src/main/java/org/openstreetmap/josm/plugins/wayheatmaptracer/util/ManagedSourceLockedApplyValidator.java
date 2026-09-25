@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import java.util.Objects;
+import java.util.function.Consumer;
 
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
@@ -12,13 +13,20 @@ public final class ManagedSourceLockedApplyValidator implements LockedApplyValid
     private final LiveNetworkSnapshotValidator network;
     private final LiveBPreviewService previewService;
     private final LiveBPreviewService.Captured captured;
+    private final Runnable requireSourceOwnerCurrent;
+    private final Consumer<String> redoFailureReporter;
 
     /** Binds an exact managed capture to one immutable edit plan. */
     public ManagedSourceLockedApplyValidator(LiveNetworkSnapshotValidator network,
-            LiveBPreviewService previewService, LiveBPreviewService.Captured captured) {
+            LiveBPreviewService previewService, LiveBPreviewService.Captured captured,
+            Runnable requireSourceOwnerCurrent, Consumer<String> redoFailureReporter) {
         this.network = Objects.requireNonNull(network, "network");
         this.previewService = Objects.requireNonNull(previewService, "previewService");
         this.captured = Objects.requireNonNull(captured, "captured");
+        this.requireSourceOwnerCurrent = Objects.requireNonNull(requireSourceOwnerCurrent,
+                "requireSourceOwnerCurrent");
+        this.redoFailureReporter = Objects.requireNonNull(redoFailureReporter,
+                "redoFailureReporter");
         if (captured.managedRaster() == null) {
             throw new IllegalArgumentException("Managed source validator requires a managed capture");
         }
@@ -28,8 +36,11 @@ public final class ManagedSourceLockedApplyValidator implements LockedApplyValid
 
     @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean firstExecution) {
         network.validateLocked(dataSet, plan, false);
-        if (firstExecution) {
-            previewService.requireCurrent(dataSet, captured);
-        }
+        requireSourceOwnerCurrent.run();
+        previewService.requireCurrent(dataSet, captured);
+    }
+
+    @Override public void reportRejectedRedo(RuntimeException failure) {
+        redoFailureReporter.accept("The captured source or network changed; recompute alignment before applying.");
     }
 }

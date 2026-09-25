@@ -8,6 +8,9 @@ public interface LockedApplyValidator {
     /** Returns the dataset identity that owns the captured Apply boundary. */
     String datasetIdentity();
 
-    /** Validates the exact plan before allocation, command snapshotting, or mutation. */
-    void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean firstExecution);
+    /** Validates the exact plan before every Apply or Redo allocation, snapshot, or mutation. */
+    void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean requireSourceGeneration);
+
+    /** Reports a rejected Redo to the source owner's UI; must not change command state. */
+    default void reportRejectedRedo(RuntimeException failure) { }
 }

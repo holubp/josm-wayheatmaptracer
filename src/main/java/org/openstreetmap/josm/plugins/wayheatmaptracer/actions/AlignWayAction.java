@@ -80,6 +80,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkS
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
@@ -531,6 +532,8 @@ public class AlignWayAction extends JosmAction {
         String sourceIdentity = managedSource ? "managed-selected-" + slideConfig.heatmap().color()
                 + "-g" + slideConfig.heatmap().cacheBuster() : liveLayerIdentity(imageryLayer);
         String sourceLineage = managedSource ? "managed-tiles" : "visible-layer";
+        final TileFetchCoordinator previewSourceOwner = managedSource
+                ? ManagedTileRuntime.initializedCoordinator() : null;
         DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createUnavailableLive(
                 LastSlideDebugBundle.buildIdentity(), "started", sourceLineage,
                 diagnosticAttemptIdentity));
@@ -584,8 +587,7 @@ public class AlignWayAction extends JosmAction {
             if (ordinaryRouting != null) {
                 final CredentialSnapshot credentials = managedSource
                         ? CredentialSnapshot.fromConfig(slideConfig.heatmap()) : null;
-                final TileFetchCoordinator coordinator = managedSource
-                        ? ManagedTileRuntime.initializedCoordinator() : null;
+                final TileFetchCoordinator coordinator = previewSourceOwner;
                 ordinaryAttemptAssembly.start(livePreviewSession, previewOwner, ordinaryRouting,
                         dataSet, selection, sourceIdentity,
                         (frozenSource, invocation, permissions) ->
@@ -598,11 +600,12 @@ public class AlignWayAction extends JosmAction {
                                     credentials, context);
                         }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
                                 imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                                tracingAtCapture, attempt.result(), diagnosticAttemptIdentity));
+                                tracingAtCapture, attempt.result(), diagnosticAttemptIdentity,
+                                previewSourceOwner));
             } else if (managedSource) {
                 final LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
                 final CredentialSnapshot credentials = CredentialSnapshot.fromConfig(slideConfig.heatmap());
-                final TileFetchCoordinator coordinator = ManagedTileRuntime.initializedCoordinator();
+                final TileFetchCoordinator coordinator = previewSourceOwner;
                 livePreviewSession.start(previewOwner, () -> {
                     seed[0] = recoveryPermissions == null
                             ? livePreviewService.captureManagedSeed(dataSet, selection, slideConfig, sourceIdentity)
@@ -618,7 +621,7 @@ public class AlignWayAction extends JosmAction {
                     return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
                 }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
                         slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
-                        diagnosticAttemptIdentity));
+                        diagnosticAttemptIdentity, previewSourceOwner));
             } else {
                 livePreviewSession.startDetached(previewOwner, () -> {
                     LiveBPreviewService.VisibleRaster raster = alignmentService.captureLiveBVisibleRaster(
@@ -636,7 +639,7 @@ public class AlignWayAction extends JosmAction {
                 }, (captured, context) -> livePreviewService.compute(captured, context),
                         attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
                                 slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
-                                diagnosticAttemptIdentity));
+                                diagnosticAttemptIdentity, null));
             }
         } catch (RuntimeException exception) {
             recordModernUnavailable("failed", sourceLineage, diagnosticAttemptIdentity);
@@ -652,7 +655,7 @@ public class AlignWayAction extends JosmAction {
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
-            String diagnosticAttemptIdentity) {
+            String diagnosticAttemptIdentity, TileFetchCoordinator previewSourceOwner) {
         if (!livePreviewSession.isCurrent(previewOwner)
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
@@ -678,7 +681,7 @@ public class AlignWayAction extends JosmAction {
                     computed.pipeline().inference().evaluatedTransitions(),
                     computed.pipeline().routes().size(), computed.counters().size());
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                    tracingAtCapture, computed.captured());
+                    tracingAtCapture, computed.captured(), previewSourceOwner);
             List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                             new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
@@ -692,7 +695,7 @@ public class AlignWayAction extends JosmAction {
             progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
                     slideConfig, persistedSlideConfig, tracingAtCapture, computed, candidates,
-                    diagnosticAttemptIdentity);
+                    diagnosticAttemptIdentity, previewSourceOwner);
         } catch (RuntimeException exception) {
             recordModernDiagnostics(computed, terminalStatus, 0, null, false, false,
                     diagnosticAttemptIdentity);
@@ -711,7 +714,8 @@ public class AlignWayAction extends JosmAction {
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
-            List<CenterlineCandidate> candidates, String diagnosticAttemptIdentity) {
+            List<CenterlineCandidate> candidates, String diagnosticAttemptIdentity,
+            TileFetchCoordinator previewSourceOwner) {
         JComboBox<CenterlineCandidate> choices = new JComboBox<>(
                 candidates.toArray(CenterlineCandidate[]::new));
         choices.setRenderer(new DefaultListCellRenderer() {
@@ -771,7 +775,7 @@ public class AlignWayAction extends JosmAction {
             }
             int index = Math.max(0, choices.getSelectedIndex());
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
-                    tracingAtCapture, computed.captured());
+                    tracingAtCapture, computed.captured(), previewSourceOwner);
             CenterlineCandidate candidate = candidates.get(index);
             FinalGeometryEvaluator.Disposition disposition =
                     computed.pipeline().routes().get(index).quality().disposition();
@@ -925,7 +929,7 @@ public class AlignWayAction extends JosmAction {
                 }
                 int index = Math.max(0, choices.getSelectedIndex());
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, tracingAtCapture, computed.captured());
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 ModernSingleWayEditPlanAdapter.Assessment currentAssessment =
                         planAdapter.assess(computed, index);
                 if (!currentAssessment.applyAvailable()) {
@@ -943,10 +947,20 @@ public class AlignWayAction extends JosmAction {
                         () -> currentPlan.before().sourceGeneration());
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
                         computed.captured().managedRaster() != null
-                            ? new ManagedSourceLockedApplyValidator(network, livePreviewService, computed.captured())
+                            ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
+                                computed.captured(), () -> requireLiveBSourceOwnerCurrent(dataSet,
+                                    imageryLayer, slideConfig, persistedSlideConfig, tracingAtCapture,
+                                    computed.captured(), previewSourceOwner),
+                                message -> SwingUtilities.invokeLater(() ->
+                                        showError(tr("Alignment Redo failed: {0}", message))))
                             : new VisibleSourceLockedApplyValidator(network, livePreviewService, computed.captured(),
                                 () -> alignmentService.captureLiveBVisibleRaster(selection, imageryLayer, mapView,
-                                        slideConfig, liveLayerIdentity(imageryLayer))),
+                                        slideConfig, liveLayerIdentity(imageryLayer),
+                                        computed.captured().specification().permissions()),
+                                () -> requireLiveBSourceOwnerCurrent(dataSet, imageryLayer, slideConfig,
+                                        persistedSlideConfig, tracingAtCapture, computed.captured(), null),
+                                message -> SwingUtilities.invokeLater(() ->
+                                        showError(tr("Alignment Redo failed: {0}", message)))),
                         tr("Apply modern alignment"));
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, "applied", index, currentPlan,
@@ -1078,7 +1092,23 @@ public class AlignWayAction extends JosmAction {
     private void requireLiveBCurrent(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
             AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
-            LiveBPreviewService.Captured captured) {
+            LiveBPreviewService.Captured captured, TileFetchCoordinator previewSourceOwner) {
+        requireLiveBSourceOwnerCurrent(dataSet, imageryLayer, slideConfig,
+                persistedSlideConfig, tracingAtCapture, captured, previewSourceOwner);
+        if (captured.managedRaster() != null) {
+            livePreviewService.requireCurrent(dataSet, captured);
+        } else {
+            LiveBPreviewService.VisibleRaster currentRaster = alignmentService.captureLiveBVisibleRaster(
+                    selection, imageryLayer, mapView, slideConfig, liveLayerIdentity(imageryLayer),
+                    captured.specification().permissions());
+            livePreviewService.requireCurrent(dataSet, captured, currentRaster);
+        }
+    }
+
+    private void requireLiveBSourceOwnerCurrent(DataSet dataSet, ImageryLayer imageryLayer,
+            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
+            TracingSettings tracingAtCapture, LiveBPreviewService.Captured captured,
+            TileFetchCoordinator sourceOwner) {
         AlignmentConfig currentPersisted = new AlignmentConfig(PluginPreferences.load(),
                 PluginPreferences.loadGeometryCleanup());
         TracingSettings currentTracing = PluginPreferences.loadTracingSettings();
@@ -1087,17 +1117,16 @@ public class AlignWayAction extends JosmAction {
                 || !matchesLivePreviewSettings(persistedSlideConfig, slideConfig, currentPersisted,
                         tracingAtCapture, currentTracing, forcedAlignmentMode, forcedLivePreviewEngine)
                 || managed && !slideConfig.heatmap().hasSameManagedSource(currentPersisted.heatmap())
+                || managed && sourceOwner != ManagedTileRuntime.initializedCoordinator()
+                || managed && !ManagedTileRuntime.initializedCoordinator().isActiveGeneration(
+                        new ManagedTileGeneration(Math.max(0L, slideConfig.heatmap().cacheBuster())))
+                || managed && !captured.managedRaster().sourceIdentity().equals(
+                        "managed-selected-" + slideConfig.heatmap().color()
+                                + "-g" + slideConfig.heatmap().cacheBuster())
                 || !managed && (!imageryLayer.isVisible()
-                        || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer)) {
+                        || HeatmapLayerResolver.resolveOptional().orElse(null) != imageryLayer
+                        || !captured.raster().sourceIdentity().equals(liveLayerIdentity(imageryLayer)))) {
             throw new IllegalStateException("The dataset, source layer, or settings changed after capture");
-        }
-        if (managed) {
-            livePreviewService.requireCurrent(dataSet, captured);
-        } else {
-            LiveBPreviewService.VisibleRaster currentRaster = alignmentService.captureLiveBVisibleRaster(
-                    selection, imageryLayer, mapView, slideConfig, liveLayerIdentity(imageryLayer),
-                    captured.specification().permissions());
-            livePreviewService.requireCurrent(dataSet, captured, currentRaster);
         }
     }
 

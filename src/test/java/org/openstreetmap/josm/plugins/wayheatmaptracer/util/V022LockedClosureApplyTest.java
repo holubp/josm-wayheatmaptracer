@@ -128,7 +128,10 @@ class V022LockedClosureApplyTest {
 
         onEdt(() -> UndoRedoHandler.getInstance().undo());
         assertEquals(List.of(fixture.first, fixture.last), fixture.way.getNodes());
+        mutationReached.set(false);
+        writeLockObserved.set(false);
         onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertTrue(writeLockObserved.get());
         assertEquals(3, fixture.way.getNodesCount());
     }
 

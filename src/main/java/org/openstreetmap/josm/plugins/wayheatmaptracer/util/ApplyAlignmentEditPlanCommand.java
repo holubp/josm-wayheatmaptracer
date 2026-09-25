@@ -154,11 +154,20 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         }
         getAffectedDataSet().update(() -> {
             if (lockedValidator != null) {
-                lockedValidator.validateLocked(getAffectedDataSet(), plan,
-                    !appliedSuccessfullyBefore);
-            } else if (!appliedSuccessfullyBefore
-                    && liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
-                throw new IllegalStateException("Alignment source generation changed before Apply");
+                try {
+                    lockedValidator.validateLocked(getAffectedDataSet(), plan, true);
+                } catch (RuntimeException failure) {
+                    if (appliedSuccessfullyBefore) {
+                        try {
+                            lockedValidator.reportRejectedRedo(failure);
+                        } catch (RuntimeException reportingFailure) {
+                            failure.addSuppressed(reportingFailure);
+                        }
+                    }
+                    throw failure;
+                }
+            } else if (liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
+                throw new IllegalStateException("Alignment source generation changed before Apply or Redo");
             }
             if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
                 createdNodes = allocatePlanLocalNodes(plan);

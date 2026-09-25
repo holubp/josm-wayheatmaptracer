@@ -4,9 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.swing.SwingUtilities;
 
@@ -14,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.command.AddCommand;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -38,6 +42,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
@@ -103,6 +109,186 @@ class V022ProductionNetworkTransactionTest {
         changed.assertMatches(fixture.dataSet());
         assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void changedVisibleRasterRejectsHostRedoWithoutTouchingDatasetOrUnrelatedHistory() throws Exception {
+        Fixture fixture = fixture();
+        AtomicReference<LiveBPreviewService.VisibleRaster> current = new AtomicReference<>(raster());
+        AtomicReference<String> reported = new AtomicReference<>();
+        ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(),
+                new VisibleSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                        fixture.captured(), current::get, () -> { }, reported::set), "Apply visible source");
+        assertSourceStaleRedoHistory(fixture.dataSet(), alignment, () -> {
+            LiveBPreviewService.VisibleRaster original = raster();
+            int[] pixels = original.argb();
+            pixels[360 * original.width() + 360] = 0xffffffff;
+            current.set(new LiveBPreviewService.VisibleRaster(original.width(), original.height(), pixels,
+                    original.minimumEast(), original.minimumNorth(), original.maximumEast(),
+                    original.maximumNorth(), original.projectionUnitsPerViewPixel(),
+                    original.groundMetersPerViewPixel(), original.nativePitchMeters(),
+                    original.sourceIdentity(), original.projectionCode()));
+        }, reported);
+    }
+
+    @Test
+    void changedVisibleIdentityRejectsHostRedoWithoutTouchingDatasetOrUnrelatedHistory() throws Exception {
+        Fixture fixture = fixture();
+        AtomicReference<LiveBPreviewService.VisibleRaster> current = new AtomicReference<>(raster());
+        AtomicReference<String> reported = new AtomicReference<>();
+        ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(),
+                new VisibleSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                        fixture.captured(), current::get, () -> { }, reported::set), "Apply visible source");
+        assertSourceStaleRedoHistory(fixture.dataSet(), alignment, () -> {
+            LiveBPreviewService.VisibleRaster original = raster();
+            current.set(new LiveBPreviewService.VisibleRaster(original.width(), original.height(),
+                    original.argb(), original.minimumEast(), original.minimumNorth(),
+                    original.maximumEast(), original.maximumNorth(),
+                    original.projectionUnitsPerViewPixel(), original.groundMetersPerViewPixel(),
+                    original.nativePitchMeters(), "replacement-visible-layer", original.projectionCode()));
+        }, reported);
+    }
+
+    @Test
+    void changedManagedGenerationRejectsHostRedoWithoutTouchingDatasetOrUnrelatedHistory()
+            throws Exception {
+        ManagedFixture fixture = managedFixture();
+        AtomicReference<ManagedHeatmapConfig> current =
+                new AtomicReference<>(fixture.config().heatmap());
+        AtomicReference<String> reported = new AtomicReference<>();
+        ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(),
+                new ManagedSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                        fixture.captured(), () -> requireManagedSourceCurrent(
+                                fixture.config().heatmap(), current.get()), reported::set),
+                "Apply managed source");
+        assertSourceStaleRedoHistory(fixture.dataSet(), alignment,
+                () -> current.set(managedConfig(38L, "hot").heatmap()), reported);
+    }
+
+    @Test
+    void changedManagedSettingsRejectHostRedoWithoutTouchingDatasetOrUnrelatedHistory()
+            throws Exception {
+        ManagedFixture fixture = managedFixture();
+        AtomicReference<ManagedHeatmapConfig> current =
+                new AtomicReference<>(fixture.config().heatmap());
+        AtomicReference<String> reported = new AtomicReference<>();
+        ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(),
+                new ManagedSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                        fixture.captured(), () -> requireManagedSourceCurrent(
+                                fixture.config().heatmap(), current.get()), reported::set),
+                "Apply managed source");
+        assertSourceStaleRedoHistory(fixture.dataSet(), alignment,
+                () -> current.set(managedConfig(37L, "blue").heatmap()), reported);
+    }
+
+    @Test
+    void generationOnlyCompatibilityCommandRejectsStaleHostRedo() throws Exception {
+        Fixture fixture = fixture();
+        AtomicLong currentGeneration = new AtomicLong(fixture.plan().before().sourceGeneration());
+        ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), fixture.plan(), fixture.plan().before().datasetIdentity(),
+                currentGeneration::get, "Apply captured generation");
+        assertSourceStaleRedoHistory(fixture.dataSet(), alignment,
+                currentGeneration::incrementAndGet);
+    }
+
+    private static void requireManagedSourceCurrent(ManagedHeatmapConfig captured,
+            ManagedHeatmapConfig current) {
+        if (!captured.hasSameManagedSource(current)) {
+            throw new IllegalStateException("Managed source settings or generation changed");
+        }
+    }
+
+    private static ManagedFixture managedFixture() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node west = node(771, 0, -8);
+        Node east = node(772, 0, 8);
+        Way selected = way(773, west, east);
+        dataSet.addPrimitive(west);
+        dataSet.addPrimitive(east);
+        dataSet.addPrimitive(selected);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(west, east), Set.of(west, east));
+        AlignmentConfig config = managedConfig(37L, "hot");
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(
+                dataSet, selection, config, "managed-selected-hot-g37"));
+        BufferedImage image = new BufferedImage(600, 600, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < image.getHeight(); y++) {
+            int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.exp(
+                    -0.5 * (y - 300.0) * (y - 300.0) / 1.44)));
+            for (int x = 0; x < image.getWidth(); x++) {
+                image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            }
+        }
+        boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
+        java.util.Arrays.fill(valid, true);
+        double equator = Math.scalb(256.0, 15) / 2.0;
+        double halfWidth = image.getWidth() / 4.0;
+        LiveBPreviewService.Captured captured = service.attachManagedRaster(seed[0],
+                new ManagedModernPreviewSource.Raster(image, valid,
+                        SupportedInputRasterTransform.webMercator(15,
+                                equator - halfWidth, equator - halfWidth, 2.0),
+                        "hot", 15, "managed-selected-hot-g37"));
+        LiveBPreviewService.Computed computed = service.compute(captured, CancellationProbe.NONE);
+        AlignmentEditPlan plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        NetworkSnapshotCapture.CapturedSnapshot[] receipt =
+                new NetworkSnapshotCapture.CapturedSnapshot[1];
+        SwingUtilities.invokeAndWait(() -> receipt[0] = NetworkSnapshotCapture.captureBound(
+                dataSet, captured.specification()));
+        LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
+                receipt[0], plan, () -> plan.before().sourceGeneration());
+        return new ManagedFixture(dataSet, config, captured, plan, validator);
+    }
+
+    private static AlignmentConfig managedConfig(long generation, String color) {
+        ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("key", "policy", "signature",
+                "session", "all", color, "", ".*", AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.CORRIDOR_AWARE, false, false, false, false, false, false,
+                false, false, false, false, 7, 4, 3.0,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                IntensitySamplingMode.COLOR_MAPPING, generation);
+        return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static void assertSourceStaleRedoHistory(DataSet dataSet,
+            ApplyAlignmentEditPlanCommand alignment, Runnable changeSource) {
+        assertSourceStaleRedoHistory(dataSet, alignment, changeSource, null);
+    }
+
+    private static void assertSourceStaleRedoHistory(DataSet dataSet,
+            ApplyAlignmentEditPlanCommand alignment, Runnable changeSource,
+            AtomicReference<String> reported) {
+        Node unrelated = new Node(new LatLon(0.001, 0.001));
+        AddCommand unrelatedHistory = new AddCommand(dataSet, unrelated);
+        V022AtomicApplyTest.onEdt(() -> {
+            UndoRedoHandler.getInstance().add(alignment);
+            UndoRedoHandler.getInstance().add(unrelatedHistory);
+            UndoRedoHandler.getInstance().undo();
+            UndoRedoHandler.getInstance().undo();
+        });
+        assertEquals(List.of(alignment, unrelatedHistory),
+                UndoRedoHandler.getInstance().getRedoCommands());
+        changeSource.run();
+        V022AtomicApplyTest.LiveState beforeRedo = V022AtomicApplyTest.LiveState.capture(dataSet);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo()));
+
+        assertTrue(failure.getMessage() != null && !failure.getMessage().isBlank());
+        if (reported != null) {
+            assertTrue(reported.get() != null && reported.get().contains("recompute alignment"));
+        }
+        beforeRedo.assertMatches(dataSet);
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertEquals(List.of(unrelatedHistory), UndoRedoHandler.getInstance().getRedoCommands());
+        assertTrue(unrelated.getDataSet() != dataSet);
     }
 
     @Test
@@ -458,7 +644,7 @@ class V022ProductionNetworkTransactionTest {
                 dataSet, captured[0].specification()));
         LiveNetworkSnapshotValidator validator = new LiveNetworkSnapshotValidator(
                 receipt[0], plan, () -> plan.before().sourceGeneration());
-        return new Fixture(dataSet, plan, validator, route);
+        return new Fixture(dataSet, plan, validator, route, captured[0]);
     }
 
     private static LiveBPreviewService.VisibleRaster raster() {
@@ -552,7 +738,12 @@ class V022ProductionNetworkTransactionTest {
     }
 
     private record Fixture(DataSet dataSet, AlignmentEditPlan plan,
-            LiveNetworkSnapshotValidator validator, Relation route) { }
+            LiveNetworkSnapshotValidator validator, Relation route,
+            LiveBPreviewService.Captured captured) { }
+
+    private record ManagedFixture(DataSet dataSet, AlignmentConfig config,
+            LiveBPreviewService.Captured captured, AlignmentEditPlan plan,
+            LiveNetworkSnapshotValidator validator) { }
 
     private record CleanupFixture(DataSet dataSet, Way selected, Node removable,
             AlignmentEditPlan plan, LiveNetworkSnapshotValidator validator) { }

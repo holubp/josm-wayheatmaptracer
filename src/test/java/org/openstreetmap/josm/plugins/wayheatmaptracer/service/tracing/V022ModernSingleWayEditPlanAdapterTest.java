@@ -436,7 +436,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
             () -> plan.before().sourceGeneration());
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
             new VisibleSourceLockedApplyValidator(network, new LiveBPreviewService(), computed.captured(),
-                V022ModernSingleWayEditPlanAdapterTest::rasterWithChangedEvidence),
+                V022ModernSingleWayEditPlanAdapterTest::rasterWithChangedEvidence,
+                () -> { }, message -> { }),
             "Apply modern visible alignment");
         List<String> before = state(fixture);
 
