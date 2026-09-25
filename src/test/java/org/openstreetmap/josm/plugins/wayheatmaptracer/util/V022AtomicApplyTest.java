@@ -238,7 +238,10 @@ class V022AtomicApplyTest {
         boolean dataSetModified
     ) {
         static LiveState capture(Fixture fixture) {
-            DataSet dataSet = fixture.dataSet;
+            return capture(fixture.dataSet);
+        }
+
+        static LiveState capture(DataSet dataSet) {
             Map<Long, NodeState> nodes = new LinkedHashMap<>();
             dataSet.getNodes().forEach(node -> nodes.put(node.getUniqueId(), NodeState.capture(node)));
             Map<Long, WayState> ways = new LinkedHashMap<>();
@@ -251,7 +254,11 @@ class V022AtomicApplyTest {
         }
 
         void assertMatches(Fixture fixture) {
-            LiveState actual = capture(fixture);
+            assertMatches(fixture.dataSet);
+        }
+
+        void assertMatches(DataSet dataSet) {
+            LiveState actual = capture(dataSet);
             assertEquals(this, actual);
             nodes.forEach((id, expected) -> assertSame(expected.identity(), actual.nodes.get(id).identity()));
             ways.forEach((id, expected) -> assertSame(expected.identity(), actual.ways.get(id).identity()));

@@ -24,6 +24,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
@@ -213,10 +215,15 @@ public final class ModernSingleWayEditPlanAdapter {
         EvidenceSnapshot evidence = computed.evidence();
         NetworkSnapshot before = captured.network();
         requireInputs(route, request, evidence, captured);
-        DetachedWay selected = requireSupportedBoundary(request, before);
+        DetachedWay selected = requireSupportedBoundary(request, before, captured.cleanup());
         List<PrimitiveKey> replacement = replacementNodes(route, request, evidence, before, selected);
 
         Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(before.primitives());
+        for (PrimitiveKey removable : before.closure().removableExistingNodeKeys()) {
+            if (!replacement.contains(removable)) {
+                afterValues.remove(removable);
+            }
+        }
         Set<PrimitiveKey> sharedJunctions = sharedMovableBoundaries(request, before, selected);
         Set<PrimitiveKey> deferredJunctions = request.permissions().junctionPolicy() == JunctionPolicy.REATTACH
                 ? sharedJunctions : Set.of();
@@ -286,7 +293,7 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     private static DetachedWay requireSupportedBoundary(
-            TraceRequest request, NetworkSnapshot before) {
+            TraceRequest request, NetworkSnapshot before, GeometryCleanupConfig cleanup) {
         ClosureDescriptor closure = before.closure();
         if (before.role() != SnapshotRole.CAPTURED_BEFORE
                 || request.engine() == TrackerMode.LEGACY_V02
@@ -298,7 +305,6 @@ public final class ModernSingleWayEditPlanAdapter {
                 || request.permissions().ordinaryRadiusMeters()
                     != request.permissions().maximumDiscoveryRadiusMeters()
                 || closure.scope() != ClosureDescriptor.Scope.EDIT_COMPONENT
-                || !closure.removableExistingNodeKeys().isEmpty()
                 || request.geometryMode() == AlignmentMode.PRECISE_SHAPE
                     && !closure.mayCreateNodes()) {
             throw new IllegalArgumentException(
@@ -310,6 +316,21 @@ public final class ModernSingleWayEditPlanAdapter {
                 || new HashSet<>(selected.nodeKeys()).size() != selected.nodeKeys().size()) {
             throw new IllegalArgumentException("Selected way occurrence identity is incomplete or repeated");
         }
+        if (!closure.removableExistingNodeKeys().isEmpty()) {
+            PrimitiveKey middle = selected.nodeKeys().get(request.selectedRange().firstIndex() + 1);
+            DetachedPrimitive value = before.primitives().get(middle);
+            if (request.engine() != TrackerMode.CORRIDOR_AWARE
+                    || request.geometryMode() != AlignmentMode.PRECISE_SHAPE
+                    || cleanup.mode() != GeometryCleanupMode.REDUCE_POINTS_ONLY
+                    || request.selectedRange().size() != 3
+                    || !closure.removableExistingNodeKeys().equals(Set.of(middle))
+                    || !(value instanceof DetachedNode node) || !node.tags().isEmpty()
+                    || !before.incomingReferrerWatches().getOrDefault(middle, Set.of())
+                            .equals(Set.of(request.selectedWayKey()))) {
+                throw new IllegalArgumentException(
+                        "Only one captured ordinary interior shape occurrence may be removed");
+            }
+        }
         if (!closure.editableExistingKeys().contains(request.selectedWayKey())
                 || !closure.editableWayOccurrences().getOrDefault(request.selectedWayKey(), List.of())
                         .equals(List.of(request.selectedRange()))) {
@@ -319,6 +340,7 @@ public final class ModernSingleWayEditPlanAdapter {
             request.selectedRange().firstIndex(), request.selectedRange().lastIndex() + 1);
         Set<PrimitiveKey> authorizedNodes = new LinkedHashSet<>(closure.protectedExistingNodeKeys());
         authorizedNodes.addAll(closure.movableExistingNodeKeys());
+        authorizedNodes.addAll(closure.removableExistingNodeKeys());
         if (!authorizedNodes.containsAll(selectedNodes)
                 || request.geometryMode() == AlignmentMode.PRECISE_SHAPE
                     && request.permissions().junctionPolicy() == JunctionPolicy.FIXED
@@ -349,12 +371,20 @@ public final class ModernSingleWayEditPlanAdapter {
         Set<PrimitiveKey> planned = new LinkedHashSet<>();
         for (FinalRoutePointId id : ids) {
             if (id instanceof ExistingWayNodeOccurrence existing) {
+                int occurrence = existing.originalOccurrenceIndex();
                 if (!existing.wayKey().equals(request.selectedWayKey())
-                        || existing.originalOccurrenceIndex() != expectedOccurrence
-                        || expectedOccurrence > request.selectedRange().lastIndex()
-                        || !selected.nodeKeys().get(expectedOccurrence).equals(existing.nodeKey())) {
+                        || occurrence < expectedOccurrence
+                        || occurrence > request.selectedRange().lastIndex()
+                        || !selected.nodeKeys().get(occurrence).equals(existing.nodeKey())) {
                     throw new IllegalArgumentException(
-                        "Final route existing occurrences are missing, duplicated, or reordered");
+                            "Final route existing occurrences are missing, duplicated, or reordered");
+                }
+                for (int skipped = expectedOccurrence; skipped < occurrence; skipped++) {
+                    if (!before.closure().removableExistingNodeKeys()
+                            .contains(selected.nodeKeys().get(skipped))) {
+                        throw new IllegalArgumentException(
+                                "Final route omits a protected or movable existing occurrence");
+                    }
                 }
                 DetachedPrimitive value = before.primitives().get(existing.nodeKey());
                 MetricPoint captured = value instanceof DetachedNode node
@@ -366,7 +396,7 @@ public final class ModernSingleWayEditPlanAdapter {
                         "Existing occurrence assignment exceeds its movement authority");
                 }
                 result.add(existing.nodeKey());
-                expectedOccurrence++;
+                expectedOccurrence = occurrence + 1;
             } else if (id instanceof GeneratedCandidatePoint generated) {
                 if (!generated.candidateId().equals(route.hypothesis().id())
                         || !planned.add(plannedKey(generated))) {
