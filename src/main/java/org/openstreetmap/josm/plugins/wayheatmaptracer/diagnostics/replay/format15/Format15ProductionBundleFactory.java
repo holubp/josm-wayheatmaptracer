@@ -411,7 +411,7 @@ public final class Format15ProductionBundleFactory {
                         || !Double.isFinite(point.yMeters())) {
                     throw new IllegalArgumentException("Interval route point assignment is incomplete");
                 }
-                json.append("{\"pointId\":").append(pointIdentityJson(pointId, null))
+                json.append("{\"pointId\":").append(pointIdentityJson(pointId, null, false))
                         .append(",\"xMeters\":").append(point.xMeters())
                         .append(",\"yMeters\":").append(point.yMeters()).append('}');
             }
@@ -484,9 +484,15 @@ public final class Format15ProductionBundleFactory {
                 if (pointId instanceof FinalRoutePointId.GeneratedCandidatePoint && owner == null) {
                     throw new IllegalArgumentException("Generated final point has no interval owner");
                 }
+                // Junction reattachment can create receiver-shape nodes which are plan-owned,
+                // but were never sampled as points on one of the slide intervals.
+                boolean topologyShapeNode = pointId == null && plan != null
+                        && nodeKey.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL
+                        && plan.createdPrimitives().get(nodeKey) instanceof DetachedNode;
                 json.append("{\"sequence\":").append(sequence)
                         .append(",\"wayKey\":").append(quote(wayKey.toString()))
-                        .append(",\"pointId\":").append(pointIdentityJson(pointId, nodeKey))
+                        .append(",\"pointId\":").append(pointIdentityJson(pointId, nodeKey,
+                                topologyShapeNode))
                         .append(",\"ownerInterval\":");
                 json.append(owner == null ? "null" : owner.toString())
                         .append(",\"latitude\":").append(coordinate.latitudeDegrees())
@@ -542,7 +548,8 @@ public final class Format15ProductionBundleFactory {
         return sourceId;
     }
 
-    private static String pointIdentityJson(FinalRoutePointId id, PrimitiveKey fallbackNode) {
+    private static String pointIdentityJson(FinalRoutePointId id, PrimitiveKey fallbackNode,
+            boolean topologyShapeNode) {
         if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
             return "{\"kind\":\"EXISTING_WAY_NODE_OCCURRENCE\",\"wayKey\":"
                     + quote(existing.wayKey().toString()) + ",\"nodeKey\":"
@@ -557,6 +564,10 @@ public final class Format15ProductionBundleFactory {
         }
         if (fallbackNode != null && fallbackNode.identityKind() == PrimitiveKey.IdentityKind.OSM_UNIQUE) {
             return "{\"kind\":\"EXISTING_NODE\",\"nodeKey\":"
+                    + quote(fallbackNode.toString()) + "}";
+        }
+        if (topologyShapeNode) {
+            return "{\"kind\":\"PLAN_LOCAL_TOPOLOGY_SHAPE_NODE\",\"nodeKey\":"
                     + quote(fallbackNode.toString()) + "}";
         }
         throw new IllegalArgumentException("Final preview point has no candidate-owned identity");

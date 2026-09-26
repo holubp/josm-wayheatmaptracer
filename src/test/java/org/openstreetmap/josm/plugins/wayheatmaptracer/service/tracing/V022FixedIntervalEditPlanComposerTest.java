@@ -179,6 +179,40 @@ class V022FixedIntervalEditPlanComposerTest {
             assertEquals(way.getValue(), decodedWay.stream().map(IndexedCoordinate::coordinate).toList(),
                     "private point provenance must reconstruct every displayed way exactly");
         }
+
+        var augmentedPlan = withUnownedPlanLocalPreviewPoint(plan);
+        var augmentedAssessment = new FixedIntervalEditPlanComposer.Assessment(
+                java.util.Optional.of(augmentedPlan), assessment.selectedWayPreview(),
+                assessment.assignments(), assessment.intervals());
+        var augmentedBundle = Format15ProductionBundleFactory.createLiveIntervals("test-build",
+                batch, augmentedAssessment, routeChoices, receipt,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+        Format15BundleWriter.write(augmentedBundle, directory.resolve("intervals-with-topology-point.zip"));
+        Format15Archive augmentedDecoded = Format15ArchiveReader.read(
+                directory.resolve("intervals-with-topology-point.zip"));
+        String augmentedProvenance = new String(augmentedDecoded.artifact(
+                "private/interval-point-provenance.json").orElseThrow().bytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(augmentedProvenance.contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE"));
+        assertTrue(augmentedProvenance.contains("\"ownerInterval\":null"));
+        Matcher augmentedMatcher = point.matcher(augmentedProvenance);
+        Map<String, List<IndexedCoordinate>> augmentedWays = new LinkedHashMap<>();
+        while (augmentedMatcher.find()) {
+            assertFalse(augmentedMatcher.group(3).contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE")
+                    && !"null".equals(augmentedMatcher.group(4)),
+                    "plan-local topology shape nodes have no slide-interval owner");
+            augmentedWays.computeIfAbsent(augmentedMatcher.group(2), ignored -> new ArrayList<>())
+                    .add(new IndexedCoordinate(Integer.parseInt(augmentedMatcher.group(1)),
+                            new GeographicPoint(Double.parseDouble(augmentedMatcher.group(5)),
+                                    Double.parseDouble(augmentedMatcher.group(6)))));
+        }
+        for (var way : augmentedPlan.finalPreviewWays().entrySet()) {
+            List<IndexedCoordinate> decodedWay = augmentedWays.get(way.getKey().toString());
+            assertTrue(decodedWay != null, "augmented provenance omitted way " + way.getKey());
+            decodedWay.sort(Comparator.comparingInt(IndexedCoordinate::index));
+            assertEquals(way.getValue(), decodedWay.stream().map(IndexedCoordinate::coordinate).toList(),
+                    "unowned plan-local point must still round-trip the complete preview");
+        }
         assertFalse(decoded.capability().supports(ReplayLevel.SCALAR_INFERENCE));
         assertFalse(decoded.capability().supports(ReplayLevel.FINAL_GEOMETRY));
         assertFalse(decoded.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
@@ -225,6 +259,45 @@ class V022FixedIntervalEditPlanComposerTest {
         String visibleIndex = new String(visibleBundle.artifact("interval-production.json").bytes(),
                 java.nio.charset.StandardCharsets.UTF_8);
         assertTrue(visibleIndex.contains("\"kind\":\"VISIBLE_RENDERED_LAYER\",\"revision\":null,\"zoom\":null"));
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan
+            withUnownedPlanLocalPreviewPoint(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan plan) {
+        var selectedKey = plan.selectedWayKey();
+        var afterValues = new LinkedHashMap<>(plan.after().primitives());
+        var selected = (DetachedWay) afterValues.get(selectedKey);
+        var generatedKey = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.planned(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE,
+                afterValues.keySet().stream()
+                        .filter(key -> key.identityKind()
+                                == org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.IdentityKind.PLAN_LOCAL)
+                        .mapToLong(org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey::id)
+                        .max().orElse(0L) + 100L);
+        var preview = new LinkedHashMap<>(plan.finalPreviewWays());
+        List<GeographicPoint> points = new ArrayList<>(preview.get(selectedKey));
+        GeographicPoint left = points.get(1);
+        GeographicPoint right = points.get(2);
+        GeographicPoint inserted = new GeographicPoint(
+                (left.latitudeDegrees() + right.latitudeDegrees()) / 2.0,
+                (left.longitudeDegrees() + right.longitudeDegrees()) / 2.0);
+        points.add(2, inserted);
+        preview.put(selectedKey, List.copyOf(points));
+        List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey> nodes =
+                new ArrayList<>(selected.nodeKeys());
+        nodes.add(2, generatedKey);
+        afterValues.put(selectedKey, new DetachedWay(selected.key(), nodes, selected.tags(),
+                selected.deleted(), true));
+        afterValues.put(generatedKey, new DetachedNode(generatedKey, inserted, Map.of(), false, true));
+        var watches = new LinkedHashMap<>(plan.after().incomingReferrerWatches());
+        watches.put(generatedKey, Set.of(selectedKey));
+        var after = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot(
+                "interval-topology-point-after", plan.after().role(), plan.after().datasetIdentity(),
+                plan.after().sourceGeneration(), plan.after().closure(), afterValues, watches);
+        return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan(
+                plan.selectedWayKey(), plan.selectedRange(), plan.before(), after,
+                plan.metricFrame(), plan.permissions(), plan.settingsHash(), plan.evidenceHash(),
+                plan.parameterHash(), plan.routeIdentity(), preview, plan.validation());
     }
 
     @Test
