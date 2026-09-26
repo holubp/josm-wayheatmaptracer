@@ -295,6 +295,16 @@ quality. Bundles without the level-specific artifact remain readable and report 
 unavailable. Raster preprocessing, full edit plans, and deterministic expected
 cancellation remain unfinished.
 
+Format-15 interval bundles from the ordinary modern preview also carry one bounded
+private frozen source frame, the original partition authority, and each interval's
+production request. The strict interval runner recomputes the partition and every
+interval through the production engines before comparing the composed preview and
+plan identity. Its interval-production capability is separate from `FULL_EDIT_PLAN`,
+which remains unavailable. Older interval artifact-only bundles remain readable but
+cannot pass strict interval replay. Use `More tools -> Export Last Alignment
+Diagnostics` immediately after each reference attempt; keep human case annotations
+separate from Apply or Cancel, which are not quality labels.
+
 ## Palette Calibration Workflow
 
 For color-scheme tuning, use `More tools -> Export Heatmap Calibration Tiles` after selecting the relevant way or way segment. The plugin downloads and exports redacted tile images for the same selected segment across the base Strava color schemes: `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle contains mosaics, source tiles, and tile metadata, but not cookies or signed URLs.
@@ -319,7 +329,7 @@ The script also accepts image directories and extracted JOSM cache tiles. It wri
 8. Use `Select Longest Heatmap Segment` after selecting only a way for the globally longest endpoint/junction-bounded segment, or after selecting the way plus one node to target the longest eligible segment containing that node.
 9. Test `Align Way to Heatmap`.
 10. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.
-11. Export the last-slide debug bundle from the plugin menu.
+11. Export the last alignment diagnostics bundle from the plugin menu after each reference attempt.
 
 Helper scripts:
 - `scripts/install-private-plugin.sh`
@@ -361,9 +371,17 @@ The plugin explicitly supports a Strava heatmap imagery workflow for OSM improve
 
 The documentation avoids publishing a raw tokenized imagery URL, but the settings dialog uses the real cookie field names so users can copy the values accurately.
 
-### Experimental live modern previews
+### v0.22 modern preview workflow
 
-The Tools menu contains six explicit session-local modern preview actions:
+Use the ordinary `More tools -> Align Way to Heatmap` action for Engine A,
+Probabilistic B, Hybrid, or Directional Image. It presents production alternatives
+in one modeless preview and exports Format-15 diagnostics for the attempt. When a
+tagged, relation-protected, or otherwise complex junction cannot be moved safely,
+the approved fixed-island interval plan leaves that vicinity unchanged and can move
+independently safe sections on either side. Inspect every preview before Apply;
+manual junction adjustment may still be necessary.
+
+The RC still contains six analysis launchers for comparison:
 
 - `Experimental Engine A Visible Preview (Read Only)`
 - `Experimental Engine B Visible Preview (Read Only)`
@@ -372,8 +390,18 @@ The Tools menu contains six explicit session-local modern preview actions:
 - `Experimental Engine A Managed Preview (Read Only)`
 - `Experimental Engine B Managed Preview (Read Only)`
 
-The visible actions run the named production engine over the currently rendered heatmap layer. The managed actions use only the selected managed palette with configured managed access values. Both sources support Engine A (Corridor-aware) and Engine B (Probabilistic); Hybrid and Directional Image are visible-source only. Modern previews require `Precise Shape`, `Color mapping`, and geometry cleanup `Off`. Managed previews require one selected palette; keep multi-color detection and all-color aggregation disabled. Keep nearby parallel-way context, junction/endpoint adjustment, wider discovery, incident-way reconstruction, aggregate intensity display, and candidate rating disabled. Visible previews require the rendered source in `EPSG:3857`.
+These launchers retain their narrow read-only comparison behavior. Collect the fourteen
+reference cases through the ordinary action, which records the actual source policy,
+route choices, and final composed geometry. Managed tiles are preferred when access
+is configured; otherwise the ordinary action captures the selected visible imagery.
 
 Select at least two consecutive nodes without repeated node identities. The modeless preview lets you inspect final-route candidates, switch candidates, pan/zoom, and use `Cancel` or `Close`; closing, repeating, or superseding an action cancels pending work. Source, settings, projection, or relevant OSM changes reject a stale preview. All modern routes run common final validation.
 
-A deliberately narrow visible-source Apply is available only for Engine A or B when the final route is applicable, or after explicit confirmation of a review-required route. It requires the same `EPSG:3857`/`Precise Shape`/`Color mapping` constraints plus cleanup, simplification, junction adjustment, alternate detector mapping, and aggregate detection disabled. It applies an immutable fixed-anchor selected-way plan only after repeated source and network validation, including source validation under the command lock. Managed, Hybrid, Directional Image, multi-color, cleanup, wider-search, and junction-capable modern previews remain read-only. Format-15 export and retry are unavailable from this preview dialog.
+An applicable managed-source interval plan can Apply as one JOSM command after source
+and network validation; Undo/Redo preserves the complete edit transaction. Generic
+visible-layer interval previews are currently read-only because JOSM does not expose
+an authoritative render revision for a safe interval Apply. Narrow single-range
+visible A/B Apply remains subject to its existing source, geometry, and settings
+guards. Review-required routes need explicit session-local confirmation; blocked
+routes cannot Apply. A failed stale Redo shows a failure and requires a fresh
+alignment attempt.
