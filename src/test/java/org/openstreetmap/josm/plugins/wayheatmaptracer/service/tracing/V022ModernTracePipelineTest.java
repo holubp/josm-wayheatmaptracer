@@ -51,6 +51,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.Dir
 /** Common detached post-processing regressions for all modern tracing engines. */
 class V022ModernTracePipelineTest {
     @Test
+    void intervalFixedOccurrenceIsExactWhileUnprotectedOriginalEndpointKeepsMovementAuthority() {
+        Fixture base = fixture(TrackerMode.CORRIDOR_AWARE);
+        var original = base.network.closure();
+        var closure = new ClosureDescriptor(original.scope(), original.queryVersion(),
+                original.primitiveKeys(), Set.of(way(3), node(1)), Set.of(node(1)),
+                Set.of(node(2)), Set.of(), original.editableWayOccurrences(),
+                original.externalPorts(), original.collisionEnvelope(), original.editRegion(),
+                original.mayCreateNodes(), true, true, true);
+        Fixture test = replaceNetwork(base, closure, base.network.primitives(), 1);
+        TraceHypothesis shifted = new TraceHypothesis("shifted", "shifted",
+                List.of(new MetricPoint(0, 1), new MetricPoint(2, 1), new MetricPoint(4, 0)),
+                List.of(ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED,
+                        ObservationOwnership.DIRECT_TWO_SIDED), 1.0, 0.4, Map.of());
+        TraceEngine engine = (request, evidence, network, cancellation) -> routes(request.engine(), shifted);
+        var pipeline = new ModernTracePipeline(engine);
+        var options = options(GeometryCleanupConfig.disabled());
+        var movable = pipeline.run(test.request, test.evidence, test.network, options,
+                CancellationProbe.NONE, Set.of()).routes().get(0);
+        var fixed = pipeline.run(test.request, test.evidence, test.network, options,
+                CancellationProbe.NONE, Set.of(0)).routes().get(0);
+        var first = new ExistingWayNodeOccurrence(way(3), node(1), 0);
+
+        assertEquals(new MetricPoint(0, 1), movable.existingAssignments().get(first));
+        assertEquals(new MetricPoint(0, 0), fixed.existingAssignments().get(first));
+        assertEquals(fixed.existingAssignments().get(first),
+                fixed.assignments().get(first));
+        assertEquals(fixed.assignments().get(first),
+                fixed.hypothesis().points().get(fixed.pointIds().indexOf(first)));
+        assertEquals(ObservationOwnership.FIXED_TOPOLOGY_ONLY,
+                fixed.sourceOwnership().get(first));
+        assertThrows(IllegalArgumentException.class, () -> pipeline.run(test.request,
+                test.evidence, test.network, options, CancellationProbe.NONE, Set.of(2)));
+    }
+
+    @Test
     void cancellationContinuesThroughCommonCleanupAndCannotReturnSuccess() {
         Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);
         TraceEngine engine = (request, evidence, network, cancellation) ->

@@ -40,11 +40,132 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
+    @Test
+    void partitionedComputationHonorsCancellationBeforeSourceAcquisition() throws Exception {
+        Fixture fixture = intervalFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.PROBABILISTIC)));
+        var partition = intervalPartition(captured[0]);
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> service.computePartitioned(captured[0], partition, () -> true));
+    }
+
+    @Test
+    void fullWayCorridorRequestKeepsExactCapturedGeographicEndpoints() throws Exception {
+        Fixture fixture = intervalFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.CORRIDOR_AWARE)));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        var locations = computed.request().corridorInput().orElseThrow().profileLocations();
+        assertEquals(captured[0].sourceGeographic().get(0), locations.get(0).geographicPoint());
+        assertEquals(captured[0].sourceGeographic().get(captured[0].sourceGeographic().size() - 1),
+                locations.get(locations.size() - 1).geographicPoint());
+    }
+
+    @Test
+    void productionEnginesTraceBothOriginalOccurrenceIntervalsAndRetainEveryAlternative() throws Exception {
+        Fixture fixture = intervalFixture();
+        for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
+                TrackerMode.PROBABILISTIC, TrackerMode.HYBRID,
+                TrackerMode.DIRECTIONAL_IMAGE)) {
+            LiveBPreviewService service = new LiveBPreviewService();
+            LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+            SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                    fixture.selection(), raster(), config(engine),
+                    engine == TrackerMode.DIRECTIONAL_IMAGE));
+            var partition = intervalPartition(captured[0]);
+            var batch = service.computePartitioned(captured[0], partition, CancellationProbe.NONE);
+            assertEquals(2, batch.runs().size(), engine.toString());
+            assertSame(captured[0].network(), batch.network());
+            assertEquals(captured[0].network().canonicalHash(), batch.network().canonicalHash());
+            assertEquals(List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 3),
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(3, 5)),
+                    batch.runs().stream().map(run -> run.request().selectedRange()).toList());
+            for (var run : batch.runs()) {
+                assertEquals(engine, run.result().inference().engine());
+                assertEquals(batch.evidence().canonicalHash(), run.request().evidenceContentHash());
+                assertEquals(batch.network().canonicalHash(), run.request().networkContentHash());
+                assertEquals(run.result().inference().alternativesTruncated(),
+                        run.alternativesTruncated());
+                assertEquals(run.result().routes(), run.routes());
+                assertFalse(run.routes().isEmpty(), engine + " interval " + run.interval());
+                assertEquals(run.result().inference().hypotheses().size(), run.routes().size());
+                for (var route : run.routes()) {
+                    var boundary = run.interval().startBoundary().kind()
+                            == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND
+                            ? run.interval().startBoundary() : run.interval().endBoundary();
+                    var id = new ExistingWayNodeOccurrence(run.request().selectedWayKey(),
+                            boundary.nodeKey(), boundary.occurrenceIndex());
+                    var node = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode)
+                            batch.network().primitives().get(boundary.nodeKey());
+                    assertEquals(batch.evidence().coordinateFrame().toMetric(node.coordinate()),
+                            route.existingAssignments().get(id), "fixed island edge must remain exact");
+                }
+            }
+        }
+    }
+
+    private static Fixture intervalFixture() {
+        DataSet dataSet = new DataSet();
+        double[] east = {-19, -14, -8, 0, 8, 14, 19};
+        double[] north = {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
+        java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i < east.length; i++) {
+            Node node = loadedNode(100 + i, latitude(north[i]), longitude(east[i]));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(110, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        return new Fixture(dataSet, new SelectionContext(way, 1, 5,
+                nodes.subList(1, 6), Set.of(nodes.get(1), nodes.get(5))));
+    }
+
+    private static SelectedWayIntervalPartitioner.Partition intervalPartition(
+            LiveBPreviewService.Captured captured) {
+        var selected = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay)
+                captured.network().primitives().get(captured.specification().selectedWayKey());
+        var keys = selected.nodeKeys();
+        var reason = ManualJunctionEligibility.Reason.AFFECTED_NODE_TAGGED;
+        var endpoint1 = new SelectedWayIntervalPartitioner.BoundaryConstraint(
+                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, 1, keys.get(1),
+                false, false, reason);
+        var fixed = new SelectedWayIntervalPartitioner.BoundaryConstraint(
+                SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND, 3, keys.get(3),
+                false, false, reason);
+        var endpoint5 = new SelectedWayIntervalPartitioner.BoundaryConstraint(
+                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, 5, keys.get(5),
+                false, false, reason);
+        var island = new SelectedWayIntervalPartitioner.FixedIsland(
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(3, 3),
+                List.of(keys.get(3)), Set.of(keys.get(3)), List.of(reason), fixed, fixed,
+                Set.of(), Set.of());
+        var left = new SelectedWayIntervalPartitioner.SlideInterval(
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 2),
+                keys.subList(1, 3), endpoint1, fixed);
+        var right = new SelectedWayIntervalPartitioner.SlideInterval(
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(4, 5),
+                keys.subList(4, 6), fixed, endpoint5);
+        return new SelectedWayIntervalPartitioner.Partition(captured.specification().selectedWayKey(),
+                captured.specification().selectedRange(), List.of(island), List.of(left, right),
+                List.of(), Set.of(), captured.network().primitives(),
+                captured.network().incomingReferrerWatches(),
+                captured.network().datasetIdentity(), captured.network().sourceGeneration());
+    }
     @BeforeAll
     static void configureJosm() {
         Config.setPreferencesInstance(new MemoryPreferences());

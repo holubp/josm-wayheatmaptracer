@@ -135,9 +135,33 @@ public final class ModernTracePipeline {
      */
     public Result run(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
             Options options, CancellationProbe cancellation) {
+        return run(request, evidence, network, options, cancellation, Set.of());
+    }
+
+    /** Runs production inference with additional original occurrences held as exact trace anchors. */
+    public Result run(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
+            Options options, CancellationProbe cancellation, Set<Integer> fixedOccurrences) {
         if (request == null || evidence == null || network == null || options == null
-                || cancellation == null) {
+                || cancellation == null || fixedOccurrences == null
+                || fixedOccurrences.stream().anyMatch(index -> index == null
+                        || index < request.selectedRange().firstIndex()
+                        || index > request.selectedRange().lastIndex())) {
             throw new IllegalArgumentException("Modern pipeline inputs are incomplete");
+        }
+        Set<Integer> exactFixed = Set.copyOf(fixedOccurrences);
+        if (!exactFixed.isEmpty()) {
+            DetachedPrimitive selected = network.primitives().get(request.selectedWayKey());
+            if (!(selected instanceof DetachedWay way)
+                    || request.selectedRange().lastIndex() >= way.nodeKeys().size()) {
+                throw new IllegalArgumentException("Fixed interval occurrences lack a captured selected way");
+            }
+            for (int index : exactFixed) {
+                PrimitiveKey key = way.nodeKeys().get(index);
+                if (!(network.primitives().get(key) instanceof DetachedNode)
+                        || java.util.Collections.frequency(way.nodeKeys(), key) != 1) {
+                    throw new IllegalArgumentException("Fixed interval occurrence identity is ambiguous");
+                }
+            }
         }
         TraceEngine engine = engine(request.engine(), options.fieldName());
         long inferenceStarted = System.nanoTime();
@@ -159,7 +183,7 @@ public final class ModernTracePipeline {
             cancellation.checkpoint();
             long routeStarted = System.nanoTime();
             routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
-                    request, options, pitch, cancellation));
+                    request, options, pitch, cancellation, exactFixed));
             finalizationNanos += System.nanoTime() - routeStarted;
         }
         long rankingStarted = System.nanoTime();
@@ -197,8 +221,9 @@ public final class ModernTracePipeline {
 
     private static Route finalizeRoute(TraceHypothesis source, TraceHypothesisSet inference,
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
-            TraceRequest request, Options options, double pitch, CancellationProbe cancellation) {
-        SeedGeometry seed = seedGeometry(source, evidence, network, request);
+            TraceRequest request, Options options, double pitch, CancellationProbe cancellation,
+            Set<Integer> fixedOccurrences) {
+        SeedGeometry seed = seedGeometry(source, evidence, network, request, fixedOccurrences);
         ImageSupportedLocalCleanup.Mode mode = request.geometryMode()
                 == AlignmentMode.MOVE_EXISTING_NODES
                 || request.engine() == TrackerMode.PROBABILISTIC
@@ -293,7 +318,7 @@ public final class ModernTracePipeline {
     }
 
     private static SeedGeometry seedGeometry(TraceHypothesis source, EvidenceSnapshot evidence,
-            NetworkSnapshot network, TraceRequest request) {
+            NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences) {
         DetachedPrimitive selectedPrimitive = network.primitives().get(request.selectedWayKey());
         if (!(selectedPrimitive instanceof DetachedWay selected)
                 || request.selectedRange().lastIndex() >= selected.nodeKeys().size()) {
@@ -337,7 +362,8 @@ public final class ModernTracePipeline {
             int exactCandidate = exactFractionIndex(candidateFractions, fraction);
             boolean ambiguousMapping = exactCandidate == -2
                     || fractionMultiplicity(sourceFractions, fraction) > 1;
-            boolean fixedCoordinate = protectedCoordinate || !movableCoordinate || ambiguousMapping;
+            boolean fixedCoordinate = protectedCoordinate || !movableCoordinate || ambiguousMapping
+                    || fixedOccurrences.contains(id.originalOccurrenceIndex());
             MetricPoint assignment = fixedCoordinate ? selectedPoints.get(local)
                     : interpolateAt(source.points(), candidateFractions, fraction);
             ObservationOwnership ownership = fixedCoordinate
@@ -345,7 +371,8 @@ public final class ModernTracePipeline {
                     : exactCandidate >= 0 ? source.support().get(exactCandidate)
                     : ObservationOwnership.INFERRED_GAP;
             entries.add(new SeedEntry(fraction, 0, local, id, assignment, ownership,
-                    !removableIdentity, fixedCoordinate));
+                    !removableIdentity || fixedOccurrences.contains(id.originalOccurrenceIndex()),
+                    fixedCoordinate));
         }
         entries.sort(Comparator.comparingDouble(SeedEntry::fraction)
                 .thenComparingInt(SeedEntry::priority).thenComparingInt(SeedEntry::ordinal));

@@ -56,10 +56,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJu
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority.NodeAuthorityReason;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCandidateAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceRequestFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
@@ -678,17 +681,75 @@ public final class LiveBPreviewService {
         }
         ModernDiagnosticCounters.begin();
         try {
-        EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
+            EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
+            TraceRequest request = fullRequest(captured, evidence);
+            ModernTracePipeline.Options options = optionsFor(captured);
+            ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
+                    .run(request, evidence, captured.network(), options, cancellation);
+            return new Computed(captured, evidence, request, pipeline, options,
+                    ModernDiagnosticCounters.snapshot());
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
+    }
+
+    /** Captures evidence once and runs every owned interval through the production modern pipeline. */
+    public IntervalTraceBatch computePartitioned(Captured captured,
+            SelectedWayIntervalPartitioner.Partition partition, CancellationProbe cancellation) {
+        if (SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Live preview inference must execute off the EDT");
+        }
+        if (captured == null || partition == null || cancellation == null
+                || !partition.selectedWayKey().equals(captured.specification().selectedWayKey())
+                || !partition.selectedRange().equals(captured.specification().selectedRange())
+                || !SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured.network())) {
+            throw new IllegalArgumentException("Interval partition does not match the frozen capture");
+        }
+        ModernDiagnosticCounters.begin();
+        try {
+            cancellation.checkpoint();
+            EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
+            TraceRequest fullRequest = fullRequest(captured, evidence);
+            ModernTracePipeline.Options options = optionsFor(captured);
+            ModernTracePipeline pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD));
+            IntervalTraceRequestFactory factory = new IntervalTraceRequestFactory();
+            List<IntervalTraceBatch.IntervalRun> runs = new ArrayList<>();
+            for (SelectedWayIntervalPartitioner.SlideInterval interval : partition.slideIntervals()) {
+                cancellation.checkpoint();
+                TraceRequest request = factory.create(fullRequest, captured, evidence,
+                        captured.network(), interval);
+                Set<Integer> fixedOccurrences = new LinkedHashSet<>();
+                if (interval.startBoundary().kind()
+                        == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
+                    fixedOccurrences.add(interval.startBoundary().occurrenceIndex());
+                }
+                if (interval.endBoundary().kind()
+                        == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
+                    fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
+                }
+                ModernTracePipeline.Result result = pipeline.run(request, evidence,
+                        captured.network(), options, cancellation, fixedOccurrences);
+                cancellation.checkpoint();
+                runs.add(new IntervalTraceBatch.IntervalRun(interval, request, result));
+            }
+            cancellation.checkpoint();
+            return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
+                    runs, options);
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
+    }
+
+    private static TraceRequest fullRequest(Captured captured, EvidenceSnapshot evidence) {
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
         Optional<CorridorTraceInput> corridorInput =
                 (captured.engine() == TrackerMode.CORRIDOR_AWARE
                         || captured.engine() == TrackerMode.HYBRID)
-                ? Optional.of(CorridorTraceInput.from(chainage, captured.sourceMetric(),
-                        evidence.coordinateFrame(), evidence.transform(),
-                        evidence.resolution().outputRasterPitchMeters()))
+                ? Optional.of(corridorWithCapturedEndpoints(chainage, captured.sourceMetric(),
+                        captured.sourceGeographic(), evidence))
                 : Optional.empty();
-        TraceRequest request = new TraceRequest(captured.specification().selectedWayKey(),
+        return new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
                 captured.geometryMode(), captured.specification().permissions(),
                 captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
@@ -699,14 +760,21 @@ public final class LiveBPreviewService {
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput);
-        ModernTracePipeline.Options options = optionsFor(captured);
-        ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
-                .run(request, evidence, captured.network(), options, cancellation);
-        return new Computed(captured, evidence, request, pipeline, options,
-                ModernDiagnosticCounters.snapshot());
-        } finally {
-            ModernDiagnosticCounters.end();
-        }
+    }
+
+    private static CorridorTraceInput corridorWithCapturedEndpoints(ProfileChainage chainage,
+            List<MetricPoint> metric, List<GeographicPoint> geographic, EvidenceSnapshot evidence) {
+        CorridorTraceInput derived = CorridorTraceInput.from(chainage, metric,
+                evidence.coordinateFrame(), evidence.transform(),
+                evidence.resolution().outputRasterPitchMeters());
+        List<DetachedProfileSamplingLocation> locations = new ArrayList<>(derived.profileLocations());
+        locations.set(0, DetachedProfileSamplingLocation.at(geographic.get(0),
+                evidence.coordinateFrame(), evidence.transform(), 0.0));
+        int last = locations.size() - 1;
+        locations.set(last, DetachedProfileSamplingLocation.at(geographic.get(geographic.size() - 1),
+                evidence.coordinateFrame(), evidence.transform(),
+                chainage.cumulativeGroundMeters().get(last)));
+        return new CorridorTraceInput(locations, derived.lateralStepMeters());
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {
