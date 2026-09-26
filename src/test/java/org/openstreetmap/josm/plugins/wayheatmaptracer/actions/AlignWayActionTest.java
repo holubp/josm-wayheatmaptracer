@@ -323,6 +323,225 @@ class AlignWayActionTest {
     }
 
     @Test
+    void intervalReceiptUsesOnlyNumericManagedLineageAndHash() {
+        String privateIdentity = "https://tiles.invalid/x?Cookie=private-secret";
+        var direct = new ManagedModernPreviewSource.Raster(
+                new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_ARGB),
+                new boolean[] {true, true, true, true},
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence
+                    .SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
+                "hot", 15, privateIdentity, new org.openstreetmap.josm.plugins.wayheatmaptracer
+                    .tile.ManagedTileGeneration(41L));
+        var captured = new LiveBPreviewService.Captured(null, direct, null, null,
+                List.of(), List.of(), null, "hot", 1.0, 1.0, "settings", "parameters",
+                GeometryCleanupConfig.disabled(), AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+
+        var receipt = (Format15ProductionBundleFactory.ManagedTileSourceReceipt)
+                AlignWayAction.intervalSourceReceipt(captured);
+
+        assertEquals(41L, receipt.generation());
+        assertEquals(15, receipt.zoom());
+        assertEquals(64, receipt.sourceIdentityHash().length());
+        assertFalse(receipt.sourceIdentityHash().contains(privateIdentity));
+    }
+
+    @Test
+    void intervalAppliedArtifactPublishesOnlyAfterSuccessfulMutation(@TempDir Path directory)
+            throws Exception {
+        var prepared = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay
+                .format15.Format15Bundle("build", "a".repeat(64), "b".repeat(64),
+                    java.util.Map.of("interval-production.json",
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                            .Format15Artifact.text("interval-production.json",
+                                "{\"status\":\"APPLIED_AFTER_REVIEW\",\"planIdentity\":\""
+                                    + "c".repeat(64) + "\",\"appliedPlanIdentity\":\""
+                                    + "c".repeat(64) + "\"}"),
+                        "private/interval-composed-preview.json",
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                            .Format15Artifact.text("private/interval-composed-preview.json", "{}"),
+                        "private/interval-point-provenance.json",
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                            .Format15Artifact.text("private/interval-point-provenance.json", "{}")));
+        AlignWayAction.recordModernUnavailable("started", "managed-tiles", "current");
+        assertThrows(IllegalStateException.class, () ->
+            AlignWayAction.applyWithPreparedIntervalDiagnostics(() -> prepared,
+                "c".repeat(64), () -> { throw new IllegalStateException("command failed"); },
+                () -> true));
+        Path failed = directory.resolve("failed.zip");
+        DiagnosticsRegistry.writeLatest(failed.toFile());
+        assertFalse(Format15ArchiveReader.read(failed).artifact("interval-production.json").isPresent());
+
+        AtomicInteger staleApply = new AtomicInteger();
+        assertThrows(IllegalStateException.class, () ->
+            AlignWayAction.applyWithPreparedIntervalDiagnostics(() -> prepared,
+                "c".repeat(64), staleApply::incrementAndGet, () -> false));
+        assertEquals(0, staleApply.get());
+        assertThrows(IllegalArgumentException.class, () ->
+            AlignWayAction.applyWithPreparedIntervalDiagnostics(() -> prepared,
+                "d".repeat(64), staleApply::incrementAndGet, () -> true));
+        assertEquals(0, staleApply.get());
+
+        AtomicInteger ownerChecks = new AtomicInteger();
+        AlignWayAction.applyWithPreparedIntervalDiagnostics(() -> prepared,
+            "c".repeat(64), staleApply::incrementAndGet,
+            () -> ownerChecks.incrementAndGet() < 3);
+        assertEquals(1, staleApply.get());
+        Path superseded = directory.resolve("superseded.zip");
+        DiagnosticsRegistry.writeLatest(superseded.toFile());
+        assertFalse(Format15ArchiveReader.read(superseded)
+                .artifact("interval-production.json").isPresent());
+
+        AtomicInteger applied = new AtomicInteger();
+        AlignWayAction.applyWithPreparedIntervalDiagnostics(() -> prepared,
+            "c".repeat(64), applied::incrementAndGet, () -> true);
+        assertEquals(1, applied.get());
+        Path success = directory.resolve("applied.zip");
+        DiagnosticsRegistry.writeLatest(success.toFile());
+        assertTrue(Format15ArchiveReader.read(success).artifact("interval-production.json").isPresent());
+    }
+
+    @Test
+    void intervalActionArtifactFollowsRouteSwitchAndNeverClaimsFullWayReplay(
+            @TempDir Path directory) throws Exception {
+        LiveBPreviewService.Computed computed = computedIntervalFixture();
+        var state = new AlignWayAction.IntervalPreviewState(computed.intervalBatch());
+        assertTrue(computed.intervalBatch().runs().get(0).routes().size() > 1);
+        var first = AlignWayAction.createIntervalDiagnostics(computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW);
+        String firstPreview = new String(first.artifact("private/interval-composed-preview.json")
+                .bytes(), StandardCharsets.UTF_8);
+        state.choose(0, 1);
+        var switched = AlignWayAction.createIntervalDiagnostics(computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW);
+        Path file = directory.resolve("switched.zip");
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                .Format15BundleWriter.write(switched, file);
+        var decoded = Format15ArchiveReader.read(file);
+        String index = new String(decoded.artifact("interval-production.json").orElseThrow()
+                .bytes(), StandardCharsets.UTF_8);
+        String displayed = new String(decoded.artifact("private/interval-composed-preview.json")
+                .orElseThrow().bytes(), StandardCharsets.UTF_8);
+
+        assertTrue(index.contains("\"chosenRouteIndex\":1"));
+        assertTrue(index.contains("\"revision\":null,\"zoom\":null"));
+        assertTrue(index.contains("\"SCALAR_INFERENCE\":false"));
+        assertTrue(index.contains("\"FULL_EDIT_PLAN\":false"));
+        assertEquals(new String(switched.artifact("private/interval-composed-preview.json")
+                .bytes(), StandardCharsets.UTF_8), displayed);
+        assertFalse(firstPreview.equals(displayed));
+        assertFalse(switched.artifactNames().contains("frozen-input.bin"));
+        assertFalse(switched.artifactNames().contains("frozen-edit-plan.bin"));
+        assertFalse(index.contains("stored-signature"));
+
+        String planHash = state.assessment().plan().orElseThrow().canonicalHash();
+        assertThrows(IllegalStateException.class, () -> AlignWayAction.createIntervalDiagnostics(
+                computed, state, Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED));
+        state.confirmReview();
+        var confirmed = AlignWayAction.createIntervalDiagnostics(computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED);
+        String confirmedIndex = new String(confirmed.artifact("interval-production.json")
+                .bytes(), StandardCharsets.UTF_8);
+        assertTrue(confirmedIndex.contains("\"reviewedPlanIdentity\":\"" + planHash + "\""));
+        var applied = AlignWayAction.createIntervalDiagnostics(computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.APPLIED_AFTER_REVIEW);
+        String appliedIndex = new String(applied.artifact("interval-production.json")
+                .bytes(), StandardCharsets.UTF_8);
+        assertTrue(appliedIndex.contains("\"appliedPlanIdentity\":\"" + planHash + "\""));
+        assertTrue(appliedIndex.contains("\"previewSha256\":"));
+        var cancelled = AlignWayAction.createIntervalDiagnostics(computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.CANCELLED);
+        String cancelledIndex = new String(cancelled.artifact("interval-production.json")
+                .bytes(), StandardCharsets.UTF_8);
+        assertTrue(cancelledIndex.contains("\"appliedPlanIdentity\":null"));
+    }
+
+    private static LiveBPreviewService.Computed computedIntervalFixture() throws Exception {
+        DataSet dataSet = new DataSet();
+        double[] east = {-19, -14, -8, 0, 8, 14, 19};
+        double[] north = {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
+        java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i < east.length; i++) {
+            Node node = loadedNode(9100 + i, north[i], east[i]);
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(9200, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 1, 5, nodes.subList(1, 6),
+                Set.of(nodes.get(1), nodes.get(5)));
+        int width = 600;
+        int[] pixels = new int[width * width];
+        for (int y = 0; y < width; y++) {
+            for (int x = 0; x < width; x++) {
+                double one = (y - 296.0) / 6.0;
+                double intensity = 0.02 + 0.80 * Math.exp(-0.5 * one * one / 1.44);
+                if (x < width / 2) {
+                    double other = (y - 270.0) / 6.0;
+                    intensity = Math.max(intensity,
+                            0.02 + 0.78 * Math.exp(-0.5 * other * other / 1.44));
+                }
+                int gray = (int) Math.round(255.0 * intensity);
+                pixels[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        var raster = new LiveBPreviewService.VisibleRaster(width, width, pixels,
+                -50.0, -50.0, 50.0, 50.0, 1.0, 1.0, OptionalDouble.of(1.0),
+                "visible-test", "EPSG:3857");
+        var config = new AlignmentConfig(configuredCorridor()
+                .withAlignmentMode(AlignmentMode.PRECISE_SHAPE), GeometryCleanupConfig.disabled());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet,
+                selection, raster, config, true));
+        var selected = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay)
+                captured[0].network().primitives().get(captured[0].specification().selectedWayKey());
+        var keys = selected.nodeKeys();
+        var reason = ManualJunctionEligibility.Reason.AFFECTED_NODE_TAGGED;
+        var endpoint1 = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.BoundaryConstraint(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                        .SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT,
+                    1, keys.get(1), false, false, reason);
+        var fixed = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.BoundaryConstraint(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                        .SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND,
+                    3, keys.get(3), false, false, reason);
+        var endpoint5 = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.BoundaryConstraint(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                        .SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT,
+                    5, keys.get(5), false, false, reason);
+        var island = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.FixedIsland(
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(3, 3),
+                    List.of(keys.get(3)), Set.of(keys.get(3)), List.of(reason), fixed, fixed,
+                    Set.of(), Set.of());
+        var left = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.SlideInterval(
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 2),
+                    keys.subList(1, 3), endpoint1, fixed);
+        var right = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.SlideInterval(
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(4, 5),
+                    keys.subList(4, 6), fixed, endpoint5);
+        var partition = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .SelectedWayIntervalPartitioner.Partition(
+                    captured[0].specification().selectedWayKey(),
+                    captured[0].specification().selectedRange(), List.of(island), List.of(left, right),
+                    List.of(), Set.of(), captured[0].network().primitives(),
+                    captured[0].network().incomingReferrerWatches(),
+                    captured[0].network().datasetIdentity(), captured[0].network().sourceGeneration());
+        var batch = service.computePartitioned(captured[0], partition, CancellationProbe.NONE);
+        return new LiveBPreviewService.Computed(captured[0], batch.evidence(),
+                batch.fullRequest(), null, batch.options(), java.util.Map.of(), batch);
+    }
+
+    @Test
     void modernAttemptStatusDistinguishesBlockedReviewAndResourceLimits() {
         assertEquals("preview-open", AlignWayAction.modernPreviewStatus(
             TraceHypothesisSet.Status.COMPLETE, ValidationReport.Disposition.APPLICABLE));

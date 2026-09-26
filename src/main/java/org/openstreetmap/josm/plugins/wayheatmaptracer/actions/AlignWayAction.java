@@ -12,6 +12,8 @@ import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.nio.charset.StandardCharsets;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
 
@@ -45,6 +47,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalArtifactStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalSourceReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.AggregateIntensityLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.HeatmapLayerResolver;
@@ -652,16 +656,18 @@ public class AlignWayAction extends JosmAction {
                 }
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
                 ((javax.swing.Timer) event.getSource()).stop();
-                livePreviewSession.close(previewOwner);
-                recordModernUnavailable("cancelled", sourceLineage, diagnosticAttemptIdentity);
+                closeAndPublishIfCurrent(livePreviewSession, previewOwner, () ->
+                        recordModernUnavailable("cancelled", sourceLineage,
+                                diagnosticAttemptIdentity));
                 progress.dispose();
             }
         });
         progress.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
-                boolean closed = livePreviewSession.close(previewOwner);
+                boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner,
+                        () -> recordModernUnavailable("cancelled", sourceLineage,
+                                diagnosticAttemptIdentity));
                 if (closed) {
-                    recordModernUnavailable("cancelled", sourceLineage, diagnosticAttemptIdentity);
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
@@ -763,9 +769,18 @@ public class AlignWayAction extends JosmAction {
                 progress.dispose();
                 showIntervalPreviewDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
                         slideConfig, persistedSlideConfig, tracingAtCapture, computed,
-                        previewSourceOwner);
+                        diagnosticAttemptIdentity, previewSourceOwner);
             } catch (RuntimeException exception) {
-                boolean closed = livePreviewSession.close(previewOwner);
+                boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner, () -> {
+                    try {
+                        recordIntervalDiagnostics(computed,
+                                new IntervalPreviewState(computed.intervalBatch()),
+                                IntervalArtifactStatus.FAILED, diagnosticAttemptIdentity);
+                    } catch (RuntimeException compositionFailure) {
+                        recordModernUnavailable("failed", computed.captured().managedRaster() == null
+                                ? "visible-layer" : "managed-tiles", diagnosticAttemptIdentity);
+                    }
+                });
                 progress.dispose();
                 if (closed) {
                     overlay.hide();
@@ -833,7 +848,7 @@ public class AlignWayAction extends JosmAction {
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
-            TileFetchCoordinator previewSourceOwner) {
+            String diagnosticAttemptIdentity, TileFetchCoordinator previewSourceOwner) {
         IntervalPreviewState state = new IntervalPreviewState(computed.intervalBatch());
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("Interval Alignment Preview"), false);
@@ -866,6 +881,7 @@ public class AlignWayAction extends JosmAction {
         JButton apply = new JButton(tr("Apply"));
         JButton close = new JButton(tr("Close preview"));
         boolean[] applying = {false};
+        boolean[] completed = {false};
         JScrollPane intervalScroll = new JScrollPane(intervalControls);
         intervalScroll.setPreferredSize(new Dimension(680, 180));
         panel.add(intervalScroll);
@@ -928,7 +944,9 @@ public class AlignWayAction extends JosmAction {
                     && state.applyAvailable() && !applying[0]);
         };
         Runnable staleFailure = () -> {
-            boolean closed = livePreviewSession.close(owner);
+            boolean closed = closeAndPublishIfCurrent(livePreviewSession, owner, () ->
+                    recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.FAILED,
+                            diagnosticAttemptIdentity));
             dialog.dispose();
             if (closed) {
                 overlay.hide();
@@ -944,6 +962,8 @@ public class AlignWayAction extends JosmAction {
                             persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                     state.choose(intervalIndex, choices.get(intervalIndex).getSelectedIndex());
                     refresh.run();
+                    recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
+                            diagnosticAttemptIdentity);
                 } catch (RuntimeException stale) {
                     staleFailure.run();
                 }
@@ -955,6 +975,8 @@ public class AlignWayAction extends JosmAction {
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 state.confirmReview();
                 refresh.run();
+                recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.CONFIRMED,
+                        diagnosticAttemptIdentity);
             } catch (RuntimeException stale) {
                 staleFailure.run();
             }
@@ -995,16 +1017,40 @@ public class AlignWayAction extends JosmAction {
                                         computed.captured(), previewSourceOwner);
                             }, redoFailureReporter(this::showError)),
                         tr("Apply modern interval alignment"));
-                UndoRedoHandler.getInstance().add(command);
-                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                applyWithPreparedIntervalDiagnostics(
+                        () -> createIntervalDiagnostics(computed, state,
+                                state.review() != null && state.review().confirmed()
+                                    ? IntervalArtifactStatus.APPLIED_AFTER_REVIEW
+                                    : IntervalArtifactStatus.APPLIED),
+                        currentPlan.canonicalHash(),
+                        () -> UndoRedoHandler.getInstance().add(command),
+                        () -> livePreviewSession.isCurrentWindow(owner, dialog,
+                                activePreviewDialog, dialog.isDisplayable()));
+                completed[0] = true;
+                try {
+                    dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                } catch (RuntimeException closeFailure) {
+                    PluginLog.verbose("Interval preview close after Apply failed: %s",
+                            closeFailure.getClass().getSimpleName());
+                }
             } catch (RuntimeException failure) {
+                completed[0] = true;
+                if (livePreviewSession.isCurrent(owner)) {
+                    recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.FAILED,
+                            diagnosticAttemptIdentity);
+                }
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Interval alignment Apply failed: {0}", failure.getMessage()));
             }
         });
         dialog.addWindowListener(new WindowAdapter() {
             @Override public void windowClosing(WindowEvent event) {
-                if (livePreviewSession.close(owner)) {
+                if (closeAndPublishIfCurrent(livePreviewSession, owner, () -> {
+                    if (!completed[0]) {
+                        recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.CANCELLED,
+                                diagnosticAttemptIdentity);
+                    }
+                })) {
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
@@ -1017,6 +1063,8 @@ public class AlignWayAction extends JosmAction {
                 new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
         try {
             refresh.run();
+            recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
+                    diagnosticAttemptIdentity);
             dialog.setVisible(true);
         } catch (RuntimeException failure) {
             dialog.dispose();
@@ -1660,6 +1708,102 @@ public class AlignWayAction extends JosmAction {
             boolean applied, String attemptIdentity) {
         recordModernDiagnostics(computed, status, routeIndex, plan, reviewed, applied,
                 attemptIdentity, null);
+    }
+
+    /** Uses only source metadata captured for this attempt; never exports a raw identity. */
+    static IntervalSourceReceipt intervalSourceReceipt(LiveBPreviewService.Captured captured) {
+        if (captured.managedRaster() != null) {
+            var raster = captured.managedRaster();
+            return new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                    raster.generation().value(), raster.zoom(), safeLayerNameIdentity(raster.sourceIdentity()));
+        }
+        var raster = captured.raster();
+        var receipt = raster.sourceReceipt();
+        return receipt == null
+                ? Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable()
+                : new Format15ProductionBundleFactory.VisibleLayerSourceReceipt(
+                        receipt.revision(), null, safeLayerNameIdentity(raster.sourceIdentity()));
+    }
+
+    /** Serializes the exact composer state displayed by the interval preview. */
+    static Format15Bundle createIntervalDiagnostics(LiveBPreviewService.Computed computed,
+            IntervalPreviewState state, IntervalArtifactStatus status) {
+        if (!computed.partitioned() || state.batch() != computed.intervalBatch()) {
+            throw new IllegalArgumentException("Interval diagnostics require the current production batch");
+        }
+        if (status == IntervalArtifactStatus.PREVIEW) {
+            if (state.batch().runs().stream().anyMatch(run -> run.result().inference().status()
+                    == TraceHypothesisSet.Status.RESOURCE_LIMIT)) {
+                status = IntervalArtifactStatus.RESOURCE_LIMIT;
+            } else if (state.batch().runs().stream().anyMatch(run -> run.result().inference().status()
+                    == TraceHypothesisSet.Status.CANCELLED)) {
+                status = IntervalArtifactStatus.CANCELLED;
+            }
+        }
+        if ((status == IntervalArtifactStatus.CONFIRMED
+                || status == IntervalArtifactStatus.APPLIED_AFTER_REVIEW)
+                && (state.review() == null || !state.review().confirmed())) {
+            throw new IllegalStateException("The composed interval plan has not been confirmed");
+        }
+        String reviewed = (status == IntervalArtifactStatus.CONFIRMED
+                || status == IntervalArtifactStatus.REVIEWED
+                || status == IntervalArtifactStatus.APPLIED_AFTER_REVIEW)
+                ? state.assessment().plan().orElseThrow().canonicalHash() : null;
+        String applied = (status == IntervalArtifactStatus.APPLIED
+                || status == IntervalArtifactStatus.APPLIED_AFTER_REVIEW)
+                ? state.assessment().plan().orElseThrow().canonicalHash() : null;
+        return Format15ProductionBundleFactory.createLiveIntervals(
+                LastSlideDebugBundle.buildIdentity(), state.batch(), state.assessment(),
+                state.routeChoices(), intervalSourceReceipt(computed.captured()), status,
+                reviewed, applied);
+    }
+
+    private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
+            IntervalPreviewState state, IntervalArtifactStatus status, String attemptIdentity) {
+        try {
+            DiagnosticsRegistry.setLastModernBundle(createIntervalDiagnostics(computed, state, status));
+        } catch (RuntimeException failure) {
+            String reason = failure.getMessage() == null ? ""
+                    : failure.getMessage().toLowerCase(Locale.ROOT);
+            String terminal = reason.contains("budget") || reason.contains("limit")
+                    || reason.contains("large") ? "resource-limited" : "failed";
+            recordModernUnavailable(terminal, computed.captured().managedRaster() == null
+                    ? "visible-layer" : "managed-tiles", attemptIdentity);
+            PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
+                    terminal, failure.getClass().getSimpleName());
+        }
+    }
+
+    /** Prepares full interval evidence before mutation and publishes only after command success. */
+    static void applyWithPreparedIntervalDiagnostics(Supplier<Format15Bundle> prepare,
+            String expectedPlanHash, Runnable apply, BooleanSupplier currentOwner) {
+        if (!currentOwner.getAsBoolean()) {
+            throw new IllegalStateException("The interval preview no longer owns this attempt");
+        }
+        Format15Bundle prepared = Objects.requireNonNull(prepare.get(),
+                "Prepared interval diagnostics are required");
+        if (!prepared.artifactNames().containsAll(java.util.Set.of("interval-production.json",
+                "private/interval-composed-preview.json", "private/interval-point-provenance.json"))) {
+            throw new IllegalArgumentException("Applied interval diagnostics lack preview evidence");
+        }
+        String index = new String(prepared.artifact("interval-production.json").bytes(),
+                StandardCharsets.UTF_8);
+        if (!index.contains("\"status\":\"APPLIED\"")
+                && !index.contains("\"status\":\"APPLIED_AFTER_REVIEW\"")) {
+            throw new IllegalArgumentException("Applied interval diagnostics have the wrong status");
+        }
+        if (expectedPlanHash == null || !index.contains("\"planIdentity\":\""
+                + expectedPlanHash + "\"") || !index.contains("\"appliedPlanIdentity\":\""
+                + expectedPlanHash + "\"")) {
+            throw new IllegalArgumentException("Applied interval diagnostics differ from the current plan");
+        }
+        if (!currentOwner.getAsBoolean()) {
+            throw new IllegalStateException("The interval preview no longer owns this attempt");
+        }
+        apply.run();
+        if (currentOwner.getAsBoolean()) {
+            DiagnosticsRegistry.setLastModernBundle(prepared);
+        }
     }
 
     static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
