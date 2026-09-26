@@ -4,13 +4,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
@@ -484,11 +487,10 @@ public final class Format15ProductionBundleFactory {
                 if (pointId instanceof FinalRoutePointId.GeneratedCandidatePoint && owner == null) {
                     throw new IllegalArgumentException("Generated final point has no interval owner");
                 }
-                // Junction reattachment can create receiver-shape nodes which are plan-owned,
-                // but were never sampled as points on one of the slide intervals.
+                // Frozen-locus junction reattachment can retain the old receiver coordinate
+                // as a plan-owned shape node. It is not a slide-interval point.
                 boolean topologyShapeNode = pointId == null && plan != null
-                        && nodeKey.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL
-                        && plan.createdPrimitives().get(nodeKey) instanceof DetachedNode;
+                        && isProvenFrozenReceiverShapeNode(batch, plan, wayKey, nodeKey);
                 json.append("{\"sequence\":").append(sequence)
                         .append(",\"wayKey\":").append(quote(wayKey.toString()))
                         .append(",\"pointId\":").append(pointIdentityJson(pointId, nodeKey,
@@ -500,6 +502,54 @@ public final class Format15ProductionBundleFactory {
             }
         }
         return json.append("]}\n").toString();
+    }
+
+    private static boolean isProvenFrozenReceiverShapeNode(IntervalTraceBatch batch,
+            AlignmentEditPlan plan, PrimitiveKey receiverWayKey, PrimitiveKey shapeNodeKey) {
+        if (receiverWayKey.equals(batch.fullRequest().selectedWayKey())
+                || receiverWayKey.type() != PrimitiveKey.Type.WAY
+                || shapeNodeKey.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
+                || plan.permissions().junctionPolicy() != JunctionPolicy.REATTACH
+                || plan.permissions().reconstructIncidentWays()) {
+            return false;
+        }
+        DetachedPrimitive created = plan.createdPrimitives().get(shapeNodeKey);
+        if (!(created instanceof DetachedNode shape) || !shape.tags().isEmpty()
+                || !plan.after().internalIncomingReferrers().getOrDefault(shapeNodeKey, Set.of())
+                        .equals(Set.of(receiverWayKey))) {
+            return false;
+        }
+        DetachedPrimitive originalReceiver = batch.network().primitives().get(receiverWayKey);
+        if (!(originalReceiver instanceof DetachedWay)
+                || !plan.finalPreviewWays().containsKey(receiverWayKey)) {
+            return false;
+        }
+        DetachedWay selectedBefore = (DetachedWay) batch.network().primitives()
+                .get(batch.fullRequest().selectedWayKey());
+        DetachedWay selectedAfter = (DetachedWay) plan.after().primitives()
+                .get(batch.fullRequest().selectedWayKey());
+        Map<PrimitiveKey, Set<PrimitiveKey>> beforeReferrers = batch.network().internalIncomingReferrers();
+        Map<PrimitiveKey, Set<PrimitiveKey>> afterReferrers = plan.after().internalIncomingReferrers();
+        for (PrimitiveKey junction : selectedBefore.nodeKeys()) {
+            Set<PrimitiveKey> oldRefs = beforeReferrers.getOrDefault(junction, Set.of());
+            if (!oldRefs.contains(batch.fullRequest().selectedWayKey())
+                    || !oldRefs.contains(receiverWayKey)) {
+                continue;
+            }
+            DetachedPrimitive originalPrimitive = batch.network().primitives().get(junction);
+            DetachedPrimitive proposedPrimitive = plan.after().primitives().get(junction);
+            if (originalPrimitive instanceof DetachedNode original
+                    && proposedPrimitive instanceof DetachedNode proposed
+                    && !original.coordinate().equals(proposed.coordinate())
+                    && original.coordinate().equals(shape.coordinate())
+                    && selectedAfter.nodeKeys().contains(junction)
+                    && afterReferrers.getOrDefault(junction, Set.of())
+                            .contains(batch.fullRequest().selectedWayKey())
+                    && afterReferrers.getOrDefault(junction, Set.of()).contains(receiverWayKey)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int routeChoicesForAssessment(IntervalTraceBatch batch,

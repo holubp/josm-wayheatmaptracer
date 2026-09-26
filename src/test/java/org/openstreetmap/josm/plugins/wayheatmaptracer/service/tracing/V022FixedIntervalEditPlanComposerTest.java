@@ -184,35 +184,11 @@ class V022FixedIntervalEditPlanComposerTest {
         var augmentedAssessment = new FixedIntervalEditPlanComposer.Assessment(
                 java.util.Optional.of(augmentedPlan), assessment.selectedWayPreview(),
                 assessment.assignments(), assessment.intervals());
-        var augmentedBundle = Format15ProductionBundleFactory.createLiveIntervals("test-build",
-                batch, augmentedAssessment, routeChoices, receipt,
-                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
-        Format15BundleWriter.write(augmentedBundle, directory.resolve("intervals-with-topology-point.zip"));
-        Format15Archive augmentedDecoded = Format15ArchiveReader.read(
-                directory.resolve("intervals-with-topology-point.zip"));
-        String augmentedProvenance = new String(augmentedDecoded.artifact(
-                "private/interval-point-provenance.json").orElseThrow().bytes(),
-                java.nio.charset.StandardCharsets.UTF_8);
-        assertTrue(augmentedProvenance.contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE"));
-        assertTrue(augmentedProvenance.contains("\"ownerInterval\":null"));
-        Matcher augmentedMatcher = point.matcher(augmentedProvenance);
-        Map<String, List<IndexedCoordinate>> augmentedWays = new LinkedHashMap<>();
-        while (augmentedMatcher.find()) {
-            assertFalse(augmentedMatcher.group(3).contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE")
-                    && !"null".equals(augmentedMatcher.group(4)),
-                    "plan-local topology shape nodes have no slide-interval owner");
-            augmentedWays.computeIfAbsent(augmentedMatcher.group(2), ignored -> new ArrayList<>())
-                    .add(new IndexedCoordinate(Integer.parseInt(augmentedMatcher.group(1)),
-                            new GeographicPoint(Double.parseDouble(augmentedMatcher.group(5)),
-                                    Double.parseDouble(augmentedMatcher.group(6)))));
-        }
-        for (var way : augmentedPlan.finalPreviewWays().entrySet()) {
-            List<IndexedCoordinate> decodedWay = augmentedWays.get(way.getKey().toString());
-            assertTrue(decodedWay != null, "augmented provenance omitted way " + way.getKey());
-            decodedWay.sort(Comparator.comparingInt(IndexedCoordinate::index));
-            assertEquals(way.getValue(), decodedWay.stream().map(IndexedCoordinate::coordinate).toList(),
-                    "unowned plan-local point must still round-trip the complete preview");
-        }
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        augmentedAssessment, routeChoices, receipt,
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),
+                "an unassigned plan-local point on the selected way must fail closed");
         assertFalse(decoded.capability().supports(ReplayLevel.SCALAR_INFERENCE));
         assertFalse(decoded.capability().supports(ReplayLevel.FINAL_GEOMETRY));
         assertFalse(decoded.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
@@ -889,6 +865,214 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
+    void frozenLocusReceiverShapePointHasPrivateUnownedProvenance(@TempDir Path directory)
+            throws Exception {
+        IntervalTraceBatch batch = tBatch(true, false, true);
+        FixedIntervalEditPlanComposer.Assessment assessment = null;
+        Map<Integer, Integer> choices = Map.of();
+        for (int routeIndex = 0; routeIndex < batch.runs().get(0).routes().size(); routeIndex++) {
+            choices = Map.of(0, routeIndex);
+            assessment = new FixedIntervalEditPlanComposer().compose(batch, choices);
+            if (assessment.intervals().get(0).routeIndex() == routeIndex) break;
+        }
+        var plan = planWithFrozenReceiverShape(batch, assessment);
+        assessment = new FixedIntervalEditPlanComposer.Assessment(java.util.Optional.of(plan),
+                plan.finalPreviewWays().get(plan.selectedWayKey()), assessment.assignments(),
+                assessment.intervals());
+        var selectedKey = batch.fullRequest().selectedWayKey();
+        var receiverKey = plan.finalPreviewWays().keySet().stream()
+                .filter(key -> !key.equals(selectedKey)).findFirst().orElseThrow();
+        var unownedShape = plan.createdPrimitives().entrySet().stream()
+                .filter(entry -> entry.getValue() instanceof DetachedNode
+                        && plan.after().internalIncomingReferrers().getOrDefault(entry.getKey(), Set.of())
+                                .equals(Set.of(receiverKey)))
+                .findFirst().orElseThrow();
+
+        var bundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                assessment, choices, Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+        Path file = directory.resolve("frozen-locus-receiver-shape.zip");
+        Format15BundleWriter.write(bundle, file);
+        Format15Archive decoded = Format15ArchiveReader.read(file);
+        String provenance = new String(decoded.artifact("private/interval-point-provenance.json")
+                .orElseThrow().bytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(provenance.contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE"));
+        Pattern point = Pattern.compile("\\{\\\"sequence\\\":(\\d+),\\\"wayKey\\\":\\\"([^\\\"]+)\\\","
+                + "\\\"pointId\\\":(\\{.*?\\}),\\\"ownerInterval\\\":(null|\\d+),"
+                + "\\\"latitude\\\":([^,]+),\\\"longitude\\\":([^}]+)\\}");
+        Matcher matcher = point.matcher(provenance);
+        Map<String, List<IndexedCoordinate>> decodedWays = new LinkedHashMap<>();
+        boolean foundShape = false;
+        while (matcher.find()) {
+            if (matcher.group(3).contains("PLAN_LOCAL_TOPOLOGY_SHAPE_NODE")) {
+                assertEquals(unownedShape.getKey().toString(), matcher.group(3).replaceAll(".*\\\"nodeKey\\\":\\\"([^\\\"]+)\\\".*", "$1"));
+                assertEquals(receiverKey.toString(), matcher.group(2));
+                assertEquals("null", matcher.group(4));
+                foundShape = true;
+            }
+            decodedWays.computeIfAbsent(matcher.group(2), ignored -> new ArrayList<>())
+                    .add(new IndexedCoordinate(Integer.parseInt(matcher.group(1)),
+                            new GeographicPoint(Double.parseDouble(matcher.group(5)),
+                                    Double.parseDouble(matcher.group(6)))));
+        }
+        assertTrue(foundShape);
+        for (var way : plan.finalPreviewWays().entrySet()) {
+            List<IndexedCoordinate> decodedWay = decodedWays.get(way.getKey().toString());
+            assertTrue(decodedWay != null, "receiver provenance omitted way " + way.getKey());
+            decodedWay.sort(Comparator.comparingInt(IndexedCoordinate::index));
+            assertEquals(way.getValue(), decodedWay.stream().map(IndexedCoordinate::coordinate).toList());
+        }
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan
+            planWithFrozenReceiverShape(IntervalTraceBatch batch,
+                    FixedIntervalEditPlanComposer.Assessment assessment) {
+        var selectedKey = batch.fullRequest().selectedWayKey();
+        var originalSelected = (DetachedWay) batch.network().primitives().get(selectedKey);
+        var afterValues = new LinkedHashMap<>(batch.network().primitives());
+        List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey> selectedNodes =
+                new ArrayList<>();
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey, GeographicPoint> previewNodePoints =
+                new LinkedHashMap<>();
+        long nextPlanNode = 1_000_000L;
+        for (var key : afterValues.keySet()) {
+            if (key.identityKind() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.IdentityKind.PLAN_LOCAL) {
+                nextPlanNode = Math.max(nextPlanNode, key.id() + 1);
+            }
+        }
+        int cursor = batch.fullRequest().selectedRange().firstIndex();
+        for (int runIndex = 0; runIndex < batch.runs().size(); runIndex++) {
+            var run = batch.runs().get(runIndex);
+            int first = run.interval().traceRange().firstIndex();
+            int last = run.interval().traceRange().lastIndex();
+            for (int occurrence = cursor; occurrence < first; occurrence++) {
+                var key = originalSelected.nodeKeys().get(occurrence);
+                selectedNodes.add(key);
+                previewNodePoints.put(key, ((DetachedNode) afterValues.get(key)).coordinate());
+            }
+            int routeIndex = assessment.intervals().get(runIndex).routeIndex();
+            var route = run.routes().get(routeIndex);
+            for (var sourceId : route.pointIds()) {
+                FinalRoutePointId composedId = sourceId;
+                if (sourceId instanceof FinalRoutePointId.GeneratedCandidatePoint generated) {
+                    if (generated.originalPointIndex() >= 1_000_000) throw new AssertionError();
+                    composedId = new FinalRoutePointId.GeneratedCandidatePoint("interval-" + runIndex
+                            + ":" + route.hypothesis().id(), runIndex * 1_000_000
+                                    + generated.originalPointIndex());
+                }
+                var point = route.assignments().get(sourceId);
+                GeographicPoint geographic = batch.evidence().coordinateFrame().toGeographic(point);
+                var nodeKey = composedId instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        ? existing.nodeKey()
+                        : org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.planned(
+                                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE,
+                                ((FinalRoutePointId.GeneratedCandidatePoint) composedId).originalPointIndex());
+                selectedNodes.add(nodeKey);
+                previewNodePoints.put(nodeKey, geographic);
+                if (nodeKey.identityKind() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.IdentityKind.PLAN_LOCAL) {
+                    afterValues.put(nodeKey, new DetachedNode(nodeKey, geographic, Map.of(), false, true));
+                } else {
+                    var existing = (DetachedNode) afterValues.get(nodeKey);
+                    if (!existing.coordinate().equals(geographic)) {
+                        afterValues.put(nodeKey, new DetachedNode(nodeKey, geographic,
+                                existing.tags(), false, true));
+                    }
+                }
+            }
+            cursor = last + 1;
+        }
+        for (int occurrence = cursor; occurrence < originalSelected.nodeKeys().size(); occurrence++) {
+            var key = originalSelected.nodeKeys().get(occurrence);
+            selectedNodes.add(key);
+            previewNodePoints.putIfAbsent(key, ((DetachedNode) afterValues.get(key)).coordinate());
+        }
+        afterValues.put(selectedKey, new DetachedWay(originalSelected.key(), selectedNodes,
+                originalSelected.tags(), false, true));
+        int junctionIndex = batch.partition().junctionDispositions().stream()
+                .filter(SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible)
+                .findFirst().orElseThrow().selectedOccurrenceIndex();
+        var junctionKey = originalSelected.nodeKeys().get(junctionIndex);
+        var junctionPoint = previewNodePoints.get(junctionKey);
+        if (junctionPoint.equals(((DetachedNode) batch.network().primitives().get(junctionKey)).coordinate())) {
+            throw new AssertionError("fixture must move its shared junction");
+        }
+        var receiverKey = batch.network().closure().editableWayOccurrences().keySet().stream()
+                .filter(key -> !key.equals(selectedKey)).findFirst().orElseThrow();
+        var receiver = (DetachedWay) afterValues.get(receiverKey);
+        var receiverNodes = new ArrayList<>(receiver.nodeKeys());
+        int oldJunctionIndex = receiverNodes.indexOf(junctionKey);
+        var shapeKey = org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.planned(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.NODE,
+                nextPlanNode);
+        afterValues.put(shapeKey, new DetachedNode(shapeKey,
+                ((DetachedNode) batch.network().primitives().get(junctionKey)).coordinate(),
+                Map.of(), false, true));
+        receiverNodes.add(oldJunctionIndex, shapeKey);
+        afterValues.put(receiverKey, new DetachedWay(receiver.key(), receiverNodes,
+                receiver.tags(), false, true));
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey, Set<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey>> watches =
+                referrerWatches(batch.network(), afterValues);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot after;
+        try {
+            after = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot(
+                    "interval-topology-receiver-after",
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole.PROPOSED_AFTER,
+                    batch.network().datasetIdentity(), batch.network().sourceGeneration(),
+                    batch.network().closure(), afterValues, watches);
+        } catch (IllegalArgumentException failure) {
+            throw new AssertionError("receiver fixture ports="
+                    + batch.network().closure().externalPorts() + " selected=" + selectedNodes
+                    + " receiver=" + receiverNodes, failure);
+        }
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey, List<GeographicPoint>> previews =
+                new LinkedHashMap<>();
+        for (var wayKey : List.of(selectedKey, receiverKey)) {
+            var way = (DetachedWay) afterValues.get(wayKey);
+            previews.put(wayKey, way.nodeKeys().stream().map(key ->
+                    ((DetachedNode) afterValues.get(key)).coordinate()).toList());
+        }
+        return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan(
+                selectedKey, batch.fullRequest().selectedRange(), batch.network(), after,
+                batch.evidence().coordinateFrame(), batch.fullRequest().permissions(),
+                batch.fullRequest().settingsHash(), batch.evidence().canonicalHash(),
+                batch.fullRequest().parameterHash(), "interval-composite:0="
+                        + batch.runs().get(0).routes().get(assessment.intervals().get(0).routeIndex())
+                                .hypothesis().id(), previews,
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport(
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED,
+                        List.of("test-review-required")));
+    }
+
+    private static Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
+            Set<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey>> referrerWatches(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot before,
+                    Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive> after) {
+        var priorInternal = before.internalIncomingReferrers();
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
+                Set<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey>> refs =
+                new LinkedHashMap<>();
+        after.keySet().forEach(key -> refs.put(key, new java.util.LinkedHashSet<>()));
+        after.values().forEach(primitive -> {
+            if (primitive instanceof DetachedWay way) {
+                way.nodeKeys().forEach(node -> refs.get(node).add(way.key()));
+            }
+        });
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
+                Set<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey>> result =
+                new LinkedHashMap<>();
+        refs.forEach((key, internal) -> {
+            var all = new java.util.LinkedHashSet<>(internal);
+            var external = new java.util.LinkedHashSet<>(before.incomingReferrerWatches()
+                    .getOrDefault(key, Set.of()));
+            external.removeAll(priorInternal.getOrDefault(key, Set.of()));
+            all.addAll(external);
+            result.put(key, Set.copyOf(all));
+        });
+        return Map.copyOf(result);
+    }
+
+    @Test
     void nonLocalPrecommandFailureDoesNotDemoteEligibleSimpleT() throws Exception {
         IntervalTraceBatch batch = tBatch(false);
         var result = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
@@ -925,10 +1109,21 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static IntervalTraceBatch tBatch(boolean completePorts) throws Exception {
+        return tBatch(completePorts, true, false);
+    }
+
+    private static IntervalTraceBatch tBatch(boolean completePorts,
+            boolean reconstructIncidentWays) throws Exception {
+        return tBatch(completePorts, reconstructIncidentWays, false);
+    }
+
+    private static IntervalTraceBatch tBatch(boolean completePorts,
+            boolean reconstructIncidentWays, boolean flatSelected) throws Exception {
         DataSet dataSet = new DataSet();
         List<Node> selectedNodes = new java.util.ArrayList<>();
         for (int i = 0; i < 7; i++) {
-            Node node = new Node(new LatLon(degrees(0.2 * Math.sin(i)), degrees(-18 + 6 * i)));
+            Node node = new Node(new LatLon(degrees(flatSelected ? 0.0 : 0.2 * Math.sin(i)),
+                    degrees(-18 + 6 * i)));
             node.setOsmId(600 + i, 1);
             node.setModified(false);
             selectedNodes.add(node);
@@ -939,19 +1134,19 @@ class V022FixedIntervalEditPlanComposerTest {
         selectedWay.setOsmId(610, 1);
         selectedWay.setModified(false);
         dataSet.addPrimitive(selectedWay);
-        Node south = new Node(new LatLon(degrees(-35), degrees(0)));
+        Node south = new Node(new LatLon(degrees(-35), degrees(flatSelected ? 3.6 : 0)));
         south.setOsmId(611, 1);
         south.setModified(false);
         dataSet.addPrimitive(south);
-        Node north = new Node(new LatLon(degrees(35), degrees(0)));
+        Node north = new Node(new LatLon(degrees(35), degrees(flatSelected ? -3.4 : 0)));
         north.setOsmId(612, 1);
         north.setModified(false);
         dataSet.addPrimitive(north);
-        Node farSouth = new Node(new LatLon(degrees(-70), degrees(0)));
+        Node farSouth = new Node(new LatLon(degrees(-70), degrees(flatSelected ? 7.1 : 0)));
         farSouth.setOsmId(614, 1);
         farSouth.setModified(false);
         dataSet.addPrimitive(farSouth);
-        Node farNorth = new Node(new LatLon(degrees(70), degrees(0)));
+        Node farNorth = new Node(new LatLon(degrees(70), degrees(flatSelected ? -6.9 : 0)));
         farNorth.setOsmId(615, 1);
         farNorth.setModified(false);
         dataSet.addPrimitive(farNorth);
@@ -965,11 +1160,11 @@ class V022FixedIntervalEditPlanComposerTest {
         var selection = new SelectionContext(selectedWay, 0, 2,
                 selectedNodes.subList(3, 6), Set.of(selectedNodes.get(3), selectedNodes.get(5)));
         var permissions = new RecoveryPermissions(false, 7.01, 7.01,
-                JunctionPolicy.REATTACH, true);
+                JunctionPolicy.REATTACH, reconstructIncidentWays);
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
-                tRaster(), config(), true, permissions));
+                flatSelected ? tRaster(1.0) : tRaster(), config(), true, permissions));
         var partition = SelectedWayIntervalPartitioner.partition(captured[0].network(),
                 captured[0].specification());
         assertTrue(partition.junctionDispositions().stream().anyMatch(
@@ -1107,11 +1302,16 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static LiveBPreviewService.VisibleRaster tRaster() {
+        return tRaster(0.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster tRaster(double northMeters) {
         int width = 800;
         int height = 1000;
         int[] argb = new int[width * height];
+        double centerRow = (100.0 - northMeters) * 5.0;
         for (int y = 0; y < height; y++) {
-            double distance = (y - 500.0) / 5.0;
+            double distance = (y - centerRow) / 5.0;
             double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44);
             int gray = (int) Math.round(255.0 * intensity);
             Arrays.fill(argb, y * width, (y + 1) * width,
