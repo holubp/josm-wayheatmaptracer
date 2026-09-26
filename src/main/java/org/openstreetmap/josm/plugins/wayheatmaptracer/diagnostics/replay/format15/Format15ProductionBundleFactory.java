@@ -1,17 +1,19 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.List;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
@@ -29,6 +31,45 @@ public final class Format15ProductionBundleFactory {
         VALIDATED, NO_PRODUCTION_ROUTE, NO_GEOMETRY_CHANGE, LOCAL_IMAGE_SUPPORT,
         LOCAL_ROUTE_BLOCKED, LOCAL_CONNECTOR_SUPPORT, T_LOCAL_PRECOMMAND_EVIDENCE,
         GLOBAL_FINAL_VALIDATION, RESOURCE_LIMIT, CANCELLED, LOCAL_FAILURE
+    }
+
+    /** Allowed terminal states for a partitioned production diagnostic artifact. */
+    public enum IntervalArtifactStatus {
+        PRODUCED, PREVIEW, REVIEWED, CONFIRMED, APPLIED, APPLIED_AFTER_REVIEW,
+        CANCELLED, RESOURCE_LIMIT, FAILED
+    }
+
+    /** Safe source lineage values that can be exported without owner objects or raw metadata. */
+    public sealed interface IntervalSourceReceipt
+            permits ManagedTileSourceReceipt, VisibleLayerSourceReceipt { }
+
+    /** Numeric receipt for one managed tile generation. */
+    public record ManagedTileSourceReceipt(long generation, int zoom, String sourceIdentityHash)
+            implements IntervalSourceReceipt {
+        public ManagedTileSourceReceipt {
+            if (generation < 0 || zoom < 0 || zoom > 22) {
+                throw new IllegalArgumentException("Managed source receipt is outside its numeric range");
+            }
+            Format15Safety.requiredHash(sourceIdentityHash, "managed source identity hash");
+        }
+    }
+
+    /** Numeric receipt for one visible-layer publication revision. */
+    public record VisibleLayerSourceReceipt(Long revision, Integer zoom, String sourceIdentityHash)
+            implements IntervalSourceReceipt {
+        public VisibleLayerSourceReceipt {
+            if ((revision != null && revision < 0) || (zoom != null && (zoom < 0 || zoom > 22))) {
+                throw new IllegalArgumentException("Visible source receipt is outside its numeric range");
+            }
+            if (sourceIdentityHash != null) {
+                Format15Safety.requiredHash(sourceIdentityHash, "visible source identity hash");
+            }
+        }
+
+        /** Explicit source observation where this renderer did not provide a receipt or tile zoom. */
+        public static VisibleLayerSourceReceipt unavailable() {
+            return new VisibleLayerSourceReceipt(null, null, null);
+        }
     }
 
     private Format15ProductionBundleFactory() {
@@ -167,30 +208,29 @@ public final class Format15ProductionBundleFactory {
 
     /**
      * Serializes the existing per-interval production routes and their already composed preview.
-     * The caller must pass the source receipt that accompanied acquisition; the detached batch
-     * deliberately does not synthesize that external receipt. The preview geometry is private
-     * evidence. This entry point emits no frozen full-way inference input and never grants
+     * The caller must pass the numeric receipt that accompanied acquisition; the detached batch
+     * deliberately does not synthesize that external receipt. The preview and point provenance
+     * geometry are private evidence. This entry point emits no frozen full-way inference input and never grants
      * {@code FULL_EDIT_PLAN} replay capability.
      *
      * <p>The live worker interface is: call this after production interval tracing and
      * {@link FixedIntervalEditPlanComposer#compose(IntervalTraceBatch, Map)} with the same batch
      * and route-choice map, then pass the actual safe source receipt, UI status, and the exact
      * composed plan identity shown at review/apply. Pass {@code null} identities before review
-     * or apply.</p>
+     * or apply. Receipt constructors accept only source kind, numeric generation/revision/zoom,
+     * and a SHA-256 identity; owner objects and arbitrary strings are never serialized.</p>
      */
     public static Format15Bundle createLiveIntervals(String buildIdentity,
             IntervalTraceBatch batch, FixedIntervalEditPlanComposer.Assessment assessment,
-            Map<Integer, Integer> routeChoices, String sourceReceipt, String status,
+            Map<Integer, Integer> routeChoices, IntervalSourceReceipt sourceReceipt,
+            IntervalArtifactStatus status,
             String reviewedPlanIdentity, String appliedPlanIdentity) {
         if (buildIdentity == null || buildIdentity.isBlank() || batch == null || assessment == null
-                || routeChoices == null || sourceReceipt == null || sourceReceipt.isBlank()
-                || status == null || status.isBlank()
+                || routeChoices == null || sourceReceipt == null || status == null
                 || assessment.intervals().size() != batch.runs().size()) {
             throw new IllegalArgumentException("Interval production artifact inputs are incomplete");
         }
         Format15Safety.requireSafeExportedMetadata(buildIdentity);
-        requireSafeSourceReceipt(sourceReceipt);
-        Format15Safety.requireSafeExportedMetadata(status);
         if (!batch.fullRequest().selectedWayKey().equals(batch.partition().selectedWayKey())
                 || !batch.fullRequest().selectedRange().equals(batch.partition().selectedRange())
                 || !batch.fullRequest().networkContentHash().equals(batch.network().canonicalHash())
@@ -209,17 +249,26 @@ public final class Format15ProductionBundleFactory {
                 || !plan.selectedRange().equals(batch.fullRequest().selectedRange())
                 || !plan.before().canonicalHash().equals(batch.network().canonicalHash())
                 || !plan.evidenceHash().equals(batch.evidence().canonicalHash())
-                || !plan.parameterHash().equals(batch.fullRequest().parameterHash()))) {
+                || !plan.settingsHash().equals(batch.fullRequest().settingsHash())
+                || !plan.parameterHash().equals(batch.fullRequest().parameterHash())
+                || !plan.routeIdentity().equals(composedRouteIdentity(batch, assessment, routeChoices)))) {
             throw new IllegalArgumentException("Composed interval plan differs from its frozen source");
         }
-        if (reviewedPlanIdentity != null && !reviewedPlanIdentity.equals(planIdentity)
+        boolean identityStatusValid = switch (status) {
+            case PRODUCED, PREVIEW, CANCELLED, RESOURCE_LIMIT, FAILED ->
+                reviewedPlanIdentity == null && appliedPlanIdentity == null;
+            case REVIEWED, CONFIRMED -> planIdentity != null
+                    && planIdentity.equals(reviewedPlanIdentity) && appliedPlanIdentity == null;
+            case APPLIED -> planIdentity != null && planIdentity.equals(appliedPlanIdentity)
+                    && (reviewedPlanIdentity == null || planIdentity.equals(reviewedPlanIdentity));
+            case APPLIED_AFTER_REVIEW -> planIdentity != null
+                    && planIdentity.equals(reviewedPlanIdentity)
+                    && planIdentity.equals(appliedPlanIdentity);
+        };
+        if (!identityStatusValid
+                || reviewedPlanIdentity != null && !reviewedPlanIdentity.equals(planIdentity)
                 || appliedPlanIdentity != null && !appliedPlanIdentity.equals(planIdentity)
-                || appliedPlanIdentity != null && reviewedPlanIdentity == null
-                || appliedPlanIdentity != null && !assessment.applyAvailable()
-                || ("confirmed".equals(status) || "reviewed".equals(status))
-                        && reviewedPlanIdentity == null
-                || ("applied".equals(status) || "applied-after-review".equals(status))
-                        && appliedPlanIdentity == null) {
+                || appliedPlanIdentity != null && !assessment.applyAvailable()) {
             throw new IllegalArgumentException("Interval review or applied identity differs from the composed plan");
         }
         if (reviewedPlanIdentity != null) Format15Safety.requireSafeExportedMetadata(reviewedPlanIdentity);
@@ -230,14 +279,15 @@ public final class Format15ProductionBundleFactory {
                 : plan.finalPreviewWays();
         String preview = geographicWays(previewWays);
         String previewHash = Format15Safety.sha256(preview.getBytes(StandardCharsets.UTF_8));
+        String receiptJson = intervalSourceReceiptJson(sourceReceipt);
         StringBuilder index = new StringBuilder("{\"schema\":1,\"artifactKind\":\"INTERVAL_PRODUCTION\"")
-                .append(",\"sourceReceipt\":").append(quote(sourceReceipt))
+                .append(",\"sourceReceipt\":").append(receiptJson)
                 .append(",\"networkHash\":").append(quote(batch.network().canonicalHash()))
                 .append(",\"evidenceHash\":").append(quote(batch.evidence().canonicalHash()))
                 .append(",\"networkSnapshotId\":").append(quote(batch.network().snapshotId()))
                 .append(",\"evidenceSnapshotId\":").append(quote(batch.evidence().snapshotId()))
                 .append(",\"parameterHash\":").append(quote(batch.fullRequest().parameterHash()))
-                .append(",\"status\":").append(quote(status))
+                .append(",\"status\":").append(quote(status.name()))
                 .append(",\"planIdentity\":").append(planIdentity == null ? "null" : quote(planIdentity))
                 .append(",\"previewArtifact\":").append(quote(INTERVAL_PREVIEW_ARTIFACT))
                 .append(",\"previewSha256\":").append(quote(previewHash))
@@ -246,7 +296,7 @@ public final class Format15ProductionBundleFactory {
                 .append(",\"appliedPlanIdentity\":")
                 .append(appliedPlanIdentity == null ? "null" : quote(appliedPlanIdentity))
                 .append(",\"applyAvailable\":").append(assessment.applyAvailable())
-                .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"FULL_EDIT_PLAN\":false,\"SCALAR_INFERENCE\":false,\"RASTER_INFERENCE\":false}")
+                .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"SCALAR_INFERENCE\":false,\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,\"FULL_EDIT_PLAN\":false}")
                 .append(",\"intervals\":[");
         for (int i = 0; i < batch.runs().size(); i++) {
             if (i > 0) index.append(',');
@@ -292,14 +342,21 @@ public final class Format15ProductionBundleFactory {
         }
         byte[] indexBytes = index.append("]}\n").toString().getBytes(StandardCharsets.UTF_8);
         String sourceHash = Format15Safety.sha256((batch.network().canonicalHash() + ":"
-                + batch.evidence().canonicalHash() + ":" + sourceReceipt)
-                .getBytes(StandardCharsets.UTF_8));
+                + batch.evidence().canonicalHash() + ":" + receiptJson).getBytes(StandardCharsets.UTF_8));
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         artifacts.put(INTERVAL_INDEX_ARTIFACT,
                 Format15Artifact.text(INTERVAL_INDEX_ARTIFACT,
                         new String(indexBytes, StandardCharsets.UTF_8)));
         artifacts.put(INTERVAL_PREVIEW_ARTIFACT,
                 Format15Artifact.text(INTERVAL_PREVIEW_ARTIFACT, preview));
+        artifacts.put("private/interval-point-provenance.json", Format15Artifact.text(
+                "private/interval-point-provenance.json",
+                intervalPointProvenanceJson(batch, assessment, plan, previewWays)));
+        for (int i = 0; i < batch.runs().size(); i++) {
+            String name = "private/interval-" + i + "-routes.json";
+            artifacts.put(name, Format15Artifact.text(name,
+                    intervalRoutesJson(batch, routeChoices, i)));
+        }
         return new Format15Bundle(buildIdentity, sourceHash, batch.fullRequest().parameterHash(), artifacts);
     }
 
@@ -315,18 +372,197 @@ public final class Format15ProductionBundleFactory {
         }
     }
 
-    private static void requireSafeSourceReceipt(String sourceReceipt) {
-        Format15Safety.requireSafeExportedMetadata(sourceReceipt);
-        String lower = sourceReceipt.toLowerCase(java.util.Locale.ROOT);
-        if (sourceReceipt.length() > 512 || sourceReceipt.indexOf('\n') >= 0
-                || sourceReceipt.indexOf('\r') >= 0 || lower.contains("://")
-                || lower.contains("authorization") || lower.contains("cookie")
-                || lower.contains("header:")) {
-            throw new IllegalArgumentException("Source receipt must be bounded redacted metadata");
+    private static String intervalSourceReceiptJson(IntervalSourceReceipt receipt) {
+        if (receipt instanceof ManagedTileSourceReceipt managed) {
+            return "{\"kind\":\"MANAGED_TILES\",\"generation\":" + managed.generation()
+                    + ",\"zoom\":" + managed.zoom() + ",\"sourceIdentityHash\":"
+                    + quote(managed.sourceIdentityHash()) + "}";
         }
+        VisibleLayerSourceReceipt visible = (VisibleLayerSourceReceipt) receipt;
+        return "{\"kind\":\"VISIBLE_RENDERED_LAYER\",\"revision\":"
+                + (visible.revision() == null ? "null" : visible.revision())
+                + ",\"zoom\":" + (visible.zoom() == null ? "null" : visible.zoom())
+                + ",\"sourceIdentityHash\":" + (visible.sourceIdentityHash() == null
+                        ? "null" : quote(visible.sourceIdentityHash())) + "}";
     }
 
-    private static String rangeJson(org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange range) {
+    private static String intervalRoutesJson(IntervalTraceBatch batch,
+            Map<Integer, Integer> routeChoices, int intervalIndex) {
+        IntervalTraceBatch.IntervalRun run = batch.runs().get(intervalIndex);
+        int chosen = run.routes().isEmpty() ? -1 : routeChoices.getOrDefault(intervalIndex, 0);
+        StringBuilder json = new StringBuilder("{\"schema\":1,\"intervalIndex\":")
+                .append(intervalIndex).append(",\"occurrenceRange\":")
+                .append(rangeJson(run.interval().range())).append(",\"traceRange\":")
+                .append(rangeJson(run.interval().traceRange())).append(",\"alternatives\":[");
+        for (int routeIndex = 0; routeIndex < run.routes().size(); routeIndex++) {
+            if (routeIndex > 0) json.append(',');
+            ModernTracePipeline.Route route = run.routes().get(routeIndex);
+            String identity = route.hypothesis().id();
+            Format15Safety.requireSafeExportedMetadata(identity);
+            json.append("{\"index\":").append(routeIndex)
+                    .append(",\"identity\":").append(quote(identity))
+                    .append(",\"chosen\":").append(chosen == routeIndex)
+                    .append(",\"points\":[");
+            for (int pointIndex = 0; pointIndex < route.pointIds().size(); pointIndex++) {
+                if (pointIndex > 0) json.append(',');
+                FinalRoutePointId pointId = route.pointIds().get(pointIndex);
+                MetricPoint point = route.assignments().get(pointId);
+                if (point == null || !Double.isFinite(point.xMeters())
+                        || !Double.isFinite(point.yMeters())) {
+                    throw new IllegalArgumentException("Interval route point assignment is incomplete");
+                }
+                json.append("{\"pointId\":").append(pointIdentityJson(pointId, null))
+                        .append(",\"xMeters\":").append(point.xMeters())
+                        .append(",\"yMeters\":").append(point.yMeters()).append('}');
+            }
+            json.append("]}");
+        }
+        return json.append("]}\n").toString();
+    }
+
+    /** Emits a complete ordered point-to-interval map for every final preview way. */
+    private static String intervalPointProvenanceJson(IntervalTraceBatch batch,
+            FixedIntervalEditPlanComposer.Assessment assessment, AlignmentEditPlan plan,
+            Map<PrimitiveKey, List<GeographicPoint>> previewWays) {
+        DetachedWay originalSelected = (DetachedWay) batch.network().primitives()
+                .get(batch.fullRequest().selectedWayKey());
+        Map<PrimitiveKey, FinalRoutePointId> idsByNode = new LinkedHashMap<>();
+        for (int occurrence = 0; occurrence < originalSelected.nodeKeys().size(); occurrence++) {
+            PrimitiveKey node = originalSelected.nodeKeys().get(occurrence);
+            idsByNode.put(node, new FinalRoutePointId.ExistingWayNodeOccurrence(
+                    originalSelected.key(), node, occurrence));
+        }
+        for (FinalRoutePointId id : assessment.assignments().keySet()) {
+            if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+                idsByNode.put(existing.nodeKey(), existing);
+            } else if (id instanceof FinalRoutePointId.GeneratedCandidatePoint generated) {
+                idsByNode.put(PrimitiveKey.planned(PrimitiveKey.Type.NODE,
+                        generated.originalPointIndex()), generated);
+            }
+        }
+        Map<FinalRoutePointId, Integer> ownerByPoint = new LinkedHashMap<>();
+        for (int intervalIndex = 0; intervalIndex < batch.runs().size(); intervalIndex++) {
+            IntervalTraceBatch.IntervalRun run = batch.runs().get(intervalIndex);
+            for (int occurrence = run.interval().range().firstIndex();
+                    occurrence <= run.interval().range().lastIndex(); occurrence++) {
+                PrimitiveKey node = originalSelected.nodeKeys().get(occurrence);
+                ownerByPoint.put(new FinalRoutePointId.ExistingWayNodeOccurrence(
+                        originalSelected.key(), node, occurrence), intervalIndex);
+            }
+            int routeIndex = run.routes().isEmpty() ? -1
+                    : routeChoicesForAssessment(batch, assessment, intervalIndex);
+            if (routeIndex < 0) continue;
+            ModernTracePipeline.Route route = run.routes().get(routeIndex);
+            for (FinalRoutePointId sourceId : route.pointIds()) {
+                FinalRoutePointId composedId = composedPointId(intervalIndex, route, sourceId);
+                if (composedId instanceof FinalRoutePointId.GeneratedCandidatePoint) {
+                    ownerByPoint.put(composedId, intervalIndex);
+                } else if (composedId instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        && run.interval().range().firstIndex() <= existing.originalOccurrenceIndex()
+                        && existing.originalOccurrenceIndex() <= run.interval().range().lastIndex()) {
+                    ownerByPoint.putIfAbsent(composedId, intervalIndex);
+                }
+            }
+        }
+
+        NetworkSnapshot finalNetwork = plan == null ? batch.network() : plan.after();
+        StringBuilder json = new StringBuilder("{\"schema\":1,\"coordinateSpace\":\"geographic-degrees\",\"points\":[");
+        boolean first = true;
+        for (PrimitiveKey wayKey : new java.util.TreeSet<>(previewWays.keySet())) {
+            DetachedWay way = (DetachedWay) finalNetwork.primitives().get(wayKey);
+            List<GeographicPoint> points = previewWays.get(wayKey);
+            if (way == null || way.nodeKeys().size() != points.size()) {
+                throw new IllegalArgumentException("Final preview provenance does not match its way sequence");
+            }
+            for (int sequence = 0; sequence < points.size(); sequence++) {
+                if (!first) json.append(',');
+                first = false;
+                PrimitiveKey nodeKey = way.nodeKeys().get(sequence);
+                FinalRoutePointId pointId = idsByNode.get(nodeKey);
+                GeographicPoint coordinate = points.get(sequence);
+                Integer owner = pointId == null ? null : ownerByPoint.get(pointId);
+                if (pointId instanceof FinalRoutePointId.GeneratedCandidatePoint && owner == null) {
+                    throw new IllegalArgumentException("Generated final point has no interval owner");
+                }
+                json.append("{\"sequence\":").append(sequence)
+                        .append(",\"wayKey\":").append(quote(wayKey.toString()))
+                        .append(",\"pointId\":").append(pointIdentityJson(pointId, nodeKey))
+                        .append(",\"ownerInterval\":");
+                json.append(owner == null ? "null" : owner.toString())
+                        .append(",\"latitude\":").append(coordinate.latitudeDegrees())
+                        .append(",\"longitude\":").append(coordinate.longitudeDegrees()).append('}');
+            }
+        }
+        return json.append("]}\n").toString();
+    }
+
+    private static int routeChoicesForAssessment(IntervalTraceBatch batch,
+            FixedIntervalEditPlanComposer.Assessment assessment, int intervalIndex) {
+        FixedIntervalEditPlanComposer.IntervalAssessment result = assessment.intervals().get(intervalIndex);
+        if (result.routeIndex() < 0 || result.routeIndex() >= batch.runs().get(intervalIndex).routes().size()) {
+            throw new IllegalArgumentException("Interval provenance has no matching chosen route");
+        }
+        return result.routeIndex();
+    }
+
+    private static String composedRouteIdentity(IntervalTraceBatch batch,
+            FixedIntervalEditPlanComposer.Assessment assessment, Map<Integer, Integer> routeChoices) {
+        String parts = java.util.stream.IntStream.range(0, batch.runs().size())
+                .mapToObj(index -> {
+                    FixedIntervalEditPlanComposer.IntervalAssessment interval =
+                            assessment.intervals().get(index);
+                    boolean frozen = interval.disposition()
+                            == FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE
+                            || interval.disposition() == FixedIntervalEditPlanComposer.Disposition.UNCHANGED_NOOP
+                            || batch.runs().get(index).routes().isEmpty();
+                    int choice = routeChoices.getOrDefault(index, 0);
+                    if (!batch.runs().get(index).routes().isEmpty()
+                            && (choice < 0 || choice >= batch.runs().get(index).routes().size())) {
+                        throw new IllegalArgumentException("Interval route choice is outside production alternatives");
+                    }
+                    String identity = frozen ? "frozen"
+                            : batch.runs().get(index).routes()
+                                    .get(choice).hypothesis().id();
+                    return index + "=" + identity;
+                }).collect(java.util.stream.Collectors.joining(";"));
+        return "interval-composite:" + parts;
+    }
+
+    private static FinalRoutePointId composedPointId(int intervalIndex,
+            ModernTracePipeline.Route route, FinalRoutePointId sourceId) {
+        if (sourceId instanceof FinalRoutePointId.GeneratedCandidatePoint generated) {
+            if (generated.originalPointIndex() >= 1_000_000) {
+                throw new IllegalArgumentException("Interval generated point budget exceeded");
+            }
+            int pointIndex = Math.addExact(Math.multiplyExact(intervalIndex, 1_000_000),
+                    generated.originalPointIndex());
+            return new FinalRoutePointId.GeneratedCandidatePoint("interval-" + intervalIndex
+                    + ":" + route.hypothesis().id(), pointIndex);
+        }
+        return sourceId;
+    }
+
+    private static String pointIdentityJson(FinalRoutePointId id, PrimitiveKey fallbackNode) {
+        if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+            return "{\"kind\":\"EXISTING_WAY_NODE_OCCURRENCE\",\"wayKey\":"
+                    + quote(existing.wayKey().toString()) + ",\"nodeKey\":"
+                    + quote(existing.nodeKey().toString()) + ",\"occurrenceIndex\":"
+                    + existing.originalOccurrenceIndex() + "}";
+        }
+        if (id instanceof FinalRoutePointId.GeneratedCandidatePoint generated) {
+            Format15Safety.requireSafeExportedMetadata(generated.candidateId());
+            return "{\"kind\":\"GENERATED_CANDIDATE_POINT\",\"candidateId\":"
+                    + quote(generated.candidateId()) + ",\"originalPointIndex\":"
+                    + generated.originalPointIndex() + "}";
+        }
+        if (fallbackNode != null && fallbackNode.identityKind() == PrimitiveKey.IdentityKind.OSM_UNIQUE) {
+            return "{\"kind\":\"EXISTING_NODE\",\"nodeKey\":"
+                    + quote(fallbackNode.toString()) + "}";
+        }
+        throw new IllegalArgumentException("Final preview point has no candidate-owned identity");
+    }
+
+    private static String rangeJson(OccurrenceRange range) {
         return "{\"first\":" + range.firstIndex() + ",\"last\":" + range.lastIndex() + "}";
     }
 

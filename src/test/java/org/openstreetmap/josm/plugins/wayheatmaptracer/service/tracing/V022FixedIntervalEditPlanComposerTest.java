@@ -12,6 +12,11 @@ import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.swing.SwingUtilities;
 
@@ -56,6 +61,8 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022FixedIntervalEditPlanComposerTest {
+    private record IndexedCoordinate(int index, GeographicPoint coordinate) { }
+
     @BeforeAll
     static void josm() {
         Config.setPreferencesInstance(new MemoryPreferences());
@@ -100,8 +107,11 @@ class V022FixedIntervalEditPlanComposerTest {
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, routeChoices);
         var plan = assessment.plan().orElseThrow();
 
+        var receipt = new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                41L, 15, "a".repeat(64));
         var bundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
-                assessment, routeChoices, "receipt:test-slide-1", "confirmed",
+                assessment, routeChoices, receipt,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED,
                 plan.canonicalHash(), null);
         Path file = directory.resolve("intervals.zip");
         Format15BundleWriter.write(bundle, file);
@@ -110,6 +120,8 @@ class V022FixedIntervalEditPlanComposerTest {
                 .bytes(), java.nio.charset.StandardCharsets.UTF_8);
         String geometry = new String(decoded.artifact("private/interval-composed-preview.json")
                 .orElseThrow().bytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String provenance = new String(decoded.artifact("private/interval-point-provenance.json")
+                .orElseThrow().bytes(), java.nio.charset.StandardCharsets.UTF_8);
 
         assertTrue(index.contains("\"chosenRouteIndex\":1"));
         for (var route : batch.runs().get(0).routes()) {
@@ -117,12 +129,56 @@ class V022FixedIntervalEditPlanComposerTest {
         }
         assertTrue(index.contains("\"occurrenceRange\""));
         assertTrue(index.contains(plan.canonicalHash()));
-        assertTrue(index.contains("receipt:test-slide-1"));
+        assertTrue(index.contains("MANAGED_TILES"));
+        assertTrue(index.contains("\"generation\":41"));
+        assertTrue(index.contains("\"FINAL_GEOMETRY\":false"));
         assertTrue(index.endsWith("]}\n"));
         assertTrue(geometry.contains("\"ways\""));
-        var firstPoint = plan.finalPreviewWays().get(plan.selectedWayKey()).get(0);
-        assertFalse(index.contains("[" + firstPoint.latitudeDegrees() + ","
-                + firstPoint.longitudeDegrees() + "]"));
+        assertFalse(index.contains("\"latitude\""));
+        for (int intervalIndex = 0; intervalIndex < batch.runs().size(); intervalIndex++) {
+            String intervalRoutes = new String(decoded.artifact("private/interval-" + intervalIndex
+                    + "-routes.json").orElseThrow().bytes(), java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(intervalRoutes.contains("\"intervalIndex\":" + intervalIndex));
+            assertTrue(intervalRoutes.contains("\"alternatives\""));
+            for (var route : batch.runs().get(intervalIndex).routes()) {
+                assertTrue(intervalRoutes.contains(route.hypothesis().id()));
+            }
+        }
+        assertTrue(provenance.contains("\"kind\":\"EXISTING_WAY_NODE_OCCURRENCE\""));
+        assertTrue(provenance.contains("\"kind\":\"GENERATED_CANDIDATE_POINT\""));
+        Pattern point = Pattern.compile("\\{\\\"sequence\\\":(\\d+),\\\"wayKey\\\":\\\"([^\\\"]+)\\\","
+                + "\\\"pointId\\\":(\\{.*?\\}),\\\"ownerInterval\\\":(null|\\d+),"
+                + "\\\"latitude\\\":([^,]+),\\\"longitude\\\":([^}]+)\\}");
+        Matcher matcher = point.matcher(provenance);
+        Map<String, List<IndexedCoordinate>> decodedWays = new LinkedHashMap<>();
+        boolean fixedIslandPointFound = false;
+        int generatedPointCount = 0;
+        while (matcher.find()) {
+            String pointId = matcher.group(3);
+            String owner = matcher.group(4);
+            if (pointId.contains("GENERATED_CANDIDATE_POINT")) {
+                generatedPointCount++;
+                assertFalse("null".equals(owner), "generated final points must have an interval owner");
+                assertTrue(Integer.parseInt(owner) < batch.runs().size());
+            }
+            if (pointId.contains("\"occurrenceIndex\":3")) {
+                fixedIslandPointFound = true;
+                assertEquals("null", owner, "fixed island points have no slide-interval owner");
+            }
+            decodedWays.computeIfAbsent(matcher.group(2), ignored -> new ArrayList<>())
+                    .add(new IndexedCoordinate(Integer.parseInt(matcher.group(1)),
+                            new GeographicPoint(Double.parseDouble(matcher.group(5)),
+                                    Double.parseDouble(matcher.group(6)))));
+        }
+        assertTrue(generatedPointCount > 0, "fixture should exercise generated candidate identities");
+        assertTrue(fixedIslandPointFound, "fixture should retain fixed island occurrence 3");
+        for (var way : plan.finalPreviewWays().entrySet()) {
+            List<IndexedCoordinate> decodedWay = decodedWays.get(way.getKey().toString());
+            assertTrue(decodedWay != null, "private provenance omitted way " + way.getKey());
+            decodedWay.sort(Comparator.comparingInt(IndexedCoordinate::index));
+            assertEquals(way.getValue(), decodedWay.stream().map(IndexedCoordinate::coordinate).toList(),
+                    "private point provenance must reconstruct every displayed way exactly");
+        }
         assertFalse(decoded.capability().supports(ReplayLevel.SCALAR_INFERENCE));
         assertFalse(decoded.capability().supports(ReplayLevel.FINAL_GEOMETRY));
         assertFalse(decoded.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
@@ -130,13 +186,45 @@ class V022FixedIntervalEditPlanComposerTest {
                 decoded.artifact("interval-production.json").orElseThrow().sha256());
         assertThrows(IllegalArgumentException.class, () ->
                 Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
-                        assessment, routeChoices, "Cookie: secret", "preview", null, null));
+                        assessment, routeChoices, new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                                0L, 15, "receipt:access_token=secret"),
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                        0L, 15, "api_key=secret"));
         assertThrows(IllegalArgumentException.class, () ->
                 Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
-                        assessment, routeChoices, "https://example.invalid/source", "preview", null, null));
+                        assessment, routeChoices, receipt,
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.CANCELLED,
+                        plan.canonicalHash(), plan.canonicalHash()));
         assertThrows(IllegalArgumentException.class, () ->
                 Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
-                        assessment, routeChoices, "receipt:test-slide-1", "reviewed", "wrong-plan", null));
+                        assessment, routeChoices, receipt,
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW,
+                        plan.canonicalHash(), null));
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        assessment, routeChoices, receipt,
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.REVIEWED, "wrong-plan", null));
+        var wrongSettingsPlan = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan(
+                plan.selectedWayKey(), plan.selectedRange(), plan.before(), plan.after(),
+                plan.metricFrame(), plan.permissions(), plan.settingsHash() + "-wrong",
+                plan.evidenceHash(), plan.parameterHash(), plan.routeIdentity(),
+                plan.finalPreviewWays(), plan.validation());
+        var wrongSettingsAssessment = new FixedIntervalEditPlanComposer.Assessment(
+                java.util.Optional.of(wrongSettingsPlan), assessment.selectedWayPreview(),
+                assessment.assignments(), assessment.intervals());
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        wrongSettingsAssessment, routeChoices, receipt,
+                        Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null));
+        var visibleBundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                assessment, routeChoices,
+                Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+        String visibleIndex = new String(visibleBundle.artifact("interval-production.json").bytes(),
+                java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(visibleIndex.contains("\"kind\":\"VISIBLE_RENDERED_LAYER\",\"revision\":null,\"zoom\":null"));
     }
 
     @Test
