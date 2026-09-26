@@ -235,6 +235,18 @@ public final class SelectedWayIntervalPartitioner {
                 return wholeSelection(authoritySnapshot, authoritySpecification,
                         refusal, selected, selectedIndex, dispositions, proof);
             }
+            if (decision.reason() == ManualJunctionEligibility.Reason.SIMPLE_T) {
+                ManualJunctionEligibility.Reason footprintReason = manualReasonInFootprint(
+                        authoritySnapshot, decision.junction(), footprint);
+                if (footprintReason != ManualJunctionEligibility.Reason.SIMPLE_T) {
+                    Set<PrimitiveKey> affected = new LinkedHashSet<>(decision.affectedNodes());
+                    footprint.proofKeys().stream().filter(key -> key.type() == PrimitiveKey.Type.NODE)
+                            .forEach(affected::add);
+                    decision = new ManualJunctionEligibility.Decision(footprintReason,
+                            decision.junction(), decision.receiver(), affected);
+                    decisions.put(selectedIndex, decision);
+                }
+            }
             provedManualFootprints.put(selectedIndex, footprint);
             selectedFootprints.put(selectedIndex, footprint.selectedRange());
         }
@@ -392,6 +404,30 @@ public final class SelectedWayIntervalPartitioner {
     private static ManualJunctionEligibility.Decision decision(
             ManualJunctionEligibility.Reason reason, PrimitiveKey node) {
         return new ManualJunctionEligibility.Decision(reason, node, null, Set.of(node));
+    }
+
+    private static ManualJunctionEligibility.Reason manualReasonInFootprint(NetworkSnapshot snapshot,
+            PrimitiveKey junction, ManualFootprint footprint) {
+        for (PrimitiveKey key : footprint.proofKeys()) {
+            if (key.type() == PrimitiveKey.Type.NODE && !key.equals(junction)
+                    && snapshot.primitives().get(key) instanceof DetachedNode node
+                    && !node.tags().isEmpty()) {
+                return ManualJunctionEligibility.Reason.AFFECTED_NODE_TAGGED;
+            }
+        }
+        for (PrimitiveKey key : footprint.proofKeys()) {
+            if (key.type() == PrimitiveKey.Type.NODE && !key.equals(junction)
+                    && hasRelationReferrer(snapshot, key)) {
+                return ManualJunctionEligibility.Reason.AFFECTED_NODE_RELATION;
+            }
+        }
+        for (PrimitiveKey key : footprint.proofKeys()) {
+            if (key.type() == PrimitiveKey.Type.NODE && !key.equals(junction)
+                    && wayReferrers(snapshot, key).size() > 1) {
+                return ManualJunctionEligibility.Reason.COUPLED_JUNCTION;
+            }
+        }
+        return ManualJunctionEligibility.Reason.SIMPLE_T;
     }
 
     private static ManualFootprint proveFootprint(NetworkSnapshot snapshot,
