@@ -1417,10 +1417,13 @@ class V022FixedIntervalEditPlanComposerTest {
                     index.replaceFirst("\\\"status\\\":\\\"PREVIEW\\\"",
                             "\\\"status\\\":\\\"APPLIED\\\""),
                     index.replaceFirst("\\\"alternativesTruncated\\\":false",
-                            "\\\"alternativesTruncated\\\":true"));
+                            "\\\"alternativesTruncated\\\":true"),
+                    index.replaceFirst("\\\"FULL_EDIT_PLAN\\\":false",
+                            "\\\"FULL_EDIT_PLAN\\\":true"));
             List<String> expectedReasons = List.of("strict-interval-index-choice-mismatch",
                     "strict-interval-index-mismatch", "strict-interval-source-receipt-mismatch",
-                    "strict-interval-status-mismatch", "strict-interval-index-choice-mismatch");
+                    "strict-interval-status-mismatch", "strict-interval-index-choice-mismatch",
+                    "strict-interval-index-mismatch");
             for (int changeIndex = 0; changeIndex < alteredIndexes.size(); changeIndex++) {
                 String altered = alteredIndexes.get(changeIndex);
                 assertNotEquals(index, altered);

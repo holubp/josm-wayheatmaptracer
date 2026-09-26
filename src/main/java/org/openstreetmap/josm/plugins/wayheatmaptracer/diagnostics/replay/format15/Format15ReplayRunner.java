@@ -28,6 +28,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 
 /** Strict offline runner that always invokes an actual production engine on frozen inputs. */
 public final class Format15ReplayRunner {
+    private static final Map<String, Boolean> INTERVAL_CAPABILITIES = Map.of(
+            "INTERVAL_PRODUCTION_ARTIFACT", true,
+            "STRICT_INTERVAL_PRODUCTION", true,
+            "SCALAR_INFERENCE", false,
+            "FINAL_GEOMETRY", false,
+            "RASTER_INFERENCE", false,
+            "FULL_EDIT_PLAN", false);
     /** Result materialized from a real production computation, never a recorded candidate. */
     public record Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
             TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
@@ -90,7 +97,9 @@ public final class Format15ReplayRunner {
                 || partition.slideIntervals().size() != payload.runs().size()) {
             throw new ReplayMismatchException("strict-interval-partition-mismatch");
         }
-        if (!Boolean.TRUE.equals(object(index, "capabilities").get("STRICT_INTERVAL_PRODUCTION"))
+        if (!Long.valueOf(1L).equals(index.get("schema"))
+                || !Boolean.TRUE.equals(index.get("privateData"))
+                || !INTERVAL_CAPABILITIES.equals(object(index, "capabilities"))
                 || !"INTERVAL_PRODUCTION".equals(index.get("artifactKind"))
                 || !shared.network().canonicalHash().equals(index.get("networkHash"))
                 || !shared.evidence().canonicalHash().equals(index.get("evidenceHash"))
