@@ -64,6 +64,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.data.imagery.ImageryInfo;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLayer;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -234,6 +235,31 @@ class AlignWayActionTest {
         } finally {
             layer.destroy();
         }
+    }
+
+    @Test
+    void intervalApplyRequiresDirectManagedSourceUntilVisibleRevisionIsProved() {
+        LiveBPreviewService.VisibleRaster visible = new LiveBPreviewService.VisibleRaster(
+                12, 12, new int[144], 0.0, 0.0, 2.0, 2.0, 1.0, 1.0,
+                OptionalDouble.empty(), "visible-test", "EPSG:3857");
+        var direct = new ManagedModernPreviewSource.Raster(
+                new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_ARGB),
+                new boolean[] {true, true, true, true},
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence
+                    .SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
+                "hot", 15, "managed-test", new org.openstreetmap.josm.plugins.wayheatmaptracer
+                    .tile.ManagedTileGeneration(0L));
+        LiveBPreviewService.Captured visibleCaptured = new LiveBPreviewService.Captured(
+                visible, null, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+        LiveBPreviewService.Captured managedCaptured = new LiveBPreviewService.Captured(
+                null, direct, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
+
+        assertFalse(AlignWayAction.intervalApplySourceAvailable(visibleCaptured));
+        assertTrue(AlignWayAction.intervalApplySourceAvailable(managedCaptured));
     }
     @Test
     void redoFailureUiUsesOnlyFixedRedactedText() throws Exception {

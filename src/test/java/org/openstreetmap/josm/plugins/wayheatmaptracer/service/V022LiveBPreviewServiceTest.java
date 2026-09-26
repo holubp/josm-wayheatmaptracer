@@ -50,6 +50,75 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
     @Test
+    void ordinaryComputeUsesOneFrozenBatchForTwoManualJunctionIslands() throws Exception {
+        DataSet dataSet = new DataSet();
+        java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i <= 30; i++) {
+            Node node = loadedNode(1000 + i, latitude(0), longitude((i - 15) * 10.0));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        for (int index : List.of(4, 12, 18, 26)) {
+            nodes.get(index).put("note", "proved manual junction boundary");
+        }
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        selected.setOsmId(1100, 1);
+        selected.setModified(false);
+        dataSet.addPrimitive(selected);
+        for (int index : List.of(8, 22)) {
+            Node north = loadedNode(1200 + index, latitude(40), longitude((index - 15) * 10.0));
+            Node south = loadedNode(1300 + index, latitude(-40), longitude((index - 15) * 10.0));
+            dataSet.addPrimitive(north);
+            dataSet.addPrimitive(south);
+            Way crossing = new Way();
+            crossing.setNodes(List.of(south, nodes.get(index), north));
+            crossing.setOsmId(1400 + index, 1);
+            crossing.setModified(false);
+            dataSet.addPrimitive(crossing);
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 30, nodes,
+                Set.of(nodes.get(0), nodes.get(30)));
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
+                wideFlatRaster(), config(TrackerMode.PROBABILISTIC)));
+
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+
+        assertTrue(computed.partitioned());
+        assertNull(computed.pipeline(), "interval inference must not synthesize a whole-way result");
+        assertEquals(2, computed.intervalBatch().partition().fixedIslands().size(),
+                computed.intervalBatch().partition().toString());
+        assertEquals(3, computed.intervalBatch().runs().size());
+        assertSame(captured[0].network(), computed.intervalBatch().network());
+        assertEquals(captured[0].network().canonicalHash(),
+                computed.intervalBatch().network().canonicalHash());
+        assertThrows(IllegalArgumentException.class, () -> new LiveBPreviewService.Computed(
+                computed.captured(), computed.evidence(), computed.request(), null,
+                computed.options(), java.util.Map.of(), null));
+        assertThrows(IllegalArgumentException.class, () -> new LiveBPreviewService.Computed(
+                computed.captured(), computed.evidence(), computed.request(),
+                computed.intervalBatch().runs().get(0).result(), computed.options(),
+                java.util.Map.of(), computed.intervalBatch()));
+    }
+
+    private static LiveBPreviewService.VisibleRaster wideFlatRaster() {
+        int width = 1200;
+        int height = 1200;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distance = (y - 600.0) / 3.0;
+            int gray = (int) Math.round(255.0 * (0.02 + 0.8
+                    * Math.exp(-0.5 * distance * distance / 1.44)));
+            java.util.Arrays.fill(argb, y * width, (y + 1) * width,
+                    0xff000000 | gray << 16 | gray << 8 | gray);
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -200.0, -200.0, 200.0, 200.0, 2.0, 2.0,
+                OptionalDouble.of(2.0), "visible-wide-test", "EPSG:3857");
+    }
+    @Test
     void batchRejectsAggregateWorkOverrunAsTypedResourceLimit() throws Exception {
         Fixture fixture = intervalFixture();
         LiveBPreviewService service = new LiveBPreviewService();

@@ -183,9 +183,34 @@ public final class LiveBPreviewService {
     /** Detached result from the actual common modern final pipeline. */
     public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
-            Map<String, Number> counters) {
+            Map<String, Number> counters, IntervalTraceBatch intervalBatch) {
         public Computed {
+            if (captured == null || evidence == null || request == null || options == null
+                    || (pipeline == null) == (intervalBatch == null)) {
+                throw new IllegalArgumentException("Exactly one live preview result variant is required");
+            }
+            if (intervalBatch != null && (intervalBatch.network() != captured.network()
+                    || intervalBatch.evidence() != evidence
+                    || intervalBatch.fullRequest() != request)) {
+                throw new IllegalArgumentException("Interval result must retain its frozen capture");
+            }
             counters = Map.copyOf(counters);
+        }
+        /** Whether this result contains production interval runs instead of a full-way run. */
+        public boolean partitioned() {
+            return intervalBatch != null;
+        }
+        /** Constructs a detached interval result without fabricating a full-way inference. */
+        public static Computed partitioned(Captured captured, IntervalTraceBatch batch,
+                Map<String, Number> counters) {
+            return new Computed(captured, batch.evidence(), batch.fullRequest(), null,
+                    batch.options(), counters, batch);
+        }
+        /** Compatibility constructor for existing full-way callers. */
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
+                Map<String, Number> counters) {
+            this(captured, evidence, request, pipeline, options, counters, null);
         }
         /** Compatibility constructor for tests that replace only a computed route. */
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
@@ -282,6 +307,14 @@ public final class LiveBPreviewService {
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        if (permissions.junctionPolicy() == JunctionPolicy.FIXED
+                && hasInteriorManualIsland(SelectedWayIntervalPartitioner.partition(
+                        network, specification))) {
+            return new Captured(raster, null, specification, network, source, metric, grid,
+                    config.heatmap().color(), radius, step, settingsHash, parameterHash,
+                    config.cleanup(), config.heatmap().alignmentMode(), engine,
+                    raster.projectionCode(), null);
+        }
         ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
                 != JunctionPolicy.FIXED
                 ? ManualJunctionEligibility.evaluate(network, specification) : null;
@@ -433,6 +466,44 @@ public final class LiveBPreviewService {
                             editPolygons.addAll(localRegion.polygons());
                             collisionPolygons.addAll(localRegion.polygons());
                         }
+                    }
+                }
+            }
+        }
+        // Read-only closure for manual islands: the partitioner must see the nearby arm
+        // and its port even when the user has not enabled any junction edit authority.
+        if (permissions.junctionPolicy() == JunctionPolicy.FIXED) {
+            for (int selectedIndex = 1; selectedIndex < selection.segmentNodes().size() - 1;
+                    selectedIndex++) {
+                Node selectedNode = selection.segmentNodes().get(selectedIndex);
+                for (var referrer : selectedNode.getReferrers()) {
+                    if (!(referrer instanceof Way incident) || incident.isDeleted()
+                            || incident.getUniqueId() == selectedWay.id()
+                            || incident.isIncomplete() || incident.hasIncompleteNodes()
+                            || incident.getNodesCount() < 2) {
+                        continue;
+                    }
+                    OccurrenceRange local;
+                    try {
+                        local = JunctionAuthorityBounds.localOccurrenceRange(
+                                incident, selectedNode, frame);
+                    } catch (IllegalArgumentException unavailableArm) {
+                        continue;
+                    }
+                    List<MetricPoint> localMetric = incident.getNodes().subList(
+                            local.firstIndex(), local.lastIndex() + 1).stream()
+                            .map(LiveBPreviewService::geographic).map(frame::toMetric).toList();
+                    MetricRegion localRegion = MetricCorridorRegion.aroundPolyline(localMetric,
+                            MAXIMUM_JUNCTION_RELOCATION_METERS);
+                    if (localRegion.polygons().stream().flatMap(List::stream).allMatch(point -> {
+                        try {
+                            frame.toGeographic(point);
+                            return true;
+                        } catch (IllegalArgumentException outsideFrame) {
+                            return false;
+                        }
+                    })) {
+                        collisionPolygons.addAll(localRegion.polygons());
                     }
                 }
             }
@@ -629,6 +700,18 @@ public final class LiveBPreviewService {
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        if (permissions.junctionPolicy() == JunctionPolicy.FIXED
+                && hasInteriorManualIsland(SelectedWayIntervalPartitioner.partition(
+                        network, specification))) {
+            return new ManagedCaptureSeed(specification, network, source, metric, frame,
+                    config.heatmap().color(), radius, config.heatmap().sampleStepMeters(),
+                    settingsHash, hash("managed-live-" + config.heatmap().trackerMode().name()
+                            .toLowerCase(java.util.Locale.ROOT) + "-v2",
+                            parameterIdentity(config.heatmap().trackerMode())),
+                    config.cleanup(), config.heatmap().alignmentMode(),
+                    config.heatmap().trackerMode(), sourceIdentity,
+                    ProjectionRegistry.getProjection().toCode(), null);
+        }
         ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
                 != JunctionPolicy.FIXED
                 ? ManualJunctionEligibility.evaluate(network, specification) : null;
@@ -680,6 +763,13 @@ public final class LiveBPreviewService {
         if (captured == null || cancellation == null) {
             throw new IllegalArgumentException("Live preview computation is incomplete");
         }
+        SelectedWayIntervalPartitioner.Partition partition = SelectedWayIntervalPartitioner.partition(
+                captured.network(), captured.specification());
+        if (captured.specification().permissions().junctionPolicy() == JunctionPolicy.FIXED
+                && hasInteriorManualIsland(partition)) {
+            IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation);
+            return Computed.partitioned(captured, batch, Map.of());
+        }
         ModernDiagnosticCounters.begin();
         try {
             EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
@@ -692,6 +782,14 @@ public final class LiveBPreviewService {
         } finally {
             ModernDiagnosticCounters.end();
         }
+    }
+
+    private static boolean hasInteriorManualIsland(SelectedWayIntervalPartitioner.Partition partition) {
+        return !partition.fixedIslands().isEmpty()
+                && partition.junctionDispositions().stream().anyMatch(junction ->
+                        !junction.automaticEligible()
+                        && junction.selectedOccurrenceIndex() > partition.selectedRange().firstIndex()
+                        && junction.selectedOccurrenceIndex() < partition.selectedRange().lastIndex());
     }
 
     /** Captures evidence once and runs every owned interval through the production modern pipeline. */

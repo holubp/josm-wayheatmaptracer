@@ -55,6 +55,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -63,6 +65,58 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class V022FixedIntervalEditPlanComposerTest {
     private record IndexedCoordinate(int index, GeographicPoint coordinate) { }
 
+    @Test
+    void liveRouteChoiceRecomposesFrozenProductionBatchAndClearsReview() throws Exception {
+        IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, true);
+        assertTrue(batch.runs().get(0).routes().size() > 1);
+        AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(batch);
+        assertTrue(state.assessment().applyAvailable());
+        assertTrue(AlignWayAction.intervalPreviewSummary(state)
+                .contains("Adjust this junction manually first."));
+        String firstHash = state.assessment().plan().orElseThrow().canonicalHash();
+        state.confirmReview();
+        assertTrue(state.review().confirmed());
+
+        state.choose(0, 1);
+
+        assertEquals(Map.of(0, 1), state.routeChoices());
+        assertFalse(state.review().confirmed());
+        assertNotEquals(firstHash, state.assessment().plan().orElseThrow().canonicalHash());
+        assertEquals(batch.runs().get(1).routes().get(0).hypothesis().id(),
+                state.assessment().intervals().get(1).routeIdentity());
+        assertEquals(batch.runs().get(0).routes().get(1).hypothesis().id(),
+                state.assessment().intervals().get(0).routeIdentity());
+        if (state.review().disposition() == ValidationReport.Disposition.REVIEW_REQUIRED) {
+            state.confirmReview();
+        }
+        assertEquals(state.assessment().plan().orElseThrow().canonicalHash(),
+                state.currentPlanForApply().canonicalHash());
+    }
+
+    @Test
+    void liveAllFrozenSelectionCannotApplyOrConfirm() throws Exception {
+        AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(
+                batch(288.0, 288.0));
+        assertFalse(state.applyAvailable());
+        assertTrue(state.assessment().plan().isEmpty());
+        assertEquals(null, state.review());
+        assertThrows(IllegalStateException.class, state::confirmReview);
+    }
+
+    @Test
+    void liveLocalFailureKeepsOneSafeIntervalAndOneCompletePlan() throws Exception {
+        AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(
+                batch(288.0, 296.0));
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED),
+                state.assessment().intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        assertTrue(state.assessment().applyAvailable());
+        assertTrue(AlignWayAction.intervalPreviewSummary(state).contains("Kept in place"));
+        assertEquals(state.assessment().plan().orElseThrow().finalPreviewWays()
+                        .get(state.batch().fullRequest().selectedWayKey()),
+                state.assessment().selectedWayPreview());
+    }
     @BeforeAll
     static void josm() {
         Config.setPreferencesInstance(new MemoryPreferences());

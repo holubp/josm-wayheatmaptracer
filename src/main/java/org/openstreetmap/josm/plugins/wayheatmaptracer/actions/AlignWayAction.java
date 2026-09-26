@@ -80,6 +80,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionCon
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
@@ -227,6 +230,86 @@ public class AlignWayAction extends JosmAction {
                             "Ordinary attempt requires exactly one detached source capture");
                 }
             }
+        }
+    }
+
+    /** Session-local route choices and exact composed review state for one frozen interval batch. */
+    public static final class IntervalPreviewState {
+        private final IntervalTraceBatch batch;
+        private final FixedIntervalEditPlanComposer composer = new FixedIntervalEditPlanComposer();
+        private Map<Integer, Integer> routeChoices = Map.of();
+        private FixedIntervalEditPlanComposer.Assessment assessment;
+        private PreviewReviewState review;
+
+        /** Composes the initial ranked routes from the immutable production batch. */
+        public IntervalPreviewState(IntervalTraceBatch batch) {
+            this.batch = Objects.requireNonNull(batch, "batch");
+            recompose();
+        }
+
+        /** Returns the sole frozen inference batch for this preview session. */
+        public IntervalTraceBatch batch() { return batch; }
+        /** Returns selected production route indexes keyed by ordered interval index. */
+        public Map<Integer, Integer> routeChoices() { return routeChoices; }
+        /** Returns the current complete selected and affected-way assessment. */
+        public FixedIntervalEditPlanComposer.Assessment assessment() { return assessment; }
+        /** Returns the exact current plan review, or null when no plan can Apply. */
+        public PreviewReviewState review() { return review; }
+
+        /** Selects an existing production route and clears confirmation, even for equal geometry. */
+        public void choose(int intervalIndex, int routeIndex) {
+            Map<Integer, Integer> next = new LinkedHashMap<>(routeChoices);
+            next.put(intervalIndex, routeIndex);
+            FixedIntervalEditPlanComposer.Assessment recomposed = composer.compose(batch, next);
+            routeChoices = Map.copyOf(next);
+            assessment = recomposed;
+            review = unconfirmedReview(recomposed);
+        }
+
+        /** Confirms exactly the currently composed complete plan. */
+        public void confirmReview() {
+            if (review == null) {
+                throw new IllegalStateException("No applicable composed preview can be reviewed");
+            }
+            review = review.confirm();
+        }
+
+        /** Returns whether the composed plan has the review state required for Apply. */
+        public boolean applyAvailable() {
+            return assessment.applyAvailable() && review != null && review.canApply();
+        }
+
+        /** Revalidates from retained production routes before the command is constructed. */
+        public AlignmentEditPlan currentPlanForApply() {
+            FixedIntervalEditPlanComposer.Assessment current = composer.compose(batch, routeChoices);
+            if (!current.applyAvailable() || review == null || !review.canApply()) {
+                throw new IllegalStateException("The composed interval preview is not applicable");
+            }
+            AlignmentEditPlan currentPlan = current.plan().orElseThrow();
+            PreviewReviewState currentReview = PreviewReviewState.fromEditPlan(
+                    choiceIdentity(), currentPlan);
+            if (!review.equals(currentReview) && !review.matches(currentReview)) {
+                throw new IllegalStateException("The reviewed interval plan is stale");
+            }
+            return currentPlan;
+        }
+
+        private void recompose() {
+            assessment = composer.compose(batch, routeChoices);
+            review = unconfirmedReview(assessment);
+        }
+
+        private PreviewReviewState unconfirmedReview(FixedIntervalEditPlanComposer.Assessment value) {
+            return value.applyAvailable()
+                    ? PreviewReviewState.fromEditPlan(choiceIdentity(), value.plan().orElseThrow())
+                    : null;
+        }
+
+        private String choiceIdentity() {
+            return "intervals:" + batch.runs().size() + ":" + java.util.stream.IntStream
+                    .range(0, batch.runs().size())
+                    .mapToObj(index -> index + "=" + routeChoices.getOrDefault(index, 0))
+                    .reduce((left, right) -> left + "," + right).orElse("");
         }
     }
 
@@ -673,6 +756,25 @@ public class AlignWayAction extends JosmAction {
                 || activePreviewDialog != progress || !progress.isDisplayable()) {
             return;
         }
+        if (computed.partitioned()) {
+            try {
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                progress.dispose();
+                showIntervalPreviewDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
+                        slideConfig, persistedSlideConfig, tracingAtCapture, computed,
+                        previewSourceOwner);
+            } catch (RuntimeException exception) {
+                boolean closed = livePreviewSession.close(previewOwner);
+                progress.dispose();
+                if (closed) {
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                    showError(tr("Interval alignment preview was rejected: {0}", exception.getMessage()));
+                }
+            }
+            return;
+        }
         String terminalStatus = "failed";
         ManualJunctionEligibility.Reason terminalManualReason = null;
         try {
@@ -724,6 +826,238 @@ public class AlignWayAction extends JosmAction {
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
             }
         }
+    }
+
+    /** Displays one composer-owned complete preview with a route choice for every slide interval. */
+    private void showIntervalPreviewDialog(PreviewSessionController.Owner owner, DataSet dataSet,
+            SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
+            TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
+            TileFetchCoordinator previewSourceOwner) {
+        IntervalPreviewState state = new IntervalPreviewState(computed.intervalBatch());
+        JDialog dialog = new JDialog(MainApplication.getMainFrame(),
+                tr("Interval Alignment Preview"), false);
+        JPanel panel = new JPanel();
+        JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
+        List<JComboBox<String>> choices = new java.util.ArrayList<>();
+        for (int index = 0; index < state.batch().runs().size(); index++) {
+            IntervalTraceBatch.IntervalRun run = state.batch().runs().get(index);
+            intervalControls.add(new JLabel(tr("Interval {0} ({1}–{2})", index + 1,
+                    run.interval().range().firstIndex(), run.interval().range().lastIndex())));
+            String[] routeLabels = run.routes().isEmpty()
+                    ? new String[] {tr("No production route")}
+                    : java.util.stream.IntStream.range(0, run.routes().size())
+                            .mapToObj(route -> route == 0
+                                    ? tr("Route {0} (recommended)", route + 1)
+                                    : tr("Route {0}", route + 1))
+                            .toArray(String[]::new);
+            JComboBox<String> choice = new JComboBox<>(routeLabels);
+            choice.setEnabled(!run.routes().isEmpty());
+            intervalControls.add(choice);
+            choices.add(choice);
+        }
+        JTextArea quality = new JTextArea(8, 78);
+        quality.setEditable(false);
+        quality.setLineWrap(true);
+        quality.setWrapStyleWord(true);
+        JScrollPane qualityScroll = new JScrollPane(quality);
+        qualityScroll.setPreferredSize(new Dimension(680, 170));
+        JButton confirm = new JButton(tr("Confirm review"));
+        JButton apply = new JButton(tr("Apply"));
+        JButton close = new JButton(tr("Close preview"));
+        boolean[] applying = {false};
+        JScrollPane intervalScroll = new JScrollPane(intervalControls);
+        intervalScroll.setPreferredSize(new Dimension(680, 180));
+        panel.add(intervalScroll);
+        panel.add(qualityScroll);
+        panel.add(confirm);
+        panel.add(apply);
+        panel.add(close);
+        dialog.setContentPane(panel);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.pack();
+        dialog.setLocationRelativeTo(MainApplication.getMainFrame());
+        activePreviewDialog = dialog;
+        livePreviewSession.replaceWindow(owner, dialog::dispose);
+
+        Runnable refresh = () -> {
+            if (!livePreviewSession.isCurrentWindow(owner, dialog, activePreviewDialog,
+                    dialog.isDisplayable())) {
+                throw new IllegalStateException("The interval preview no longer owns this attempt");
+            }
+            FixedIntervalEditPlanComposer.Assessment assessment = state.assessment();
+            List<EastNorth> selectedPreview = assessment.selectedWayPreview().stream()
+                    .map(AlignWayAction::projectGeographic).toList();
+            List<EastNorth> source = computed.captured().sourceGeographic().stream()
+                    .map(AlignWayAction::projectGeographic).toList();
+            CenterlineCandidate carrier = new CenterlineCandidate(
+                    "composed-interval-preview", 0.0, List.of(), List.of());
+            AlignmentResult display = new AlignmentResult(selection, null, List.of(carrier), source,
+                    selectedPreview, List.of(), null, null, List.of(), List.of());
+            Map<PrimitiveKey, List<EastNorth>> finalWays = new LinkedHashMap<>();
+            if (assessment.plan().isPresent()) {
+                assessment.plan().orElseThrow().finalPreviewWays().forEach((key, geographic) ->
+                        finalWays.put(key, geographic.stream().map(AlignWayAction::projectGeographic)
+                                .toList()));
+            } else {
+                finalWays.put(state.batch().fullRequest().selectedWayKey(), selectedPreview);
+            }
+            ValidationReport.Disposition disposition = assessment.plan().isPresent()
+                    ? assessment.plan().orElseThrow().validation().disposition()
+                    : ValidationReport.Disposition.HARD_BLOCKED;
+            overlay.show(selection, display, carrier, switch (disposition) {
+                case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
+                case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
+                case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
+            }, state.review() != null && state.review().confirmed(),
+                    PluginPreferences.isDebugEnabled(), finalWays);
+            ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
+            boolean sourceApply = intervalApplySourceAvailable(computed.captured());
+            quality.setText(intervalPreviewSummary(state)
+                    + "\nApply: " + (preflight == ModernApplyPreflight.READY && sourceApply
+                            && state.applyAvailable() ? "available" : "unavailable")
+                    + (preflight == ModernApplyPreflight.READY ? ""
+                            : "\n" + modernApplyPreflightMessage(preflight))
+                    + (sourceApply ? "" : "\nVisible interval preview has no locked source"
+                            + " revision receipt for Apply."));
+            quality.setCaretPosition(0);
+            confirm.setEnabled(preflight == ModernApplyPreflight.READY && sourceApply
+                    && state.review() != null && !state.review().confirmed()
+                    && state.review().disposition() == ValidationReport.Disposition.REVIEW_REQUIRED);
+            apply.setEnabled(preflight == ModernApplyPreflight.READY && sourceApply
+                    && state.applyAvailable() && !applying[0]);
+        };
+        Runnable staleFailure = () -> {
+            boolean closed = livePreviewSession.close(owner);
+            dialog.dispose();
+            if (closed) {
+                overlay.hide();
+                PluginLog.endSlideSession();
+                showError(tr("Interval preview became stale; run alignment again."));
+            }
+        };
+        for (int index = 0; index < choices.size(); index++) {
+            final int intervalIndex = index;
+            choices.get(index).addActionListener(event -> {
+                try {
+                    requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                            persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                    state.choose(intervalIndex, choices.get(intervalIndex).getSelectedIndex());
+                    refresh.run();
+                } catch (RuntimeException stale) {
+                    staleFailure.run();
+                }
+            });
+        }
+        confirm.addActionListener(event -> {
+            try {
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                state.confirmReview();
+                refresh.run();
+            } catch (RuntimeException stale) {
+                staleFailure.run();
+            }
+        });
+        apply.addActionListener(event -> {
+            if (applying[0]) return;
+            applying[0] = true;
+            apply.setEnabled(false);
+            try {
+                if (!livePreviewSession.isCurrentWindow(owner, dialog, activePreviewDialog,
+                        dialog.isDisplayable())) {
+                    throw new IllegalStateException("The interval preview no longer owns this attempt");
+                }
+                if (modernApplyPreflight(computed.captured(), slideConfig)
+                        != ModernApplyPreflight.READY) {
+                    throw new IllegalStateException("Interval Apply configuration is unavailable");
+                }
+                if (!intervalApplySourceAvailable(computed.captured())) {
+                    throw new IllegalStateException("Interval Apply needs a locked source revision receipt");
+                }
+                requireSupportedApplySource(computed.captured(), imageryLayer);
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                AlignmentEditPlan currentPlan = state.currentPlanForApply();
+                NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
+                        dataSet, computed.captured().specification());
+                LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt,
+                        currentPlan,
+                        () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
+                ManagedSourceReceipt managedReceipt = ManagedSourceReceipt.forCurrentPlugin(
+                        previewSourceOwner, computed.captured(), slideConfig.heatmap());
+                ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet,
+                        currentPlan, new ManagedSourceLockedApplyValidator(network, livePreviewService,
+                            computed.captured(), () -> {
+                                managedReceipt.requireCurrent();
+                                requireLiveBSourceOwnerCurrent(dataSet, imageryLayer,
+                                        slideConfig, persistedSlideConfig, tracingAtCapture,
+                                        computed.captured(), previewSourceOwner);
+                            }, redoFailureReporter(this::showError)),
+                        tr("Apply modern interval alignment"));
+                UndoRedoHandler.getInstance().add(command);
+                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+            } catch (RuntimeException failure) {
+                dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
+                showError(tr("Interval alignment Apply failed: {0}", failure.getMessage()));
+            }
+        });
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent event) {
+                if (livePreviewSession.close(owner)) {
+                    overlay.hide();
+                    PluginLog.endSlideSession();
+                }
+            }
+            @Override public void windowClosed(WindowEvent event) {
+                if (activePreviewDialog == dialog) activePreviewDialog = null;
+            }
+        });
+        close.addActionListener(event -> dialog.dispatchEvent(
+                new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING)));
+        try {
+            refresh.run();
+            dialog.setVisible(true);
+        } catch (RuntimeException failure) {
+            dialog.dispose();
+            throw failure;
+        }
+    }
+
+    private static EastNorth projectGeographic(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint point) {
+        return ProjectionRegistry.getProjection().latlon2eastNorth(
+                new LatLon(point.latitudeDegrees(), point.longitudeDegrees()));
+    }
+
+    /** Formats fixed-island guidance and typed interval outcomes for the modeless preview. */
+    public static String intervalPreviewSummary(IntervalPreviewState state) {
+        StringBuilder summary = new StringBuilder();
+        for (SelectedWayIntervalPartitioner.FixedIsland island
+                : state.batch().partition().fixedIslands()) {
+            summary.append("Fixed junction occurrences ").append(island.range().firstIndex())
+                    .append('–').append(island.range().lastIndex()).append(": ")
+                    .append(island.reasons()).append(". Adjust this junction manually first.\n");
+        }
+        for (FixedIntervalEditPlanComposer.IntervalAssessment interval
+                : state.assessment().intervals()) {
+            String outcome = switch (interval.disposition()) {
+                case CHANGED -> "Ready to slide";
+                case FROZEN_LOCAL_FAILURE -> "Kept in place";
+                case BLOCKED_GLOBAL -> "Blocked by whole-way validation";
+                case UNCHANGED_NOOP -> "No change";
+            };
+            summary.append("Interval ").append(interval.intervalIndex() + 1).append(": ")
+                    .append(outcome).append(" (").append(interval.reason())
+                    .append("); route ").append(interval.routeIndex() + 1).append('\n');
+        }
+        if (state.assessment().plan().isPresent()) {
+            AlignmentEditPlan plan = state.assessment().plan().orElseThrow();
+            summary.append("Complete preview: ").append(plan.validation().disposition())
+                    .append("; affected ways: ").append(plan.affectedWayKeys().size())
+                    .append("; findings: ").append(plan.validation().findingCodes()).append('\n');
+        }
+        return summary.toString();
     }
 
     static String noPreviewableRouteMessage(LiveBPreviewService.Captured captured,
@@ -1214,6 +1548,11 @@ public class AlignWayAction extends JosmAction {
             throw new IllegalStateException("The managed rendered source cannot verify unchanged pixels; "
                     + "use direct managed tiles for Apply.");
         }
+    }
+
+    /** Interval Apply currently requires a plugin-owned direct tile receipt and locked validator. */
+    static boolean intervalApplySourceAvailable(LiveBPreviewService.Captured captured) {
+        return captured != null && captured.managedRaster() != null;
     }
 
     /** Queues one fixed, credential-free host Redo failure for the user-visible error surface. */
