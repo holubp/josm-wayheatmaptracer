@@ -25,7 +25,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * Posterior mass is never added across engines. Common final assessment and ranking decide between
  * the retained routes.</p>
  */
-public final class HybridTraceEngine implements TraceEngine {
+public final class HybridTraceEngine implements BudgetReportingTraceEngine {
     private final TraceEngine corridorProposalEngine;
     private final TraceEngine probabilisticEngine;
 
@@ -41,28 +41,36 @@ public final class HybridTraceEngine implements TraceEngine {
     @Override
     public TraceHypothesisSet trace(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation) {
+        return traceWithUsage(request, evidence, network, cancellation).result();
+    }
+
+    @Override
+    public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, CancellationProbe cancellation) {
         validate(request, evidence, network, cancellation);
         long completedStates = 0;
         long completedTransitions = 0;
+        TraceWorkUsage work = TraceWorkUsage.none();
         try {
             cancellation.checkpoint();
             TraceRequest probabilisticRequest = withEngineAndBudgets(
                 request, TrackerMode.PROBABILISTIC, request.budgets());
             TraceEngineRun probabilisticRun = runWithUsage(probabilisticEngine,
                 probabilisticRequest, evidence, network, cancellation);
+            work = work.plus(probabilisticRun.usage());
             TraceHypothesisSet probabilistic = probabilisticRun.result();
             completedStates = probabilistic.evaluatedStates();
             completedTransitions = probabilistic.evaluatedTransitions();
             if (probabilistic.status() == TraceHypothesisSet.Status.CANCELLED) {
-                return cancelled(completedStates, completedTransitions);
+                return reported(cancelled(completedStates, completedTransitions), work);
             }
             cancellation.checkpoint();
 
             RemainingBudget remaining = RemainingBudget.from(request.budgets())
                 .consume(probabilisticRun.usage());
             if (!remaining.canRunStage()) {
-                return combine(null, probabilistic, null, request.budgets(), true,
-                    "A omitted: " + remaining.exhaustionReason());
+                return reported(combine(null, probabilistic, null, request.budgets(), true,
+                    "A omitted: " + remaining.exhaustionReason()), work);
             }
 
             TraceBudgets corridorBudgets = remaining.reserveGuidedSlice();
@@ -70,11 +78,12 @@ public final class HybridTraceEngine implements TraceEngine {
                 request, TrackerMode.CORRIDOR_AWARE, corridorBudgets);
             TraceEngineRun corridorRun = runWithUsage(corridorProposalEngine,
                 corridorRequest, evidence, network, cancellation);
+            work = work.plus(corridorRun.usage());
             TraceHypothesisSet corridor = corridorRun.result();
             completedStates = saturatedAdd(completedStates, corridor.evaluatedStates());
             completedTransitions = saturatedAdd(completedTransitions, corridor.evaluatedTransitions());
             if (corridor.status() == TraceHypothesisSet.Status.CANCELLED) {
-                return cancelled(completedStates, completedTransitions);
+                return reported(cancelled(completedStates, completedTransitions), work);
             }
             cancellation.checkpoint();
             remaining = remaining.consume(corridorRun.usage());
@@ -96,11 +105,12 @@ public final class HybridTraceEngine implements TraceEngine {
                         request, TrackerMode.PROBABILISTIC, remaining.all());
                     TraceEngineRun guidedRun = capable.traceGuidedWithUsage(guidedRequest,
                         evidence, network, guide.orElseThrow(), cancellation);
+                    work = work.plus(guidedRun.usage());
                     guided = guidedRun.result();
                     completedStates = saturatedAdd(completedStates, guided.evaluatedStates());
                     completedTransitions = saturatedAdd(completedTransitions, guided.evaluatedTransitions());
                     if (guided.status() == TraceHypothesisSet.Status.CANCELLED) {
-                        return cancelled(completedStates, completedTransitions);
+                        return reported(cancelled(completedStates, completedTransitions), work);
                     }
                     cancellation.checkpoint();
                     RemainingBudget afterGuided = remaining.consume(guidedRun.usage());
@@ -110,11 +120,16 @@ public final class HybridTraceEngine implements TraceEngine {
                     }
                 }
             }
-            return combine(corridor, probabilistic, guided, request.budgets(),
-                resourceOmission, limitation);
+            return reported(combine(corridor, probabilistic, guided, request.budgets(),
+                resourceOmission, limitation), work);
         } catch (CancellationException exception) {
-            return cancelled(completedStates, completedTransitions);
+            return reported(cancelled(completedStates, completedTransitions), work);
         }
+    }
+
+    private static TraceEngineRun reported(TraceHypothesisSet result, TraceWorkUsage work) {
+        return new TraceEngineRun(result, new TraceWorkUsage(work.pairVisits(), work.transitions(),
+            work.rawAlternatives(), result.hypotheses().size()));
     }
 
     private static TraceEngineRun runWithUsage(TraceEngine engine, TraceRequest request,

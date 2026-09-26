@@ -120,8 +120,8 @@ public record EvidenceResolution(Kind kind, OptionalDouble nativePitchMeters, do
 
     /** Returns whether the resolution declaration covers the complete measured profile chainage. */
     public boolean covers(ProfileChainage chainage) {
-        return chainage != null && covers(chainage.cumulativeGroundMeters()
-            .get(chainage.cumulativeGroundMeters().size() - 1));
+        return chainage != null && covers(chainage.sourceOriginGroundMeters()
+            + chainage.cumulativeGroundMeters().get(chainage.cumulativeGroundMeters().size() - 1));
     }
 
     private boolean covers(double chainageMeters) {

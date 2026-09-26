@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -22,6 +23,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -30,13 +34,78 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedScalarProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022IntervalTraceRequestFactoryTest {
+    @Test
+    void secondIntervalSamplesVariableSourcePitchAtItsOriginalPhysicalChainage() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] holder = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> holder[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.PROBABILISTIC)));
+        var captured = holder[0];
+        var computed = service.compute(captured, CancellationProbe.NONE);
+        var full = computed.request();
+        var original = computed.evidence();
+        double start = captured.sourceMetric().get(0).distanceTo(captured.sourceMetric().get(1))
+                + captured.sourceMetric().get(1).distanceTo(captured.sourceMetric().get(2));
+        double total = full.profileChainage().cumulativeGroundMeters().get(
+                full.profileChainage().cumulativeGroundMeters().size() - 1);
+        var resolution = new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
+                OptionalDouble.of(1.0), original.resolution().renderedPitchMeters(),
+                List.of(new EvidenceResolution.PitchSample(0.0, OptionalDouble.of(1.0),
+                                original.resolution().renderedPitchMeters()),
+                        new EvidenceResolution.PitchSample(start, OptionalDouble.of(2.0),
+                                original.resolution().renderedPitchMeters()),
+                        new EvidenceResolution.PitchSample(total, OptionalDouble.of(4.0),
+                                original.resolution().renderedPitchMeters())),
+                original.resolution().resampledPitchMeters());
+        var evidence = new EvidenceSnapshot(original.snapshotId(), original.coordinateFrame(),
+                original.transform(), resolution, original.decisionRegion(), original.evidenceRegion(),
+                original.fields(), original.resampling(), original.sourceIdentity());
+        var bound = new TraceRequest(full.selectedWayKey(), full.selectedRange(), full.engine(),
+                full.geometryMode(), full.permissions(), full.budgets(), evidence.snapshotId(),
+                evidence.canonicalHash(), full.networkSnapshotId(), full.networkContentHash(),
+                full.settingsHash(), full.parameterHash(), full.samplerId(),
+                full.configuredSampleStepMeters(), full.profileChainage(), resolution,
+                full.corridorInput());
+        var right = new IntervalTraceRequestFactory().create(bound, captured, evidence,
+                captured.network(), partition(captured).slideIntervals().get(1));
+        assertEquals(evidence.canonicalHash(), right.evidenceContentHash());
+        assertEquals(original.transform(), evidence.transform());
+        assertEquals(original.coordinateFrame(), evidence.coordinateFrame());
+        assertEquals(start, right.profileChainage().sourceOriginGroundMeters(), 1.0e-9);
+        assertEquals(0.0, right.profileChainage().cumulativeGroundMeters().get(0));
+        var anchors = captured.sourceMetric().subList(2, 5);
+        var profiles = new ProbabilisticProfileFactory().create(anchors, right.profileChainage(),
+                right.permissions().ordinaryRadiusMeters(), true, evidence,
+                evidence.fields().get("selected-visible-source"));
+
+        assertEquals(2.0, profiles.get(0).sourcePitchMeters(), 1.0e-9);
+        assertEquals(4.0, profiles.get(profiles.size() - 1).sourcePitchMeters(), 1.0e-9);
+        var corridor = CorridorTraceInput.from(right.profileChainage(), anchors,
+                evidence.coordinateFrame(), evidence.transform(),
+                evidence.resolution().outputRasterPitchMeters());
+        var sampler = new DetachedScalarProfileSampler();
+        var physicalLevels = sampler.sample(evidence, "selected-visible-source",
+                corridor.profileLocations(), right.permissions().ordinaryRadiusMeters(),
+                corridor.lateralStepMeters(), CancellationProbe.NONE,
+                right.profileChainage().sourceOriginGroundMeters());
+        assertFalse(physicalLevels.levels().isEmpty());
+        var production = new ModernTracePipeline(new CorridorEngineAdapter("selected-visible-source"))
+                .run(right, evidence, captured.network(), computed.options(), CancellationProbe.NONE,
+                        Set.of(3));
+        assertEquals(TrackerMode.PROBABILISTIC, production.inference().engine());
+    }
+
     @BeforeAll
     static void configureJosm() {
         Config.setPreferencesInstance(new MemoryPreferences());

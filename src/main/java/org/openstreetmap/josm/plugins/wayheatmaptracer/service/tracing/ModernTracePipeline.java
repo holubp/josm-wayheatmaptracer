@@ -109,6 +109,15 @@ public final class ModernTracePipeline {
         }
     }
 
+    /** Production result with actual engine work for an outer attempt-wide budget. */
+    public record PipelineRun(Result result, TraceWorkUsage usage) {
+        public PipelineRun {
+            if (result == null || usage == null) {
+                throw new IllegalArgumentException("Pipeline work result is incomplete");
+            }
+        }
+    }
+
     private final TraceEngine corridorProposalEngine;
 
     /**
@@ -141,6 +150,14 @@ public final class ModernTracePipeline {
     /** Runs production inference with additional original occurrences held as exact trace anchors. */
     public Result run(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
             Options options, CancellationProbe cancellation, Set<Integer> fixedOccurrences) {
+        return runWithUsage(request, evidence, network, options, cancellation,
+                fixedOccurrences).result();
+    }
+
+    /** Runs production inference and reports actual work to the caller's attempt budget. */
+    public PipelineRun runWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, Options options, CancellationProbe cancellation,
+            Set<Integer> fixedOccurrences) {
         if (request == null || evidence == null || network == null || options == null
                 || cancellation == null || fixedOccurrences == null
                 || fixedOccurrences.stream().anyMatch(index -> index == null
@@ -165,10 +182,21 @@ public final class ModernTracePipeline {
         }
         TraceEngine engine = engine(request.engine(), options.fieldName());
         long inferenceStarted = System.nanoTime();
-        TraceHypothesisSet inference = engine.trace(request, evidence, network, cancellation);
+        TraceEngineRun engineRun;
+        if (engine instanceof BudgetReportingTraceEngine reporting) {
+            engineRun = reporting.traceWithUsage(request, evidence, network, cancellation);
+        } else {
+            TraceHypothesisSet result = engine.trace(request, evidence, network, cancellation);
+            engineRun = new TraceEngineRun(result, result.status() == TraceHypothesisSet.Status.CANCELLED
+                    ? TraceWorkUsage.none()
+                    : new TraceWorkUsage(request.budgets().maximumPairVisits(),
+                            request.budgets().maximumTransitions(),
+                            request.budgets().maximumRawAlternatives(), result.hypotheses().size()));
+        }
+        TraceHypothesisSet inference = engineRun.result();
         long inferenceNanos = System.nanoTime() - inferenceStarted;
         if (inference.hypotheses().isEmpty()) {
-            return new Result(inference, List.of());
+            return new PipelineRun(new Result(inference, List.of()), engineRun.usage());
         }
         ScalarEvidenceField scalar = evidence.fields().get(options.fieldName());
         if (scalar == null) {
@@ -199,7 +227,7 @@ public final class ModernTracePipeline {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "pipeline.routes", ranked.size());
         }
-        return new Result(inference, ranked);
+        return new PipelineRun(new Result(inference, ranked), engineRun.usage());
     }
 
     private static long millis(long nanos) {

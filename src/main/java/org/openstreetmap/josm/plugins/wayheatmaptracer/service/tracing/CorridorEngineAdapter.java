@@ -77,9 +77,11 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
         cancellation.checkpoint();
         MultiScaleProfileSet profiles = new DetachedScalarProfileSampler().sample(
             evidence, fieldName, input.profileLocations(),
-            request.permissions().ordinaryRadiusMeters(), input.lateralStepMeters(), cancellation);
+            request.permissions().ordinaryRadiusMeters(), input.lateralStepMeters(), cancellation,
+            request.profileChainage().sourceOriginGroundMeters());
         double outputPitch = evidence.resolution().outputRasterPitchMeters();
-        double sourcePixelSizePx = maximumSourcePitch(evidence, input.profileLocations()) / outputPitch;
+        double sourcePixelSizePx = maximumSourcePitch(evidence, input.profileLocations(),
+                request.profileChainage().sourceOriginGroundMeters()) / outputPitch;
         cancellation.checkpoint();
         CorridorAwareTracker.TrackingResult tracked = new CorridorAwareTracker().trackDetailed(
             profiles, sourcePixelSizePx, junctionContext(request, network, profiles.levelZeroProfiles().size()),
@@ -221,11 +223,11 @@ public final class CorridorEngineAdapter implements BudgetReportingTraceEngine {
     }
 
     private static double maximumSourcePitch(EvidenceSnapshot evidence,
-            List<DetachedProfileSamplingLocation> locations) {
+            List<DetachedProfileSamplingLocation> locations, double sourceOriginGroundMeters) {
         double maximum = 0.0;
         for (DetachedProfileSamplingLocation location : locations) {
             maximum = Math.max(maximum, evidence.resolution().effectivePitchMetersAt(
-                location.cumulativeGroundDistanceMeters()));
+                sourceOriginGroundMeters + location.cumulativeGroundDistanceMeters()));
         }
         return maximum;
     }

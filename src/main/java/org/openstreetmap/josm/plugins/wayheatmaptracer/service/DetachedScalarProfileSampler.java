@@ -48,12 +48,22 @@ public final class DetachedScalarProfileSampler {
     public MultiScaleProfileSet sample(EvidenceSnapshot evidence, String fieldName,
             List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
             double lateralStepMeters, CancellationProbe cancellation) {
+        return sample(evidence, fieldName, anchors, searchHalfWidthMeters,
+                lateralStepMeters, cancellation, 0.0);
+    }
+
+    /** Samples local-zero anchors while resolving source pitch at their absolute route positions. */
+    public MultiScaleProfileSet sample(EvidenceSnapshot evidence, String fieldName,
+            List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
+            double lateralStepMeters, CancellationProbe cancellation,
+            double sourceOriginGroundMeters) {
         validateInputs(evidence, fieldName, anchors, searchHalfWidthMeters,
-            lateralStepMeters, cancellation);
+            lateralStepMeters, cancellation, sourceOriginGroundMeters);
         cancellation.checkpoint();
         ScalarEvidenceField source = evidence.fields().get(fieldName);
         double outputPitchMeters = evidence.resolution().outputRasterPitchMeters();
-        double maximumSourcePitchMeters = maximumSourcePitch(evidence, anchors);
+        double maximumSourcePitchMeters = maximumSourcePitch(evidence, anchors,
+                sourceOriginGroundMeters);
         double sourcePitchRasterPixels = maximumSourcePitchMeters / outputPitchMeters;
         if (!Double.isFinite(sourcePitchRasterPixels) || sourcePitchRasterPixels <= 0.0
             || sourcePitchRasterPixels > Integer.MAX_VALUE / 4.0) {
@@ -77,11 +87,13 @@ public final class DetachedScalarProfileSampler {
 
     private static void validateInputs(EvidenceSnapshot evidence, String fieldName,
             List<DetachedProfileSamplingLocation> anchors, double searchHalfWidthMeters,
-            double lateralStepMeters, CancellationProbe cancellation) {
+            double lateralStepMeters, CancellationProbe cancellation,
+            double sourceOriginGroundMeters) {
         if (evidence == null || fieldName == null || fieldName.isBlank()
             || anchors == null || anchors.size() < 2
             || !Double.isFinite(searchHalfWidthMeters) || searchHalfWidthMeters <= 0.0
             || !Double.isFinite(lateralStepMeters) || lateralStepMeters <= 0.0
+            || !Double.isFinite(sourceOriginGroundMeters) || sourceOriginGroundMeters < 0.0
             || cancellation == null || !evidence.fields().containsKey(fieldName)) {
             throw new IllegalArgumentException("Detached scalar profile input is incomplete");
         }
@@ -103,17 +115,18 @@ public final class DetachedScalarProfileSampler {
             }
             previousChainage = chainage;
         }
-        evidence.resolution().effectivePitchMetersAt(previousChainage);
+        evidence.resolution().effectivePitchMetersAt(sourceOriginGroundMeters + previousChainage);
     }
 
     private static double maximumSourcePitch(
         EvidenceSnapshot evidence,
-        List<DetachedProfileSamplingLocation> anchors
+        List<DetachedProfileSamplingLocation> anchors,
+        double sourceOriginGroundMeters
     ) {
         double maximum = 0.0;
         for (DetachedProfileSamplingLocation anchor : anchors) {
             maximum = Math.max(maximum, evidence.resolution().effectivePitchMetersAt(
-                anchor.cumulativeGroundDistanceMeters()));
+                sourceOriginGroundMeters + anchor.cumulativeGroundDistanceMeters()));
         }
         return maximum;
     }

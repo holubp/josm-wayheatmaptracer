@@ -23,10 +23,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.BudgetReportingTraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 
 /** Direct image-engine adapter over immutable detached snapshots only. */
-public final class DirectionalImageTraceEngine implements TraceEngine {
+public final class DirectionalImageTraceEngine implements BudgetReportingTraceEngine {
     private final String fieldName;
 
     /** Creates the engine for one named scalar field in the common snapshot raster frame. */
@@ -40,6 +42,12 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
     @Override
     public TraceHypothesisSet trace(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation) {
+        return traceWithUsage(request, evidence, network, cancellation).result();
+    }
+
+    @Override
+    public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+        NetworkSnapshot network, CancellationProbe cancellation) {
         try {
             validate(request, evidence, network);
             cancellation.checkpoint();
@@ -47,10 +55,15 @@ public final class DirectionalImageTraceEngine implements TraceEngine {
                 new DirectionalImageSearchProblem(evidence, fieldName, selectedEndpoints(request, evidence, network),
                     request.budgets(), request.permissions(), DirectionalImageSearchProblem.Scope.ORDINARY, false),
                 cancellation);
-            return hypotheses(request, evidence.fields().get(fieldName), evidence, result);
+            TraceHypothesisSet hypotheses = hypotheses(request, evidence.fields().get(fieldName),
+                    evidence, result);
+            int retained = result.paths().size();
+            return new TraceEngineRun(hypotheses, new TraceWorkUsage(result.evaluatedStates(),
+                    result.evaluatedTransitions(), retained, retained));
         } catch (CancellationException exception) {
-            return new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE, List.of(),
-                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled");
+            return new TraceEngineRun(new TraceHypothesisSet(TrackerMode.DIRECTIONAL_IMAGE, List.of(),
+                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"),
+                    TraceWorkUsage.none());
         }
     }
 

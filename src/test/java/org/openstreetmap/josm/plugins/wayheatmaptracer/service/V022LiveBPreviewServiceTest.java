@@ -40,6 +40,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
@@ -47,6 +49,53 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
+    @Test
+    void batchRejectsAggregateWorkOverrunAsTypedResourceLimit() throws Exception {
+        Fixture fixture = intervalFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.PROBABILISTIC)));
+        var batch = service.computePartitioned(captured[0], intervalPartition(captured[0]),
+                CancellationProbe.NONE);
+        var first = batch.runs().get(0);
+        var overcharged = new IntervalTraceBatch.IntervalRun(first.interval(), first.request(),
+                first.result(), new TraceWorkUsage(batch.fullRequest().budgets().maximumPairVisits(),
+                        batch.fullRequest().budgets().maximumTransitions(),
+                        first.usage().rawAlternatives(), first.usage().distinctAlternatives()));
+
+        var failure = assertThrows(IntervalTraceBatch.ResourceLimitException.class,
+                () -> new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                        batch.partition(), List.of(overcharged, batch.runs().get(1)), batch.options()));
+        assertTrue(failure.getMessage().contains("RESOURCE_LIMIT"));
+    }
+
+    @Test
+    void secondIntervalReceivesOnlyRemainingAttemptWorkBudget() throws Exception {
+        Fixture fixture = intervalFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(TrackerMode.PROBABILISTIC)));
+        var batch = service.computePartitioned(captured[0], intervalPartition(captured[0]),
+                CancellationProbe.NONE);
+        var first = batch.runs().get(0).request().budgets();
+        var second = batch.runs().get(1).request().budgets();
+
+        assertTrue(second.maximumPairVisits() < first.maximumPairVisits(),
+                "second interval must not reacquire the first interval's pair-visit allowance");
+        assertTrue(second.maximumTransitions() < first.maximumTransitions(),
+                "second interval must not reacquire the first interval's transition allowance");
+        assertEquals(first.maximumPairVisits() - batch.runs().get(0).usage().pairVisits(),
+                second.maximumPairVisits());
+        assertEquals(first.maximumTransitions() - batch.runs().get(0).usage().transitions(),
+                second.maximumTransitions());
+        assertTrue(batch.totalUsage().pairVisits() <= batch.fullRequest().budgets().maximumPairVisits());
+        assertTrue(batch.totalUsage().transitions() <= batch.fullRequest().budgets().maximumTransitions());
+        assertEquals(first.maximumRawAlternatives(), second.maximumRawAlternatives());
+        assertEquals(first.maximumDistinctAlternatives(), second.maximumDistinctAlternatives());
+    }
+
     @Test
     void partitionedComputationHonorsCancellationBeforeSourceAcquisition() throws Exception {
         Fixture fixture = intervalFixture();

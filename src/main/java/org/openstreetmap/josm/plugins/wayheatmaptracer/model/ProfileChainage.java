@@ -3,13 +3,15 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.model;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Explicit measured profile chainage, kept distinct from the configured sampling step. */
-public record ProfileChainage(List<Double> cumulativeGroundMeters, double configuredStepMeters) {
+/** Explicit local measured chainage and its factual origin on the captured full source. */
+public record ProfileChainage(List<Double> cumulativeGroundMeters, double configuredStepMeters,
+        double sourceOriginGroundMeters) {
     /** Copies and validates a finite monotonic sequence. */
     public ProfileChainage {
         cumulativeGroundMeters = List.copyOf(cumulativeGroundMeters);
         if (cumulativeGroundMeters.isEmpty() || cumulativeGroundMeters.get(0) != 0.0
-            || !Double.isFinite(configuredStepMeters) || configuredStepMeters <= 0.0) {
+            || !Double.isFinite(configuredStepMeters) || configuredStepMeters <= 0.0
+            || !Double.isFinite(sourceOriginGroundMeters) || sourceOriginGroundMeters < 0.0) {
             throw new IllegalArgumentException("Profile chainage is incomplete");
         }
         double previous = -1.0;
@@ -19,6 +21,17 @@ public record ProfileChainage(List<Double> cumulativeGroundMeters, double config
             }
             previous = distance;
         }
+    }
+
+    /** Existing full-source requests start their measured chainage at source zero. */
+    public ProfileChainage(List<Double> cumulativeGroundMeters, double configuredStepMeters) {
+        this(cumulativeGroundMeters, configuredStepMeters, 0.0);
+    }
+
+    /** Retains local-zero sampling distances with their absolute captured-source origin. */
+    public ProfileChainage withSourceOrigin(double sourceOriginGroundMeters) {
+        return new ProfileChainage(cumulativeGroundMeters, configuredStepMeters,
+                sourceOriginGroundMeters);
     }
 
     /** Measures cumulative arclength from immutable anchors. */

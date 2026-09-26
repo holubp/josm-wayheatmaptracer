@@ -11,11 +11,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evidence,
         NetworkSnapshot network, SelectedWayIntervalPartitioner.Partition partition,
         List<IntervalRun> runs, ModernTracePipeline.Options options) {
+    /** Bound on final route objects retained across one detached attempt. */
+    public static final int MAX_RETAINED_ROUTES = 128;
     /** One original interval and its unmodified production inference and ranked routes. */
     public record IntervalRun(SelectedWayIntervalPartitioner.SlideInterval interval,
-            TraceRequest request, ModernTracePipeline.Result result) {
+            TraceRequest request, ModernTracePipeline.Result result, TraceWorkUsage usage) {
         public IntervalRun {
-            if (interval == null || request == null || result == null
+            if (interval == null || request == null || result == null || usage == null
                     || !interval.traceRange().equals(request.selectedRange())
                     || result.inference().engine() != request.engine()) {
                 throw new IllegalArgumentException("Interval result does not match its request");
@@ -30,6 +32,13 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
         /** Engine declaration of discarded alternatives under its bounded budget. */
         public boolean alternativesTruncated() {
             return result.inference().alternativesTruncated();
+        }
+    }
+
+    /** Typed refusal when a complete interval batch cannot stay inside its attempt budget. */
+    public static final class ResourceLimitException extends IllegalStateException {
+        public ResourceLimitException(String reason) {
+            super("RESOURCE_LIMIT: " + reason);
         }
     }
 
@@ -55,5 +64,25 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
                 throw new IllegalArgumentException("Interval run has a different source or order");
             }
         }
+        TraceWorkUsage total = TraceWorkUsage.none();
+        int retainedRoutes = 0;
+        for (IntervalRun run : runs) {
+            total = total.plus(run.usage());
+            retainedRoutes = Math.addExact(retainedRoutes, run.routes().size());
+        }
+        if (total.pairVisits() > fullRequest.budgets().maximumPairVisits()
+                || total.transitions() > fullRequest.budgets().maximumTransitions()
+                || retainedRoutes > MAX_RETAINED_ROUTES) {
+            throw new ResourceLimitException("interval results exceed the attempt work or route envelope");
+        }
+    }
+
+    /** Actual engine work charged across all completed interval runs. */
+    public TraceWorkUsage totalUsage() {
+        TraceWorkUsage total = TraceWorkUsage.none();
+        for (IntervalRun run : runs) {
+            total = total.plus(run.usage());
+        }
+        return total;
     }
 }

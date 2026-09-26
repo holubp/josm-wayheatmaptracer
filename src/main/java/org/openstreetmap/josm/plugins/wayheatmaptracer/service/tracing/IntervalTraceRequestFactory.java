@@ -15,6 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
@@ -27,8 +28,24 @@ public final class IntervalTraceRequestFactory {
     public TraceRequest create(TraceRequest fullRequest, LiveBPreviewService.Captured captured,
             EvidenceSnapshot evidence, NetworkSnapshot network,
             SelectedWayIntervalPartitioner.SlideInterval interval) {
+        return create(fullRequest, captured, evidence, network, interval,
+                fullRequest == null ? null : fullRequest.budgets());
+    }
+
+    /** Constructs an interval request with attempt-wide remaining work limits. */
+    public TraceRequest create(TraceRequest fullRequest, LiveBPreviewService.Captured captured,
+            EvidenceSnapshot evidence, NetworkSnapshot network,
+            SelectedWayIntervalPartitioner.SlideInterval interval, TraceBudgets remainingBudgets) {
         if (fullRequest == null || captured == null || evidence == null || network == null
-                || interval == null || captured.specification() == null
+                || interval == null || remainingBudgets == null || captured.specification() == null
+                || remainingBudgets.maximumStatesPerProfile()
+                        != fullRequest.budgets().maximumStatesPerProfile()
+                || remainingBudgets.maximumPairVisits() > fullRequest.budgets().maximumPairVisits()
+                || remainingBudgets.maximumTransitions() > fullRequest.budgets().maximumTransitions()
+                || remainingBudgets.maximumRawAlternatives()
+                        != fullRequest.budgets().maximumRawAlternatives()
+                || remainingBudgets.maximumDistinctAlternatives()
+                        != fullRequest.budgets().maximumDistinctAlternatives()
                 || !captured.specification().selectedWayKey().equals(fullRequest.selectedWayKey())
                 || !captured.specification().selectedRange().equals(fullRequest.selectedRange())
                 || captured.engine() != fullRequest.engine()
@@ -80,6 +97,12 @@ public final class IntervalTraceRequestFactory {
         }
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(metric,
                 fullRequest.configuredSampleStepMeters());
+        double sourceOrigin = fullRequest.profileChainage().sourceOriginGroundMeters();
+        for (int index = 1; index <= start; index++) {
+            sourceOrigin += captured.sourceMetric().get(index - 1)
+                    .distanceTo(captured.sourceMetric().get(index));
+        }
+        chainage = chainage.withSourceOrigin(sourceOrigin);
         Optional<CorridorTraceInput> corridor = Optional.empty();
         if (fullRequest.engine() == TrackerMode.CORRIDOR_AWARE
                 || fullRequest.engine() == TrackerMode.HYBRID) {
@@ -96,7 +119,7 @@ public final class IntervalTraceRequestFactory {
             corridor = Optional.of(new CorridorTraceInput(locations, derived.lateralStepMeters()));
         }
         return new TraceRequest(fullRequest.selectedWayKey(), trace, fullRequest.engine(),
-                fullRequest.geometryMode(), fullRequest.permissions(), fullRequest.budgets(),
+                fullRequest.geometryMode(), fullRequest.permissions(), remainingBudgets,
                 fullRequest.evidenceSnapshotId(), fullRequest.evidenceContentHash(),
                 fullRequest.networkSnapshotId(), fullRequest.networkContentHash(),
                 fullRequest.settingsHash(), fullRequest.parameterHash(), fullRequest.samplerId(),

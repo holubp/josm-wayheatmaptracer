@@ -66,9 +66,19 @@ public final class ProbabilisticProfileFactory {
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
         EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability) {
+        return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters, fixedEndpoints,
+                evidence, field, parameters, cancellation, directLongitudinalReliability, 0.0);
+    }
+
+    private List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
+        EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        CancellationProbe cancellation, boolean directLongitudinalReliability,
+        double sourceOriginGroundMeters) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
             || !positive(searchHalfWidthMeters) || evidence == null || field == null
-            || parameters == null || cancellation == null) {
+            || parameters == null || cancellation == null
+            || !Double.isFinite(sourceOriginGroundMeters) || sourceOriginGroundMeters < 0.0) {
             throw new IllegalArgumentException("Profile sampling inputs are incomplete");
         }
         ResampledCurve curve = resample(sourcePolyline, configuredStepMeters);
@@ -77,7 +87,8 @@ public final class ProbabilisticProfileFactory {
         List<ProbabilisticProfile> result = new ArrayList<>(curve.points().size());
         for (int index = 0; index < curve.points().size(); index++) {
             cancellation.checkpoint();
-            double sourcePitch = evidence.resolution().effectivePitchMetersAt(curve.chainageMeters().get(index));
+            double sourcePitch = evidence.resolution().effectivePitchMetersAt(
+                    sourceOriginGroundMeters + curve.chainageMeters().get(index));
             double samplePitch = 0.5 * sourcePitch;
             MetricPoint anchor = curve.points().get(index);
             MetricPoint tangent = tangent(curve.points(), index);
@@ -142,7 +153,7 @@ public final class ProbabilisticProfileFactory {
         }
         List<ProbabilisticProfile> result = create(sourcePolyline, profileChainage.configuredStepMeters(),
             searchHalfWidthMeters, fixedEndpoints, evidence, field, parameters, cancellation,
-            directLongitudinalReliability);
+            directLongitudinalReliability, profileChainage.sourceOriginGroundMeters());
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }

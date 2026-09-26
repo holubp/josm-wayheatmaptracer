@@ -53,6 +53,47 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 /** T033-T038: independent A proposals and unguided B orchestration. */
 class V022HybridRecoveryTest {
     @Test
+    void cancelledSecondStageReportsPriorWorkWithoutClaimingRetainedRoutes() {
+        Fixture fixture = fixture();
+        BudgetReportingTraceEngine b = (request, evidence, network, cancellation) ->
+                new TraceEngineRun(route(TrackerMode.PROBABILISTIC, "b", 1.0),
+                        new TraceWorkUsage(3, 4, 1, 1));
+        BudgetReportingTraceEngine a = (request, evidence, network, cancellation) ->
+                new TraceEngineRun(new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE,
+                        List.of(), TraceHypothesisSet.Status.CANCELLED, false, 0, 0,
+                        "cancelled"), TraceWorkUsage.none());
+
+        TraceEngineRun run = new HybridTraceEngine(a, b).traceWithUsage(
+                fixture.request(), fixture.evidence(), fixture.network(), CancellationProbe.NONE);
+
+        assertEquals(TraceHypothesisSet.Status.CANCELLED, run.result().status());
+        assertEquals(3, run.usage().pairVisits());
+        assertEquals(4, run.usage().transitions());
+        assertEquals(1, run.usage().rawAlternatives());
+        assertEquals(0, run.usage().distinctAlternatives());
+    }
+
+    @Test
+    void productionHybridUsageChargesCompletedUnguidedAndCorridorStages() {
+        Fixture fixture = fixture();
+        BudgetReportingTraceEngine a = (request, evidence, network, cancellation) ->
+                new TraceEngineRun(route(TrackerMode.CORRIDOR_AWARE, "a", 1.0),
+                        new TraceWorkUsage(5, 7, 1, 1));
+        BudgetReportingTraceEngine b = (request, evidence, network, cancellation) ->
+                new TraceEngineRun(route(TrackerMode.PROBABILISTIC, "b", 1.0),
+                        new TraceWorkUsage(3, 4, 1, 1));
+
+        TraceEngineRun run = new HybridTraceEngine(a, b).traceWithUsage(
+                fixture.request(), fixture.evidence(), fixture.network(), CancellationProbe.NONE);
+
+        assertEquals(8, run.usage().pairVisits());
+        assertEquals(11, run.usage().transitions());
+        assertEquals(2, run.usage().rawAlternatives());
+        assertEquals(2, run.usage().distinctAlternatives());
+        assertFalse(run.result().hypotheses().isEmpty());
+    }
+
+    @Test
     void T033_unguidedBIsRetainedAlongsideA() {
         Fixture fixture = fixture();
         TraceHypothesisSet result = engine(route(TrackerMode.CORRIDOR_AWARE, "a", 4.0),

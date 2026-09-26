@@ -63,6 +63,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernCan
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceRequestFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
@@ -714,10 +715,21 @@ public final class LiveBPreviewService {
             ModernTracePipeline pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD));
             IntervalTraceRequestFactory factory = new IntervalTraceRequestFactory();
             List<IntervalTraceBatch.IntervalRun> runs = new ArrayList<>();
+            long remainingPairs = fullRequest.budgets().maximumPairVisits();
+            long remainingTransitions = fullRequest.budgets().maximumTransitions();
+            int retainedRoutes = 0;
             for (SelectedWayIntervalPartitioner.SlideInterval interval : partition.slideIntervals()) {
                 cancellation.checkpoint();
+                if (remainingPairs <= 0 || remainingTransitions <= 0) {
+                    throw new IntervalTraceBatch.ResourceLimitException(
+                            "no work budget remains for the next interval");
+                }
+                TraceBudgets remaining = new TraceBudgets(
+                        fullRequest.budgets().maximumStatesPerProfile(), remainingPairs,
+                        remainingTransitions, fullRequest.budgets().maximumRawAlternatives(),
+                        fullRequest.budgets().maximumDistinctAlternatives());
                 TraceRequest request = factory.create(fullRequest, captured, evidence,
-                        captured.network(), interval);
+                        captured.network(), interval, remaining);
                 Set<Integer> fixedOccurrences = new LinkedHashSet<>();
                 if (interval.startBoundary().kind()
                         == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
@@ -727,10 +739,22 @@ public final class LiveBPreviewService {
                         == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
                     fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
                 }
-                ModernTracePipeline.Result result = pipeline.run(request, evidence,
+                ModernTracePipeline.PipelineRun production = pipeline.runWithUsage(request, evidence,
                         captured.network(), options, cancellation, fixedOccurrences);
                 cancellation.checkpoint();
-                runs.add(new IntervalTraceBatch.IntervalRun(interval, request, result));
+                TraceWorkUsage usage = production.usage();
+                if (usage.pairVisits() > remainingPairs
+                        || usage.transitions() > remainingTransitions
+                        || (long) retainedRoutes + production.result().routes().size()
+                                > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
+                    throw new IntervalTraceBatch.ResourceLimitException(
+                            "interval inference exceeded remaining work or retained-route budget");
+                }
+                remainingPairs -= usage.pairVisits();
+                remainingTransitions -= usage.transitions();
+                retainedRoutes += production.result().routes().size();
+                runs.add(new IntervalTraceBatch.IntervalRun(interval, request,
+                        production.result(), usage));
             }
             cancellation.checkpoint();
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
