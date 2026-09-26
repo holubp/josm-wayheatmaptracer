@@ -1642,6 +1642,16 @@ class V022EndToEndTest {
         Map<PrimitiveKey, DatasetPrimitiveState> after = snapshot(fixture.dataSet());
         assertNotEquals(before, after);
         var selectedBefore = (DetachedWay) batch.network().primitives().get(plan.selectedWayKey());
+        for (int intervalIndex : List.of(0, batch.runs().size() - 1)) {
+            var owned = batch.runs().get(intervalIndex).interval().range();
+            boolean moved = java.util.stream.IntStream.rangeClosed(owned.firstIndex(),
+                    owned.lastIndex()).anyMatch(occurrence -> {
+                        PrimitiveKey key = selectedBefore.nodeKeys().get(occurrence);
+                        return !before.get(key).coordinate().equals(after.get(key).coordinate());
+                    });
+            assertTrue(moved, "outer interval " + intervalIndex
+                    + " must move an owned original node in the applied dataset");
+        }
         for (var island : batch.partition().fixedIslands()) {
             for (int occurrence = island.range().firstIndex();
                     occurrence <= island.range().lastIndex(); occurrence++) {
@@ -1731,6 +1741,7 @@ class V022EndToEndTest {
         assertThrows(IllegalStateException.class,
                 () -> onEdt(() -> { UndoRedoHandler.getInstance().redo(); return null; }));
         assertEquals(before, snapshot(fixture.dataSet()));
+        SwingUtilities.invokeAndWait(() -> { });
         assertTrue(shown.get() != null && shown.get().contains("Alignment Redo failed"));
         UndoRedoHandler.getInstance().clean();
     }
