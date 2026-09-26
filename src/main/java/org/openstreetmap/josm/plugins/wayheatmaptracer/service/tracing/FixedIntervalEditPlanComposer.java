@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.G
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 
@@ -74,6 +75,31 @@ public final class FixedIntervalEditPlanComposer {
         DetachedWay selected = (DetachedWay) batch.network().primitives()
                 .get(batch.fullRequest().selectedWayKey());
         if (selected == null) throw new IllegalArgumentException("Selected way is absent");
+        List<Integer> incomplete = java.util.stream.IntStream.range(0, runs.size())
+                .filter(index -> runs.get(index).result().inference().status()
+                        == TraceHypothesisSet.Status.RESOURCE_LIMIT
+                        || runs.get(index).result().inference().status()
+                                == TraceHypothesisSet.Status.CANCELLED)
+                .boxed().toList();
+        if (!incomplete.isEmpty()) {
+            Set<Integer> blocked = new LinkedHashSet<>();
+            Map<Integer, String> reasons = new HashMap<>();
+            for (int index = 0; index < runs.size(); index++) {
+                blocked.add(index);
+                int failed = incomplete.get(0);
+                reasons.put(index, runs.get(failed).result().inference().status().name()
+                        + ":interval-" + failed);
+            }
+            Map<FinalRoutePointId, MetricPoint> originals = new LinkedHashMap<>();
+            for (int occurrence = batch.fullRequest().selectedRange().firstIndex();
+                    occurrence <= batch.fullRequest().selectedRange().lastIndex(); occurrence++) {
+                PrimitiveKey key = selected.nodeKeys().get(occurrence);
+                originals.put(new ExistingWayNodeOccurrence(selected.key(), key, occurrence),
+                        original(batch, selected, occurrence));
+            }
+            return assessment(batch, selected, routeChoices, Set.of(), reasons, blocked,
+                    Optional.empty(), originals, originalPreview(batch, selected));
+        }
         Set<Integer> frozen = new LinkedHashSet<>();
         Map<Integer, String> reasons = new HashMap<>();
         for (int i = 0; i < runs.size(); i++) {

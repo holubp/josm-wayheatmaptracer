@@ -1562,8 +1562,15 @@ public final class ModernSingleWayEditPlanAdapter {
                 if (adjacent) {
                     boolean selectedBoundary = first.wayKey().equals(selectedWay)
                             && first.insideSelectedRange() != second.insideSelectedRange();
+                    boolean changedFrozenContinuation = first.wayKey().equals(selectedWay)
+                            && first.insideSelectedRange() && second.insideSelectedRange()
+                            && first.changed() != second.changed();
                     boolean changedIncidentContinuation = !first.wayKey().equals(selectedWay)
                             && (first.changed() || second.changed());
+                    if (changedFrozenContinuation && classify(first.first(), first.second(),
+                            second.first(), second.second()) == TopologyDefect.COLLINEAR_OVERLAP) {
+                        findings.add("final-topology:COLLINEAR_OVERLAP");
+                    }
                     if ((selectedBoundary || changedIncidentContinuation)
                             && continuationReverses(first, second)) {
                         findings.add("final-topology:CONTINUATION");

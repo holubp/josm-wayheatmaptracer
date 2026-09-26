@@ -30,6 +30,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -182,6 +183,99 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
+    void resourceLimitedEmptyIntervalBlocksTheWholeBatch() throws Exception {
+        IntervalTraceBatch batch = withResourceLimit(batch(), 0, false);
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.plan().isEmpty());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
+                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
+                assessment.intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        assertTrue(assessment.intervals().stream().allMatch(interval ->
+                interval.reason().startsWith("RESOURCE_LIMIT")), assessment.intervals().toString());
+        assertEquals(batch.runs().get(1).routes().get(0).hypothesis().id(),
+                assessment.intervals().get(1).routeIdentity());
+    }
+
+    @Test
+    void resourceLimitedRetainedRouteIsDiagnosticOnlyForEveryInterval() throws Exception {
+        IntervalTraceBatch batch = withResourceLimit(batch(), 0, true);
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.plan().isEmpty());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
+                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
+                assessment.intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        assertEquals(batch.runs().get(0).routes().get(0).hypothesis().id(),
+                assessment.intervals().get(0).routeIdentity());
+        assertTrue(assessment.intervals().stream().allMatch(interval ->
+                interval.reason().startsWith("RESOURCE_LIMIT")), assessment.intervals().toString());
+    }
+
+    @Test
+    void completeInferenceWithTruncatedAlternativesStillUsesItsRetainedRoute() throws Exception {
+        IntervalTraceBatch batch = batch();
+        List<IntervalTraceBatch.IntervalRun> runs = new java.util.ArrayList<>(batch.runs());
+        var run = runs.get(0);
+        var original = run.result().inference();
+        var truncated = new TraceHypothesisSet(original.engine(), original.hypotheses(),
+                TraceHypothesisSet.Status.COMPLETE, true, original.evaluatedStates(),
+                original.evaluatedTransitions(), "retained alternatives truncated");
+        runs.set(0, new IntervalTraceBatch.IntervalRun(run.interval(), run.request(),
+                new ModernTracePipeline.Result(truncated, run.routes()), run.usage()));
+        var retained = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(),
+                batch.network(), batch.partition(), runs, batch.options());
+        var assessment = new FixedIntervalEditPlanComposer().compose(retained, Map.of());
+        assertTrue(assessment.applyAvailable());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED),
+                assessment.intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+    }
+
+    @Test
+    void cancelledInferenceDoesNotFreezeLocallyAndApplyTheOtherInterval() throws Exception {
+        IntervalTraceBatch batch = batch();
+        List<IntervalTraceBatch.IntervalRun> runs = new java.util.ArrayList<>(batch.runs());
+        var run = runs.get(0);
+        var original = run.result().inference();
+        var cancelled = new TraceHypothesisSet(original.engine(), List.of(),
+                TraceHypothesisSet.Status.CANCELLED, false,
+                original.evaluatedStates(), original.evaluatedTransitions(), "cancelled");
+        runs.set(0, new IntervalTraceBatch.IntervalRun(run.interval(), run.request(),
+                new ModernTracePipeline.Result(cancelled, List.of()), run.usage()));
+        var cancelledBatch = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(),
+                batch.network(), batch.partition(), runs, batch.options());
+        var assessment = new FixedIntervalEditPlanComposer().compose(cancelledBatch, Map.of());
+        assertFalse(assessment.applyAvailable());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
+                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
+                assessment.intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        assertTrue(assessment.intervals().stream().allMatch(interval ->
+                interval.reason().startsWith("CANCELLED")));
+    }
+
+    private static IntervalTraceBatch withResourceLimit(IntervalTraceBatch batch, int interval,
+            boolean retainRoutes) {
+        List<IntervalTraceBatch.IntervalRun> runs = new java.util.ArrayList<>(batch.runs());
+        var run = runs.get(interval);
+        var original = run.result().inference();
+        var limited = new TraceHypothesisSet(original.engine(),
+                retainRoutes ? original.hypotheses() : List.of(),
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, true,
+                original.evaluatedStates(), original.evaluatedTransitions(),
+                "bounded interval inference exhausted");
+        runs.set(interval, new IntervalTraceBatch.IntervalRun(run.interval(), run.request(),
+                new ModernTracePipeline.Result(limited,
+                        retainRoutes ? run.routes() : List.of()), run.usage()));
+        return new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                batch.partition(), runs, batch.options());
+    }
+
+    @Test
     void capturedSurroundingCrossingBlocksTheCompleteComposedPlan() throws Exception {
         IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE,
                 false, true);
@@ -237,8 +331,10 @@ class V022FixedIntervalEditPlanComposerTest {
                 Map.of());
         var rightAlone = composer.compose(withoutRoutes(withRoute(safe, 1, alteredRight), 0),
                 Map.of());
-        assertTrue(leftAlone.applyAvailable(), leftAlone.intervals().toString());
-        assertTrue(rightAlone.applyAvailable(), rightAlone.intervals().toString());
+        assertTrue(leftAlone.applyAvailable(), leftAlone.intervals() + " "
+                + leftAlone.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
+        assertTrue(rightAlone.applyAvailable(), rightAlone.intervals() + " "
+                + rightAlone.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
         var both = composer.compose(withRoute(withRoute(safe, 0, alteredLeft), 1,
                 alteredRight), Map.of());
         assertFalse(both.applyAvailable());
@@ -250,6 +346,34 @@ class V022FixedIntervalEditPlanComposerTest {
         assertTrue(both.plan().orElseThrow().validation().findingCodes().stream()
                 .anyMatch(code -> code.equals("final-topology:CROSSING")
                         || code.equals("final-topology:COLLINEAR_OVERLAP")));
+    }
+
+    @Test
+    void changedApproachOverlappingAdjacentFrozenIslandEdgeBlocksWholePlan() throws Exception {
+        IntervalTraceBatch batch = uBatch(overlapRaster());
+        var left = batch.runs().get(0).routes().get(0);
+        assertEquals(6, left.pointIds().size());
+        MetricPoint lower = originalMetric(batch, 3);
+        var flat = withGeneratedPositions(batch, left, Map.of(
+                existingPointId(left, 2), originalMetric(batch, 2)));
+        flat = withGeneratedPositions(batch, flat, linearGeneratedPositions(flat));
+        var approach = withGeneratedPositions(batch, flat, Map.of(
+                left.pointIds().get(4), new MetricPoint(lower.xMeters(),
+                        lower.yMeters() + 1.5)));
+        assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                approach.quality().disposition(), approach.quality().toString());
+        assertFalse(approach.quality().has(
+                FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY),
+                approach.quality().toString());
+        var assessment = new FixedIntervalEditPlanComposer().compose(
+                withoutRoutes(withRoute(batch, 0, approach), 1), Map.of());
+        assertFalse(assessment.applyAvailable());
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
+                assessment.intervals().get(0).disposition(), assessment.intervals().toString());
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes().stream()
+                .anyMatch(code -> code.equals("final-topology:CONTINUATION")
+                        || code.equals("final-topology:COLLINEAR_OVERLAP")),
+                assessment.plan().orElseThrow().validation().findingCodes().toString());
     }
 
     private static IntervalTraceBatch withRoute(IntervalTraceBatch batch, int interval,
@@ -276,6 +400,11 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static IntervalTraceBatch uBatch() throws Exception {
+        return uBatch(uRaster());
+    }
+
+    private static IntervalTraceBatch uBatch(LiveBPreviewService.VisibleRaster raster)
+            throws Exception {
         DataSet dataSet = new DataSet();
         double[] east = {-20, -15, -7, 0, 0, -7, -15, -20};
         double[] north = {0, 0, 0, 0, 5, 5, 5, 5};
@@ -297,7 +426,7 @@ class V022FixedIntervalEditPlanComposerTest {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
-                uRaster(), config()));
+                raster, config()));
         var selected = (DetachedWay) captured[0].network().primitives()
                 .get(captured[0].specification().selectedWayKey());
         var keys = selected.nodeKeys();
@@ -358,6 +487,31 @@ class V022FixedIntervalEditPlanComposerTest {
         return new LiveBPreviewService.VisibleRaster(width, height, argb,
                 -50, -50, 50, 50, 1.0, 1.0, OptionalDouble.of(1.0),
                 "u-visible-test", "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster overlapRaster() {
+        int width = 600;
+        int height = 600;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                double east = (x + 0.5 - 300.0) / 6.0;
+                double north = (300.0 - y - 0.5) / 6.0;
+                double distance = distanceToSegment(east, north, -20, 0, -7, 0);
+                distance = Math.min(distance,
+                        distanceToSegment(east, north, -7, 0, 0, 1.5));
+                distance = Math.min(distance,
+                        distanceToSegment(east, north, 0, -5, 0, 5));
+                distance = Math.min(distance,
+                        distanceToSegment(east, north, 0, 5, -20, 5));
+                double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44);
+                int gray = (int) Math.round(255.0 * intensity);
+                argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -50, -50, 50, 50, 1.0, 1.0, OptionalDouble.of(1.0),
+                "overlap-visible-test", "EPSG:3857");
     }
 
     private static double distanceToSegment(double x, double y,
