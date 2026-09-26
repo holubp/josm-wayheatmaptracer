@@ -338,6 +338,114 @@ public final class ModernSingleWayEditPlanAdapter {
             route.hypothesis().id(), preview, validation);
     }
 
+    /** Builds one exact plan from ordered, candidate-owned interval geometry. */
+    AlignmentEditPlan adaptComposite(IntervalTraceBatch batch, List<FinalRoutePointId> ids,
+            Map<FinalRoutePointId, MetricPoint> assignments, String identity,
+            List<String> routeFindings) {
+        TraceRequest request = batch.fullRequest();
+        EvidenceSnapshot evidence = batch.evidence();
+        NetworkSnapshot before = batch.network();
+        if (ids == null || ids.size() < 2 || assignments == null
+                || !assignments.keySet().equals(new LinkedHashSet<>(ids))
+                || identity == null || identity.isBlank() || routeFindings == null
+                || !request.evidenceContentHash().equals(evidence.canonicalHash())
+                || !request.networkContentHash().equals(before.canonicalHash())) {
+            throw new IllegalArgumentException("Composite candidate and frozen inputs do not match");
+        }
+        DetachedWay selected = requireCompositeBoundary(request, before,
+                batch.options().cleanup(), ids, assignments, evidence,
+                batch.partition());
+        List<PrimitiveKey> replacement = replacementNodes(ids, assignments, identity,
+                request, evidence, before, selected, true);
+        Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(before.primitives());
+        for (PrimitiveKey removable : before.closure().removableExistingNodeKeys()) {
+            if (!replacement.contains(removable)) afterValues.remove(removable);
+        }
+        Set<PrimitiveKey> sharedJunctions = sharedMovableBoundaries(request, before, selected);
+        Set<PrimitiveKey> deferredJunctions = request.permissions().junctionPolicy()
+                == JunctionPolicy.REATTACH ? sharedJunctions : Set.of();
+        for (FinalRoutePointId id : ids) {
+            GeographicPoint geographic = evidence.coordinateFrame().toGeographic(assignments.get(id));
+            if (id instanceof GeneratedCandidatePoint generated) {
+                PrimitiveKey key = plannedKey(generated);
+                afterValues.put(key, new DetachedNode(key, geographic, Map.of(), false, true));
+            } else if (id instanceof ExistingWayNodeOccurrence existing
+                    && before.closure().movableExistingNodeKeys().contains(existing.nodeKey())
+                    && !deferredJunctions.contains(existing.nodeKey())) {
+                DetachedNode old = (DetachedNode) before.primitives().get(existing.nodeKey());
+                if (assignments.get(id).equals(
+                        evidence.coordinateFrame().toMetric(old.coordinate()))) {
+                    geographic = old.coordinate();
+                }
+                afterValues.put(existing.nodeKey(), new DetachedNode(existing.nodeKey(), geographic,
+                        old.tags(), old.deleted(), old.modified() || !old.coordinate().equals(geographic)));
+            }
+        }
+        boolean wayChanged = !selected.nodeKeys().equals(replacement);
+        afterValues.put(selected.key(), new DetachedWay(selected.key(), replacement,
+                selected.tags(), false, selected.modified() || wayChanged));
+        if (!sharedJunctions.isEmpty()
+                && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
+            afterValues = applyReattachment(afterValues, before, ids, assignments,
+                    request, evidence, sharedJunctions);
+        }
+        requireCompositeChangedSupport(before, afterValues, selected, evidence,
+                batch.options().fieldName());
+        NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + identity,
+                SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
+                before.closure(), afterValues, proposedWatches(before, afterValues));
+        List<String> findings = new ArrayList<>(routeFindings);
+        findings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
+                request.selectedRange(), evidence));
+        ValidationReport.Disposition disposition = findings.stream().anyMatch(finding ->
+                finding.startsWith("final-topology:"))
+                ? ValidationReport.Disposition.HARD_BLOCKED
+                : findings.isEmpty() ? ValidationReport.Disposition.APPLICABLE
+                        : ValidationReport.Disposition.REVIEW_REQUIRED;
+        if (request.permissions().junctionPolicy() != JunctionPolicy.FIXED
+                && disposition != ValidationReport.Disposition.HARD_BLOCKED) {
+            disposition = ValidationReport.Disposition.REVIEW_REQUIRED;
+            findings.add("network-review-required");
+        }
+        return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
+                before, after, evidence.coordinateFrame(), request.permissions(),
+                request.settingsHash(), evidence.canonicalHash(), request.parameterHash(),
+                identity, finalPreviewWays(before, afterValues),
+                new ValidationReport(disposition, findings));
+    }
+
+    private static void requireCompositeChangedSupport(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay source,
+            EvidenceSnapshot evidence, String fieldName) {
+        var field = evidence.fields().get(fieldName);
+        if (field == null) throw new IllegalArgumentException("Composite image field is unavailable");
+        double pitch = evidence.resolution().effectivePitchMeters();
+        ImageCostField image = new ImageCostField(field, evidence.transform(),
+                evidence.decisionRegion(), pitch);
+        DetachedWay proposed = (DetachedWay) after.get(source.key());
+        for (int i = 1; i < proposed.nodeKeys().size(); i++) {
+            PrimitiveKey left = proposed.nodeKeys().get(i - 1);
+            PrimitiveKey right = proposed.nodeKeys().get(i);
+            if (!unchangedSelectedEdge(before, after, source, left, right)
+                    && unsupportedBoundaryConnector(image, List.of(),
+                            metric(after, left, evidence), metric(after, right, evidence), pitch)) {
+                throw new CompositeLocalSupportException(left, right);
+            }
+        }
+    }
+
+    static final class CompositeLocalSupportException extends IllegalArgumentException {
+        private final PrimitiveKey left;
+        private final PrimitiveKey right;
+        CompositeLocalSupportException(PrimitiveKey left, PrimitiveKey right) {
+            super("Changed composite span lacks direct support");
+            this.left = left;
+            this.right = right;
+        }
+        PrimitiveKey left() { return left; }
+        PrimitiveKey right() { return right; }
+    }
+
     private static void requireInputs(ModernTracePipeline.Route route, TraceRequest request,
             EvidenceSnapshot evidence, LiveBPreviewService.Captured captured) {
         NetworkSnapshot before = captured.network();
@@ -520,6 +628,59 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private static DetachedWay requireSupportedBoundary(
             TraceRequest request, NetworkSnapshot before, GeometryCleanupConfig cleanup) {
+        return requireSupportedBoundary(request, before, cleanup, false);
+    }
+
+    private static DetachedWay requireCompositeBoundary(TraceRequest request,
+            NetworkSnapshot before, GeometryCleanupConfig cleanup,
+            List<FinalRoutePointId> ids, Map<FinalRoutePointId, MetricPoint> assignments,
+            EvidenceSnapshot evidence,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                    .SelectedWayIntervalPartitioner.Partition partition) {
+        DetachedWay selected = (DetachedWay) before.primitives().get(request.selectedWayKey());
+        if (selected == null || partition == null
+                || !partition.selectedWayKey().equals(selected.key())
+                || !partition.selectedRange().equals(request.selectedRange())) {
+            throw new IllegalArgumentException("Composite original-node authority is unavailable");
+        }
+        Set<Integer> fixedOccurrences = new LinkedHashSet<>();
+        for (var island : partition.fixedIslands()) {
+            for (int index = island.range().firstIndex(); index <= island.range().lastIndex(); index++) {
+                fixedOccurrences.add(index);
+            }
+        }
+        int expected = request.selectedRange().firstIndex();
+        for (FinalRoutePointId id : ids) {
+            if (!(id instanceof ExistingWayNodeOccurrence occurrence)) continue;
+            int index = occurrence.originalOccurrenceIndex();
+            if (index < expected || index > request.selectedRange().lastIndex()
+                    || java.util.stream.IntStream.range(expected, index).anyMatch(skipped ->
+                            !before.closure().removableExistingNodeKeys()
+                                    .contains(selected.nodeKeys().get(skipped)))
+                    || !occurrence.wayKey().equals(selected.key())
+                    || !occurrence.nodeKey().equals(selected.nodeKeys().get(index))
+                    || !(before.primitives().get(occurrence.nodeKey()) instanceof DetachedNode node)
+                    || (!before.closure().movableExistingNodeKeys().contains(occurrence.nodeKey())
+                            || fixedOccurrences.contains(index))
+                            && !evidence.coordinateFrame().toMetric(node.coordinate())
+                                    .equals(assignments.get(id))) {
+                throw new IllegalArgumentException(
+                        "Composite original occurrence exceeds its captured movement authority");
+            }
+            expected = index + 1;
+        }
+        if (java.util.stream.IntStream.rangeClosed(expected,
+                request.selectedRange().lastIndex()).anyMatch(skipped ->
+                        !before.closure().removableExistingNodeKeys()
+                                .contains(selected.nodeKeys().get(skipped)))) {
+            throw new IllegalArgumentException("Composite plan omitted an original selected node");
+        }
+        return requireSupportedBoundary(request, before, cleanup, true);
+    }
+
+    private static DetachedWay requireSupportedBoundary(
+            TraceRequest request, NetworkSnapshot before, GeometryCleanupConfig cleanup,
+            boolean exactOriginalComposite) {
         ClosureDescriptor closure = before.closure();
         if (before.role() != SnapshotRole.CAPTURED_BEFORE
                 || request.engine() == TrackerMode.LEGACY_V02
@@ -568,10 +729,10 @@ public final class ModernSingleWayEditPlanAdapter {
         authorizedNodes.addAll(closure.movableExistingNodeKeys());
         authorizedNodes.addAll(closure.removableExistingNodeKeys());
         if (!authorizedNodes.containsAll(selectedNodes)
-                || request.geometryMode() == AlignmentMode.PRECISE_SHAPE
+                || !exactOriginalComposite && request.geometryMode() == AlignmentMode.PRECISE_SHAPE
                     && request.permissions().junctionPolicy() == JunctionPolicy.FIXED
                     && !closure.protectedExistingNodeKeys().containsAll(selectedNodes)
-                || request.geometryMode() == AlignmentMode.PRECISE_SHAPE
+                || !exactOriginalComposite && request.geometryMode() == AlignmentMode.PRECISE_SHAPE
                     && request.permissions().junctionPolicy() == JunctionPolicy.FIXED
                     && (!closure.movableExistingNodeKeys().isEmpty()
                         || !closure.editableExistingKeys().equals(Set.of(request.selectedWayKey())))) {
@@ -584,7 +745,14 @@ public final class ModernSingleWayEditPlanAdapter {
     private static List<PrimitiveKey> replacementNodes(ModernTracePipeline.Route route,
             TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot before,
             DetachedWay selected) {
-        List<FinalRoutePointId> ids = route.pointIds();
+        return replacementNodes(route.pointIds(), route.assignments(), route.hypothesis().id(),
+                request, evidence, before, selected, false);
+    }
+
+    private static List<PrimitiveKey> replacementNodes(List<FinalRoutePointId> ids,
+            Map<FinalRoutePointId, MetricPoint> assignments, String identity,
+            TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot before,
+            DetachedWay selected, boolean composite) {
         if (!(ids.get(0) instanceof ExistingWayNodeOccurrence first)
                 || !(ids.get(ids.size() - 1) instanceof ExistingWayNodeOccurrence last)
                 || first.originalOccurrenceIndex() != request.selectedRange().firstIndex()
@@ -616,15 +784,15 @@ public final class ModernSingleWayEditPlanAdapter {
                 MetricPoint captured = value instanceof DetachedNode node
                     ? evidence.coordinateFrame().toMetric(node.coordinate()) : null;
                 boolean movable = before.closure().movableExistingNodeKeys().contains(existing.nodeKey());
-                if (captured == null || route.assignments().get(id) == null
-                        || !movable && !captured.equals(route.assignments().get(id))) {
+                if (captured == null || assignments.get(id) == null
+                        || !movable && !captured.equals(assignments.get(id))) {
                     throw new IllegalArgumentException(
                         "Existing occurrence assignment exceeds its movement authority");
                 }
                 result.add(existing.nodeKey());
                 expectedOccurrence = occurrence + 1;
             } else if (id instanceof GeneratedCandidatePoint generated) {
-                if (!generated.candidateId().equals(route.hypothesis().id())
+                if (!composite && !generated.candidateId().equals(identity)
                         || !planned.add(plannedKey(generated))) {
                     throw new IllegalArgumentException(
                         "Generated route identities are inconsistent or duplicated");
@@ -688,8 +856,17 @@ public final class ModernSingleWayEditPlanAdapter {
     private static List<SelectedReceiverIntersection> selectedReceiverIntersections(
             NetworkSnapshot before, ModernTracePipeline.Route route,
             Map<PrimitiveKey, DetachedPrimitive> evidenced, EvidenceSnapshot evidence,
+            List<PrimitiveKey> receiving, PrimitiveKey junction, MetricPoint proposed) {
+        return selectedReceiverIntersections(before, route.pointIds(), route.assignments(),
+                evidenced, evidence, receiving, junction, proposed);
+    }
+
+    private static List<SelectedReceiverIntersection> selectedReceiverIntersections(
+            NetworkSnapshot before, List<FinalRoutePointId> pointIds,
+            Map<FinalRoutePointId, MetricPoint> assignments,
+            Map<PrimitiveKey, DetachedPrimitive> evidenced, EvidenceSnapshot evidence,
             DetachedWay receiver, PrimitiveKey junction, MetricPoint proposed) {
-        List<FinalRoutePointId> selected = route.pointIds().stream()
+        List<FinalRoutePointId> selected = pointIds.stream()
                 .filter(id -> !(id instanceof ExistingWayNodeOccurrence occurrence
                         && occurrence.nodeKey().equals(junction)))
                 .toList();
@@ -700,37 +877,40 @@ public final class ModernSingleWayEditPlanAdapter {
             List<PrimitiveKey> receiving = receiver.nodeKeys().subList(
                     range.firstIndex(), range.lastIndex() + 1).stream()
                     .filter(key -> !key.equals(junction)).toList();
-            addSelectedReceiverIntersections(result, before, route, selected,
+            addSelectedReceiverIntersections(result, before, pointIds, assignments, selected,
                     evidenced, evidence, receiving, junction, proposed);
         }
         return bestIntersections(result);
     }
 
     private static List<SelectedReceiverIntersection> selectedReceiverIntersections(
-            NetworkSnapshot before, ModernTracePipeline.Route route,
+            NetworkSnapshot before, List<FinalRoutePointId> pointIds,
+            Map<FinalRoutePointId, MetricPoint> assignments,
             Map<PrimitiveKey, DetachedPrimitive> evidenced, EvidenceSnapshot evidence,
             List<PrimitiveKey> receiving, PrimitiveKey junction, MetricPoint proposed) {
-        List<FinalRoutePointId> selected = route.pointIds().stream()
+        List<FinalRoutePointId> selected = pointIds.stream()
                 .filter(id -> !(id instanceof ExistingWayNodeOccurrence occurrence
                         && occurrence.nodeKey().equals(junction)))
                 .toList();
         List<SelectedReceiverIntersection> result = new ArrayList<>();
-        addSelectedReceiverIntersections(result, before, route, selected,
+        addSelectedReceiverIntersections(result, before, pointIds, assignments, selected,
                 evidenced, evidence, receiving, junction, proposed);
         return bestIntersections(result);
     }
 
     private static void addSelectedReceiverIntersections(
             List<SelectedReceiverIntersection> result, NetworkSnapshot before,
-            ModernTracePipeline.Route route, List<FinalRoutePointId> selected,
+            List<FinalRoutePointId> pointIds,
+            Map<FinalRoutePointId, MetricPoint> assignments,
+            List<FinalRoutePointId> selected,
             Map<PrimitiveKey, DetachedPrimitive> evidenced, EvidenceSnapshot evidence,
             List<PrimitiveKey> receiving, PrimitiveKey junction, MetricPoint proposed) {
         for (int selectedIndex = 0; selectedIndex < selected.size(); selectedIndex++) {
-            MetricPoint selectedStart = route.assignments().get(selected.get(selectedIndex));
+            MetricPoint selectedStart = assignments.get(selected.get(selectedIndex));
             MetricPoint selectedEnd;
             if (selectedIndex + 1 < selected.size()) {
-                selectedEnd = route.assignments().get(selected.get(selectedIndex + 1));
-            } else if (route.pointIds().get(route.pointIds().size() - 1)
+                selectedEnd = assignments.get(selected.get(selectedIndex + 1));
+            } else if (pointIds.get(pointIds.size() - 1)
                     instanceof ExistingWayNodeOccurrence last
                     && last.nodeKey().equals(junction)) {
                 double dx = proposed.xMeters() - selectedStart.xMeters();
@@ -839,6 +1019,16 @@ public final class ModernSingleWayEditPlanAdapter {
             Map<PrimitiveKey, DetachedPrimitive> baseValues, NetworkSnapshot before,
             ModernTracePipeline.Route route, TraceRequest request, EvidenceSnapshot evidence,
             Set<PrimitiveKey> sharedJunctions) {
+        return applyReattachment(baseValues, before, route.pointIds(), route.assignments(),
+                request, evidence, sharedJunctions);
+    }
+
+    private static Map<PrimitiveKey, DetachedPrimitive> applyReattachment(
+            Map<PrimitiveKey, DetachedPrimitive> baseValues, NetworkSnapshot before,
+            List<FinalRoutePointId> pointIds,
+            Map<FinalRoutePointId, MetricPoint> assignments,
+            TraceRequest request, EvidenceSnapshot evidence,
+            Set<PrimitiveKey> sharedJunctions) {
         Map<PrimitiveKey, DetachedPrimitive> evidenced = request.permissions().reconstructIncidentWays()
                 ? IncidentWayReconstructor.reconstruct(before, baseValues, evidence,
                         request.selectedWayKey(), sharedJunctions)
@@ -855,13 +1045,13 @@ public final class ModernSingleWayEditPlanAdapter {
         Map<PrimitiveKey, MetricPoint> jointPositions = new LinkedHashMap<>();
         Map<PrimitiveKey, PrimitiveKey> selectedInsertionAfter = new LinkedHashMap<>();
         for (PrimitiveKey junction : sharedJunctions.stream().sorted().toList()) {
-            ExistingWayNodeOccurrence occurrence = route.pointIds().stream()
+            ExistingWayNodeOccurrence occurrence = pointIds.stream()
                     .filter(ExistingWayNodeOccurrence.class::isInstance)
                     .map(ExistingWayNodeOccurrence.class::cast)
                     .filter(value -> value.nodeKey().equals(junction)).findFirst()
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Final route omits a movable junction occurrence"));
-            MetricPoint proposed = route.assignments().get(occurrence);
+            MetricPoint proposed = assignments.get(occurrence);
             List<TopologyNetwork.Id> receivers = topology.ways().values().stream()
                     .filter(way -> !way.id().equals(selectedWay)
                             && way.nodeIds().contains(conversion.id(junction)))
@@ -876,7 +1066,8 @@ public final class ModernSingleWayEditPlanAdapter {
                         && receiver.nodeKeys().indexOf(junction) > 0
                         && receiver.nodeKeys().indexOf(junction) < receiver.nodeKeys().size() - 1) {
                     List<SelectedReceiverIntersection> intersections =
-                            selectedReceiverIntersections(before, route, evidenced, evidence,
+                            selectedReceiverIntersections(before, pointIds, assignments,
+                                    evidenced, evidence,
                                     receiver, junction, proposed);
                     if (!intersections.isEmpty()) {
                         SelectedReceiverIntersection intersection = uniqueIntersection(intersections);
@@ -892,7 +1083,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     List<PrimitiveKey> receiving = splitReceiverSpan(before, conversion,
                             receivers, junction);
                     List<SelectedReceiverIntersection> intersections =
-                            selectedReceiverIntersections(before, route, evidenced,
+                            selectedReceiverIntersections(before, pointIds, assignments, evidenced,
                                     evidence, receiving, junction, proposed);
                     if (intersections.isEmpty()) {
                         groups = List.of();
@@ -979,12 +1170,12 @@ public final class ModernSingleWayEditPlanAdapter {
                 selectedProposal.tags(), selectedProposal.deleted(),
                 selectedProposal.modified() || !selectedProposal.nodeKeys().equals(selectedOrder)));
         for (PrimitiveKey junction : sharedJunctions) {
-            ExistingWayNodeOccurrence occurrence = route.pointIds().stream()
+            ExistingWayNodeOccurrence occurrence = pointIds.stream()
                     .filter(ExistingWayNodeOccurrence.class::isInstance)
                     .map(ExistingWayNodeOccurrence.class::cast)
                     .filter(value -> value.nodeKey().equals(junction)).findFirst().orElseThrow();
             MetricPoint expected = jointPositions.getOrDefault(junction,
-                    route.assignments().get(occurrence));
+                    assignments.get(occurrence));
             DetachedNode finalNode = (DetachedNode) combined.get(junction);
             MetricPoint actual = evidence.coordinateFrame().toMetric(finalNode.coordinate());
             if (actual.distanceTo(expected) > 1.0e-9) {
