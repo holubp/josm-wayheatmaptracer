@@ -169,8 +169,12 @@ class V022FixedIntervalEditPlanComposerTest {
     void emptyProductionAlternativesFreezeButExplicitChoiceIsRejected() throws Exception {
         IntervalTraceBatch batch = batch();
         var first = batch.runs().get(0);
+        var original = first.result().inference();
+        var noRoute = new TraceHypothesisSet(original.engine(), List.of(),
+                TraceHypothesisSet.Status.NO_ROUTE, false, original.evaluatedStates(),
+                original.evaluatedTransitions(), "no local route");
         var missing = new IntervalTraceBatch.IntervalRun(first.interval(), first.request(),
-                new ModernTracePipeline.Result(first.result().inference(), List.of()), first.usage());
+                new ModernTracePipeline.Result(noRoute, List.of()), first.usage());
         var unavailable = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(),
                 batch.network(), batch.partition(), List.of(missing, batch.runs().get(1)),
                 batch.options());
@@ -180,6 +184,9 @@ class V022FixedIntervalEditPlanComposerTest {
         assertEquals(FixedIntervalEditPlanComposer.Disposition.FROZEN_LOCAL_FAILURE,
                 assessment.intervals().get(0).disposition());
         assertEquals("NO_PRODUCTION_ROUTE", assessment.intervals().get(0).reason());
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                assessment.intervals().get(1).disposition());
+        assertTrue(assessment.applyAvailable());
     }
 
     @Test
@@ -376,6 +383,46 @@ class V022FixedIntervalEditPlanComposerTest {
                 assessment.plan().orElseThrow().validation().findingCodes().toString());
     }
 
+    @Test
+    void twoChangedIntervalsCannotOverlapAtSingletonFixedIsland() throws Exception {
+        IntervalTraceBatch batch = uBatch(overlapRaster(), true);
+        assertEquals(new OccurrenceRange(3, 3), batch.partition().fixedIslands().get(0).range());
+        var left = batch.runs().get(0).routes().get(0);
+        var right = batch.runs().get(1).routes().get(0);
+        assertFalse(right.quality().has(
+                FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY),
+                right.quality().toString());
+        MetricPoint fixed = originalMetric(batch, 3);
+        var flatLeft = withGeneratedPositions(batch, left, Map.of(
+                existingPointId(left, 2), originalMetric(batch, 2)));
+        flatLeft = withGeneratedPositions(batch, flatLeft, linearGeneratedPositions(flatLeft));
+        var overlapLeft = withGeneratedPositions(batch, flatLeft, Map.of(
+                left.pointIds().get(left.pointIds().size() - 2),
+                new MetricPoint(fixed.xMeters(), fixed.yMeters() + 1.5)));
+        var overlapRight = right;
+        assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                overlapLeft.quality().disposition(), overlapLeft.quality().toString());
+        assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                overlapRight.quality().disposition(), overlapRight.quality().toString());
+        assertFalse(overlapLeft.quality().has(
+                FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY),
+                overlapLeft.quality().toString());
+        assertFalse(overlapRight.quality().has(
+                FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY),
+                overlapRight.quality().toString());
+        var assessment = new FixedIntervalEditPlanComposer().compose(
+                withRoute(withRoute(batch, 0, overlapLeft), 1, overlapRight), Map.of());
+        assertFalse(assessment.applyAvailable());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
+                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
+                assessment.intervals().stream().map(
+                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList(),
+                assessment.intervals().toString());
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes().contains(
+                "final-topology:COLLINEAR_OVERLAP"),
+                assessment.plan().orElseThrow().validation().findingCodes().toString());
+    }
+
     private static IntervalTraceBatch withRoute(IntervalTraceBatch batch, int interval,
             ModernTracePipeline.Route route) {
         List<IntervalTraceBatch.IntervalRun> runs = new java.util.ArrayList<>(batch.runs());
@@ -400,11 +447,16 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static IntervalTraceBatch uBatch() throws Exception {
-        return uBatch(uRaster());
+        return uBatch(uRaster(), false);
     }
 
     private static IntervalTraceBatch uBatch(LiveBPreviewService.VisibleRaster raster)
             throws Exception {
+        return uBatch(raster, false);
+    }
+
+    private static IntervalTraceBatch uBatch(LiveBPreviewService.VisibleRaster raster,
+            boolean singletonIsland) throws Exception {
         DataSet dataSet = new DataSet();
         double[] east = {-20, -15, -7, 0, 0, -7, -15, -20};
         double[] north = {0, 0, 0, 0, 5, 5, 5, 5};
@@ -443,12 +495,20 @@ class V022FixedIntervalEditPlanComposerTest {
         var end = new SelectedWayIntervalPartitioner.BoundaryConstraint(
                 SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, 6, keys.get(6),
                 false, false, reason);
-        var island = new SelectedWayIntervalPartitioner.FixedIsland(new OccurrenceRange(3, 4),
-                keys.subList(3, 5), Set.of(), List.of(reason), lower, upper, Set.of(), Set.of());
+        var island = singletonIsland
+                ? new SelectedWayIntervalPartitioner.FixedIsland(new OccurrenceRange(3, 3),
+                        List.of(keys.get(3)), Set.of(), List.of(reason), lower, lower,
+                        Set.of(), Set.of())
+                : new SelectedWayIntervalPartitioner.FixedIsland(new OccurrenceRange(3, 4),
+                        keys.subList(3, 5), Set.of(), List.of(reason), lower, upper,
+                        Set.of(), Set.of());
         var left = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(1, 2),
                 keys.subList(1, 3), start, lower);
-        var right = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(5, 6),
-                keys.subList(5, 7), upper, end);
+        var right = singletonIsland
+                ? new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(4, 6),
+                        keys.subList(4, 7), lower, end)
+                : new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(5, 6),
+                        keys.subList(5, 7), upper, end);
         var partition = new SelectedWayIntervalPartitioner.Partition(selected.key(),
                 captured[0].specification().selectedRange(), List.of(island),
                 List.of(left, right), List.of(), Set.of(),
