@@ -27,6 +27,12 @@ final class IncidentWayReconstructor {
     private IncidentWayReconstructor() {
     }
 
+    static final class MissingEvidenceException extends IllegalArgumentException {
+        MissingEvidenceException(String detail) {
+            super("incident approach evidence " + detail);
+        }
+    }
+
     static Map<PrimitiveKey, DetachedPrimitive> reconstruct(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> proposed, EvidenceSnapshot evidence,
             PrimitiveKey selectedWayKey, Set<PrimitiveKey> sharedJunctions) {
@@ -470,7 +476,7 @@ final class IncidentWayReconstructor {
             MetricPoint tangent = tangent(initial, index);
             FrozenProfile profile = image.freezeProfile(initial.get(index), tangent);
             if (profile.support() != FrozenSupport.MEASURED) {
-                throw failure("is missing direct evidence for incident control "
+                throw missingEvidence("is missing direct evidence for incident control "
                         + way.key() + "#" + (firstIndex + index));
             }
             double offset = 0.5 * (profile.coreMinimumMeters() + profile.coreMaximumMeters());
@@ -546,13 +552,13 @@ final class IncidentWayReconstructor {
                     (start.yMeters() + end.yMeters()) * 0.5);
             FrozenProfile profile = image.freezeProfile(midpoint, tangent);
             if (profile.support() != FrozenSupport.MEASURED) {
-                throw failure("has missing or ambiguous scalar localization outside "
+                throw missingEvidence("has missing or ambiguous scalar localization outside "
                         + "the junction core on segment " + (index - 1) + "->" + index);
             }
             measuredOutsideCore++;
         }
         if (measuredOutsideCore == 0) {
-            throw failure("has no measured incident section outside the junction core");
+            throw missingEvidence("has no measured incident section outside the junction core");
         }
     }
 
@@ -669,5 +675,9 @@ final class IncidentWayReconstructor {
 
     private static IllegalArgumentException failure(String detail) {
         return new IllegalArgumentException("incident approach evidence " + detail);
+    }
+
+    private static MissingEvidenceException missingEvidence(String detail) {
+        return new MissingEvidenceException(detail);
     }
 }

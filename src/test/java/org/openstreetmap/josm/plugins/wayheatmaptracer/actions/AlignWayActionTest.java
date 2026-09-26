@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.file.Path;
@@ -27,6 +28,9 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
@@ -95,7 +99,7 @@ class AlignWayActionTest {
         SelectionContext selection = new SelectionContext(selected, 0, 1,
                 List.of(start, junction), Set.of(start, junction));
         int[] pixels = new int[1200 * 1200];
-        java.util.Arrays.fill(pixels, 0xff808080);
+        java.util.Arrays.fill(pixels, 0xff000000);
         LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(
                 1200, 1200, pixels, -100.0, -100.0, 100.0, 100.0, 1.0, 1.0,
                 OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
@@ -112,12 +116,14 @@ class AlignWayActionTest {
                 .contains("Adjust this junction manually, then run alignment again"));
         LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
                 captured[0], CancellationProbe.NONE);
+        assertTrue(computed.pipeline().routes().isEmpty());
         AlignWayAction.recordModernDiagnostics(computed, "blocked", 0, null, false, false,
                 "manual-no-route");
         Path diagnostic = directory.resolve("manual-no-route.zip");
         DiagnosticsRegistry.writeLatest(diagnostic.toFile());
         String status = new String(Format15ArchiveReader.read(diagnostic)
                 .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"blocked\""));
         assertTrue(status.contains("\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
         RecoveryPermissions fixed = new RecoveryPermissions(false, 7.01, 7.01,
                 JunctionPolicy.FIXED, false);
@@ -129,7 +135,44 @@ class AlignWayActionTest {
         SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
                 dataSet, selection, raster, config, true, permissions));
         assertTrue(AlignWayAction.noPreviewableRouteMessage(captured[0], TrackerMode.PROBABILISTIC)
+                .contains("Adjust this junction manually, then run alignment again."));
+        LiveBPreviewService.Computed simpleTNoRoute = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        assertTrue(simpleTNoRoute.pipeline().routes().isEmpty());
+        AlignWayAction.recordModernDiagnostics(simpleTNoRoute, "blocked", 0, null,
+                false, false, "simple-t-dark-no-route");
+        Path simpleDiagnostic = directory.resolve("simple-t-dark-no-route.zip");
+        DiagnosticsRegistry.writeLatest(simpleDiagnostic.toFile());
+        String simpleStatus = new String(Format15ArchiveReader.read(simpleDiagnostic)
+                .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(simpleStatus.contains("\"status\":\"blocked\""));
+        assertTrue(simpleStatus.contains(
+                "\"manualJunctionReason\":\"MISSING_RECEIVER_EVIDENCE\""));
+        dataSet.removePrimitive(receiver);
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, raster, config, true, permissions));
+        assertTrue(AlignWayAction.noPreviewableRouteMessage(captured[0], TrackerMode.PROBABILISTIC)
                 .contains("no previewable final route"));
+    }
+
+    @Test
+    void incompleteIncidentCaptureExportsTypedBlockedAttempt(@TempDir Path directory)
+            throws Exception {
+        String failure = "ManualJunctionCaptureException: INCOMPLETE_ARM: incomplete incident way. "
+                + "Adjust this junction manually, then run alignment again.";
+        var reason = AlignWayAction.manualCaptureReason(failure);
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.Reason.INCOMPLETE_ARM, reason);
+        assertEquals(null, AlignWayAction.manualCaptureReason(
+                "IllegalArgumentException: unrelated source capture failed"));
+        AlignWayAction.recordModernUnavailable("blocked", "visible-layer",
+                "incomplete-incident", reason);
+        Path diagnostic = directory.resolve("incomplete-incident.zip");
+        DiagnosticsRegistry.writeLatest(diagnostic.toFile());
+        String status = new String(Format15ArchiveReader.read(diagnostic)
+                .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"blocked\""));
+        assertTrue(status.contains("\"manualJunctionReason\":\"INCOMPLETE_ARM\""));
     }
 
     private static Node loadedNode(long id, double northMeters, double eastMeters) {
@@ -246,6 +289,18 @@ class AlignWayActionTest {
             TraceHypothesisSet.Status.NO_ROUTE, ValidationReport.Disposition.HARD_BLOCKED));
         assertEquals("resource-limited", AlignWayAction.modernPreviewStatus(
             TraceHypothesisSet.Status.RESOURCE_LIMIT, ValidationReport.Disposition.APPLICABLE));
+    }
+    @Test
+    void manualJunctionAssessmentBlocksApplicableRoutePresentationAndAttemptStatus() {
+        var assessment = new ModernSingleWayEditPlanAdapter.Assessment(Optional.empty(),
+                ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION,
+                "Missing receiver evidence. Adjust this junction manually, then run alignment again.",
+                ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE);
+        ValidationReport.Disposition displayed = AlignWayAction.liveBDisplayedDisposition(
+                FinalGeometryEvaluator.Disposition.APPLICABLE, assessment, null);
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED, displayed);
+        assertEquals("blocked", AlignWayAction.modernPreviewStatus(
+                TraceHypothesisSet.Status.COMPLETE, displayed));
     }
     @Test
     void modernSourceIdentityHashesLayerNamesWithoutExportingSignedValues() {

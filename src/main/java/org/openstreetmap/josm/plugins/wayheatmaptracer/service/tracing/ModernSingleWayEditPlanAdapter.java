@@ -74,7 +74,20 @@ public final class ModernSingleWayEditPlanAdapter {
 
     /** Exact immutable plan when inspectable, plus its typed Apply availability. */
     public record Assessment(Optional<AlignmentEditPlan> plan,
-            ApplyAvailability availability, String detail) {
+            ApplyAvailability availability, String detail,
+            ManualJunctionEligibility.Reason manualReason,
+            ManualJunctionEligibility.Reason junctionReason) {
+        public Assessment(Optional<AlignmentEditPlan> plan,
+                ApplyAvailability availability, String detail) {
+            this(plan, availability, detail, null, null);
+        }
+
+        public Assessment(Optional<AlignmentEditPlan> plan,
+                ApplyAvailability availability, String detail,
+                ManualJunctionEligibility.Reason manualReason) {
+            this(plan, availability, detail, manualReason, manualReason);
+        }
+
         /** Validates a bounded user-visible assessment. */
         public Assessment {
             boolean inspectable = availability != null
@@ -85,7 +98,11 @@ public final class ModernSingleWayEditPlanAdapter {
                     || availability == ApplyAvailability.FINAL_TOPOLOGY_CONTINUATION
                     || availability == ApplyAvailability.FINAL_GEOMETRY_BLOCKED);
             if (plan == null || availability == null || detail == null || detail.isBlank()
-                    || inspectable != plan.isPresent()) {
+                    || inspectable != plan.isPresent()
+                    || manualReason != null && availability != ApplyAvailability.MANUAL_JUNCTION
+                    || manualReason != null && manualReason != junctionReason
+                    || junctionReason != null && (junctionReason == ManualJunctionEligibility.Reason.NO_JUNCTION
+                            || junctionReason == ManualJunctionEligibility.Reason.SIMPLE_T)) {
                 throw new IllegalArgumentException("Modern Apply assessment is incomplete");
             }
         }
@@ -132,7 +149,8 @@ public final class ModernSingleWayEditPlanAdapter {
                 != JunctionPolicy.FIXED ? junctionDecision(computed.captured()) : null;
         boolean manual = junction != null && junction.manualOnly();
         if (manual && !canSlideOutside(junction)) {
-            return unavailable(ApplyAvailability.MANUAL_JUNCTION, junction.manualInstruction());
+            return unavailable(ApplyAvailability.MANUAL_JUNCTION, junction.manualInstruction(),
+                    junction.reason());
         }
         if (computed.request().engine() == TrackerMode.PROBABILISTIC
                 && !computed.captured().cleanup().isDisabled()) {
@@ -158,27 +176,45 @@ public final class ModernSingleWayEditPlanAdapter {
             if (topology != ApplyAvailability.PLAN_AVAILABLE) {
                 return new Assessment(Optional.of(plan), topology,
                         "The exact final preview is blocked by " + topology.name()
-                                + (manual ? " " + junction.manualInstruction() : ""));
+                                + (manual ? " " + junction.manualInstruction() : ""),
+                        null, manual ? junction.reason() : null);
             }
             if (plan.validation().disposition() == ValidationReport.Disposition.HARD_BLOCKED) {
                 return new Assessment(Optional.of(plan), ApplyAvailability.FINAL_GEOMETRY_BLOCKED,
                         "The exact final preview is blocked by final geometry validation"
-                                + (manual ? ". " + junction.manualInstruction() : ""));
+                                + (manual ? ". " + junction.manualInstruction() : ""),
+                        null, manual ? junction.reason() : null);
             }
             return new Assessment(Optional.of(plan), ApplyAvailability.PLAN_AVAILABLE,
                     manual ? "Exact outside-junction plan available; junction stays fixed"
-                            : "Exact immutable plan available");
+                            : "Exact immutable plan available", null,
+                    manual ? junction.reason() : null);
         } catch (IllegalArgumentException failure) {
+            boolean missingReceiverEvidence = junction != null && junction.automaticallyEligible()
+                    && failure instanceof IncidentWayReconstructor.MissingEvidenceException;
+            if (missingReceiverEvidence) {
+                ManualJunctionEligibility.Reason reason = ManualJunctionEligibility.Reason
+                        .MISSING_RECEIVER_EVIDENCE;
+                return unavailable(ApplyAvailability.MANUAL_JUNCTION,
+                        failure.getMessage() + " " + new ManualJunctionEligibility.Decision(reason,
+                                junction.junction(), junction.receiver(), junction.affectedNodes())
+                                .manualInstruction(), reason);
+            }
             return unavailable(manual ? ApplyAvailability.MANUAL_JUNCTION
                             : ApplyAvailability.PLAN_UNAVAILABLE,
                     manual ? failure.getMessage() + " " + junction.manualInstruction()
-                            : failure.getMessage());
+                            : failure.getMessage(), manual ? junction.reason() : null);
         }
     }
 
     private static Assessment unavailable(ApplyAvailability availability, String detail) {
+        return unavailable(availability, detail, null);
+    }
+
+    private static Assessment unavailable(ApplyAvailability availability, String detail,
+            ManualJunctionEligibility.Reason manualReason) {
         return new Assessment(Optional.empty(), availability,
-                detail == null || detail.isBlank() ? availability.name() : detail);
+                detail == null || detail.isBlank() ? availability.name() : detail, manualReason);
     }
 
     private static ApplyAvailability topologyAvailability(List<String> findings) {
@@ -330,7 +366,8 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private static ManualJunctionEligibility.Decision junctionDecision(
             LiveBPreviewService.Captured captured) {
-        return ManualJunctionEligibility.evaluate(captured.network(), captured.specification());
+        return captured.junctionDecision() != null ? captured.junctionDecision()
+                : ManualJunctionEligibility.evaluate(captured.network(), captured.specification());
     }
 
     private static boolean canSlideOutside(ManualJunctionEligibility.Decision junction) {

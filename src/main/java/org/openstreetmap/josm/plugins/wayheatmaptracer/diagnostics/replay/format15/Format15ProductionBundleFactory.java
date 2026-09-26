@@ -183,6 +183,13 @@ public final class Format15ProductionBundleFactory {
     /** Emits a truthful terminal attempt even when capture failed before detached input existed. */
     public static Format15Bundle createUnavailableLive(String buildIdentity, String status,
             String sourceLineage, String attemptIdentity) {
+        return createUnavailableLive(buildIdentity, status, sourceLineage, attemptIdentity, null);
+    }
+
+    /** Adds a bounded manual-junction reason when capture fails before detached input exists. */
+    public static Format15Bundle createUnavailableLive(String buildIdentity, String status,
+            String sourceLineage, String attemptIdentity,
+            ManualJunctionEligibility.Reason manualJunctionReason) {
         if (status == null || status.isBlank() || sourceLineage == null
                 || sourceLineage.isBlank() || attemptIdentity == null || attemptIdentity.isBlank()) {
             throw new IllegalArgumentException("Unavailable attempt metadata is incomplete");
@@ -195,6 +202,8 @@ public final class Format15ProductionBundleFactory {
         artifacts.put("attempt-status.json", Format15Artifact.text("attempt-status.json",
             "{\"status\":" + quote(status) + ",\"sourceLineage\":"
                 + quote(sourceLineage) + ",\"attemptIdentityHash\":" + quote(identity)
+                + ",\"manualJunctionReason\":" + (manualJunctionReason == null
+                    ? "null" : quote(manualJunctionReason.name()))
                 + ",\"privateData\":true,\"capabilities\":{\"SCALAR_INFERENCE\":false,"
                 + "\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,"
                 + "\"FULL_EDIT_PLAN\":false}}\n"));

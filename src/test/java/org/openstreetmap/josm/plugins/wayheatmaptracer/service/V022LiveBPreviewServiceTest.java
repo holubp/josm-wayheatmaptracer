@@ -412,6 +412,110 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void repeatedReceiverIsCapturedAsTypedManualOnlyInVisibleAndManagedSources()
+            throws Exception {
+        Fixture fixture = fixture();
+        Node junction = fixture.selection().segmentNodes().get(1);
+        Node west = loadedNode(61, latitude(8), longitude(-8));
+        Node east = loadedNode(62, latitude(8), longitude(8));
+        Node north = loadedNode(63, latitude(16), longitude(8));
+        for (Node node : List.of(west, east, north)) fixture.dataSet().addPrimitive(node);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(west, junction, east, junction, north));
+        receiver.setOsmId(64, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                    config(), true, permissions);
+            managed[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    managedConfig(), "managed-repeated-receiver", permissions);
+        });
+        var expected = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.Reason.REPEATED_OCCURRENCE;
+        assertEquals(expected, org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.evaluate(visible[0].network(),
+                        visible[0].specification()).reason());
+        assertEquals(expected, org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.evaluate(managed[0].network(),
+                        managed[0].specification()).reason());
+        PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId());
+        assertTrue(visible[0].network().closure().protectedExistingNodeKeys().contains(key));
+        assertTrue(managed[0].network().closure().protectedExistingNodeKeys().contains(key));
+    }
+
+    @Test
+    void receiverArmOutsideCertifiedFrameIsTypedManualOnly() throws Exception {
+        Fixture fixture = fixture();
+        Node junction = fixture.selection().segmentNodes().get(1);
+        Node south = loadedNode(71, latitude(-31), longitude(8));
+        Node north = loadedNode(72, latitude(31), longitude(8));
+        fixture.dataSet().addPrimitive(south);
+        fixture.dataSet().addPrimitive(north);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(south, junction, north));
+        receiver.setOsmId(73, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        int[] pixels = new int[360 * 360];
+        java.util.Arrays.fill(pixels, 0xff808080);
+        LiveBPreviewService.VisibleRaster narrow = new LiveBPreviewService.VisibleRaster(
+                360, 360, pixels, -30.0, -30.0, 30.0, 30.0, 1.0, 1.0,
+                OptionalDouble.of(1.0), "visible-narrow-junction", "EPSG:3857");
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), narrow, config(), true, permissions));
+        var decision = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.evaluate(captured[0].network(), captured[0].specification());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.Reason.INCOMPLETE_ARM, decision.reason());
+        assertTrue(decision.manualInstruction().contains(
+                "Adjust this junction manually, then run alignment again."));
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId())));
+    }
+
+    @Test
+    void incompleteIncidentReceiverRefusesCaptureWithManualFirstReason() throws Exception {
+        Fixture fixture = fixture();
+        Node junction = fixture.selection().segmentNodes().get(1);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(junction));
+        receiver.setOsmId(82, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        List<String> before = state(fixture.dataSet());
+        var undoBefore = List.copyOf(org.openstreetmap.josm.data.UndoRedoHandler
+                .getInstance().getUndoCommands());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+
+        LiveBPreviewService.ManualJunctionCaptureException[] refusal =
+                new LiveBPreviewService.ManualJunctionCaptureException[1];
+        SwingUtilities.invokeAndWait(() -> refusal[0] = assertThrows(
+                LiveBPreviewService.ManualJunctionCaptureException.class,
+                () -> new LiveBPreviewService().capture(
+                        fixture.dataSet(), fixture.selection(), raster(), config(), true,
+                        permissions)));
+
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                .ManualJunctionEligibility.Reason.INCOMPLETE_ARM, refusal[0].reason());
+        assertTrue(refusal[0].getMessage().contains("incomplete incident way"));
+        assertTrue(refusal[0].getMessage().contains(
+                "Adjust this junction manually, then run alignment again."));
+        assertEquals(before, state(fixture.dataSet()));
+        assertEquals(undoBefore, List.copyOf(org.openstreetmap.josm.data.UndoRedoHandler
+                .getInstance().getUndoCommands()));
+    }
+
+    @Test
     void managedCaptureCarriesFrozenRecoveryIntoTraceRequest() throws Exception {
         Fixture fixture = fiveNodeFixture();
         RecoveryPermissions permissions = new RecoveryPermissions(true, 7.01, 14.0,

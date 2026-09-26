@@ -63,6 +63,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
@@ -167,13 +168,25 @@ class V022ModernSingleWayEditPlanAdapterTest {
     @Test
     void relationJunctionCanLeaveAnExactFrozenFootprintWhileSlidingOutside() throws Exception {
         Fixture fixture = relationJunctionFixture();
+        Way receiverWithContinuation = fixture.dataSet().getWays().stream()
+                .filter(way -> way.getUniqueId() == 11).findFirst().orElseThrow();
+        Node southPort = loadedNode(22, longitude(-31), 0.0);
+        Node northPort = loadedNode(23, longitude(31), 0.0);
+        Node farSouth = loadedNode(24, longitude(-70), 0.0);
+        Node farNorth = loadedNode(25, longitude(70), 0.0);
+        for (Node node : List.of(southPort, northPort, farSouth, farNorth)) {
+            fixture.dataSet().addPrimitive(node);
+        }
+        receiverWithContinuation.setNodes(List.of(farSouth, southPort,
+                receiverWithContinuation.getNode(0), fixture.way().getNode(7),
+                receiverWithContinuation.getNode(2), northPort, farNorth));
         List<String> liveBefore = state(fixture);
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
                 JunctionPolicy.REATTACH, true);
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
-                fixture.dataSet(), fixture.selection(), manualJunctionRaster(false),
+                fixture.dataSet(), fixture.selection(), manualJunctionRaster(false, 100),
                 config(TrackerMode.PROBABILISTIC),
                 true, permissions));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
@@ -182,7 +195,20 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
         assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                 assessment.availability(), assessment.detail());
+        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                captured[0].junctionDecision().reason());
+        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                assessment.junctionReason());
+        assertEquals(null, assessment.manualReason());
         AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        var diagnostic = Format15ProductionBundleFactory.createLive("test",
+                new FrozenReplayInput(computed.request(), computed.evidence(),
+                        computed.captured().network(), computed.options()),
+                computed.pipeline(), "preview-open", "visible-layer", 0, plan,
+                false, false, computed.counters(), assessment.junctionReason());
+        assertTrue(new String(diagnostic.artifact("attempt-status.json").bytes(),
+                StandardCharsets.UTF_8).contains(
+                        "\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
         assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10)),
                 plan.affectedWayKeys());
         for (int id : new int[] {2, 3, 4, 5, 6, 9}) {
@@ -230,6 +256,43 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(applied, state(fixture));
         assertEquals(protectedCoordinates, protectedNodes.stream()
                 .map(node -> new LatLon(node.lat(), node.lon())).toList());
+    }
+
+    @Test
+    void taggedJunctionCannotInventAReceiverPortAfterFreezing() throws Exception {
+        Fixture fixture = relationJunctionFixture();
+        Node junction = fixture.way().getNode(7);
+        junction.put("highway", "traffic_signals");
+        Way receiver = fixture.dataSet().getWays().stream()
+                .filter(way -> way.getUniqueId() == 11).findFirst().orElseThrow();
+        Node southPortLike = loadedNode(22, longitude(-31), 0.0);
+        Node northPortLike = loadedNode(23, longitude(31), 0.0);
+        Node farSouth = loadedNode(24, longitude(-70), 0.0);
+        Node farNorth = loadedNode(25, longitude(70), 0.0);
+        for (Node node : List.of(southPortLike, northPortLike, farSouth, farNorth)) {
+            fixture.dataSet().addPrimitive(node);
+        }
+        receiver.setNodes(List.of(farSouth, southPortLike, receiver.getNode(0),
+                junction, receiver.getNode(2), northPortLike, farNorth));
+        List<String> before = state(fixture);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), manualJunctionRaster(false, 100),
+                config(TrackerMode.PROBABILISTIC), true, permissions));
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                captured[0].junctionDecision().reason());
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION,
+                assessment.availability());
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                assessment.manualReason());
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.plan().isEmpty());
+        assertEquals(before, state(fixture));
     }
 
     @Test
@@ -775,24 +838,29 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     private static LiveBPreviewService.VisibleRaster manualJunctionRaster(boolean darkConnector) {
-        int width = 600;
-        int height = 600;
+        return manualJunctionRaster(darkConnector, 50);
+    }
+
+    private static LiveBPreviewService.VisibleRaster manualJunctionRaster(boolean darkConnector,
+            int halfExtentMeters) {
+        int width = 6 * 2 * halfExtentMeters;
+        int height = width;
         int[] argb = new int[width * height];
         for (int x = 0; x < width; x++) {
-            double groundX = (x - 300.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double groundX = (x - width / 2.0) / RenderedHeatmapSampler.RASTER_SCALE;
             double centerY = groundX <= -34.0 ? 2.0
                     : groundX >= -30.0 ? 0.0 : (-30.0 - groundX) * 0.5;
             for (int y = 0; y < height; y++) {
-                double groundY = (300.0 - y) / RenderedHeatmapSampler.RASTER_SCALE;
+                double groundY = (height / 2.0 - y) / RenderedHeatmapSampler.RASTER_SCALE;
                 double distance = groundY - centerY;
-                double intensity = darkConnector && x >= 97 && x <= 122 ? 0.0
+                double intensity = darkConnector && groundX >= -34.0 && groundX <= -30.0 ? 0.0
                         : 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / (1.2 * 1.2));
                 int gray = (int) Math.round(255.0 * intensity);
                 argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }
         }
         return new LiveBPreviewService.VisibleRaster(width, height, argb,
-                -50.0, -50.0, 50.0, 50.0, 1.0, 1.0,
+                -halfExtentMeters, -halfExtentMeters, halfExtentMeters, halfExtentMeters, 1.0, 1.0,
                 OptionalDouble.of(1.0), darkConnector ? "visible-dark-connector"
                         : "visible-manual-junction", "EPSG:3857");
     }

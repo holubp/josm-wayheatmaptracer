@@ -233,6 +233,19 @@ class V022ManualJunctionEligibilityTest {
     }
 
     @Test
+    void remoteContinuationOfUnrelatedMaterializedWayDoesNotEscapeFrame() {
+        Fixture fixture = fixture();
+        Node localOne = node(67, 0.00018, 0.00009);
+        Node localTwo = node(68, 0.00018, 0.00018);
+        Node remote = node(69, 0.00018, 0.02);
+        for (Node node : List.of(localOne, localTwo, remote)) fixture.data.addPrimitive(node);
+        fixture.data.addPrimitive(way(70, List.of(localOne, localTwo, remote)));
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                fixture.decision().reason());
+    }
+
+    @Test
     void provedThirtyMetrePortSeparatesTaggedContinuationButFindsSharedJunction() {
         Fixture fixture = fixture();
         Node outer = node(17, 0, -0.00045);

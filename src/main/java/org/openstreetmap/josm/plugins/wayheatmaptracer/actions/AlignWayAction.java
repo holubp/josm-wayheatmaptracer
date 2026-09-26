@@ -555,10 +555,13 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     String failureReason = current.failureReason() == null ? ""
                             : current.failureReason().toLowerCase(java.util.Locale.ROOT);
-                    recordModernUnavailable(failureReason.contains("budget")
-                                    || failureReason.contains("resource")
-                                    ? "resource-limited" : "failed",
-                            sourceLineage, diagnosticAttemptIdentity);
+                    ManualJunctionEligibility.Reason captureJunction =
+                            manualCaptureReason(current.failureReason());
+                    recordModernUnavailable(captureJunction != null ? "blocked"
+                                    : failureReason.contains("budget")
+                                            || failureReason.contains("resource")
+                                        ? "resource-limited" : "failed",
+                            sourceLineage, diagnosticAttemptIdentity, captureJunction);
                     overlay.hide();
                     PluginLog.endSlideSession();
                     showError(tr("{0} alignment preview failed safely: {1}", engineLabel,
@@ -648,7 +651,11 @@ public class AlignWayAction extends JosmAction {
                                 diagnosticAttemptIdentity, null));
             }
         } catch (RuntimeException exception) {
-            recordModernUnavailable("failed", sourceLineage, diagnosticAttemptIdentity);
+            ManualJunctionEligibility.Reason captureJunction = exception
+                    instanceof LiveBPreviewService.ManualJunctionCaptureException manual
+                        ? manual.reason() : null;
+            recordModernUnavailable(captureJunction == null ? "failed" : "blocked",
+                    sourceLineage, diagnosticAttemptIdentity, captureJunction);
             livePreviewSession.close(previewOwner);
             progress.dispose();
             throw exception;
@@ -667,6 +674,7 @@ public class AlignWayAction extends JosmAction {
             return;
         }
         String terminalStatus = "failed";
+        ManualJunctionEligibility.Reason terminalManualReason = null;
         try {
             ValidationReport.Disposition initialDisposition = computed.pipeline().routes().isEmpty()
                     ? ValidationReport.Disposition.HARD_BLOCKED
@@ -694,6 +702,9 @@ public class AlignWayAction extends JosmAction {
             if (candidates.isEmpty()) {
                 terminalStatus = modernPreviewStatus(computed.pipeline().inference().status(),
                         initialDisposition);
+                ManualJunctionEligibility.Decision manual = noRouteJunctionDecision(
+                        computed.captured());
+                terminalManualReason = manual == null ? null : manual.reason();
                 throw new IllegalStateException(noPreviewableRouteMessage(computed.captured(),
                         slideConfig.heatmap().trackerMode()));
             }
@@ -703,7 +714,7 @@ public class AlignWayAction extends JosmAction {
                     diagnosticAttemptIdentity, previewSourceOwner);
         } catch (RuntimeException exception) {
             recordModernDiagnostics(computed, terminalStatus, 0, null, false, false,
-                    diagnosticAttemptIdentity);
+                    diagnosticAttemptIdentity, terminalManualReason);
             boolean closed = livePreviewSession.close(previewOwner);
             progress.dispose();
             if (closed) {
@@ -717,17 +728,41 @@ public class AlignWayAction extends JosmAction {
 
     static String noPreviewableRouteMessage(LiveBPreviewService.Captured captured,
             TrackerMode engine) {
-        if (captured != null && captured.network() != null && captured.specification() != null
-                && captured.specification().permissions().junctionPolicy()
-                        != JunctionPolicy.FIXED) {
-            ManualJunctionEligibility.Decision decision = ManualJunctionEligibility.evaluate(
-                    captured.network(), captured.specification());
-            if (decision.manualOnly()) {
-                return decision.manualInstruction();
-            }
+        ManualJunctionEligibility.Decision decision = noRouteJunctionDecision(captured);
+        if (decision != null) {
+            return decision.manualInstruction();
         }
         return "Production " + livePreviewEngineLabel(engine)
                 + " returned no previewable final route";
+    }
+
+    private static ManualJunctionEligibility.Decision manualJunctionDecision(
+            LiveBPreviewService.Captured captured) {
+        ManualJunctionEligibility.Decision decision = capturedJunctionDecision(captured);
+        return decision != null && decision.manualOnly() ? decision : null;
+    }
+
+    private static ManualJunctionEligibility.Decision noRouteJunctionDecision(
+            LiveBPreviewService.Captured captured) {
+        ManualJunctionEligibility.Decision decision = capturedJunctionDecision(captured);
+        if (decision != null && decision.reason() == ManualJunctionEligibility.Reason.SIMPLE_T) {
+            return new ManualJunctionEligibility.Decision(
+                    ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE,
+                    decision.junction(), decision.receiver(), decision.affectedNodes());
+        }
+        return decision != null && decision.manualOnly() ? decision : null;
+    }
+
+    private static ManualJunctionEligibility.Decision capturedJunctionDecision(
+            LiveBPreviewService.Captured captured) {
+        if (captured == null || captured.network() == null || captured.specification() == null
+                || captured.specification().permissions().junctionPolicy() == JunctionPolicy.FIXED) {
+            return null;
+        }
+        ManualJunctionEligibility.Decision decision = captured.junctionDecision() != null
+                ? captured.junctionDecision()
+                : ManualJunctionEligibility.evaluate(captured.network(), captured.specification());
+        return decision;
     }
 
     private void showLiveBReadOnlyDialog(PreviewSessionController.Owner previewOwner, DataSet dataSet,
@@ -812,12 +847,8 @@ public class AlignWayAction extends JosmAction {
             }
             AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
                     candidate, plan[0]);
-            ValidationReport.Disposition displayedDisposition = plan[0] == null
-                    ? switch (disposition) {
-                        case APPLICABLE -> ValidationReport.Disposition.APPLICABLE;
-                        case REVIEW_REQUIRED -> ValidationReport.Disposition.REVIEW_REQUIRED;
-                        case HARD_BLOCKED -> ValidationReport.Disposition.HARD_BLOCKED;
-                    } : plan[0].validation().disposition();
+            ValidationReport.Disposition displayedDisposition = liveBDisplayedDisposition(
+                    disposition, assessment[0], plan[0]);
             Map<PrimitiveKey, List<EastNorth>> projectedPreview =
                     assessment[0] == null || assessment[0].plan().isEmpty()
                         ? Map.of()
@@ -835,11 +866,16 @@ public class AlignWayAction extends JosmAction {
                     ? computed.pipeline().routes().get(index).quality().findings().stream()
                             .map(finding -> finding.code().name()).toList()
                     : plan[0].validation().findingCodes();
-            String finalDisposition = plan[0] == null ? disposition.name()
+            String finalDisposition = assessment[0] != null
+                    && assessment[0].availability()
+                            == ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION
+                    ? "MANUAL_JUNCTION"
+                    : plan[0] == null ? disposition.name()
                     : plan[0].validation().disposition().name();
             recordModernDiagnostics(computed, modernPreviewStatus(
                     computed.pipeline().inference().status(), displayedDisposition),
-                    index, plan[0], false, false, diagnosticAttemptIdentity);
+                    index, plan[0], false, false, diagnosticAttemptIdentity,
+                    assessment[0] == null ? null : assessment[0].junctionReason());
             String sourceLabel = computed.captured().managedRaster() == null
                     ? tr("visible layer") : tr("managed tiles");
             quality.setText(liveBQualitySummary(computed, index) + "\n\n"
@@ -992,7 +1028,7 @@ public class AlignWayAction extends JosmAction {
                         tr("Apply modern alignment"));
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, "applied", index, currentPlan,
-                            review[0].confirmed(), true),
+                            review[0].confirmed(), true, null),
                     () -> UndoRedoHandler.getInstance().add(command));
                 completed[0] = true;
                 try {
@@ -1215,10 +1251,44 @@ public class AlignWayAction extends JosmAction {
                 ? "review-required" : "preview-open";
     }
 
+    static ValidationReport.Disposition liveBDisplayedDisposition(
+            FinalGeometryEvaluator.Disposition routeDisposition,
+            ModernSingleWayEditPlanAdapter.Assessment assessment,
+            AlignmentEditPlan plan) {
+        if (routeDisposition == null) {
+            throw new IllegalArgumentException("Modern route disposition is required");
+        }
+        if (assessment != null && assessment.availability()
+                == ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION) {
+            return ValidationReport.Disposition.HARD_BLOCKED;
+        }
+        if (plan != null) {
+            return plan.validation().disposition();
+        }
+        return switch (routeDisposition) {
+            case APPLICABLE -> ValidationReport.Disposition.APPLICABLE;
+            case REVIEW_REQUIRED -> ValidationReport.Disposition.REVIEW_REQUIRED;
+            case HARD_BLOCKED -> ValidationReport.Disposition.HARD_BLOCKED;
+        };
+    }
+
     static void recordModernUnavailable(String status, String sourceLineage,
             String attemptIdentity) {
+        recordModernUnavailable(status, sourceLineage, attemptIdentity, null);
+    }
+
+    static void recordModernUnavailable(String status, String sourceLineage,
+            String attemptIdentity, ManualJunctionEligibility.Reason manualReason) {
         DiagnosticsRegistry.setLastModernBundle(Format15ProductionBundleFactory.createUnavailableLive(
-                LastSlideDebugBundle.buildIdentity(), status, sourceLineage, attemptIdentity));
+                LastSlideDebugBundle.buildIdentity(), status, sourceLineage, attemptIdentity,
+                manualReason));
+    }
+
+    static ManualJunctionEligibility.Reason manualCaptureReason(String failure) {
+        String marker = LiveBPreviewService.ManualJunctionCaptureException.class.getSimpleName()
+                + ": " + ManualJunctionEligibility.Reason.INCOMPLETE_ARM.name() + ":";
+        return failure != null && failure.startsWith(marker)
+                ? ManualJunctionEligibility.Reason.INCOMPLETE_ARM : null;
     }
 
     static String beginDiagnosticAttempt() {
@@ -1242,11 +1312,19 @@ public class AlignWayAction extends JosmAction {
     static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
             boolean applied, String attemptIdentity) {
+        recordModernDiagnostics(computed, status, routeIndex, plan, reviewed, applied,
+                attemptIdentity, null);
+    }
+
+    static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
+            String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
+            boolean applied, String attemptIdentity,
+            ManualJunctionEligibility.Reason assessedManualReason) {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
             DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(computed,
-                    status, routeIndex, plan, reviewed, applied));
+                    status, routeIndex, plan, reviewed, applied, assessedManualReason));
         } catch (RuntimeException failure) {
             String reason = failure.getMessage() == null ? "" : failure.getMessage()
                     .toLowerCase(java.util.Locale.ROOT);
@@ -1260,19 +1338,27 @@ public class AlignWayAction extends JosmAction {
 
     private static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed computed,
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
-            boolean applied) {
+            boolean applied, ManualJunctionEligibility.Reason assessedManualReason) {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
                 computed.evidence(), computed.captured().network(), computed.options());
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
         ManualJunctionEligibility.Decision junction = computed.request().permissions()
                 .junctionPolicy() == JunctionPolicy.FIXED ? null
-                : ManualJunctionEligibility.evaluate(computed.captured().network(),
-                        computed.captured().specification());
+                : computed.captured().junctionDecision() != null
+                    ? computed.captured().junctionDecision()
+                    : ManualJunctionEligibility.evaluate(computed.captured().network(),
+                            computed.captured().specification());
         return Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
                 input, computed.pipeline(), status,
                 computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
                 selectedRoute, plan, reviewed, applied, computed.counters(),
-                junction != null && junction.manualOnly() ? junction.reason() : null);
+                assessedManualReason != null ? assessedManualReason
+                        : junction != null && junction.manualOnly() ? junction.reason()
+                        : junction != null && junction.reason()
+                            == ManualJunctionEligibility.Reason.SIMPLE_T
+                            && computed.pipeline().routes().isEmpty()
+                                ? ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE
+                                : null);
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */

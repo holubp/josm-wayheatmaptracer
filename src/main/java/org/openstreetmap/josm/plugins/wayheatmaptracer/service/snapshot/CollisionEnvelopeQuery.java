@@ -171,13 +171,13 @@ public final class CollisionEnvelopeQuery {
         return current + 1;
     }
 
-    private record MetricSegment(MetricPoint start, MetricPoint end) {
+    record MetricSegment(MetricPoint start, MetricPoint end) {
     }
 
     private record DegreeSegment(double startX, double startY, double endX, double endY) {
     }
 
-    private record CertifiedDomain(double westLongitude, double longitudeSpan, double southLatitude,
+    record CertifiedDomain(double westLongitude, double longitudeSpan, double southLatitude,
                                    double northLatitude, double originX, LocalMetricFrame frame,
                                    MetricRegion metricRegion) {
         static CertifiedDomain from(LocalMetricFrame frame) {

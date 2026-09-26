@@ -126,7 +126,19 @@ public final class LiveBPreviewService {
             List<MetricPoint> sourceMetric, MetricRasterGrid outputGrid,
             String palette, double searchRadiusMeters, double sampleStepMeters,
             String settingsHash, String parameterHash, GeometryCleanupConfig cleanup,
-            AlignmentMode geometryMode, TrackerMode engine, String projectionCode) {
+            AlignmentMode geometryMode, TrackerMode engine, String projectionCode,
+            ManualJunctionEligibility.Decision junctionDecision) {
+        public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+                MetricRasterGrid outputGrid, String palette, double searchRadiusMeters,
+                double sampleStepMeters, String settingsHash, String parameterHash,
+                GeometryCleanupConfig cleanup, AlignmentMode geometryMode, TrackerMode engine,
+                String projectionCode) {
+            this(raster, managedRaster, specification, network, sourceGeographic, sourceMetric,
+                    outputGrid, palette, searchRadiusMeters, sampleStepMeters, settingsHash,
+                    parameterHash, cleanup, geometryMode, engine, projectionCode, null);
+        }
         public Captured {
             if ((raster == null) == (managedRaster == null)) {
                 throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
@@ -146,7 +158,8 @@ public final class LiveBPreviewService {
             List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
             double searchRadiusMeters, double sampleStepMeters, String settingsHash,
             String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
-            TrackerMode engine, String sourceIdentity, String projectionCode) {
+            TrackerMode engine, String sourceIdentity, String projectionCode,
+            ManualJunctionEligibility.Decision junctionDecision) {
         public ManagedCaptureSeed {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
@@ -269,6 +282,7 @@ public final class LiveBPreviewService {
                 != JunctionPolicy.FIXED
                 ? ManualJunctionEligibility.evaluate(network, specification) : null;
         if (junction != null && junction.manualOnly()) {
+            NetworkSnapshot originalNetwork = network;
             authority = freezeManualJunction(authority, way, junction);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -277,10 +291,12 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
             network = NetworkSnapshotCapture.capture(dataSet, specification);
+            requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
+                    junction);
         }
         return new Captured(raster, null, specification, network, source, metric, grid,
                 config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(),
-                config.heatmap().alignmentMode(), engine, raster.projectionCode());
+                config.heatmap().alignmentMode(), engine, raster.projectionCode(), junction);
     }
 
     private static CaptureAuthority captureAuthority(DataSet dataSet, SelectionContext selection,
@@ -314,6 +330,17 @@ public final class LiveBPreviewService {
                     : List.of(selection.segmentNodes().get(0),
                             selection.segmentNodes().get(selection.segmentNodes().size() - 1));
             for (Node boundary : candidates) {
+                boolean incompleteIncident = dataSet.getWays().stream()
+                        .anyMatch(incident -> !incident.isDeleted()
+                                && incident.getUniqueId() != selectedWay.id()
+                                && incident.getNodes().contains(boundary)
+                                && (incident.isIncomplete() || incident.hasIncompleteNodes()
+                                    || incident.getNodesCount() < 2));
+                if (incompleteIncident) {
+                    throw new ManualJunctionCaptureException(
+                            ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                            "incomplete incident way");
+                }
                 if (boundary.hasKeys() || boundary.getReferrers().stream()
                         .anyMatch(referrer -> !(referrer instanceof Way))
                         || dataSet.getRelations().stream().anyMatch(relation -> relation.getMembers().stream()
@@ -329,6 +356,24 @@ public final class LiveBPreviewService {
                         && !reattachableJunction) {
                     continue;
                 }
+                Map<Way, OccurrenceRange> localRanges = new LinkedHashMap<>();
+                boolean completeLocalArms = true;
+                for (Way incident : incidentWays) {
+                    if (PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                            incident.getUniqueId()).equals(selectedWay)) {
+                        continue;
+                    }
+                    try {
+                        localRanges.put(incident, JunctionAuthorityBounds.localOccurrenceRange(
+                                incident, boundary, frame));
+                    } catch (IllegalArgumentException unavailableArm) {
+                        completeLocalArms = false;
+                        break;
+                    }
+                }
+                if (!completeLocalArms) {
+                    continue;
+                }
                 PrimitiveKey boundaryKey = key(boundary);
                 movable.add(boundaryKey);
                 editable.add(boundaryKey);
@@ -339,9 +384,7 @@ public final class LiveBPreviewService {
                             incident.getUniqueId());
                     editable.add(incidentKey);
                     if (!incidentKey.equals(selectedWay)) {
-                        List<OccurrenceRange> localGeometry = List.of(
-                                JunctionAuthorityBounds.localOccurrenceRange(
-                                        incident, boundary, frame));
+                        List<OccurrenceRange> localGeometry = List.of(localRanges.get(incident));
                         List<OccurrenceRange> authorized = permissions.junctionPolicy()
                                 == JunctionPolicy.REATTACH ? localGeometry
                                 : occurrenceRanges(incident, boundary);
@@ -384,6 +427,22 @@ public final class LiveBPreviewService {
         return new CaptureAuthority(Map.copyOf(occurrences), Set.copyOf(editable),
                 Set.copyOf(movable), Set.copyOf(removable), Set.copyOf(protectedNodes), Map.copyOf(reasons),
                 new MetricRegion(collisionPolygons), new MetricRegion(editPolygons));
+    }
+
+    /** A junction-specific capture refusal before a complete detached closure exists. */
+    public static final class ManualJunctionCaptureException extends IllegalArgumentException {
+        private final ManualJunctionEligibility.Reason reason;
+
+        public ManualJunctionCaptureException(ManualJunctionEligibility.Reason reason,
+                String detail) {
+            super(reason.name() + ": " + detail
+                    + ". Adjust this junction manually, then run alignment again.");
+            this.reason = reason;
+        }
+
+        public ManualJunctionEligibility.Reason reason() {
+            return reason;
+        }
     }
 
     private static boolean sourceCollinear(List<Node> selected, LocalMetricFrame frame) {
@@ -477,6 +536,43 @@ public final class LiveBPreviewService {
                 Map.copyOf(reasons), original.collisionEnvelope(), original.editRegion());
     }
 
+    private static void requireSameJunctionSource(NetworkSnapshot original,
+            NetworkSnapshot frozen, PrimitiveKey selectedWay,
+            ManualJunctionEligibility.Decision decision) {
+        // Edit authority can omit a relation payload after freezing, but every participating
+        // way/node and its complete referrer inventory must remain identical.
+        Set<PrimitiveKey> required = new LinkedHashSet<>(decision.affectedNodes());
+        required.add(selectedWay);
+        if (decision.junction() != null) required.add(decision.junction());
+        if (decision.receiver() != null) required.add(decision.receiver());
+        for (PrimitiveKey wayKey : List.of(selectedWay,
+                decision.receiver() == null ? selectedWay : decision.receiver())) {
+            if (original.primitives().get(wayKey) instanceof org.openstreetmap.josm.plugins
+                    .wayheatmaptracer.model.DetachedWay way) {
+                required.addAll(way.nodeKeys());
+            }
+        }
+        original.closure().externalPorts().stream()
+                .filter(port -> port.wayKey().equals(selectedWay)
+                        || port.wayKey().equals(decision.receiver()))
+                .forEach(port -> {
+                    required.add(port.boundaryNodeKey());
+                    required.add(port.outsideNeighborKey());
+                });
+        for (PrimitiveKey key : required) {
+            if (!original.primitives().containsKey(key)
+                    || !frozen.primitives().containsKey(key)
+                    || !original.incomingReferrerWatches().containsKey(key)
+                    || !frozen.incomingReferrerWatches().containsKey(key)
+                    || !java.util.Objects.equals(original.primitives().get(key),
+                    frozen.primitives().get(key))
+                    || !java.util.Objects.equals(original.incomingReferrerWatches().get(key),
+                            frozen.incomingReferrerWatches().get(key))) {
+                throw new IllegalStateException("Junction source changed during capture");
+            }
+        }
+    }
+
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
             AlignmentConfig config, String sourceIdentity) {
@@ -524,6 +620,7 @@ public final class LiveBPreviewService {
                 != JunctionPolicy.FIXED
                 ? ManualJunctionEligibility.evaluate(network, specification) : null;
         if (junction != null && junction.manualOnly()) {
+            NetworkSnapshot originalNetwork = network;
             authority = freezeManualJunction(authority, way, junction);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -532,6 +629,8 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
             network = NetworkSnapshotCapture.capture(dataSet, specification);
+            requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
+                    junction);
         }
         return new ManagedCaptureSeed(specification, network,
                 source, metric, frame, config.heatmap().color(), radius,
@@ -541,7 +640,7 @@ public final class LiveBPreviewService {
                         parameterIdentity(config.heatmap().trackerMode())),
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
-                ProjectionRegistry.getProjection().toCode());
+                ProjectionRegistry.getProjection().toCode(), junction);
     }
 
     /** Attaches immutable native pixels to an EDT-captured seed without retaining credentials. */
@@ -557,7 +656,7 @@ public final class LiveBPreviewService {
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
                 seed.geometryMode(), seed.engine(),
-                seed.projectionCode());
+                seed.projectionCode(), seed.junctionDecision());
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
@@ -682,7 +781,7 @@ public final class LiveBPreviewService {
                 captured.sourceGeographic(), captured.sourceMetric(), captured.outputGrid(), captured.palette(),
                 captured.searchRadiusMeters(), captured.sampleStepMeters(), captured.settingsHash(),
                 captured.parameterHash(), captured.cleanup(), captured.geometryMode(), captured.engine(),
-                captured.projectionCode());
+                captured.projectionCode(), captured.junctionDecision());
         if (!captureEvidence(captured, CancellationProbe.NONE).canonicalHash().equals(
                 captureEvidence(refreshed, CancellationProbe.NONE).canonicalHash())) {
             throw new IllegalStateException("Live preview visible evidence is stale");

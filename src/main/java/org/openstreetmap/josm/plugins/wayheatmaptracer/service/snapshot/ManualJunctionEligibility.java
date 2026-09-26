@@ -24,7 +24,7 @@ public final class ManualJunctionEligibility {
         MULTIPLE_JUNCTIONS, SELECTED_INTERIOR, MULTIPLE_RECEIVERS, SPLIT_OR_TERMINAL_RECEIVER,
         PARTICIPATING_RELATION, AFFECTED_NODE_TAGGED, AFFECTED_NODE_RELATION,
         COUPLED_JUNCTION, INCOMPLETE_ARM, AMBIGUOUS_CROSSING, RESOURCE_LIMIT,
-        LEGACY_POLICY
+        LEGACY_POLICY, MISSING_RECEIVER_EVIDENCE
     }
 
     /** The exact frozen junction and protected neighborhood known to the decision. */
@@ -153,6 +153,9 @@ public final class ManualJunctionEligibility {
         if (crossing == CrossingCheck.CROSSING) {
             return decision(Reason.AMBIGUOUS_CROSSING, junction, receiverKey, affected);
         }
+        if (crossing == CrossingCheck.INCOMPLETE) {
+            return decision(Reason.INCOMPLETE_CLOSURE, junction, receiverKey, affected);
+        }
         if (specification.permissions().junctionPolicy()
                 == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy
                         .LEGACY_BOUNDED_MOVE) {
@@ -199,8 +202,13 @@ public final class ManualJunctionEligibility {
             if (first == null || second == null) {
                 return false;
             }
-            double length = specification.metricFrame().toMetric(first.coordinate()).distanceTo(
-                    specification.metricFrame().toMetric(second.coordinate()));
+            double length;
+            try {
+                length = specification.metricFrame().toMetric(first.coordinate()).distanceTo(
+                        specification.metricFrame().toMetric(second.coordinate()));
+            } catch (IllegalArgumentException outsideCertifiedFrame) {
+                return false;
+            }
             if (!Double.isFinite(length) || length <= 0.0
                     || distance + length > MAXIMUM_ARM_METERS) {
                 return false;
@@ -278,12 +286,14 @@ public final class ManualJunctionEligibility {
         return 6_335_439.0 * 2.0 * Math.asin(Math.sqrt(Math.min(1.0, haversine)));
     }
 
-    private enum CrossingCheck { CLEAR, CROSSING, RESOURCE_LIMIT }
+    private enum CrossingCheck { CLEAR, CROSSING, INCOMPLETE, RESOURCE_LIMIT }
 
     private static CrossingCheck checkUnconnectedCrossing(NetworkSnapshot snapshot,
             NetworkSnapshotCapture.Specification specification, DetachedWay selected,
             DetachedWay receiver, Set<PrimitiveKey> affected) {
         long comparisons = 0L;
+        CollisionEnvelopeQuery.CertifiedDomain domain = CollisionEnvelopeQuery.CertifiedDomain
+                .from(specification.metricFrame());
         for (DetachedPrimitive primitive : snapshot.primitives().values()) {
             if (!(primitive instanceof DetachedWay other) || other.key().equals(selected.key())
                     || other.key().equals(receiver.key())) {
@@ -296,17 +306,30 @@ public final class ManualJunctionEligibility {
                     if (!affected.contains(left) || !affected.contains(right)) {
                         continue;
                     }
-                    MetricPoint a = metric(snapshot, specification, left);
-                    MetricPoint b = metric(snapshot, specification, right);
+                    MetricPoint a;
+                    MetricPoint b;
+                    try {
+                        a = metric(snapshot, specification, left);
+                        b = metric(snapshot, specification, right);
+                    } catch (IllegalArgumentException failure) {
+                        return CrossingCheck.INCOMPLETE;
+                    }
                     for (int otherIndex = 0; otherIndex + 1 < other.nodeKeys().size(); otherIndex++) {
                         if (++comparisons > 1_000_000L) {
                             return CrossingCheck.RESOURCE_LIMIT;
                         }
-                        MetricPoint c = metric(snapshot, specification,
-                                other.nodeKeys().get(otherIndex));
-                        MetricPoint d = metric(snapshot, specification,
-                                other.nodeKeys().get(otherIndex + 1));
-                        if (intersects(a, b, c, d)) {
+                        if (!(snapshot.primitives().get(other.nodeKeys().get(otherIndex))
+                                instanceof DetachedNode first)
+                                || !(snapshot.primitives().get(other.nodeKeys().get(otherIndex + 1))
+                                        instanceof DetachedNode second)) {
+                            return CrossingCheck.INCOMPLETE;
+                        }
+                        var clipped = domain.clipAndConvert(first.coordinate().latitudeDegrees(),
+                                first.coordinate().longitudeDegrees(),
+                                second.coordinate().latitudeDegrees(),
+                                second.coordinate().longitudeDegrees());
+                        if (clipped.isPresent() && intersects(a, b, clipped.orElseThrow().start(),
+                                clipped.orElseThrow().end())) {
                             return CrossingCheck.CROSSING;
                         }
                     }
