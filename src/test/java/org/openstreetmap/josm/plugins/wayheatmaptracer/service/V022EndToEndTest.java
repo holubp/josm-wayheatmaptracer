@@ -81,6 +81,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSin
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -1540,6 +1541,7 @@ class V022EndToEndTest {
 
         assertEquals(beforeRedo, snapshot(fixture.dataSet()));
         assertEquals(List.of(prior), UndoRedoHandler.getInstance().getUndoCommands());
+        SwingUtilities.invokeAndWait(() -> { });
         assertTrue(shown.get() != null && shown.get().contains("Alignment Redo failed"),
                 "failed Redo must show a safe user-visible message");
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty()
@@ -1587,6 +1589,150 @@ class V022EndToEndTest {
         assertEquals(before, snapshot(fixture.dataSet()));
         assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void T175_allFrozenLiveJunctionHasNoApplyCommand() throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture(9, 11);
+        assertTrue(fixture.computed().partitioned());
+        var state = new AlignWayAction.IntervalPreviewState(fixture.computed().intervalBatch());
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        UndoRedoHandler.getInstance().clean();
+
+        assertTrue(state.batch().partition().slideIntervals().isEmpty(),
+                state.batch().partition().toString());
+        assertFalse(state.applyAvailable());
+        assertTrue(state.assessment().plan().isEmpty());
+        assertThrows(IllegalStateException.class, state::currentPlanForApply);
+        assertEquals(before, snapshot(fixture.dataSet()));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+    }
+
+    @Test
+    void T176_twoSeparatedManualJunctionsKeepBothFixedIslandsAndReceiversExact()
+            throws Exception {
+        MultiIntervalHostFixture fixture = multiIntervalHostFixture();
+        assertTrue(fixture.computed().partitioned());
+        var batch = fixture.computed().intervalBatch();
+        assertEquals(2, batch.partition().fixedIslands().size(),
+                batch.partition().toString());
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                assessment.intervals().get(0).disposition(), assessment.intervals().toString());
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                assessment.intervals().get(assessment.intervals().size() - 1).disposition(),
+                assessment.intervals().toString());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(fixture.dataSet(),
+                fixture.computed().captured().specification()));
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+                new VisibleSourceLockedApplyValidator(new LiveNetworkSnapshotValidator(receipt,
+                        plan, () -> plan.before().sourceGeneration()),
+                        new LiveBPreviewService(), fixture.computed().captured(), fixture::raster,
+                        fixture.epoch(), () -> { }, message -> { }),
+                "Apply intervals around two manual junctions");
+        UndoRedoHandler.getInstance().clean();
+
+        onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
+
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        assertAppliedPreviewWays(plan, fixture.dataSet(), command);
+        Map<PrimitiveKey, DatasetPrimitiveState> after = snapshot(fixture.dataSet());
+        assertNotEquals(before, after);
+        var selectedBefore = (DetachedWay) batch.network().primitives().get(plan.selectedWayKey());
+        for (var island : batch.partition().fixedIslands()) {
+            for (int occurrence = island.range().firstIndex();
+                    occurrence <= island.range().lastIndex(); occurrence++) {
+                PrimitiveKey key = selectedBefore.nodeKeys().get(occurrence);
+                assertEquals(before.get(key), after.get(key), "fixed island node " + key);
+                Node original = fixture.nodes().get(occurrence);
+                assertTrue(fixture.selected().getNodes().stream().anyMatch(node -> node == original),
+                        "fixed occurrence identity " + occurrence);
+            }
+        }
+        for (Way receiver : fixture.receivers()) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                    receiver.getUniqueId());
+            assertEquals(before.get(key), after.get(key), "fixed incident receiver " + key);
+        }
+        for (int cycle = 0; cycle < 20; cycle++) {
+            onEdt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(before, snapshot(fixture.dataSet()), "two-island Undo cycle " + cycle);
+            onEdt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+            assertEquals(after, snapshot(fixture.dataSet()), "two-island Redo cycle " + cycle);
+            assertAppliedPreviewWays(plan, fixture.dataSet(), command);
+        }
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        UndoRedoHandler.getInstance().clean();
+    }
+
+    @Test
+    void T177_managedIntervalCommandUsesFrozenSourceReceiptForApplyAndRedo()
+            throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture();
+        List<Node> nodes = fixture.selected().getNodes();
+        SelectionContext selection = new SelectionContext(fixture.selected(), 0, 20, nodes,
+                Set.of(nodes.get(0), nodes.get(20)));
+        LiveBPreviewService service = new LiveBPreviewService();
+        var seed = onEdt(() -> service.captureManagedSeed(fixture.dataSet(), selection,
+                managedConfig(), "managed-interval-host"));
+        int size = 600;
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < size; y++) {
+            double distance = (y - 299.0) / 6.0;
+            int gray = (int) Math.round(255.0 * (0.02 + 0.80
+                    * Math.exp(-0.5 * distance * distance / 1.44)));
+            for (int x = 0; x < size; x++) {
+                image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            }
+        }
+        boolean[] valid = new boolean[size * size];
+        java.util.Arrays.fill(valid, true);
+        double equator = Math.scalb(256.0, 15) / 2.0;
+        var raster = new ManagedModernPreviewSource.Raster(image, valid,
+                SupportedInputRasterTransform.webMercator(15, equator - size / 4.0,
+                        equator - size / 4.0, 2.0),
+                "hot", 15, "managed-interval-host",
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L));
+        var captured = service.attachManagedRaster(seed, raster);
+        var computed = service.compute(captured, CancellationProbe.NONE);
+        assertTrue(computed.partitioned());
+        var assessment = new FixedIntervalEditPlanComposer().compose(
+                computed.intervalBatch(), Map.of());
+        assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
+        assertEquals(1, assessment.intervals().stream().filter(interval ->
+                interval.disposition() == FixedIntervalEditPlanComposer.Disposition.CHANGED).count(),
+                assessment.intervals().toString());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(fixture.dataSet(),
+                captured.specification()));
+        java.util.concurrent.atomic.AtomicLong generation =
+                new java.util.concurrent.atomic.AtomicLong(0L);
+        var validator = new LiveNetworkSnapshotValidator(receipt, plan, generation::get);
+        AtomicReference<String> shown = new AtomicReference<>();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+                new ManagedSourceLockedApplyValidator(validator, service, captured, () -> {
+                    if (generation.get() != 0L) {
+                        throw new IllegalStateException("Managed source generation changed");
+                    }
+                }, AlignWayAction.redoFailureReporter(shown::set)),
+                "Apply managed fixed-island intervals");
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        UndoRedoHandler.getInstance().clean();
+
+        onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
+        assertAppliedPreviewWays(plan, fixture.dataSet(), command);
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        onEdt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+        assertEquals(before, snapshot(fixture.dataSet()));
+        generation.incrementAndGet();
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> { UndoRedoHandler.getInstance().redo(); return null; }));
+        assertEquals(before, snapshot(fixture.dataSet()));
+        assertTrue(shown.get() != null && shown.get().contains("Alignment Redo failed"));
+        UndoRedoHandler.getInstance().clean();
     }
 
     private static final class IntervalMutationFailure extends RuntimeException { }
@@ -1905,7 +2051,61 @@ class V022EndToEndTest {
             LiveBPreviewService.VisibleRaster raster, VisibleSourceEpoch epoch,
             LiveBPreviewService.Computed computed) { }
 
+    private record MultiIntervalHostFixture(DataSet dataSet, Way selected, List<Node> nodes,
+            List<Way> receivers, LiveBPreviewService.VisibleRaster raster,
+            VisibleSourceEpoch epoch, LiveBPreviewService.Computed computed) { }
+
+    private static MultiIntervalHostFixture multiIntervalHostFixture() throws Exception {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = new java.util.ArrayList<>();
+        for (int index = 0; index <= 40; index++) {
+            Node node = loadedNode(900 + index, latitude(0.4 * Math.sin(index * 0.5)),
+                    longitude(-100 + 5.0 * index));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way selected = loadedWay(950, nodes.toArray(Node[]::new));
+        dataSet.addPrimitive(selected);
+        List<Way> receivers = new java.util.ArrayList<>();
+        for (int occurrence : List.of(13, 27)) {
+            nodes.get(occurrence).put("highway", "traffic_signals");
+            double east = -100 + 5.0 * occurrence;
+            Node south = loadedNode(960 + occurrence, latitude(-40), longitude(east));
+            Node north = loadedNode(980 + occurrence, latitude(40), longitude(east));
+            dataSet.addPrimitive(south);
+            dataSet.addPrimitive(north);
+            Way receiver = loadedWay(1_000 + occurrence, south, nodes.get(occurrence), north);
+            dataSet.addPrimitive(receiver);
+            receivers.add(receiver);
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 40, nodes,
+                Set.of(nodes.get(0), nodes.get(40)));
+        int width = 1200;
+        int height = 400;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distance = (y - 200.0) / 5.0;
+            double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44);
+            int gray = (int) Math.round(255.0 * intensity);
+            java.util.Arrays.fill(argb, y * width, (y + 1) * width,
+                    0xff000000 | gray << 16 | gray << 8 | gray);
+        }
+        var epoch = new VisibleSourceEpoch();
+        var raster = new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -120, -40, 120, 40, 1.2, 1.2, OptionalDouble.of(1.0),
+                "two-junction-host-visible", "EPSG:3857", epoch.captureStable());
+        var captured = onEdt(() -> new LiveBPreviewService().capture(dataSet, selection,
+                raster, visibleConfig()));
+        var computed = new LiveBPreviewService().compute(captured, CancellationProbe.NONE);
+        return new MultiIntervalHostFixture(dataSet, selected, List.copyOf(nodes),
+                List.copyOf(receivers), raster, epoch, computed);
+    }
+
     private static IntervalHostFixture intervalHostFixture() throws Exception {
+        return intervalHostFixture(0, 20);
+    }
+
+    private static IntervalHostFixture intervalHostFixture(int first, int last) throws Exception {
         DataSet dataSet = new DataSet();
         List<Node> nodes = new java.util.ArrayList<>();
         for (int i = 0; i <= 20; i++) {
@@ -1926,8 +2126,8 @@ class V022EndToEndTest {
         dataSet.addPrimitive(north);
         Way receiver = loadedWay(853, south, nodes.get(10), north);
         dataSet.addPrimitive(receiver);
-        SelectionContext selection = new SelectionContext(selected, 0, 20, nodes,
-                Set.of(nodes.get(0), nodes.get(20)));
+        SelectionContext selection = new SelectionContext(selected, first, last,
+                nodes.subList(first, last + 1), Set.of(nodes.get(first), nodes.get(last)));
         int width = 800;
         int height = 400;
         int[] argb = new int[width * height];
