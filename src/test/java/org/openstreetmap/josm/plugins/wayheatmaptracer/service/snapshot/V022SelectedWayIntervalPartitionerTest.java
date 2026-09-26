@@ -167,6 +167,96 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
+    void overlappingEndpointSimpleTAffectedFootprintsAreBothManual() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 50, 100}, Set.of(0, 2),
+                List.of(port(1, 0, ExternalPort.Side.BEFORE), port(1, 2, ExternalPort.Side.AFTER)));
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 0).reason());
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 2).reason());
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(2, result.junctionDispositions().size());
+        assertTrue(result.junctionDispositions().stream().noneMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        assertTrue(result.junctionDispositions().stream().allMatch(d ->
+                d.reason() == ManualJunctionEligibility.Reason.COUPLED_JUNCTION));
+        assertEquals(List.of(new OccurrenceRange(0, 2)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+    }
+
+    @Test
+    void fullSelectedRangeKeepsSupportedLongEndpointSimpleTEligible() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 15, 30, 45, 60}, Set.of(0),
+                List.of(port(3, 4, ExternalPort.Side.AFTER)));
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                result.junctionDispositions().get(0).reason());
+        assertTrue(result.junctionDispositions().get(0).automaticEligible());
+        assertTrue(result.fixedIslands().isEmpty());
+    }
+
+    @Test
+    void distantDisjointEndpointSimpleTFootprintsRemainEligible() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 40, 80, 120, 160}, Set.of(0, 4),
+                List.of(port(1, 2, ExternalPort.Side.AFTER),
+                        port(3, 2, ExternalPort.Side.BEFORE)));
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(2, result.junctionDispositions().size());
+        assertTrue(result.junctionDispositions().stream().allMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        assertTrue(result.fixedIslands().isEmpty());
+    }
+
+    @Test
+    void endpointSimpleTOverlappingManualInteriorFootprintIsDemoted() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 50, 100, 150}, Set.of(0, 2),
+                List.of(port(1, 2, ExternalPort.Side.AFTER),
+                        port(1, 0, ExternalPort.Side.BEFORE)));
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 0).reason());
+        assertEquals(ManualJunctionEligibility.Reason.SELECTED_INTERIOR,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 2).reason());
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertTrue(result.junctionDispositions().stream().noneMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        assertTrue(result.junctionDispositions().stream().anyMatch(d ->
+                d.selectedOccurrenceIndex() == 0
+                        && d.reason() == ManualJunctionEligibility.Reason.COUPLED_JUNCTION));
+        assertTrue(result.junctionDispositions().stream().anyMatch(d ->
+                d.selectedOccurrenceIndex() == 2
+                        && d.reason() == ManualJunctionEligibility.Reason.SELECTED_INTERIOR),
+                result.junctionDispositions().toString());
+    }
+
+    @Test
+    void laterUnprovedEndpointDoesNotLeaveDuplicateOrAutomaticJunctionDispositions() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 50, 100}, Set.of(0, 2),
+                List.of(port(1, 2, ExternalPort.Side.AFTER)));
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(2, result.junctionDispositions().size());
+        assertEquals(Set.of(0, 2), result.junctionDispositions().stream()
+                .map(SelectedWayIntervalPartitioner.JunctionDisposition::selectedOccurrenceIndex)
+                .collect(java.util.stream.Collectors.toSet()));
+        assertTrue(result.junctionDispositions().stream().noneMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(new OccurrenceRange(0, 2)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+    }
+
+    @Test
     void provedExternalPortSurvivesFreezeAndChangedPortOrReferrerPayloadFailsParity() {
         Fixture fixture = endpointSimpleT().withLongReceiverAndPort();
         SelectedWayIntervalPartitioner.Partition partition = partition(fixture);
@@ -233,6 +323,44 @@ class V022SelectedWayIntervalPartitionerTest {
         values.put(selected, way(selected, List.of(junction, endpoint)));
         values.put(receiver, way(receiver, List.of(west, junction, east)));
         return fixture(values, selected, List.of(junction, endpoint), 1, Map.of(), List.of());
+    }
+
+    private static Fixture endpointTJunctions(double[] positions, Set<Integer> junctionIndices,
+            List<ExternalPort> ports) {
+        Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>();
+        List<PrimitiveKey> selectedNodes = new ArrayList<>();
+        for (int index = 0; index < positions.length; index++) {
+            PrimitiveKey key = nodeKey(100 + index);
+            selectedNodes.add(key);
+            values.put(key, node(key, positions[index], 0, Map.of()));
+        }
+        PrimitiveKey selected = wayKey(100);
+        values.put(selected, way(selected, selectedNodes));
+        for (int index : junctionIndices) {
+            PrimitiveKey north = nodeKey(1000 + index * 10L);
+            PrimitiveKey south = nodeKey(1001 + index * 10L);
+            PrimitiveKey receiver = wayKey(200 + index);
+            values.put(north, node(north, positions[index], 40, Map.of()));
+            values.put(south, node(south, positions[index], -40, Map.of()));
+            values.put(receiver, way(receiver, List.of(north, selectedNodes.get(index), south)));
+        }
+        Map<PrimitiveKey, Set<PrimitiveKey>> watches = new LinkedHashMap<>();
+        values.keySet().forEach(key -> watches.put(key, new LinkedHashSet<>()));
+        values.values().forEach(primitive -> {
+            if (primitive instanceof DetachedWay way) way.nodeKeys().forEach(node -> watches.get(node).add(way.key()));
+            if (primitive instanceof DetachedRelation relation) relation.members().forEach(member ->
+                    watches.get(member.memberKey()).add(relation.key()));
+        });
+        List<ExternalPort> exactPorts = ports.stream().map(port -> new ExternalPort(selected,
+                selectedNodes.get(port.boundaryOccurrenceIndex()), port.outsideNeighborKey(),
+                port.boundaryOccurrenceIndex(), port.side(),
+                ((DetachedNode) values.get(port.outsideNeighborKey())).coordinate())).toList();
+        return fixture(values, selected, selectedNodes, selectedNodes.size() - 1, Map.of(), exactPorts);
+    }
+
+    private static ExternalPort port(int boundaryIndex, int outsideIndex, ExternalPort.Side side) {
+        return new ExternalPort(wayKey(100), nodeKey(100 + boundaryIndex), nodeKey(100 + outsideIndex),
+                boundaryIndex, side, new GeographicPoint(0, 0));
     }
 
     private static Fixture fixture(Map<PrimitiveKey, DetachedPrimitive> input, PrimitiveKey selected,

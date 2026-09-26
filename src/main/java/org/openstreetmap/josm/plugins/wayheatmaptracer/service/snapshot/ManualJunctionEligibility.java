@@ -56,6 +56,17 @@ public final class ManualJunctionEligibility {
     /** Evaluates the same immutable closure used by the live capture and final edit plan. */
     public static Decision evaluate(NetworkSnapshot snapshot,
             NetworkSnapshotCapture.Specification specification) {
+        return evaluate(snapshot, specification, null);
+    }
+
+    /** Evaluates one selected-way junction while retaining the complete selected-range authority. */
+    public static Decision evaluateOccurrence(NetworkSnapshot snapshot,
+            NetworkSnapshotCapture.Specification specification, int selectedOccurrenceIndex) {
+        return evaluate(snapshot, specification, selectedOccurrenceIndex);
+    }
+
+    private static Decision evaluate(NetworkSnapshot snapshot,
+            NetworkSnapshotCapture.Specification specification, Integer targetOccurrenceIndex) {
         if (snapshot == null || specification == null
                 || !snapshot.closure().wayReferrersComplete()
                 || !snapshot.closure().relationReferrersComplete()
@@ -71,17 +82,32 @@ public final class ManualJunctionEligibility {
         if (new HashSet<>(selected.nodeKeys()).size() != selected.nodeKeys().size()) {
             return decision(Reason.REPEATED_OCCURRENCE, null, null, Set.of());
         }
-        List<PrimitiveKey> shared = selected.nodeKeys().subList(selectedRange.firstIndex(),
-                selectedRange.lastIndex() + 1).stream()
-                .filter(node -> wayReferrers(snapshot, node).size() > 1).distinct().toList();
-        if (shared.isEmpty()) {
-            return decision(Reason.NO_JUNCTION, null, null, Set.of());
+        PrimitiveKey junction;
+        int selectedIndex;
+        if (targetOccurrenceIndex == null) {
+            List<PrimitiveKey> shared = selected.nodeKeys().subList(selectedRange.firstIndex(),
+                    selectedRange.lastIndex() + 1).stream()
+                    .filter(node -> wayReferrers(snapshot, node).size() > 1).distinct().toList();
+            if (shared.isEmpty()) {
+                return decision(Reason.NO_JUNCTION, null, null, Set.of());
+            }
+            if (shared.size() != 1) {
+                return decision(Reason.MULTIPLE_JUNCTIONS, null, null, Set.copyOf(shared));
+            }
+            junction = shared.get(0);
+            selectedIndex = selected.nodeKeys().indexOf(junction);
+        } else {
+            if (targetOccurrenceIndex < selectedRange.firstIndex()
+                    || targetOccurrenceIndex > selectedRange.lastIndex()
+                    || targetOccurrenceIndex >= selected.nodeKeys().size()) {
+                return decision(Reason.INCOMPLETE_CLOSURE, null, null, Set.of());
+            }
+            selectedIndex = targetOccurrenceIndex;
+            junction = selected.nodeKeys().get(selectedIndex);
+            if (wayReferrers(snapshot, junction).size() <= 1) {
+                return decision(Reason.NO_JUNCTION, junction, null, Set.of(junction));
+            }
         }
-        if (shared.size() != 1) {
-            return decision(Reason.MULTIPLE_JUNCTIONS, null, null, Set.copyOf(shared));
-        }
-        PrimitiveKey junction = shared.get(0);
-        int selectedIndex = selected.nodeKeys().indexOf(junction);
         if (selectedIndex != selectedRange.firstIndex() && selectedIndex != selectedRange.lastIndex()) {
             return decision(Reason.SELECTED_INTERIOR, junction, null, Set.of(junction));
         }
