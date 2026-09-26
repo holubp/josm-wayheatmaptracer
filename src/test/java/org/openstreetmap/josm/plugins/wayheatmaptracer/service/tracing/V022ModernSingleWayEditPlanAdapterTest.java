@@ -33,6 +33,8 @@ import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Relation;
+import org.openstreetmap.josm.data.osm.RelationMember;
 import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -52,10 +54,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
@@ -158,6 +162,95 @@ class V022ModernSingleWayEditPlanAdapterTest {
             key.equals(computed.request().selectedWayKey())
                 || key.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL));
         assertEquals(beforeLive, state(fixture));
+    }
+
+    @Test
+    void relationJunctionCanLeaveAnExactFrozenFootprintWhileSlidingOutside() throws Exception {
+        Fixture fixture = relationJunctionFixture();
+        List<String> liveBefore = state(fixture);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
+                fixture.dataSet(), fixture.selection(), manualJunctionRaster(false),
+                config(TrackerMode.PROBABILISTIC),
+                true, permissions));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10)),
+                plan.affectedWayKeys());
+        for (int id : new int[] {2, 3, 4, 5, 6, 9}) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, id);
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 11);
+        assertEquals(plan.before().primitives().get(receiver), plan.after().primitives().get(receiver));
+        assertFalse(plan.before().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 8)).equals(plan.after().primitives().get(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 8))));
+        assertEquals(liveBefore, state(fixture));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+
+        List<Node> protectedNodes = List.of(fixture.way().getNode(2), fixture.way().getNode(3),
+                fixture.way().getNode(4), fixture.way().getNode(5), fixture.way().getNode(6),
+                fixture.way().getNode(7), fixture.dataSet().getNodes().stream()
+                        .filter(node -> node.getUniqueId() == 20).findFirst().orElseThrow(),
+                fixture.dataSet().getNodes().stream()
+                        .filter(node -> node.getUniqueId() == 21).findFirst().orElseThrow());
+        List<LatLon> protectedCoordinates = protectedNodes.stream()
+                .map(node -> new LatLon(node.lat(), node.lon())).toList();
+        Way receivingWay = fixture.dataSet().getWays().stream()
+                .filter(way -> way.getUniqueId() == 11).findFirst().orElseThrow();
+        List<Node> receiverOrder = List.copyOf(receivingWay.getNodes());
+        List<RelationMember> relationMembers = fixture.dataSet().getRelations().iterator().next()
+                .getMembers();
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
+                fixture.dataSet(), plan, plan.before().datasetIdentity(),
+                () -> plan.before().sourceGeneration(), "Apply safe outside-junction alignment");
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), fixture.way().getNodes()
+                .stream().map(node -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .GeographicPoint(node.lat(), node.lon())).toList());
+        assertEquals(protectedCoordinates, protectedNodes.stream()
+                .map(node -> new LatLon(node.lat(), node.lon())).toList());
+        assertEquals(receiverOrder, receivingWay.getNodes());
+        assertEquals(relationMembers,
+                fixture.dataSet().getRelations().iterator().next().getMembers());
+        List<String> applied = state(fixture);
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(liveBefore, state(fixture));
+        onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertEquals(applied, state(fixture));
+        assertEquals(protectedCoordinates, protectedNodes.stream()
+                .map(node -> new LatLon(node.lat(), node.lon())).toList());
+    }
+
+    @Test
+    void manualJunctionWithoutSupportedOutsideConnectorHasVisibleNonApplyableReason() throws Exception {
+        Fixture fixture = relationJunctionFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.VisibleRaster broken = manualJunctionRaster(true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
+                fixture.dataSet(), fixture.selection(), broken,
+                config(TrackerMode.PROBABILISTIC), true, permissions));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.detail().contains("connector"), assessment.detail());
+        assertTrue(assessment.detail().contains(
+                "Adjust this junction manually, then run alignment again."));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
     }
 
     @Test
@@ -628,6 +721,43 @@ class V022ModernSingleWayEditPlanAdapterTest {
             new SelectionContext(way, 1, 2, List.of(first, last), Set.of(first, last)));
     }
 
+    private static Fixture relationJunctionFixture() {
+        DataSet dataSet = new DataSet();
+        Node endpoint = loadedNode(1, 0.0, longitude(-38));
+        Node outside = loadedNode(8, longitude(4), longitude(-34));
+        List<Node> selectedNodes = new ArrayList<>();
+        selectedNodes.add(endpoint);
+        selectedNodes.add(outside);
+        for (int id = 2; id <= 6; id++) {
+            selectedNodes.add(loadedNode(id, 0.0, longitude(-36 + 6 * (id - 1))));
+        }
+        Node junction = loadedNode(9, 0.0, 0.0);
+        selectedNodes.add(junction);
+        selectedNodes.forEach(dataSet::addPrimitive);
+        Way selected = new Way();
+        selected.setNodes(selectedNodes);
+        selected.setOsmId(10, 1);
+        selected.setModified(false);
+        Node south = loadedNode(20, longitude(-8), 0.0);
+        Node north = loadedNode(21, longitude(8), 0.0);
+        dataSet.addPrimitive(south);
+        dataSet.addPrimitive(north);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(south, junction, north));
+        receiver.setOsmId(11, 1);
+        receiver.setModified(false);
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("", receiver)));
+        route.setOsmId(12, 1);
+        route.setModified(false);
+        dataSet.addPrimitive(route);
+        return new Fixture(dataSet, selected, new SelectionContext(selected, 0,
+                selectedNodes.size() - 1, selectedNodes,
+                Set.of(endpoint, selectedNodes.get(2), junction)));
+    }
+
     private static LiveBPreviewService.VisibleRaster raster() {
         int width = 600;
         int height = 600;
@@ -642,6 +772,29 @@ class V022ModernSingleWayEditPlanAdapterTest {
         return new LiveBPreviewService.VisibleRaster(width, height, argb,
             -50.0, -50.0, 50.0, 50.0, 1.0, 1.0,
             OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster manualJunctionRaster(boolean darkConnector) {
+        int width = 600;
+        int height = 600;
+        int[] argb = new int[width * height];
+        for (int x = 0; x < width; x++) {
+            double groundX = (x - 300.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double centerY = groundX <= -34.0 ? 2.0
+                    : groundX >= -30.0 ? 0.0 : (-30.0 - groundX) * 0.5;
+            for (int y = 0; y < height; y++) {
+                double groundY = (300.0 - y) / RenderedHeatmapSampler.RASTER_SCALE;
+                double distance = groundY - centerY;
+                double intensity = darkConnector && x >= 97 && x <= 122 ? 0.0
+                        : 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / (1.2 * 1.2));
+                int gray = (int) Math.round(255.0 * intensity);
+                argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -50.0, -50.0, 50.0, 50.0, 1.0, 1.0,
+                OptionalDouble.of(1.0), darkConnector ? "visible-dark-connector"
+                        : "visible-manual-junction", "EPSG:3857");
     }
 
     private static LiveBPreviewService.VisibleRaster rasterWithChangedEvidence() {

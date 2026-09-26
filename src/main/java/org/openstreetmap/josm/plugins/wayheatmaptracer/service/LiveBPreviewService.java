@@ -52,6 +52,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.JunctionAuthorityBounds;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedSegmentNodeAuthority.NodeAuthorityReason;
@@ -264,6 +265,19 @@ public final class LiveBPreviewService {
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
+                != JunctionPolicy.FIXED
+                ? ManualJunctionEligibility.evaluate(network, specification) : null;
+        if (junction != null && junction.manualOnly()) {
+            authority = freezeManualJunction(authority, way, junction);
+            specification = new NetworkSnapshotCapture.Specification(snapshotId,
+                    specification.datasetIdentity(), specification.sourceGeneration(), way, range,
+                    frame, authority.collisionEnvelope(), authority.editRegion(),
+                    authority.editableWayOccurrences(), authority.editableExistingKeys(),
+                    authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
+                    true, permissions);
+            network = NetworkSnapshotCapture.capture(dataSet, specification);
+        }
         return new Captured(raster, null, specification, network, source, metric, grid,
                 config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(),
                 config.heatmap().alignmentMode(), engine, raster.projectionCode());
@@ -432,6 +446,37 @@ public final class LiveBPreviewService {
         }
     }
 
+    private static CaptureAuthority freezeManualJunction(CaptureAuthority original,
+            PrimitiveKey selectedWay, ManualJunctionEligibility.Decision decision) {
+        Set<PrimitiveKey> frozen = new LinkedHashSet<>(decision.affectedNodes());
+        if (decision.reason() != ManualJunctionEligibility.Reason.PARTICIPATING_RELATION
+                && decision.reason() != ManualJunctionEligibility.Reason.AFFECTED_NODE_TAGGED
+                && decision.reason() != ManualJunctionEligibility.Reason.AFFECTED_NODE_RELATION
+                && decision.reason() != ManualJunctionEligibility.Reason.LEGACY_POLICY) {
+            frozen.addAll(original.reasons().keySet());
+        }
+        Set<PrimitiveKey> movable = new LinkedHashSet<>(original.movableNodes());
+        Set<PrimitiveKey> removable = new LinkedHashSet<>(original.removableNodes());
+        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>(original.protectedNodes());
+        Set<PrimitiveKey> editable = new LinkedHashSet<>(original.editableExistingKeys());
+        Map<PrimitiveKey, NodeAuthorityReason> reasons = new LinkedHashMap<>(original.reasons());
+        for (PrimitiveKey node : original.reasons().keySet()) {
+            if (frozen.contains(node)
+                    || reasons.get(node) == NodeAuthorityReason.AUTHORIZED_RECEIVER_SHAPE) {
+                movable.remove(node);
+                removable.remove(node);
+                editable.remove(node);
+                protectedNodes.add(node);
+                reasons.put(node, NodeAuthorityReason.EXPLICIT_FIXED);
+            }
+        }
+        editable.removeIf(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selectedWay));
+        return new CaptureAuthority(Map.of(selectedWay,
+                    original.editableWayOccurrences().get(selectedWay)), Set.copyOf(editable),
+                Set.copyOf(movable), Set.copyOf(removable), Set.copyOf(protectedNodes),
+                Map.copyOf(reasons), original.collisionEnvelope(), original.editRegion());
+    }
+
     /** Captures the detached managed source/network seed on the EDT before background acquisition. */
     public ManagedCaptureSeed captureManagedSeed(DataSet dataSet, SelectionContext selection,
             AlignmentConfig config, String sourceIdentity) {
@@ -474,7 +519,21 @@ public final class LiveBPreviewService {
                 frame, authority.collisionEnvelope(), authority.editRegion(),
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
-        return new ManagedCaptureSeed(specification, NetworkSnapshotCapture.capture(dataSet, specification),
+        NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
+                != JunctionPolicy.FIXED
+                ? ManualJunctionEligibility.evaluate(network, specification) : null;
+        if (junction != null && junction.manualOnly()) {
+            authority = freezeManualJunction(authority, way, junction);
+            specification = new NetworkSnapshotCapture.Specification(snapshotId,
+                    specification.datasetIdentity(), specification.sourceGeneration(), way, range,
+                    frame, authority.collisionEnvelope(), authority.editRegion(),
+                    authority.editableWayOccurrences(), authority.editableExistingKeys(),
+                    authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
+                    true, permissions);
+            network = NetworkSnapshotCapture.capture(dataSet, specification);
+        }
+        return new ManagedCaptureSeed(specification, network,
                 source, metric, frame, config.heatmap().color(), radius,
                 config.heatmap().sampleStepMeters(), settingsHash,
                 hash("managed-live-" + config.heatmap().trackerMode().name()

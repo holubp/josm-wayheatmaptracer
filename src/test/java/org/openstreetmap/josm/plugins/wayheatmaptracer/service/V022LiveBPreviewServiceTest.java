@@ -359,6 +359,59 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void relationMemberReceiverIsFrozenAtVisibleCaptureBoundary() throws Exception {
+        Fixture fixture = relationMemberReceiverFixture();
+        Node junction = fixture.selection().segmentNodes().get(1);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), raster(), config(), true, permissions));
+
+        PrimitiveKey junctionKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId());
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 53);
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(junctionKey));
+        assertFalse(captured[0].network().closure().editableExistingKeys().contains(receiverKey));
+    }
+
+    @Test
+    void relationMemberReceiverIsFrozenAtManagedCaptureBoundary() throws Exception {
+        Fixture fixture = relationMemberReceiverFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.ManagedCaptureSeed[] captured = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().captureManagedSeed(
+                fixture.dataSet(), fixture.selection(), managedConfig(), "managed-relation", permissions));
+
+        PrimitiveKey junctionKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.selection().segmentNodes().get(1).getUniqueId());
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 53);
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(junctionKey));
+        assertFalse(captured[0].network().closure().editableExistingKeys().contains(receiverKey));
+    }
+
+    @Test
+    void persistedLegacyJunctionPermissionCannotMoveARelationReceiver() throws Exception {
+        Fixture fixture = relationMemberReceiverFixture();
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), raster(), config(), true, permissions));
+        PrimitiveKey junction = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.selection().segmentNodes().get(1).getUniqueId());
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(junction));
+        assertFalse(captured[0].network().closure().movableExistingNodeKeys().contains(junction));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.detail().contains(
+                "Adjust this junction manually, then run alignment again."));
+    }
+
+    @Test
     void managedCaptureCarriesFrozenRecoveryIntoTraceRequest() throws Exception {
         Fixture fixture = fiveNodeFixture();
         RecoveryPermissions permissions = new RecoveryPermissions(true, 7.01, 14.0,
@@ -526,6 +579,26 @@ class V022LiveBPreviewServiceTest {
         dataSet.addPrimitive(b);
         dataSet.addPrimitive(way);
         return new Fixture(dataSet, new SelectionContext(way, 0, 1, List.of(a, b), Set.of(a, b)));
+    }
+
+    private static Fixture relationMemberReceiverFixture() {
+        Fixture fixture = fixture();
+        Node junction = fixture.selection().segmentNodes().get(1);
+        Node west = loadedNode(51, latitude(8), longitude(-8));
+        Node east = loadedNode(52, latitude(8), longitude(8));
+        fixture.dataSet().addPrimitive(west);
+        fixture.dataSet().addPrimitive(east);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(west, junction, east));
+        receiver.setOsmId(53, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("", receiver)));
+        route.setOsmId(54, 1);
+        route.setModified(false);
+        fixture.dataSet().addPrimitive(route);
+        return fixture;
     }
 
     private static LiveBPreviewService.VisibleRaster raster() {

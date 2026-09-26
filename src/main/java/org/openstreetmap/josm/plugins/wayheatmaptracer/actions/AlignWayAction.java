@@ -63,6 +63,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -78,6 +79,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPrev
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
@@ -692,9 +694,8 @@ public class AlignWayAction extends JosmAction {
             if (candidates.isEmpty()) {
                 terminalStatus = modernPreviewStatus(computed.pipeline().inference().status(),
                         initialDisposition);
-                throw new IllegalStateException("Production "
-                        + livePreviewEngineLabel(slideConfig.heatmap().trackerMode())
-                        + " returned no previewable final route");
+                throw new IllegalStateException(noPreviewableRouteMessage(computed.captured(),
+                        slideConfig.heatmap().trackerMode()));
             }
             progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
@@ -712,6 +713,21 @@ public class AlignWayAction extends JosmAction {
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
             }
         }
+    }
+
+    static String noPreviewableRouteMessage(LiveBPreviewService.Captured captured,
+            TrackerMode engine) {
+        if (captured != null && captured.network() != null && captured.specification() != null
+                && captured.specification().permissions().junctionPolicy()
+                        != JunctionPolicy.FIXED) {
+            ManualJunctionEligibility.Decision decision = ManualJunctionEligibility.evaluate(
+                    captured.network(), captured.specification());
+            if (decision.manualOnly()) {
+                return decision.manualInstruction();
+            }
+        }
+        return "Production " + livePreviewEngineLabel(engine)
+                + " returned no previewable final route";
     }
 
     private void showLiveBReadOnlyDialog(PreviewSessionController.Owner previewOwner, DataSet dataSet,
@@ -1248,10 +1264,15 @@ public class AlignWayAction extends JosmAction {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
                 computed.evidence(), computed.captured().network(), computed.options());
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
+        ManualJunctionEligibility.Decision junction = computed.request().permissions()
+                .junctionPolicy() == JunctionPolicy.FIXED ? null
+                : ManualJunctionEligibility.evaluate(computed.captured().network(),
+                        computed.captured().specification());
         return Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
                 input, computed.pipeline(), status,
                 computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
-                selectedRoute, plan, reviewed, applied, computed.counters());
+                selectedRoute, plan, reviewed, applied, computed.counters(),
+                junction != null && junction.manualOnly() ? junction.reason() : null);
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */

@@ -34,9 +34,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.topology.JunctionReattachmentPlanner;
@@ -60,6 +63,7 @@ public final class ModernSingleWayEditPlanAdapter {
         PRECISE_SHAPE_REQUIRED,
         SOURCE_LINEAGE_UNAVAILABLE,
         CANDIDATE_ASSIGNMENTS_UNAVAILABLE,
+        MANUAL_JUNCTION,
         FINAL_TOPOLOGY_CROSSING,
         FINAL_TOPOLOGY_VERTEX_TOUCH,
         FINAL_TOPOLOGY_COLLINEAR_OVERLAP,
@@ -124,6 +128,12 @@ public final class ModernSingleWayEditPlanAdapter {
                     "The final candidate selection is incomplete");
         }
         ModernTracePipeline.Route route = computed.pipeline().routes().get(routeIndex);
+        ManualJunctionEligibility.Decision junction = computed.request().permissions().junctionPolicy()
+                != JunctionPolicy.FIXED ? junctionDecision(computed.captured()) : null;
+        boolean manual = junction != null && junction.manualOnly();
+        if (manual && !canSlideOutside(junction)) {
+            return unavailable(ApplyAvailability.MANUAL_JUNCTION, junction.manualInstruction());
+        }
         if (computed.request().engine() == TrackerMode.PROBABILISTIC
                 && !computed.captured().cleanup().isDisabled()) {
             return unavailable(ApplyAvailability.CLEANUP_UNAVAILABLE_FOR_ENGINE,
@@ -147,16 +157,22 @@ public final class ModernSingleWayEditPlanAdapter {
             ApplyAvailability topology = topologyAvailability(plan.validation().findingCodes());
             if (topology != ApplyAvailability.PLAN_AVAILABLE) {
                 return new Assessment(Optional.of(plan), topology,
-                        "The exact final preview is blocked by " + topology.name());
+                        "The exact final preview is blocked by " + topology.name()
+                                + (manual ? " " + junction.manualInstruction() : ""));
             }
             if (plan.validation().disposition() == ValidationReport.Disposition.HARD_BLOCKED) {
                 return new Assessment(Optional.of(plan), ApplyAvailability.FINAL_GEOMETRY_BLOCKED,
-                        "The exact final preview is blocked by final geometry validation");
+                        "The exact final preview is blocked by final geometry validation"
+                                + (manual ? ". " + junction.manualInstruction() : ""));
             }
             return new Assessment(Optional.of(plan), ApplyAvailability.PLAN_AVAILABLE,
-                    "Exact immutable plan available");
+                    manual ? "Exact outside-junction plan available; junction stays fixed"
+                            : "Exact immutable plan available");
         } catch (IllegalArgumentException failure) {
-            return unavailable(ApplyAvailability.PLAN_UNAVAILABLE, failure.getMessage());
+            return unavailable(manual ? ApplyAvailability.MANUAL_JUNCTION
+                            : ApplyAvailability.PLAN_UNAVAILABLE,
+                    manual ? failure.getMessage() + " " + junction.manualInstruction()
+                            : failure.getMessage());
         }
     }
 
@@ -217,7 +233,16 @@ public final class ModernSingleWayEditPlanAdapter {
         EvidenceSnapshot evidence = computed.evidence();
         NetworkSnapshot before = captured.network();
         requireInputs(route, request, evidence, captured);
+        ManualJunctionEligibility.Decision junction = request.permissions().junctionPolicy()
+                != JunctionPolicy.FIXED ? junctionDecision(captured) : null;
+        boolean manual = junction != null && junction.manualOnly();
+        if (manual && !canSlideOutside(junction)) {
+            throw new IllegalArgumentException(junction.manualInstruction());
+        }
         DetachedWay selected = requireSupportedBoundary(request, before, captured.cleanup());
+        if (manual) {
+            route = retainFrozenManualArm(route, computed, junction);
+        }
         List<PrimitiveKey> replacement = replacementNodes(route, request, evidence, before, selected);
 
         Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(before.primitives());
@@ -252,6 +277,10 @@ public final class ModernSingleWayEditPlanAdapter {
                 && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
             afterValues = applyReattachment(afterValues, before, route, request, evidence,
                     sharedJunctions);
+        }
+        if (manual) {
+            requireSafeManualOutside(before, afterValues, selected, junction, evidence,
+                    computed.options().fieldName());
         }
         NetworkSnapshot after = new NetworkSnapshot(
             before.snapshotId() + ":proposed:" + route.hypothesis().id(),
@@ -297,6 +326,159 @@ public final class ModernSingleWayEditPlanAdapter {
                     && !route.quality().findings().isEmpty()) {
             throw new IllegalArgumentException("Inconsistent final route cannot form a plan");
         }
+    }
+
+    private static ManualJunctionEligibility.Decision junctionDecision(
+            LiveBPreviewService.Captured captured) {
+        return ManualJunctionEligibility.evaluate(captured.network(), captured.specification());
+    }
+
+    private static boolean canSlideOutside(ManualJunctionEligibility.Decision junction) {
+        return junction.reason() == ManualJunctionEligibility.Reason.PARTICIPATING_RELATION
+                || junction.reason() == ManualJunctionEligibility.Reason.AFFECTED_NODE_TAGGED
+                || junction.reason() == ManualJunctionEligibility.Reason.AFFECTED_NODE_RELATION
+                || junction.reason() == ManualJunctionEligibility.Reason.LEGACY_POLICY;
+    }
+
+    private static ModernTracePipeline.Route retainFrozenManualArm(ModernTracePipeline.Route route,
+            LiveBPreviewService.Computed computed,
+            ManualJunctionEligibility.Decision junction) {
+        List<FinalRoutePointId> ids = route.pointIds();
+        int first = -1;
+        int last = -1;
+        for (int index = 0; index < ids.size(); index++) {
+            if (ids.get(index) instanceof ExistingWayNodeOccurrence existing
+                    && junction.affectedNodes().contains(existing.nodeKey())) {
+                first = first < 0 ? index : first;
+                last = index;
+            }
+        }
+        if (first < 0 || last <= first) {
+            throw new IllegalArgumentException("Final route omits the fixed manual junction arm");
+        }
+        List<FinalRoutePointId> kept = new ArrayList<>();
+        List<MetricPoint> positions = new ArrayList<>();
+        List<ObservationOwnership> support = new ArrayList<>();
+        Map<FinalRoutePointId, MetricPoint> assignments = new LinkedHashMap<>();
+        Map<FinalRoutePointId, ObservationOwnership> ownership = new LinkedHashMap<>();
+        Map<Integer, MetricPoint> protectedAssignments = new LinkedHashMap<>();
+        for (int index = 0; index < ids.size(); index++) {
+            FinalRoutePointId id = ids.get(index);
+            if (index > first && index < last
+                    && !(id instanceof ExistingWayNodeOccurrence existing
+                            && junction.affectedNodes().contains(existing.nodeKey()))) {
+                continue;
+            }
+            MetricPoint point = route.assignments().get(id);
+            ObservationOwnership source = route.sourceOwnership().get(id);
+            int outputIndex = kept.size();
+            kept.add(id);
+            positions.add(point);
+            support.add(source);
+            assignments.put(id, point);
+            ownership.put(id, source);
+            if (id instanceof ExistingWayNodeOccurrence existing
+                    && computed.captured().network().closure().protectedExistingNodeKeys()
+                            .contains(existing.nodeKey())) {
+                protectedAssignments.put(outputIndex, point);
+            }
+        }
+        if (kept.size() == ids.size()) {
+            return route;
+        }
+        EvidenceSnapshot evidence = computed.evidence();
+        double pitch = evidence.resolution().effectivePitchMeters();
+        var field = evidence.fields().get(computed.options().fieldName());
+        if (field == null) {
+            throw new IllegalArgumentException("Final manual-junction image field is unavailable");
+        }
+        ImageCostField image = new ImageCostField(field, evidence.transform(),
+                evidence.decisionRegion(), pitch);
+        TraceHypothesis original = route.hypothesis();
+        TraceHypothesis finalHypothesis = new TraceHypothesis(original.id(),
+                original.branchSignature(), positions, support, original.objective(),
+                original.posteriorProbability(), original.diagnostics());
+        FinalGeometryEvaluator.Result quality = new FinalGeometryEvaluator().evaluate(
+                new FinalGeometryEvaluator.Request(original.id(), positions, kept, image, pitch,
+                        protectedAssignments, List.of(), route.geometryChanged(),
+                        computed.pipeline().inference().status()
+                                == TraceHypothesisSet.Status.AMBIGUOUS,
+                        computed.pipeline().inference().alternativesTruncated(),
+                        computed.pipeline().inference().status()
+                                == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+        return new ModernTracePipeline.Route(route.rawHypothesis(), finalHypothesis, kept,
+                assignments, ownership, quality, route.cleanupStatus(), route.geometryChanged());
+    }
+
+    private static void requireSafeManualOutside(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay selected,
+            ManualJunctionEligibility.Decision junction, EvidenceSnapshot evidence,
+            String fieldName) {
+        if (junction.affectedNodes().isEmpty()
+                || !(after.get(selected.key()) instanceof DetachedWay proposed)) {
+            throw new IllegalArgumentException("The manual junction footprint is incomplete");
+        }
+        for (PrimitiveKey node : junction.affectedNodes()) {
+            if (!before.primitives().get(node).equals(after.get(node))) {
+                throw new IllegalArgumentException("The manual junction footprint would move");
+            }
+        }
+        for (Map.Entry<PrimitiveKey, DetachedPrimitive> entry : before.primitives().entrySet()) {
+            if (entry.getValue() instanceof DetachedWay && !entry.getKey().equals(selected.key())
+                    && !entry.getValue().equals(after.get(entry.getKey()))) {
+                throw new IllegalArgumentException("An incident way would change at the manual junction");
+            }
+        }
+        int first = -1;
+        int last = -1;
+        for (int index = 0; index < selected.nodeKeys().size(); index++) {
+            if (junction.affectedNodes().contains(selected.nodeKeys().get(index))) {
+                first = first < 0 ? index : first;
+                last = index;
+            }
+        }
+        if (first < 0 || last <= first) {
+            throw new IllegalArgumentException("The selected manual junction arm has no fixed span");
+        }
+        int proposedFirst = proposed.nodeKeys().indexOf(selected.nodeKeys().get(first));
+        int proposedLast = proposed.nodeKeys().indexOf(selected.nodeKeys().get(last));
+        if (proposedFirst < 0 || proposedLast < proposedFirst
+                || !proposed.nodeKeys().subList(proposedFirst, proposedLast + 1)
+                        .equals(selected.nodeKeys().subList(first, last + 1))) {
+            throw new IllegalArgumentException("The selected manual junction arm would change");
+        }
+        if (selected.equals(proposed) && selected.nodeKeys().stream()
+                .allMatch(key -> before.primitives().get(key).equals(after.get(key)))) {
+            throw new IllegalArgumentException("No safe slide remains outside the manual junction");
+        }
+        var field = evidence.fields().get(fieldName);
+        if (field == null) {
+            throw new IllegalArgumentException("Final connector source evidence is unavailable");
+        }
+        double pitch = evidence.resolution().effectivePitchMeters();
+        ImageCostField image = new ImageCostField(field, evidence.transform(),
+                evidence.decisionRegion(), pitch);
+        if (first > 0 && (proposedFirst == 0 || unsupportedChangedConnector(before, after,
+                selected, proposed.nodeKeys().get(proposedFirst - 1),
+                proposed.nodeKeys().get(proposedFirst), evidence, image, pitch))) {
+            throw new IllegalArgumentException("The final manual-junction connector lacks direct support");
+        }
+        if (last < selected.nodeKeys().size() - 1
+                && (proposedLast == proposed.nodeKeys().size() - 1
+                    || unsupportedChangedConnector(before, after, selected,
+                            proposed.nodeKeys().get(proposedLast),
+                            proposed.nodeKeys().get(proposedLast + 1), evidence, image, pitch))) {
+            throw new IllegalArgumentException("The final manual-junction connector lacks direct support");
+        }
+    }
+
+    private static boolean unsupportedChangedConnector(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay selected,
+            PrimitiveKey first, PrimitiveKey second, EvidenceSnapshot evidence,
+            ImageCostField image, double pitch) {
+        return !unchangedSelectedEdge(before, after, selected, first, second)
+                && unsupportedBoundaryConnector(image, List.of(),
+                        metric(after, first, evidence), metric(after, second, evidence), pitch);
     }
 
     private static DetachedWay requireSupportedBoundary(

@@ -334,8 +334,11 @@ public final class NetworkSnapshotCapture {
                 .filter(node -> inventory.referrers(node).stream()
                         .filter(key -> key.type() == PrimitiveKey.Type.WAY).count() > 1)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        Set<PrimitiveKey> selectedBoundaries = Set.of(
+                key(selected.getNode(specification.selectedRange().firstIndex())),
+                key(selected.getNode(specification.selectedRange().lastIndex())));
         if (specification.movableExistingNodeKeys().stream()
-                .filter(selectedRangeNodes::contains)
+                .filter(selectedBoundaries::contains)
                 .anyMatch(node -> !movableSharedJunctions.contains(node))) {
             return false;
         }

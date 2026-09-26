@@ -8,14 +8,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import javax.swing.SwingUtilities;
+
+import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.osm.DataSet;
+import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Relation;
+import org.openstreetmap.josm.data.osm.RelationMember;
+import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
@@ -32,6 +47,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
@@ -50,6 +67,87 @@ import org.openstreetmap.josm.spi.preferences.IBaseDirectories;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @BeforeAll
+    static void configureJosm() {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+    }
+
+    @Test
+    void noRouteFromManualJunctionShowsInstructionWhileOrdinaryNoRouteKeepsItsReason(
+            @TempDir Path directory)
+            throws Exception {
+        DataSet dataSet = new DataSet();
+        Node start = loadedNode(101, 0.0, -40.0);
+        Node junction = loadedNode(102, 0.0, 0.0);
+        Node north = loadedNode(103, 40.0, 0.0);
+        Node south = loadedNode(104, -40.0, 0.0);
+        Way selected = loadedWay(110, start, junction);
+        Way receiver = loadedWay(111, south, junction, north);
+        for (Node node : List.of(start, junction, north, south)) dataSet.addPrimitive(node);
+        dataSet.addPrimitive(selected);
+        dataSet.addPrimitive(receiver);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("", receiver)));
+        route.setOsmId(112, 1);
+        route.setModified(false);
+        dataSet.addPrimitive(route);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(start, junction), Set.of(start, junction));
+        int[] pixels = new int[1200 * 1200];
+        java.util.Arrays.fill(pixels, 0xff808080);
+        LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(
+                1200, 1200, pixels, -100.0, -100.0, 100.0, 100.0, 1.0, 1.0,
+                OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
+        AlignmentConfig config = new AlignmentConfig(configuredCorridor()
+                .withTrackerMode(TrackerMode.PROBABILISTIC)
+                .withAlignmentMode(AlignmentMode.PRECISE_SHAPE), GeometryCleanupConfig.disabled());
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, raster, config, true, permissions));
+
+        assertTrue(AlignWayAction.noPreviewableRouteMessage(captured[0], TrackerMode.PROBABILISTIC)
+                .contains("Adjust this junction manually, then run alignment again"));
+        LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        AlignWayAction.recordModernDiagnostics(computed, "blocked", 0, null, false, false,
+                "manual-no-route");
+        Path diagnostic = directory.resolve("manual-no-route.zip");
+        DiagnosticsRegistry.writeLatest(diagnostic.toFile());
+        String status = new String(Format15ArchiveReader.read(diagnostic)
+                .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
+        RecoveryPermissions fixed = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.FIXED, false);
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, raster, config, true, fixed));
+        assertTrue(AlignWayAction.noPreviewableRouteMessage(captured[0], TrackerMode.PROBABILISTIC)
+                .contains("no previewable final route"));
+        dataSet.removePrimitive(route);
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, raster, config, true, permissions));
+        assertTrue(AlignWayAction.noPreviewableRouteMessage(captured[0], TrackerMode.PROBABILISTIC)
+                .contains("no previewable final route"));
+    }
+
+    private static Node loadedNode(long id, double northMeters, double eastMeters) {
+        double degrees = 180.0 / Math.PI / 6_378_137.0;
+        Node node = new Node(new LatLon(northMeters * degrees, eastMeters * degrees));
+        node.setOsmId(id, 1);
+        node.setModified(false);
+        return node;
+    }
+
+    private static Way loadedWay(long id, Node... nodes) {
+        Way way = new Way();
+        way.setNodes(List.of(nodes));
+        way.setOsmId(id, 1);
+        way.setModified(false);
+        return way;
+    }
+
     @Test
     void managedRenderedCaptureCannotReachApplyWithoutAnAuthoritativePixelLease(@TempDir Path directory) {
         Config.setPreferencesInstance(new MemoryPreferences());

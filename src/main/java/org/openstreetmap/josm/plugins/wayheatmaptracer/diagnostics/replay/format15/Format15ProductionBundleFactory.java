@@ -15,6 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
@@ -62,6 +63,15 @@ public final class Format15ProductionBundleFactory {
             ModernTracePipeline.Result actual, String status, String sourceLineage,
             int routeIndex, AlignmentEditPlan plan, boolean reviewed, boolean applied,
             Map<String, Number> counters) {
+        return createLive(buildIdentity, input, actual, status, sourceLineage, routeIndex,
+                plan, reviewed, applied, counters, null);
+    }
+
+    /** Adds the capture/plan junction decision to the live attempt without changing replay inputs. */
+    public static Format15Bundle createLive(String buildIdentity, FrozenReplayInput input,
+            ModernTracePipeline.Result actual, String status, String sourceLineage,
+            int routeIndex, AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            Map<String, Number> counters, ManualJunctionEligibility.Reason manualJunctionReason) {
         if (actual == null || status == null || status.isBlank()
                 || sourceLineage == null || sourceLineage.isBlank()
                 || routeIndex < -1 || routeIndex >= actual.routes().size()
@@ -133,6 +143,8 @@ public final class Format15ProductionBundleFactory {
         artifacts.put("attempt-status.json", Format15Artifact.text("attempt-status.json",
             "{\"status\":" + quote(status) + ",\"sourceLineage\":"
                 + quote(sourceLineage) + ",\"routeIndex\":" + routeIndex
+                + ",\"manualJunctionReason\":" + (manualJunctionReason == null
+                    ? "null" : quote(manualJunctionReason.name()))
                 + ",\"reviewed\":" + reviewed + ",\"applied\":" + applied
                 + ",\"privateData\":true,\"capabilities\":{\"SCALAR_INFERENCE\":true,"
                 + "\"FINAL_GEOMETRY\":true,\"RASTER_INFERENCE\":false,"
