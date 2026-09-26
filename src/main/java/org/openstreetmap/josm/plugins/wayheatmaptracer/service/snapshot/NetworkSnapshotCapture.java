@@ -56,7 +56,25 @@ public final class NetworkSnapshotCapture {
         Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
         Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableExistingNodeKeys,
         Set<PrimitiveKey> removableExistingNodeKeys, Set<PrimitiveKey> explicitlyProtectedNodeKeys,
-        boolean mayCreateNodes, RecoveryPermissions permissions) {
+        boolean mayCreateNodes, RecoveryPermissions permissions,
+        List<ExternalPort> readOnlyPorts) {
+        /** Preserves callers that do not carry fixed-island read-only port proofs. */
+        public Specification(String snapshotId, String datasetIdentity, long sourceGeneration,
+                PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+                LocalMetricFrame metricFrame, MetricRegion collisionEnvelope,
+                MetricRegion editRegion,
+                Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
+                Set<PrimitiveKey> editableExistingKeys,
+                Set<PrimitiveKey> movableExistingNodeKeys,
+                Set<PrimitiveKey> removableExistingNodeKeys,
+                Set<PrimitiveKey> explicitlyProtectedNodeKeys, boolean mayCreateNodes,
+                RecoveryPermissions permissions) {
+            this(snapshotId, datasetIdentity, sourceGeneration, selectedWayKey, selectedRange,
+                    metricFrame, collisionEnvelope, editRegion, editableWayOccurrences,
+                    editableExistingKeys, movableExistingNodeKeys, removableExistingNodeKeys,
+                    explicitlyProtectedNodeKeys, mayCreateNodes, permissions, List.of());
+        }
+
         /** Copies detached authority inputs and rejects incomplete or oversized specifications. */
         public Specification {
             if (snapshotId == null || snapshotId.isBlank() || datasetIdentity == null
@@ -65,12 +83,13 @@ public final class NetworkSnapshotCapture {
                 || editRegion == null || editableWayOccurrences == null
                 || editableExistingKeys == null || movableExistingNodeKeys == null
                 || removableExistingNodeKeys == null || explicitlyProtectedNodeKeys == null
-                || permissions == null) {
+                || permissions == null || readOnlyPorts == null
+                || readOnlyPorts.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("Network capture specification is incomplete");
             }
             long authorityIdentities = (long) editableWayOccurrences.size() + editableExistingKeys.size()
                 + movableExistingNodeKeys.size() + removableExistingNodeKeys.size()
-                + explicitlyProtectedNodeKeys.size();
+                + explicitlyProtectedNodeKeys.size() + readOnlyPorts.size();
             if (authorityIdentities > MAXIMUM_AUTHORITY_IDENTITIES) {
                 throw new IllegalArgumentException("Network capture authority inventory exceeds its budget");
             }
@@ -93,6 +112,25 @@ public final class NetworkSnapshotCapture {
             movableExistingNodeKeys = Set.copyOf(movableExistingNodeKeys);
             removableExistingNodeKeys = Set.copyOf(removableExistingNodeKeys);
             explicitlyProtectedNodeKeys = Set.copyOf(explicitlyProtectedNodeKeys);
+            readOnlyPorts = List.copyOf(readOnlyPorts);
+        }
+
+        /** Retains only ports actually present in the initial authority capture. */
+        public Specification withReadOnlyPortsFrom(NetworkSnapshot initial,
+                Set<ExternalPort> provedPorts) {
+            if (initial == null || provedPorts == null
+                    || initial.role() != SnapshotRole.CAPTURED_BEFORE
+                    || !snapshotId.equals(initial.snapshotId())
+                    || !datasetIdentity.equals(initial.datasetIdentity())
+                    || sourceGeneration != initial.sourceGeneration()
+                    || !initial.closure().externalPorts().containsAll(provedPorts)) {
+                throw new IllegalArgumentException("Read-only ports lack initial capture proof");
+            }
+            return new Specification(snapshotId, datasetIdentity, sourceGeneration,
+                    selectedWayKey, selectedRange, metricFrame, collisionEnvelope, editRegion,
+                    editableWayOccurrences, editableExistingKeys, movableExistingNodeKeys,
+                    removableExistingNodeKeys, explicitlyProtectedNodeKeys, mayCreateNodes,
+                    permissions, List.copyOf(provedPorts));
         }
     }
 
@@ -182,6 +220,8 @@ public final class NetworkSnapshotCapture {
         materializer.include(specification.selectedWayKey());
         query.intersectingWayKeys().stream().sorted().forEach(materializer::include);
         specification.editableExistingKeys().stream().sorted().forEach(materializer::include);
+        specification.readOnlyPorts().stream().map(ExternalPort::wayKey).distinct()
+                .sorted().forEach(materializer::include);
 
         Set<PrimitiveKey> decisionNodes = decisionRelevantNodes(specification, inventory);
         Set<PrimitiveKey> affectedWays = new LinkedHashSet<>(
@@ -525,6 +565,22 @@ public final class NetworkSnapshotCapture {
                         }
                     });
             });
+        for (ExternalPort retained : specification.readOnlyPorts()) {
+            Way way = (Way) inventory.require(retained.wayKey());
+            int boundary = retained.boundaryOccurrenceIndex();
+            int outside = boundary + (retained.side() == ExternalPort.Side.BEFORE ? -1 : 1);
+            if (way.isDeleted() || way.isIncomplete() || way.hasIncompleteNodes()
+                    || boundary < 0 || boundary >= way.getNodesCount()
+                    || outside < 0 || outside >= way.getNodesCount()
+                    || !inventory.referrers(retained.boundaryNodeKey())
+                            .contains(retained.wayKey())
+                    || !inventory.referrers(retained.outsideNeighborKey())
+                            .contains(retained.wayKey())
+                    || !retained.equals(port(way, boundary, outside, retained.side()))) {
+                throw new IllegalStateException("Read-only external port changed after capture");
+            }
+            if (!result.contains(retained)) result.add(retained);
+        }
         return List.copyOf(result);
     }
 

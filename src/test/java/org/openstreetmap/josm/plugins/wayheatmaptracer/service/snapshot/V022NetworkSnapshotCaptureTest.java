@@ -83,6 +83,46 @@ class V022NetworkSnapshotCaptureTest {
     }
 
     @Test
+    void readOnlyPortRevalidationRejectsChangedOutsideCoordinateAndIdentity() {
+        Chain chain = chain();
+        NetworkSnapshotCapture.Specification base = chain.specification("read-only-port");
+        ExternalPort port = new ExternalPort(way(11), node(2), node(3), 0,
+                ExternalPort.Side.AFTER, new GeographicPoint(chain.c().lat(), chain.c().lon()));
+        NetworkSnapshotCapture.Specification retained = withReadOnlyPort(base, port);
+
+        NetworkSnapshot captured = onEdt(() -> NetworkSnapshotCapture.capture(
+                chain.dataSet(), retained));
+        assertTrue(captured.closure().externalPorts().contains(port));
+        NetworkSnapshot initialWithoutPort = onEdt(() -> NetworkSnapshotCapture.capture(
+                chain.dataSet(), base));
+        assertThrows(IllegalArgumentException.class,
+                () -> base.withReadOnlyPortsFrom(initialWithoutPort, Set.of(port)),
+                "a caller cannot claim a port absent from its initial authority capture");
+
+        chain.c().setCoor(new LatLon(chain.c().lat(), chain.c().lon() + 0.00001));
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(chain.dataSet(), retained)));
+        chain.c().setCoor(new LatLon(port.outsideNeighborCoordinate().latitudeDegrees(),
+                port.outsideNeighborCoordinate().longitudeDegrees()));
+        Node replacement = chain.dataSet().getNodes().stream()
+                .filter(node -> node.getUniqueId() == 4).findFirst().orElseThrow();
+        chain.bc().setNodes(List.of(chain.b(), replacement));
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> NetworkSnapshotCapture.capture(chain.dataSet(), retained)));
+    }
+
+    private static NetworkSnapshotCapture.Specification withReadOnlyPort(
+            NetworkSnapshotCapture.Specification source, ExternalPort port) {
+        return new NetworkSnapshotCapture.Specification(source.snapshotId(),
+                source.datasetIdentity(), source.sourceGeneration(), source.selectedWayKey(),
+                source.selectedRange(), source.metricFrame(), source.collisionEnvelope(),
+                source.editRegion(), source.editableWayOccurrences(),
+                source.editableExistingKeys(), source.movableExistingNodeKeys(),
+                source.removableExistingNodeKeys(), source.explicitlyProtectedNodeKeys(),
+                source.mayCreateNodes(), source.permissions(), List.of(port));
+    }
+
+    @Test
     void captureIsDetachedImmutableAndLeavesDatasetUntouched() throws InterruptedException {
         Chain chain = chain();
         List<String> beforeState = liveState(chain.dataSet());

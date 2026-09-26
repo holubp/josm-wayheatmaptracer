@@ -1605,6 +1605,19 @@ class V022EndToEndTest {
         var decision = ManualJunctionEligibility.evaluate(computed.captured().network(),
                 computed.captured().specification());
         assertEquals(reason, decision.reason());
+        if (computed.partitioned()) {
+            var partition = computed.intervalBatch().partition();
+            assertTrue(partition.junctionDispositions().stream().anyMatch(disposition ->
+                    disposition.reason() == reason && !disposition.automaticEligible()));
+            var preview = new org.openstreetmap.josm.plugins.wayheatmaptracer.actions
+                    .AlignWayAction.IntervalPreviewState(computed.intervalBatch());
+            assertFalse(preview.applyAvailable(),
+                    "a short all-frozen manual junction has no interval Apply plan");
+            assertEquals(before, snapshot(dataSet));
+            assertEquals(undoBefore, onEdt(() -> List.copyOf(
+                    UndoRedoHandler.getInstance().getUndoCommands())));
+            return;
+        }
         var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
         assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION,
                 assessment.availability(), assessment.detail());

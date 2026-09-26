@@ -45,10 +45,77 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWork
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
+    @Test
+    void reattachEndpointWithoutProvedArmKeepsDisjointInteriorIntervals() throws Exception {
+        DataSet dataSet = new DataSet();
+        java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i <= 30; i++) {
+            Node node = loadedNode(2000 + i, latitude(0), longitude((i - 15) * 10.0));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        nodes.get(8).put("note", "manual interior junction");
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        selected.setOsmId(2100, 1);
+        selected.setModified(false);
+        dataSet.addPrimitive(selected);
+        for (int index : List.of(8, 30)) {
+            Node north = loadedNode(2200 + index, latitude(40), longitude((index - 15) * 10.0));
+            Node south = loadedNode(2300 + index, latitude(-40), longitude((index - 15) * 10.0));
+            dataSet.addPrimitive(north);
+            dataSet.addPrimitive(south);
+            Way receiver = new Way();
+            receiver.setNodes(List.of(south, nodes.get(index), north));
+            receiver.setOsmId(2400 + index, 1);
+            receiver.setModified(false);
+            dataSet.addPrimitive(receiver);
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 30, nodes,
+                Set.of(nodes.get(0), nodes.get(30)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
+                wideFlatRaster(), config(TrackerMode.PROBABILISTIC), true, permissions));
+
+        var initial = captured[0].intervalPartition();
+        assertNotNull(initial, "initial authority partition must survive read-only freeze");
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(initial,
+                captured[0].network()));
+        assertEquals(2, initial.fixedIslands().size(), initial.junctionDispositions().toString());
+        assertEquals(List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(5, 11),
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(26, 30)),
+                initial.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range)
+                        .toList());
+        assertEquals(2, initial.slideIntervals().size(), initial.junctionDispositions().toString());
+        assertTrue(initial.junctionDispositions().stream().anyMatch(disposition ->
+                disposition.selectedOccurrenceIndex() == 30
+                        && disposition.reason() == ManualJunctionEligibility.Reason.INCOMPLETE_ARM
+                        && !disposition.automaticEligible()),
+                "unproved endpoint arm stays manual without freezing the disjoint intervals");
+        assertTrue(initial.junctionDispositions().stream().anyMatch(disposition ->
+                disposition.selectedOccurrenceIndex() == 8 && !disposition.automaticEligible()));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        assertTrue(computed.partitioned(), "ordinary REATTACH preview must use the fixed-island batch");
+        assertTrue(assertThrows(IllegalArgumentException.class,
+                () -> new ModernSingleWayEditPlanAdapter().assess(computed, 0))
+                .getMessage().contains("fixed-interval plan composer"));
+        assertEquals(initial.fixedIslands(), computed.intervalBatch().partition().fixedIslands());
+        assertEquals(2, computed.intervalBatch().runs().size());
+        AlignWayAction.IntervalPreviewState preview = new AlignWayAction.IntervalPreviewState(
+                computed.intervalBatch());
+        assertSame(computed.intervalBatch(), preview.batch());
+        assertTrue(AlignWayAction.intervalPreviewSummary(preview)
+                .contains("Adjust this junction manually first."));
+    }
+
     @Test
     void ordinaryComputeUsesOneFrozenBatchForTwoManualJunctionIslands() throws Exception {
         DataSet dataSet = new DataSet();

@@ -28,6 +28,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceCorrelationGroup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
@@ -131,7 +132,20 @@ public final class LiveBPreviewService {
             String palette, double searchRadiusMeters, double sampleStepMeters,
             String settingsHash, String parameterHash, GeometryCleanupConfig cleanup,
             AlignmentMode geometryMode, TrackerMode engine, String projectionCode,
-            ManualJunctionEligibility.Decision junctionDecision) {
+            ManualJunctionEligibility.Decision junctionDecision,
+            SelectedWayIntervalPartitioner.Partition intervalPartition) {
+        public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+                MetricRasterGrid outputGrid, String palette, double searchRadiusMeters,
+                double sampleStepMeters, String settingsHash, String parameterHash,
+                GeometryCleanupConfig cleanup, AlignmentMode geometryMode, TrackerMode engine,
+                String projectionCode, ManualJunctionEligibility.Decision junctionDecision) {
+            this(raster, managedRaster, specification, network, sourceGeographic, sourceMetric,
+                    outputGrid, palette, searchRadiusMeters, sampleStepMeters, settingsHash,
+                    parameterHash, cleanup, geometryMode, engine, projectionCode,
+                    junctionDecision, null);
+        }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
                 List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
@@ -150,8 +164,17 @@ public final class LiveBPreviewService {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
             if (cleanup == null || geometryMode == null || engine == null
-                    || projectionCode == null || projectionCode.isBlank()) {
-                throw new IllegalArgumentException("Live preview engine is required");
+                    || projectionCode == null || projectionCode.isBlank()
+                    || intervalPartition != null && (network == null || specification == null
+                            || junctionDecision != null
+                            || !intervalPartition.selectedWayKey().equals(
+                                    specification.selectedWayKey())
+                            || !intervalPartition.selectedRange().equals(
+                                    specification.selectedRange())
+                            || !hasInteriorManualIsland(intervalPartition)
+                            || !SelectedWayIntervalPartitioner.verifyFrozenParity(
+                                    intervalPartition, network))) {
+                throw new IllegalArgumentException("Live preview engine or interval proof is invalid");
             }
         }
     }
@@ -163,7 +186,19 @@ public final class LiveBPreviewService {
             double searchRadiusMeters, double sampleStepMeters, String settingsHash,
             String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
             TrackerMode engine, String sourceIdentity, String projectionCode,
-            ManualJunctionEligibility.Decision junctionDecision) {
+            ManualJunctionEligibility.Decision junctionDecision,
+            SelectedWayIntervalPartitioner.Partition intervalPartition) {
+        public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
+                NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
+                List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
+                double searchRadiusMeters, double sampleStepMeters, String settingsHash,
+                String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
+                TrackerMode engine, String sourceIdentity, String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision) {
+            this(specification, network, sourceGeographic, sourceMetric, frame, palette,
+                    searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash, cleanup,
+                    geometryMode, engine, sourceIdentity, projectionCode, junctionDecision, null);
+        }
         public ManagedCaptureSeed {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
@@ -174,7 +209,15 @@ public final class LiveBPreviewService {
                     || settingsHash == null || parameterHash == null || cleanup == null
                     || geometryMode == null || engine == null
                     || sourceIdentity == null || sourceIdentity.isBlank()
-                    || projectionCode == null || projectionCode.isBlank()) {
+                    || projectionCode == null || projectionCode.isBlank()
+                    || intervalPartition != null && (junctionDecision != null
+                            || !intervalPartition.selectedWayKey().equals(
+                                    specification.selectedWayKey())
+                            || !intervalPartition.selectedRange().equals(
+                                    specification.selectedRange())
+                            || !hasInteriorManualIsland(intervalPartition)
+                            || !SelectedWayIntervalPartitioner.verifyFrozenParity(
+                                    intervalPartition, network))) {
                 throw new IllegalArgumentException("Managed preview seed is incomplete");
             }
         }
@@ -307,13 +350,27 @@ public final class LiveBPreviewService {
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
-        if (permissions.junctionPolicy() == JunctionPolicy.FIXED
-                && hasInteriorManualIsland(SelectedWayIntervalPartitioner.partition(
-                        network, specification))) {
+        SelectedWayIntervalPartitioner.Partition intervalPartition =
+                SelectedWayIntervalPartitioner.partition(network, specification);
+        if (hasInteriorManualIsland(intervalPartition)) {
+            authority = freezeFixedIslands(authority, network, intervalPartition, way);
+            specification = new NetworkSnapshotCapture.Specification(snapshotId,
+                    specification.datasetIdentity(), specification.sourceGeneration(), way, range,
+                    frame, authority.collisionEnvelope(), authority.editRegion(),
+                    authority.editableWayOccurrences(), authority.editableExistingKeys(),
+                    authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
+                    true, permissions).withReadOnlyPortsFrom(network,
+                            intervalPartition.provedPorts());
+            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
+                throw new ManualJunctionCaptureException(
+                        ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                        "fixed-island source changed during read-only recapture");
+            }
             return new Captured(raster, null, specification, network, source, metric, grid,
                     config.heatmap().color(), radius, step, settingsHash, parameterHash,
                     config.cleanup(), config.heatmap().alignmentMode(), engine,
-                    raster.projectionCode(), null);
+                    raster.projectionCode(), null, intervalPartition);
         }
         ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
                 != JunctionPolicy.FIXED
@@ -470,9 +527,10 @@ public final class LiveBPreviewService {
                 }
             }
         }
-        // Read-only closure for manual islands: the partitioner must see the nearby arm
-        // and its port even when the user has not enabled any junction edit authority.
-        if (permissions.junctionPolicy() == JunctionPolicy.FIXED) {
+        // Read-only closure for fixed islands under either modern junction policy.
+        // These arm polygons never add edit authority.
+        if (permissions.junctionPolicy() == JunctionPolicy.FIXED
+                || permissions.junctionPolicy() == JunctionPolicy.REATTACH) {
             for (int selectedIndex = 1; selectedIndex < selection.segmentNodes().size() - 1;
                     selectedIndex++) {
                 Node selectedNode = selection.segmentNodes().get(selectedIndex);
@@ -589,6 +647,49 @@ public final class LiveBPreviewService {
         }
     }
 
+    /** Reduces only proved fixed-island edit authority before interval inference. */
+    private static CaptureAuthority freezeFixedIslands(CaptureAuthority original,
+            NetworkSnapshot initialNetwork, SelectedWayIntervalPartitioner.Partition partition,
+            PrimitiveKey selectedWay) {
+        Set<PrimitiveKey> frozenNodes = new LinkedHashSet<>();
+        Set<PrimitiveKey> frozenReceivers = new LinkedHashSet<>();
+        for (SelectedWayIntervalPartitioner.FixedIsland island : partition.fixedIslands()) {
+            frozenNodes.addAll(island.occurrenceKeys());
+            for (PrimitiveKey junction : island.junctionKeys()) {
+                for (PrimitiveKey referrer : initialNetwork.incomingReferrerWatches()
+                        .getOrDefault(junction, Set.of())) {
+                    if (referrer.type() != PrimitiveKey.Type.WAY || referrer.equals(selectedWay)) {
+                        continue;
+                    }
+                    frozenReceivers.add(referrer);
+                    if (initialNetwork.primitives().get(referrer) instanceof DetachedWay receiver) {
+                        frozenNodes.addAll(receiver.nodeKeys());
+                    }
+                }
+            }
+        }
+        Map<PrimitiveKey, List<OccurrenceRange>> occurrences = new LinkedHashMap<>(
+                original.editableWayOccurrences());
+        frozenReceivers.forEach(occurrences::remove);
+        Set<PrimitiveKey> editable = new LinkedHashSet<>(original.editableExistingKeys());
+        editable.removeAll(frozenReceivers);
+        Set<PrimitiveKey> movable = new LinkedHashSet<>(original.movableNodes());
+        Set<PrimitiveKey> removable = new LinkedHashSet<>(original.removableNodes());
+        Set<PrimitiveKey> protectedNodes = new LinkedHashSet<>(original.protectedNodes());
+        Map<PrimitiveKey, NodeAuthorityReason> reasons = new LinkedHashMap<>(original.reasons());
+        for (PrimitiveKey node : frozenNodes) {
+            if (reasons.containsKey(node)) {
+                movable.remove(node);
+                removable.remove(node);
+                editable.remove(node);
+                protectedNodes.add(node);
+                reasons.put(node, NodeAuthorityReason.EXPLICIT_FIXED);
+            }
+        }
+        return new CaptureAuthority(occurrences, editable, movable, removable,
+                protectedNodes, reasons, original.collisionEnvelope(), original.editRegion());
+    }
+
     private static CaptureAuthority freezeManualJunction(CaptureAuthority original,
             PrimitiveKey selectedWay, ManualJunctionEligibility.Decision decision) {
         Set<PrimitiveKey> frozen = new LinkedHashSet<>(decision.affectedNodes());
@@ -700,9 +801,23 @@ public final class LiveBPreviewService {
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
-        if (permissions.junctionPolicy() == JunctionPolicy.FIXED
-                && hasInteriorManualIsland(SelectedWayIntervalPartitioner.partition(
-                        network, specification))) {
+        SelectedWayIntervalPartitioner.Partition intervalPartition =
+                SelectedWayIntervalPartitioner.partition(network, specification);
+        if (hasInteriorManualIsland(intervalPartition)) {
+            authority = freezeFixedIslands(authority, network, intervalPartition, way);
+            specification = new NetworkSnapshotCapture.Specification(snapshotId,
+                    specification.datasetIdentity(), specification.sourceGeneration(), way, range,
+                    frame, authority.collisionEnvelope(), authority.editRegion(),
+                    authority.editableWayOccurrences(), authority.editableExistingKeys(),
+                    authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
+                    true, permissions).withReadOnlyPortsFrom(network,
+                            intervalPartition.provedPorts());
+            network = NetworkSnapshotCapture.capture(dataSet, specification);
+            if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
+                throw new ManualJunctionCaptureException(
+                        ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                        "fixed-island source changed during read-only recapture");
+            }
             return new ManagedCaptureSeed(specification, network, source, metric, frame,
                     config.heatmap().color(), radius, config.heatmap().sampleStepMeters(),
                     settingsHash, hash("managed-live-" + config.heatmap().trackerMode().name()
@@ -710,7 +825,7 @@ public final class LiveBPreviewService {
                             parameterIdentity(config.heatmap().trackerMode())),
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
-                    ProjectionRegistry.getProjection().toCode(), null);
+                    ProjectionRegistry.getProjection().toCode(), null, intervalPartition);
         }
         ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
                 != JunctionPolicy.FIXED
@@ -752,7 +867,7 @@ public final class LiveBPreviewService {
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
                 seed.geometryMode(), seed.engine(),
-                seed.projectionCode(), seed.junctionDecision());
+                seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition());
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
@@ -763,10 +878,14 @@ public final class LiveBPreviewService {
         if (captured == null || cancellation == null) {
             throw new IllegalArgumentException("Live preview computation is incomplete");
         }
-        SelectedWayIntervalPartitioner.Partition partition = SelectedWayIntervalPartitioner.partition(
-                captured.network(), captured.specification());
-        if (captured.specification().permissions().junctionPolicy() == JunctionPolicy.FIXED
-                && hasInteriorManualIsland(partition)) {
+        SelectedWayIntervalPartitioner.Partition partition = captured.intervalPartition() == null
+                ? SelectedWayIntervalPartitioner.partition(captured.network(), captured.specification())
+                : captured.intervalPartition();
+        if (captured.intervalPartition() != null
+                && !SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured.network())) {
+            throw new IllegalStateException("Frozen interval source changed before inference");
+        }
+        if (hasInteriorManualIsland(partition)) {
             IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation);
             return Computed.partitioned(captured, batch, Map.of());
         }
@@ -957,7 +1076,10 @@ public final class LiveBPreviewService {
                 throw new IllegalStateException("Live preview source, layer, or projection is stale");
             }
             NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
-            if (!current.canonicalHash().equals(captured.network().canonicalHash())) {
+            if (!current.canonicalHash().equals(captured.network().canonicalHash())
+                    || captured.intervalPartition() != null
+                            && !SelectedWayIntervalPartitioner.verifyFrozenParity(
+                                    captured.intervalPartition(), current)) {
                 throw new IllegalStateException("Live preview network snapshot is stale");
             }
             return;
@@ -980,7 +1102,7 @@ public final class LiveBPreviewService {
                 captured.sourceGeographic(), captured.sourceMetric(), captured.outputGrid(), captured.palette(),
                 captured.searchRadiusMeters(), captured.sampleStepMeters(), captured.settingsHash(),
                 captured.parameterHash(), captured.cleanup(), captured.geometryMode(), captured.engine(),
-                captured.projectionCode(), captured.junctionDecision());
+                captured.projectionCode(), captured.junctionDecision(), captured.intervalPartition());
         if (!captureEvidence(captured, CancellationProbe.NONE).canonicalHash().equals(
                 captureEvidence(refreshed, CancellationProbe.NONE).canonicalHash())) {
             throw new IllegalStateException("Live preview visible evidence is stale");
@@ -1015,7 +1137,10 @@ public final class LiveBPreviewService {
             throw new IllegalStateException("Live preview source, layer, or projection is stale");
         }
         NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
-        if (!current.canonicalHash().equals(captured.network().canonicalHash())) {
+        if (!current.canonicalHash().equals(captured.network().canonicalHash())
+                || captured.intervalPartition() != null
+                        && !SelectedWayIntervalPartitioner.verifyFrozenParity(
+                                captured.intervalPartition(), current)) {
             throw new IllegalStateException("Live preview network snapshot is stale");
         }
     }

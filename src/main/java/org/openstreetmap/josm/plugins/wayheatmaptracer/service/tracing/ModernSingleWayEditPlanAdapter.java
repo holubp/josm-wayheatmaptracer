@@ -139,6 +139,10 @@ public final class ModernSingleWayEditPlanAdapter {
      * Blocked topology plans remain present so the user can inspect their exact geometry.
      */
     public Assessment assess(LiveBPreviewService.Computed computed, int routeIndex) {
+        if (computed != null && computed.partitioned()) {
+            throw new IllegalArgumentException(
+                    "Partitioned preview requires the fixed-interval plan composer");
+        }
         if (computed == null || computed.captured() == null || computed.pipeline() == null
                 || routeIndex < 0 || routeIndex >= computed.pipeline().routes().size()) {
             return unavailable(ApplyAvailability.PLAN_UNAVAILABLE,

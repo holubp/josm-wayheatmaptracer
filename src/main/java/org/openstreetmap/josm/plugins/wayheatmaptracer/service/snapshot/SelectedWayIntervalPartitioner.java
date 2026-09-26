@@ -262,7 +262,16 @@ public final class SelectedWayIntervalPartitioner {
             for (int right = left + 1; right < junctionOccurrences.size(); right++) {
                 int rightIndex = junctionOccurrences.get(right);
                 OccurrenceRange rightRange = selectedFootprints.get(rightIndex);
-                if (rightRange != null && leftRange.firstIndex() <= rightRange.lastIndex()
+                Set<PrimitiveKey> leftReceivers = new LinkedHashSet<>(wayReferrers(
+                        authoritySnapshot, selected.nodeKeys().get(leftIndex)));
+                leftReceivers.remove(selected.key());
+                Set<PrimitiveKey> rightReceivers = new LinkedHashSet<>(wayReferrers(
+                        authoritySnapshot, selected.nodeKeys().get(rightIndex)));
+                rightReceivers.remove(selected.key());
+                boolean sharedReceiver = !java.util.Collections.disjoint(
+                        leftReceivers, rightReceivers);
+                if (sharedReceiver || rightRange != null
+                        && leftRange.firstIndex() <= rightRange.lastIndex()
                         && rightRange.firstIndex() <= leftRange.lastIndex()) {
                     if (decisions.get(leftIndex).reason() == ManualJunctionEligibility.Reason.SIMPLE_T) {
                         overlappingAutomatic.add(leftIndex);
@@ -559,11 +568,28 @@ public final class SelectedWayIntervalPartitioner {
             PrimitiveKey node, int occurrence) {
         if (!(snapshot.primitives().get(node) instanceof DetachedNode detached)) return false;
         return !detached.tags().isEmpty() || hasRelationReferrer(snapshot, node)
+                || certifiedSelectedInternalCut(snapshot, specification, way, node, occurrence)
                 || way.key().equals(specification.selectedWayKey())
                         && occurrence >= specification.selectedRange().firstIndex()
                         && occurrence <= specification.selectedRange().lastIndex()
                         && snapshot.closure().protectedExistingNodeKeys().contains(node)
                 || wayReferrers(snapshot, node).stream().anyMatch(referrer -> !referrer.equals(way.key()));
+    }
+
+    /** A fully captured selected occurrence is an exact local cut, without inventing an external port. */
+    private static boolean certifiedSelectedInternalCut(NetworkSnapshot snapshot,
+            NetworkSnapshotCapture.Specification specification, DetachedWay way,
+            PrimitiveKey node, int occurrence) {
+        OccurrenceRange selectedRange = specification.selectedRange();
+        return way.key().equals(specification.selectedWayKey())
+                && occurrence > selectedRange.firstIndex()
+                && occurrence < selectedRange.lastIndex()
+                && occurrence < way.nodeKeys().size()
+                && way.nodeKeys().get(occurrence).equals(node)
+                && snapshot.closure().primitiveKeys().contains(way.key())
+                && snapshot.closure().primitiveKeys().contains(node)
+                && incomingComplete(snapshot, way.key())
+                && incomingComplete(snapshot, node);
     }
 
     private static List<ExternalPort> portsAt(NetworkSnapshot snapshot, PrimitiveKey way,

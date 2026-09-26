@@ -137,14 +137,34 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
-    void missingThirtyToSixtyMetreArmPortFreezesTheWholeSelection() {
+    void completeSelectedOccurrencesProvideExactInternalCutsWithoutInventedPorts() {
         Fixture fixture = pathWithJunctions(12, 5, -1, true).withoutSelectedArmPorts();
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(List.of(new OccurrenceRange(3, 7)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(new OccurrenceRange(0, 2), new OccurrenceRange(8, 12)),
+                result.slideIntervals().stream().map(SelectedWayIntervalPartitioner.SlideInterval::range)
+                        .toList());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixture.snapshot()));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withSelectedNodeAt(3, 46.0, 0.0).snapshot()));
+        assertEquals(ManualJunctionEligibility.Reason.SELECTED_INTERIOR,
+                result.junctionDispositions().get(0).reason());
+    }
+
+    @Test
+    void internalCutCannotCrossAnUnprovedLongSelectedSegment() {
+        Fixture fixture = pathWithJunctions(12, 5, -1, true).withoutSelectedArmPorts()
+                .withSelectedNodeAt(4, 100.0, 0.0);
 
         SelectedWayIntervalPartitioner.Partition result = partition(fixture);
 
         assertTrue(result.slideIntervals().isEmpty());
         assertEquals(List.of(new OccurrenceRange(0, 12)),
-                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range)
+                        .toList());
         assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
                 result.junctionDispositions().get(0).reason());
     }
@@ -311,6 +331,62 @@ class V022SelectedWayIntervalPartitionerTest {
         assertTrue(result.junctionDispositions().stream().allMatch(
                 SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
         assertTrue(result.fixedIslands().isEmpty());
+    }
+
+    @Test
+    void distantEndpointTSharingManualIslandsReceiverIsCoupledAndFrozen() {
+        Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>();
+        List<PrimitiveKey> selectedNodes = new ArrayList<>();
+        for (int index = 0; index <= 6; index++) {
+            PrimitiveKey key = nodeKey(100 + index);
+            selectedNodes.add(key);
+            values.put(key, node(key, index * 40.0, 0.0, Map.of()));
+        }
+        PrimitiveKey selected = wayKey(100);
+        PrimitiveKey receiver = wayKey(200);
+        PrimitiveKey north0 = nodeKey(1000);
+        PrimitiveKey south0 = nodeKey(1001);
+        PrimitiveKey north5 = nodeKey(1002);
+        values.put(north0, node(north0, 0.0, 40.0, Map.of()));
+        values.put(south0, node(south0, 0.0, -40.0, Map.of()));
+        values.put(north5, node(north5, 200.0, 40.0, Map.of()));
+        List<PrimitiveKey> receiverNodes = new ArrayList<>(List.of(north0,
+                selectedNodes.get(0), south0));
+        for (int index = 1; index <= 5; index++) {
+            PrimitiveKey key = nodeKey(1100 + index);
+            values.put(key, node(key, index * 40.0, -40.0, Map.of()));
+            receiverNodes.add(key);
+        }
+        receiverNodes.add(selectedNodes.get(5));
+        receiverNodes.add(north5);
+        values.put(selected, way(selected, selectedNodes));
+        values.put(receiver, way(receiver, receiverNodes));
+        List<ExternalPort> ports = List.of(
+                new ExternalPort(selected, selectedNodes.get(1), selectedNodes.get(2), 1,
+                        ExternalPort.Side.AFTER,
+                        ((DetachedNode) values.get(selectedNodes.get(2))).coordinate()),
+                new ExternalPort(receiver, south0, receiverNodes.get(3), 2,
+                        ExternalPort.Side.AFTER,
+                        ((DetachedNode) values.get(receiverNodes.get(3))).coordinate()),
+                new ExternalPort(receiver, receiverNodes.get(7), receiverNodes.get(6), 7,
+                        ExternalPort.Side.BEFORE,
+                        ((DetachedNode) values.get(receiverNodes.get(6))).coordinate()));
+        Fixture fixture = fixture(values, selected, selectedNodes, 6, Map.of(), ports);
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                ManualJunctionEligibility.evaluateOccurrence(
+                        fixture.snapshot(), fixture.specification(), 0).reason());
+
+        SelectedWayIntervalPartitioner.Partition partition = partition(fixture);
+
+        assertEquals(ManualJunctionEligibility.Reason.COUPLED_JUNCTION,
+                partition.junctionDispositions().get(0).reason());
+        assertFalse(partition.junctionDispositions().get(0).automaticEligible());
+        assertEquals(List.of(new OccurrenceRange(0, 1), new OccurrenceRange(4, 6)),
+                partition.fixedIslands().stream().map(
+                        SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(new OccurrenceRange(2, 3)),
+                partition.slideIntervals().stream().map(
+                        SelectedWayIntervalPartitioner.SlideInterval::range).toList());
     }
 
     @Test
@@ -617,6 +693,12 @@ class V022SelectedWayIntervalPartitionerTest {
             values.put(last, node(last, oldLast.coordinate().longitudeDegrees() * 111_000.0,
                     -length, Map.of()));
             return rebuild(values, Map.of());
+        }
+        Fixture withSelectedNodeAt(int index, double x, double y) {
+            Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>(snapshot.primitives());
+            PrimitiveKey key = selectedNodes.get(index);
+            values.put(key, node(key, x, y, Map.of()));
+            return rebuild(values, Map.of(), snapshot.closure().externalPorts());
         }
         Fixture withSelectedPort(int boundaryIndex, int outsideIndex, ExternalPort.Side side) {
             DetachedWay selectedWay = (DetachedWay) snapshot.primitives().get(selected);
