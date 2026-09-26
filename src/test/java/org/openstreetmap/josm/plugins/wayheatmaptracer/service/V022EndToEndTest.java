@@ -1627,11 +1627,9 @@ class V022EndToEndTest {
         Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
         var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(fixture.dataSet(),
                 fixture.computed().captured().specification()));
-        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
-                new VisibleSourceLockedApplyValidator(new LiveNetworkSnapshotValidator(receipt,
-                        plan, () -> plan.before().sourceGeneration()),
-                        new LiveBPreviewService(), fixture.computed().captured(), fixture::raster,
-                        fixture.epoch(), () -> { }, message -> { }),
+        var validator = new LiveNetworkSnapshotValidator(receipt, plan,
+                () -> fixture.epoch().captureStable().revision());
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan, validator,
                 "Apply intervals around two manual junctions");
         UndoRedoHandler.getInstance().clean();
 
