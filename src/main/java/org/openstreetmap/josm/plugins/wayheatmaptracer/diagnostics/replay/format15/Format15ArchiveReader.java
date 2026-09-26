@@ -356,7 +356,7 @@ public final class Format15ArchiveReader {
                 throw new IllegalArgumentException("Invalid JSON number");
             }
             return value.contains(".") || value.contains("e") || value.contains("E")
-                ? Double.valueOf(value) : Long.valueOf(value);
+                ? (Object) Double.valueOf(value) : Long.valueOf(value);
         }
 
         private Object literal(String literal, Object value) {

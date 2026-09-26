@@ -1371,14 +1371,19 @@ class V022FixedIntervalEditPlanComposerTest {
             assertEquals(2, layout.getInt());
             int firstRequestBytes = layout.getInt();
             layout.position(layout.position() + firstRequestBytes);
-            int firstScalarHashOffset = layout.position() + 2;
-            for (int corruption : List.of(0, 1)) {
+            int firstSourceOriginOffset = layout.position();
+            int firstScalarHashOffset = firstSourceOriginOffset + Double.BYTES + 2;
+            for (int corruption : List.of(0, 1, 2)) {
                 byte[] alteredPayload = originalPayload.clone();
                 if (corruption == 0) {
                     java.nio.ByteBuffer.wrap(alteredPayload).putInt(intervalCountOffset, 1);
-                } else {
+                } else if (corruption == 1) {
                     alteredPayload[firstScalarHashOffset] = alteredPayload[firstScalarHashOffset]
                             == 'a' ? (byte) 'b' : (byte) 'a';
+                } else {
+                    java.nio.ByteBuffer tamperedOrigin = java.nio.ByteBuffer.wrap(alteredPayload);
+                    tamperedOrigin.putDouble(firstSourceOriginOffset,
+                            tamperedOrigin.getDouble(firstSourceOriginOffset) + 5.0);
                 }
                 Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
                 changed.put("private/frozen-interval-input.bin", Format15Artifact.binary(
@@ -1387,8 +1392,14 @@ class V022FixedIntervalEditPlanComposerTest {
                         replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed);
                 Format15BundleWriter.write(tampered, replayPath);
                 var read = Format15ArchiveReader.read(replayPath);
-                assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
-                        read, read.sourceIdentityHash(), read.parameterHash()));
+                ReplayMismatchException failure = assertThrows(ReplayMismatchException.class,
+                        () -> Format15ReplayRunner.replayIntervals(read,
+                                read.sourceIdentityHash(), read.parameterHash()));
+                assertEquals(switch (corruption) {
+                    case 0 -> "strict-interval-replay-input-malformed";
+                    case 1 -> "strict-interval-production-output-mismatch";
+                    default -> "strict-interval-request-derivation-mismatch";
+                }, failure.getMessage());
             }
 
             String index = new String(replayBundle.artifact("interval-production.json").bytes(),
@@ -1399,9 +1410,20 @@ class V022FixedIntervalEditPlanComposerTest {
             String alteredProof = index.substring(0, proofStart)
                     + (index.charAt(proofStart) == 'a' ? 'b' : 'a')
                     + index.substring(proofStart + 1);
-            for (String altered : List.of(
+            List<String> alteredIndexes = List.of(
                     index.replaceFirst("\\\"chosenRouteIndex\\\":0", "\\\"chosenRouteIndex\\\":1"),
-                    alteredProof)) {
+                    alteredProof,
+                    index.replaceFirst("\\\"generation\\\":1", "\\\"generation\\\":2"),
+                    index.replaceFirst("\\\"status\\\":\\\"PREVIEW\\\"",
+                            "\\\"status\\\":\\\"APPLIED\\\""),
+                    index.replaceFirst("\\\"alternativesTruncated\\\":false",
+                            "\\\"alternativesTruncated\\\":true"));
+            List<String> expectedReasons = List.of("strict-interval-index-choice-mismatch",
+                    "strict-interval-index-mismatch", "strict-interval-source-receipt-mismatch",
+                    "strict-interval-status-mismatch", "strict-interval-index-choice-mismatch");
+            for (int changeIndex = 0; changeIndex < alteredIndexes.size(); changeIndex++) {
+                String altered = alteredIndexes.get(changeIndex);
+                assertNotEquals(index, altered);
                 Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
                 changed.put("interval-production.json", Format15Artifact.text(
                         "interval-production.json", altered));
@@ -1409,8 +1431,10 @@ class V022FixedIntervalEditPlanComposerTest {
                         replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed);
                 Format15BundleWriter.write(tampered, replayPath);
                 var read = Format15ArchiveReader.read(replayPath);
-                assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
-                        read, read.sourceIdentityHash(), read.parameterHash()));
+                ReplayMismatchException failure = assertThrows(ReplayMismatchException.class,
+                        () -> Format15ReplayRunner.replayIntervals(read,
+                                read.sourceIdentityHash(), read.parameterHash()));
+                assertEquals(expectedReasons.get(changeIndex), failure.getMessage());
             }
             for (String name : List.of("private/interval-composed-preview.json",
                     "private/interval-0-routes.json")) {
@@ -1424,6 +1448,11 @@ class V022FixedIntervalEditPlanComposerTest {
                 var read = Format15ArchiveReader.read(replayPath);
                 assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
                         read, read.sourceIdentityHash(), read.parameterHash()));
+            }
+            for (int intervalIndex = 0; intervalIndex < batch.runs().size(); intervalIndex++) {
+                assertEquals(batch.runs().get(intervalIndex).request().profileChainage(),
+                        replay.batch().runs().get(intervalIndex).request().profileChainage(),
+                        "strict replay must retain the factual full-source origin");
             }
         } finally {
             Files.deleteIfExists(replayPath);

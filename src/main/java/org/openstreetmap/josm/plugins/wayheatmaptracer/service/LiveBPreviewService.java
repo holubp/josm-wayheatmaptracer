@@ -987,7 +987,7 @@ public final class LiveBPreviewService {
         Optional<CorridorTraceInput> corridorInput =
                 (captured.engine() == TrackerMode.CORRIDOR_AWARE
                         || captured.engine() == TrackerMode.HYBRID)
-                ? Optional.of(corridorWithCapturedEndpoints(chainage, captured.sourceMetric(),
+                ? Optional.of(IntervalTraceRequestFactory.corridorForAnchors(chainage, captured.sourceMetric(),
                         captured.sourceGeographic(), evidence))
                 : Optional.empty();
         return new TraceRequest(captured.specification().selectedWayKey(),
@@ -1001,21 +1001,6 @@ public final class LiveBPreviewService {
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
                 captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput);
-    }
-
-    private static CorridorTraceInput corridorWithCapturedEndpoints(ProfileChainage chainage,
-            List<MetricPoint> metric, List<GeographicPoint> geographic, EvidenceSnapshot evidence) {
-        CorridorTraceInput derived = CorridorTraceInput.from(chainage, metric,
-                evidence.coordinateFrame(), evidence.transform(),
-                evidence.resolution().outputRasterPitchMeters());
-        List<DetachedProfileSamplingLocation> locations = new ArrayList<>(derived.profileLocations());
-        locations.set(0, DetachedProfileSamplingLocation.at(geographic.get(0),
-                evidence.coordinateFrame(), evidence.transform(), 0.0));
-        int last = locations.size() - 1;
-        locations.set(last, DetachedProfileSamplingLocation.at(geographic.get(geographic.size() - 1),
-                evidence.coordinateFrame(), evidence.transform(),
-                chainage.cumulativeGroundMeters().get(last)));
-        return new CorridorTraceInput(locations, derived.lateralStepMeters());
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {

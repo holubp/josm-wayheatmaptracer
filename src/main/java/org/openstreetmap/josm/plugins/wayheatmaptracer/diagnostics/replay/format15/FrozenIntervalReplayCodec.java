@@ -19,7 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.Replay
 final class FrozenIntervalReplayCodec {
     static final String ARTIFACT = "private/frozen-interval-input.bin";
     private static final int MAGIC = 0x57544952;
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int MAX_INTERVALS = 128;
 
     record ExpectedRun(TraceRequest request, String scalarHash, String finalHash,
@@ -63,6 +63,7 @@ final class FrozenIntervalReplayCodec {
                 var expected = assessment.intervals().get(index);
                 byte[] request = FrozenReplayCodec.encodeRequestOnly(run.request());
                 part(out, request);
+                out.writeDouble(run.request().profileChainage().sourceOriginGroundMeters());
                 var result = new Format15ReplayRunner.Result(ReplayLevel.FINAL_GEOMETRY,
                         run.request().engine(), run.request().engine(),
                         run.result().inference(), run.result().routes(),
@@ -108,7 +109,9 @@ final class FrozenIntervalReplayCodec {
             }
             List<ExpectedRun> runs = new ArrayList<>(count);
             for (int index = 0; index < count; index++) {
-                TraceRequest request = FrozenReplayCodec.decodeRequestOnly(part(in), shared.evidence());
+                TraceRequest request = withSourceOrigin(
+                        FrozenReplayCodec.decodeRequestOnly(part(in), shared.evidence()),
+                        in.readDouble());
                 String scalar = hash(in), finalHash = hash(in);
                 int routes = in.readInt();
                 if (routes < 0 || routes > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
@@ -150,6 +153,16 @@ final class FrozenIntervalReplayCodec {
             throw new IllegalArgumentException("Interval replay component exceeds budget");
         }
         return in.readNBytes(length);
+    }
+
+    private static TraceRequest withSourceOrigin(TraceRequest source, double origin) {
+        return new TraceRequest(source.selectedWayKey(), source.selectedRange(), source.engine(),
+                source.geometryMode(), source.permissions(), source.budgets(),
+                source.evidenceSnapshotId(), source.evidenceContentHash(),
+                source.networkSnapshotId(), source.networkContentHash(), source.settingsHash(),
+                source.parameterHash(), source.samplerId(), source.configuredSampleStepMeters(),
+                source.profileChainage().withSourceOrigin(origin), source.evidenceResolution(),
+                source.corridorInput());
     }
 
     private static void hash(DataOutputStream out, String value) throws IOException {

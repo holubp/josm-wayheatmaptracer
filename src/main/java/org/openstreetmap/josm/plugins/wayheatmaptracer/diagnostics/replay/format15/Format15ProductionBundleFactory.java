@@ -365,8 +365,8 @@ public final class Format15ProductionBundleFactory {
             index.append("]}");
         }
         byte[] indexBytes = index.append("]}\n").toString().getBytes(StandardCharsets.UTF_8);
-        String sourceHash = Format15Safety.sha256((batch.network().canonicalHash() + ":"
-                + batch.evidence().canonicalHash() + ":" + receiptJson).getBytes(StandardCharsets.UTF_8));
+        String sourceHash = intervalSourceHash(batch.network().canonicalHash(),
+                batch.evidence().canonicalHash(), sourceReceipt);
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         artifacts.put(INTERVAL_INDEX_ARTIFACT,
                 Format15Artifact.text(INTERVAL_INDEX_ARTIFACT,
@@ -400,7 +400,13 @@ public final class Format15ProductionBundleFactory {
         }
     }
 
-    private static String intervalSourceReceiptJson(IntervalSourceReceipt receipt) {
+    static String intervalSourceHash(String networkHash, String evidenceHash,
+            IntervalSourceReceipt receipt) {
+        return Format15Safety.sha256(networkHash + ":" + evidenceHash + ":"
+                + intervalSourceReceiptJson(receipt));
+    }
+
+    static String intervalSourceReceiptJson(IntervalSourceReceipt receipt) {
         if (receipt instanceof ManagedTileSourceReceipt managed) {
             return "{\"kind\":\"MANAGED_TILES\",\"generation\":" + managed.generation()
                     + ",\"zoom\":" + managed.zoom() + ",\"sourceIdentityHash\":"

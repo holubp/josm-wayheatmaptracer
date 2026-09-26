@@ -20,6 +20,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceRequestFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
@@ -97,6 +98,13 @@ public final class Format15ReplayRunner {
                 || !payload.partitionProofHash().equals(index.get("partitionProofHash"))) {
             throw new ReplayMismatchException("strict-interval-index-mismatch");
         }
+        var sourceReceipt = sourceReceipt(index.get("sourceReceipt"));
+        if (!Format15ProductionBundleFactory.intervalSourceHash(shared.network().canonicalHash(),
+                shared.evidence().canonicalHash(), sourceReceipt)
+                .equals(archive.sourceIdentityHash())) {
+            throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
+        }
+        validateStatus(index, payload.planHash());
         List<?> indexRuns = list(index, "intervals");
         if (indexRuns.size() != payload.runs().size()) {
             throw new ReplayMismatchException("strict-interval-count-mismatch");
@@ -137,6 +145,16 @@ public final class Format15ReplayRunner {
                     || request.budgets().maximumTransitions() != remainingTransitions) {
                 throw new ReplayMismatchException("strict-interval-request-mismatch");
             }
+            try {
+                TraceRequest derived = new IntervalTraceRequestFactory().createDetached(
+                        shared.request(), shared.evidence(), shared.network(), interval,
+                        request.budgets());
+                if (!derived.equals(request)) {
+                    throw new ReplayMismatchException("strict-interval-request-derivation-mismatch");
+                }
+            } catch (IllegalArgumentException invalidRequest) {
+                throw new ReplayMismatchException("strict-interval-request-derivation-mismatch");
+            }
             Set<Integer> fixedOccurrences = new LinkedHashSet<>();
             if (interval.startBoundary().kind()
                     == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
@@ -173,7 +191,8 @@ public final class Format15ReplayRunner {
                     || !expected.routeIdentities().equals(routeIds)) {
                 throw new ReplayMismatchException("strict-interval-production-output-mismatch");
             }
-            verifyIndexRun(indexRuns.get(position), position, interval, expected);
+            verifyIndexRun(indexRuns.get(position), position, interval, expected,
+                    replayed.inference().alternativesTruncated());
             choices.put(position, expected.chosenRouteIndex());
             actualRuns.add(new IntervalTraceBatch.IntervalRun(interval, request,
                     replayed, usage));
@@ -244,7 +263,7 @@ public final class Format15ReplayRunner {
 
     private static void verifyIndexRun(Object value, int position,
             SelectedWayIntervalPartitioner.SlideInterval interval,
-            FrozenIntervalReplayCodec.ExpectedRun expected) {
+            FrozenIntervalReplayCodec.ExpectedRun expected, boolean alternativesTruncated) {
         if (!(value instanceof Map<?, ?> row)
                 || !(row.get("intervalIndex") instanceof Number number)
                 || number.intValue() != position
@@ -256,6 +275,7 @@ public final class Format15ReplayRunner {
                                 : expected.routeIdentities().get(expected.chosenRouteIndex()))
                 || !expected.disposition().name().equals(row.get("disposition"))
                 || !expected.reason().name().equals(row.get("reason"))
+                || !Boolean.valueOf(alternativesTruncated).equals(row.get("alternativesTruncated"))
                 || !rangeMatches(row.get("occurrenceRange"), interval.range())
                 || !rangeMatches(row.get("traceRange"), interval.traceRange())) {
             throw new ReplayMismatchException("strict-interval-index-choice-mismatch");
@@ -271,6 +291,82 @@ public final class Format15ReplayRunner {
                     || !expected.routeIdentities().get(index).equals(alternative.get("identity"))) {
                 throw new ReplayMismatchException("strict-interval-index-alternatives-mismatch");
             }
+        }
+    }
+
+    private static Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt(Object value) {
+        if (!(value instanceof Map<?, ?> map) || !(map.get("kind") instanceof String kind)) {
+            throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
+        }
+        try {
+            if ("MANAGED_TILES".equals(kind)
+                    && map.keySet().equals(Set.of("kind", "generation", "zoom", "sourceIdentityHash"))
+                    && map.get("sourceIdentityHash") instanceof String hash) {
+                return new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                        exactLong(map.get("generation")), exactInt(map.get("zoom")), hash);
+            }
+            if ("VISIBLE_RENDERED_LAYER".equals(kind)
+                    && map.keySet().equals(Set.of("kind", "revision", "zoom", "sourceIdentityHash"))
+                    && (map.get("sourceIdentityHash") == null
+                            || map.get("sourceIdentityHash") instanceof String)) {
+                return new Format15ProductionBundleFactory.VisibleLayerSourceReceipt(
+                        map.get("revision") == null ? null : exactLong(map.get("revision")),
+                        map.get("zoom") == null ? null : exactInt(map.get("zoom")),
+                        (String) map.get("sourceIdentityHash"));
+            }
+        } catch (IllegalArgumentException malformed) {
+            throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
+        }
+        throw new ReplayMismatchException("strict-interval-source-receipt-mismatch");
+    }
+
+    private static long exactLong(Object value) {
+        if (!(value instanceof Long number) || number < 0) {
+            throw new IllegalArgumentException("Non-canonical receipt integer");
+        }
+        return number;
+    }
+
+    private static int exactInt(Object value) {
+        long number = exactLong(value);
+        if (number > Integer.MAX_VALUE) throw new IllegalArgumentException("Receipt integer overflow");
+        return (int) number;
+    }
+
+    private static void validateStatus(Map<String, Object> index, String planIdentity) {
+        Format15ProductionBundleFactory.IntervalArtifactStatus status;
+        String reviewed = nullableHash(index.get("reviewedPlanIdentity"));
+        String applied = nullableHash(index.get("appliedPlanIdentity"));
+        try {
+            status = Format15ProductionBundleFactory.IntervalArtifactStatus.valueOf(
+                    (String) index.get("status"));
+        } catch (RuntimeException malformed) {
+            throw new ReplayMismatchException("strict-interval-status-mismatch");
+        }
+        boolean valid = switch (status) {
+            case PRODUCED, PREVIEW, CANCELLED, RESOURCE_LIMIT, FAILED ->
+                reviewed == null && applied == null;
+            case REVIEWED, CONFIRMED -> planIdentity != null
+                    && planIdentity.equals(reviewed) && applied == null;
+            case APPLIED -> Boolean.TRUE.equals(index.get("applyAvailable"))
+                    && planIdentity != null && planIdentity.equals(applied)
+                    && (reviewed == null || planIdentity.equals(reviewed));
+            case APPLIED_AFTER_REVIEW -> Boolean.TRUE.equals(index.get("applyAvailable"))
+                    && planIdentity != null
+                    && planIdentity.equals(reviewed) && planIdentity.equals(applied);
+        };
+        if (!valid) throw new ReplayMismatchException("strict-interval-status-mismatch");
+    }
+
+    private static String nullableHash(Object value) {
+        if (value == null) return null;
+        if (!(value instanceof String hash)) {
+            throw new ReplayMismatchException("strict-interval-status-mismatch");
+        }
+        try {
+            return Format15Safety.requiredHash(hash, "interval status identity");
+        } catch (IllegalArgumentException malformed) {
+            throw new ReplayMismatchException("strict-interval-status-mismatch");
         }
     }
 

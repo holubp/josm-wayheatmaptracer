@@ -65,6 +65,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
     @Test
+    void replayIndexParserKeepsExactLongReceiptGeneration() throws Exception {
+        var parsed = Format15ArchiveReader.parseObject(
+                "{\"generation\":9007199254740993}".getBytes(StandardCharsets.UTF_8),
+                "interval-production.json");
+        assertEquals(9007199254740993L, parsed.get("generation"));
+    }
+
+    @Test
     void singleRequestArchiveCannotSubstituteForProductionIntervalReplay(
             @TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
