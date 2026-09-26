@@ -1,6 +1,11 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
@@ -12,6 +17,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorE
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.HybridTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.image.DirectionalImageTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
@@ -40,6 +49,257 @@ public final class Format15ReplayRunner {
     }
 
     private Format15ReplayRunner() { }
+
+    /** Strict detached interval replay of one captured partitioned attempt. */
+    public static IntervalResult replayIntervals(Format15Archive archive,
+            String expectedSourceHash, String expectedParameterHash) {
+        if (archive == null || archive.formatVersion() != 15
+                || !archive.sourceIdentityHash().equals(expectedSourceHash)
+                || !archive.parameterHash().equals(expectedParameterHash)
+                || archive.artifact(FrozenIntervalReplayCodec.ARTIFACT).isEmpty()) {
+            throw new ReplayMismatchException("strict-interval-replay-input-unavailable");
+        }
+        FrozenIntervalReplayCodec.Payload payload;
+        Map<String, Object> index;
+        try {
+            payload = FrozenIntervalReplayCodec.decode(archive.artifact(
+                    FrozenIntervalReplayCodec.ARTIFACT).orElseThrow().bytes());
+            index = Format15ArchiveReader.parseObject(archive.artifact("interval-production.json")
+                    .orElseThrow().bytes(), "interval-production.json");
+        } catch (Exception malformed) {
+            throw new ReplayMismatchException("strict-interval-replay-input-malformed");
+        }
+        FrozenReplayInput shared = payload.shared();
+        if (!shared.request().parameterHash().equals(archive.parameterHash())
+                || !shared.network().snapshotId().equals(payload.authority().snapshotId())
+                || !shared.network().datasetIdentity().equals(payload.authority().datasetIdentity())
+                || shared.network().sourceGeneration() != payload.authority().sourceGeneration()
+                || !shared.request().selectedWayKey().equals(payload.authority().selectedWayKey())
+                || !shared.request().selectedRange().equals(payload.authority().selectedRange())) {
+            throw new ReplayMismatchException("strict-interval-authority-mismatch");
+        }
+        SelectedWayIntervalPartitioner.Partition partition;
+        try {
+            partition = SelectedWayIntervalPartitioner.partition(shared.network(), payload.authority());
+        } catch (RuntimeException invalidAuthority) {
+            throw new ReplayMismatchException("strict-interval-partition-recomputation-failed");
+        }
+        if (!SelectedWayIntervalPartitioner.verifyFrozenParity(partition, shared.network())
+                || !FrozenReplayCodec.partitionProofHash(partition).equals(payload.partitionProofHash())
+                || partition.slideIntervals().size() != payload.runs().size()) {
+            throw new ReplayMismatchException("strict-interval-partition-mismatch");
+        }
+        if (!Boolean.TRUE.equals(object(index, "capabilities").get("STRICT_INTERVAL_PRODUCTION"))
+                || !"INTERVAL_PRODUCTION".equals(index.get("artifactKind"))
+                || !shared.network().canonicalHash().equals(index.get("networkHash"))
+                || !shared.evidence().canonicalHash().equals(index.get("evidenceHash"))
+                || !shared.request().parameterHash().equals(index.get("parameterHash"))
+                || !payload.partitionProofHash().equals(index.get("partitionProofHash"))) {
+            throw new ReplayMismatchException("strict-interval-index-mismatch");
+        }
+        List<?> indexRuns = list(index, "intervals");
+        if (indexRuns.size() != payload.runs().size()) {
+            throw new ReplayMismatchException("strict-interval-count-mismatch");
+        }
+        ModernTracePipeline pipeline = new ModernTracePipeline(
+                new CorridorEngineAdapter(shared.options().fieldName()));
+        List<IntervalTraceBatch.IntervalRun> actualRuns = new ArrayList<>();
+        Map<Integer, Integer> choices = new LinkedHashMap<>();
+        long remainingPairs = shared.request().budgets().maximumPairVisits();
+        long remainingTransitions = shared.request().budgets().maximumTransitions();
+        int retainedRoutes = 0;
+        for (int position = 0; position < payload.runs().size(); position++) {
+            var expected = payload.runs().get(position);
+            var interval = partition.slideIntervals().get(position);
+            var request = expected.request();
+            if (!request.selectedWayKey().equals(shared.request().selectedWayKey())
+                    || !request.selectedRange().equals(interval.traceRange())
+                    || !request.evidenceSnapshotId().equals(shared.evidence().snapshotId())
+                    || !request.evidenceContentHash().equals(shared.evidence().canonicalHash())
+                    || !request.networkSnapshotId().equals(shared.network().snapshotId())
+                    || !request.networkContentHash().equals(shared.network().canonicalHash())
+                    || !request.settingsHash().equals(shared.request().settingsHash())
+                    || !request.parameterHash().equals(shared.request().parameterHash())
+                    || request.engine() != shared.request().engine()
+                    || request.geometryMode() != shared.request().geometryMode()
+                    || !request.permissions().equals(shared.request().permissions())
+                    || !request.samplerId().equals(shared.request().samplerId())
+                    || Double.compare(request.configuredSampleStepMeters(),
+                            shared.request().configuredSampleStepMeters()) != 0
+                    || !request.evidenceResolution().equals(shared.request().evidenceResolution())
+                    || request.budgets().maximumStatesPerProfile()
+                            != shared.request().budgets().maximumStatesPerProfile()
+                    || request.budgets().maximumRawAlternatives()
+                            != shared.request().budgets().maximumRawAlternatives()
+                    || request.budgets().maximumDistinctAlternatives()
+                            != shared.request().budgets().maximumDistinctAlternatives()
+                    || request.budgets().maximumPairVisits() != remainingPairs
+                    || request.budgets().maximumTransitions() != remainingTransitions) {
+                throw new ReplayMismatchException("strict-interval-request-mismatch");
+            }
+            Set<Integer> fixedOccurrences = new LinkedHashSet<>();
+            if (interval.startBoundary().kind()
+                    == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
+                fixedOccurrences.add(interval.startBoundary().occurrenceIndex());
+            }
+            if (interval.endBoundary().kind()
+                    == SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND) {
+                fixedOccurrences.add(interval.endBoundary().occurrenceIndex());
+            }
+            ModernTracePipeline.PipelineRun production;
+            try {
+                production = pipeline.runWithUsage(request, shared.evidence(), shared.network(),
+                        shared.options(), CancellationProbe.NONE, fixedOccurrences);
+            } catch (RuntimeException failure) {
+                throw new ReplayMismatchException("strict-interval-production-execution-failed");
+            }
+            TraceWorkUsage usage = production.usage();
+            if (usage.pairVisits() > remainingPairs || usage.transitions() > remainingTransitions
+                    || retainedRoutes + production.result().routes().size()
+                            > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
+                throw new ReplayMismatchException("strict-interval-work-budget-mismatch");
+            }
+            remainingPairs -= usage.pairVisits();
+            remainingTransitions -= usage.transitions();
+            retainedRoutes += production.result().routes().size();
+            var replayed = production.result();
+            var fingerprint = new Result(ReplayLevel.FINAL_GEOMETRY, request.engine(),
+                    request.engine(), replayed.inference(), replayed.routes(),
+                    Format15Safety.sha256(FrozenReplayCodec.encodeRequestOnly(request)));
+            List<String> routeIds = replayed.routes().stream()
+                    .map(route -> route.hypothesis().id()).toList();
+            if (!expected.scalarHash().equals(ScalarReplayFingerprint.sha256(replayed.inference()))
+                    || !expected.finalHash().equals(FinalReplayFingerprint.sha256(fingerprint))
+                    || !expected.routeIdentities().equals(routeIds)) {
+                throw new ReplayMismatchException("strict-interval-production-output-mismatch");
+            }
+            verifyIndexRun(indexRuns.get(position), position, interval, expected);
+            choices.put(position, expected.chosenRouteIndex());
+            actualRuns.add(new IntervalTraceBatch.IntervalRun(interval, request,
+                    replayed, usage));
+        }
+        IntervalTraceBatch batch = new IntervalTraceBatch(shared.request(), shared.evidence(),
+                shared.network(), partition, actualRuns, shared.options(), payload.authority());
+        FixedIntervalEditPlanComposer.Assessment assessment;
+        try {
+            assessment = new FixedIntervalEditPlanComposer().compose(batch, choices);
+        } catch (RuntimeException invalidComposition) {
+            throw new ReplayMismatchException("strict-interval-composition-failed");
+        }
+        for (int position = 0; position < assessment.intervals().size(); position++) {
+            var captured = payload.runs().get(position);
+            var actual = assessment.intervals().get(position);
+            if (actual.disposition() != captured.disposition()
+                    || Format15ProductionBundleFactory.intervalReason(actual.reason()) != captured.reason()
+                    || !actual.routeIdentity().equals(captured.routeIdentities().isEmpty()
+                            ? "unavailable" : captured.routeIdentities().get(captured.chosenRouteIndex()))) {
+                throw new ReplayMismatchException("strict-interval-composition-disposition-mismatch");
+            }
+        }
+        String actualPlan = assessment.plan().map(plan -> plan.canonicalHash()).orElse(null);
+        Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
+                List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint>> previewWays =
+                assessment.plan().map(plan -> plan.finalPreviewWays()).orElseGet(() ->
+                        Map.of(shared.request().selectedWayKey(), assessment.selectedWayPreview()));
+        String actualPreview = Format15Safety.sha256(
+                Format15ProductionBundleFactory.geographicWays(previewWays));
+        if (!archive.artifact("private/interval-composed-preview.json")
+                    .map(Format15Artifact::sha256).filter(actualPreview::equals).isPresent()
+                || !archive.artifact("private/interval-point-provenance.json")
+                    .map(Format15Artifact::sha256)
+                    .filter(Format15Safety.sha256(
+                            Format15ProductionBundleFactory.intervalPointProvenanceJson(batch,
+                                    assessment, assessment.plan().orElse(null), previewWays))::equals)
+                    .isPresent()) {
+            throw new ReplayMismatchException("strict-interval-preview-artifact-mismatch");
+        }
+        for (int position = 0; position < actualRuns.size(); position++) {
+            String name = "private/interval-" + position + "-routes.json";
+            String expectedArtifact = Format15Safety.sha256(
+                    Format15ProductionBundleFactory.intervalRoutesJson(batch, choices, position));
+            if (!archive.artifact(name).map(Format15Artifact::sha256)
+                    .filter(expectedArtifact::equals).isPresent()) {
+                throw new ReplayMismatchException("strict-interval-route-artifact-mismatch");
+            }
+        }
+        if (!java.util.Objects.equals(payload.planHash(), actualPlan)
+                || !payload.previewHash().equals(actualPreview)
+                || !java.util.Objects.equals(index.get("planIdentity"), actualPlan)
+                || !payload.previewHash().equals(index.get("previewSha256"))
+                || !Boolean.valueOf(assessment.applyAvailable()).equals(index.get("applyAvailable"))
+                || index.get("reviewedPlanIdentity") != null
+                        && !index.get("reviewedPlanIdentity").equals(actualPlan)
+                || index.get("appliedPlanIdentity") != null
+                        && !index.get("appliedPlanIdentity").equals(actualPlan)) {
+            throw new ReplayMismatchException("strict-interval-composed-plan-mismatch");
+        }
+        return new IntervalResult(partition, batch, assessment);
+    }
+
+    /** Recomputed production partition, batch, and one composed edit assessment. */
+    public record IntervalResult(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.Partition partition,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch batch,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment) { }
+
+    private static void verifyIndexRun(Object value, int position,
+            SelectedWayIntervalPartitioner.SlideInterval interval,
+            FrozenIntervalReplayCodec.ExpectedRun expected) {
+        if (!(value instanceof Map<?, ?> row)
+                || !(row.get("intervalIndex") instanceof Number number)
+                || number.intValue() != position
+                || !(row.get("chosenRouteIndex") instanceof Number choice)
+                || choice.intValue() != (expected.routeIdentities().isEmpty()
+                        ? -1 : expected.chosenRouteIndex())
+                || !java.util.Objects.equals(row.get("chosenRouteIdentity"),
+                        expected.routeIdentities().isEmpty() ? "unavailable"
+                                : expected.routeIdentities().get(expected.chosenRouteIndex()))
+                || !expected.disposition().name().equals(row.get("disposition"))
+                || !expected.reason().name().equals(row.get("reason"))
+                || !rangeMatches(row.get("occurrenceRange"), interval.range())
+                || !rangeMatches(row.get("traceRange"), interval.traceRange())) {
+            throw new ReplayMismatchException("strict-interval-index-choice-mismatch");
+        }
+        Object alternatives = row.get("alternatives");
+        if (!(alternatives instanceof List<?> list) || list.size() != expected.routeIdentities().size()) {
+            throw new ReplayMismatchException("strict-interval-index-alternatives-mismatch");
+        }
+        for (int index = 0; index < list.size(); index++) {
+            if (!(list.get(index) instanceof Map<?, ?> alternative)
+                    || !(alternative.get("index") instanceof Number alternativeIndex)
+                    || alternativeIndex.intValue() != index
+                    || !expected.routeIdentities().get(index).equals(alternative.get("identity"))) {
+                throw new ReplayMismatchException("strict-interval-index-alternatives-mismatch");
+            }
+        }
+    }
+
+    private static boolean rangeMatches(Object value,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange range) {
+        return value instanceof Map<?, ?> map
+                && map.get("first") instanceof Number first
+                && map.get("last") instanceof Number last
+                && first.intValue() == range.firstIndex() && last.intValue() == range.lastIndex();
+    }
+
+    private static Map<String, Object> object(Map<String, Object> value, String key) {
+        if (!(value.get(key) instanceof Map<?, ?> map)) {
+            throw new ReplayMismatchException("strict-interval-index-mismatch");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        map.forEach((name, item) -> {
+            if (!(name instanceof String text)) throw new ReplayMismatchException("strict-interval-index-mismatch");
+            result.put(text, item);
+        });
+        return result;
+    }
+
+    private static List<?> list(Map<String, Object> value, String key) {
+        if (!(value.get(key) instanceof List<?> items)) {
+            throw new ReplayMismatchException("strict-interval-index-mismatch");
+        }
+        return items;
+    }
 
     /** Runs the captured engine at a supported scalar or final level. */
     public static Result replay(Format15Archive archive, ReplayLevel level,

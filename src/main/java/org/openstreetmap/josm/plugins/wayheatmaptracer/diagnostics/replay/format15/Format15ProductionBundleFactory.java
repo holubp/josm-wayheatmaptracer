@@ -23,6 +23,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
@@ -213,8 +214,10 @@ public final class Format15ProductionBundleFactory {
      * Serializes the existing per-interval production routes and their already composed preview.
      * The caller must pass the numeric receipt that accompanied acquisition; the detached batch
      * deliberately does not synthesize that external receipt. The preview and point provenance
-     * geometry are private evidence. This entry point emits no frozen full-way inference input and never grants
-     * {@code FULL_EDIT_PLAN} replay capability.
+     * geometry are private evidence. When the original capture authority and bounded shared
+     * input are available, it also emits strict interval replay input. The full-selection
+     * request in that input supplies lineage; inference is replayed only for the recorded
+     * intervals. This entry point never grants {@code FULL_EDIT_PLAN} capability.
      *
      * <p>The live worker interface is: call this after production interval tracing and
      * {@link FixedIntervalEditPlanComposer#compose(IntervalTraceBatch, Map)} with the same batch
@@ -282,6 +285,20 @@ public final class Format15ProductionBundleFactory {
                 : plan.finalPreviewWays();
         String preview = geographicWays(previewWays);
         String previewHash = Format15Safety.sha256(preview.getBytes(StandardCharsets.UTF_8));
+        byte[] frozenIntervals = null;
+        if (batch.authoritySpecification() != null) {
+            try {
+                var reproducedPartition = SelectedWayIntervalPartitioner.partition(
+                        batch.network(), batch.authoritySpecification());
+                if (FrozenReplayCodec.partitionProofHash(reproducedPartition).equals(
+                        FrozenReplayCodec.partitionProofHash(batch.partition()))) {
+                    frozenIntervals = FrozenIntervalReplayCodec.encode(batch, assessment,
+                            routeChoices, previewHash);
+                }
+            } catch (IllegalArgumentException budgetOrUnsafeInput) {
+                // The existing artifact remains useful, but cannot advertise executable replay.
+            }
+        }
         String receiptJson = intervalSourceReceiptJson(sourceReceipt);
         StringBuilder index = new StringBuilder("{\"schema\":1,\"artifactKind\":\"INTERVAL_PRODUCTION\"")
                 .append(",\"sourceReceipt\":").append(receiptJson)
@@ -290,6 +307,8 @@ public final class Format15ProductionBundleFactory {
                 .append(",\"networkSnapshotId\":").append(quote(batch.network().snapshotId()))
                 .append(",\"evidenceSnapshotId\":").append(quote(batch.evidence().snapshotId()))
                 .append(",\"parameterHash\":").append(quote(batch.fullRequest().parameterHash()))
+                .append(",\"partitionProofHash\":")
+                .append(quote(FrozenReplayCodec.partitionProofHash(batch.partition())))
                 .append(",\"status\":").append(quote(status.name()))
                 .append(",\"planIdentity\":").append(planIdentity == null ? "null" : quote(planIdentity))
                 .append(",\"previewArtifact\":").append(quote(INTERVAL_PREVIEW_ARTIFACT))
@@ -299,7 +318,9 @@ public final class Format15ProductionBundleFactory {
                 .append(",\"appliedPlanIdentity\":")
                 .append(appliedPlanIdentity == null ? "null" : quote(appliedPlanIdentity))
                 .append(",\"applyAvailable\":").append(assessment.applyAvailable())
-                .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"SCALAR_INFERENCE\":false,\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,\"FULL_EDIT_PLAN\":false}")
+                .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"STRICT_INTERVAL_PRODUCTION\":")
+                .append(frozenIntervals != null)
+                .append(",\"SCALAR_INFERENCE\":false,\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,\"FULL_EDIT_PLAN\":false}")
                 .append(",\"intervals\":[");
         for (int i = 0; i < batch.runs().size(); i++) {
             if (i > 0) index.append(',');
@@ -352,6 +373,10 @@ public final class Format15ProductionBundleFactory {
                         new String(indexBytes, StandardCharsets.UTF_8)));
         artifacts.put(INTERVAL_PREVIEW_ARTIFACT,
                 Format15Artifact.text(INTERVAL_PREVIEW_ARTIFACT, preview));
+        if (frozenIntervals != null) {
+            artifacts.put(FrozenIntervalReplayCodec.ARTIFACT,
+                    Format15Artifact.binary(FrozenIntervalReplayCodec.ARTIFACT, frozenIntervals));
+        }
         artifacts.put("private/interval-point-provenance.json", Format15Artifact.text(
                 "private/interval-point-provenance.json",
                 intervalPointProvenanceJson(batch, assessment, plan, previewWays)));
@@ -363,7 +388,7 @@ public final class Format15ProductionBundleFactory {
         return new Format15Bundle(buildIdentity, sourceHash, batch.fullRequest().parameterHash(), artifacts);
     }
 
-    private static IntervalReason intervalReason(String reason) {
+    static IntervalReason intervalReason(String reason) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("Interval assessment reason is missing");
         }
@@ -389,7 +414,7 @@ public final class Format15ProductionBundleFactory {
                         ? "null" : quote(visible.sourceIdentityHash())) + "}";
     }
 
-    private static String intervalRoutesJson(IntervalTraceBatch batch,
+    static String intervalRoutesJson(IntervalTraceBatch batch,
             Map<Integer, Integer> routeChoices, int intervalIndex) {
         IntervalTraceBatch.IntervalRun run = batch.runs().get(intervalIndex);
         int chosen = run.routes().isEmpty() ? -1 : routeChoices.getOrDefault(intervalIndex, 0);
@@ -424,7 +449,7 @@ public final class Format15ProductionBundleFactory {
     }
 
     /** Emits a complete ordered point-to-interval map for every final preview way. */
-    private static String intervalPointProvenanceJson(IntervalTraceBatch batch,
+    static String intervalPointProvenanceJson(IntervalTraceBatch batch,
             FixedIntervalEditPlanComposer.Assessment assessment, AlignmentEditPlan plan,
             Map<PrimitiveKey, List<GeographicPoint>> previewWays) {
         DetachedWay originalSelected = (DetachedWay) batch.network().primitives()
@@ -711,7 +736,7 @@ public final class Format15ProductionBundleFactory {
         return json.append("]}\n").toString();
     }
 
-    private static String geographicWays(Map<PrimitiveKey, List<GeographicPoint>> ways) {
+    static String geographicWays(Map<PrimitiveKey, List<GeographicPoint>> ways) {
         StringBuilder json = new StringBuilder("{\"coordinateSpace\":\"geographic-degrees\",\"ways\":{");
         boolean firstWay = true;
         for (PrimitiveKey key : new java.util.TreeSet<>(ways.keySet())) {

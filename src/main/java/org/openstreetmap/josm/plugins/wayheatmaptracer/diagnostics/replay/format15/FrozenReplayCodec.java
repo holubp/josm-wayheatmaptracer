@@ -57,6 +57,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 
 /**
  * Explicit bounded binary codec for production-replay inputs. No Java
@@ -133,6 +135,197 @@ public final class FrozenReplayCodec {
         } finally {
             DECODE_ADMISSION.remove();
         }
+    }
+
+    /** Encodes one interval request without copying its shared evidence or network. */
+    static byte[] encodeRequestOnly(TraceRequest value) {
+        try {
+            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
+                    Format15Safety.MAX_ARTIFACT_BYTES);
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                request(out, value);
+            }
+            return bytes.toByteArray();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Interval request exceeds budget", failure);
+        }
+    }
+
+    /** Decodes one request against the sole shared evidence frame. */
+    static TraceRequest decodeRequestOnly(byte[] bytes, EvidenceSnapshot evidence) {
+        if (bytes == null || bytes.length > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Interval request exceeds budget");
+        }
+        DECODE_ADMISSION.set(new Admission());
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            TraceRequest result = request(in, evidence.coordinateFrame(), evidence.transform());
+            if (in.read() != -1) throw new IllegalArgumentException("Interval request has trailing bytes");
+            return result;
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Malformed interval request", failure);
+        } finally {
+            DECODE_ADMISSION.remove();
+        }
+    }
+
+    /** Version-one original partition authority, kept separate from the v1/v2 single-request codec. */
+    static byte[] encodeAuthority(NetworkSnapshotCapture.Specification s) {
+        try {
+            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
+                    Format15Safety.MAX_ARTIFACT_BYTES);
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                str(out, s.snapshotId());
+                str(out, s.datasetIdentity());
+                out.writeLong(s.sourceGeneration());
+                key(out, s.selectedWayKey());
+                range(out, s.selectedRange());
+                frame(out, s.metricFrame());
+                region(out, s.collisionEnvelope());
+                region(out, s.editRegion());
+                count(out, s.editableWayOccurrences().size());
+                for (PrimitiveKey way : orderedKeys(s.editableWayOccurrences().keySet())) {
+                    key(out, way);
+                    count(out, s.editableWayOccurrences().get(way).size());
+                    for (OccurrenceRange occurrence : s.editableWayOccurrences().get(way))
+                        range(out, occurrence);
+                }
+                keys(out, s.editableExistingKeys());
+                keys(out, s.movableExistingNodeKeys());
+                keys(out, s.removableExistingNodeKeys());
+                keys(out, s.explicitlyProtectedNodeKeys());
+                out.writeBoolean(s.mayCreateNodes());
+                out.writeBoolean(s.permissions().widerDiscovery());
+                out.writeDouble(s.permissions().ordinaryRadiusMeters());
+                out.writeDouble(s.permissions().maximumDiscoveryRadiusMeters());
+                en(out, s.permissions().junctionPolicy());
+                out.writeBoolean(s.permissions().reconstructIncidentWays());
+                count(out, s.readOnlyPorts().size());
+                for (ExternalPort port : s.readOnlyPorts()) port(out, port);
+            }
+            return bytes.toByteArray();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Partition authority exceeds budget", failure);
+        }
+    }
+
+    static NetworkSnapshotCapture.Specification decodeAuthority(byte[] bytes) {
+        if (bytes == null || bytes.length > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Partition authority exceeds budget");
+        }
+        DECODE_ADMISSION.set(new Admission());
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            String id = str(in), dataset = str(in);
+            long generation = in.readLong();
+            PrimitiveKey selected = key(in);
+            OccurrenceRange selection = range(in);
+            LocalMetricFrame metric = frame(in);
+            MetricRegion collision = region(in), edit = region(in);
+            int n = count(in);
+            Map<PrimitiveKey, List<OccurrenceRange>> occurrences = new LinkedHashMap<>();
+            for (int index = 0; index < n; index++) {
+                PrimitiveKey way = key(in);
+                int size = count(in);
+                List<OccurrenceRange> ranges = new ArrayList<>(size);
+                for (int j = 0; j < size; j++) ranges.add(range(in));
+                if (occurrences.put(way, ranges) != null)
+                    throw new IllegalArgumentException("Duplicate authority way");
+            }
+            Set<PrimitiveKey> editable = keys(in), movable = keys(in), removable = keys(in),
+                    protectedKeys = keys(in);
+            boolean create = in.readBoolean();
+            RecoveryPermissions permissions = new RecoveryPermissions(in.readBoolean(),
+                    in.readDouble(), in.readDouble(), en(in, JunctionPolicy.class),
+                    in.readBoolean());
+            n = count(in);
+            List<ExternalPort> ports = new ArrayList<>(n);
+            for (int index = 0; index < n; index++) ports.add(port(in));
+            if (in.read() != -1) throw new IllegalArgumentException("Partition authority has trailing bytes");
+            return new NetworkSnapshotCapture.Specification(id, dataset, generation, selected,
+                    selection, metric, collision, edit, occurrences, editable, movable,
+                    removable, protectedKeys, create, permissions, ports);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Malformed partition authority", failure);
+        } finally {
+            DECODE_ADMISSION.remove();
+        }
+    }
+
+    /** Hashes the complete typed partition proof, with captured network parity bound separately. */
+    static String partitionProofHash(SelectedWayIntervalPartitioner.Partition p) {
+        try {
+            BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
+                    Format15Safety.MAX_ARTIFACT_BYTES);
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                key(out, p.selectedWayKey());
+                range(out, p.selectedRange());
+                str(out, p.datasetIdentity());
+                out.writeLong(p.sourceGeneration());
+                count(out, p.fixedIslands().size());
+                for (var island : p.fixedIslands()) {
+                    range(out, island.range());
+                    count(out, island.occurrenceKeys().size());
+                    for (PrimitiveKey k : island.occurrenceKeys()) key(out, k);
+                    keys(out, island.junctionKeys());
+                    count(out, island.reasons().size());
+                    for (var reason : island.reasons()) en(out, reason);
+                    boundary(out, island.beforeBoundary());
+                    boundary(out, island.afterBoundary());
+                    keys(out, island.provedPrimitiveKeys());
+                    ports(out, island.provedPorts());
+                }
+                count(out, p.slideIntervals().size());
+                for (var interval : p.slideIntervals()) {
+                    range(out, interval.range());
+                    count(out, interval.occurrenceKeys().size());
+                    for (PrimitiveKey k : interval.occurrenceKeys()) key(out, k);
+                    boundary(out, interval.startBoundary());
+                    boundary(out, interval.endBoundary());
+                }
+                count(out, p.junctionDispositions().size());
+                for (var disposition : p.junctionDispositions()) {
+                    out.writeInt(disposition.selectedOccurrenceIndex());
+                    key(out, disposition.nodeKey());
+                    en(out, disposition.reason());
+                    out.writeBoolean(disposition.automaticEligible());
+                    out.writeBoolean(disposition.provedFootprint() != null);
+                    if (disposition.provedFootprint() != null) range(out, disposition.provedFootprint());
+                }
+                ports(out, p.provedPorts());
+            }
+            return Format15Safety.sha256(bytes.toByteArray());
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Partition proof exceeds budget", failure);
+        }
+    }
+
+    private static void boundary(DataOutputStream out,
+            SelectedWayIntervalPartitioner.BoundaryConstraint b) throws IOException {
+        en(out, b.kind());
+        out.writeInt(b.occurrenceIndex());
+        key(out, b.nodeKey());
+        out.writeBoolean(b.mayMove());
+        out.writeBoolean(b.requiresJointPlan());
+        en(out, b.reason());
+    }
+
+    private static void ports(DataOutputStream out, Set<ExternalPort> values) throws IOException {
+        count(out, values.size());
+        for (ExternalPort value : values.stream().sorted(Comparator.comparing(ExternalPort::toString)).toList())
+            port(out, value);
+    }
+
+    private static void port(DataOutputStream out, ExternalPort p) throws IOException {
+        key(out, p.wayKey());
+        key(out, p.boundaryNodeKey());
+        key(out, p.outsideNeighborKey());
+        out.writeInt(p.boundaryOccurrenceIndex());
+        en(out, p.side());
+        geo(out, p.outsideNeighborCoordinate());
+    }
+
+    private static ExternalPort port(DataInputStream in) throws IOException {
+        return new ExternalPort(key(in), key(in), key(in), in.readInt(),
+                en(in, ExternalPort.Side.class), geo(in));
     }
 
     /** Encodes the exact immutable reviewed edit plan in a separate bounded artifact. */

@@ -975,7 +975,7 @@ public final class LiveBPreviewService {
             }
             cancellation.checkpoint();
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
-                    runs, options);
+                    runs, options, captured.specification());
         } finally {
             ModernDiagnosticCounters.end();
         }

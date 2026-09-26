@@ -6,11 +6,19 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 
 /** Frozen per-interval production results from one captured slide attempt. */
 public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evidence,
         NetworkSnapshot network, SelectedWayIntervalPartitioner.Partition partition,
-        List<IntervalRun> runs, ModernTracePipeline.Options options) {
+        List<IntervalRun> runs, ModernTracePipeline.Options options,
+        NetworkSnapshotCapture.Specification authoritySpecification) {
+    /** Compatibility constructor for artifact-only batches without original capture authority. */
+    public IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evidence,
+            NetworkSnapshot network, SelectedWayIntervalPartitioner.Partition partition,
+            List<IntervalRun> runs, ModernTracePipeline.Options options) {
+        this(fullRequest, evidence, network, partition, runs, options, null);
+    }
     /** Bound on final route objects retained across one detached attempt. */
     public static final int MAX_RETAINED_ROUTES = 128;
     /** One original interval and its unmodified production inference and ranked routes. */
@@ -53,6 +61,13 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
                 || !fullRequest.networkSnapshotId().equals(network.snapshotId())
                 || !fullRequest.networkContentHash().equals(network.canonicalHash())) {
             throw new IllegalArgumentException("Interval batch does not match its captured source");
+        }
+        if (authoritySpecification != null && (!authoritySpecification.snapshotId().equals(network.snapshotId())
+                || !authoritySpecification.selectedWayKey().equals(fullRequest.selectedWayKey())
+                || !authoritySpecification.selectedRange().equals(fullRequest.selectedRange())
+                || !authoritySpecification.datasetIdentity().equals(network.datasetIdentity())
+                || authoritySpecification.sourceGeneration() != network.sourceGeneration())) {
+            throw new IllegalArgumentException("Interval authority does not match its captured source");
         }
         runs = List.copyOf(runs);
         for (int index = 0; index < runs.size(); index++) {

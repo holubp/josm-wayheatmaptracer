@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -28,6 +29,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.ReplayMismatchException;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -1327,6 +1332,102 @@ class V022FixedIntervalEditPlanComposerTest {
                 CancellationProbe.NONE);
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
         assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
+        var replayBundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                assessment, Map.of(), new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                        1L, 15, "a".repeat(64)),
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+        assertTrue(replayBundle.artifactNames().contains("private/frozen-interval-input.bin"),
+                "a real two-interval production batch must include strict replay input");
+        Path replayPath = Files.createTempFile("strict-interval-", ".zip");
+        try {
+            Format15BundleWriter.write(replayBundle, replayPath);
+            var archive = Format15ArchiveReader.read(replayPath);
+            var replay = Format15ReplayRunner.replayIntervals(archive,
+                    archive.sourceIdentityHash(), archive.parameterHash());
+            assertEquals(partition.slideIntervals(), replay.partition().slideIntervals());
+            assertEquals(2, replay.batch().runs().size());
+            assertEquals(assessment.plan().orElseThrow().canonicalHash(),
+                    replay.assessment().plan().orElseThrow().canonicalHash());
+
+            Map<String, Format15Artifact> omitted = new LinkedHashMap<>(replayBundle.artifacts());
+            omitted.remove("private/frozen-interval-input.bin");
+            var withoutInput = new Format15Bundle(replayBundle.buildIdentity(),
+                    replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), omitted);
+            Format15BundleWriter.write(withoutInput, replayPath);
+            var missing = Format15ArchiveReader.read(replayPath);
+            assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                    missing, missing.sourceIdentityHash(), missing.parameterHash()));
+
+            byte[] originalPayload = replayBundle.artifact("private/frozen-interval-input.bin").bytes();
+            java.nio.ByteBuffer layout = java.nio.ByteBuffer.wrap(originalPayload);
+            layout.position(8);
+            int sharedBytes = layout.getInt();
+            layout.position(layout.position() + sharedBytes);
+            int authorityBytes = layout.getInt();
+            layout.position(layout.position() + authorityBytes);
+            int proofBytes = Short.toUnsignedInt(layout.getShort());
+            layout.position(layout.position() + proofBytes);
+            int intervalCountOffset = layout.position();
+            assertEquals(2, layout.getInt());
+            int firstRequestBytes = layout.getInt();
+            layout.position(layout.position() + firstRequestBytes);
+            int firstScalarHashOffset = layout.position() + 2;
+            for (int corruption : List.of(0, 1)) {
+                byte[] alteredPayload = originalPayload.clone();
+                if (corruption == 0) {
+                    java.nio.ByteBuffer.wrap(alteredPayload).putInt(intervalCountOffset, 1);
+                } else {
+                    alteredPayload[firstScalarHashOffset] = alteredPayload[firstScalarHashOffset]
+                            == 'a' ? (byte) 'b' : (byte) 'a';
+                }
+                Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
+                changed.put("private/frozen-interval-input.bin", Format15Artifact.binary(
+                        "private/frozen-interval-input.bin", alteredPayload));
+                var tampered = new Format15Bundle(replayBundle.buildIdentity(),
+                        replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed);
+                Format15BundleWriter.write(tampered, replayPath);
+                var read = Format15ArchiveReader.read(replayPath);
+                assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                        read, read.sourceIdentityHash(), read.parameterHash()));
+            }
+
+            String index = new String(replayBundle.artifact("interval-production.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(index.contains("\"chosenRouteIndex\":0"));
+            int proofStart = index.indexOf("\"partitionProofHash\":\"")
+                    + "\"partitionProofHash\":\"".length();
+            String alteredProof = index.substring(0, proofStart)
+                    + (index.charAt(proofStart) == 'a' ? 'b' : 'a')
+                    + index.substring(proofStart + 1);
+            for (String altered : List.of(
+                    index.replaceFirst("\\\"chosenRouteIndex\\\":0", "\\\"chosenRouteIndex\\\":1"),
+                    alteredProof)) {
+                Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
+                changed.put("interval-production.json", Format15Artifact.text(
+                        "interval-production.json", altered));
+                var tampered = new Format15Bundle(replayBundle.buildIdentity(),
+                        replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed);
+                Format15BundleWriter.write(tampered, replayPath);
+                var read = Format15ArchiveReader.read(replayPath);
+                assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                        read, read.sourceIdentityHash(), read.parameterHash()));
+            }
+            for (String name : List.of("private/interval-composed-preview.json",
+                    "private/interval-0-routes.json")) {
+                Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
+                String text = new String(replayBundle.artifact(name).bytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                changed.put(name, Format15Artifact.text(name, text + " "));
+                var tampered = new Format15Bundle(replayBundle.buildIdentity(),
+                        replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), changed);
+                Format15BundleWriter.write(tampered, replayPath);
+                var read = Format15ArchiveReader.read(replayPath);
+                assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                        read, read.sourceIdentityHash(), read.parameterHash()));
+            }
+        } finally {
+            Files.deleteIfExists(replayPath);
+        }
         var plan = assessment.plan().orElseThrow();
         var beforeSelected = (DetachedWay) batch.network().primitives().get(plan.selectedWayKey());
         var afterSelected = (DetachedWay) plan.after().primitives().get(plan.selectedWayKey());
