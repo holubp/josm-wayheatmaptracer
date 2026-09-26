@@ -341,16 +341,25 @@ public final class LiveBPreviewService {
                             ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
                             "incomplete incident way");
                 }
+                List<Way> incidentWays = dataSet.getWays().stream()
+                        .filter(incident -> !incident.isDeleted() && !incident.isIncomplete()
+                                && incident.getNodes().contains(boundary))
+                        .toList();
+                if (incidentWays.size() > 1 && dataSet.getRelations().stream()
+                        .filter(relation -> !relation.isDeleted() && relation.hasIncompleteMembers())
+                        .anyMatch(relation -> relation.getMembers().stream()
+                                .anyMatch(member -> member.getMember() == boundary
+                                        || incidentWays.contains(member.getMember())))) {
+                    throw new ManualJunctionCaptureException(
+                            ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                            "incomplete relation member at junction");
+                }
                 if (boundary.hasKeys() || boundary.getReferrers().stream()
                         .anyMatch(referrer -> !(referrer instanceof Way))
                         || dataSet.getRelations().stream().anyMatch(relation -> relation.getMembers().stream()
                                 .anyMatch(member -> member.getMember() == boundary))) {
                     continue;
                 }
-                List<Way> incidentWays = dataSet.getWays().stream()
-                        .filter(incident -> !incident.isDeleted() && !incident.isIncomplete()
-                                && incident.getNodes().contains(boundary))
-                        .toList();
                 boolean reattachableJunction = incidentWays.size() > 1;
                 if (permissions.junctionPolicy() == JunctionPolicy.REATTACH
                         && !reattachableJunction) {

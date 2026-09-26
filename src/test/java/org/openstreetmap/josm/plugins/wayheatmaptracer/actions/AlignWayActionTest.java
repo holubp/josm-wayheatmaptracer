@@ -175,6 +175,23 @@ class AlignWayActionTest {
         assertTrue(status.contains("\"manualJunctionReason\":\"INCOMPLETE_ARM\""));
     }
 
+    @Test
+    void incompleteRelationCaptureReasonExportsTypedBlockedAttempt(@TempDir Path directory)
+            throws Exception {
+        String failure = "ManualJunctionCaptureException: INCOMPLETE_CLOSURE: "
+                + "incomplete relation member. Adjust this junction manually, then run alignment again.";
+        var reason = AlignWayAction.manualCaptureReason(failure);
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE, reason);
+        AlignWayAction.recordModernUnavailable("blocked", "visible-layer",
+                "incomplete-relation", reason);
+        Path diagnostic = directory.resolve("incomplete-relation.zip");
+        DiagnosticsRegistry.writeLatest(diagnostic.toFile());
+        String status = new String(Format15ArchiveReader.read(diagnostic)
+                .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(status.contains("\"status\":\"blocked\""));
+        assertTrue(status.contains("\"manualJunctionReason\":\"INCOMPLETE_CLOSURE\""));
+    }
+
     private static Node loadedNode(long id, double northMeters, double eastMeters) {
         double degrees = 180.0 / Math.PI / 6_378_137.0;
         Node node = new Node(new LatLon(northMeters * degrees, eastMeters * degrees));

@@ -1286,9 +1286,16 @@ public class AlignWayAction extends JosmAction {
 
     static ManualJunctionEligibility.Reason manualCaptureReason(String failure) {
         String marker = LiveBPreviewService.ManualJunctionCaptureException.class.getSimpleName()
-                + ": " + ManualJunctionEligibility.Reason.INCOMPLETE_ARM.name() + ":";
-        return failure != null && failure.startsWith(marker)
-                ? ManualJunctionEligibility.Reason.INCOMPLETE_ARM : null;
+                + ": ";
+        if (failure == null || !failure.startsWith(marker)) {
+            return null;
+        }
+        for (ManualJunctionEligibility.Reason reason : ManualJunctionEligibility.Reason.values()) {
+            if (failure.startsWith(marker + reason.name() + ":")) {
+                return reason;
+            }
+        }
+        return null;
     }
 
     static String beginDiagnosticAttempt() {
