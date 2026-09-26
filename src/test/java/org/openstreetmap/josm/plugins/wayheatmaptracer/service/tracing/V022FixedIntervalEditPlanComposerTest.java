@@ -11,11 +11,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.nio.file.Path;
 
 import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Archive;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
@@ -82,6 +89,54 @@ class V022FixedIntervalEditPlanComposerTest {
                 .get(selected.nodeKeys().get(index)).equals(
                         plan.after().primitives().get(selected.nodeKeys().get(index)))),
                 "at least one ordinary movable existing node must actually move");
+    }
+
+    @Test
+    void intervalProductionArtifactPreservesComposedPreviewAndDoesNotClaimReplay(
+            @TempDir Path directory) throws Exception {
+        IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, true);
+        assertTrue(batch.runs().get(0).routes().size() > 1);
+        Map<Integer, Integer> routeChoices = Map.of(0, 1);
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, routeChoices);
+        var plan = assessment.plan().orElseThrow();
+
+        var bundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                assessment, routeChoices, "receipt:test-slide-1", "confirmed",
+                plan.canonicalHash(), null);
+        Path file = directory.resolve("intervals.zip");
+        Format15BundleWriter.write(bundle, file);
+        Format15Archive decoded = Format15ArchiveReader.read(file);
+        String index = new String(decoded.artifact("interval-production.json").orElseThrow()
+                .bytes(), java.nio.charset.StandardCharsets.UTF_8);
+        String geometry = new String(decoded.artifact("private/interval-composed-preview.json")
+                .orElseThrow().bytes(), java.nio.charset.StandardCharsets.UTF_8);
+
+        assertTrue(index.contains("\"chosenRouteIndex\":1"));
+        for (var route : batch.runs().get(0).routes()) {
+            assertTrue(index.contains(route.hypothesis().id()));
+        }
+        assertTrue(index.contains("\"occurrenceRange\""));
+        assertTrue(index.contains(plan.canonicalHash()));
+        assertTrue(index.contains("receipt:test-slide-1"));
+        assertTrue(index.endsWith("]}\n"));
+        assertTrue(geometry.contains("\"ways\""));
+        var firstPoint = plan.finalPreviewWays().get(plan.selectedWayKey()).get(0);
+        assertFalse(index.contains("[" + firstPoint.latitudeDegrees() + ","
+                + firstPoint.longitudeDegrees() + "]"));
+        assertFalse(decoded.capability().supports(ReplayLevel.SCALAR_INFERENCE));
+        assertFalse(decoded.capability().supports(ReplayLevel.FINAL_GEOMETRY));
+        assertFalse(decoded.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
+        assertEquals(bundle.artifact("interval-production.json").sha256(),
+                decoded.artifact("interval-production.json").orElseThrow().sha256());
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        assessment, routeChoices, "Cookie: secret", "preview", null, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        assessment, routeChoices, "https://example.invalid/source", "preview", null, null));
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+                        assessment, routeChoices, "receipt:test-slide-1", "reviewed", "wrong-plan", null));
     }
 
     @Test

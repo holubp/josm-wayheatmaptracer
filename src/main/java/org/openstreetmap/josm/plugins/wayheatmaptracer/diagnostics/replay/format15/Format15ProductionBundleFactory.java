@@ -15,10 +15,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
+    private static final String INTERVAL_INDEX_ARTIFACT = "interval-production.json";
+    private static final String INTERVAL_PREVIEW_ARTIFACT = "private/interval-composed-preview.json";
+
+    /** Typed per-interval failure/no-op reasons exported by the additive interval artifact. */
+    public enum IntervalReason {
+        VALIDATED, NO_PRODUCTION_ROUTE, NO_GEOMETRY_CHANGE, LOCAL_IMAGE_SUPPORT,
+        LOCAL_ROUTE_BLOCKED, LOCAL_CONNECTOR_SUPPORT, T_LOCAL_PRECOMMAND_EVIDENCE,
+        GLOBAL_FINAL_VALIDATION, RESOURCE_LIMIT, CANCELLED, LOCAL_FAILURE
+    }
+
     private Format15ProductionBundleFactory() {
     }
 
@@ -151,6 +163,171 @@ public final class Format15ProductionBundleFactory {
                 + "\"FULL_EDIT_PLAN\":false}}\n"));
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
             base.parameterHash(), artifacts);
+    }
+
+    /**
+     * Serializes the existing per-interval production routes and their already composed preview.
+     * The caller must pass the source receipt that accompanied acquisition; the detached batch
+     * deliberately does not synthesize that external receipt. The preview geometry is private
+     * evidence. This entry point emits no frozen full-way inference input and never grants
+     * {@code FULL_EDIT_PLAN} replay capability.
+     *
+     * <p>The live worker interface is: call this after production interval tracing and
+     * {@link FixedIntervalEditPlanComposer#compose(IntervalTraceBatch, Map)} with the same batch
+     * and route-choice map, then pass the actual safe source receipt, UI status, and the exact
+     * composed plan identity shown at review/apply. Pass {@code null} identities before review
+     * or apply.</p>
+     */
+    public static Format15Bundle createLiveIntervals(String buildIdentity,
+            IntervalTraceBatch batch, FixedIntervalEditPlanComposer.Assessment assessment,
+            Map<Integer, Integer> routeChoices, String sourceReceipt, String status,
+            String reviewedPlanIdentity, String appliedPlanIdentity) {
+        if (buildIdentity == null || buildIdentity.isBlank() || batch == null || assessment == null
+                || routeChoices == null || sourceReceipt == null || sourceReceipt.isBlank()
+                || status == null || status.isBlank()
+                || assessment.intervals().size() != batch.runs().size()) {
+            throw new IllegalArgumentException("Interval production artifact inputs are incomplete");
+        }
+        Format15Safety.requireSafeExportedMetadata(buildIdentity);
+        requireSafeSourceReceipt(sourceReceipt);
+        Format15Safety.requireSafeExportedMetadata(status);
+        if (!batch.fullRequest().selectedWayKey().equals(batch.partition().selectedWayKey())
+                || !batch.fullRequest().selectedRange().equals(batch.partition().selectedRange())
+                || !batch.fullRequest().networkContentHash().equals(batch.network().canonicalHash())
+                || !batch.fullRequest().evidenceContentHash().equals(batch.evidence().canonicalHash())) {
+            throw new IllegalArgumentException("Interval batch source lineage is inconsistent");
+        }
+        if (routeChoices.keySet().stream().anyMatch(index -> index == null || index < 0
+                    || index >= batch.runs().size())
+                || routeChoices.values().stream().anyMatch(index -> index == null || index < 0)) {
+            throw new IllegalArgumentException("Interval route choice is outside the batch");
+        }
+
+        AlignmentEditPlan plan = assessment.plan().orElse(null);
+        String planIdentity = plan == null ? null : plan.canonicalHash();
+        if (plan != null && (!plan.selectedWayKey().equals(batch.fullRequest().selectedWayKey())
+                || !plan.selectedRange().equals(batch.fullRequest().selectedRange())
+                || !plan.before().canonicalHash().equals(batch.network().canonicalHash())
+                || !plan.evidenceHash().equals(batch.evidence().canonicalHash())
+                || !plan.parameterHash().equals(batch.fullRequest().parameterHash()))) {
+            throw new IllegalArgumentException("Composed interval plan differs from its frozen source");
+        }
+        if (reviewedPlanIdentity != null && !reviewedPlanIdentity.equals(planIdentity)
+                || appliedPlanIdentity != null && !appliedPlanIdentity.equals(planIdentity)
+                || appliedPlanIdentity != null && reviewedPlanIdentity == null
+                || appliedPlanIdentity != null && !assessment.applyAvailable()
+                || ("confirmed".equals(status) || "reviewed".equals(status))
+                        && reviewedPlanIdentity == null
+                || ("applied".equals(status) || "applied-after-review".equals(status))
+                        && appliedPlanIdentity == null) {
+            throw new IllegalArgumentException("Interval review or applied identity differs from the composed plan");
+        }
+        if (reviewedPlanIdentity != null) Format15Safety.requireSafeExportedMetadata(reviewedPlanIdentity);
+        if (appliedPlanIdentity != null) Format15Safety.requireSafeExportedMetadata(appliedPlanIdentity);
+
+        Map<PrimitiveKey, List<GeographicPoint>> previewWays = plan == null
+                ? Map.of(batch.fullRequest().selectedWayKey(), assessment.selectedWayPreview())
+                : plan.finalPreviewWays();
+        String preview = geographicWays(previewWays);
+        String previewHash = Format15Safety.sha256(preview.getBytes(StandardCharsets.UTF_8));
+        StringBuilder index = new StringBuilder("{\"schema\":1,\"artifactKind\":\"INTERVAL_PRODUCTION\"")
+                .append(",\"sourceReceipt\":").append(quote(sourceReceipt))
+                .append(",\"networkHash\":").append(quote(batch.network().canonicalHash()))
+                .append(",\"evidenceHash\":").append(quote(batch.evidence().canonicalHash()))
+                .append(",\"networkSnapshotId\":").append(quote(batch.network().snapshotId()))
+                .append(",\"evidenceSnapshotId\":").append(quote(batch.evidence().snapshotId()))
+                .append(",\"parameterHash\":").append(quote(batch.fullRequest().parameterHash()))
+                .append(",\"status\":").append(quote(status))
+                .append(",\"planIdentity\":").append(planIdentity == null ? "null" : quote(planIdentity))
+                .append(",\"previewArtifact\":").append(quote(INTERVAL_PREVIEW_ARTIFACT))
+                .append(",\"previewSha256\":").append(quote(previewHash))
+                .append(",\"reviewedPlanIdentity\":")
+                .append(reviewedPlanIdentity == null ? "null" : quote(reviewedPlanIdentity))
+                .append(",\"appliedPlanIdentity\":")
+                .append(appliedPlanIdentity == null ? "null" : quote(appliedPlanIdentity))
+                .append(",\"applyAvailable\":").append(assessment.applyAvailable())
+                .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"FULL_EDIT_PLAN\":false,\"SCALAR_INFERENCE\":false,\"RASTER_INFERENCE\":false}")
+                .append(",\"intervals\":[");
+        for (int i = 0; i < batch.runs().size(); i++) {
+            if (i > 0) index.append(',');
+            IntervalTraceBatch.IntervalRun run = batch.runs().get(i);
+            FixedIntervalEditPlanComposer.IntervalAssessment result = assessment.intervals().get(i);
+            int selectedRouteChoice = routeChoices.getOrDefault(i, 0);
+            if (run.routes().isEmpty() && routeChoices.containsKey(i)
+                    || !run.routes().isEmpty() && selectedRouteChoice >= run.routes().size()) {
+                throw new IllegalArgumentException("Interval route choice is outside production alternatives");
+            }
+            int routeIndex = run.routes().isEmpty() ? -1 : selectedRouteChoice;
+            String routeIdentity = routeIndex < 0 ? "unavailable"
+                    : run.routes().get(routeIndex).hypothesis().id();
+            if (result.intervalIndex() != i || result.routeIndex() < 0
+                    || result.routeIndex() >= Math.max(1, run.routes().size())
+                    || result.routeIdentity() == null) {
+                throw new IllegalArgumentException("Composer assessment differs from the selected production route");
+            }
+            String assessmentIdentity = run.routes().isEmpty() ? "unavailable"
+                    : run.routes().get(result.routeIndex()).hypothesis().id();
+            if (!routeIdentity.equals(assessmentIdentity) || !routeIdentity.equals(result.routeIdentity())) {
+                throw new IllegalArgumentException("Composer assessment differs from the selected production route");
+            }
+            Format15Safety.requireSafeExportedMetadata(routeIdentity);
+            IntervalReason reason = intervalReason(result.reason());
+            index.append("{\"intervalIndex\":").append(i)
+                    .append(",\"occurrenceRange\":").append(rangeJson(run.interval().range()))
+                    .append(",\"traceRange\":").append(rangeJson(run.interval().traceRange()))
+                    .append(",\"chosenRouteIndex\":").append(routeIndex)
+                    .append(",\"chosenRouteIdentity\":").append(quote(routeIdentity))
+                    .append(",\"alternativesTruncated\":").append(run.alternativesTruncated())
+                    .append(",\"disposition\":").append(quote(result.disposition().name()))
+                    .append(",\"reason\":").append(quote(reason.name()))
+                    .append(",\"alternatives\":[");
+            for (int route = 0; route < run.routes().size(); route++) {
+                if (route > 0) index.append(',');
+                String id = run.routes().get(route).hypothesis().id();
+                Format15Safety.requireSafeExportedMetadata(id);
+                index.append("{\"index\":").append(route)
+                        .append(",\"identity\":").append(quote(id)).append('}');
+            }
+            index.append("]}");
+        }
+        byte[] indexBytes = index.append("]}\n").toString().getBytes(StandardCharsets.UTF_8);
+        String sourceHash = Format15Safety.sha256((batch.network().canonicalHash() + ":"
+                + batch.evidence().canonicalHash() + ":" + sourceReceipt)
+                .getBytes(StandardCharsets.UTF_8));
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
+        artifacts.put(INTERVAL_INDEX_ARTIFACT,
+                Format15Artifact.text(INTERVAL_INDEX_ARTIFACT,
+                        new String(indexBytes, StandardCharsets.UTF_8)));
+        artifacts.put(INTERVAL_PREVIEW_ARTIFACT,
+                Format15Artifact.text(INTERVAL_PREVIEW_ARTIFACT, preview));
+        return new Format15Bundle(buildIdentity, sourceHash, batch.fullRequest().parameterHash(), artifacts);
+    }
+
+    private static IntervalReason intervalReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("Interval assessment reason is missing");
+        }
+        String code = reason.split(":", 2)[0];
+        try {
+            return IntervalReason.valueOf(code);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Interval assessment reason is not a known typed reason", exception);
+        }
+    }
+
+    private static void requireSafeSourceReceipt(String sourceReceipt) {
+        Format15Safety.requireSafeExportedMetadata(sourceReceipt);
+        String lower = sourceReceipt.toLowerCase(java.util.Locale.ROOT);
+        if (sourceReceipt.length() > 512 || sourceReceipt.indexOf('\n') >= 0
+                || sourceReceipt.indexOf('\r') >= 0 || lower.contains("://")
+                || lower.contains("authorization") || lower.contains("cookie")
+                || lower.contains("header:")) {
+            throw new IllegalArgumentException("Source receipt must be bounded redacted metadata");
+        }
+    }
+
+    private static String rangeJson(org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange range) {
+        return "{\"first\":" + range.firstIndex() + ",\"last\":" + range.lastIndex() + "}";
     }
 
     private static String performanceCounters(ModernTracePipeline.Result actual,
