@@ -36,6 +36,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedScalarProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
@@ -100,6 +101,30 @@ class V022IntervalTraceRequestFactoryTest {
                 corridor.lateralStepMeters(), CancellationProbe.NONE,
                 right.profileChainage().sourceOriginGroundMeters());
         assertFalse(physicalLevels.levels().isEmpty());
+        var way = (DetachedWay) captured.network().primitives().get(right.selectedWayKey());
+        var locations = new java.util.ArrayList<>(corridor.profileLocations());
+        for (int local : List.of(0, locations.size() - 1)) {
+            int occurrence = local == 0 ? right.selectedRange().firstIndex()
+                    : right.selectedRange().lastIndex();
+            var node = (DetachedNode) captured.network().primitives()
+                    .get(way.nodeKeys().get(occurrence));
+            locations.set(local, DetachedProfileSamplingLocation.at(node.coordinate(),
+                            evidence.coordinateFrame(), evidence.transform(),
+                            right.profileChainage().cumulativeGroundMeters().get(local)));
+        }
+        var exactCorridor = new CorridorTraceInput(locations, corridor.lateralStepMeters());
+        var aRequest = new TraceRequest(right.selectedWayKey(), right.selectedRange(),
+                TrackerMode.CORRIDOR_AWARE, right.geometryMode(), right.permissions(),
+                right.budgets(), right.evidenceSnapshotId(), right.evidenceContentHash(),
+                right.networkSnapshotId(), right.networkContentHash(), right.settingsHash(),
+                right.parameterHash(), right.samplerId(), right.configuredSampleStepMeters(),
+                right.profileChainage(), resolution, java.util.Optional.of(exactCorridor));
+        var aRun = new CorridorEngineAdapter("selected-visible-source").traceWithUsage(
+                aRequest, evidence, captured.network(), CancellationProbe.NONE);
+        assertFalse(aRun.result().hypotheses().isEmpty());
+        assertEquals(4.0 / resolution.outputRasterPitchMeters(),
+                aRun.result().hypotheses().get(0).diagnostics().get("sourcePixelSizeRasterPixels"),
+                1.0e-9);
         var production = new ModernTracePipeline(new CorridorEngineAdapter("selected-visible-source"))
                 .run(right, evidence, captured.network(), computed.options(), CancellationProbe.NONE,
                         Set.of(3));
