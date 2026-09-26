@@ -17,12 +17,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.UndoRedoHandler;
+import org.openstreetmap.josm.command.AddCommand;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -72,10 +74,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetw
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -1434,6 +1440,172 @@ class V022EndToEndTest {
     }
 
     @Test
+    void T171_twoLiveIntervalsApplyAsOneExactUndoableHostEdit() throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture();
+        var computed = fixture.computed();
+        assertTrue(computed.partitioned(), "a real captured manual junction must select interval tracing");
+        var batch = computed.intervalBatch();
+        assertEquals(2, batch.runs().size(), batch.partition().toString());
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED), assessment.intervals().stream()
+                .map(FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList(),
+                assessment.intervals().toString());
+        assertTrue(assessment.applyAvailable());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), computed.captured().specification()));
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+                new VisibleSourceLockedApplyValidator(
+                        new LiveNetworkSnapshotValidator(receipt, plan,
+                                () -> plan.before().sourceGeneration()),
+                        new LiveBPreviewService(), computed.captured(), fixture::raster,
+                        fixture.epoch(), () -> { }, message -> { }),
+                "Apply two fixed-island intervals");
+        UndoRedoHandler.getInstance().clean();
+
+        onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
+
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        assertAppliedPreviewWays(plan, fixture.dataSet(), command);
+        assertTrue(fixture.selected().getNodes().stream()
+                .anyMatch(node -> node == fixture.fixedJunction()));
+        Map<PrimitiveKey, DatasetPrimitiveState> after = snapshot(fixture.dataSet());
+        PrimitiveKey fixedKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.fixedJunction().getUniqueId());
+        assertEquals(before.get(fixedKey), after.get(fixedKey),
+                "fixed junction identity, coordinate, tags, flags, and referrers stay exact");
+        assertNotEquals(before, after);
+        for (int cycle = 0; cycle < 20; cycle++) {
+            onEdt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(before, snapshot(fixture.dataSet()), "Undo cycle " + cycle);
+            onEdt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+            assertEquals(after, snapshot(fixture.dataSet()), "Redo cycle " + cycle);
+            assertAppliedPreviewWays(plan, fixture.dataSet(), command);
+        }
+        assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        UndoRedoHandler.getInstance().clean();
+    }
+
+    @Test
+    void T172_staleLiveIntervalPreviewAndApplyLeaveExactHostState() throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture();
+        var computed = fixture.computed();
+        var assessment = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
+        assertTrue(assessment.applyAvailable());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        ApplyAlignmentEditPlanCommand command = intervalHostCommand(fixture, plan, message -> { });
+        UndoRedoHandler.getInstance().clean();
+        fixture.fixedJunction().setCoor(new LatLon(latitude(0.2), longitude(0)));
+        Map<PrimitiveKey, DatasetPrimitiveState> staleState = snapshot(fixture.dataSet());
+
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> {
+            new LiveBPreviewService().requireCurrent(fixture.dataSet(), computed.captured(),
+                    fixture.raster());
+            return null;
+        }));
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; }));
+
+        assertEquals(staleState, snapshot(fixture.dataSet()));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void T173_staleIntervalRedoReportsVisibleFailureWithoutChangingHistoryOrDataset()
+            throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture();
+        var assessment = new FixedIntervalEditPlanComposer().compose(
+                fixture.computed().intervalBatch(), Map.of());
+        assertEquals(2, assessment.intervals().stream().filter(interval ->
+                interval.disposition() == FixedIntervalEditPlanComposer.Disposition.CHANGED).count());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        UndoRedoHandler.getInstance().clean();
+        Node unrelated = new Node(new LatLon(latitude(10_000), longitude(10_000)));
+        onEdt(() -> { UndoRedoHandler.getInstance().add(
+                new AddCommand(fixture.dataSet(), unrelated)); return null; });
+        AtomicReference<String> shown = new AtomicReference<>();
+        ApplyAlignmentEditPlanCommand command = intervalHostCommand(fixture, plan,
+                AlignWayAction.redoFailureReporter(shown::set));
+        onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
+        onEdt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+        Map<PrimitiveKey, DatasetPrimitiveState> beforeRedo = snapshot(fixture.dataSet());
+        var prior = UndoRedoHandler.getInstance().getUndoCommands().get(0);
+        fixture.epoch().sourceChanged();
+
+        assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> { UndoRedoHandler.getInstance().redo(); return null; }));
+
+        assertEquals(beforeRedo, snapshot(fixture.dataSet()));
+        assertEquals(List.of(prior), UndoRedoHandler.getInstance().getUndoCommands());
+        assertTrue(shown.get() != null && shown.get().contains("Alignment Redo failed"),
+                "failed Redo must show a safe user-visible message");
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty()
+                || UndoRedoHandler.getInstance().getRedoCommands().equals(List.of(command)),
+                "JOSM 19555 may consume only the attempted Redo entry");
+        UndoRedoHandler.getInstance().clean();
+    }
+
+    @Test
+    void T174_twoIntervalMutationFailureRollsBackExactHostState() throws Exception {
+        IntervalHostFixture fixture = intervalHostFixture();
+        var assessment = new FixedIntervalEditPlanComposer().compose(
+                fixture.computed().intervalBatch(), Map.of());
+        assertEquals(2, assessment.intervals().stream().filter(interval ->
+                interval.disposition() == FixedIntervalEditPlanComposer.Disposition.CHANGED).count());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), fixture.computed().captured().specification()));
+        var validator = new LiveNetworkSnapshotValidator(receipt, plan,
+                () -> plan.before().sourceGeneration());
+        Class<?> probeType = Class.forName(ApplyAlignmentEditPlanCommand.class.getName()
+                + "$MutationProbe");
+        Object probe = java.lang.reflect.Proxy.newProxyInstance(probeType.getClassLoader(),
+                new Class<?>[] {probeType}, (ignored, method, arguments) -> {
+                    if (method.getName().equals("reached")
+                            && arguments[0].toString().equals("AFTER_REPLACE_WAYS")) {
+                        throw new IntervalMutationFailure();
+                    }
+                    return null;
+                });
+        var constructor = ApplyAlignmentEditPlanCommand.class.getDeclaredConstructor(
+                DataSet.class, AlignmentEditPlan.class, LiveNetworkSnapshotValidator.class,
+                String.class, probeType);
+        constructor.setAccessible(true);
+        var command = (ApplyAlignmentEditPlanCommand) constructor.newInstance(
+                fixture.dataSet(), plan, validator,
+                "Fail two-interval mutation after way replacement", probe);
+        Map<PrimitiveKey, DatasetPrimitiveState> before = snapshot(fixture.dataSet());
+        UndoRedoHandler.getInstance().clean();
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; }));
+
+        assertTrue(failure.getCause() instanceof IntervalMutationFailure);
+        assertEquals(before, snapshot(fixture.dataSet()));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    private static final class IntervalMutationFailure extends RuntimeException { }
+
+    private static ApplyAlignmentEditPlanCommand intervalHostCommand(IntervalHostFixture fixture,
+            AlignmentEditPlan plan, java.util.function.Consumer<String> redoReporter)
+            throws Exception {
+        var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), fixture.computed().captured().specification()));
+        return new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+                new VisibleSourceLockedApplyValidator(
+                        new LiveNetworkSnapshotValidator(receipt, plan,
+                                () -> plan.before().sourceGeneration()),
+                        new LiveBPreviewService(), fixture.computed().captured(), fixture::raster,
+                        fixture.epoch(), () -> { }, redoReporter),
+                "Apply two fixed-island intervals");
+    }
+
+    @Test
     void T170_actualAtomicCommandAppliesEveryReviewedPreviewWayExactly() throws Exception {
         assertAtomicCommandAppliesPreviewWaysExactly(reconstructionFixture(),
                 junctionReconstructionRaster(true), true);
@@ -1711,7 +1883,12 @@ class V022EndToEndTest {
                     ? relation.getMembers().stream().map(member -> member.getRole() + ":"
                             + member.getMember().getType().name() + ":"
                             + member.getMember().getUniqueId()).toList() : List.of();
-            state.put(key, new DatasetPrimitiveState(coordinate, nodeIds, members,
+            Set<PrimitiveKey> referrers = primitive.getReferrers().stream()
+                    .map(referrer -> PrimitiveKey.existing(
+                            PrimitiveKey.Type.valueOf(referrer.getType().name()),
+                            referrer.getUniqueId()))
+                    .collect(java.util.stream.Collectors.toSet());
+            state.put(key, new DatasetPrimitiveState(coordinate, nodeIds, members, referrers,
                     Map.copyOf(new java.util.TreeMap<>(primitive.getKeys())),
                     primitive.isModified(), primitive.isDeleted()));
         }
@@ -1719,8 +1896,56 @@ class V022EndToEndTest {
     }
 
     private record DatasetPrimitiveState(LatLon coordinate, List<Long> nodeIds,
-            List<String> relationMembers, Map<String, String> tags, boolean modified,
+            List<String> relationMembers, Set<PrimitiveKey> referrers,
+            Map<String, String> tags, boolean modified,
             boolean deleted) {
+    }
+
+    private record IntervalHostFixture(DataSet dataSet, Way selected, Node fixedJunction,
+            LiveBPreviewService.VisibleRaster raster, VisibleSourceEpoch epoch,
+            LiveBPreviewService.Computed computed) { }
+
+    private static IntervalHostFixture intervalHostFixture() throws Exception {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i <= 20; i++) {
+            Node node = loadedNode(800 + i, latitude(0.4 * Math.sin(i * 0.5)),
+                    longitude(-50 + 5.0 * i));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        nodes.get(10).put("highway", "traffic_signals");
+        nodes.get(4).put("note", "fixed west arm boundary");
+        nodes.get(16).put("note", "fixed east arm boundary");
+        nodes.get(17).put("note", "second fixed east arm boundary");
+        Way selected = loadedWay(850, nodes.toArray(Node[]::new));
+        dataSet.addPrimitive(selected);
+        Node south = loadedNode(851, latitude(-40), longitude(0));
+        Node north = loadedNode(852, latitude(40), longitude(0));
+        dataSet.addPrimitive(south);
+        dataSet.addPrimitive(north);
+        Way receiver = loadedWay(853, south, nodes.get(10), north);
+        dataSet.addPrimitive(receiver);
+        SelectionContext selection = new SelectionContext(selected, 0, 20, nodes,
+                Set.of(nodes.get(0), nodes.get(20)));
+        int width = 800;
+        int height = 400;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distance = (y - 200.0) / 5.0;
+            double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44);
+            int gray = (int) Math.round(255.0 * intensity);
+            java.util.Arrays.fill(argb, y * width, (y + 1) * width,
+                    0xff000000 | gray << 16 | gray << 8 | gray);
+        }
+        var epoch = new VisibleSourceEpoch();
+        var raster = new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -80, -40, 80, 40, 1.2, 1.2, OptionalDouble.of(1.0),
+                "interval-host-visible", "EPSG:3857", epoch.captureStable());
+        var captured = onEdt(() -> new LiveBPreviewService().capture(dataSet, selection,
+                raster, visibleConfig()));
+        var computed = new LiveBPreviewService().compute(captured, CancellationProbe.NONE);
+        return new IntervalHostFixture(dataSet, selected, nodes.get(10), raster, epoch, computed);
     }
 
     private static Fixture fixture() {
