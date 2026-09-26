@@ -211,33 +211,32 @@ public final class SelectedWayIntervalPartitioner {
         Map<Integer, ManualJunctionEligibility.Decision> decisions = new LinkedHashMap<>();
         Map<Integer, OccurrenceRange> selectedFootprints = new LinkedHashMap<>();
         Map<Integer, ManualFootprint> provedManualFootprints = new LinkedHashMap<>();
-        Set<Integer> unprovedManualFootprints = new LinkedHashSet<>();
         Set<Integer> overlappingAutomatic = new LinkedHashSet<>();
         for (int selectedIndex : junctionOccurrences) {
             ManualJunctionEligibility.Decision decision = classify(authoritySnapshot,
                     authoritySpecification, selected, selectedIndex);
-            decisions.put(selectedIndex, decision);
-            if (decision.reason() == ManualJunctionEligibility.Reason.SIMPLE_T) {
-                List<Integer> affectedIndices = new ArrayList<>();
-                for (int index = selection.firstIndex(); index <= selection.lastIndex(); index++) {
-                    if (decision.affectedNodes().contains(selected.nodeKeys().get(index))) {
-                        affectedIndices.add(index);
-                    }
-                }
-                if (!affectedIndices.isEmpty()) {
-                    selectedFootprints.put(selectedIndex, new OccurrenceRange(
-                            affectedIndices.get(0), affectedIndices.get(affectedIndices.size() - 1)));
-                }
-            } else {
-                ManualFootprint footprint = proveFootprint(authoritySnapshot,
-                        authoritySpecification, selected, selectedIndex, proof);
-                if (footprint == null) {
-                    unprovedManualFootprints.add(selectedIndex);
-                } else {
-                    provedManualFootprints.put(selectedIndex, footprint);
-                    selectedFootprints.put(selectedIndex, footprint.selectedRange());
-                }
+            if (decision.reason() == ManualJunctionEligibility.Reason.RESOURCE_LIMIT
+                    || decision.reason() == ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE
+                    || decision.reason() == ManualJunctionEligibility.Reason.NO_JUNCTION) {
+                ManualJunctionEligibility.Reason refusal = decision.reason()
+                        == ManualJunctionEligibility.Reason.NO_JUNCTION
+                                ? ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE
+                                : decision.reason();
+                return wholeSelection(authoritySnapshot, authoritySpecification,
+                        refusal, selected, selectedIndex, dispositions, proof);
             }
+            decisions.put(selectedIndex, decision);
+            ManualFootprint footprint = proveFootprint(authoritySnapshot,
+                    authoritySpecification, selected, selectedIndex, proof);
+            if (footprint == null) {
+                ManualJunctionEligibility.Reason refusal = proof.resourceExceeded
+                        ? ManualJunctionEligibility.Reason.RESOURCE_LIMIT
+                        : ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE;
+                return wholeSelection(authoritySnapshot, authoritySpecification,
+                        refusal, selected, selectedIndex, dispositions, proof);
+            }
+            provedManualFootprints.put(selectedIndex, footprint);
+            selectedFootprints.put(selectedIndex, footprint.selectedRange());
         }
         if (proof.resourceExceeded) {
             return wholeSelection(authoritySnapshot, authoritySpecification,
@@ -302,15 +301,6 @@ public final class SelectedWayIntervalPartitioner {
             }
             if (overlappingAutomatic.contains(selectedIndex)) {
                 reason = ManualJunctionEligibility.Reason.COUPLED_JUNCTION;
-            }
-            if (unprovedManualFootprints.contains(selectedIndex)) {
-                ManualJunctionEligibility.Reason refusal = proof.resourceExceeded
-                        ? ManualJunctionEligibility.Reason.RESOURCE_LIMIT
-                        : ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE;
-                dispositions.add(new JunctionDisposition(selectedIndex, node,
-                        refusal, false, selection));
-                return wholeSelection(authoritySnapshot, authoritySpecification,
-                        refusal, selected, selectedIndex, dispositions, proof);
             }
             ManualFootprint footprint = provedManualFootprints.get(selectedIndex);
             if (footprint == null) {
@@ -442,9 +432,9 @@ public final class SelectedWayIntervalPartitioner {
             snapshot.closure().externalPorts().stream().filter(port -> port.wayKey().equals(wayKey))
                     .forEach(localPorts::add);
             int[] directions = wayKey.equals(selected.key())
-                    ? selectedIndex == specification.selectedRange().firstIndex()
+                    ? at == 0
                             ? new int[] {1}
-                            : selectedIndex == specification.selectedRange().lastIndex()
+                            : at == way.nodeKeys().size() - 1
                                     ? new int[] {-1} : new int[] {-1, 1}
                     : new int[] {-1, 1};
             for (int direction : directions) {
@@ -520,7 +510,8 @@ public final class SelectedWayIntervalPartitioner {
             if (index == 0 || index == way.nodeKeys().size() - 1) {
                 return new ArmProof(minimum, maximum, keys, ports);
             }
-            if (distance >= NORMAL_PORT_METERS && reliableBoundary(snapshot, specification, way, nextKey)) {
+            if (distance >= NORMAL_PORT_METERS
+                    && reliableBoundary(snapshot, specification, way, nextKey, index)) {
                 return new ArmProof(minimum, maximum, keys, ports);
             }
         }
@@ -528,10 +519,13 @@ public final class SelectedWayIntervalPartitioner {
     }
 
     private static boolean reliableBoundary(NetworkSnapshot snapshot,
-            NetworkSnapshotCapture.Specification specification, DetachedWay way, PrimitiveKey node) {
+            NetworkSnapshotCapture.Specification specification, DetachedWay way,
+            PrimitiveKey node, int occurrence) {
         if (!(snapshot.primitives().get(node) instanceof DetachedNode detached)) return false;
         return !detached.tags().isEmpty() || hasRelationReferrer(snapshot, node)
                 || way.key().equals(specification.selectedWayKey())
+                        && occurrence >= specification.selectedRange().firstIndex()
+                        && occurrence <= specification.selectedRange().lastIndex()
                         && snapshot.closure().protectedExistingNodeKeys().contains(node)
                 || wayReferrers(snapshot, node).stream().anyMatch(referrer -> !referrer.equals(way.key()));
     }

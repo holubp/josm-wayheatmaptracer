@@ -107,9 +107,10 @@ class V022SelectedWayIntervalPartitionerTest {
 
     @Test
     void taggedNodeAndRelationMemberWayAreManualAndPreserved() {
-        Fixture tagged = pathWithJunctions(12, 5, -1, true).selectRange(5, 12);
+        Fixture tagged = pathWithJunctions(12, 5, -1, true)
+                .withSelectedPort(3, 2, ExternalPort.Side.BEFORE).selectRange(5, 12);
         Fixture relation = pathWithJunctions(12, 5, -1, false).withParticipatingRelation()
-                .selectRange(5, 12);
+                .withSelectedPort(3, 2, ExternalPort.Side.BEFORE).selectRange(5, 12);
 
         var taggedResult = partition(tagged);
         var relationResult = partition(relation);
@@ -146,6 +147,70 @@ class V022SelectedWayIntervalPartitionerTest {
                 result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
         assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
                 result.junctionDispositions().get(0).reason());
+    }
+
+    @Test
+    void selectionBoundaryStillRequiresProofOfThePhysicalOutsideArm() {
+        Fixture fixture = pathWithJunctions(12, 5, -1, false).selectRange(5, 12);
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(new OccurrenceRange(5, 12)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                result.junctionDispositions().get(0).reason());
+    }
+
+    @Test
+    void unmaterializedReferrerJustOutsideSelectionFreezesIt() {
+        Fixture fixture = pathWithJunctions(12, 5, -1, false)
+                .withUnmaterializedReferrerAt(4).selectRange(5, 12);
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(new OccurrenceRange(5, 12)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                result.junctionDispositions().get(0).reason());
+    }
+
+    @Test
+    void laterUnprovedEndpointFreezesEarlierEligibleTWithoutDuplicateDispositions() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 40, 80, 120}, Set.of(0, 3),
+                List.of(port(1, 2, ExternalPort.Side.AFTER))).withReceiverArmLengthAt(3, 100);
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 0).reason());
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertEquals(2, result.junctionDispositions().size());
+        assertEquals(Set.of(0, 3), result.junctionDispositions().stream()
+                .map(SelectedWayIntervalPartitioner.JunctionDisposition::selectedOccurrenceIndex)
+                .collect(java.util.stream.Collectors.toSet()));
+        assertTrue(result.junctionDispositions().stream().noneMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(new OccurrenceRange(0, 3)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+    }
+
+    @Test
+    void classificationResourceLimitFreezesTheWholeSelection() {
+        Fixture fixture = resourceLimitFixture();
+        assertEquals(ManualJunctionEligibility.Reason.RESOURCE_LIMIT,
+                ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 0).reason());
+
+        SelectedWayIntervalPartitioner.Partition result = partition(fixture);
+
+        assertTrue(result.slideIntervals().isEmpty());
+        assertEquals(List.of(new OccurrenceRange(0, 12)),
+                result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(ManualJunctionEligibility.Reason.RESOURCE_LIMIT,
+                        ManualJunctionEligibility.Reason.RESOURCE_LIMIT),
+                result.junctionDispositions().stream().map(
+                        SelectedWayIntervalPartitioner.JunctionDisposition::reason).toList());
     }
 
     @Test
@@ -358,6 +423,50 @@ class V022SelectedWayIntervalPartitionerTest {
         return fixture(values, selected, selectedNodes, selectedNodes.size() - 1, Map.of(), exactPorts);
     }
 
+    private static Fixture resourceLimitFixture() {
+        PrimitiveKey selectedKey = wayKey(301);
+        PrimitiveKey receiverKey = wayKey(302);
+        PrimitiveKey decoyKey = wayKey(303);
+        PrimitiveKey junction = nodeKey(3000);
+        PrimitiveKey secondJunction = nodeKey(3008);
+        List<PrimitiveKey> selectedNodes = new ArrayList<>();
+        List<PrimitiveKey> receiverNodes = new ArrayList<>();
+        List<PrimitiveKey> decoyNodes = new ArrayList<>();
+        Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>();
+        for (int index = 0; index <= 12; index++) {
+            PrimitiveKey key = index == 0 ? junction : index == 8 ? secondJunction : nodeKey(3000 + index);
+            selectedNodes.add(key);
+            values.put(key, node(key, index * 15.0, 0, Map.of()));
+        }
+        values.put(selectedKey, way(selectedKey, selectedNodes));
+        for (int index = 0; index <= 1000; index++) {
+            PrimitiveKey receiverNode = nodeKey(4000 + index);
+            receiverNodes.add(receiverNode);
+            values.put(receiverNode, node(receiverNode, 0, (index - 500) * 0.05, Map.of()));
+            PrimitiveKey decoyNode = nodeKey(6000 + index);
+            decoyNodes.add(decoyNode);
+            values.put(decoyNode, node(decoyNode, 100 + index * 0.05, 100, Map.of()));
+        }
+        receiverNodes.set(500, junction);
+        values.remove(nodeKey(4500));
+        values.put(receiverKey, way(receiverKey, receiverNodes));
+        values.put(decoyKey, way(decoyKey, decoyNodes));
+        PrimitiveKey north = nodeKey(8000);
+        PrimitiveKey south = nodeKey(8001);
+        PrimitiveKey secondReceiver = wayKey(304);
+        values.put(north, node(north, 120, 40, Map.of()));
+        values.put(south, node(south, 120, -40, Map.of()));
+        values.put(secondReceiver, way(secondReceiver, List.of(north, secondJunction, south)));
+        List<ExternalPort> ports = List.of(
+                new ExternalPort(selectedKey, selectedNodes.get(2), selectedNodes.get(3), 2,
+                        ExternalPort.Side.AFTER, ((DetachedNode) values.get(selectedNodes.get(3))).coordinate()),
+                new ExternalPort(selectedKey, selectedNodes.get(6), selectedNodes.get(5), 6,
+                        ExternalPort.Side.BEFORE, ((DetachedNode) values.get(selectedNodes.get(5))).coordinate()),
+                new ExternalPort(selectedKey, selectedNodes.get(10), selectedNodes.get(11), 10,
+                        ExternalPort.Side.AFTER, ((DetachedNode) values.get(selectedNodes.get(11))).coordinate()));
+        return fixture(values, selectedKey, selectedNodes, 12, Map.of(), ports);
+    }
+
     private static ExternalPort port(int boundaryIndex, int outsideIndex, ExternalPort.Side side) {
         return new ExternalPort(wayKey(100), nodeKey(100 + boundaryIndex), nodeKey(100 + outsideIndex),
                 boundaryIndex, side, new GeographicPoint(0, 0));
@@ -457,6 +566,31 @@ class V022SelectedWayIntervalPartitionerTest {
             repeated.set(8, repeated.get(7));
             values.put(selected, way(selected, repeated));
             return rebuild(values, Map.of());
+        }
+        Fixture withReceiverArmLengthAt(int selectedOccurrence, double length) {
+            PrimitiveKey junction = selectedNodes.get(selectedOccurrence);
+            PrimitiveKey receiverKey = snapshot.incomingReferrerWatches().get(junction).stream()
+                    .filter(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selected))
+                    .findFirst().orElseThrow();
+            DetachedWay receiver = (DetachedWay) snapshot.primitives().get(receiverKey);
+            Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>(snapshot.primitives());
+            PrimitiveKey first = receiver.nodeKeys().get(0);
+            PrimitiveKey last = receiver.nodeKeys().get(receiver.nodeKeys().size() - 1);
+            DetachedNode oldFirst = (DetachedNode) values.get(first);
+            DetachedNode oldLast = (DetachedNode) values.get(last);
+            values.put(first, node(first, oldFirst.coordinate().longitudeDegrees() * 111_000.0,
+                    length, Map.of()));
+            values.put(last, node(last, oldLast.coordinate().longitudeDegrees() * 111_000.0,
+                    -length, Map.of()));
+            return rebuild(values, Map.of());
+        }
+        Fixture withSelectedPort(int boundaryIndex, int outsideIndex, ExternalPort.Side side) {
+            DetachedWay selectedWay = (DetachedWay) snapshot.primitives().get(selected);
+            PrimitiveKey boundary = selectedWay.nodeKeys().get(boundaryIndex);
+            PrimitiveKey outside = selectedWay.nodeKeys().get(outsideIndex);
+            ExternalPort port = new ExternalPort(selected, boundary, outside, boundaryIndex, side,
+                    ((DetachedNode) snapshot.primitives().get(outside)).coordinate());
+            return rebuild(snapshot.primitives(), Map.of(), List.of(port));
         }
         Fixture withLongReceiverAndPort() {
             PrimitiveKey receiver = snapshot.closure().editableWayOccurrences().keySet().stream()
