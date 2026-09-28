@@ -1770,7 +1770,7 @@ public class AlignWayAction extends JosmAction {
             recordModernUnavailable(terminal, computed.captured().managedRaster() == null
                     ? "visible-layer" : "managed-tiles", attemptIdentity);
             PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
-                    terminal, failure.getClass().getSimpleName());
+                    terminal, format15FailureCode(failure));
         }
     }
 
@@ -1822,8 +1822,21 @@ public class AlignWayAction extends JosmAction {
                     || reason.contains("large") ? "resource-limited" : "failed";
             recordModernUnavailable(diagnosticStatus, sourceLineage, attemptIdentity);
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
-                    diagnosticStatus, failure.getClass().getSimpleName());
+                    diagnosticStatus, format15FailureCode(failure));
         }
+    }
+
+    private static String format15FailureCode(RuntimeException failure) {
+        // Only fixed local codes leave this boundary; exception/server text may contain credentials.
+        return switch (failure.getMessage() == null ? "" : failure.getMessage()) {
+            case "final-output-invalid" -> "final-output-invalid";
+            case "final-output-budget" -> "final-output-budget";
+            case "scalar-output-invalid" -> "scalar-output-invalid";
+            case "scalar-output-budget" -> "scalar-output-budget";
+            case "Modern counter value is invalid" -> "counter-invalid";
+            case "Modern counter inventory exceeds budget" -> "counter-budget";
+            default -> "export-failed";
+        };
     }
 
     private static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed computed,

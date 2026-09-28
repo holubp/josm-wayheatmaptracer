@@ -45,25 +45,27 @@ class WayHeatmapTracerPluginTest {
     }
 
     @Test
-    void ordinaryActionsAndTemporaryLaunchersShareThePluginAttemptAuthority() throws Exception {
+    void registeredActionsKeepOrdinaryRoutingWithoutExperimentalLaunchers() throws Exception {
         PreviewSessionController<LiveBPreviewService.Computed> session =
                 new PreviewSessionController<>(Runnable::run);
         List<JosmAction> actions = WayHeatmapTracerPlugin.createRegisteredActions(session);
         try {
             Field authority = AlignWayAction.class.getDeclaredField("livePreviewSession");
             authority.setAccessible(true);
-            for (int index = 0; index < 9; index++) {
+            for (int index = 0; index < 3; index++) {
                 assertTrue(actions.get(index) instanceof AlignWayAction);
                 assertSame(session, authority.get(actions.get(index)));
             }
             assertEquals(List.of(
-                    "Engine A Visible Alignment",
-                    "Engine B Visible Alignment",
-                    "Engine Hybrid A+B Visible Alignment",
-                    "Engine Image Visible Alignment",
-                    "Engine A Managed Alignment",
-                    "Engine B Managed Alignment"),
-                    actions.subList(3, 9).stream()
+                    "Align Way to Heatmap",
+                    "Align Way to Heatmap Precisely",
+                    "Align Way to Heatmap by Moving Nodes",
+                    "Select Longest Heatmap Segment",
+                    "Heatmap Layer Settings",
+                    "Geometry Cleanup Settings...",
+                    "Export Heatmap Calibration Tiles",
+                    "Export Last Alignment Diagnostics"),
+                    actions.stream()
                             .map(action -> action.getValue(Action.NAME)).toList());
         } finally {
             actions.forEach(JosmAction::destroy);

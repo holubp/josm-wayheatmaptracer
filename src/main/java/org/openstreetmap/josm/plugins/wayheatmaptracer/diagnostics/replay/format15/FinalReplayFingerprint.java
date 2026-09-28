@@ -172,8 +172,24 @@ final class FinalReplayFingerprint {
         writeDouble(data, quality.totalLengthMeters());
         writeDouble(data, quality.directlySupportedLengthMeters());
         writeDouble(data, quality.worstUnsupportedSpanMeters());
-        writeDouble(data, quality.meanImageCenterCost());
+        writeImageCenterCost(data, quality);
         writeDouble(data, quality.bendPreservingRoughness());
+    }
+
+    private static void writeImageCenterCost(DataOutputStream data,
+            FinalGeometryEvaluator.Result quality) throws IOException {
+        double cost = quality.meanImageCenterCost();
+        boolean unavailable = quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY);
+        if (unavailable != (cost == Double.POSITIVE_INFINITY)) {
+            throw new IllegalArgumentException("final-output-invalid");
+        }
+        if (unavailable) {
+            // The finding owns this canonical unavailable sentinel; it is not measured quality.
+            // Keep finite schema-1 output bytes unchanged, including interval replay hashes.
+            data.writeLong(Double.doubleToLongBits(Double.POSITIVE_INFINITY));
+        } else {
+            writeDouble(data, cost);
+        }
     }
 
     private static void writeDouble(DataOutputStream data, double value) throws IOException {

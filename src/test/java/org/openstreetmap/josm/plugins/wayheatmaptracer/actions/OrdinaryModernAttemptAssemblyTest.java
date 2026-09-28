@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -8,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.util.OptionalDouble;
@@ -47,6 +49,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPrev
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -141,6 +144,29 @@ class OrdinaryModernAttemptAssemblyTest {
                 Path path = directory.resolve("resource-limited.zip");
                 DiagnosticsRegistry.writeLatest(path.toFile());
                 assertTrue(Format15ArchiveReader.read(path).artifact("frozen-input.bin").isEmpty());
+
+                // The real export boundary must identify known faults without logging arbitrary text.
+                PluginLog.beginSlideSession();
+                try {
+                    LiveBPreviewService.Computed invalidCounters = new LiveBPreviewService.Computed(
+                            computed.captured(), computed.evidence(), computed.request(),
+                            computed.pipeline(), computed.options(), Map.of("synthetic", Double.NaN));
+                    AlignWayAction.recordModernDiagnostics(invalidCounters, "preview-open", 0,
+                            null, false, false, "ordinary-attempt");
+                    assertTrue(PluginLog.currentSlideLog().contains("cause=counter-invalid"));
+                    AlignWayAction.recordModernDiagnostics(computed,
+                            "synthetic?Signature=private-test-value", 0, null, false, false,
+                            "ordinary-attempt");
+                    String log = PluginLog.currentSlideLog();
+                    assertTrue(log.contains("cause=export-failed"));
+                    assertFalse(log.contains("private-test-value"));
+                    Path rejected = directory.resolve("rejected-metadata.zip");
+                    DiagnosticsRegistry.writeLatest(rejected.toFile());
+                    assertTrue(Format15ArchiveReader.read(rejected)
+                            .artifact("frozen-input.bin").isEmpty());
+                } finally {
+                    PluginLog.endSlideSession();
+                }
             }
         }
     }

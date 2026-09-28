@@ -195,19 +195,13 @@ For rough new paths, draw a simple way approximately along the heatmap trace, se
 All actions are under JOSM `More tools`:
 
 - `Align Way to Heatmap`: `Ctrl+Shift+Y`
-- `Experimental Engine A Visible Preview (Read Only)`
-- `Experimental Engine B Visible Preview (Read Only)`
-- `Experimental Engine Hybrid A+B Visible Preview (Read Only)`
-- `Experimental Engine Image Visible Preview (Read Only)`
-- `Experimental Engine A Managed Preview (Read Only)`
-- `Experimental Engine B Managed Preview (Read Only)`
-
-The Hybrid A+B visible preview reads the currently rendered heatmap layer and runs the independent unguided B result alongside the A proposal through the shared preview ranking. The Image visible preview uses the existing directional image engine on that same captured scalar frame. Both are read-only; the ordinary `Align Way to Heatmap` action remains the action that can apply geometry.
+- `Align Way to Heatmap Precisely`: `Alt+Ctrl+Shift+S`
+- `Align Way to Heatmap by Moving Nodes`: `Alt+Ctrl+Shift+M`
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Geometry Cleanup Settings`: no default shortcut
 - `Select Longest Heatmap Segment`: no default shortcut
 - `Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
-- `Export Last Slide Debug Bundle`: `Alt+Ctrl+Shift+D`
+- `Export Last Alignment Diagnostics`: `Alt+Ctrl+Shift+D`
 
 ## Debugging And Reporting Bad Slides
 
@@ -216,7 +210,7 @@ When a slide is wrong:
 1. Open `More tools -> Heatmap Layer Settings`.
 2. Enable `Verbose logging` and `Debug overlay`.
 3. Re-run the slide and choose/apply/cancel the preview in the same way that produced the problem.
-4. Run `More tools -> Export Last Slide Debug Bundle`.
+4. Run `More tools -> Export Last Alignment Diagnostics`.
 5. Use `Copy file path` or `Copy folder path` from the export dialog.
 6. Share the generated zip, not raw cookies or tokenized URLs.
 
@@ -381,17 +375,8 @@ the approved fixed-island interval plan leaves that vicinity unchanged and can m
 independently safe sections on either side. Inspect every preview before Apply;
 manual junction adjustment may still be necessary.
 
-The RC still contains six analysis launchers for comparison:
-
-- `Experimental Engine A Visible Preview (Read Only)`
-- `Experimental Engine B Visible Preview (Read Only)`
-- `Experimental Hybrid A+B Visible Preview (Read Only)`
-- `Experimental Directional Image Visible Preview (Read Only)`
-- `Experimental Engine A Managed Preview (Read Only)`
-- `Experimental Engine B Managed Preview (Read Only)`
-
-These launchers retain their narrow read-only comparison behavior. Collect the fourteen
-reference cases through the ordinary action, which records the actual source policy,
+Choose the engine in settings and collect the fourteen reference cases through the
+ordinary action, which records the actual source policy,
 route choices, and final composed geometry. Managed tiles are preferred when access
 is configured; otherwise the ordinary action captures the selected visible imagery.
 

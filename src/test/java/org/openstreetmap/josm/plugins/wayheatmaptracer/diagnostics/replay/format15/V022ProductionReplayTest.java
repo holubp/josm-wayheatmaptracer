@@ -134,7 +134,128 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void blockedLiveResultKeepsFrozenInputWithoutInventingRoute() {
+    void managedProbabilisticUnavailableImageQualityExportsAndReplaysWithoutBecomingMeasured(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.MISSING_ENDPOINT_SUPPORT);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.PROBABILISTIC);
+        assertFalse(actual.routes().isEmpty());
+        assertTrue(actual.routes().stream().anyMatch(route -> route.quality().has(
+                FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY)));
+        ModernTracePipeline.Route unavailable = actual.routes().stream().filter(route ->
+                route.quality().has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY))
+                .findFirst().orElseThrow();
+        assertEquals(Double.POSITIVE_INFINITY, unavailable.quality().meanImageCenterCost());
+        assertNotEquals(FinalGeometryEvaluator.Disposition.APPLICABLE,
+                unavailable.quality().disposition());
+
+        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+                new ModernTracePipeline.Result(actual.inference(), actual.routes()),
+                "blocked", "managed-tiles", actual.routes().indexOf(unavailable),
+                null, false, false);
+        Path path = directory.resolve("unavailable-managed-b.zip");
+        Format15BundleWriter.write(live, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        Format15ReplayRunner.Result replayed = Format15ReplayRunner.replay(archive,
+                ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(), archive.parameterHash());
+        FinalReplayExpectation expectation = FinalReplayExpectation.read(archive).orElseThrow();
+        expectation.validateBinding(archive, input);
+        assertTrue(expectation.matches(replayed));
+        assertEquals(unavailable.quality(), replayed.routes().get(
+                actual.routes().indexOf(unavailable)).quality());
+        assertFalse(live.artifactNames().contains("frozen-edit-plan.bin"));
+        assertFalse(live.artifactNames().contains("applied-geometry.json"));
+        CliRun strict = runCli(directory.resolve("strict-unavailable"), live, "B",
+                51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        // CLI quality gates physical corpus invariants, not complete live Apply eligibility.
+        assertEquals(0, strict.exit(), strict.output());
+        assertTrue(strict.output().contains("\"fidelityStatus\":\"MATCH\""));
+
+        for (double measured : List.of(0.0, 0.5)) {
+            FinalGeometryEvaluator.Result quality = unavailable.quality();
+            assertThrows(IllegalArgumentException.class, () -> new FinalGeometryEvaluator.Result(
+                    quality.id(), quality.disposition(), quality.findings(),
+                    quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), measured, quality.bendPreservingRoughness()));
+            FinalGeometryEvaluator.Result measuredQuality = new FinalGeometryEvaluator.Result(
+                    quality.id(), quality.disposition(), quality.findings().stream()
+                        .filter(finding -> finding.code()
+                            != FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY).toList(),
+                    quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), measured, quality.bendPreservingRoughness());
+            var changed = new java.util.ArrayList<>(actual.routes());
+            changed.set(actual.routes().indexOf(unavailable), copyRoute(unavailable,
+                    unavailable.rawHypothesis(), unavailable.hypothesis(), unavailable.pointIds(),
+                    unavailable.assignments(), unavailable.sourceOwnership(), measuredQuality,
+                    unavailable.cleanupStatus(), unavailable.geometryChanged()));
+            Format15ReplayRunner.Result changedOutput = withRoutes(actual, changed);
+            assertFalse(expectation.matches(changedOutput),
+                    "Unavailable quality must remain distinct from measured " + measured);
+            Format15Bundle tampered = withFinalExpectedArtifact(live, new String(
+                    FinalReplayExpectation.capture("test", input, changedOutput).bytes(),
+                    StandardCharsets.UTF_8));
+            CliRun mismatch = runCli(directory.resolve("strict-measured-" + measured),
+                    tampered, "B", 51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+            assertEquals(2, mismatch.exit(), mismatch.output());
+            assertTrue(mismatch.output().contains("\"reason\":\"final-output-mismatch\""));
+        }
+    }
+
+    @Test
+    void finiteSchemaOneFinalFingerprintRemainsByteCompatible() {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        // Captured from the unmodified schema-1 encoder at a209cb4.
+        assertEquals("ca151583f0332e11c36b4b901dbda29597d700001c1e98023cfd9eff281fe368",
+                FinalReplayFingerprint.sha256(actual));
+    }
+
+    @Test
+    void finalFingerprintStillRejectsNonfiniteRequiredMetricsAndFindingAmplitudes() {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        ModernTracePipeline.Route route = actual.routes().get(0);
+        FinalGeometryEvaluator.Result quality = route.quality();
+        for (double invalid : List.of(Double.NaN, Double.POSITIVE_INFINITY,
+                Double.NEGATIVE_INFINITY)) {
+            for (int field = 0; field < 4; field++) {
+                FinalGeometryEvaluator.Result invalidQuality = new FinalGeometryEvaluator.Result(
+                        quality.id(), quality.disposition(), quality.findings(),
+                        field == 0 ? invalid : quality.totalLengthMeters(),
+                        field == 1 ? invalid : quality.directlySupportedLengthMeters(),
+                        field == 2 ? invalid : quality.worstUnsupportedSpanMeters(),
+                        quality.meanImageCenterCost(),
+                        field == 3 ? invalid : quality.bendPreservingRoughness());
+                assertThrows(IllegalArgumentException.class, () -> finalFingerprint(withRoutes(
+                        actual, List.of(copyRoute(route, route.rawHypothesis(), route.hypothesis(),
+                            route.pointIds(), route.assignments(), route.sourceOwnership(),
+                            invalidQuality, route.cleanupStatus(), route.geometryChanged())))));
+            }
+            var findings = new java.util.ArrayList<>(quality.findings());
+            findings.add(new FinalGeometryEvaluator.Finding(
+                    FinalGeometryEvaluator.FindingCode.UNSUPPORTED_ISOLATED_EXCURSION,
+                    FinalGeometryEvaluator.Severity.REVIEW, 0, 1, invalid));
+            FinalGeometryEvaluator.Result invalidFinding = new FinalGeometryEvaluator.Result(
+                    quality.id(), FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, findings,
+                    quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(),
+                    quality.bendPreservingRoughness());
+            assertThrows(IllegalArgumentException.class, () -> finalFingerprint(withRoutes(
+                    actual, List.of(copyRoute(route, route.rawHypothesis(), route.hypothesis(),
+                        route.pointIds(), route.assignments(), route.sourceOwnership(),
+                        invalidFinding, route.cleanupStatus(), route.geometryChanged())))));
+            assertThrows(IllegalArgumentException.class, () -> new FinalGeometryEvaluator.Result(
+                    quality.id(), quality.disposition(), quality.findings(),
+                    quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), invalid, quality.bendPreservingRoughness()));
+        }
+    }
+
+    @Test
+    void blockedLiveResultKeepsFrozenInputWithoutInventingRoute(@TempDir Path directory)
+            throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.NO_SIGNAL);
         Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
             ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
@@ -146,6 +267,13 @@ class V022ProductionReplayTest {
         assertFalse(live.artifactNames().contains("final-route.json"));
         assertTrue(new String(live.artifact("attempt-status.json").bytes(),
             StandardCharsets.UTF_8).contains("blocked"));
+        Path path = directory.resolve("blocked-no-route.zip");
+        Format15BundleWriter.write(live, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        Format15ReplayRunner.Result replayed = Format15ReplayRunner.replay(archive,
+                ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(), archive.parameterHash());
+        assertTrue(replayed.routes().isEmpty());
+        assertTrue(FinalReplayExpectation.read(archive).orElseThrow().matches(replayed));
     }
     @Test
     void finalFingerprintPreservesCompleteOrderedRouteSemanticsAndCanonicalMaps() {
@@ -1213,6 +1341,9 @@ class V022ProductionReplayTest {
         boolean[] valid = new boolean[intensity.length];
         Arrays.fill(intensity, 0.02);
         Arrays.fill(valid, true);
+        if (scene == Scene.MISSING_ENDPOINT_SUPPORT) {
+            valid[50 * width + 20] = false;
+        }
         if (scene != Scene.NO_SIGNAL) {
             int center = raster == RasterFixture.COARSE ? 11 : 53;
             Arrays.fill(intensity, (center - 2) * width, (center - 1) * width, 0.25);
@@ -1327,7 +1458,7 @@ class V022ProductionReplayTest {
 
     private record CliRun(int exit, String output) { }
 
-    private enum Scene { RIDGE, PARALLEL, NO_SIGNAL }
+    private enum Scene { RIDGE, PARALLEL, NO_SIGNAL, MISSING_ENDPOINT_SUPPORT }
 
     private enum RasterFixture { FINE, FINE_DENSE, COARSE }
 }
