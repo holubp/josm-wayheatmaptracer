@@ -14,9 +14,16 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.ObservedModeStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.UniqueSegmentStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Evaluates the exact final-preview polyline with physical local and topology checks. */
 public final class FinalGeometryEvaluator {
+    private static final double[] LOCAL_WINDOW_SPANS_METERS = {6.0, 10.0, 20.0};
+    private static final int MAXIMUM_LOCAL_WINDOW_ROWS = 65_536;
+    private static final int MAXIMUM_CACHED_PROFILE_ROWS = 65_536;
     /** Stable defect codes shared by all modern engines. */
     public enum FindingCode {
         SELF_INTERSECTION,
@@ -36,7 +43,8 @@ public final class FinalGeometryEvaluator {
         INSUFFICIENT_DIRECT_SUPPORT,
         UNAVAILABLE_IMAGE_QUALITY,
         PROTECTED_ASSIGNMENT_MISMATCH,
-        PRECISE_SHAPE_REQUIRED
+        PRECISE_SHAPE_REQUIRED,
+        LOCAL_SHAPE_IMAGE_AMBIGUITY
     }
 
     /** Severity remains separate from empirical confidence or average fit. */
@@ -160,9 +168,39 @@ public final class FinalGeometryEvaluator {
         }
     }
 
+    /** Test-facing truthful counters for the bounded local-warning classifier. */
+    record LocalWarningStats(long windowVisits, long qualifyingWindows,
+            long candidateComparisons, long maximumDiagnosticRows,
+            long maximumCachedProfileRows, long rowBudgetAbstentions) { }
+
+    /** Local-warning result and its bounded-work evidence. */
+    record LocalWarningInspection(List<Finding> findings, LocalWarningStats stats) {
+        LocalWarningInspection {
+            findings = List.copyOf(findings);
+        }
+    }
+
+    /** Focused classifier entry point used to prove its work and retention bounds. */
+    LocalWarningInspection inspectRepeatedShortWavesForTest(Request request,
+            CancellationProbe cancellation) {
+        List<Finding> findings = new ArrayList<>();
+        MutableLocalWarningStats stats = new MutableLocalWarningStats();
+        double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
+        inspectRepeatedShortWaves(request, findings, chainage(request.points()), onset,
+                cancellation, stats);
+        return new LocalWarningInspection(findings, stats.snapshot());
+    }
+
     /** Evaluates topology, localized excursions, image support and deterministic eligibility. */
     public Result evaluate(Request request) {
+        return evaluate(request, CancellationProbe.NONE);
+    }
+
+    /** Evaluates with bounded cooperative cancellation for local physical diagnostics. */
+    public Result evaluate(Request request, CancellationProbe cancellation) {
+        Objects.requireNonNull(cancellation, "cancellation");
         List<Finding> findings = new ArrayList<>();
+        MutableLocalWarningStats localWarningStats = new MutableLocalWarningStats();
         DirectedSamplingMemo sampling = new DirectedSamplingMemo(2_048);
         long protectedStarted = System.nanoTime();
         inspectProtectedAssignments(request, findings);
@@ -174,7 +212,7 @@ public final class FinalGeometryEvaluator {
         inspectBacktracks(request.points(), findings);
         long backtracksNanos = System.nanoTime() - backtracksStarted;
         long excursionsStarted = System.nanoTime();
-        inspectLocalExcursions(request, findings, sampling);
+        inspectLocalExcursions(request, findings, sampling, cancellation, localWarningStats);
         long excursionsNanos = System.nanoTime() - excursionsStarted;
         long incidentsStarted = System.nanoTime();
         inspectIncidentCrossings(request, findings);
@@ -312,27 +350,15 @@ public final class FinalGeometryEvaluator {
     }
 
     private static void inspectLocalExcursions(Request request, List<Finding> findings,
-            DirectedSamplingMemo sampling) {
+            DirectedSamplingMemo sampling, CancellationProbe cancellation,
+            MutableLocalWarningStats localWarningStats) {
         double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
         double[] chainage = chainage(request.points());
-        int reversalCount = 0;
-        double previousTurn = 0.0;
-        for (int index = 1; index < request.points().size() - 1; index++) {
-            double turn = orientation(request.points().get(index - 1), request.points().get(index),
-                    request.points().get(index + 1));
-            if (previousTurn * turn < 0.0) {
-                reversalCount++;
-            }
-            if (Math.abs(turn) > 1.0e-9) {
-                previousTurn = turn;
-            }
-        }
-        if (reversalCount >= 3) {
-            findings.add(review(FindingCode.REPEATED_SHORT_WAVE_WRINKLE, 0,
-                    request.points().size() - 1, reversalCount));
-        }
+        inspectRepeatedShortWaves(request, findings, chainage, onset, cancellation,
+                localWarningStats);
 
         for (int first = 0; first < request.points().size() - 2; first++) {
+            cancellation.checkpoint();
             for (int last = first + 2; last < request.points().size(); last++) {
                 double span = chainage[last] - chainage[first];
                 if (span > 20.0) {
@@ -374,6 +400,373 @@ public final class FinalGeometryEvaluator {
             inspectTerminalKink(request.points(), request.image(), onset, false, findings, sampling);
             inspectTerminalKink(request.points(), request.image(), onset, true, findings, sampling);
         }
+    }
+
+    private static void inspectRepeatedShortWaves(Request request, List<Finding> findings,
+            double[] vertexChainage, double onset, CancellationProbe cancellation,
+            MutableLocalWarningStats stats) {
+        PhysicalSampleIndex samples = PhysicalSampleIndex.create(request.points(), vertexChainage,
+                Math.min(1.0, request.sourcePitchMeters() / 2.0), cancellation);
+        if (request.points().size() < 5 || exactlyCollinear(request.points())) {
+            return;
+        }
+        ProfileCache profiles = new ProfileCache(stats);
+        WindowCandidate contradicted = null;
+        WindowCandidate ambiguous = null;
+        BudgetWindow budgetLimited = null;
+        for (double span : LOCAL_WINDOW_SPANS_METERS) {
+            if (samples.totalLengthMeters() + 1.0e-9 < span) {
+                continue;
+            }
+            for (int centerIndex = 0; centerIndex < samples.uniformCount(); centerIndex++) {
+                cancellation.checkpoint();
+                PhysicalSample center = samples.uniformAt(centerIndex);
+                double start = center.chainageMeters() - span / 2.0;
+                double end = center.chainageMeters() + span / 2.0;
+                if (start < -1.0e-9 || end > samples.totalLengthMeters() + 1.0e-9) {
+                    continue;
+                }
+                stats.windowVisits++;
+                WindowMeasurement measurement = measureWindow(samples, Math.max(0.0, start),
+                        Math.min(samples.totalLengthMeters(), end), request.sourcePitchMeters(),
+                        onset, cancellation, stats);
+                if (measurement.rowBudgetExceeded()) {
+                    stats.rowBudgetAbstentions++;
+                    BudgetWindow current = new BudgetWindow(Math.max(0.0, start),
+                            Math.min(samples.totalLengthMeters(), end));
+                    if (budgetLimited == null || current.spanMeters() < budgetLimited.spanMeters()
+                            || current.spanMeters() == budgetLimited.spanMeters()
+                                    && current.startChainageMeters()
+                                            < budgetLimited.startChainageMeters()) {
+                        budgetLimited = current;
+                    }
+                    continue;
+                }
+                WindowCandidate candidate = measurement.candidate();
+                if (candidate == null || candidate.qualifiedReversals() < 3) {
+                    continue;
+                }
+                stats.qualifyingWindows++;
+                stats.candidateComparisons++;
+                LocalComparison comparison = compareObservedUniqueMode(request, samples,
+                        candidate, profiles, cancellation, stats);
+                if (comparison == LocalComparison.CONTRADICTED
+                        && (contradicted == null || candidate.betterThan(contradicted))) {
+                    contradicted = candidate;
+                } else if (comparison == LocalComparison.AMBIGUOUS
+                        && (ambiguous == null || candidate.betterThan(ambiguous))) {
+                    ambiguous = candidate;
+                }
+            }
+        }
+        if (contradicted != null) {
+            findings.add(review(FindingCode.REPEATED_SHORT_WAVE_WRINKLE,
+                    samples.firstVertex(contradicted.startChainageMeters()),
+                    samples.lastVertex(contradicted.endChainageMeters()),
+                    contradicted.amplitudeMeters()));
+        } else if (ambiguous != null) {
+            findings.add(review(FindingCode.LOCAL_SHAPE_IMAGE_AMBIGUITY,
+                    samples.firstVertex(ambiguous.startChainageMeters()),
+                    samples.lastVertex(ambiguous.endChainageMeters()), ambiguous.amplitudeMeters()));
+        } else if (budgetLimited != null) {
+            findings.add(review(FindingCode.LOCAL_SHAPE_IMAGE_AMBIGUITY,
+                    samples.firstVertex(budgetLimited.startChainageMeters()),
+                    samples.lastVertex(budgetLimited.endChainageMeters()), 0.0));
+        }
+    }
+
+    private static boolean exactlyCollinear(List<MetricPoint> points) {
+        MetricPoint first = points.get(0);
+        int distinct = 1;
+        while (distinct < points.size() && points.get(distinct).equals(first)) {
+            distinct++;
+        }
+        if (distinct == points.size()) {
+            return true;
+        }
+        MetricPoint second = points.get(distinct);
+        for (int index = distinct + 1; index < points.size(); index++) {
+            if (orientation(first, second, points.get(index)) != 0.0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static WindowMeasurement measureWindow(PhysicalSampleIndex samples, double start,
+            double end, double sourcePitchMeters, double onset, CancellationProbe cancellation,
+            MutableLocalWarningStats stats) {
+        List<PhysicalSample> fitRows = samples.uniformWindow(start, end);
+        if (fitRows == null) {
+            return new WindowMeasurement(null, true);
+        }
+        if (fitRows.size() < 4) {
+            return new WindowMeasurement(null, false);
+        }
+        MetricPoint startPoint = fitRows.get(0).point();
+        MetricPoint endPoint = fitRows.get(fitRows.size() - 1).point();
+        MetricPoint direction = subtract(endPoint, startPoint);
+        double length = norm(direction);
+        if (!(length > 1.0e-12)) {
+            return new WindowMeasurement(null, false);
+        }
+        MetricPoint normal = new MetricPoint(-direction.yMeters() / length,
+                direction.xMeters() / length);
+        double center = 0.5 * (start + end);
+        List<TrendObservation> observations = new ArrayList<>(fitRows.size());
+        for (PhysicalSample row : fitRows) {
+            observations.add(new TrendObservation(row.chainageMeters() - center,
+                    dot(subtract(row.point(), startPoint), normal)));
+        }
+        QuadraticTrend trend = robustQuadratic(observations, sourcePitchMeters);
+        if (trend == null) {
+            return new WindowMeasurement(null, false);
+        }
+        List<PhysicalSample> diagnosticRows = samples.diagnosticWindow(start, end,
+                cancellation, stats);
+        if (diagnosticRows == null) {
+            return new WindowMeasurement(null, true);
+        }
+        List<ResidualPoint> residuals = new ArrayList<>(diagnosticRows.size());
+        for (PhysicalSample row : diagnosticRows) {
+            double localX = row.chainageMeters() - center;
+            double transverse = dot(subtract(row.point(), startPoint), normal);
+            residuals.add(new ResidualPoint(row, transverse - trend.value(localX)));
+        }
+        List<ResidualPoint> lobes = qualifiedLobes(samples, residuals, onset);
+        if (lobes.size() < 3) {
+            return new WindowMeasurement(null, false);
+        }
+        double amplitude = lobes.stream().mapToDouble(lobe -> Math.abs(lobe.residualMeters()))
+                .max().orElse(0.0);
+        return new WindowMeasurement(new WindowCandidate(start, end, List.copyOf(lobes),
+                lobes.size(), amplitude), false);
+    }
+
+    private static List<ResidualPoint> qualifiedLobes(PhysicalSampleIndex samples,
+            List<ResidualPoint> residuals, double onset) {
+        if (residuals.size() < 5) {
+            return List.of();
+        }
+        List<ResidualPlateau> plateaus = new ArrayList<>();
+        int start = 0;
+        for (int index = 1; index <= residuals.size(); index++) {
+            if (index < residuals.size()
+                    && residuals.get(index).residualMeters()
+                            == residuals.get(start).residualMeters()) {
+                continue;
+            }
+            int end = index - 1;
+            double middleChainage = 0.5 * (residuals.get(start).sample().chainageMeters()
+                    + residuals.get(end).sample().chainageMeters());
+            ResidualPoint representative = residuals.get(start);
+            plateaus.add(new ResidualPlateau(representative, middleChainage));
+            start = index;
+        }
+        if (plateaus.size() < 5) {
+            return List.of();
+        }
+        List<ResidualPlateau> extrema = new ArrayList<>();
+        extrema.add(plateaus.get(0));
+        int previousDirection = 0;
+        for (int index = 1; index < plateaus.size(); index++) {
+            double movement = plateaus.get(index).point().residualMeters()
+                    - plateaus.get(index - 1).point().residualMeters();
+            int direction = movement > 0.0 ? 1 : movement < 0.0 ? -1 : 0;
+            if (direction != 0 && previousDirection != 0 && direction != previousDirection) {
+                extrema.add(plateaus.get(index - 1));
+            }
+            if (direction != 0) {
+                previousDirection = direction;
+            }
+        }
+        extrema.add(plateaus.get(plateaus.size() - 1));
+        List<ResidualPoint> result = new ArrayList<>();
+        for (int index = 1; index < extrema.size() - 1; index++) {
+            ResidualPlateau previous = extrema.get(index - 1);
+            ResidualPlateau current = extrema.get(index);
+            ResidualPlateau next = extrema.get(index + 1);
+            double value = current.point().residualMeters();
+            if (Math.abs(value) > onset
+                    && Math.abs(value - previous.point().residualMeters()) > onset
+                    && Math.abs(next.point().residualMeters() - value) > onset) {
+                PhysicalSample sample = samples.sampleAt(current.middleChainageMeters());
+                result.add(new ResidualPoint(sample, value));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static LocalComparison compareObservedUniqueMode(Request request,
+            PhysicalSampleIndex samples, WindowCandidate window,
+            ProfileCache profiles, CancellationProbe cancellation,
+            MutableLocalWarningStats stats) {
+        for (ResidualPoint lobe : window.lobes()) {
+            cancellation.checkpoint();
+            if (samples.isProtected(lobe.sample().chainageMeters(), request.protectedIndices())) {
+                return LocalComparison.AMBIGUOUS;
+            }
+            MetricPoint tangent = samples.tangentAt(lobe.sample().chainageMeters());
+            FrozenProfile profile = frozenProfile(request.image(), lobe.sample().point(), tangent,
+                    profiles, cancellation);
+            if (profile == null
+                    || profile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE) {
+                return LocalComparison.AMBIGUOUS;
+            }
+            if (profile.coreMinimumMeters() <= 0.0 && profile.coreMaximumMeters() >= 0.0) {
+                return LocalComparison.SUPPORTED;
+            }
+            double offset = 0.5 * (profile.coreMinimumMeters() + profile.coreMaximumMeters());
+            MetricPoint alternative = new MetricPoint(
+                    lobe.sample().point().xMeters() + profile.normal().xMeters() * offset,
+                    lobe.sample().point().yMeters() + profile.normal().yMeters() * offset);
+            var candidateCost = profile.evaluate(lobe.sample().point());
+            var alternativeCost = profile.evaluate(alternative);
+            if (candidateCost.isEmpty() || alternativeCost.isEmpty()
+                    || !(alternativeCost.orElseThrow().cost()
+                            < candidateCost.orElseThrow().cost())) {
+                return LocalComparison.AMBIGUOUS;
+            }
+        }
+        List<PhysicalSample> rows = samples.comparisonWindow(window.startChainageMeters(),
+                window.endChainageMeters(), request.protectedIndices(), cancellation, stats);
+        if (rows == null) {
+            stats.rowBudgetAbstentions++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        List<MetricPoint> alternatives = new ArrayList<>(rows.size());
+        for (int index = 0; index < rows.size(); index++) {
+            cancellation.checkpoint();
+            PhysicalSample row = rows.get(index);
+            MetricPoint tangent = localTangent(rows, index);
+            FrozenProfile profile = frozenProfile(request.image(), row.point(), tangent,
+                    profiles, cancellation);
+            if (profile == null
+                    || profile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE) {
+                return LocalComparison.AMBIGUOUS;
+            }
+            boolean retained = index == 0 || index == rows.size() - 1
+                    || row.originalVertex() == 0
+                    || row.originalVertex() == request.points().size() - 1
+                    || samples.isProtected(row.chainageMeters(), request.protectedIndices());
+            double offset = 0.5 * (profile.coreMinimumMeters() + profile.coreMaximumMeters());
+            alternatives.add(retained ? row.point() : new MetricPoint(
+                    row.point().xMeters() + profile.normal().xMeters() * offset,
+                    row.point().yMeters() + profile.normal().yMeters() * offset));
+        }
+        for (int index = 1; index < alternatives.size(); index++) {
+            cancellation.checkpoint();
+            if (request.image().certifyDirectUniqueSegment(alternatives.get(index - 1),
+                    alternatives.get(index), cancellation)
+                    != UniqueSegmentStatus.DIRECT_UNIQUE) {
+                return LocalComparison.AMBIGUOUS;
+            }
+        }
+        return LocalComparison.CONTRADICTED;
+    }
+
+    private static FrozenProfile frozenProfile(ImageCostField image, MetricPoint point,
+            MetricPoint tangent, ProfileCache profiles,
+            CancellationProbe cancellation) {
+        return profiles.getOrMeasure(image, new ProfileKey(point, tangent), cancellation);
+    }
+
+    private static MetricPoint localTangent(List<PhysicalSample> rows, int index) {
+        int first = Math.max(0, index - 1);
+        int last = Math.min(rows.size() - 1, index + 1);
+        return subtract(rows.get(last).point(), rows.get(first).point());
+    }
+
+    private static QuadraticTrend robustQuadratic(List<TrendObservation> observations,
+            double sourcePitchMeters) {
+        double[] weights = new double[observations.size()];
+        java.util.Arrays.fill(weights, 1.0);
+        QuadraticTrend fit = weightedQuadratic(observations, weights);
+        if (fit == null) {
+            return null;
+        }
+        for (int iteration = 0; iteration < 3; iteration++) {
+            List<Double> residuals = new ArrayList<>(observations.size());
+            for (TrendObservation observation : observations) {
+                residuals.add(observation.transverseMeters() - fit.value(observation.xMeters()));
+            }
+            double scale = Math.max(0.05 * sourcePitchMeters, 1.4826 * medianAbsoluteDeviation(residuals));
+            for (int index = 0; index < observations.size(); index++) {
+                double normalized = Math.abs(residuals.get(index)) / (1.5 * scale);
+                weights[index] = normalized <= 1.0 ? 1.0 : 1.0 / normalized;
+            }
+            fit = weightedQuadratic(observations, weights);
+            if (fit == null) {
+                return null;
+            }
+        }
+        return fit;
+    }
+
+    private static QuadraticTrend weightedQuadratic(List<TrendObservation> observations,
+            double[] weights) {
+        double[][] matrix = new double[3][3];
+        double[] vector = new double[3];
+        for (int index = 0; index < observations.size(); index++) {
+            TrendObservation observation = observations.get(index);
+            double x = observation.xMeters();
+            double[] powers = {1.0, x, x * x, x * x * x, x * x * x * x};
+            for (int row = 0; row < 3; row++) {
+                vector[row] += weights[index] * powers[row] * observation.transverseMeters();
+                for (int column = 0; column < 3; column++) {
+                    matrix[row][column] += weights[index] * powers[row + column];
+                }
+            }
+        }
+        double[] solution = solveLinearSystem(matrix, vector);
+        return solution == null ? null : new QuadraticTrend(solution[0], solution[1], solution[2]);
+    }
+
+    private static double[] solveLinearSystem(double[][] matrix, double[] vector) {
+        double[][] work = new double[3][4];
+        for (int row = 0; row < 3; row++) {
+            System.arraycopy(matrix[row], 0, work[row], 0, 3);
+            work[row][3] = vector[row];
+        }
+        for (int column = 0; column < 3; column++) {
+            int pivot = column;
+            for (int row = column + 1; row < 3; row++) {
+                if (Math.abs(work[row][column]) > Math.abs(work[pivot][column])) {
+                    pivot = row;
+                }
+            }
+            if (Math.abs(work[pivot][column]) <= 1.0e-10) {
+                return null;
+            }
+            double[] swap = work[column];
+            work[column] = work[pivot];
+            work[pivot] = swap;
+            double divisor = work[column][column];
+            for (int index = column; index < 4; index++) {
+                work[column][index] /= divisor;
+            }
+            for (int row = 0; row < 3; row++) {
+                if (row == column) continue;
+                double factor = work[row][column];
+                for (int index = column; index < 4; index++) {
+                    work[row][index] -= factor * work[column][index];
+                }
+            }
+        }
+        double[] result = {work[0][3], work[1][3], work[2][3]};
+        return java.util.Arrays.stream(result).allMatch(Double::isFinite) ? result : null;
+    }
+
+    private static double medianAbsoluteDeviation(List<Double> values) {
+        List<Double> ordered = values.stream().sorted().toList();
+        double center = median(ordered);
+        return median(ordered.stream().map(value -> Math.abs(value - center)).sorted().toList());
+    }
+
+    private static double median(List<Double> ordered) {
+        int middle = ordered.size() / 2;
+        return (ordered.size() & 1) == 0
+                ? 0.5 * (ordered.get(middle - 1) + ordered.get(middle)) : ordered.get(middle);
     }
 
     private static void inspectTerminalKink(List<MetricPoint> points, ImageCostField image,
@@ -677,6 +1070,332 @@ public final class FinalGeometryEvaluator {
     }
 
     private enum IntersectionKind { NONE, PROPER, TOUCH, OVERLAP }
+
+    private enum LocalComparison { CONTRADICTED, SUPPORTED, AMBIGUOUS }
+
+    private record TrendObservation(double xMeters, double transverseMeters) { }
+
+    private record QuadraticTrend(double intercept, double linear, double quadratic) {
+        double value(double xMeters) {
+            return intercept + linear * xMeters + quadratic * xMeters * xMeters;
+        }
+    }
+
+    private record PhysicalSample(MetricPoint point, double chainageMeters,
+            int segmentIndex, int originalVertex) { }
+
+    private record ResidualPoint(PhysicalSample sample, double residualMeters) { }
+
+    private record ResidualPlateau(ResidualPoint point, double middleChainageMeters) { }
+
+    private record ProfileKey(MetricPoint point, MetricPoint tangent) { }
+
+    private record WindowMeasurement(WindowCandidate candidate, boolean rowBudgetExceeded) { }
+
+    private record BudgetWindow(double startChainageMeters, double endChainageMeters) {
+        double spanMeters() {
+            return endChainageMeters - startChainageMeters;
+        }
+    }
+
+    private record WindowCandidate(double startChainageMeters, double endChainageMeters,
+            List<ResidualPoint> lobes, int qualifiedReversals, double amplitudeMeters) {
+        double firstLobeChainageMeters() {
+            return lobes.get(0).sample().chainageMeters();
+        }
+
+        double lastLobeChainageMeters() {
+            return lobes.get(lobes.size() - 1).sample().chainageMeters();
+        }
+
+        boolean betterThan(WindowCandidate other) {
+            int reversals = Integer.compare(qualifiedReversals, other.qualifiedReversals);
+            if (reversals != 0) return reversals > 0;
+            int amplitude = Double.compare(amplitudeMeters, other.amplitudeMeters);
+            if (amplitude != 0) return amplitude > 0;
+            double span = endChainageMeters - startChainageMeters;
+            double otherSpan = other.endChainageMeters - other.startChainageMeters;
+            if (Double.compare(span, otherSpan) != 0) return span < otherSpan;
+            return startChainageMeters < other.startChainageMeters;
+        }
+    }
+
+    private static final class MutableLocalWarningStats {
+        private long windowVisits;
+        private long qualifyingWindows;
+        private long candidateComparisons;
+        private long maximumDiagnosticRows;
+        private long maximumCachedProfileRows;
+        private long rowBudgetAbstentions;
+
+        LocalWarningStats snapshot() {
+            return new LocalWarningStats(windowVisits, qualifyingWindows, candidateComparisons,
+                    maximumDiagnosticRows, maximumCachedProfileRows, rowBudgetAbstentions);
+        }
+    }
+
+    private static final class ProfileCache {
+        private final Map<ProfileKey, FrozenProfile> profiles =
+                new LinkedHashMap<>(256, 0.75f, true);
+        private final MutableLocalWarningStats stats;
+        private long retainedRows;
+
+        private ProfileCache(MutableLocalWarningStats stats) {
+            this.stats = stats;
+        }
+
+        FrozenProfile getOrMeasure(ImageCostField image, ProfileKey key,
+                CancellationProbe cancellation) {
+            FrozenProfile cached = profiles.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            FrozenProfile measured = image.freezeProfile(key.point(), key.tangent(), cancellation);
+            int rows = measured.sampleCount();
+            if (rows > MAXIMUM_CACHED_PROFILE_ROWS) {
+                return null;
+            }
+            while (!profiles.isEmpty()
+                    && retainedRows + rows > MAXIMUM_CACHED_PROFILE_ROWS) {
+                var iterator = profiles.entrySet().iterator();
+                Map.Entry<ProfileKey, FrozenProfile> eldest = iterator.next();
+                retainedRows -= eldest.getValue().sampleCount();
+                iterator.remove();
+            }
+            profiles.put(key, measured);
+            retainedRows += rows;
+            stats.maximumCachedProfileRows = Math.max(stats.maximumCachedProfileRows, retainedRows);
+            return measured;
+        }
+    }
+
+    private static final class PhysicalSampleIndex {
+        private final List<MetricPoint> points;
+        private final double[] vertexChainage;
+        private final int uniformIntervals;
+        private final double spacingMeters;
+        private final Map<Integer, PhysicalSample> uniformCache = new LinkedHashMap<>(2_049, 0.75f, true);
+
+        private PhysicalSampleIndex(List<MetricPoint> points, double[] vertexChainage,
+                int uniformIntervals, double spacingMeters) {
+            this.points = points;
+            this.vertexChainage = vertexChainage;
+            this.uniformIntervals = uniformIntervals;
+            this.spacingMeters = spacingMeters;
+        }
+
+        static PhysicalSampleIndex create(List<MetricPoint> points, double[] vertexChainage,
+                double maximumSpacingMeters, CancellationProbe cancellation) {
+            cancellation.checkpoint();
+            double total = vertexChainage[vertexChainage.length - 1];
+            if (!(total > 0.0)) {
+                return new PhysicalSampleIndex(points, vertexChainage, 1, maximumSpacingMeters);
+            }
+            long requestedIntervals = (long) Math.ceil(total / maximumSpacingMeters);
+            if (requestedIntervals > Integer.MAX_VALUE - 1L) {
+                throw new IllegalArgumentException("Local physical sampling exceeds indexed address space");
+            }
+            int intervals = Math.max(1, (int) requestedIntervals);
+            return new PhysicalSampleIndex(points, vertexChainage, intervals, total / intervals);
+        }
+
+        int uniformCount() {
+            return uniformIntervals + 1;
+        }
+
+        PhysicalSample uniformAt(int index) {
+            if (index < 0 || index > uniformIntervals) {
+                throw new IndexOutOfBoundsException(index);
+            }
+            PhysicalSample cached = uniformCache.get(index);
+            if (cached != null) {
+                return cached;
+            }
+            PhysicalSample row = sampleAt(index == uniformIntervals
+                    ? totalLengthMeters() : index * spacingMeters);
+            uniformCache.put(index, row);
+            if (uniformCache.size() > 2_048) {
+                uniformCache.remove(uniformCache.keySet().iterator().next());
+            }
+            return row;
+        }
+
+        double totalLengthMeters() {
+            return vertexChainage[vertexChainage.length - 1];
+        }
+
+        List<PhysicalSample> uniformWindow(double start, double end) {
+            int firstInterior = Math.max(0, (int) Math.floor(start / spacingMeters) + 1);
+            int lastInterior = Math.min(uniformIntervals - 1,
+                    (int) Math.ceil(end / spacingMeters) - 1);
+            long rowCount = Math.max(0, lastInterior - firstInterior + 1L) + 2L;
+            if (rowCount > MAXIMUM_LOCAL_WINDOW_ROWS) {
+                return null;
+            }
+            List<PhysicalSample> rows = new ArrayList<>((int) rowCount);
+            rows.add(sampleAt(start));
+            for (int index = firstInterior; index <= lastInterior; index++) {
+                PhysicalSample row = uniformAt(index);
+                if (row.chainageMeters() > start + 1.0e-9
+                        && row.chainageMeters() < end - 1.0e-9) {
+                    rows.add(row);
+                }
+            }
+            rows.add(sampleAt(end));
+            return List.copyOf(rows);
+        }
+
+        List<PhysicalSample> diagnosticWindow(double start, double end,
+                CancellationProbe cancellation, MutableLocalWarningStats stats) {
+            List<PhysicalSample> uniform = uniformWindow(start, end);
+            if (uniform == null) {
+                return null;
+            }
+            int firstVertex = lowerBound(vertexChainage, start - 1.0e-9);
+            int lastVertex = upperBound(vertexChainage, end + 1.0e-9);
+            if ((long) uniform.size() + lastVertex - firstVertex
+                    > MAXIMUM_LOCAL_WINDOW_ROWS) {
+                return null;
+            }
+            List<PhysicalSample> rows = new ArrayList<>(uniform);
+            for (int index = firstVertex; index < lastVertex; index++) {
+                if ((index & 1023) == 0) cancellation.checkpoint();
+                rows.add(new PhysicalSample(points.get(index), vertexChainage[index],
+                        Math.max(0, Math.min(points.size() - 2, index)), index));
+            }
+            List<PhysicalSample> distinct = orderedDistinct(rows);
+            stats.maximumDiagnosticRows = Math.max(stats.maximumDiagnosticRows, distinct.size());
+            return distinct;
+        }
+
+        List<PhysicalSample> comparisonWindow(double start, double end,
+                Set<Integer> protectedIndices, CancellationProbe cancellation,
+                MutableLocalWarningStats stats) {
+            List<PhysicalSample> uniform = uniformWindow(start, end);
+            if (uniform == null) {
+                return null;
+            }
+            long protectedRows = 0;
+            for (int index : protectedIndices) {
+                if (vertexChainage[index] >= start - 1.0e-9
+                        && vertexChainage[index] <= end + 1.0e-9) {
+                    protectedRows++;
+                }
+            }
+            if ((long) uniform.size() + protectedRows > MAXIMUM_LOCAL_WINDOW_ROWS) {
+                return null;
+            }
+            List<PhysicalSample> rows = new ArrayList<>(uniform);
+            int visited = 0;
+            for (int index : protectedIndices) {
+                if ((visited++ & 1023) == 0) cancellation.checkpoint();
+                if (vertexChainage[index] >= start - 1.0e-9
+                        && vertexChainage[index] <= end + 1.0e-9) {
+                    rows.add(new PhysicalSample(points.get(index), vertexChainage[index],
+                            Math.max(0, Math.min(points.size() - 2, index)), index));
+                }
+            }
+            List<PhysicalSample> distinct = orderedDistinct(rows);
+            stats.maximumDiagnosticRows = Math.max(stats.maximumDiagnosticRows, distinct.size());
+            return distinct;
+        }
+
+        private static List<PhysicalSample> orderedDistinct(List<PhysicalSample> rows) {
+            rows.sort(Comparator.comparingDouble(PhysicalSample::chainageMeters)
+                    .thenComparingInt(row -> row.originalVertex() < 0 ? 1 : 0));
+            List<PhysicalSample> distinct = new ArrayList<>(rows.size());
+            for (PhysicalSample row : rows) {
+                if (!distinct.isEmpty()
+                        && Math.abs(row.chainageMeters()
+                                - distinct.get(distinct.size() - 1).chainageMeters()) <= 1.0e-9) {
+                    if (distinct.get(distinct.size() - 1).originalVertex() < 0
+                            && row.originalVertex() >= 0) {
+                        distinct.set(distinct.size() - 1, row);
+                    }
+                } else {
+                    distinct.add(row);
+                }
+            }
+            return List.copyOf(distinct);
+        }
+
+        PhysicalSample sampleAt(double target) {
+            double bounded = Math.max(0.0, Math.min(totalLengthMeters(), target));
+            int segment = Math.max(0, Math.min(points.size() - 2,
+                    upperBound(vertexChainage, bounded) - 1));
+            while (segment + 1 < vertexChainage.length - 1
+                    && vertexChainage[segment + 1] - vertexChainage[segment] <= 1.0e-12) {
+                segment++;
+            }
+            double segmentLength = vertexChainage[segment + 1] - vertexChainage[segment];
+            double fraction = segmentLength > 0.0
+                    ? (bounded - vertexChainage[segment]) / segmentLength : 0.0;
+            int original = -1;
+            if (Math.abs(bounded - vertexChainage[segment]) <= 1.0e-12) {
+                original = segment;
+            } else if (Math.abs(bounded - vertexChainage[segment + 1]) <= 1.0e-12) {
+                original = segment + 1;
+            }
+            return new PhysicalSample(interpolate(points.get(segment), points.get(segment + 1),
+                    fraction), bounded, segment, original);
+        }
+
+        private static int lowerBound(double[] values, double target) {
+            int low = 0;
+            int high = values.length;
+            while (low < high) {
+                int middle = (low + high) >>> 1;
+                if (values[middle] < target) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return low;
+        }
+
+        private static int upperBound(double[] values, double target) {
+            int low = 0;
+            int high = values.length;
+            while (low < high) {
+                int middle = (low + high) >>> 1;
+                if (values[middle] <= target) {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            return low;
+        }
+
+        MetricPoint tangentAt(double chainageMeters) {
+            double left = Math.max(0.0, chainageMeters - spacingMeters);
+            double right = Math.min(totalLengthMeters(), chainageMeters + spacingMeters);
+            if (!(right > left)) {
+                return new MetricPoint(1.0, 0.0);
+            }
+            return subtract(sampleAt(right).point(), sampleAt(left).point());
+        }
+
+        boolean isProtected(double chainageMeters, Set<Integer> protectedIndices) {
+            for (int index : protectedIndices) {
+                if (Math.abs(vertexChainage[index] - chainageMeters) <= 1.0e-9) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        int firstVertex(double chainageMeters) {
+            return Math.max(0, Math.min(points.size() - 1,
+                    upperBound(vertexChainage, chainageMeters - 1.0e-9) - 1));
+        }
+
+        int lastVertex(double chainageMeters) {
+            return Math.min(points.size() - 1,
+                    lowerBound(vertexChainage, chainageMeters - 1.0e-9));
+        }
+    }
 
     private record SupportMetrics(double totalLength, double directLength, double worstUnsupportedSpan) {
     }

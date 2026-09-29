@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -99,6 +100,26 @@ class V022ModernTracePipelineTest {
                 fixture.request, fixture.evidence, fixture.network, options(enabled),
                 () -> checkpoints.incrementAndGet() >= 2));
         assertEquals(2, checkpoints.get());
+    }
+
+    @Test
+    void productionCancellationReachesFinalGeometryEvaluation() {
+        Fixture fixture = fixture(TrackerMode.CORRIDOR_AWARE);
+        TraceEngine engine = (request, evidence, network, cancellation) ->
+                routes(request.engine(), route("cancel-final-geometry", 0.7));
+        AtomicBoolean reachedFinalGeometry = new AtomicBoolean();
+        CancellationProbe probe = () -> {
+            boolean finalGeometry = java.util.Arrays.stream(Thread.currentThread().getStackTrace())
+                    .anyMatch(frame -> frame.getClassName()
+                            .equals("org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator"));
+            reachedFinalGeometry.compareAndSet(false, finalGeometry);
+            return finalGeometry;
+        };
+
+        assertThrows(CancellationException.class, () -> new ModernTracePipeline(engine).run(
+                fixture.request, fixture.evidence, fixture.network,
+                options(GeometryCleanupConfig.disabled()), probe));
+        assertTrue(reachedFinalGeometry.get());
     }
 
     @Test

@@ -32,6 +32,12 @@ public final class ImageCostField {
     /** Frozen ownership state for a selected local image branch. */
     public enum FrozenSupport { MEASURED, AMBIGUOUS, MISSING }
 
+    /** Whether the queried decision-window profile proved one observed complete mode. */
+    public enum ObservedModeStatus { UNKNOWN, OBSERVED_UNIQUE, OBSERVED_AMBIGUOUS, UNAVAILABLE }
+
+    /** Direct longitudinal support disposition for one exact constructed segment. */
+    public enum UniqueSegmentStatus { DIRECT_UNIQUE, AMBIGUOUS, UNAVAILABLE }
+
     /** Cost and metric gradient from one frozen local branch field. */
     public record FrozenSample(double cost, double gradientX, double gradientY) { }
 
@@ -43,7 +49,20 @@ public final class ImageCostField {
             double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
             double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
             List<ImageOrientationSupport.AngularMode> orientationModes,
-            double orientationRadians, double orientationCertainty, double positionalReliability) {
+            double orientationRadians, double orientationCertainty, double positionalReliability,
+            ObservedModeStatus observedModeStatus) {
+        /** Retains callers that predate explicit observed-mode evidence. */
+        public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
+                double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
+                double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
+                List<ImageOrientationSupport.AngularMode> orientationModes,
+                double orientationRadians, double orientationCertainty, double positionalReliability) {
+            this(support, origin, normal, coreMinimumMeters, coreMaximumMeters,
+                    localizationSigmaMeters, noiseFloor, peakIntensity, offsetsMeters, values,
+                    orientationModes, orientationRadians, orientationCertainty,
+                    positionalReliability, ObservedModeStatus.UNKNOWN);
+        }
+
         /** Retains fixtures that predate continuous image reliability. */
         public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
                 double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
@@ -60,7 +79,7 @@ public final class ImageCostField {
             offsetsMeters = offsetsMeters.clone();
             values = values.clone();
             orientationModes = List.copyOf(orientationModes);
-            if (support == null || origin == null || normal == null
+            if (support == null || observedModeStatus == null || origin == null || normal == null
                     || offsetsMeters.length != values.length || offsetsMeters.length < 2
                     || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
                     || !Double.isFinite(orientationRadians) || !Double.isFinite(orientationCertainty)
@@ -74,6 +93,9 @@ public final class ImageCostField {
         @Override public double[] offsetsMeters() { return offsetsMeters.clone(); }
         /** Returns a defensive copy of the fixed profile ordinates. */
         @Override public double[] values() { return values.clone(); }
+
+        /** Returns the exact number of retained scalar rows without copying either array. */
+        public int sampleCount() { return offsetsMeters.length; }
 
         /** Evaluates the declared fixed branch field without selecting another mode. */
         public Optional<FrozenSample> evaluate(MetricPoint point) {
@@ -276,15 +298,20 @@ public final class ImageCostField {
                 sourcePitchMeters, parameters);
         List<LocalScalarProfileExtractor.Mode> ordered = extracted.modes().stream()
                 .sorted(Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0))).toList();
+        ObservedModeStatus observedModeStatus = !extracted.censoredModes().isEmpty()
+                ? ObservedModeStatus.UNAVAILABLE
+                : ordered.size() == 1 ? ObservedModeStatus.OBSERVED_UNIQUE
+                : ordered.size() > 1 ? ObservedModeStatus.OBSERVED_AMBIGUOUS
+                : ObservedModeStatus.UNAVAILABLE;
         if (ordered.isEmpty()) {
             return unavailable(FrozenSupport.MISSING, point, normal, offsets, values,
-                    extracted.noiseFloor(), extracted.maximumIntensity());
+                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus);
         }
         LocalScalarProfileExtractor.Mode selected = ordered.get(0);
         if (ordered.size() > 1 && ordered.get(1).distanceToCenterSet(0.0)
                 <= selected.distanceToCenterSet(0.0) + sourcePitchMeters) {
             return unavailable(FrozenSupport.AMBIGUOUS, point, normal, offsets, values,
-                    extracted.noiseFloor(), extracted.maximumIntensity());
+                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus);
         }
         Orientation orientation = measureOrientation(point, routeTangent, cancellation);
         double routeBearing = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
@@ -296,7 +323,61 @@ public final class ImageCostField {
                 orientation.measured() ? orientation.radians() : routeBearing,
                 orientation.measured() ? orientation.certainty() : 0.0,
                 selected.scalarAmplitudeReliability() + (1.0 - selected.scalarAmplitudeReliability())
-                    * (orientation.measured() ? orientation.certainty() : 0.0));
+                    * (orientation.measured() ? orientation.certainty() : 0.0), observedModeStatus);
+    }
+
+    /**
+     * Certifies direct support for one exact constructed longitudinal segment.
+     * Every bounded physical sample must lie inside one complete uncensored observed core.
+     */
+    public UniqueSegmentStatus certifyDirectUniqueSegment(MetricPoint first, MetricPoint second,
+            CancellationProbe cancellation) {
+        if (first == null || second == null || cancellation == null) {
+            throw new IllegalArgumentException("Unique segment inputs are incomplete");
+        }
+        MetricPoint tangent = new MetricPoint(second.xMeters() - first.xMeters(),
+                second.yMeters() - first.yMeters());
+        double length = StrictMath.hypot(tangent.xMeters(), tangent.yMeters());
+        if (!Double.isFinite(length)) {
+            return UniqueSegmentStatus.UNAVAILABLE;
+        }
+        if (!(length > 1.0e-12)) {
+            return directUniqueAt(first, new MetricPoint(1.0, 0.0), cancellation);
+        }
+        double spacing = Math.min(1.0, sourcePitchMeters * 0.5);
+        double requestedIntervals = Math.ceil(length / spacing);
+        if (!Double.isFinite(requestedIntervals)
+                || requestedIntervals + 1.0 > MAXIMUM_FROZEN_PROFILE_SAMPLES) {
+            return UniqueSegmentStatus.UNAVAILABLE;
+        }
+        int intervals = Math.max(1, (int) requestedIntervals);
+        for (int index = 0; index <= intervals; index++) {
+            cancellation.checkpoint();
+            double fraction = (double) index / intervals;
+            MetricPoint point = new MetricPoint(
+                    first.xMeters() + fraction * tangent.xMeters(),
+                    first.yMeters() + fraction * tangent.yMeters());
+            UniqueSegmentStatus status = directUniqueAt(point, tangent, cancellation);
+            if (status != UniqueSegmentStatus.DIRECT_UNIQUE) {
+                return status;
+            }
+        }
+        return UniqueSegmentStatus.DIRECT_UNIQUE;
+    }
+
+    private UniqueSegmentStatus directUniqueAt(MetricPoint point, MetricPoint tangent,
+            CancellationProbe cancellation) {
+        FrozenProfile profile = freezeProfile(point, tangent, cancellation);
+        if (profile.observedModeStatus() == ObservedModeStatus.UNAVAILABLE) {
+            return UniqueSegmentStatus.UNAVAILABLE;
+        }
+        if (profile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE
+                || profile.support() != FrozenSupport.MEASURED
+                || profile.coreMinimumMeters() > 0.0 || profile.coreMaximumMeters() < 0.0) {
+            return UniqueSegmentStatus.AMBIGUOUS;
+        }
+        return profile.evaluate(point).isPresent()
+                ? UniqueSegmentStatus.DIRECT_UNIQUE : UniqueSegmentStatus.UNAVAILABLE;
     }
 
     /** Returns whether a point has complete bilinear image support inside the decision region. */
@@ -559,9 +640,11 @@ public final class ImageCostField {
     }
 
     private FrozenProfile unavailable(FrozenSupport support, MetricPoint point, MetricPoint normal,
-            double[] offsets, double[] values, double noiseFloor, double peakIntensity) {
+            double[] offsets, double[] values, double noiseFloor, double peakIntensity,
+            ObservedModeStatus observedModeStatus) {
         return new FrozenProfile(support, point, normal, 0.0, 0.0, sourcePitchMeters,
-                noiseFloor, peakIntensity, offsets, values, List.of(), 0.0, 0.0);
+                noiseFloor, peakIntensity, offsets, values, List.of(), 0.0, 0.0, 1.0,
+                observedModeStatus);
     }
 
     private Orientation measureOrientation(MetricPoint center, MetricPoint routeTangent,

@@ -19,12 +19,51 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenSupport;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.ObservedModeStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.UniqueSegmentStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.SyntheticHeatmapScene;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022SceneCatalog;
 
 /** T053-T060: deterministic image-supported refitting and its numerical safeguards. */
 class V022ImageRefitterTest {
     private final ImageSupportedRefitter refitter = new ImageSupportedRefitter();
+
+    @Test
+    void compatibilityFrozenProfilesDoNotInventObservedUniqueness() {
+        FrozenProfile legacy = new FrozenProfile(FrozenSupport.MEASURED,
+                new MetricPoint(0, 0), new MetricPoint(0, 1), -0.25, 0.25,
+                0.5, 0.0, 1.0, new double[] {-1, 0, 1},
+                new double[] {0, 1, 0}, List.of(), 0.0, 0.0);
+
+        assertEquals(ObservedModeStatus.UNKNOWN, legacy.observedModeStatus());
+    }
+
+    @Test
+    void frozenProfileCertifiesOnlyOneCompleteUncensoredObservedMode() {
+        FrozenProfile unique = straightGaussianImage(false).freezeProfile(
+                new MetricPoint(45, 0), new MetricPoint(1, 0));
+        FrozenProfile parallel = parallelGaussianImage().freezeProfile(
+                new MetricPoint(45, 0), new MetricPoint(1, 0));
+
+        assertEquals(ObservedModeStatus.OBSERVED_UNIQUE, unique.observedModeStatus());
+        assertEquals(ObservedModeStatus.OBSERVED_AMBIGUOUS, parallel.observedModeStatus());
+    }
+
+    @Test
+    void directUniqueSegmentCertificateRejectsDisconnectedModeJump() {
+        ImageCostField straight = straightGaussianImage(false);
+        ImageCostField disconnected = disconnectedGaussianImage();
+
+        assertEquals(UniqueSegmentStatus.DIRECT_UNIQUE,
+                straight.certifyDirectUniqueSegment(new MetricPoint(10, 0),
+                        new MetricPoint(20, 0), CancellationProbe.NONE));
+        assertEquals(UniqueSegmentStatus.AMBIGUOUS,
+                disconnected.certifyDirectUniqueSegment(new MetricPoint(10, 0),
+                        new MetricPoint(20, 4), CancellationProbe.NONE));
+    }
 
     @Test
     void uniformBrightRasterCannotAuthorizeStraighteningAnUnsupportedApex() {
@@ -662,6 +701,31 @@ class V022ImageRefitterTest {
                         EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY, "parallel-gaussian",
                         EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
         return new ImageCostField(field, new RasterMetricTransform("parallel-gaussian-v1",
+                RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                new MetricPoint(0, -20), 0.5, 0.0, 0.0, 0.5, 1.0),
+                MetricRegion.rectangle(0, -20, 89.5, 19.5), 1.0);
+    }
+
+    private static ImageCostField disconnectedGaussianImage() {
+        int width = 180;
+        int height = 80;
+        double[] values = new double[width * height];
+        boolean[] valid = new boolean[values.length];
+        java.util.Arrays.fill(valid, true);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                double metricX = 0.5 * x;
+                double metricY = -20.0 + 0.5 * y;
+                double center = metricX < 15.0 ? 0.0 : 4.0;
+                double distance = metricY - center;
+                values[y * width + x] = 0.01 + 0.8 * Math.exp(-0.5 * distance * distance);
+            }
+        }
+        ScalarEvidenceField field = new ScalarEvidenceField(width, height, values, valid,
+                new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                        EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                        "disconnected-gaussian", EvidenceCorrelationGroup.SYNTHETIC_TRUTH, false));
+        return new ImageCostField(field, new RasterMetricTransform("disconnected-gaussian-v1",
                 RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
                 new MetricPoint(0, -20), 0.5, 0.0, 0.0, 0.5, 1.0),
                 MetricRegion.rectangle(0, -20, 89.5, 19.5), 1.0);

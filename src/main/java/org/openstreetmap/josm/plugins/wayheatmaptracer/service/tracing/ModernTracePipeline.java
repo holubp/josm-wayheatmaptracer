@@ -313,7 +313,7 @@ public final class ModernTracePipeline {
                     finalIds, image, pitch, protectedAssignments, List.of(), changed,
                     inference.status() == TraceHypothesisSet.Status.AMBIGUOUS,
                     inference.alternativesTruncated(),
-                    inference.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+                    inference.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT), cancellation);
         if (preciseShapeRequired) {
             List<FinalGeometryEvaluator.Finding> findings = new ArrayList<>(quality.findings());
             findings.add(new FinalGeometryEvaluator.Finding(
