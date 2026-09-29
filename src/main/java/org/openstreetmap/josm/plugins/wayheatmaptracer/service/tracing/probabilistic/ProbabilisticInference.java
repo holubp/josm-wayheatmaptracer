@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
@@ -361,7 +362,7 @@ public final class ProbabilisticInference {
             for (int index = 0; index < record.length(); index++) {
                 points.add(profiles.get(index).point(record.states()[index]));
             }
-            double mass = Math.exp(-record.energy() / parameters.temperature()
+            double mass = StrictMath.exp(-record.energy() / parameters.temperature()
                 + record.logMeasure() - logPartition);
             result.add(new ProbabilisticPath(record.states(), points,
                 branchSignature(record.states(), profiles), record.energy(), record.logMeasure(), mass));
@@ -375,7 +376,7 @@ public final class ProbabilisticInference {
         if (profiles.size() == 1) {
             double[] marginal = new double[profiles.get(0).cells().size()];
             for (int state = 0; state < marginal.length; state++) {
-                marginal[state] = Math.exp(messages.singleAlpha()[state] - messages.logPartition());
+                marginal[state] = StrictMath.exp(messages.singleAlpha()[state] - messages.logPartition());
             }
             return List.of(marginal);
         }
@@ -393,7 +394,7 @@ public final class ProbabilisticInference {
             }
             double[] marginal = new double[logValues.length];
             for (int state = 0; state < marginal.length; state++) {
-                marginal[state] = Math.exp(logValues[state] - messages.logPartition());
+                marginal[state] = StrictMath.exp(logValues[state] - messages.logPartition());
             }
             normalize(marginal);
             result.add(marginal);
@@ -536,7 +537,7 @@ public final class ProbabilisticInference {
         }
         MetricPoint first = start.point(startState);
         MetricPoint second = end.point(endState);
-        double heading = Math.atan2(second.yMeters() - first.yMeters(), second.xMeters() - first.xMeters());
+        double heading = StrictMath.atan2(second.yMeters() - first.yMeters(), second.xMeters() - first.xMeters());
         double span = end.chainageMeters() - start.chainageMeters();
         return parameters.orientationWeight() * span * support.certainty()
             * end.orientationReliability(endState)
@@ -551,8 +552,8 @@ public final class ProbabilisticInference {
         MetricPoint before = profiles.get(profileIndex - 2).point(beforeState);
         MetricPoint prior = profiles.get(profileIndex - 1).point(priorState);
         MetricPoint current = profiles.get(profileIndex).point(state);
-        double firstHeading = Math.atan2(prior.yMeters() - before.yMeters(), prior.xMeters() - before.xMeters());
-        double secondHeading = Math.atan2(current.yMeters() - prior.yMeters(), current.xMeters() - prior.xMeters());
+        double firstHeading = StrictMath.atan2(prior.yMeters() - before.yMeters(), prior.xMeters() - before.xMeters());
+        double secondHeading = StrictMath.atan2(current.yMeters() - prior.yMeters(), current.xMeters() - prior.xMeters());
         double normalizedTurn = wrap(secondHeading - firstHeading) / parameters.turnScaleRadians();
         double middleSpan = Math.max(1e-6, 0.5 * (profiles.get(profileIndex).chainageMeters()
             - profiles.get(profileIndex - 2).chainageMeters()));
@@ -620,7 +621,7 @@ public final class ProbabilisticInference {
     }
 
     private static double logMeasure(LateralStateCell cell) {
-        return cell.exactAnchor() ? 0.0 : Math.log(cell.quadratureWidthMeters());
+        return cell.exactAnchor() ? 0.0 : StrictMath.log(cell.quadratureWidthMeters());
     }
 
     private static double logAdd(double first, double second) {
@@ -631,7 +632,7 @@ public final class ProbabilisticInference {
             return first;
         }
         double maximum = Math.max(first, second);
-        return maximum + Math.log(Math.exp(first - maximum) + Math.exp(second - maximum));
+        return maximum + StrictMath.log(StrictMath.exp(first - maximum) + StrictMath.exp(second - maximum));
     }
 
     private static double logSumExp(double[] values) {
@@ -641,9 +642,9 @@ public final class ProbabilisticInference {
         }
         double sum = 0.0;
         for (double value : values) {
-            sum += Math.exp(value - maximum);
+            sum += StrictMath.exp(value - maximum);
         }
-        return maximum + Math.log(sum);
+        return maximum + StrictMath.log(sum);
     }
 
     private static double[] flatten(double[][] values) {
@@ -659,7 +660,9 @@ public final class ProbabilisticInference {
     }
 
     private static void normalize(double[] values) {
-        double sum = Arrays.stream(values).sum();
+        OrderedDoubleSum reduction = new OrderedDoubleSum();
+        for (double value : values) reduction.add(value);
+        double sum = reduction.value();
         if (sum > 0.0) {
             for (int index = 0; index < values.length; index++) {
                 values[index] /= sum;
@@ -668,7 +671,7 @@ public final class ProbabilisticInference {
     }
 
     private static double wrap(double angle) {
-        return Math.atan2(Math.sin(angle), Math.cos(angle));
+        return StrictMath.atan2(StrictMath.sin(angle), StrictMath.cos(angle));
     }
 
     private static final Comparator<PathRecord> PATH_ORDER = (first, second) -> {

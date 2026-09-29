@@ -134,6 +134,7 @@ class OrdinaryModernAttemptAssemblyTest {
                     assertTrue(new String(archive.artifact("attempt-status.json")
                         .orElseThrow().bytes(), StandardCharsets.UTF_8).contains(status));
                     assertTrue(archive.artifact("frozen-input.bin").isPresent());
+                    assertTrue(archive.artifact("numerical-policy.json").isPresent());
                     String counters = new String(archive.artifact("performance-counters.json")
                         .orElseThrow().bytes(), StandardCharsets.UTF_8);
                     assertTrue(counters.contains("inference.pairVisits"));

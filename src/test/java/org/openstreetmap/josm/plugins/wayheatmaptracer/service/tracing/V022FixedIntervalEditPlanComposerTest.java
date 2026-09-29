@@ -1376,10 +1376,14 @@ class V022FixedIntervalEditPlanComposerTest {
                 CancellationProbe.NONE);
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
         assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
-        var replayBundle = Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
+        var replayBundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.createLiveIntervals("test-build", batch,
                 assessment, Map.of(), new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
                         1L, 15, "a".repeat(64)),
-                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
+                        batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
+                batch.fullRequest().engine());
         assertTrue(replayBundle.artifactNames().contains("private/frozen-interval-input.bin"),
                 "a real two-interval production batch must include strict replay input");
         Path replayPath = Files.createTempFile("strict-interval-", ".zip");
@@ -1390,6 +1394,17 @@ class V022FixedIntervalEditPlanComposerTest {
                     archive.sourceIdentityHash(), archive.parameterHash());
             assertTrue(archive.artifact("private/interval-output-components.bin").isPresent());
             assertEquals("MATCH", replay.outputComponentStatus());
+
+            Map<String, Format15Artifact> oldPolicyMembers = new LinkedHashMap<>(replayBundle.artifacts());
+            oldPolicyMembers.remove("numerical-policy.json");
+            Path oldPolicyPath = directory.resolve("strict-interval-unattested-policy.zip");
+            Format15BundleWriter.write(new Format15Bundle(replayBundle.buildIdentity(),
+                    replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), oldPolicyMembers), oldPolicyPath);
+            Format15Archive oldPolicyArchive = Format15ArchiveReader.read(oldPolicyPath);
+            var oldPolicyFailure = assertThrows(ReplayMismatchException.class, () ->
+                    Format15ReplayRunner.replayIntervals(oldPolicyArchive,
+                        oldPolicyArchive.sourceIdentityHash(), oldPolicyArchive.parameterHash()));
+            assertEquals("numerical-policy-unattested", oldPolicyFailure.getMessage());
             assertEquals(batch.runs().size(), replay.outputComponentComparisons().size());
             assertEquals(partition.slideIntervals(), replay.partition().slideIntervals());
             assertEquals(2, replay.batch().runs().size());

@@ -118,7 +118,7 @@ public final class ImageCostField {
             double clippedResponse = Math.max(1.0e-6, Math.min(1.0, response));
             double responseDerivative = response > 1.0e-6 && response < 1.0
                     ? intensityDerivative / responseRange : 0.0;
-            double presenceCost = -Math.log(clippedResponse);
+            double presenceCost = -StrictMath.log(clippedResponse);
             double presenceDerivative = -responseDerivative / clippedResponse;
             double distance;
             double distanceSign;
@@ -239,7 +239,7 @@ public final class ImageCostField {
         if (cancellation == null) {
             throw new IllegalArgumentException("Frozen profile cancellation probe is required");
         }
-        double tangentLength = Math.hypot(routeTangent.xMeters(), routeTangent.yMeters());
+        double tangentLength = StrictMath.hypot(routeTangent.xMeters(), routeTangent.yMeters());
         if (!(tangentLength > 0.0) || !Double.isFinite(tangentLength)) {
             throw new IllegalArgumentException("Frozen profile tangent must be finite and nonzero");
         }
@@ -287,7 +287,7 @@ public final class ImageCostField {
                     extracted.noiseFloor(), extracted.maximumIntensity());
         }
         Orientation orientation = measureOrientation(point, routeTangent, cancellation);
-        double routeBearing = normalizeBearing(Math.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
+        double routeBearing = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
         return new FrozenProfile(FrozenSupport.MEASURED, point, normal,
                 selected.coreMinimumMeters(), selected.coreMaximumMeters(),
                 Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters()),
@@ -312,7 +312,7 @@ public final class ImageCostField {
         if (point == null || routeTangent == null) {
             throw new IllegalArgumentException("Route-local sampling requires a point and tangent");
         }
-        double tangentLength = Math.hypot(routeTangent.xMeters(), routeTangent.yMeters());
+        double tangentLength = StrictMath.hypot(routeTangent.xMeters(), routeTangent.yMeters());
         if (!(tangentLength > 0.0) || !Double.isFinite(tangentLength)) {
             throw new IllegalArgumentException("Route tangent must be finite and nonzero");
         }
@@ -344,7 +344,7 @@ public final class ImageCostField {
                 ? clamp((raw.getAsDouble() - features.noiseFloor()) / responseRange) : 0.0;
         if (features.modes().isEmpty() && features.censoredModes().isEmpty()) {
             double presenceCost = responseRange > 0.0
-                    ? -Math.log(Math.max(1.0e-6, presenceResponse)) : Double.POSITIVE_INFINITY;
+                    ? -StrictMath.log(Math.max(1.0e-6, presenceResponse)) : Double.POSITIVE_INFINITY;
             return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
                     features.maximumIntensity(), presenceResponse, presenceCost,
                     Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0.0, 0.0, false,
@@ -362,7 +362,7 @@ public final class ImageCostField {
             double directedDistance = nearestCensored.side() == LocalScalarProfileExtractor.CensorSide.RIGHT
                     ? Math.max(0.0, nearestCensored.boundaryOffsetMeters())
                     : Math.max(0.0, -nearestCensored.boundaryOffsetMeters());
-            double presenceCost = -Math.log(Math.max(1.0e-6, presenceResponse));
+            double presenceCost = -StrictMath.log(Math.max(1.0e-6, presenceResponse));
             double directionalCost = nearestCensored.gradientTowardEdge()
                     ? EvidenceModelParameters.huber(directedDistance / sourcePitchMeters) : 0.0;
             return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
@@ -377,7 +377,7 @@ public final class ImageCostField {
         double normalizedDistance = distance
                 / Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters());
         double centerCost = EvidenceModelParameters.huber(normalizedDistance);
-        double presenceCost = -Math.log(Math.max(1.0e-6, presenceResponse));
+        double presenceCost = -StrictMath.log(Math.max(1.0e-6, presenceResponse));
         boolean directlyLocalized = selected.localizationConfidence() > 0.0
                 && distance <= selected.localizationSigmaMeters() + 1.0e-12;
         return Optional.of(new RouteSample(normal, raw.getAsDouble(), features.noiseFloor(),
@@ -512,7 +512,7 @@ public final class ImageCostField {
         double gradientIntensityY = derivativeRasterX * drxDmy + derivativeRasterY * dryDmy;
         double presence = Math.max(1.0e-6, interpolated);
         double residual = 1.0 - interpolated;
-        return Optional.of(new Sample(interpolated, -Math.log(presence), residual * residual,
+        return Optional.of(new Sample(interpolated, -StrictMath.log(presence), residual * residual,
                 -gradientIntensityX / presence, -gradientIntensityY / presence,
                 -2.0 * residual * gradientIntensityX, -2.0 * residual * gradientIntensityY));
     }
@@ -594,8 +594,8 @@ public final class ImageCostField {
                     double distance = sourcePitchMeters + (rayLength - sourcePitchMeters)
                             * index / (samples - 1.0);
                     MetricPoint point = new MetricPoint(center.xMeters()
-                            + sign * Math.cos(angle) * distance,
-                            center.yMeters() + sign * Math.sin(angle) * distance);
+                            + sign * StrictMath.cos(angle) * distance,
+                            center.yMeters() + sign * StrictMath.sin(angle) * distance);
                     OptionalDouble value = sampleScalar(point);
                     if (value.isPresent()) {
                         rays[heading][side][index] = value.getAsDouble();
@@ -646,7 +646,7 @@ public final class ImageCostField {
         if (support.status() != ImageOrientationSupport.Status.MEASURED_TWO_SIDED) {
             return Orientation.UNKNOWN;
         }
-        double routeAngle = normalizeBearing(Math.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
+        double routeAngle = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
         ImageOrientationSupport.AngularMode selectedMode = support.modes().stream()
                 .min(Comparator.comparingDouble(mode -> mode.distanceTo(routeAngle))).orElseThrow();
         double selected = selectedMode.contains(routeAngle) ? routeAngle

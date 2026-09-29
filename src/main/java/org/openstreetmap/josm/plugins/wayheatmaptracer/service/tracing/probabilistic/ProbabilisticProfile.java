@@ -156,7 +156,7 @@ public record ProbabilisticProfile(
             || orientationSupport == null) {
             throw new IllegalArgumentException("Probabilistic profile is incomplete");
         }
-        double norm = Math.hypot(normalUnit.xMeters(), normalUnit.yMeters());
+        double norm = StrictMath.hypot(normalUnit.xMeters(), normalUnit.yMeters());
         if (Math.abs(norm - 1.0) > 1e-9) {
             throw new IllegalArgumentException("Profile normal must be a unit vector");
         }

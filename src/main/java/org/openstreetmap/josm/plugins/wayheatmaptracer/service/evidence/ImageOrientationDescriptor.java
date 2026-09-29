@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 
 /** Measures bounded multi-direction image support along physical two-sided metric rays. */
 public final class ImageOrientationDescriptor {
@@ -104,8 +105,8 @@ public final class ImageOrientationDescriptor {
                     cancellation.checkpoint();
                     double distance = sign * distances[sampleIndex];
                     MetricPoint metricSample = new MetricPoint(
-                        center.xMeters() + Math.cos(heading) * distance,
-                        center.yMeters() + Math.sin(heading) * distance);
+                        center.xMeters() + StrictMath.cos(heading) * distance,
+                        center.yMeters() + StrictMath.sin(heading) * distance);
                     OptionalDouble value = sample(evidence, field, metricSample);
                     if (value.isPresent()) {
                         values[sampleIndex] = value.getAsDouble();
@@ -259,16 +260,18 @@ public final class ImageOrientationDescriptor {
 
     private static RaySummary summarize(RaySamples samples, double background) {
         double excessIntegral = 0.0;
-        double totalWeight = Arrays.stream(samples.weights()).sum();
+        OrderedDoubleSum total = new OrderedDoubleSum();
+        OrderedDoubleSum valid = new OrderedDoubleSum();
+        for (double weight : samples.weights()) total.add(weight);
+        double totalWeight = total.value();
         for (int index = 0; index < samples.values().length; index++) {
             if (Double.isFinite(samples.values()[index])) {
+                valid.add(samples.weights()[index]);
                 excessIntegral += samples.weights()[index]
                     * Math.max(0.0, samples.values()[index] - background);
             }
         }
-        double validWeight = java.util.stream.IntStream.range(0, samples.values().length)
-            .filter(index -> Double.isFinite(samples.values()[index]))
-            .mapToDouble(index -> samples.weights()[index]).sum();
+        double validWeight = valid.value();
         double validFraction = totalWeight > 0.0
             ? Math.max(0.0, Math.min(1.0, validWeight / totalWeight)) : 0.0;
         return new RaySummary(validWeight > 0.0 ? excessIntegral / validWeight : 0.0,

@@ -169,9 +169,9 @@ final class LongitudinalModeReliability {
         MetricPoint right = center(rightProfile, rightMode);
         double dx = right.xMeters() - left.xMeters();
         double dy = right.yMeters() - left.yMeters();
-        double distance = Math.hypot(dx, dy);
+        double distance = StrictMath.hypot(dx, dy);
         if (!(distance > 0.0)) return 0.0;
-        double bearing = Math.atan2(dy, dx);
+        double bearing = StrictMath.atan2(dy, dx);
         double leftResidual = distance * Math.sqrt(
                 leftMode.orientationSupport().mismatchSquared(bearing));
         double rightResidual = distance * Math.sqrt(
@@ -184,7 +184,7 @@ final class LongitudinalModeReliability {
                 / square(uncertainty);
         double certainty = Math.sqrt(leftMode.orientationSupport().certainty()
                 * rightMode.orientationSupport().certainty());
-        return certainty * Math.exp(-0.5 * normalized);
+        return certainty * StrictMath.exp(-0.5 * normalized);
     }
 
     private static boolean directOrientation(ImageOrientationSupport support) {
@@ -246,7 +246,7 @@ final class LongitudinalModeReliability {
                             + square(leftProfile.sourcePitchMeters())
                             + square(profile.sourcePitchMeters())
                             + square(rightProfile.sourcePitchMeters()));
-                    confidence[modeIndex] = Math.exp(-0.5 * square(residual / uncertainty));
+                    confidence[modeIndex] = StrictMath.exp(-0.5 * square(residual / uncertainty));
                 }
             }
             result.add(confidence);

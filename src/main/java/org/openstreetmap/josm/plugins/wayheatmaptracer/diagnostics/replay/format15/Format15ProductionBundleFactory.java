@@ -80,6 +80,46 @@ public final class Format15ProductionBundleFactory {
     private Format15ProductionBundleFactory() {
     }
 
+    /**
+     * Explicitly declares that the caller computed this bundle using the current
+     * named numerical policies. The caller owns that provenance assertion; this
+     * method cannot establish the backend of arbitrary historic output objects.
+     * Old factory entry points deliberately do not add this declaration.
+     */
+    public static Format15Bundle withCurrentNumericalPolicy(Format15Bundle bundle,
+            FrozenReplayInput input, TrackerMode computedEngine) {
+        if (bundle == null || input == null
+                || !bundle.parameterHash().equals(input.request().parameterHash())) {
+            throw new IllegalArgumentException("numerical-policy-binding-invalid");
+        }
+        Format15Artifact frozen = bundle.artifacts().get("frozen-input.bin");
+        String inputHash = frozen == null ? null : frozen.sha256();
+        if (frozen != null) {
+            var trace = numericalReceiptMetadata(bundle.artifact("trace-request.json"));
+            if (!input.request().engine().name().equals(trace.get("engine"))) {
+                throw new IllegalArgumentException("numerical-policy-binding-invalid");
+            }
+        } else if (bundle.artifactNames().contains(INTERVAL_INDEX_ARTIFACT)) {
+            var index = numericalReceiptMetadata(bundle.artifact(INTERVAL_INDEX_ARTIFACT));
+            Object digest = index.get("sharedInputHash");
+            if (digest instanceof String value) inputHash = Format15Safety.requiredHash(value, "sharedInputHash");
+            else if (digest != null) throw new IllegalArgumentException("numerical-policy-binding-invalid");
+        }
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT,
+            Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(), inputHash,
+                input.request().parameterHash(), input.request().engine(), computedEngine));
+        return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
+    }
+
+    private static Map<String, Object> numericalReceiptMetadata(Format15Artifact artifact) {
+        try {
+            return Format15ArchiveReader.parseObject(artifact.bytes(), artifact.name());
+        } catch (Format15ArchiveException invalid) {
+            throw new IllegalArgumentException("numerical-policy-binding-invalid");
+        }
+    }
+
     /** Creates a Format-15 archive payload for scalar/final replay only; it does not claim raster or edit-plan replay. */
     public static Format15Bundle create(String buildIdentity, FrozenReplayInput input) {
         if (buildIdentity == null || buildIdentity.isBlank() || input == null) {
@@ -288,14 +328,17 @@ public final class Format15ProductionBundleFactory {
         String preview = geographicWays(previewWays);
         String previewHash = Format15Safety.sha256(preview.getBytes(StandardCharsets.UTF_8));
         byte[] frozenIntervals = null;
+        String sharedInputHash = null;
         if (batch.authoritySpecification() != null) {
             try {
                 var reproducedPartition = SelectedWayIntervalPartitioner.partition(
                         batch.network(), batch.authoritySpecification());
                 if (FrozenReplayCodec.partitionProofHash(reproducedPartition).equals(
                         FrozenReplayCodec.partitionProofHash(batch.partition()))) {
-                    frozenIntervals = FrozenIntervalReplayCodec.encode(batch, assessment,
+                    var encoded = FrozenIntervalReplayCodec.encodeWithIdentity(batch, assessment,
                             routeChoices, previewHash);
+                    frozenIntervals = encoded.bytes();
+                    sharedInputHash = encoded.sharedInputHash();
                 }
             } catch (IllegalArgumentException budgetOrUnsafeInput) {
                 // The existing artifact remains useful, but cannot advertise executable replay.
@@ -303,6 +346,7 @@ public final class Format15ProductionBundleFactory {
         }
         String receiptJson = intervalSourceReceiptJson(sourceReceipt);
         StringBuilder index = new StringBuilder("{\"schema\":1,\"artifactKind\":\"INTERVAL_PRODUCTION\"")
+                .append(",\"sharedInputHash\":").append(sharedInputHash == null ? "null" : quote(sharedInputHash))
                 .append(",\"sourceReceipt\":").append(receiptJson)
                 .append(",\"networkHash\":").append(quote(batch.network().canonicalHash()))
                 .append(",\"evidenceHash\":").append(quote(batch.evidence().canonicalHash()))
@@ -818,8 +862,8 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put(ScalarReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             ScalarReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
-        return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts);
+        return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts), input, requestedEngine);
     }
 
     /** Creates a frozen bundle that records one actual final-geometry production result. */
@@ -835,8 +879,8 @@ public final class Format15ProductionBundleFactory {
         artifacts.put(FinalReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             FinalReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
         addFinalOutputComponents(artifacts, expectation, actual);
-        return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts);
+        return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts), input, requestedEngine);
     }
 
     private static void addFinalOutputComponents(Map<String, Format15Artifact> artifacts,

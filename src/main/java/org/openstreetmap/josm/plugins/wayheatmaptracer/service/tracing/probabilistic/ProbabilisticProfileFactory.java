@@ -322,7 +322,7 @@ public final class ProbabilisticProfileFactory {
         MetricPoint end = points.get(Math.min(points.size() - 1, index + 1));
         double dx = end.xMeters() - start.xMeters();
         double dy = end.yMeters() - start.yMeters();
-        double length = Math.hypot(dx, dy);
+        double length = StrictMath.hypot(dx, dy);
         if (!(length > 0.0)) {
             throw new IllegalArgumentException("Resampled source has a zero tangent");
         }

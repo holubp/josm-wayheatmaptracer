@@ -1774,10 +1774,14 @@ public class AlignWayAction extends JosmAction {
         String applied = (status == IntervalArtifactStatus.APPLIED
                 || status == IntervalArtifactStatus.APPLIED_AFTER_REVIEW)
                 ? state.assessment().plan().orElseThrow().canonicalHash() : null;
-        return Format15ProductionBundleFactory.createLiveIntervals(
+        Format15Bundle bundle = Format15ProductionBundleFactory.createLiveIntervals(
                 LastSlideDebugBundle.buildIdentity(), state.batch(), state.assessment(),
                 state.routeChoices(), intervalSourceReceipt(computed.captured()), status,
                 reviewed, applied);
+        var batch = state.batch();
+        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
+                new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
+                batch.fullRequest().engine());
     }
 
     private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
@@ -1873,7 +1877,7 @@ public class AlignWayAction extends JosmAction {
                     ? computed.captured().junctionDecision()
                     : ManualJunctionEligibility.evaluate(computed.captured().network(),
                             computed.captured().specification());
-        return Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
+        Format15Bundle bundle = Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
                 input, computed.pipeline(), status,
                 computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
                 selectedRoute, plan, reviewed, applied, computed.counters(),
@@ -1884,6 +1888,7 @@ public class AlignWayAction extends JosmAction {
                             && computed.pipeline().routes().isEmpty()
                                 ? ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE
                                 : null);
+        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, input, input.request().engine());
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */

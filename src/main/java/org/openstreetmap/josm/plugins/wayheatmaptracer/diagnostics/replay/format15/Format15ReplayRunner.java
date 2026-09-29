@@ -83,6 +83,10 @@ public final class Format15ReplayRunner {
             throw new ReplayMismatchException("strict-interval-replay-input-malformed");
         }
         FrozenReplayInput shared = payload.shared();
+        TrackerMode numericalEngine = Format15NumericalPolicyReceipt.validate(archive, shared, payload.sharedInputHash());
+        if (payload.runs().stream().anyMatch(run -> run.request().engine() != numericalEngine)) {
+            throw new ReplayMismatchException("numerical-policy-engine-mismatch");
+        }
         if (!shared.request().parameterHash().equals(archive.parameterHash())
                 || !shared.network().snapshotId().equals(payload.authority().snapshotId())
                 || !shared.network().datasetIdentity().equals(payload.authority().datasetIdentity())
@@ -443,7 +447,10 @@ public final class Format15ReplayRunner {
         return replay(input, level, engine);
     }
 
-    /** Executes one requested modern engine over the same complete frozen attempt values. */
+    /**
+     * Executes the current production engine over exact frozen values. This direct
+     * forensic comparison does not attest which backend produced an old archive.
+     */
     public static Result replay(FrozenReplayInput input, ReplayLevel level, TrackerMode engine) {
         if (input == null || level == null || engine == null) {
             throw new IllegalArgumentException("Frozen input, level, and engine are required");
@@ -485,11 +492,13 @@ public final class Format15ReplayRunner {
             .map(FrozenReplayCodec::decode)
             .orElseThrow(() -> new ReplayMismatchException(
                 "Replay archive lacks frozen production input"));
-        if (!input.canonicalHash().equals(archive.sourceIdentityHash())
+        String verifiedInputHash = input.canonicalHash();
+        if (!verifiedInputHash.equals(archive.sourceIdentityHash())
                 || !input.request().parameterHash().equals(archive.parameterHash())) {
             throw new ReplayMismatchException(
                 "Frozen replay input identity disagrees with archive manifest");
         }
+        Format15NumericalPolicyReceipt.validate(archive, input, verifiedInputHash);
         return input;
     }
 

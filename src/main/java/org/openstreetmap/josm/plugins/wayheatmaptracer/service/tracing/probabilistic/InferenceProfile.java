@@ -120,7 +120,7 @@ public final class InferenceProfile {
             || componentResponsibilities == null || componentResponsibilities.length != cells.size()) {
             throw new IllegalArgumentException("Inference profile is incomplete");
         }
-        double norm = Math.hypot(normalUnit.xMeters(), normalUnit.yMeters());
+        double norm = StrictMath.hypot(normalUnit.xMeters(), normalUnit.yMeters());
         if (Math.abs(norm - 1.0) > 1e-9 || Arrays.stream(unaryCosts).anyMatch(value -> !Double.isFinite(value))
             || Arrays.stream(structuralGuideCosts).anyMatch(value -> !Double.isFinite(value) || value < 0.0)) {
             throw new IllegalArgumentException("Inference profile geometry or unary costs are invalid");

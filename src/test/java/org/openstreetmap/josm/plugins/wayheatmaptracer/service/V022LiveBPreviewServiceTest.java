@@ -358,6 +358,19 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void liveParameterIdentityBindsEachModernNumericalPolicyAndPreservesLegacy() {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID,
+                TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
+            String identity = LiveBPreviewService.parameterIdentity(engine);
+            assertTrue(identity.contains("shared-modern-cost-fdlibm53-v1"), engine.name());
+            assertTrue(identity.contains("ordered-compensated-java17-v1"), engine.name());
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+                    identity.contains("java17-fdlibm53-v1"), engine.name());
+        }
+        assertEquals("legacy-v02", LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_V02));
+    }
+
+    @Test
     void liveParameterIdentitySeparatesDirectBFromBaselineHybrid() throws Exception {
         String direct = LiveBPreviewService.parameterIdentity(TrackerMode.PROBABILISTIC);
         String hybrid = LiveBPreviewService.parameterIdentity(TrackerMode.HYBRID);

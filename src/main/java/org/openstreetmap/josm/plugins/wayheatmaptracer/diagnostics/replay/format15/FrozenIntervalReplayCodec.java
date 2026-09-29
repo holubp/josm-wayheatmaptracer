@@ -31,7 +31,7 @@ final class FrozenIntervalReplayCodec {
         }
     }
 
-    record Payload(FrozenReplayInput shared,
+    record Payload(FrozenReplayInput shared, String sharedInputHash,
             NetworkSnapshotCapture.Specification authority, String partitionProofHash,
             List<ExpectedRun> runs, String previewHash, String planHash) {
         Payload {
@@ -41,7 +41,15 @@ final class FrozenIntervalReplayCodec {
 
     private FrozenIntervalReplayCodec() { }
 
+    record Encoded(byte[] bytes, String sharedInputHash) { }
+
     static byte[] encode(IntervalTraceBatch batch,
+            FixedIntervalEditPlanComposer.Assessment assessment, Map<Integer, Integer> choices,
+            String previewHash) {
+        return encodeWithIdentity(batch, assessment, choices, previewHash).bytes();
+    }
+
+    static Encoded encodeWithIdentity(IntervalTraceBatch batch,
             FixedIntervalEditPlanComposer.Assessment assessment, Map<Integer, Integer> choices,
             String previewHash) {
         if (batch.authoritySpecification() == null || batch.runs().isEmpty()
@@ -57,7 +65,7 @@ final class FrozenIntervalReplayCodec {
             }
             out.writeInt(MAGIC);
             out.writeInt(completeFrame ? VERSION : 2);
-            part(out, FrozenReplayCodec.encode(new FrozenReplayInput(batch.fullRequest(),
+            String sharedHash = partWithHash(out, FrozenReplayCodec.encode(new FrozenReplayInput(batch.fullRequest(),
                     batch.evidence(), batch.network(), batch.options())));
             part(out, FrozenReplayCodec.encodeAuthority(batch.authoritySpecification()));
             hash(out, FrozenReplayCodec.partitionProofHash(batch.partition()));
@@ -90,7 +98,7 @@ final class FrozenIntervalReplayCodec {
             if (bytes.size() > Format15Safety.MAX_ARTIFACT_BYTES) {
                 throw new IllegalArgumentException("Strict interval replay exceeds per-file budget");
             }
-            return bytes.toByteArray();
+            return new Encoded(bytes.toByteArray(), sharedHash);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Strict interval replay could not be encoded", failure);
         }
@@ -108,7 +116,10 @@ final class FrozenIntervalReplayCodec {
             if (version != 2 && version != VERSION) {
                 throw new IllegalArgumentException("Unsupported interval replay codec version");
             }
-            FrozenReplayInput shared = FrozenReplayCodec.decode(part(in));
+            byte[] sharedWire = part(in);
+            String sharedHash = Format15Safety.sha256(sharedWire);
+            FrozenReplayInput shared = FrozenReplayCodec.decode(sharedWire);
+            sharedWire = null;
             NetworkSnapshotCapture.Specification authority = FrozenReplayCodec.decodeAuthority(part(in));
             if ((version == VERSION) != shared.evidence().coordinateFrame().hasCompleteNumericalIdentity()
                     || (version == VERSION) != authority.metricFrame().hasCompleteNumericalIdentity()) {
@@ -145,10 +156,16 @@ final class FrozenIntervalReplayCodec {
             String preview = hash(in);
             String plan = in.readBoolean() ? hash(in) : null;
             if (in.read() != -1) throw new IllegalArgumentException("Interval replay has trailing bytes");
-            return new Payload(shared, authority, proof, runs, preview, plan);
+            return new Payload(shared, sharedHash, authority, proof, runs, preview, plan);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Malformed strict interval replay input", failure);
         }
+    }
+
+    /** Hashes the already encoded/admitted bytes while writing them, without another encoding. */
+    private static String partWithHash(DataOutputStream out, byte[] value) throws IOException {
+        part(out, value);
+        return Format15Safety.sha256(value);
     }
 
     private static void part(DataOutputStream out, byte[] value) throws IOException {

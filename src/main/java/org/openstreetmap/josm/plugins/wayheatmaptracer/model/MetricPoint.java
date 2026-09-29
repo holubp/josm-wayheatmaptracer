@@ -11,6 +11,6 @@ public record MetricPoint(double xMeters, double yMeters) {
 
     /** Returns Euclidean distance to another local point in metres. */
     public double distanceTo(MetricPoint other) {
-        return Math.hypot(xMeters - other.xMeters, yMeters - other.yMeters);
+        return StrictMath.hypot(xMeters - other.xMeters, yMeters - other.yMeters);
     }
 }

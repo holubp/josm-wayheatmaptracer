@@ -1245,11 +1245,15 @@ public final class LiveBPreviewService {
         }
         return switch (engine) {
             case PROBABILISTIC -> EvidenceModelParameters.defaults().version() + "/"
-                    + ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2;
+                    + ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2 + "/"
+                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case HYBRID -> EvidenceModelParameters.defaults().version() + "/"
-                    + ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE;
-            case CORRIDOR_AWARE -> "corridor-aware-v1";
-            case DIRECTIONAL_IMAGE -> "directional-image-v1";
+                    + ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE + "/"
+                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
+            case CORRIDOR_AWARE -> "corridor-aware-v1/"
+                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
+            case DIRECTIONAL_IMAGE -> "directional-image-v1/"
+                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case LEGACY_V02 -> "legacy-v02";
         };
     }

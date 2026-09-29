@@ -8,10 +8,11 @@ import java.util.Map;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 
 /** Evaluates the deterministic finite observation mixture on an admitted lateral lattice. */
 public final class ProbabilisticObservationModel {
-    private static final double LOG_FLOOR = Math.log(1e-300);
+    private static final double LOG_FLOOR = StrictMath.log(1e-300);
 
     /**
      * Converts scalar samples and explicit evidence components to normalized unary costs.
@@ -60,14 +61,14 @@ public final class ProbabilisticObservationModel {
             for (int component = 0; component < components.size(); component++) {
                 double prior = priors[component];
                 terms[component] = prior == 0.0 ? Double.NEGATIVE_INFINITY
-                    : Math.log(prior) + logDensity[component][state];
+                    : StrictMath.log(prior) + logDensity[component][state];
             }
             double logMixture = logSumExp(terms);
             unary[state] = lattice.cells().get(state).exactAnchor() ? 0.0
                 : -Math.max(LOG_FLOOR, logMixture);
             for (int component = 0; component < terms.length; component++) {
                 responsibilities[state][component] = Double.isFinite(terms[component])
-                    ? Math.exp(terms[component] - logMixture) : 0.0;
+                    ? StrictMath.exp(terms[component] - logMixture) : 0.0;
             }
         }
 
@@ -141,7 +142,7 @@ public final class ProbabilisticObservationModel {
             }
             double response = clamp((intensity - profile.noiseFloor())
                 / Math.max(evidence.peak() - profile.noiseFloor(), 1e-12), 0.0, 1.0);
-            double presenceCost = -Math.log(Math.max(1e-6, response));
+            double presenceCost = -StrictMath.log(Math.max(1e-6, response));
             double distance = distanceToInterval(offset, mode.coreMinimumMeters(), mode.coreMaximumMeters());
             double centerScale = Math.max(profile.sourcePitchMeters() * 0.5, mode.localizationSigmaMeters());
             double centerCost = EvidenceModelParameters.huber(distance / centerScale);
@@ -196,8 +197,10 @@ public final class ProbabilisticObservationModel {
     }
 
     private static void fillUniform(double[] output, List<LateralStateCell> cells) {
-        double width = cells.stream().mapToDouble(LateralStateCell::quadratureWidthMeters).sum();
-        java.util.Arrays.fill(output, -Math.log(width));
+        OrderedDoubleSum reduction = new OrderedDoubleSum();
+        for (LateralStateCell cell : cells) reduction.add(cell.quadratureWidthMeters());
+        double width = reduction.value();
+        java.util.Arrays.fill(output, -StrictMath.log(width));
     }
 
     private static void normalizeDensity(double[] logValues, List<LateralStateCell> cells) {
@@ -208,10 +211,10 @@ public final class ProbabilisticObservationModel {
         double sum = 0.0;
         for (int state = 0; state < logValues.length; state++) {
             if (Double.isFinite(logValues[state])) {
-                sum += Math.exp(logValues[state] - maximum) * cells.get(state).quadratureWidthMeters();
+                sum += StrictMath.exp(logValues[state] - maximum) * cells.get(state).quadratureWidthMeters();
             }
         }
-        double logNormalizer = maximum + Math.log(sum);
+        double logNormalizer = maximum + StrictMath.log(sum);
         for (int state = 0; state < logValues.length; state++) {
             if (Double.isFinite(logValues[state])) {
                 logValues[state] -= logNormalizer;
@@ -268,9 +271,9 @@ public final class ProbabilisticObservationModel {
         }
         double sum = 0.0;
         for (double value : values) {
-            sum += Math.exp(value - maximum);
+            sum += StrictMath.exp(value - maximum);
         }
-        return maximum + Math.log(sum);
+        return maximum + StrictMath.log(sum);
     }
 
     private static double clamp(double value, double minimum, double maximum) {

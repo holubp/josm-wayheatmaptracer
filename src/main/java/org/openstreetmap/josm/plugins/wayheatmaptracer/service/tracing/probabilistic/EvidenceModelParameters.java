@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy;
+
 /** Versioned numerical parameters for probabilistic longitudinal inference. */
 public record EvidenceModelParameters(
     String version,
@@ -13,6 +15,9 @@ public record EvidenceModelParameters(
     double ambiguityEnergyDelta,
     Localization localization
 ) {
+    /** Normative binary64 value of pi/6 for the fixed 30-degree turn scale. */
+    private static final double DEFAULT_TURN_SCALE_RADIANS = 0x1.0c152382d7365p-1;
+
     /** Validates finite nonnegative weights and positive scales. */
     public EvidenceModelParameters {
         if (version == null || version.isBlank() || !finiteNonnegative(dataWeight)
@@ -40,14 +45,16 @@ public record EvidenceModelParameters(
 
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
-        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion(), 1.0, 1.0, 2.0,
-            0.5, 0.5, Math.toRadians(30.0), 1.0, 2.0, Localization.defaults());
+        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
+            + "/" + ModernNumericalPolicy.B_INFERENCE, 1.0, 1.0, 2.0,
+            0.5, 0.5, DEFAULT_TURN_SCALE_RADIANS, 1.0, 2.0, Localization.defaults());
     }
 
     /** Returns a deterministic data-only parameter set used by exact solver tests. */
     public static EvidenceModelParameters withoutShapeTerms() {
-        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion() + "-data-only", 1.0,
-            1.0, 0.0, 0.0, 0.0, Math.toRadians(30.0), 1.0, 1e-9,
+        return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
+            + "/" + ModernNumericalPolicy.B_INFERENCE + "-data-only", 1.0,
+            1.0, 0.0, 0.0, 0.0, DEFAULT_TURN_SCALE_RADIANS, 1.0, 1e-9,
             Localization.defaults());
     }
 

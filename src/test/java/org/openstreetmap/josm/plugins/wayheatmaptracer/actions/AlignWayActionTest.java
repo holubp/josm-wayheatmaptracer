@@ -431,6 +431,7 @@ class AlignWayActionTest {
                 .bytes(), StandardCharsets.UTF_8), displayed);
         assertFalse(firstPreview.equals(displayed));
         assertFalse(switched.artifactNames().contains("frozen-input.bin"));
+        assertTrue(switched.artifactNames().contains("numerical-policy.json"));
         assertFalse(switched.artifactNames().contains("frozen-edit-plan.bin"));
         assertFalse(index.contains("stored-signature"));
 

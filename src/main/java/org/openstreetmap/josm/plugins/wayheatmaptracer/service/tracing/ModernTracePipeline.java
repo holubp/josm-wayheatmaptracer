@@ -651,7 +651,7 @@ public final class ModernTracePipeline {
         MetricPoint end = points.get(Math.min(points.size() - 1, index + 1));
         double x = end.xMeters() - start.xMeters();
         double y = end.yMeters() - start.yMeters();
-        return Math.hypot(x, y) <= 1.0e-12 ? null : new MetricPoint(x, y);
+        return StrictMath.hypot(x, y) <= 1.0e-12 ? null : new MetricPoint(x, y);
     }
 
     private static ImageSupportedLocalCleanup.Mode cleanupMode(GeometryCleanupMode mode) {

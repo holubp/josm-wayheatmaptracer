@@ -552,7 +552,7 @@ public final class FinalGeometryEvaluator {
             if (denominator > 0.0) {
                 double cosine = Math.max(-1.0, Math.min(1.0, dot(first, second) / denominator));
                 double localLength = 0.5 * (norm(first) + norm(second));
-                total += localLength * Math.acos(cosine);
+                total += localLength * StrictMath.acos(cosine);
                 length += localLength;
             }
         }
@@ -664,7 +664,7 @@ public final class FinalGeometryEvaluator {
     }
 
     private static double norm(MetricPoint point) {
-        return Math.hypot(point.xMeters(), point.yMeters());
+        return StrictMath.hypot(point.xMeters(), point.yMeters());
     }
 
     private static double dot(MetricPoint first, MetricPoint second) {

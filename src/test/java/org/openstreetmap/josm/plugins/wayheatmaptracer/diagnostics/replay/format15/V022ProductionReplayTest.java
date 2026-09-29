@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -65,6 +67,121 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
     @Test
+    void oldNumericalPolicyArchiveRemainsReadableButStrictExecutionFails(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Path path = directory.resolve("unattested.zip");
+        Format15BundleWriter.write(Format15ProductionBundleFactory.create("old-test", input), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+        var failure = assertThrows(ReplayMismatchException.class, () ->
+                Format15ReplayRunner.replay(archive, ReplayLevel.SCALAR_INFERENCE,
+                    archive.sourceIdentityHash(), archive.parameterHash()));
+        assertEquals("numerical-policy-unattested", failure.getMessage());
+        // Explicit current-engine forensic comparison remains available and
+        // does not relabel the old archive or claim its original backend.
+        assertFalse(Format15ReplayRunner.replay(input, ReplayLevel.SCALAR_INFERENCE,
+                TrackerMode.PROBABILISTIC).inference().hypotheses().isEmpty());
+    }
+
+    @Test
+    void freshlyComputedExpectedOutputBindsCurrentNumericalPolicy(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedFinalOutput(
+                "current-test", input, TrackerMode.PROBABILISTIC);
+        assertTrue(bundle.artifactNames().contains("numerical-policy.json"));
+        String receipt = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+        assertTrue(receipt.contains("java17-fdlibm53-v1"));
+        assertTrue(receipt.contains("shared-modern-cost-fdlibm53-v1"));
+        assertTrue(receipt.contains("ordered-compensated-java17-v1"));
+        assertTrue(receipt.contains(input.canonicalHash()));
+        assertTrue(receipt.contains(input.request().parameterHash()));
+        Format15Bundle declaredAgain = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                bundle, input, input.request().engine());
+        assertSame(bundle.artifact("frozen-input.bin"), declaredAgain.artifact("frozen-input.bin"));
+        assertEquals(bundle.artifact("numerical-policy.json").sha256(),
+                declaredAgain.artifact("numerical-policy.json").sha256());
+        Path path = directory.resolve("current.zip");
+        Format15BundleWriter.write(bundle, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        var actual = Format15ReplayRunner.replay(archive, ReplayLevel.FINAL_GEOMETRY,
+                archive.sourceIdentityHash(), archive.parameterHash());
+        FinalReplayExpectation.read(archive).orElseThrow().validateBinding(archive, input);
+        assertEquals(FinalReplayExpectation.read(archive).orElseThrow().componentsBinding().rootFingerprint(),
+                FinalReplayFingerprint.sha256(actual));
+    }
+
+    @Test
+    void knownAlternateComputedEngineCannotRebindSavedBOutput(@TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedFinalOutput(
+                "current-test", input, TrackerMode.PROBABILISTIC);
+        String receipt = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
+                .replace("\"computedEngine\":\"PROBABILISTIC\"", "\"computedEngine\":\"CORRIDOR_AWARE\"")
+                .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1\"",
+                        "\"inferencePolicy\":\"engine-specific\"");
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", receipt));
+        Path path = directory.resolve("known-alternate-engine.zip");
+        Format15BundleWriter.write(new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
+                bundle.parameterHash(), artifacts), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        var failure = assertThrows(ReplayMismatchException.class, () ->
+                Format15ReplayRunner.replay(archive, ReplayLevel.FINAL_GEOMETRY,
+                    archive.sourceIdentityHash(), archive.parameterHash()));
+        assertEquals("numerical-policy-engine-mismatch", failure.getMessage());
+    }
+
+    @Test
+    void unsupportedOrReboundNumericalPolicyFailsBeforeInference(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "current-test", input, TrackerMode.PROBABILISTIC);
+        Path baselinePath = directory.resolve("valid-baseline.zip");
+        Format15BundleWriter.write(base, baselinePath);
+        Format15Archive baseline = Format15ArchiveReader.read(baselinePath);
+        var admitted = Format15ReplayRunner.replay(baseline, ReplayLevel.SCALAR_INFERENCE,
+                baseline.sourceIdentityHash(), baseline.parameterHash());
+        assertTrue(ScalarReplayExpectation.read(baseline).orElseThrow().matches(admitted));
+
+        byte[] receiptBytes = base.artifact("numerical-policy.json").bytes();
+        String current = new String(receiptBytes, StandardCharsets.UTF_8);
+        Map<String, Object> validFields = Format15ArchiveReader.parseObject(receiptBytes, "numerical-policy.json");
+        List<String> invalidReceipts = new ArrayList<>();
+        for (var mutation : List.of(Map.entry("sourceIdentityHash", "0".repeat(64)),
+                Map.entry("inputHash", "0".repeat(64)), Map.entry("parameterHash", "0".repeat(64)),
+                Map.entry("capturedEngine", "DIRECTIONAL_IMAGE"),
+                Map.entry("computedEngine", "DIRECTIONAL_IMAGE"),
+                Map.entry("inferencePolicy", "unknown-inference-policy"),
+                Map.entry("sharedPolicy", "unknown-shared-policy"))) {
+            String key = mutation.getKey();
+            String invalid = current.replace(jsonQuote(key) + ":" + jsonQuote((String) validFields.get(key)),
+                    jsonQuote(key) + ":" + jsonQuote(mutation.getValue()));
+            Map<String, Object> changed = Format15ArchiveReader.parseObject(
+                    invalid.getBytes(StandardCharsets.UTF_8), "numerical-policy.json");
+            assertEquals(List.of(key), validFields.keySet().stream()
+                    .filter(field -> !validFields.get(field).equals(changed.get(field))).toList());
+            invalidReceipts.add(invalid);
+        }
+        invalidReceipts.add(current + " ".repeat(4096));
+        for (String invalid : invalidReceipts) {
+            Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+            artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", invalid));
+            Path path = directory.resolve("invalid-" + artifacts.get("numerical-policy.json").sha256() + ".zip");
+            Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                    base.parameterHash(), artifacts), path);
+            Format15Archive archive = Format15ArchiveReader.read(path);
+            var failure = assertThrows(ReplayMismatchException.class, () ->
+                    Format15ReplayRunner.replay(archive, ReplayLevel.SCALAR_INFERENCE,
+                        archive.sourceIdentityHash(), archive.parameterHash()));
+            assertEquals("numerical-policy-invalid", failure.getMessage());
+        }
+    }
+
+    @Test
     void replayIndexParserKeepsExactLongReceiptGeneration() throws Exception {
         var parsed = Format15ArchiveReader.parseObject(
                 "{\"generation\":9007199254740993}".getBytes(StandardCharsets.UTF_8),
@@ -77,7 +194,7 @@ class V022ProductionReplayTest {
             @TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
         Path file = directory.resolve("single-request.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create("test", input), file);
+        Format15BundleWriter.write(currentBundle("test", input), file);
         Format15Archive archive = Format15ArchiveReader.read(file);
 
         assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
@@ -93,9 +210,9 @@ class V022ProductionReplayTest {
             ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
         ModernTracePipeline.Result pipeline = new ModernTracePipeline.Result(
             actual.inference(), actual.routes());
-        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+        Format15Bundle live = currentLiveBundle("test", input,
             pipeline, "preview-open", "visible-layer", 0, null, false, false);
-        assertThrows(IllegalArgumentException.class, () -> Format15ProductionBundleFactory.createLive(
+        assertThrows(IllegalArgumentException.class, () -> currentLiveBundle(
             "test", input, pipeline, "preview-open", "visible-layer?Signature=private",
             0, null, false, false));
         Path path = directory.resolve("live.zip");
@@ -149,7 +266,7 @@ class V022ProductionReplayTest {
         assertNotEquals(FinalGeometryEvaluator.Disposition.APPLICABLE,
                 unavailable.quality().disposition());
 
-        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+        Format15Bundle live = currentLiveBundle("test", input,
                 new ModernTracePipeline.Result(actual.inference(), actual.routes()),
                 "blocked", "managed-tiles", actual.routes().indexOf(unavailable),
                 null, false, false);
@@ -260,7 +377,7 @@ class V022ProductionReplayTest {
         Format15ReplayRunner.Result actual = Format15ReplayRunner.replay(input,
             ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
         assertTrue(actual.routes().isEmpty());
-        Format15Bundle live = Format15ProductionBundleFactory.createLive("test", input,
+        Format15Bundle live = currentLiveBundle("test", input,
             new ModernTracePipeline.Result(actual.inference(), actual.routes()),
             "blocked", "visible-layer", -1, null, false, false);
         assertTrue(live.artifactNames().contains("frozen-input.bin"));
@@ -575,7 +692,7 @@ class V022ProductionReplayTest {
         assertTrue(matching.output().contains("\"qualityStatus\":\"PASS\""));
 
         CliRun unavailable = runCli(directory.resolve("unavailable"),
-            Format15ProductionBundleFactory.create("test", input), "A", 51.0, 55.0,
+            currentBundle("test", input), "A", 51.0, 55.0,
             false, "{}", "SCALAR_INFERENCE", "[]", "[]");
         assertEquals(0, unavailable.exit(), unavailable.output());
         assertTrue(unavailable.output().contains(
@@ -745,7 +862,7 @@ class V022ProductionReplayTest {
         assertEquals(captured.network().canonicalHash(), decoded.network().canonicalHash());
         assertEquals(captured.request().corridorInput(), decoded.request().corridorInput());
         Path archivePath = directory.resolve("analytic ridge.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create("test", decoded), archivePath);
+        Format15BundleWriter.write(currentBundle("test", decoded), archivePath);
         Format15Archive archive = Format15ArchiveReader.read(archivePath);
 
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
@@ -756,7 +873,7 @@ class V022ProductionReplayTest {
         FrozenReplayInput image = fixture(TrackerMode.DIRECTIONAL_IMAGE, Scene.RIDGE,
             RasterFixture.COARSE);
         Path imagePath = directory.resolve("coarse image ridge.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create("test", image), imagePath);
+        Format15BundleWriter.write(currentBundle("test", image), imagePath);
         assertProductionReplay(Format15ArchiveReader.read(imagePath), image,
             TrackerMode.DIRECTIONAL_IMAGE, 53.0, 57.0);
     }
@@ -967,7 +1084,7 @@ class V022ProductionReplayTest {
         }
 
         Path safe = directory.resolve("safe.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create(
+        Format15BundleWriter.write(currentBundle(
             "build-2026.09.15+synthetic", input), safe);
         assertTrue(Files.isRegularFile(safe));
     }
@@ -977,7 +1094,7 @@ class V022ProductionReplayTest {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
 
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-            () -> Format15ProductionBundleFactory.create(
+            () -> currentBundle(
                 "/private/archive.zip?X-Amz-Signature=synthetic", input));
         assertTrue(allMessages(failure).contains("private path or signed value"));
     }
@@ -1002,7 +1119,7 @@ class V022ProductionReplayTest {
         Path corpus = directory.resolve("official corpus with spaces");
         Files.createDirectories(corpus);
         Path inner = directory.resolve("factory bundle.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create("test-build",
+        Format15BundleWriter.write(currentBundle("test-build",
             fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE)), inner);
         byte[] innerBytes = Files.readAllBytes(inner);
         Path outer = corpus.resolve("outer archive with spaces.zip");
@@ -1058,7 +1175,7 @@ class V022ProductionReplayTest {
                 originalRoute.rawHypothesis(), originalRoute.hypothesis(), originalRoute.pointIds(),
                 originalRoute.assignments(), originalRoute.sourceOwnership(), changedQuality,
                 originalRoute.cleanupStatus(), originalRoute.geometryChanged());
-        Format15Bundle changedExpected = Format15ProductionBundleFactory.createLive("test", input,
+        Format15Bundle changedExpected = currentLiveBundle("test", input,
                 new ModernTracePipeline.Result(produced.inference(), List.of(changedRoute)),
                 "produced", "synthetic-source", 0, null, false, false);
         CliRun rootMismatch = runCli(directory.resolve("root mismatch with companion"), changedExpected,
@@ -1159,7 +1276,7 @@ class V022ProductionReplayTest {
     void rasterAndEditReplayRemainExplicitlyUnsupported(@TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         Path archivePath = directory.resolve("input.zip");
-        Format15BundleWriter.write(Format15ProductionBundleFactory.create("test", input), archivePath);
+        Format15BundleWriter.write(currentBundle("test", input), archivePath);
         Format15Archive archive = Format15ArchiveReader.read(archivePath);
         assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
             ReplayLevel.RASTER_INFERENCE, input.canonicalHash(),
@@ -1173,7 +1290,7 @@ class V022ProductionReplayTest {
             FrozenReplayInput input, Path output) {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
             () -> Format15BundleWriter.write(
-                Format15ProductionBundleFactory.create(identity, input), output), identity);
+                currentBundle(identity, input), output), identity);
         assertTrue(allMessages(failure).contains("private path or signed value"), identity);
         assertFalse(Files.exists(output), identity);
     }
@@ -1184,6 +1301,21 @@ class V022ProductionReplayTest {
             false, "{}");
         assertEquals(0, run.exit(), run.output());
         return run.output();
+    }
+
+    /** Synthetic current inputs/results explicitly declare their production numerical target. */
+    private static Format15Bundle currentBundle(String build, FrozenReplayInput input) {
+        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create(build, input), input, input.request().engine());
+    }
+
+    private static Format15Bundle currentLiveBundle(String build, FrozenReplayInput input,
+            ModernTracePipeline.Result actual, String status, String lineage, int routeIndex,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan plan,
+            boolean reviewed, boolean applied) {
+        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.createLive(build, input, actual, status,
+                    lineage, routeIndex, plan, reviewed, applied), input, actual.inference().engine());
     }
 
     private static CliRun runCli(Path directory, FrozenReplayInput input,
@@ -1206,7 +1338,7 @@ class V022ProductionReplayTest {
             String engines, double minimumY, double maximumY,
             boolean corruptOuterHash, String ablationContents,
             String capability, String missingInputs, String errors) throws Exception {
-        return runCli(directory, Format15ProductionBundleFactory.create("test", input), engines,
+        return runCli(directory, currentBundle("test", input), engines,
             minimumY, maximumY, corruptOuterHash, ablationContents, capability, missingInputs,
             errors);
     }

@@ -571,6 +571,38 @@ metrics, cleanup status, and geometry-change flag. Point-keyed maps follow final
 order. Positive quality validation remains independent. Raster preprocessing, full edit
 plans, and deterministic cancellation replay remain unsupported.
 
+### Modern Numerical Policies
+
+Engine B inference uses `java17-fdlibm53-v1`: Java 17 ordered binary64
+arithmetic and the specified `StrictMath` fdlibm 5.3 transcendental functions.
+The shared metric distances, image orientation, final support and cost leaves
+use `shared-modern-cost-fdlibm53-v1`. Both policies are part of B/Hybrid live
+parameter identities; A and Direction-aware Image bind the shared policy only.
+This does not certify all A/Image engine arithmetic. Legacy V02 is unchanged.
+The correction preserves arithmetic order, thresholds, state space, comparison
+rules and exact fingerprints; it introduces no output rounding or tolerance.
+Both policies bind `ordered-compensated-java17-v1` for marginal normalization,
+uniform observation width and orientation ray weights. This reducer fixes the
+sequential compensated operation order and infinity fallback, replacing
+implementation-dependent stream sums. The integer-valued scalar filter kernel
+sum already remains exact.
+
+New current computations can carry a checksummed, bounded
+`numerical-policy.json` declaration bound to the captured/computed engines,
+frozen input and parameters. Strict archive replay requires a supported
+declaration before inference. Older archives remain readable for inspection;
+direct frozen-input replay is an explicit comparison with the current engine,
+and cannot attest or repair their original arithmetic backend. An export caller
+must explicitly declare a current computation: accepting historic input/output
+objects alone cannot establish which backend produced them. Published reference
+algorithms, exact analytic controls and graph regressions validate the policy.
+Optional cleanup and refitting have arithmetic outside this bounded policy;
+their complete final output still requires exact replay verification.
+
+The numerical contract follows the Java 17
+[StrictMath specification](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/StrictMath.html)
+and [strict expression rules](https://docs.oracle.com/javase/specs/jls/se17/html/jls-15.html#jls-15.4).
+
 ## Corridor-Aware Promotion Contract
 
 The maintainer approved `CORRIDOR_AWARE` as the default for `0.20.0`. A missing, blank, or unknown tracker preference resolves to corridor-aware; an explicitly stored `LEGACY_V02` preference remains legacy and round-trips without migration. Geometry cleanup remains independently disabled by default. Promotion verification includes the full Gradle suite, `wayheatmaptracer-testing.zip`, palette fixtures for `hot`, `blue`, `bluered`, `purple`, `gray`, and `all-colors-combined`, plus the existing broad-corridor, sparse-corridor, sustained sine/switchback, endpoint/junction, topology, and parent/child ambiguity regressions. Future changes must preserve the explicit legacy fallback and must not weaken these gates.
