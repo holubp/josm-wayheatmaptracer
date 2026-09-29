@@ -32,7 +32,7 @@ public final class SelectLongestSegmentAction extends JosmAction {
         super(
             tr("Select Longest Heatmap Segment"),
             null,
-            tr("Select the longest non-branching part of the selected way, or the longest such part containing one selected node"),
+            tr("Select the longest non-branching segment of a way, optionally containing a selected node; a node alone works when its way is unambiguous"),
             Shortcut.registerShortcut(
                 "wayheatmaptracer:select-longest-segment",
                 tr("WayHeatmapTracer: Select Longest Heatmap Segment"),
@@ -72,23 +72,50 @@ public final class SelectLongestSegmentAction extends JosmAction {
     }
 
     /**
-     * Validates the exact selection shapes supported by this preprocessing action.
+     * Resolves and validates the supported way-only, way-plus-node, and uniquely inferable node-only selections.
      *
      * @param dataSet active editable dataset
-     * @return selected way and optional single node hint
-     * @throws IllegalStateException when any extra or unsupported primitive is selected
+     * @return containing way and optional single node hint
+     * @throws IllegalStateException when the selection is unsupported or a node-only selection is ambiguous,
+     *     orphaned, or has incomplete way geometry
      */
     static SelectionRequest selectionRequest(DataSet dataSet) {
+        int selectedWayCount = dataSet.getSelectedWays().size();
         int selectedNodeCount = dataSet.getSelectedNodes().size();
-        if (dataSet.getSelectedWays().size() != 1
-            || selectedNodeCount > 1
-            || dataSet.getAllSelected().size() != 1 + selectedNodeCount) {
+        if (dataSet.getAllSelected().size() != selectedWayCount + selectedNodeCount) {
             throw new IllegalStateException(
-                "Select exactly one way, optionally together with one node on that way.");
+                "Select exactly one way, optionally with one node, or select one node whose way is unambiguous.");
         }
-        Way way = dataSet.getSelectedWays().iterator().next();
-        Node hint = selectedNodeCount == 1 ? dataSet.getSelectedNodes().iterator().next() : null;
-        return new SelectionRequest(way, hint);
+        if (selectedWayCount == 1 && selectedNodeCount <= 1) {
+            Way way = dataSet.getSelectedWays().iterator().next();
+            Node hint = selectedNodeCount == 1 ? dataSet.getSelectedNodes().iterator().next() : null;
+            return new SelectionRequest(way, hint);
+        }
+        if (selectedWayCount == 0 && selectedNodeCount == 1) {
+            Node hint = dataSet.getSelectedNodes().iterator().next();
+            List<Way> liveReferrers = hint.getReferrers().stream()
+                .filter(Way.class::isInstance)
+                .map(Way.class::cast)
+                .filter(way -> way.getDataSet() == dataSet && !way.isDeleted())
+                .toList();
+            if (liveReferrers.isEmpty()) {
+                throw new IllegalStateException(
+                    "The selected node does not belong to a live way in the active data layer.");
+            }
+            if (liveReferrers.size() > 1) {
+                throw new IllegalStateException(
+                    "The selected node belongs to more than one live way. Select the way too to choose which one.");
+            }
+            Way way = liveReferrers.get(0);
+            if (way.isIncomplete() || way.hasIncompleteNodes() || way.getNodesCount() < 2
+                || way.getNodes().stream().anyMatch(node -> node.isIncomplete() || !node.isLatLonKnown())) {
+                throw new IllegalStateException(
+                    "The selected node's way has incomplete geometry. Complete the way and its node coordinates first.");
+            }
+            return new SelectionRequest(way, hint);
+        }
+        throw new IllegalStateException(
+            "Select exactly one way, optionally with one node, or select one node whose way is unambiguous.");
     }
 
     /** Pure validated request used before changing the JOSM selection. */

@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -44,6 +45,138 @@ class SelectLongestSegmentActionTest {
         assertNull(global.hintNode());
         assertSame(way, hinted.way());
         assertSame(hint, hinted.hintNode());
+    }
+
+    @Test
+    void infersUniqueContainingWayFromOneSelectedNode() {
+        DataSet dataSet = new DataSet();
+        Node start = node(0.0);
+        Node firstJunction = node(0.001);
+        Node middle = node(0.004);
+        Node secondJunction = node(0.007);
+        Node end = node(0.008);
+        Way main = way(start, firstJunction, middle, secondJunction, end);
+        Way firstBranch = way(firstJunction, node(0.0011));
+        Way secondBranch = way(secondJunction, node(0.0071));
+        add(dataSet, main);
+        add(dataSet, firstBranch);
+        add(dataSet, secondBranch);
+        dataSet.setSelected(List.of(start));
+
+        SelectLongestSegmentAction.SelectionRequest request = SelectLongestSegmentAction.selectionRequest(dataSet);
+        var range = request.selectRange(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector());
+
+        assertSame(main, request.way());
+        assertSame(start, request.hintNode());
+        assertEquals(0, range.startIndex());
+        assertEquals(1, range.endIndex());
+    }
+
+    @Test
+    void explicitWayAndSharedNodeStillSelectsLongerAdjacentSpan() {
+        DataSet dataSet = new DataSet();
+        Node start = node(0.0);
+        Node junction = node(0.001);
+        Node middle = node(0.004);
+        Node farJunction = node(0.007);
+        Node end = node(0.008);
+        Way main = way(start, junction, middle, farJunction, end);
+        add(dataSet, main);
+        add(dataSet, way(junction, node(0.0011)));
+        add(dataSet, way(farJunction, node(0.0071)));
+        dataSet.setSelected(List.of(main, junction));
+
+        var range = SelectLongestSegmentAction.selectionRequest(dataSet)
+            .selectRange(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector());
+
+        assertEquals(1, range.startIndex());
+        assertEquals(3, range.endIndex());
+    }
+
+    @Test
+    void rejectsNodeOnlySelectionWhenMultipleLiveWaysReferToNode() {
+        DataSet dataSet = new DataSet();
+        Node shared = node(0.0);
+        Way first = way(shared, node(0.001));
+        Way second = way(shared, node(0.002));
+        add(dataSet, first);
+        add(dataSet, second);
+        dataSet.setSelected(List.of(shared));
+        List<?> before = List.copyOf(dataSet.getAllSelected());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+            () -> SelectLongestSegmentAction.selectionRequest(dataSet));
+
+        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("Select the way"));
+        assertEquals(before, List.copyOf(dataSet.getAllSelected()));
+    }
+
+    @Test
+    void rejectsOrphanNodeSelection() {
+        DataSet dataSet = new DataSet();
+        Node orphan = node(0.0);
+        dataSet.addPrimitive(orphan);
+        dataSet.setSelected(List.of(orphan));
+
+        assertThrows(IllegalStateException.class, () -> SelectLongestSegmentAction.selectionRequest(dataSet));
+    }
+
+    @Test
+    void inferredHintStillRejectsRepeatedOccurrenceInItsWay() {
+        DataSet dataSet = new DataSet();
+        Node repeated = node(0.0);
+        Way way = way(repeated, node(0.001), repeated, node(0.002));
+        add(dataSet, way);
+        dataSet.setSelected(List.of(repeated));
+
+        SelectLongestSegmentAction.SelectionRequest request = SelectLongestSegmentAction.selectionRequest(dataSet);
+
+        assertThrows(IllegalArgumentException.class,
+            () -> request.selectRange(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector()));
+    }
+
+    @Test
+    void rejectsNodeOnlySelectionWithExtraPrimitive() {
+        DataSet dataSet = new DataSet();
+        Node hint = node(0.0);
+        Way way = way(hint, node(0.001));
+        Relation relation = new Relation();
+        add(dataSet, way);
+        dataSet.addPrimitive(relation);
+        dataSet.setSelected(List.of(hint, relation));
+
+        assertThrows(IllegalStateException.class, () -> SelectLongestSegmentAction.selectionRequest(dataSet));
+    }
+
+    @Test
+    void ignoresDeletedWayReferrersButRejectsIncompleteLiveGeometry() {
+        DataSet dataSet = new DataSet();
+        Node hint = node(0.0);
+        Way live = way(hint, node(0.001));
+        Way deleted = way(hint, node(0.002));
+        add(dataSet, live);
+        add(dataSet, deleted);
+        deleted.setDeleted(true);
+        dataSet.setSelected(List.of(hint));
+
+        assertSame(live, SelectLongestSegmentAction.selectionRequest(dataSet).way());
+
+        Node unresolved = new Node(9001);
+        Way incomplete = way(hint, unresolved);
+        add(dataSet, incomplete);
+        dataSet.setSelected(List.of(hint));
+        assertThrows(IllegalStateException.class, () -> SelectLongestSegmentAction.selectionRequest(dataSet));
+    }
+
+    @Test
+    void rejectsUniqueIncompleteWayAsInferenceTarget() {
+        DataSet incompleteData = new DataSet();
+        Node hint = node(0.0);
+        Way incomplete = way(hint, new Node(9002));
+        add(incompleteData, incomplete);
+        incompleteData.setSelected(List.of(hint));
+        assertThrows(IllegalStateException.class,
+            () -> SelectLongestSegmentAction.selectionRequest(incompleteData));
     }
 
     @Test
