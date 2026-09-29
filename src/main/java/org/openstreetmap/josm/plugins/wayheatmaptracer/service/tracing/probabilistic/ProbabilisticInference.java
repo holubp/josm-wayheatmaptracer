@@ -49,11 +49,11 @@ public final class ProbabilisticInference {
         long stateCount = profiles.stream().mapToLong(profile -> profile.cells().size()).sum();
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(InferenceProfile::orientationResourceLimited)) {
-            return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, stateCount, 0,
+            return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, 0, 0,
                 "orientation descriptor resource limit", profiles);
         }
         if (profiles.stream().anyMatch(profile -> profile.cells().size() > budgets.maximumStatesPerProfile())) {
-            return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, stateCount, 0,
+            return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, 0, 0,
                 "state budget exceeded", profiles);
         }
         try {
@@ -74,40 +74,56 @@ public final class ProbabilisticInference {
                     messages.pairVisits(), messages.transitions(), "non-finite partition function", profiles);
             }
             long kBestStarted = System.nanoTime();
-            KBestResult kBest = enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation, admissions);
+            long remainingTransitions = budgets.maximumTransitions() - messages.transitions();
+            KBestResult kBest = enumerateKBest(profiles, parameters, budgets,
+                remainingTransitions, decisionRegion, cancellation, admissions);
             long kBestNanos = System.nanoTime() - kBestStarted;
+            long allTransitions = messages.transitions() + kBest.transitions();
             if (kBest.resourceLimited()) {
                 return failure(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
-                    messages.pairVisits(), kBest.transitions(), kBest.explanation(), profiles);
+                    messages.pairVisits(), allTransitions, kBest.explanation(), profiles);
             }
             long alternativesStarted = System.nanoTime();
             List<ProbabilisticPath> rawPaths = materialize(kBest.paths(), profiles, parameters,
                 messages.logPartition());
             double pitch = representativePitch(profiles);
             int distinctCap = Math.min(8, budgets.maximumDistinctAlternatives());
-            List<ProbabilisticPath> distinct = new PathAlternativeSelector().select(rawPaths, profiles,
-                pitch, distinctCap);
+            List<ProbabilisticPath> probed = new PathAlternativeSelector().select(rawPaths, profiles,
+                pitch, Math.max(2, distinctCap));
+            List<ProbabilisticPath> distinct = List.copyOf(probed.subList(0,
+                Math.min(distinctCap, probed.size())));
             long alternativesNanos = System.nanoTime() - alternativesStarted;
-            boolean alternativeTruncated = kBest.truncated()
-                || distinct.size() == distinctCap
-                    && rawPaths.stream().anyMatch(path -> distinct.stream().noneMatch(path::equals));
+            int rawCap = Math.min(32, budgets.maximumRawAlternatives());
+            boolean rawEnumerationCapped = kBest.terminalCount() > rawCap;
+            boolean diversityReached = distinct.size() == distinctCap;
+            var completion = new ProbabilisticInferenceResult.Completion(rawCap, distinctCap,
+                kBest.terminalCount(), rawEnumerationCapped, rawEnumerationCapped, diversityReached);
+            boolean alternativeTruncated = rawEnumerationCapped && !diversityReached;
+            boolean unresolvedCloseRival = rawEnumerationCapped && !rawPaths.isEmpty()
+                && rawPaths.get(rawPaths.size() - 1).energy() - rawPaths.get(0).energy()
+                    <= parameters.ambiguityEnergyDelta();
             GapSummary gaps = gapSummary(profiles);
             boolean allMissing = profiles.stream().allMatch(InferenceProfile::entirelyMissing);
             ProbabilisticInferenceResult.Status status = allMissing
                 ? ProbabilisticInferenceResult.Status.ALL_MISSING
                 : gaps.longestInternalGapMeters() > 20.0 || gaps.terminalGapMeters() > 0.0
                     ? ProbabilisticInferenceResult.Status.REVIEW_REQUIRED
-                    : ambiguous(distinct, parameters) ? ProbabilisticInferenceResult.Status.AMBIGUOUS
-                        : ProbabilisticInferenceResult.Status.COMPLETE;
+                    : ambiguous(probed, parameters) ? ProbabilisticInferenceResult.Status.AMBIGUOUS
+                        : unresolvedCloseRival ? ProbabilisticInferenceResult.Status.REVIEW_REQUIRED
+                            : ProbabilisticInferenceResult.Status.COMPLETE;
             List<double[]> marginals = positionalMarginals(profiles, messages);
             List<double[]> componentMarginals = componentMarginals(profiles, marginals);
             List<CredibleLateralSet> credibleSets = credibleSets(profiles, marginals, 0.95);
             ProbabilisticInferenceResult result = new ProbabilisticInferenceResult(status,
                 rawPaths.isEmpty() ? Optional.empty() : Optional.of(rawPaths.get(0)), rawPaths, distinct,
                 messages.logPartition(), marginals, componentMarginals, marginals, marginals, credibleSets, !allMissing,
-                alternativeTruncated, messages.pairVisits(), messages.transitions(), gaps,
-                allMissing ? "all profiles lack localized evidence" : alternativeTruncated
-                    ? "ALTERNATIVE_SEARCH_TRUNCATED" : "complete retained graph");
+                alternativeTruncated, Optional.of(completion), messages.pairVisits(), allTransitions, gaps,
+                allMissing ? "all profiles lack localized evidence"
+                    : alternativeTruncated && unresolvedCloseRival
+                        ? "ALTERNATIVE_SEARCH_TRUNCATED; ALTERNATIVE_AMBIGUITY_UNRESOLVED"
+                    : alternativeTruncated ? "ALTERNATIVE_SEARCH_TRUNCATED"
+                    : unresolvedCloseRival ? "ALTERNATIVE_AMBIGUITY_UNRESOLVED"
+                    : "complete retained graph");
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.forwardBackwardMs", nanosToMillis(forwardBackwardNanos));
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -126,9 +142,19 @@ public final class ProbabilisticInference {
                 "inference.rawPaths", result.rawPaths().size());
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.distinctPaths", result.distinctPaths().size());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.effectiveRawLimit", completion.effectiveRawLimit());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.effectiveDistinctLimit", completion.effectiveDistinctLimit());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.terminalCountAtSaturation", completion.completePathsAtSaturation());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.rawEnumerationCapped", completion.rawEnumerationCapped() ? 1 : 0);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.requestedDiversityReached", completion.requestedDiversityReached() ? 1 : 0);
             return result;
         } catch (ArithmeticException exception) {
-            return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE, stateCount, 0,
+            return failure(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE, 0, 0,
                 "numeric failure", profiles);
         }
     }
@@ -260,7 +286,8 @@ public final class ProbabilisticInference {
     }
 
     private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
-        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        EvidenceModelParameters parameters, TraceBudgets budgets, long remainingTransitions,
+        MetricRegion decisionRegion,
         CancellationProbe cancellation, TransitionAdmissionMemo admissions) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
@@ -272,15 +299,16 @@ public final class ProbabilisticInference {
                     logMeasure(profile.cells().get(state))));
             }
             paths.sort(PATH_ORDER);
-            boolean truncated = paths.size() > cap;
+            int terminalCount = Math.min(cap + 1, paths.size());
             return new KBestResult(List.copyOf(paths.subList(0, Math.min(cap, paths.size()))),
-                truncated, false, 0, "complete");
+                terminalCount, false, 0, "complete");
         }
 
         int firstStates = profiles.get(0).cells().size();
         int secondStates = profiles.get(1).cells().size();
         @SuppressWarnings("unchecked")
         List<PathRecord>[][] current = new List[firstStates][secondStates];
+        int[][] counts = new int[firstStates][secondStates];
         for (int first = 0; first < firstStates; first++) {
             for (int second = 0; second < secondStates; second++) {
                 if (!transitionAllowed(profiles, 0, first, second, decisionRegion, admissions)) {
@@ -293,17 +321,18 @@ public final class ProbabilisticInference {
                 current[first][second] = List.of(PathRecord.initial(first, second, energy,
                     logMeasure(profiles.get(0).cells().get(first))
                         + logMeasure(profiles.get(1).cells().get(second))));
+                counts[first][second] = 1;
             }
         }
         assignLexicalRanks(current);
         long transitions = 0;
-        boolean truncated = false;
         for (int profileIndex = 2; profileIndex < profiles.size(); profileIndex++) {
             cancellation.checkpoint();
             int previousStates = profiles.get(profileIndex - 1).cells().size();
             int nextStates = profiles.get(profileIndex).cells().size();
             @SuppressWarnings("unchecked")
             List<PathRecord>[][] next = new List[previousStates][nextStates];
+            int[][] nextCounts = new int[previousStates][nextStates];
             for (int prior = 0; prior < previousStates; prior++) {
                 for (int state = 0; state < nextStates; state++) {
                     TopKPaths candidates = new TopKPaths(cap);
@@ -311,6 +340,8 @@ public final class ProbabilisticInference {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
                         }
+                        nextCounts[prior][state] = Math.min(cap + 1,
+                            nextCounts[prior][state] + counts[before][prior]);
                         List<PathRecord> prefixes = current[before][prior];
                         if (prefixes == null || prefixes.isEmpty()) {
                             continue;
@@ -324,19 +355,23 @@ public final class ProbabilisticInference {
                             if ((transitions & 1023L) == 0L) {
                                 cancellation.checkpoint();
                             }
-                            if (transitions > budgets.maximumTransitions()) {
-                                return new KBestResult(List.of(), true, true, transitions,
+                            if (transitions > remainingTransitions) {
+                                return new KBestResult(List.of(), 0, true, transitions,
                                     "transition budget exceeded during k-best");
                             }
                             candidates.offer(prefix.extend(state, increment, measure));
                         }
                     }
-                    truncated |= candidates.truncated();
                     next[prior][state] = candidates.paths();
                 }
             }
             assignLexicalRanks(next);
             current = next;
+            counts = nextCounts;
+        }
+        int terminalCount = 0;
+        for (int[] row : counts) for (int value : row) {
+            terminalCount = Math.min(cap + 1, terminalCount + value);
         }
         List<PathRecord> result = new ArrayList<>();
         for (List<PathRecord>[] row : current) {
@@ -348,10 +383,9 @@ public final class ProbabilisticInference {
         }
         result.sort(PATH_ORDER);
         if (result.size() > cap) {
-            truncated = true;
             result = new ArrayList<>(result.subList(0, cap));
         }
-        return new KBestResult(List.copyOf(result), truncated, false, transitions, "complete");
+        return new KBestResult(List.copyOf(result), terminalCount, false, transitions, "complete");
     }
 
     private static List<ProbabilisticPath> materialize(List<PathRecord> paths,
@@ -600,7 +634,7 @@ public final class ProbabilisticInference {
     private static ProbabilisticInferenceResult failure(ProbabilisticInferenceResult.Status status,
         long pairVisits, long transitions, String explanation, List<InferenceProfile> profiles) {
         return new ProbabilisticInferenceResult(status, Optional.empty(), List.of(), List.of(), Double.NaN,
-            List.of(), List.of(), List.of(), List.of(), List.of(), false, status == ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
+            List.of(), List.of(), List.of(), List.of(), List.of(), false, false,
             pairVisits, transitions, gapSummary(profiles), explanation);
     }
 
@@ -733,7 +767,7 @@ public final class ProbabilisticInference {
         double logMeasure() { return logMeasure; }
     }
 
-    private record KBestResult(List<PathRecord> paths, boolean truncated, boolean resourceLimited,
+    private record KBestResult(List<PathRecord> paths, int terminalCount, boolean resourceLimited,
         long transitions, String explanation) { }
 
     private record GraphMessages(double logPartition, List<double[][]> forward,

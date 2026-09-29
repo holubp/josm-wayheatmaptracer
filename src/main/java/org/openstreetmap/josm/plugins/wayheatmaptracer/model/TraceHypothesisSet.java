@@ -20,8 +20,7 @@ public record TraceHypothesisSet(TrackerMode engine, List<TraceHypothesis> hypot
         hypotheses = List.copyOf(hypotheses);
         boolean hasRoutes = !hypotheses.isEmpty();
         if ((status == Status.COMPLETE || status == Status.AMBIGUOUS) && !hasRoutes
-            || (status == Status.NO_ROUTE || status == Status.CANCELLED) && hasRoutes
-            || status == Status.RESOURCE_LIMIT && !alternativesTruncated) {
+            || (status == Status.NO_ROUTE || status == Status.CANCELLED) && hasRoutes) {
             throw new IllegalArgumentException("Trace hypothesis status contradicts retained computation");
         }
         Set<String> ids = new HashSet<>();

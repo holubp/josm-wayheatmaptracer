@@ -196,7 +196,10 @@ class V022LocalizationCorrectionTest {
         MetricPoint apex = points.stream().min(Comparator.comparingDouble(point ->
             Math.abs(point.xMeters() - 60.0))).orElseThrow();
 
-        assertEquals(TraceHypothesisSet.Status.COMPLETE, completed.inference().status());
+        assertTrue(completed.inference().status() == TraceHypothesisSet.Status.COMPLETE
+                || completed.inference().status() == TraceHypothesisSet.Status.AMBIGUOUS,
+            () -> "supported kink produced no reviewable route: "
+                + completed.inference().explanation());
         assertTrue(apex.yMeters() > 53.0, "strong short kink was flattened: " + apex);
         assertTrue(completed.routes().get(0).quality().disposition()
                 != FinalGeometryEvaluator.Disposition.HARD_BLOCKED);
@@ -381,7 +384,9 @@ class V022LocalizationCorrectionTest {
 
         assertAll(
             () -> assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, exhausted.status()),
-            () -> assertTrue(exhausted.alternativesTruncated()),
+            () -> assertFalse(exhausted.alternativesTruncated(),
+                "native resource exhaustion is not an alternative-cap proof"),
+            () -> assertTrue(exhausted.hypotheses().isEmpty()),
             () -> assertTrue(exhausted.explanation().contains("orientation descriptor")),
             () -> assertEquals(TraceHypothesisSet.Status.CANCELLED, cancelled.status()),
             () -> assertEquals(TraceHypothesisSet.Status.COMPLETE, normal.status()),

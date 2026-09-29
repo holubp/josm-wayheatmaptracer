@@ -44,7 +44,7 @@ class V022PathAlternativeTest {
     }
 
     @Test
-    void t029RawAndDistinctCapsProduceVisibleTruncation() {
+    void t029RawCapWithRequestedDiversityHasSeparateCompletionProof() {
         TraceBudgets budgets = new TraceBudgets(96, 8_000_000, 128_000_000, 3, 2);
         List<InferenceProfile> profiles = profiles(20, new double[] {-4, -2, 0, 2, 4},
             new double[] {0, 0, 0, 0, 0}, new String[] {"a", "b", "c", "d", "e"});
@@ -52,9 +52,11 @@ class V022PathAlternativeTest {
         ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
             EvidenceModelParameters.defaults(), budgets);
 
-        assertTrue(result.alternativeSearchTruncated());
+        assertFalse(result.alternativeSearchTruncated());
         assertEquals(3, result.rawPaths().size());
-        assertTrue(result.distinctPaths().size() <= 2);
+        assertEquals(2, result.distinctPaths().size());
+        assertTrue(result.completion().orElseThrow().rawEnumerationCapped());
+        assertTrue(result.completion().orElseThrow().requestedDiversityReached());
     }
 
     @Test
@@ -139,7 +141,9 @@ class V022PathAlternativeTest {
     @Test
     void s11ObservedTailWithShortHolesIsRecoveredAsMeasuredRoute() {
         ProbabilisticInferenceResult result = solve(sineTailProfiles(false));
-        assertEquals(ProbabilisticInferenceResult.Status.COMPLETE, result.status());
+        assertEquals(ProbabilisticInferenceResult.Status.REVIEW_REQUIRED, result.status());
+        assertTrue(result.alternativeSearchTruncated());
+        assertTrue(result.explanation().contains("ALTERNATIVE_AMBIGUITY_UNRESOLVED"));
         for (int index = 0; index < result.mapPath().orElseThrow().points().size(); index++) {
             assertEquals(3.0 * Math.sin(2.0 * Math.PI * index * 10.0 / 240.0),
                 result.mapPath().orElseThrow().points().get(index).yMeters(), 1e-9);
@@ -178,7 +182,11 @@ class V022PathAlternativeTest {
 
         assertEquals(32, result.rawPaths().size());
         assertEquals(8, result.distinctPaths().size());
-        assertTrue(result.alternativeSearchTruncated());
+        assertFalse(result.alternativeSearchTruncated());
+        assertEquals(32, result.completion().orElseThrow().effectiveRawLimit());
+        assertEquals(8, result.completion().orElseThrow().effectiveDistinctLimit());
+        assertTrue(result.completion().orElseThrow().rawEnumerationCapped());
+        assertTrue(result.completion().orElseThrow().requestedDiversityReached());
     }
 
     private static ProbabilisticInferenceResult solve(List<InferenceProfile> profiles) {

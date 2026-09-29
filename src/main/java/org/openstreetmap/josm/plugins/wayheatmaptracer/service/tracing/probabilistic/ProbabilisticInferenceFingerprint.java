@@ -20,6 +20,15 @@ public final class ProbabilisticInferenceFingerprint {
                 .append(result.alternativeSearchTruncated()).append('|')
                 .append(result.evaluatedPairVisits()).append('|').append(result.evaluatedTransitions())
                 .append('|').append(result.gapSummary());
+        value.append("|completion=");
+        result.completion().ifPresentOrElse(completion -> value
+                .append(completion.effectiveRawLimit()).append(':')
+                .append(completion.effectiveDistinctLimit()).append(':')
+                .append(completion.completePathsAtSaturation()).append(':')
+                .append(completion.terminalCountSaturated()).append(':')
+                .append(completion.rawEnumerationCapped()).append(':')
+                .append(completion.requestedDiversityReached()),
+            () -> value.append("unavailable"));
         appendPaths(value, "raw", result.rawPaths());
         appendPaths(value, "distinct", result.distinctPaths());
         appendArrays(value, "position", result.positionMarginals());

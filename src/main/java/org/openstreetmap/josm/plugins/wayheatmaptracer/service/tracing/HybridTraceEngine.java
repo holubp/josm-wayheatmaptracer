@@ -160,7 +160,7 @@ public final class HybridTraceEngine implements BudgetReportingTraceEngine {
             outputOmitted |= append(routes, "guided-b", guided.hypotheses(),
                 budgets.maximumDistinctAlternatives());
         }
-        boolean truncated = resourceOmission || outputOmitted || probabilistic.alternativesTruncated()
+        boolean truncated = outputOmitted || probabilistic.alternativesTruncated()
             || corridor != null && corridor.alternativesTruncated()
             || guided != null && guided.alternativesTruncated();
         long states = probabilistic.evaluatedStates();
@@ -180,7 +180,6 @@ public final class HybridTraceEngine implements BudgetReportingTraceEngine {
         TraceHypothesisSet.Status status;
         if (resourceLimited) {
             status = TraceHypothesisSet.Status.RESOURCE_LIMIT;
-            truncated = true;
         } else if (routes.isEmpty()) {
             status = TraceHypothesisSet.Status.NO_ROUTE;
         } else {

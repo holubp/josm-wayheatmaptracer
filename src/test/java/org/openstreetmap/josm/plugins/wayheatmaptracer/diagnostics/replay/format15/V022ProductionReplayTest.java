@@ -114,6 +114,38 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void bCompletionProofIsIncludedInScalarReplayFingerprint(@TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "completion-proof-test", input, TrackerMode.PROBABILISTIC);
+        Path path = directory.resolve("completion-proof.zip");
+        Format15BundleWriter.write(bundle, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        var replayed = Format15ReplayRunner.replay(archive, ReplayLevel.SCALAR_INFERENCE,
+                archive.sourceIdentityHash(), archive.parameterHash());
+        assertTrue(ScalarReplayExpectation.read(archive).orElseThrow().matches(replayed));
+        TraceHypothesisSet actual = replayed.inference();
+        TraceHypothesis first = actual.hypotheses().get(0);
+        assertEquals(1.0, first.diagnostics().get("bTerminalCompletionPolicyV1"));
+        assertEquals((double) Math.min(32, input.request().budgets().maximumRawAlternatives()),
+                first.diagnostics().get("effectiveRawAlternativeLimit"));
+        assertEquals((double) Math.min(8, input.request().budgets().maximumDistinctAlternatives()),
+                first.diagnostics().get("effectiveDistinctAlternativeLimit"));
+        assertTrue(first.diagnostics().get("completePathsAtSaturation") >= 1.0);
+
+        Map<String, Double> alteredDiagnostics = new LinkedHashMap<>(first.diagnostics());
+        alteredDiagnostics.put("completePathsAtSaturation",
+                alteredDiagnostics.get("completePathsAtSaturation") + 1.0);
+        List<TraceHypothesis> alteredHypotheses = new ArrayList<>(actual.hypotheses());
+        alteredHypotheses.set(0, new TraceHypothesis(first.id(), first.branchSignature(), first.points(),
+                first.support(), first.objective(), first.posteriorProbability(), alteredDiagnostics));
+        TraceHypothesisSet altered = new TraceHypothesisSet(actual.engine(), alteredHypotheses,
+                actual.status(), actual.alternativesTruncated(), actual.evaluatedStates(),
+                actual.evaluatedTransitions(), actual.explanation());
+        assertNotEquals(ScalarReplayFingerprint.sha256(actual), ScalarReplayFingerprint.sha256(altered));
+    }
+
+    @Test
     void knownAlternateComputedEngineCannotRebindSavedBOutput(@TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedFinalOutput(

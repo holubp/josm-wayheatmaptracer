@@ -995,7 +995,7 @@ public final class LiveBPreviewService {
                 captured.geometryMode(), captured.specification().permissions(),
                 captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
                         : captured.engine() == TrackerMode.PROBABILISTIC
-                                ? TraceBudgets.interactiveProbabilisticPreview()
+                                ? TraceBudgets.defaults()
                                 : TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
                 captured.settingsHash(), captured.parameterHash(), "visible-"

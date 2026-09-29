@@ -53,6 +53,28 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 /** T033-T038: independent A proposals and unguided B orchestration. */
 class V022HybridRecoveryTest {
     @Test
+    void resourceOnlyHybridOmissionDoesNotClaimAlternativeCap() {
+        Fixture fixture = fixture();
+        TraceRequest limited = withBudgets(fixture.request(), new TraceBudgets(96, 1, 1, 1, 1));
+        AtomicInteger aCalls = new AtomicInteger();
+        BudgetReportingTraceEngine a = (request, evidence, network, cancellation) -> {
+            aCalls.incrementAndGet();
+            return new TraceEngineRun(noRoute(TrackerMode.CORRIDOR_AWARE), TraceWorkUsage.none());
+        };
+        BudgetReportingTraceEngine b = (request, evidence, network, cancellation) ->
+            new TraceEngineRun(route(TrackerMode.PROBABILISTIC, "b", 1.0),
+                new TraceWorkUsage(1, 1, 1, 1));
+
+        var result = new HybridTraceEngine(a, b).trace(limited,
+            fixture.evidence(), fixture.network());
+
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, result.status());
+        assertEquals(0, aCalls.get());
+        assertEquals(1, result.hypotheses().size());
+        assertFalse(result.alternativesTruncated());
+    }
+
+    @Test
     void cancelledSecondStageReportsPriorWorkWithoutClaimingRetainedRoutes() {
         Fixture fixture = fixture();
         BudgetReportingTraceEngine b = (request, evidence, network, cancellation) ->
@@ -358,7 +380,8 @@ class V022HybridRecoveryTest {
         assertEquals(1, result.hypotheses().size());
         assertTrue(result.hypotheses().get(0).id().startsWith("hybrid-b-"));
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, result.status());
-        assertTrue(result.alternativesTruncated());
+        assertFalse(result.alternativesTruncated(),
+            "omitting a later Hybrid stage does not prove B hit its alternative cap");
     }
 
     @Test
@@ -389,7 +412,8 @@ class V022HybridRecoveryTest {
         assertEquals(1, result.hypotheses().size());
         assertTrue(result.hypotheses().get(0).id().startsWith("hybrid-b-"));
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, result.status());
-        assertTrue(result.alternativesTruncated());
+        assertFalse(result.alternativesTruncated(),
+            "consuming the attempt-wide raw budget does not prove B enumeration was capped");
         assertTrue(result.explanation().contains("raw-alternative budget exhausted"));
     }
 

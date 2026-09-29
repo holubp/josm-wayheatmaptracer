@@ -599,6 +599,20 @@ algorithms, exact analytic controls and graph regressions validate the policy.
 Optional cleanup and refitting have arithmetic outside this bounded policy;
 their complete final output still requires exact replay verification.
 
+Engine B completion uses a separate
+`terminal-path-count-cumulative-work-v1` execution policy. The existing exact
+k-best traversal counts every admitted complete state sequence, including
+discarded prefixes, with bounded counters saturated at `K + 1`. A completed
+run reports alternative truncation only when more than `K` terminal paths
+exist and the requested `D` physically distinct routes were not reached.
+Resource exhaustion has no completion proof and does not itself set the
+alternative-truncation flag. Forward/backward and k-best transitions consume
+one cumulative per-invocation allowance; the reported count includes the first
+attempted transition over budget. Ordinary B uses the `96 / 8M / 128M / 32 / 8`
+state, pair, transition, raw and distinct limits. The named `8 / 4`
+experimental preview policy remains available only to explicit callers;
+frozen requests retain their recorded budgets.
+
 The numerical contract follows the Java 17
 [StrictMath specification](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/StrictMath.html)
 and [strict expression rules](https://docs.oracle.com/javase/specs/jls/se17/html/jls-15.html#jls-15.4).

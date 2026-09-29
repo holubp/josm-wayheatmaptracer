@@ -366,6 +366,8 @@ class V022LiveBPreviewServiceTest {
             assertTrue(identity.contains("ordered-compensated-java17-v1"), engine.name());
             assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
                     identity.contains("java17-fdlibm53-v1"), engine.name());
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+                    identity.contains("terminal-path-count-cumulative-work-v1"), engine.name());
         }
         assertEquals("legacy-v02", LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_V02));
     }
@@ -408,7 +410,9 @@ class V022LiveBPreviewServiceTest {
                 "synthetic visible raster must contain localized B evidence");
         LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
 
-        assertEquals(TraceBudgets.interactiveProbabilisticPreview(), result.request().budgets());
+        assertEquals(TraceBudgets.defaults(), result.request().budgets());
+        assertEquals(32, result.request().budgets().maximumRawAlternatives());
+        assertEquals(8, result.request().budgets().maximumDistinctAlternatives());
         assertEquals("selected-visible", result.options().sourceTier());
         assertEquals(captured[0].cleanup(), result.options().cleanup());
         assertTrue(result.counters().containsKey("pipeline.inferenceMs"));

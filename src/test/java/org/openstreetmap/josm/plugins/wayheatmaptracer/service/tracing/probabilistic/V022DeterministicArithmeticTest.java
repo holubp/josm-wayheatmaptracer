@@ -113,9 +113,10 @@ class V022DeterministicArithmeticTest {
         }
         var result = new ProbabilisticInference().solve(profiles,
             EvidenceModelParameters.withoutShapeTerms(), TraceBudgets.defaults());
-        // 3 x 3 pairs at each of two stages; 3^3 transitions in each direction.
+        // 3 x 3 pairs at each of two FB stages; 3^3 transitions in both FB directions
+        // plus the same 3^3 retained-prefix extensions in k-best.
         assertEquals(18, result.evaluatedPairVisits());
-        assertEquals(54, result.evaluatedTransitions());
+        assertEquals(81, result.evaluatedTransitions());
         assertEquals(27, result.rawPaths().size());
         int ordinal = 0;
         for (int first = 0; first < 3; first++) {

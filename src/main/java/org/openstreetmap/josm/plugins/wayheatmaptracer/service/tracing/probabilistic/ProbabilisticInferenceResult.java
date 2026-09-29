@@ -21,6 +21,7 @@ public final class ProbabilisticInferenceResult {
     private final List<CredibleLateralSet> credibleSets;
     private final boolean posteriorUsable;
     private final boolean alternativeSearchTruncated;
+    private final Optional<Completion> completion;
     private final long evaluatedPairVisits;
     private final long evaluatedTransitions;
     private final GapSummary gapSummary;
@@ -33,11 +34,37 @@ public final class ProbabilisticInferenceResult {
         List<double[]> backwardPositionMarginals, List<CredibleLateralSet> credibleSets,
         boolean posteriorUsable, boolean alternativeSearchTruncated, long evaluatedPairVisits,
         long evaluatedTransitions, GapSummary gapSummary, String explanation) {
+        this(status, mapPath, rawPaths, distinctPaths, logPartition, positionMarginals,
+            componentMarginals, forwardPositionMarginals, backwardPositionMarginals,
+            credibleSets, posteriorUsable, alternativeSearchTruncated, Optional.empty(),
+            evaluatedPairVisits, evaluatedTransitions, gapSummary, explanation);
+    }
+
+    /** Adds a bounded completed-terminal proof; older constructed results remain unattested. */
+    public ProbabilisticInferenceResult(Status status, Optional<ProbabilisticPath> mapPath,
+        List<ProbabilisticPath> rawPaths, List<ProbabilisticPath> distinctPaths, double logPartition,
+        List<double[]> positionMarginals, List<double[]> componentMarginals, List<double[]> forwardPositionMarginals,
+        List<double[]> backwardPositionMarginals, List<CredibleLateralSet> credibleSets,
+        boolean posteriorUsable, boolean alternativeSearchTruncated, Optional<Completion> completion,
+        long evaluatedPairVisits, long evaluatedTransitions, GapSummary gapSummary, String explanation) {
         if (status == null || mapPath == null || rawPaths == null || distinctPaths == null
             || positionMarginals == null || componentMarginals == null || forwardPositionMarginals == null
-            || backwardPositionMarginals == null || credibleSets == null || evaluatedPairVisits < 0
+            || backwardPositionMarginals == null || credibleSets == null || completion == null || evaluatedPairVisits < 0
             || evaluatedTransitions < 0 || gapSummary == null || explanation == null) {
             throw new IllegalArgumentException("Inference result is incomplete");
+        }
+        if (completion.isPresent()) {
+            Completion proof = completion.orElseThrow();
+            int expectedRawPathCount = Math.min(proof.effectiveRawLimit(), proof.completePathsAtSaturation());
+            boolean expectedDiversityReached = distinctPaths.size() == proof.effectiveDistinctLimit();
+            boolean expectedAlternativeTruncation = proof.rawEnumerationCapped()
+                && !proof.requestedDiversityReached();
+            if (rawPaths.size() != expectedRawPathCount
+                || distinctPaths.size() > proof.effectiveDistinctLimit()
+                || proof.requestedDiversityReached() != expectedDiversityReached
+                || alternativeSearchTruncated != expectedAlternativeTruncation) {
+                throw new IllegalArgumentException("Inference result contradicts its completion proof");
+            }
         }
         this.status = status;
         this.mapPath = mapPath;
@@ -51,6 +78,7 @@ public final class ProbabilisticInferenceResult {
         this.credibleSets = List.copyOf(credibleSets);
         this.posteriorUsable = posteriorUsable;
         this.alternativeSearchTruncated = alternativeSearchTruncated;
+        this.completion = completion;
         this.evaluatedPairVisits = evaluatedPairVisits;
         this.evaluatedTransitions = evaluatedTransitions;
         this.gapSummary = gapSummary;
@@ -79,8 +107,10 @@ public final class ProbabilisticInferenceResult {
     public List<CredibleLateralSet> credibleSets() { return credibleSets; }
     /** Returns whether posterior claims are usable rather than all-missing or incomplete. */
     public boolean posteriorUsable() { return posteriorUsable; }
-    /** Returns whether the raw or distinct alternative cap curtailed exploration. */
+    /** Returns whether terminal enumeration exceeded K before requested diversity D was reached. */
     public boolean alternativeSearchTruncated() { return alternativeSearchTruncated; }
+    /** Returns a terminal proof only for completed admitted-graph enumeration. */
+    public Optional<Completion> completion() { return completion; }
     /** Returns pair-state visit count. */
     public long evaluatedPairVisits() { return evaluatedPairVisits; }
     /** Returns admitted graph transition count. */
@@ -89,6 +119,22 @@ public final class ProbabilisticInferenceResult {
     public GapSummary gapSummary() { return gapSummary; }
     /** Returns a bounded diagnostic explanation. */
     public String explanation() { return explanation; }
+
+    /** Saturated terminal count and independent raw-cap/diversity facts. */
+    public record Completion(int effectiveRawLimit, int effectiveDistinctLimit,
+        int completePathsAtSaturation, boolean terminalCountSaturated,
+        boolean rawEnumerationCapped, boolean requestedDiversityReached) {
+        public Completion {
+            if (effectiveRawLimit < 1 || effectiveRawLimit > 32 || effectiveDistinctLimit < 1
+                || effectiveDistinctLimit > 8 || effectiveDistinctLimit > effectiveRawLimit
+                || completePathsAtSaturation < 1
+                || completePathsAtSaturation > effectiveRawLimit + 1
+                || terminalCountSaturated != (completePathsAtSaturation == effectiveRawLimit + 1)
+                || rawEnumerationCapped != terminalCountSaturated) {
+                throw new IllegalArgumentException("Terminal completion proof is invalid");
+            }
+        }
+    }
 
     private static List<double[]> deepCopy(List<double[]> values) {
         List<double[]> copy = new ArrayList<>(values.size());

@@ -71,7 +71,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
         } catch (LongitudinalModeReliability.ResourceLimitException exception) {
             return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
                 exception.getMessage()), 0, 0);
         }
     }
@@ -90,7 +90,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
         } catch (LongitudinalModeReliability.ResourceLimitException exception) {
             return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
                 exception.getMessage()), 0, 0);
         }
     }
@@ -117,7 +117,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
             return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, true, 0, 0,
+                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
                 "orientation descriptor resource limit"), 0, 0);
         }
         long stateObservationStarted = System.nanoTime();
@@ -133,7 +133,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 request.budgets().maximumStatesPerProfile());
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
                 return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
-                    TraceHypothesisSet.Status.RESOURCE_LIMIT, true, stateCount, 0,
+                    TraceHypothesisSet.Status.RESOURCE_LIMIT, false, stateCount, 0,
                     "STATE_LIMIT at profile " + profile.profileIndex() + ": " + stateResult.explanation()), 0, 0);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
@@ -254,6 +254,14 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             diagnostics.put("temperature", parameters.temperature());
             diagnostics.put("turnWeight", parameters.turnWeight());
             diagnostics.put("orientationWeight", parameters.orientationWeight());
+            var completion = inference.completion().orElseThrow();
+            diagnostics.put("bTerminalCompletionPolicyV1", 1.0);
+            diagnostics.put("effectiveRawAlternativeLimit", (double) completion.effectiveRawLimit());
+            diagnostics.put("effectiveDistinctAlternativeLimit", (double) completion.effectiveDistinctLimit());
+            diagnostics.put("completePathsAtSaturation", (double) completion.completePathsAtSaturation());
+            diagnostics.put("terminalCountSaturated", completion.terminalCountSaturated() ? 1.0 : 0.0);
+            diagnostics.put("rawEnumerationCapped", completion.rawEnumerationCapped() ? 1.0 : 0.0);
+            diagnostics.put("requestedDiversityReached", completion.requestedDiversityReached() ? 1.0 : 0.0);
             if (guide != null) {
                 diagnostics.put("structuralGuideApplied", 1.0);
                 diagnostics.put("structuralGuideWeight", parameters.guideWeight());
