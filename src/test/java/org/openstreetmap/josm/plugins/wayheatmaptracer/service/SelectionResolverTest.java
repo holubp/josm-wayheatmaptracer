@@ -145,14 +145,15 @@ class SelectionResolverTest {
         Node start = node(0.0);
         Node junction = node(0.002);
         Node hinted = node(0.003);
+        Node secondOrdinary = node(0.0035);
         Node secondJunction = node(0.004);
         Node end = node(0.020);
         Node branchEnd1 = node(0.0025);
         Node branchEnd2 = node(0.0045);
-        for (Node node : List.of(start, junction, hinted, secondJunction, end, branchEnd1, branchEnd2)) {
+        for (Node node : List.of(start, junction, hinted, secondOrdinary, secondJunction, end, branchEnd1, branchEnd2)) {
             dataSet.addPrimitive(node);
         }
-        Way way = way(start, junction, hinted, secondJunction, end);
+        Way way = way(start, junction, hinted, secondOrdinary, secondJunction, end);
         dataSet.addPrimitive(way);
         dataSet.addPrimitive(way(junction, branchEnd1));
         dataSet.addPrimitive(way(secondJunction, branchEnd2));

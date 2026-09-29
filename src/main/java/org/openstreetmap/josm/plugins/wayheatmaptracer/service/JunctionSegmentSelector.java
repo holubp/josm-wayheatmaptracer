@@ -12,7 +12,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.WaySegmentRange;
 
 /**
  * Finds maximal junction-bounded way segments for the plugin-specific selection mode.
- * Shared-way nodes are legal inclusive endpoints but never occur in a returned range's open interior.
+ * Branching shared-way nodes bound candidate ranges, but are excluded from returned ranges.
  */
 public final class JunctionSegmentSelector {
     /** Creates a stateless junction-bounded segment selector. */
@@ -34,15 +34,17 @@ public final class JunctionSegmentSelector {
     }
 
     /**
-     * Finds the longest eligible maximal junction-bounded segment containing one unique hint occurrence.
-     * A shared junction is contained by both adjacent ranges; the longer range wins and exact ties retain
-     * the earlier range in way order.
+     * Finds the longest eligible trimmed segment whose original maximal range contains one unique hint
+     * occurrence. An unsafe shared-junction hint qualifies both adjacent original ranges, but the hint is
+     * trimmed from either returned range. A safe end-to-end continuation may keep the hint as an endpoint.
+     * The longer returned range wins; exact length ties retain the earlier original range in way order.
      *
      * @param way way to inspect
-     * @param hintNode uniquely occurring node whose inclusive containing range is requested
-     * @return inclusive node-index range of the longest eligible containing segment
+     * @param hintNode uniquely occurring node used to select its containing original range or ranges
+     * @return inclusive node-index range of the longest eligible trimmed segment
      * @throws IllegalArgumentException when the hint is absent or occurs more than once
-     * @throws IllegalStateException when no eligible maximal range contains the hint
+     * @throws IllegalStateException when no eligible trimmed range is associated with an original
+     *     range containing the hint
      */
     public WaySegmentRange longestJunctionBoundedSegmentContaining(Way way, Node hintNode) {
         requireWaySize(way);
@@ -59,8 +61,8 @@ public final class JunctionSegmentSelector {
                     + "Split the way or choose a non-repeated node before selecting a segment.");
         }
         int hintIndex = hintIndexes.get(0);
-        return chooseLongest(candidates(way), range -> range.startIndex() <= hintIndex
-                && hintIndex <= range.endIndex(),
+        return chooseLongest(candidates(way), originalRange -> originalRange.startIndex() <= hintIndex
+                && hintIndex <= originalRange.endIndex(),
             "No slideable non-branching segment containing the selected node is available.");
     }
 
@@ -70,12 +72,23 @@ public final class JunctionSegmentSelector {
         SelectionIntegrity.NodeOccurrenceIndex occurrenceIndex = SelectionIntegrity.occurrenceIndex(way);
         List<SegmentCandidate> candidates = new ArrayList<>(Math.max(0, anchors.size() - 1));
         for (int i = 1; i < anchors.size(); i++) {
-            int start = anchors.get(i - 1);
-            int end = anchors.get(i);
-            if (end > start) {
-                WaySegmentRange range = new WaySegmentRange(start, end);
-                candidates.add(new SegmentCandidate(range, length(way, start, end),
-                    occurrenceIndex.rangeIsUnambiguous(start, end)));
+            int originalStart = anchors.get(i - 1);
+            int originalEnd = anchors.get(i);
+            if (originalEnd > originalStart) {
+                int start = originalStart;
+                int end = originalEnd;
+                while (start < end && !safeEndpoint(way, start)) {
+                    start++;
+                }
+                while (end > start && !safeEndpoint(way, end)) {
+                    end--;
+                }
+                if (end > start) {
+                    WaySegmentRange originalRange = new WaySegmentRange(originalStart, originalEnd);
+                    WaySegmentRange range = new WaySegmentRange(start, end);
+                    candidates.add(new SegmentCandidate(originalRange, range, length(way, start, end),
+                        occurrenceIndex.rangeIsUnambiguous(start, end)));
+                }
             }
         }
         return List.copyOf(candidates);
@@ -90,7 +103,7 @@ public final class JunctionSegmentSelector {
         for (SegmentCandidate candidate : candidates) {
             WaySegmentRange range = candidate.range();
             if (!candidate.repeatedOccurrenceSafe()
-                || !rangePredicate.test(range)) {
+                || !rangePredicate.test(candidate.originalRange())) {
                 continue;
             }
             if (best == null || candidate.length() > best.length()) {
@@ -114,7 +127,7 @@ public final class JunctionSegmentSelector {
         anchors.add(0);
         for (int i = 1; i < way.getNodesCount() - 1; i++) {
             Node node = way.getNode(i);
-            if (node.referrers(Way.class).count() > 1) {
+            if (node.referrers(Way.class).anyMatch(referrer -> !referrer.isDeleted() && referrer != way)) {
                 anchors.add(i);
             }
         }
@@ -123,6 +136,59 @@ public final class JunctionSegmentSelector {
             anchors.add(last);
         }
         return anchors;
+    }
+
+    private boolean safeEndpoint(Way selectedWay, int nodeIndex) {
+        Node node = selectedWay.getNode(nodeIndex);
+        List<Way> liveReferrers = node.referrers(Way.class).filter(referrer -> !referrer.isDeleted()).toList();
+        if (liveReferrers.size() == 1 && liveReferrers.get(0) == selectedWay) {
+            return true;
+        }
+        if (liveReferrers.size() != 2 || !liveReferrers.contains(selectedWay)) {
+            return false;
+        }
+        Way otherWay = liveReferrers.get(0) == selectedWay ? liveReferrers.get(1) : liveReferrers.get(0);
+        if (otherWay == selectedWay || selectedWay.getDataSet() == null
+            || selectedWay.getDataSet() != otherWay.getDataSet()
+            || node.getDataSet() != selectedWay.getDataSet()) {
+            return false;
+        }
+        return isCompleteNondegenerate(selectedWay)
+            && isCompleteNondegenerate(otherWay)
+            && occursUniquelyAtEndpoint(selectedWay, node)
+            && occursUniquelyAtEndpoint(otherWay, node);
+    }
+
+    private boolean isCompleteNondegenerate(Way way) {
+        if (way.isDeleted() || way.isIncomplete() || way.hasIncompleteNodes() || way.getNodesCount() < 2
+            || way.getNodes().stream().anyMatch(node -> node.isIncomplete() || !node.isLatLonKnown())) {
+            return false;
+        }
+        EastNorth previous = null;
+        boolean nondegenerate = false;
+        for (Node node : way.getNodes()) {
+            EastNorth current = node.getEastNorth(ProjectionRegistry.getProjection());
+            if (current == null || !Double.isFinite(current.getX()) || !Double.isFinite(current.getY())) {
+                return false;
+            }
+            if (previous != null && previous.distance(current) > 0.0) {
+                nondegenerate = true;
+            }
+            previous = current;
+        }
+        return nondegenerate;
+    }
+
+    private boolean occursUniquelyAtEndpoint(Way way, Node node) {
+        int occurrences = 0;
+        boolean endpoint = false;
+        for (int index = 0; index < way.getNodesCount(); index++) {
+            if (way.getNode(index) == node) {
+                occurrences++;
+                endpoint = index == 0 || index == way.getNodesCount() - 1;
+            }
+        }
+        return occurrences == 1 && endpoint;
     }
 
     private double length(Way way, int startIndex, int endIndex) {
@@ -138,6 +204,11 @@ public final class JunctionSegmentSelector {
     }
 
     /** Candidate retained in way order so strict greater-than comparison preserves deterministic ties. */
-    private record SegmentCandidate(WaySegmentRange range, double length, boolean repeatedOccurrenceSafe) {
+    private record SegmentCandidate(
+        WaySegmentRange originalRange,
+        WaySegmentRange range,
+        double length,
+        boolean repeatedOccurrenceSafe
+    ) {
     }
 }

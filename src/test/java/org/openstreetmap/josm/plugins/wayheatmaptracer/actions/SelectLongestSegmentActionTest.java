@@ -52,45 +52,48 @@ class SelectLongestSegmentActionTest {
         DataSet dataSet = new DataSet();
         Node start = node(0.0);
         Node firstJunction = node(0.001);
+        Node afterFirstJunction = node(0.002);
         Node middle = node(0.004);
+        Node beforeSecondJunction = node(0.006);
         Node secondJunction = node(0.007);
         Node end = node(0.008);
-        Way main = way(start, firstJunction, middle, secondJunction, end);
+        Way main = way(start, firstJunction, afterFirstJunction, middle, beforeSecondJunction, secondJunction, end);
         Way firstBranch = way(firstJunction, node(0.0011));
         Way secondBranch = way(secondJunction, node(0.0071));
         add(dataSet, main);
         add(dataSet, firstBranch);
         add(dataSet, secondBranch);
-        dataSet.setSelected(List.of(start));
+        dataSet.setSelected(List.of(middle));
 
         SelectLongestSegmentAction.SelectionRequest request = SelectLongestSegmentAction.selectionRequest(dataSet);
         var range = request.selectRange(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector());
 
         assertSame(main, request.way());
-        assertSame(start, request.hintNode());
-        assertEquals(0, range.startIndex());
-        assertEquals(1, range.endIndex());
+        assertSame(middle, request.hintNode());
+        assertEquals(2, range.startIndex());
+        assertEquals(4, range.endIndex());
     }
 
     @Test
     void explicitWayAndSharedNodeStillSelectsLongerAdjacentSpan() {
         DataSet dataSet = new DataSet();
         Node start = node(0.0);
-        Node junction = node(0.001);
+        Node beforeJunction = node(0.001);
+        Node junction = node(0.002);
+        Node afterJunction = node(0.003);
         Node middle = node(0.004);
-        Node farJunction = node(0.007);
-        Node end = node(0.008);
-        Way main = way(start, junction, middle, farJunction, end);
+        Node second = node(0.005);
+        Node end = node(0.006);
+        Way main = way(start, beforeJunction, junction, afterJunction, middle, second, end);
         add(dataSet, main);
         add(dataSet, way(junction, node(0.0011)));
-        add(dataSet, way(farJunction, node(0.0071)));
         dataSet.setSelected(List.of(main, junction));
 
         var range = SelectLongestSegmentAction.selectionRequest(dataSet)
             .selectRange(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.JunctionSegmentSelector());
 
-        assertEquals(1, range.startIndex());
-        assertEquals(3, range.endIndex());
+        assertEquals(3, range.startIndex());
+        assertEquals(6, range.endIndex());
     }
 
     @Test

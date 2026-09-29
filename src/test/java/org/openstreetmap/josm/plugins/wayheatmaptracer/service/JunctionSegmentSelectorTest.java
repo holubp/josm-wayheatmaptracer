@@ -48,7 +48,7 @@ class JunctionSegmentSelectorTest {
 
         WaySegmentRange range = new JunctionSegmentSelector().longestJunctionBoundedSegment(way);
 
-        assertEquals(new WaySegmentRange(2, 3), range);
+        assertEquals(new WaySegmentRange(0, 1), range);
     }
 
     @Test
@@ -62,11 +62,171 @@ class JunctionSegmentSelectorTest {
     }
 
     @Test
-    void globalTieKeepsEarlierSegmentInWayOrder() {
-        Fixture fixture = fixtureWithJunctions(0.0, 0.001, 0.002, 0.004, 0.005);
+    void excludesTNodesAtBothSelectedWayEndpoints() {
+        DataSet dataSet = new DataSet();
+        Node start = node(0.0);
+        Node first = node(0.001);
+        Node middle = node(0.002);
+        Node last = node(0.003);
+        Node end = node(0.004);
+        Way selected = way(start, first, middle, last, end);
+        addWayWithNodes(dataSet, selected);
+        addBranch(dataSet, start, -0.001);
+        addBranch(dataSet, start, 0.0001);
+        addBranch(dataSet, end, 0.0041);
+        addBranch(dataSet, end, 0.005);
+
+        assertEquals(new WaySegmentRange(1, 3),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void keepsSimpleEndToEndContinuationAsAnEndpoint() {
+        DataSet dataSet = new DataSet();
+        Node junction = node(0.0);
+        Way selected = way(junction, node(0.001), node(0.002));
+        Way continuation = way(node(-0.002), node(-0.001), junction);
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, continuation);
 
         assertEquals(new WaySegmentRange(0, 2),
-            new JunctionSegmentSelector().longestJunctionBoundedSegment(fixture.way()));
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void keepsSafeContinuationHintAsReturnedEndpoint() {
+        DataSet dataSet = new DataSet();
+        Node junction = node(0.0);
+        Way selected = way(junction, node(0.001), node(0.002));
+        Way continuation = way(node(-0.002), node(-0.001), junction);
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, continuation);
+
+        assertEquals(new WaySegmentRange(0, 2), new JunctionSegmentSelector()
+            .longestJunctionBoundedSegmentContaining(selected, junction));
+    }
+
+    @Test
+    void excludesEndpointMeetingTheInteriorOfAnotherWay() {
+        DataSet dataSet = new DataSet();
+        Node junction = node(0.0);
+        Way selected = way(junction, node(0.001), node(0.002));
+        Way throughWay = way(node(-0.001), junction, node(0.0005));
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, throughWay);
+
+        assertEquals(new WaySegmentRange(1, 2),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void excludesInteriorTJunctionOccurrenceFromReturnedSpan() {
+        DataSet dataSet = new DataSet();
+        Node start = node(0.0);
+        Node junction = node(0.001);
+        Node after = node(0.002);
+        Node end = node(0.003);
+        Way selected = way(start, junction, after, end);
+        addWayWithNodes(dataSet, selected);
+        addBranch(dataSet, junction, 0.0015);
+
+        assertEquals(new WaySegmentRange(2, 3),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void excludesSharedInteriorCrossingAndKeepsOnlySafeAdjacentSpan() {
+        DataSet dataSet = new DataSet();
+        Node before = node(0.0);
+        Node crossing = node(0.001);
+        Node after = node(0.002);
+        Node end = node(0.003);
+        Way selected = way(before, crossing, after, end);
+        Way crossingWay = way(node(0.0005), crossing, node(0.0015));
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, crossingWay);
+
+        assertEquals(new WaySegmentRange(2, 3),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void ignoresDeletedReferrerWhenRecognizingSimpleEndToEndContinuation() {
+        DataSet dataSet = new DataSet();
+        Node junction = node(0.0);
+        Way selected = way(junction, node(0.001), node(0.002));
+        Way continuation = way(node(-0.002), node(-0.001), junction);
+        Way deletedBranch = way(junction, node(0.0005));
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, continuation);
+        addWayWithNodes(dataSet, deletedBranch);
+        deletedBranch.setDeleted(true);
+
+        assertEquals(new WaySegmentRange(0, 2),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void incompleteReferrerCannotMakeAnEndpointAContinuation() {
+        DataSet dataSet = new DataSet();
+        Node junction = node(0.0);
+        Way selected = way(junction, node(0.001), node(0.002));
+        Way incompleteNeighbor = way(junction, new Node(9003));
+        addWayWithNodes(dataSet, selected);
+        addWayWithNodes(dataSet, incompleteNeighbor);
+
+        assertEquals(new WaySegmentRange(1, 2),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void refusesRangeWhenTrimmingJunctionsLeavesOnlyOneOccurrence() {
+        DataSet dataSet = new DataSet();
+        Node start = node(0.0);
+        Node junction1 = node(0.001);
+        Node junction2 = node(0.002);
+        Node end = node(0.003);
+        Way selected = way(start, junction1, junction2, end);
+        addWayWithNodes(dataSet, selected);
+        addBranch(dataSet, junction1, 0.0015);
+        addBranch(dataSet, junction2, 0.0025);
+
+        assertThrows(IllegalStateException.class,
+            () -> new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void ranksRangesByLengthAfterBranchEndpointsAreTrimmed() {
+        DataSet dataSet = new DataSet();
+        Node n0 = node(0.0);
+        Node n1 = node(0.001);
+        Node n2 = node(0.010);
+        Node n3 = node(0.0101);
+        Node n4 = node(0.015);
+        Node n5 = node(0.020);
+        Node n6 = node(0.021);
+        Node n7 = node(0.0211);
+        Node n8 = node(0.0212);
+        Way selected = way(n0, n1, n2, n3, n4, n5, n6, n7, n8);
+        addWayWithNodes(dataSet, selected);
+        addBranch(dataSet, n2, 0.0105);
+        addBranch(dataSet, n6, 0.0215);
+
+        assertEquals(new WaySegmentRange(3, 5),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(selected));
+    }
+
+    @Test
+    void globalTieKeepsEarlierSegmentInWayOrder() {
+        DataSet dataSet = new DataSet();
+        Way way = way(node(0.0), node(0.125), node(0.25), node(0.375),
+            node(0.5), node(0.625), node(0.75), node(0.875));
+        addWayWithNodes(dataSet, way);
+        addBranch(dataSet, way.getNode(2), 0.2505);
+        addBranch(dataSet, way.getNode(5), 0.6255);
+
+        assertEquals(new WaySegmentRange(0, 1),
+            new JunctionSegmentSelector().longestJunctionBoundedSegment(way));
     }
 
     @Test
@@ -89,34 +249,42 @@ class JunctionSegmentSelectorTest {
 
     @Test
     void selectsContainingSegmentForInteriorHintInsteadOfGlobalLongest() {
-        Fixture fixture = fixtureWithJunctions(0.0, 0.004, 0.006, 0.020, 0.021);
+        DataSet dataSet = new DataSet();
+        Way way = way(node(0.0), node(0.001), node(0.002), node(0.003),
+            node(0.004), node(0.005), node(0.006), node(0.007));
+        addWayWithNodes(dataSet, way);
+        addBranch(dataSet, way.getNode(3), 0.0035);
 
-        WaySegmentRange range = new JunctionSegmentSelector()
-            .longestJunctionBoundedSegmentContaining(fixture.way(), fixture.way().getNode(1));
+        JunctionSegmentSelector selector = new JunctionSegmentSelector();
+        WaySegmentRange range = selector.longestJunctionBoundedSegmentContaining(way, way.getNode(1));
 
         assertEquals(new WaySegmentRange(0, 2), range);
+        assertEquals(new WaySegmentRange(4, 7), selector.longestJunctionBoundedSegment(way));
     }
 
     @Test
     void selectedJunctionChoosesLongerAdjacentSegmentAndEarlierOnTie() {
-        Fixture unequal = fixtureWithJunctions(0.0, 0.001, 0.002, 0.010, 0.011);
-        Fixture tied = fixtureWithJunctions(0.0, 0.001, 0.002, 0.004, 0.005);
+        Fixture unequal = fixtureWithCentralJunction(0.0, 0.001, 0.002, 0.003, 0.004,
+            0.010, 0.011, 0.012);
+        Fixture tied = fixtureWithCentralJunction(0.0, 0.125, 0.25, 0.375, 0.5,
+            0.625, 0.75, 1.0);
         JunctionSegmentSelector selector = new JunctionSegmentSelector();
 
-        assertEquals(new WaySegmentRange(2, 3), selector.longestJunctionBoundedSegmentContaining(
-            unequal.way(), unequal.way().getNode(2)));
-        assertEquals(new WaySegmentRange(0, 2), selector.longestJunctionBoundedSegmentContaining(
-            tied.way(), tied.way().getNode(2)));
+        assertEquals(new WaySegmentRange(0, 3), selector.longestJunctionBoundedSegmentContaining(
+            unequal.way(), unequal.way().getNode(4)));
+        assertEquals(new WaySegmentRange(0, 3), selector.longestJunctionBoundedSegmentContaining(
+            tied.way(), tied.way().getNode(4)));
     }
 
     @Test
     void endpointHintsChooseTheirAdjacentSegments() {
-        Fixture fixture = fixtureWithJunctions(0.0, 0.001, 0.002, 0.010, 0.011);
+        Fixture fixture = fixtureWithCentralJunction(0.0, 0.001, 0.002, 0.003, 0.004,
+            0.010, 0.011, 0.012);
         JunctionSegmentSelector selector = new JunctionSegmentSelector();
 
-        assertEquals(new WaySegmentRange(0, 2), selector.longestJunctionBoundedSegmentContaining(
+        assertEquals(new WaySegmentRange(0, 3), selector.longestJunctionBoundedSegmentContaining(
             fixture.way(), fixture.way().firstNode()));
-        assertEquals(new WaySegmentRange(3, 4), selector.longestJunctionBoundedSegmentContaining(
+        assertEquals(new WaySegmentRange(5, 7), selector.longestJunctionBoundedSegmentContaining(
             fixture.way(), fixture.way().lastNode()));
     }
 
@@ -139,14 +307,14 @@ class JunctionSegmentSelectorTest {
         Node junction1 = node(0.030);
         Node junction2 = node(0.032);
         Way way = way(node(0.0), repeated, node(0.020), repeated, junction1,
-            node(0.031), junction2, node(0.0325));
+            node(0.0305), node(0.031), junction2, node(0.0325));
         addWayWithNodes(dataSet, way);
         addBranch(dataSet, junction1, 0.0305);
         addBranch(dataSet, junction2, 0.0322);
 
         WaySegmentRange range = new JunctionSegmentSelector().longestJunctionBoundedSegment(way);
 
-        assertEquals(new WaySegmentRange(4, 6), range);
+        assertEquals(new WaySegmentRange(5, 6), range);
     }
 
     @Test
@@ -161,7 +329,7 @@ class JunctionSegmentSelectorTest {
         WaySegmentRange range = new JunctionSegmentSelector()
             .longestJunctionBoundedSegmentContaining(way, junction);
 
-        assertEquals(new WaySegmentRange(4, 6), range);
+        assertEquals(new WaySegmentRange(5, 6), range);
     }
 
     @Test
@@ -204,12 +372,13 @@ class JunctionSegmentSelectorTest {
         Node repeated = node(0.0);
         Node junction1 = node(0.002);
         Node junction2 = node(0.004);
-        Way closed = way(repeated, node(0.001), junction1, node(0.003), junction2, node(0.005), repeated);
+        Way closed = way(repeated, node(0.001), junction1, node(0.0025), node(0.003),
+            junction2, node(0.005), repeated);
         addWayWithNodes(dataSet, closed);
         addBranch(dataSet, junction1, 0.0025);
         addBranch(dataSet, junction2, 0.0045);
 
-        assertEquals(new WaySegmentRange(2, 4),
+        assertEquals(new WaySegmentRange(3, 4),
             new JunctionSegmentSelector().longestJunctionBoundedSegment(closed));
     }
 
@@ -221,6 +390,16 @@ class JunctionSegmentSelectorTest {
         addWayWithNodes(dataSet, way);
         addBranch(dataSet, nodes[2], longitudes[2] + 0.0002);
         addBranch(dataSet, nodes[3], longitudes[3] + 0.0002);
+        return new Fixture(dataSet, way);
+    }
+
+    private static Fixture fixtureWithCentralJunction(double... longitudes) {
+        DataSet dataSet = new DataSet();
+        Node[] nodes = java.util.Arrays.stream(longitudes).mapToObj(JunctionSegmentSelectorTest::node)
+            .toArray(Node[]::new);
+        Way way = way(nodes);
+        addWayWithNodes(dataSet, way);
+        addBranch(dataSet, nodes[4], longitudes[4] + 0.0002);
         return new Fixture(dataSet, way);
     }
 
