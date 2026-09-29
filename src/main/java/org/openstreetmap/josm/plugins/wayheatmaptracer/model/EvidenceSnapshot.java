@@ -67,13 +67,24 @@ public record EvidenceSnapshot(
 
     /** Returns a content-bound hash over coordinates, masks, scalar values, resolution, and source lineage. */
     public String canonicalHash() {
-        CanonicalEncoder encoder = new CanonicalEncoder().field("evidence-snapshot-v3")
+        boolean completeFrame = coordinateFrame.hasCompleteNumericalIdentity();
+        CanonicalEncoder encoder = new CanonicalEncoder().field(
+                completeFrame ? "evidence-snapshot-v4" : "evidence-snapshot-v3")
             .field(sourceIdentity).field(coordinateFrame.projectionId())
             .field(Double.toHexString(coordinateFrame.origin().latitudeDegrees()))
             .field(Double.toHexString(coordinateFrame.origin().longitudeDegrees()))
             .field(coordinateFrame.distortionCertificate().method())
-            .field(Double.toHexString(coordinateFrame.distortionCertificate().maximumRelativeDistanceError()))
-            .field(transform.transformId()).field(transform.originKind().name()).field(transform.axisUnit().name())
+            .field(Double.toHexString(coordinateFrame.distortionCertificate().maximumRelativeDistanceError()));
+        if (completeFrame) {
+            DistortionCertificate certificate = coordinateFrame.distortionCertificate();
+            encoder.field(Double.toHexString(certificate.southWest().latitudeDegrees()))
+                .field(Double.toHexString(certificate.southWest().longitudeDegrees()))
+                .field(Double.toHexString(certificate.northEast().latitudeDegrees()))
+                .field(Double.toHexString(certificate.northEast().longitudeDegrees()))
+                .field(Double.toHexString(certificate.eastMetersPerRadian()))
+                .field(Double.toHexString(certificate.northMetersPerRadian()));
+        }
+        encoder.field(transform.transformId()).field(transform.originKind().name()).field(transform.axisUnit().name())
             .field(Double.toHexString(transform.origin().xMeters()))
             .field(Double.toHexString(transform.origin().yMeters()))
             .field(Double.toHexString(transform.xAxisEastMetersPerSourcePixel()))

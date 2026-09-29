@@ -56,4 +56,8 @@ public final class Format15Artifact {
     public String sha256() {
         return sha256;
     }
+
+    int sizeBytes() {
+        return bytes.length;
+    }
 }

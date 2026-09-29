@@ -97,7 +97,9 @@ public record AlignmentEditPlan(
 
     /** Returns the schema-versioned identity that review confirmation binds to. */
     public String canonicalHash() {
-        CanonicalEncoder encoder = new CanonicalEncoder().field("alignment-edit-plan-v4");
+        boolean completeFrame = metricFrame.hasCompleteNumericalIdentity();
+        CanonicalEncoder encoder = new CanonicalEncoder().field(
+                completeFrame ? "alignment-edit-plan-v5" : "alignment-edit-plan-v4");
         NetworkSnapshot.encodeKey(encoder, selectedWayKey);
         encoder.field(selectedRange.firstIndex()).field(selectedRange.lastIndex())
             .field(before.canonicalHash()).field(after.canonicalHash())
@@ -109,8 +111,12 @@ public record AlignmentEditPlan(
             .field(Double.toHexString(metricFrame.distortionCertificate().southWest().latitudeDegrees()))
             .field(Double.toHexString(metricFrame.distortionCertificate().southWest().longitudeDegrees()))
             .field(Double.toHexString(metricFrame.distortionCertificate().northEast().latitudeDegrees()))
-            .field(Double.toHexString(metricFrame.distortionCertificate().northEast().longitudeDegrees()))
-            .field(settingsHash).field(evidenceHash).field(parameterHash).field(routeIdentity)
+            .field(Double.toHexString(metricFrame.distortionCertificate().northEast().longitudeDegrees()));
+        if (completeFrame) {
+            encoder.field(Double.toHexString(metricFrame.distortionCertificate().eastMetersPerRadian()))
+                .field(Double.toHexString(metricFrame.distortionCertificate().northMetersPerRadian()));
+        }
+        encoder.field(settingsHash).field(evidenceHash).field(parameterHash).field(routeIdentity)
             .field(permissions.toString()).field(validation.disposition().name());
         validation.findingCodes().forEach(code -> encoder.field("finding").field(code));
         finalPreviewWays.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {

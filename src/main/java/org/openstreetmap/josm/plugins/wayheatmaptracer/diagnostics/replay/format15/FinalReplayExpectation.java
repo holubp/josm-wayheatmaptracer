@@ -122,6 +122,22 @@ final class FinalReplayExpectation {
         return requestedEngine;
     }
 
+    FinalOutputComponentsCodec.Binding componentsBinding() {
+        return new FinalOutputComponentsCodec.Binding(buildIdentity, inputHash, parameterHash,
+                capturedEngine, requestedEngine, ReplayLevel.FINAL_GEOMETRY,
+                FinalReplayFingerprint.SCHEMA_VERSION, fingerprint);
+    }
+
+    String fingerprint() { return fingerprint; }
+
+    String buildIdentity() { return buildIdentity; }
+
+    String inputHash() { return inputHash; }
+
+    String parameterHash() { return parameterHash; }
+
+    TrackerMode capturedEngine() { return capturedEngine; }
+
     boolean matches(Format15ReplayRunner.Result actual) {
         return actual.level() == ReplayLevel.FINAL_GEOMETRY
             && actual.capturedEngine() == capturedEngine

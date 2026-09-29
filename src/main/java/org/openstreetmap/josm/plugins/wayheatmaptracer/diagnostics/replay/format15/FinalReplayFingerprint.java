@@ -34,7 +34,7 @@ final class FinalReplayFingerprint {
                 || output.routes().size() > MAX_ROUTES) {
             throw new IllegalArgumentException("final-output-invalid");
         }
-        long items = aggregateItems(output);
+        long items = ReplayOutputAdmission.rootItems(output);
         if (items > MAX_AGGREGATE_ITEMS) {
             throw new IllegalArgumentException("final-output-budget");
         }
@@ -100,80 +100,26 @@ final class FinalReplayFingerprint {
 
     private static void writeRoute(DataOutputStream data, ModernTracePipeline.Route route)
             throws IOException {
-        ScalarReplayFingerprint.writeHypothesis(data, route.rawHypothesis());
-        ScalarReplayFingerprint.writeHypothesis(data, route.hypothesis());
-        data.writeInt(route.pointIds().size());
-        for (FinalRoutePointId id : route.pointIds()) {
-            writePointId(data, id);
-            writePoint(data, route.assignments().get(id));
-            ObservationOwnership ownership = route.sourceOwnership().get(id);
-            if (ownership == null) {
-                throw new IllegalArgumentException("final-output-invalid");
-            }
-            ScalarReplayFingerprint.writeString(data, ownership.name());
-        }
-        writeQuality(data, route.quality());
-        ScalarReplayFingerprint.writeString(data, route.cleanupStatus().name());
-        data.writeBoolean(route.geometryChanged());
+        ReplayOutputCanonical.writeRoute(data, route);
     }
 
     private static void writePointId(DataOutputStream data, FinalRoutePointId id)
             throws IOException {
-        if (id instanceof ExistingWayNodeOccurrence existing) {
-            data.writeByte(0);
-            writePrimitiveKey(data, existing.wayKey());
-            writePrimitiveKey(data, existing.nodeKey());
-            data.writeInt(existing.originalOccurrenceIndex());
-        } else if (id instanceof GeneratedCandidatePoint generated) {
-            data.writeByte(1);
-            ScalarReplayFingerprint.writeString(data, generated.candidateId());
-            data.writeInt(generated.originalPointIndex());
-        } else {
-            throw new IllegalArgumentException("final-output-invalid");
-        }
+        ReplayOutputCanonical.writePointId(data, id);
     }
 
     private static void writePrimitiveKey(DataOutputStream data, PrimitiveKey key)
             throws IOException {
-        if (key == null) {
-            throw new IllegalArgumentException("final-output-invalid");
-        }
-        ScalarReplayFingerprint.writeString(data, key.type().name());
-        ScalarReplayFingerprint.writeString(data, key.identityKind().name());
-        data.writeLong(key.id());
+        ReplayOutputCanonical.writePrimitiveKey(data, key);
     }
 
     private static void writePoint(DataOutputStream data, MetricPoint point) throws IOException {
-        if (point == null) {
-            throw new IllegalArgumentException("final-output-invalid");
-        }
-        writeDouble(data, point.xMeters());
-        writeDouble(data, point.yMeters());
+        ReplayOutputCanonical.writePoint(data, point);
     }
 
     private static void writeQuality(DataOutputStream data, FinalGeometryEvaluator.Result quality)
             throws IOException {
-        if (quality == null || quality.disposition() == null || quality.findings() == null) {
-            throw new IllegalArgumentException("final-output-invalid");
-        }
-        ScalarReplayFingerprint.writeString(data, quality.id());
-        ScalarReplayFingerprint.writeString(data, quality.disposition().name());
-        data.writeInt(quality.findings().size());
-        for (FinalGeometryEvaluator.Finding finding : quality.findings()) {
-            if (finding == null || finding.code() == null || finding.severity() == null) {
-                throw new IllegalArgumentException("final-output-invalid");
-            }
-            ScalarReplayFingerprint.writeString(data, finding.code().name());
-            ScalarReplayFingerprint.writeString(data, finding.severity().name());
-            data.writeInt(finding.firstVertex());
-            data.writeInt(finding.lastVertex());
-            writeDouble(data, finding.amplitudeMeters());
-        }
-        writeDouble(data, quality.totalLengthMeters());
-        writeDouble(data, quality.directlySupportedLengthMeters());
-        writeDouble(data, quality.worstUnsupportedSpanMeters());
-        writeImageCenterCost(data, quality);
-        writeDouble(data, quality.bendPreservingRoughness());
+        ReplayOutputCanonical.writeQuality(data, quality);
     }
 
     private static void writeImageCenterCost(DataOutputStream data,
@@ -193,9 +139,6 @@ final class FinalReplayFingerprint {
     }
 
     private static void writeDouble(DataOutputStream data, double value) throws IOException {
-        if (!Double.isFinite(value)) {
-            throw new IllegalArgumentException("final-output-invalid");
-        }
-        data.writeLong(Double.doubleToLongBits(value));
+        ReplayOutputCanonical.writeFiniteDouble(data, value);
     }
 }

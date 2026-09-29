@@ -69,9 +69,14 @@ public final class Format15ReplayRunner {
         }
         FrozenIntervalReplayCodec.Payload payload;
         Map<String, Object> index;
+        java.util.Optional<IntervalFinalOutputComponentsCodec.Decoded> outputComponents;
         try {
             payload = FrozenIntervalReplayCodec.decode(archive.artifact(
                     FrozenIntervalReplayCodec.ARTIFACT).orElseThrow().bytes());
+            outputComponents = archive.artifact(IntervalFinalOutputComponentsCodec.ARTIFACT)
+                    .map(Format15Artifact::bytes)
+                    .map(bytes -> IntervalFinalOutputComponentsCodec.decode(bytes,
+                            archive.buildIdentity(), payload));
             index = Format15ArchiveReader.parseObject(archive.artifact("interval-production.json")
                     .orElseThrow().bytes(), "interval-production.json");
         } catch (Exception malformed) {
@@ -121,6 +126,7 @@ public final class Format15ReplayRunner {
         ModernTracePipeline pipeline = new ModernTracePipeline(
                 new CorridorEngineAdapter(shared.options().fieldName()));
         List<IntervalTraceBatch.IntervalRun> actualRuns = new ArrayList<>();
+        List<FinalOutputComponentsCodec.Comparison> componentComparisons = new ArrayList<>();
         Map<Integer, Integer> choices = new LinkedHashMap<>();
         long remainingPairs = shared.request().budgets().maximumPairVisits();
         long remainingTransitions = shared.request().budgets().maximumTransitions();
@@ -200,6 +206,15 @@ public final class Format15ReplayRunner {
                     || !expected.routeIdentities().equals(routeIds)) {
                 throw new ReplayMismatchException("strict-interval-production-output-mismatch");
             }
+            if (outputComponents.isPresent()) {
+                FinalOutputComponentsCodec.Comparison comparison =
+                        FinalOutputComponentsCodec.compare(
+                                outputComponents.orElseThrow().snapshots().get(position), fingerprint);
+                if (comparison.status() != FinalOutputComponentsCodec.ComparisonStatus.MATCH) {
+                    throw new ReplayMismatchException("strict-interval-components-mismatch");
+                }
+                componentComparisons.add(comparison);
+            }
             verifyIndexRun(indexRuns.get(position), position, interval, expected,
                     replayed.inference().alternativesTruncated());
             choices.put(position, expected.chosenRouteIndex());
@@ -261,14 +276,22 @@ public final class Format15ReplayRunner {
                         && !index.get("appliedPlanIdentity").equals(actualPlan)) {
             throw new ReplayMismatchException("strict-interval-composed-plan-mismatch");
         }
-        return new IntervalResult(partition, batch, assessment);
+        return new IntervalResult(partition, batch, assessment,
+                outputComponents.isPresent() ? "MATCH" : "UNAVAILABLE",
+                componentComparisons);
     }
 
     /** Recomputed production partition, batch, and one composed edit assessment. */
     public record IntervalResult(
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.Partition partition,
             org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch batch,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment) { }
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer.Assessment assessment,
+            String outputComponentStatus,
+            List<FinalOutputComponentsCodec.Comparison> outputComponentComparisons) {
+        public IntervalResult {
+            outputComponentComparisons = List.copyOf(outputComponentComparisons);
+        }
+    }
 
     private static void verifyIndexRun(Object value, int position,
             SelectedWayIntervalPartitioner.SlideInterval interval,

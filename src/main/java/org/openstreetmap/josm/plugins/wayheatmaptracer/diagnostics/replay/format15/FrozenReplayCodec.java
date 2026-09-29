@@ -65,7 +65,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
+    private static final int AUTHORITY_MAGIC = 0x57544155;
+    private static final int AUTHORITY_VERSION = 1;
     private static final int MAX_BYTES = 64 * 1024 * 1024;
     private static final int MAX_TEXT = 1_000_000;
     private static final int MAX_ENTRIES = 250_000;
@@ -74,6 +76,29 @@ public final class FrozenReplayCodec {
     private static final ThreadLocal<Admission> DECODE_ADMISSION = new ThreadLocal<>();
 
     private FrozenReplayCodec() {}
+
+    /** Validates the bounded envelope header and reports its actual wire version, not payload admission. */
+    static int encodedVersion(byte[] bytes) {
+        if (bytes == null || bytes.length < 8 || bytes.length > MAX_BYTES) {
+            throw new IllegalArgumentException("Frozen replay bytes are outside budget");
+        }
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            return inputVersion(in);
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("Malformed frozen replay header", failure);
+        }
+    }
+
+    private static int inputVersion(DataInputStream in) throws IOException {
+        if (in.readInt() != 0x57545250) {
+            throw new IllegalArgumentException("Unsupported frozen replay codec version");
+        }
+        int version = in.readInt();
+        if (version != 1 && version != 2 && version != VERSION) {
+            throw new IllegalArgumentException("Unsupported frozen replay codec version");
+        }
+        return version;
+    }
 
     /**
      * Encodes every frozen engine input under a versioned, length-bounded
@@ -89,7 +114,7 @@ public final class FrozenReplayCodec {
                 Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57545250);
-                out.writeInt(VERSION);
+                out.writeInt(input.evidence().coordinateFrame().hasCompleteNumericalIdentity() ? VERSION : 2);
                 evidence(out, input.evidence());
                 request(out, input.request());
                 network(out, input.network());
@@ -113,13 +138,7 @@ public final class FrozenReplayCodec {
         Admission admission = new Admission();
         DECODE_ADMISSION.set(admission);
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != 0x57545250) {
-                throw new IllegalArgumentException("Unsupported frozen replay codec version");
-            }
-            int version = in.readInt();
-            if (version != 1 && version != VERSION) {
-                throw new IllegalArgumentException("Unsupported frozen replay codec version");
-            }
+            int version = inputVersion(in);
             EvidenceSnapshot evidence = evidence(in, version);
             TraceRequest request = request(in, evidence.coordinateFrame(), evidence.transform());
             NetworkSnapshot network = network(in);
@@ -151,6 +170,11 @@ public final class FrozenReplayCodec {
         }
     }
 
+    /** Same request wire fields for a bounded streaming hash without a payload copy. */
+    static void writeRequestOnly(DataOutputStream out, TraceRequest value) throws IOException {
+        request(out, value);
+    }
+
     /** Decodes one request against the sole shared evidence frame. */
     static TraceRequest decodeRequestOnly(byte[] bytes, EvidenceSnapshot evidence) {
         if (bytes == null || bytes.length > Format15Safety.MAX_ARTIFACT_BYTES) {
@@ -168,12 +192,16 @@ public final class FrozenReplayCodec {
         }
     }
 
-    /** Version-one original partition authority, kept separate from the v1/v2 single-request codec. */
+    /** Original partition authority; complete numerical frames have their own explicit header. */
     static byte[] encodeAuthority(NetworkSnapshotCapture.Specification s) {
         try {
             BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
                     Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
+                if (s.metricFrame().hasCompleteNumericalIdentity()) {
+                    out.writeInt(AUTHORITY_MAGIC);
+                    out.writeInt(AUTHORITY_VERSION);
+                }
                 str(out, s.snapshotId());
                 str(out, s.datasetIdentity());
                 out.writeLong(s.sourceGeneration());
@@ -214,11 +242,20 @@ public final class FrozenReplayCodec {
         }
         DECODE_ADMISSION.set(new Admission());
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+            in.mark(8);
+            boolean completeFrame = in.readInt() == AUTHORITY_MAGIC;
+            if (completeFrame) {
+                if (in.readInt() != AUTHORITY_VERSION) {
+                    throw new IllegalArgumentException("Unsupported partition authority codec version");
+                }
+            } else {
+                in.reset();
+            }
             String id = str(in), dataset = str(in);
             long generation = in.readLong();
             PrimitiveKey selected = key(in);
             OccurrenceRange selection = range(in);
-            LocalMetricFrame metric = frame(in);
+            LocalMetricFrame metric = frame(in, completeFrame);
             MetricRegion collision = region(in), edit = region(in);
             int n = count(in);
             Map<PrimitiveKey, List<OccurrenceRange>> occurrences = new LinkedHashMap<>();
@@ -338,7 +375,7 @@ public final class FrozenReplayCodec {
                 Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57544550);
-                out.writeInt(1);
+                out.writeInt(plan.metricFrame().hasCompleteNumericalIdentity() ? 2 : 1);
                 key(out, plan.selectedWayKey());
                 range(out, plan.selectedRange());
                 network(out, plan.before());
@@ -379,14 +416,18 @@ public final class FrozenReplayCodec {
         }
         DECODE_ADMISSION.set(new Admission());
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != 0x57544550 || in.readInt() != 1) {
+            if (in.readInt() != 0x57544550) {
+                throw new IllegalArgumentException("Unsupported edit plan codec version");
+            }
+            int version = in.readInt();
+            if (version != 1 && version != 2) {
                 throw new IllegalArgumentException("Unsupported edit plan codec version");
             }
             PrimitiveKey selectedWay = key(in);
             OccurrenceRange selectedRange = range(in);
             NetworkSnapshot before = network(in);
             NetworkSnapshot after = network(in);
-            LocalMetricFrame metricFrame = frame(in);
+            LocalMetricFrame metricFrame = frame(in, version == 2);
             RecoveryPermissions permissions = new RecoveryPermissions(in.readBoolean(),
                 in.readDouble(), in.readDouble(), en(in, JunctionPolicy.class), in.readBoolean());
             String settings = str(in), evidence = str(in), parameters = str(in), route = str(in);
@@ -539,7 +580,7 @@ public final class FrozenReplayCodec {
 
     private static EvidenceSnapshot evidence(DataInputStream input, int version) throws IOException {
         String id = str(input);
-        LocalMetricFrame frame = frame(input);
+        LocalMetricFrame frame = frame(input, version >= 3);
         RasterMetricTransform transform = transform(input);
         EvidenceResolution resolution = resolution(input);
         MetricRegion decision = region(input);
@@ -675,13 +716,23 @@ public final class FrozenReplayCodec {
         geo(o, f.origin());
         geo(o, f.distortionCertificate().southWest());
         geo(o, f.distortionCertificate().northEast());
+        if (f.hasCompleteNumericalIdentity()) {
+            str(o, f.distortionCertificate().method());
+            o.writeDouble(f.distortionCertificate().maximumRelativeDistanceError());
+            o.writeDouble(f.distortionCertificate().eastMetersPerRadian());
+            o.writeDouble(f.distortionCertificate().northMetersPerRadian());
+        }
     }
-    private static LocalMetricFrame frame(DataInputStream i) throws IOException {
+    private static LocalMetricFrame frame(DataInputStream i, boolean complete) throws IOException {
         String id = str(i);
         GeographicPoint origin = geo(i), sw = geo(i), ne = geo(i);
-        if (!"local-wgs84-tangent-v1".equals(id))
+        if (complete) {
+            return LocalMetricFrame.restoreCertified(id, str(i), origin, sw, ne,
+                    i.readDouble(), i.readDouble(), i.readDouble());
+        }
+        if (!LocalMetricFrame.LEGACY_PROJECTION_ID.equals(id))
             throw new IllegalArgumentException("Unsupported metric frame");
-        return LocalMetricFrame.certifiedEquirectangular(origin, sw, ne);
+        return LocalMetricFrame.legacyCertifiedEquirectangular(origin, sw, ne);
     }
     private static void transform(DataOutputStream o, RasterMetricTransform t) throws IOException {
         str(o, t.transformId());

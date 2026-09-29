@@ -57,6 +57,11 @@ public final class ProductionReplayCommand {
         TrackerMode capturedEngine = null;
         TraceHypothesisSet inference = null;
         String fidelity = "UNAVAILABLE";
+        String componentStatus = "UNAVAILABLE";
+        List<FinalOutputComponentsCodec.Component> differingComponents = List.of();
+        String componentIntegrity = "";
+        FinalOutputComponentsCodec.QualitySummary expectedQuality = null;
+        FinalOutputComponentsCodec.QualitySummary actualQuality = null;
         String quality = "NOT_EVALUATED";
         String reason = "";
         try {
@@ -71,9 +76,19 @@ public final class ProductionReplayCommand {
             Format15Archive archive = Format15NestedArchiveReader.read(item);
             Optional<ScalarReplayExpectation> expectedScalar;
             Optional<FinalReplayExpectation> expectedFinal;
+            Optional<FinalOutputComponentsCodec.Snapshot> expectedComponents;
             try {
                 expectedScalar = ScalarReplayExpectation.read(archive);
                 expectedFinal = FinalReplayExpectation.read(archive);
+                Optional<Format15Artifact> companion = archive.artifact(FinalOutputComponentsCodec.ARTIFACT);
+                if (companion.isPresent()) {
+                    FinalReplayExpectation expectation = expectedFinal.orElseThrow(
+                            () -> new ReplayMismatchException("final-components-expectation-missing"));
+                    expectedComponents = Optional.of(FinalOutputComponentsCodec.decode(
+                            companion.orElseThrow().bytes(), expectation.componentsBinding()));
+                } else {
+                    expectedComponents = Optional.empty();
+                }
             } catch (ReplayMismatchException invalid) {
                 fidelity = "MISMATCH";
                 throw invalid;
@@ -103,6 +118,18 @@ public final class ProductionReplayCommand {
                     && expectedFinal.isPresent()
                     && expectedFinal.orElseThrow().requestedEngine() == engine) {
                 fidelity = expectedFinal.orElseThrow().matches(actual) ? "MATCH" : "MISMATCH";
+                if (expectedComponents.isPresent()) {
+                    FinalOutputComponentsCodec.Comparison componentComparison =
+                            FinalOutputComponentsCodec.compare(expectedComponents.orElseThrow(), actual);
+                    componentStatus = componentComparison.status().name();
+                    differingComponents = componentComparison.differingComponents();
+                    componentIntegrity = componentComparison.integrityCode();
+                    expectedQuality = componentComparison.expectedSummary();
+                    actualQuality = componentComparison.actualSummary();
+                }
+            } else if (item.replayCapability() == ReplayLevel.FINAL_GEOMETRY
+                    && expectedComponents.isPresent()) {
+                componentStatus = "NOT_COMPARABLE";
             }
             try {
                 if (item.replayCapability() == ReplayLevel.SCALAR_INFERENCE) {
@@ -122,10 +149,12 @@ public final class ProductionReplayCommand {
             String status = quality.equals("PASS") && !fidelity.equals("MISMATCH")
                     ? "ok" : "failed";
             return new CaseResult(item.caseId(), item.replayCapability(), engine,
-                    capturedEngine, inference, fidelity, quality, status, reason);
+                    capturedEngine, inference, fidelity, componentStatus, differingComponents,
+                    componentIntegrity, expectedQuality, actualQuality, quality, status, reason);
         } catch (IOException | RuntimeException exception) {
             return new CaseResult(item.caseId(), item.replayCapability(), engine,
-                    capturedEngine, inference, fidelity, quality, "failed",
+                    capturedEngine, inference, fidelity, componentStatus, differingComponents,
+                    componentIntegrity, expectedQuality, actualQuality, quality, "failed",
                     safeReason(exception));
         }
     }
@@ -200,6 +229,15 @@ public final class ProductionReplayCommand {
                     .append(result.inference == null ? "null"
                             : result.inference.evaluatedTransitions())
                     .append(",\"fidelityStatus\":").append(quote(result.fidelityStatus))
+                    .append(",\"componentStatus\":").append(quote(result.componentStatus))
+                    .append(",\"differingComponents\":")
+                    .append(componentArray(result.differingComponents))
+                    .append(",\"componentIntegrity\":")
+                    .append(result.componentIntegrity.isEmpty() ? "null" : quote(result.componentIntegrity))
+                    .append(",\"expectedQualitySummary\":")
+                    .append(qualitySummaryJson(result.expectedQuality))
+                    .append(",\"actualQualitySummary\":")
+                    .append(qualitySummaryJson(result.actualQuality))
                     .append(",\"qualityStatus\":").append(quote(result.qualityStatus))
                     .append(",\"status\":").append(quote(result.status))
                     .append(",\"reason\":").append(quote(result.reason)).append('}');
@@ -224,6 +262,20 @@ public final class ProductionReplayCommand {
             case DIRECTIONAL_IMAGE -> "IMAGE";
             case LEGACY_V02 -> "LEGACY";
         };
+    }
+
+    private static String componentArray(List<FinalOutputComponentsCodec.Component> components) {
+        StringBuilder result = new StringBuilder("[");
+        for (int index = 0; index < components.size(); index++) {
+            if (index > 0) result.append(',');
+            result.append(quote(components.get(index).name()));
+        }
+        return result.append(']').toString();
+    }
+
+    private static String qualitySummaryJson(FinalOutputComponentsCodec.QualitySummary summary) {
+        return summary == null ? "null"
+                : FinalOutputComponentsCodec.summaryJson(summary).stripTrailing();
     }
 
     private static String safeReason(Throwable failure) {
@@ -255,7 +307,12 @@ public final class ProductionReplayCommand {
 
     private record CaseResult(String caseId, ReplayLevel level, TrackerMode engine,
             TrackerMode capturedEngine, TraceHypothesisSet inference,
-            String fidelityStatus, String qualityStatus, String status, String reason) {
+            String fidelityStatus, String componentStatus,
+            List<FinalOutputComponentsCodec.Component> differingComponents,
+            String componentIntegrity,
+            FinalOutputComponentsCodec.QualitySummary expectedQuality,
+            FinalOutputComponentsCodec.QualitySummary actualQuality,
+            String qualityStatus, String status, String reason) {
     }
 
     private record Arguments(Path manifest, List<TrackerMode> engines,

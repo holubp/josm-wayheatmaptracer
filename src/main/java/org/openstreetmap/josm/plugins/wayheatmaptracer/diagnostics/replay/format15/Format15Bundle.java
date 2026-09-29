@@ -37,7 +37,7 @@ public final class Format15Bundle {
                 || copy.put(entry.getKey(), artifact) != null) {
                 throw new IllegalArgumentException("Format-15 artifact identity is inconsistent");
             }
-            total += artifact.bytes().length;
+            total += artifact.sizeBytes();
             if (total > Format15Safety.MAX_TOTAL_BYTES) {
                 throw new IllegalArgumentException("Format-15 artifact set exceeds the total limit");
             }

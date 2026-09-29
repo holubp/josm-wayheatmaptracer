@@ -69,36 +69,7 @@ final class ScalarReplayFingerprint {
 
     static void writeHypothesis(DataOutputStream data, TraceHypothesis hypothesis)
             throws IOException {
-        writeString(data, hypothesis.id());
-        writeString(data, hypothesis.branchSignature());
-        data.writeLong(Double.doubleToLongBits(hypothesis.objective()));
-        data.writeBoolean(hypothesis.posteriorProbability().isPresent());
-        if (hypothesis.posteriorProbability().isPresent()) {
-            data.writeLong(Double.doubleToLongBits(
-                hypothesis.posteriorProbability().getAsDouble()));
-        }
-        data.writeInt(hypothesis.points().size());
-        for (MetricPoint point : hypothesis.points()) {
-            data.writeLong(Double.doubleToLongBits(point.xMeters()));
-            data.writeLong(Double.doubleToLongBits(point.yMeters()));
-        }
-        data.writeInt(hypothesis.support().size());
-        for (ObservationOwnership ownership : hypothesis.support()) {
-            if (ownership == null) {
-                throw new IllegalArgumentException("scalar-output-invalid");
-            }
-            writeString(data, ownership.name());
-        }
-        Map<String, Double> diagnostics = new TreeMap<>(hypothesis.diagnostics());
-        data.writeInt(diagnostics.size());
-        for (Map.Entry<String, Double> entry : diagnostics.entrySet()) {
-            if (entry.getKey() == null || entry.getKey().isBlank()
-                    || entry.getValue() == null || !Double.isFinite(entry.getValue())) {
-                throw new IllegalArgumentException("scalar-output-invalid");
-            }
-            writeString(data, entry.getKey());
-            data.writeLong(Double.doubleToLongBits(entry.getValue()));
-        }
+        ReplayOutputCanonical.writeHypothesis(data, hypothesis);
     }
 
     static void writeString(DataOutputStream data, String value) throws IOException {

@@ -162,6 +162,49 @@ class V022FixedIntervalEditPlanComposerTest {
             @TempDir Path directory) throws Exception {
         IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, true);
         assertTrue(batch.runs().get(0).routes().size() > 1);
+        // Exercise direct optional codec admission using this already-produced public
+        // batch: later-run privacy must refuse even when the byte allowance is zero.
+        assertEquals(2, batch.runs().size());
+        Class<?> codec = Class.forName("org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15."
+                + "IntervalFinalOutputComponentsCodec");
+        var encode = codec.getDeclaredMethod("encode", String.class, IntervalTraceBatch.class, int.class, long.class);
+        encode.setAccessible(true);
+        Object budgetOnly = encode.invoke(null, "test-build", batch, 0, 0L);
+        var availability = budgetOnly.getClass().getDeclaredMethod("availability");
+        availability.setAccessible(true);
+        assertEquals("UNAVAILABLE_BUDGET", availability.invoke(budgetOnly).toString());
+        var originalRun = batch.runs().get(1);
+        var originalInference = originalRun.result().inference();
+        var unsafeInference = new TraceHypothesisSet(originalInference.engine(), originalInference.hypotheses(),
+                originalInference.status(), originalInference.alternativesTruncated(),
+                originalInference.evaluatedStates(), originalInference.evaluatedTransitions(),
+                "Cookie: public-synthetic-refusal-control");
+        List<IntervalTraceBatch.IntervalRun> unsafeRuns = new java.util.ArrayList<>(batch.runs());
+        unsafeRuns.set(1, new IntervalTraceBatch.IntervalRun(originalRun.interval(), originalRun.request(),
+                new ModernTracePipeline.Result(unsafeInference, originalRun.routes()), originalRun.usage()));
+        var unsafeBatch = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                batch.partition(), unsafeRuns, batch.options(), batch.authoritySpecification());
+        var refused = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> encode.invoke(null, "test-build", unsafeBatch, 0, 0L));
+        assertTrue(refused.getCause() instanceof IllegalArgumentException);
+        assertTrue(refused.getCause().getMessage().contains("Credential-bearing"));
+        var originalRoute = originalRun.routes().get(0);
+        var quality = originalRoute.quality();
+        var nonfiniteQuality = new FinalGeometryEvaluator.Result(quality.id(), quality.disposition(),
+                quality.findings(), quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(), Double.NaN);
+        List<ModernTracePipeline.Route> malformedRoutes = new java.util.ArrayList<>(originalRun.routes());
+        malformedRoutes.set(0, new ModernTracePipeline.Route(originalRoute.rawHypothesis(), originalRoute.hypothesis(),
+                originalRoute.pointIds(), originalRoute.assignments(), originalRoute.sourceOwnership(),
+                nonfiniteQuality, originalRoute.cleanupStatus(), originalRoute.geometryChanged()));
+        unsafeRuns.set(1, new IntervalTraceBatch.IntervalRun(originalRun.interval(), originalRun.request(),
+                new ModernTracePipeline.Result(originalInference, malformedRoutes), originalRun.usage()));
+        var malformedBatch = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                batch.partition(), unsafeRuns, batch.options(), batch.authoritySpecification());
+        var malformed = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> encode.invoke(null, "test-build", malformedBatch, 0, 128L * 1024 * 1024 - 1));
+        assertTrue(malformed.getCause() instanceof IllegalArgumentException);
+        assertEquals("final-output-invalid", malformed.getCause().getMessage());
         Map<Integer, Integer> routeChoices = Map.of(0, 1);
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, routeChoices);
         var plan = assessment.plan().orElseThrow();
@@ -1269,7 +1312,8 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
-    void realCapturedTaggedJunctionPartitionKeepsFixedFootprintExact() throws Exception {
+    void realCapturedTaggedJunctionPartitionKeepsFixedFootprintExact(@TempDir Path directory)
+            throws Exception {
         DataSet dataSet = new DataSet();
         List<Node> nodes = new java.util.ArrayList<>();
         for (int i = 0; i <= 20; i++) {
@@ -1344,10 +1388,56 @@ class V022FixedIntervalEditPlanComposerTest {
             var archive = Format15ArchiveReader.read(replayPath);
             var replay = Format15ReplayRunner.replayIntervals(archive,
                     archive.sourceIdentityHash(), archive.parameterHash());
+            assertTrue(archive.artifact("private/interval-output-components.bin").isPresent());
+            assertEquals("MATCH", replay.outputComponentStatus());
+            assertEquals(batch.runs().size(), replay.outputComponentComparisons().size());
             assertEquals(partition.slideIntervals(), replay.partition().slideIntervals());
             assertEquals(2, replay.batch().runs().size());
             assertEquals(assessment.plan().orElseThrow().canonicalHash(),
                     replay.assessment().plan().orElseThrow().canonicalHash());
+            assertEquals("MATCH", replay.outputComponentStatus());
+
+            Map<String, Format15Artifact> legacyMembers = new LinkedHashMap<>(replayBundle.artifacts());
+            legacyMembers.remove("private/interval-output-components.bin");
+            legacyMembers.remove("private/interval-output-components-summary.json");
+            Format15Bundle legacyBundle = new Format15Bundle(replayBundle.buildIdentity(),
+                    replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), legacyMembers);
+            Path legacyPath = directory.resolve("strict-interval-without-components.zip");
+            Format15BundleWriter.write(legacyBundle, legacyPath);
+            Format15Archive legacyArchive = Format15ArchiveReader.read(legacyPath);
+            var legacyReplay = Format15ReplayRunner.replayIntervals(legacyArchive,
+                    legacyArchive.sourceIdentityHash(), legacyArchive.parameterHash());
+            assertEquals("UNAVAILABLE", legacyReplay.outputComponentStatus());
+
+            byte[] staleRequest = replayBundle.artifact(
+                    "private/interval-output-components.bin").bytes();
+            int requestHashOffset = 4 + 4 + 4 + "test-build".getBytes(
+                    java.nio.charset.StandardCharsets.UTF_8).length + 4 + 4;
+            staleRequest[requestHashOffset] = staleRequest[requestHashOffset] == 'a' ? (byte) 'b' : (byte) 'a';
+            Map<String, Format15Artifact> staleMembers = new LinkedHashMap<>(replayBundle.artifacts());
+            staleMembers.put("private/interval-output-components.bin", Format15Artifact.binary(
+                    "private/interval-output-components.bin", staleRequest));
+            Format15Bundle staleBundle = new Format15Bundle(replayBundle.buildIdentity(),
+                    replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), staleMembers);
+            Path stalePath = directory.resolve("stale-interval-output-components.zip");
+            Format15BundleWriter.write(staleBundle, stalePath);
+            Format15Archive staleArchive = Format15ArchiveReader.read(stalePath);
+            assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                    staleArchive, staleArchive.sourceIdentityHash(), staleArchive.parameterHash()));
+
+            byte[] reordered = replayBundle.artifact(
+                    "private/interval-output-components.bin").bytes();
+            reordered[25] = 1; // first interval index, now out of order
+            Map<String, Format15Artifact> reorderedMembers = new LinkedHashMap<>(replayBundle.artifacts());
+            reorderedMembers.put("private/interval-output-components.bin", Format15Artifact.binary(
+                    "private/interval-output-components.bin", reordered));
+            Format15Bundle reorderedBundle = new Format15Bundle(replayBundle.buildIdentity(),
+                    replayBundle.sourceIdentityHash(), replayBundle.parameterHash(), reorderedMembers);
+            Path reorderedPath = directory.resolve("reordered-interval-output-components.zip");
+            Format15BundleWriter.write(reorderedBundle, reorderedPath);
+            Format15Archive reorderedArchive = Format15ArchiveReader.read(reorderedPath);
+            assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replayIntervals(
+                    reorderedArchive, reorderedArchive.sourceIdentityHash(), reorderedArchive.parameterHash()));
 
             Map<String, Format15Artifact> omitted = new LinkedHashMap<>(replayBundle.artifacts());
             omitted.remove("private/frozen-interval-input.bin");
@@ -1360,7 +1450,8 @@ class V022FixedIntervalEditPlanComposerTest {
 
             byte[] originalPayload = replayBundle.artifact("private/frozen-interval-input.bin").bytes();
             java.nio.ByteBuffer layout = java.nio.ByteBuffer.wrap(originalPayload);
-            layout.position(8);
+            assertEquals(0x57544952, layout.getInt());
+            assertEquals(3, layout.getInt(), "strict frames require the complete interval envelope");
             int sharedBytes = layout.getInt();
             layout.position(layout.position() + sharedBytes);
             int authorityBytes = layout.getInt();
@@ -1373,17 +1464,19 @@ class V022FixedIntervalEditPlanComposerTest {
             layout.position(layout.position() + firstRequestBytes);
             int firstSourceOriginOffset = layout.position();
             int firstScalarHashOffset = firstSourceOriginOffset + Double.BYTES + 2;
-            for (int corruption : List.of(0, 1, 2)) {
+            for (int corruption : List.of(0, 1, 2, 3)) {
                 byte[] alteredPayload = originalPayload.clone();
                 if (corruption == 0) {
                     java.nio.ByteBuffer.wrap(alteredPayload).putInt(intervalCountOffset, 1);
                 } else if (corruption == 1) {
                     alteredPayload[firstScalarHashOffset] = alteredPayload[firstScalarHashOffset]
                             == 'a' ? (byte) 'b' : (byte) 'a';
-                } else {
+                } else if (corruption == 2) {
                     java.nio.ByteBuffer tamperedOrigin = java.nio.ByteBuffer.wrap(alteredPayload);
                     tamperedOrigin.putDouble(firstSourceOriginOffset,
                             tamperedOrigin.getDouble(firstSourceOriginOffset) + 5.0);
+                } else {
+                    java.nio.ByteBuffer.wrap(alteredPayload).putInt(4, 2);
                 }
                 Map<String, Format15Artifact> changed = new LinkedHashMap<>(replayBundle.artifacts());
                 changed.put("private/frozen-interval-input.bin", Format15Artifact.binary(
@@ -1398,7 +1491,8 @@ class V022FixedIntervalEditPlanComposerTest {
                 assertEquals(switch (corruption) {
                     case 0 -> "strict-interval-replay-input-malformed";
                     case 1 -> "strict-interval-production-output-mismatch";
-                    default -> "strict-interval-request-derivation-mismatch";
+                    case 2 -> "strict-interval-request-derivation-mismatch";
+                    default -> "strict-interval-replay-input-malformed";
                 }, failure.getMessage());
             }
 

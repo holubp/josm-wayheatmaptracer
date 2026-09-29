@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 
@@ -89,7 +90,7 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         artifacts.put("frozen-input.bin",
             Format15Artifact.binary("frozen-input.bin", frozenInput));
-        String identities = "{\"codecVersion\":" + FrozenReplayCodec.VERSION
+        String identities = "{\"codecVersion\":" + FrozenReplayCodec.encodedVersion(frozenInput)
             + ",\"inputHash\":" + quote(inputHash) + ",\"evidenceHash\":"
             + quote(input.evidence().canonicalHash()) + ",\"networkHash\":"
             + quote(input.network().canonicalHash()) + ",\"parameterHash\":"
@@ -206,6 +207,7 @@ public final class Format15ProductionBundleFactory {
                 + ",\"privateData\":true,\"capabilities\":{\"SCALAR_INFERENCE\":true,"
                 + "\"FINAL_GEOMETRY\":true,\"RASTER_INFERENCE\":false,"
                 + "\"FULL_EDIT_PLAN\":false}}\n"));
+        addFinalOutputComponents(artifacts, expectation, finalResult);
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
             base.parameterHash(), artifacts);
     }
@@ -385,7 +387,50 @@ public final class Format15ProductionBundleFactory {
             artifacts.put(name, Format15Artifact.text(name,
                     intervalRoutesJson(batch, routeChoices, i)));
         }
+        addIntervalOutputComponents(artifacts, buildIdentity, batch, frozenIntervals != null);
         return new Format15Bundle(buildIdentity, sourceHash, batch.fullRequest().parameterHash(), artifacts);
+    }
+
+    private static void addIntervalOutputComponents(Map<String, Format15Artifact> artifacts,
+            String buildIdentity, IntervalTraceBatch batch, boolean strictReplayAvailable) {
+        long existingBytes = artifacts.values().stream().mapToLong(Format15Artifact::sizeBytes).sum();
+        String name = "private/interval-output-components-summary.json";
+        // Malformed/private metadata remains an error even when optional detail cannot fit.
+        for (var run : batch.runs()) {
+            FinalOutputComponentsCodec.validateOutputMetadata(run.result().inference(), run.result().routes());
+        }
+        if (artifacts.size() >= Format15Safety.MAX_ARTIFACTS) return;
+        String unavailable = "{\"schema\":1,\"status\":\"UNAVAILABLE_BUDGET\",\"intervals\":[]}\n";
+        List<String> metrics = new ArrayList<>();
+        try {
+            ReplayOutputAdmission.Budget shared = new ReplayOutputAdmission.Budget(existingBytes);
+            for (var run : batch.runs()) shared.output(run.result().inference(), run.result().routes());
+            for (var run : batch.runs()) metrics.add(FinalOutputComponentsCodec.summaryJson(
+                    FinalOutputComponentsCodec.qualitySummary(IntervalFinalOutputComponentsCodec.result(run, "0".repeat(64))))
+                    .stripTrailing());
+        } catch (ReplayOutputAdmission.BudgetExceeded budget) {
+            appendOptionalSummary(artifacts, name, unavailable);
+            return;
+        }
+        String quality = String.join(",", metrics);
+        String budgetSummary = "{\"schema\":1,\"status\":\"UNAVAILABLE_BUDGET\",\"intervals\":[" + quality + "]}\n";
+        int summaryBytes = typedSummaryBytes(budgetSummary);
+        if (!optionalSummaryFits(artifacts, summaryBytes)) {
+            appendOptionalSummary(artifacts, name, unavailable);
+            return;
+        }
+        int maximum = optionalPayloadAllowance(artifacts, summaryBytes);
+        IntervalFinalOutputComponentsCodec.Encoded encoded = strictReplayAvailable && maximum > 0
+                ? IntervalFinalOutputComponentsCodec.encode(buildIdentity, batch, maximum, existingBytes + 4L * summaryBytes)
+                : new IntervalFinalOutputComponentsCodec.Encoded(strictReplayAvailable
+                        ? IntervalFinalOutputComponentsCodec.Availability.UNAVAILABLE_BUDGET
+                        : IntervalFinalOutputComponentsCodec.Availability.UNAVAILABLE, null, List.of());
+        if (encoded.availability() == IntervalFinalOutputComponentsCodec.Availability.AVAILABLE) {
+            artifacts.put(IntervalFinalOutputComponentsCodec.ARTIFACT,
+                    Format15Artifact.binary(IntervalFinalOutputComponentsCodec.ARTIFACT, encoded.bytes()));
+        }
+        appendOptionalSummary(artifacts, name, "{\"schema\":1,\"status\":" + quote(encoded.availability().name())
+                + ",\"intervals\":[" + quality + "]}\n");
     }
 
     static IntervalReason intervalReason(String reason) {
@@ -789,8 +834,70 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put(FinalReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             FinalReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
+        addFinalOutputComponents(artifacts, expectation, actual);
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
             base.parameterHash(), artifacts);
+    }
+
+    private static void addFinalOutputComponents(Map<String, Format15Artifact> artifacts,
+            FinalReplayExpectation expectation, Format15ReplayRunner.Result actual) {
+        FinalOutputComponentsCodec.validate(expectation.componentsBinding(), actual);
+        long existingBytes = artifacts.values().stream().mapToLong(Format15Artifact::sizeBytes).sum();
+        String name = "private/final-output-components-summary.json";
+        if (artifacts.size() >= Format15Safety.MAX_ARTIFACTS) return;
+        String quality = FinalOutputComponentsCodec.summaryJson(FinalOutputComponentsCodec.qualitySummary(actual)).stripTrailing();
+        String budgetSummary = "{\"status\":\"UNAVAILABLE_BUDGET\",\"quality\":" + quality + "}\n";
+        int summaryBytes = typedSummaryBytes(budgetSummary);
+        if (!optionalSummaryFits(artifacts, summaryBytes)) {
+            appendOptionalSummary(artifacts, name, "{\"status\":\"UNAVAILABLE_BUDGET\"}\n");
+            return;
+        }
+        int maximum = optionalPayloadAllowance(artifacts, summaryBytes);
+        FinalOutputComponentsCodec.Encoded encoded = maximum > 0
+                ? FinalOutputComponentsCodec.encode(expectation.componentsBinding(), actual,
+                        maximum, existingBytes + 4L * summaryBytes)
+                : new FinalOutputComponentsCodec.Encoded(FinalOutputComponentsCodec.Availability.UNAVAILABLE_BUDGET,
+                        null, Map.of(), FinalOutputComponentsCodec.qualitySummary(actual));
+        if (encoded.availability() == FinalOutputComponentsCodec.Availability.AVAILABLE) {
+            artifacts.put(FinalOutputComponentsCodec.ARTIFACT,
+                    Format15Artifact.binary(FinalOutputComponentsCodec.ARTIFACT, encoded.bytes()));
+        }
+        appendOptionalSummary(artifacts, name, "{\"status\":" + quote(encoded.availability().name())
+                + ",\"quality\":" + quality + "}\n");
+    }
+
+    private static int optionalPayloadAllowance(Map<String, Format15Artifact> artifacts, int reservedSummaryBytes) {
+        long existing = artifacts.values().stream().mapToLong(Format15Artifact::sizeBytes).sum();
+        return optionalPayloadAllowance(artifacts.size(), existing, reservedSummaryBytes);
+    }
+
+    static int optionalPayloadAllowance(int mandatoryCount, long mandatoryBytes, int reservedSummaryBytes) {
+        if (mandatoryCount < 0 || mandatoryCount > Format15Safety.MAX_ARTIFACTS || mandatoryBytes < 0
+                || mandatoryBytes > Format15Safety.MAX_TOTAL_BYTES || reservedSummaryBytes < 0) {
+            throw new IllegalArgumentException("optional-budget-invalid");
+        }
+        if (mandatoryCount + 2 > Format15Safety.MAX_ARTIFACTS) return 0;
+        return (int) Math.max(0, Math.min(Format15Safety.MAX_ARTIFACT_BYTES,
+                Format15Safety.MAX_TOTAL_BYTES - mandatoryBytes - reservedSummaryBytes));
+    }
+
+    private static boolean optionalSummaryFits(Map<String, Format15Artifact> artifacts, int bytes) {
+        long existing = artifacts.values().stream().mapToLong(Format15Artifact::sizeBytes).sum();
+        return artifacts.size() < Format15Safety.MAX_ARTIFACTS && bytes <= Format15Safety.MAX_ARTIFACT_BYTES
+                && existing + 4L * bytes <= Format15Safety.MAX_TOTAL_BYTES;
+    }
+
+    private static void appendOptionalSummary(Map<String, Format15Artifact> artifacts, String name, String text) {
+        if (optionalSummaryFits(artifacts, typedSummaryBytes(text))) artifacts.put(name, Format15Artifact.text(name, text));
+    }
+
+    private static int typedSummaryBytes(String text) {
+        // This projection contains only fixed keys, enum names and numeric literals.
+        // Size it without allocating UTF-8 copies before optional admission.
+        for (int index = 0; index < text.length(); index++) {
+            if (text.charAt(index) > 0x7f) throw new IllegalArgumentException("typed-summary-invalid");
+        }
+        return text.length();
     }
 
     private static String quote(String value) {

@@ -15,11 +15,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedInte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 
-/** Bounded additive interval envelope: one shared v2 input, authority, and exact ordered requests. */
+/** Bounded interval envelope with explicit legacy or complete numerical-frame authority. */
 final class FrozenIntervalReplayCodec {
     static final String ARTIFACT = "private/frozen-interval-input.bin";
     private static final int MAGIC = 0x57544952;
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     private static final int MAX_INTERVALS = 128;
 
     record ExpectedRun(TraceRequest request, String scalarHash, String finalHash,
@@ -51,8 +51,12 @@ final class FrozenIntervalReplayCodec {
         try {
             ByteArrayOutputStream bytes = new BoundedOutput();
             DataOutputStream out = new DataOutputStream(bytes);
+            boolean completeFrame = batch.evidence().coordinateFrame().hasCompleteNumericalIdentity();
+            if (completeFrame != batch.authoritySpecification().metricFrame().hasCompleteNumericalIdentity()) {
+                throw new IllegalArgumentException("Interval authority mixes numerical frame versions");
+            }
             out.writeInt(MAGIC);
-            out.writeInt(VERSION);
+            out.writeInt(completeFrame ? VERSION : 2);
             part(out, FrozenReplayCodec.encode(new FrozenReplayInput(batch.fullRequest(),
                     batch.evidence(), batch.network(), batch.options())));
             part(out, FrozenReplayCodec.encodeAuthority(batch.authoritySpecification()));
@@ -97,11 +101,19 @@ final class FrozenIntervalReplayCodec {
             throw new IllegalArgumentException("Strict interval replay exceeds per-file budget");
         }
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
-            if (in.readInt() != MAGIC || in.readInt() != VERSION) {
+            if (in.readInt() != MAGIC) {
+                throw new IllegalArgumentException("Unsupported interval replay codec version");
+            }
+            int version = in.readInt();
+            if (version != 2 && version != VERSION) {
                 throw new IllegalArgumentException("Unsupported interval replay codec version");
             }
             FrozenReplayInput shared = FrozenReplayCodec.decode(part(in));
             NetworkSnapshotCapture.Specification authority = FrozenReplayCodec.decodeAuthority(part(in));
+            if ((version == VERSION) != shared.evidence().coordinateFrame().hasCompleteNumericalIdentity()
+                    || (version == VERSION) != authority.metricFrame().hasCompleteNumericalIdentity()) {
+                throw new IllegalArgumentException("Interval envelope disagrees with numerical frame versions");
+            }
             String proof = hash(in);
             int count = in.readInt();
             if (count < 1 || count > MAX_INTERVALS) {

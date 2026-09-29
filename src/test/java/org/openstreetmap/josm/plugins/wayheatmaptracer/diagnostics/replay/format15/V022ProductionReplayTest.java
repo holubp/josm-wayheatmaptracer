@@ -892,8 +892,13 @@ class V022ProductionReplayTest {
         assertEquals(1, ByteBuffer.wrap(original, 4, 4).getInt());
         assertEquals("ae4767db2a223eb743188aec4416c74f17534be2ec65c319295f0a4764c77072",
             Format15Safety.sha256(original));
-        assertEquals(fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE).canonicalHash(),
-            FrozenReplayCodec.decode(original).canonicalHash());
+        FrozenReplayInput decoded = FrozenReplayCodec.decode(original);
+        assertFalse(decoded.evidence().coordinateFrame().hasCompleteNumericalIdentity());
+        assertEquals(fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE, RasterFixture.FINE, true)
+                .canonicalHash(), decoded.canonicalHash());
+        byte[] historicalV2 = FrozenReplayCodec.encode(decoded);
+        assertEquals(2, FrozenReplayCodec.encodedVersion(historicalV2));
+        assertEquals(decoded.canonicalHash(), FrozenReplayCodec.decode(historicalV2).canonicalHash());
     }
 
     @Test
@@ -1024,6 +1029,71 @@ class V022ProductionReplayTest {
         assertEquals(0, exit, Files.readString(output, StandardCharsets.UTF_8));
         assertTrue(Files.readString(output, StandardCharsets.UTF_8)
             .contains("\"status\":\"ok\""));
+    }
+
+    @Test
+    void finalComponentDiagnosticsKeepLegacyRootsStrictAndVariantsNotComparable(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);
+        Format15Bundle captured = Format15ProductionBundleFactory.createWithExpectedFinalOutput(
+                "test", input, TrackerMode.CORRIDOR_AWARE);
+        CliRun matching = runCli(directory.resolve("component match"), captured, "A",
+                51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        assertEquals(0, matching.exit(), matching.output());
+        assertTrue(matching.output().contains("\"componentStatus\":\"MATCH\""));
+        assertTrue(matching.output().contains("\"differingComponents\":[]"));
+        assertTrue(matching.output().contains("\"imageCenterCostAvailability\":\"AVAILABLE\""));
+
+        Format15ReplayRunner.Result produced = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.CORRIDOR_AWARE);
+        ModernTracePipeline.Route originalRoute = produced.routes().get(0);
+        FinalGeometryEvaluator.Result originalQuality = originalRoute.quality();
+        FinalGeometryEvaluator.Result changedQuality = new FinalGeometryEvaluator.Result(
+                originalQuality.id(), originalQuality.disposition(), originalQuality.findings(),
+                originalQuality.totalLengthMeters() + 0.01,
+                originalQuality.directlySupportedLengthMeters(),
+                originalQuality.worstUnsupportedSpanMeters(), originalQuality.meanImageCenterCost(),
+                originalQuality.bendPreservingRoughness());
+        ModernTracePipeline.Route changedRoute = copyRoute(originalRoute,
+                originalRoute.rawHypothesis(), originalRoute.hypothesis(), originalRoute.pointIds(),
+                originalRoute.assignments(), originalRoute.sourceOwnership(), changedQuality,
+                originalRoute.cleanupStatus(), originalRoute.geometryChanged());
+        Format15Bundle changedExpected = Format15ProductionBundleFactory.createLive("test", input,
+                new ModernTracePipeline.Result(produced.inference(), List.of(changedRoute)),
+                "produced", "synthetic-source", 0, null, false, false);
+        CliRun rootMismatch = runCli(directory.resolve("root mismatch with companion"), changedExpected,
+                "A", 51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        assertEquals(2, rootMismatch.exit());
+        assertTrue(rootMismatch.output().contains("\"reason\":\"final-output-mismatch\""));
+        assertTrue(rootMismatch.output().contains("\"componentStatus\":\"MISMATCH\""));
+        assertTrue(rootMismatch.output().contains("\"ROUTE_QUALITY\""));
+
+        CliRun variant = runCli(directory.resolve("variant not comparable"), captured, "B",
+                51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        assertTrue(variant.output().contains("\"componentStatus\":\"NOT_COMPARABLE\""));
+
+        Map<String, Format15Artifact> legacyArtifacts = new LinkedHashMap<>(captured.artifacts());
+        legacyArtifacts.remove(FinalOutputComponentsCodec.ARTIFACT);
+        legacyArtifacts.remove("private/final-output-components-summary.json");
+        Format15Bundle legacy = new Format15Bundle(captured.buildIdentity(),
+                captured.sourceIdentityHash(), captured.parameterHash(), legacyArtifacts);
+        CliRun legacyMatch = runCli(directory.resolve("legacy root only"), legacy, "A",
+                51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        assertEquals(0, legacyMatch.exit(), legacyMatch.output());
+        assertTrue(legacyMatch.output().contains("\"fidelityStatus\":\"MATCH\""));
+        assertTrue(legacyMatch.output().contains("\"componentStatus\":\"UNAVAILABLE\""));
+
+        Map<String, Format15Artifact> tamperedArtifacts = new LinkedHashMap<>(captured.artifacts());
+        byte[] tampered = captured.artifact(FinalOutputComponentsCodec.ARTIFACT).bytes();
+        tampered[0] ^= 1;
+        tamperedArtifacts.put(FinalOutputComponentsCodec.ARTIFACT,
+                Format15Artifact.binary(FinalOutputComponentsCodec.ARTIFACT, tampered));
+        Format15Bundle tamperedBundle = new Format15Bundle(captured.buildIdentity(),
+                captured.sourceIdentityHash(), captured.parameterHash(), tamperedArtifacts);
+        CliRun tamperedRun = runCli(directory.resolve("tampered components"), tamperedBundle,
+                "A", 51.0, 55.0, false, "{}", "FINAL_GEOMETRY", "[]", "[]");
+        assertEquals(2, tamperedRun.exit());
+        assertTrue(tamperedRun.output().contains("\"reason\":\"final-components-invalid\""));
     }
 
     @Test
@@ -1304,15 +1374,31 @@ class V022ProductionReplayTest {
             engine + " must retain measured physical support");
     }
 
+    static FrozenReplayInput syntheticRidgeInput() {
+        return fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+    }
+
+    static FrozenReplayInput syntheticNoSignalInput() {
+        return fixture(TrackerMode.PROBABILISTIC, Scene.NO_SIGNAL);
+    }
+
     private static FrozenReplayInput fixture(TrackerMode engine, Scene scene) {
         return fixture(engine, scene, RasterFixture.FINE);
     }
 
     private static FrozenReplayInput fixture(TrackerMode engine, Scene scene,
             RasterFixture raster) {
+        return fixture(engine, scene, raster, false);
+    }
+
+    private static FrozenReplayInput fixture(TrackerMode engine, Scene scene,
+            RasterFixture raster, boolean legacyFrame) {
         GeographicPoint origin = new GeographicPoint(50, 14);
-        LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(origin,
-            new GeographicPoint(49.99, 13.99), new GeographicPoint(50.01, 14.02));
+        GeographicPoint southWest = new GeographicPoint(49.99, 13.99);
+        GeographicPoint northEast = new GeographicPoint(50.01, 14.02);
+        LocalMetricFrame frame = legacyFrame
+            ? LocalMetricFrame.legacyCertifiedEquirectangular(origin, southWest, northEast)
+            : LocalMetricFrame.certifiedEquirectangular(origin, southWest, northEast);
         PrimitiveKey first = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 1);
         PrimitiveKey last = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 2);
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 3);
