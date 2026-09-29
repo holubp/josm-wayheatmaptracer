@@ -16,6 +16,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
+import java.util.function.BiFunction;
+import java.util.function.LongSupplier;
 
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
@@ -101,6 +103,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.LockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceReceipt;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.MoveNodesCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -1361,36 +1364,24 @@ public class AlignWayAction extends JosmAction {
             applying[0] = true;
             apply.setEnabled(false);
             try {
-                if (!livePreviewSession.isCurrentWindow(previewOwner, dialog, activePreviewDialog,
-                        dialog.isDisplayable())) {
-                    throw new IllegalStateException("The preview window no longer owns this attempt");
-                }
                 int index = Math.max(0, choices.getSelectedIndex());
-                requireSupportedApplySource(computed.captured(), imageryLayer);
-                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
-                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
-                ModernSingleWayEditPlanAdapter.Assessment currentAssessment =
-                        planAdapter.assess(computed, index);
-                if (!currentAssessment.applyAvailable()) {
-                    throw new IllegalStateException(currentAssessment.detail());
-                }
-                AlignmentEditPlan currentPlan = currentAssessment.plan().orElseThrow();
-                PreviewReviewState currentReview = PreviewReviewState.fromEditPlan(candidates.get(index).id(), currentPlan);
-                if (review[0] == null || !(review[0].equals(currentReview)
-                        || review[0].matches(currentReview)) || !review[0].canApply()) {
-                    throw new IllegalStateException("The reviewed candidate plan is stale");
-                }
-                NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
-                        dataSet, computed.captured().specification());
-                LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, currentPlan,
-                        computed.captured().managedRaster() != null
+                PreparedModernApply prepared = prepareModernApply(dataSet, computed, index,
+                        candidates.get(index).id(), review[0], () -> {
+                            if (!livePreviewSession.isCurrentWindow(previewOwner, dialog, activePreviewDialog,
+                                    dialog.isDisplayable())) {
+                                throw new IllegalStateException("The preview window no longer owns this attempt");
+                            }
+                            requireSupportedApplySource(computed.captured(), imageryLayer);
+                            requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                                    persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                        }, computed.captured().managedRaster() != null
                             ? () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue()
-                            : () -> currentPlan.before().sourceGeneration());
-                ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
-                    : ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner,
-                        computed.captured(), slideConfig.heatmap());
-                ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet, currentPlan,
-                        computed.captured().managedRaster() != null
+                            : () -> computed.captured().network().sourceGeneration(),
+                        (network, currentPlan) -> {
+                            ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
+                                : ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner,
+                                    computed.captured(), slideConfig.heatmap());
+                            return computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
                                 computed.captured(), () -> {
                                     managedReceipt.requireCurrent();
@@ -1406,8 +1397,10 @@ public class AlignWayAction extends JosmAction {
                                 visibleSourceEpoch(imageryLayer),
                                 () -> requireLiveBSourceOwnerCurrent(dataSet, imageryLayer, slideConfig,
                                         persistedSlideConfig, tracingAtCapture, computed.captured(), null),
-                                redoFailureReporter(this::showError)),
-                        tr("Apply modern alignment"));
+                                redoFailureReporter(this::showError));
+                        });
+                AlignmentEditPlan currentPlan = prepared.plan();
+                ApplyAlignmentEditPlanCommand command = prepared.command();
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, "applied", index, currentPlan,
                             review[0].confirmed(), true, null),
@@ -1522,6 +1515,35 @@ public class AlignWayAction extends JosmAction {
         return new AlignmentResult(selection, null, candidates, source,
                 preview, List.of(), null, null, List.of(), List.of());
     }
+
+    /** Side-effect-free preparation shared by the ordinary listener and headless boundary checks. */
+    static PreparedModernApply prepareModernApply(DataSet dataSet, LiveBPreviewService.Computed computed,
+            int routeIndex, String candidateId, PreviewReviewState review,
+            Runnable requirePreviewAndSourceCurrent, LongSupplier sourceGeneration,
+            BiFunction<LiveNetworkSnapshotValidator, AlignmentEditPlan, LockedApplyValidator> validatorFactory) {
+        Objects.requireNonNull(requirePreviewAndSourceCurrent, "preview/source freshness").run();
+        Objects.requireNonNull(sourceGeneration, "source generation");
+        Objects.requireNonNull(validatorFactory, "locked validator factory");
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, routeIndex);
+        if (!assessment.applyAvailable()) {
+            throw new IllegalStateException(assessment.detail());
+        }
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        PreviewReviewState current = PreviewReviewState.fromEditPlan(candidateId, plan);
+        if (review == null || !(review.equals(current) || review.matches(current)) || !review.canApply()) {
+            throw new IllegalStateException("The reviewed candidate plan is stale");
+        }
+        NetworkSnapshotCapture.CapturedSnapshot receipt = NetworkSnapshotCapture.captureBound(
+                dataSet, computed.captured().specification());
+        LiveNetworkSnapshotValidator network = new LiveNetworkSnapshotValidator(receipt, plan, sourceGeneration);
+        LockedApplyValidator validator = Objects.requireNonNull(validatorFactory.apply(network, plan),
+                "locked validator");
+        return new PreparedModernApply(plan, new ApplyAlignmentEditPlanCommand(dataSet, plan, validator,
+                tr("Apply modern alignment")));
+    }
+
+    record PreparedModernApply(AlignmentEditPlan plan, ApplyAlignmentEditPlanCommand command) { }
 
     private String liveBQualitySummary(LiveBPreviewService.Computed computed, int index) {
         FinalGeometryEvaluator.Result quality = computed.pipeline().routes().get(index).quality();

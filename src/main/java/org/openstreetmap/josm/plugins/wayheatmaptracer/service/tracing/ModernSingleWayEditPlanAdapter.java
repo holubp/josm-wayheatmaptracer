@@ -735,15 +735,36 @@ public final class ModernSingleWayEditPlanAdapter {
         if (!authorizedNodes.containsAll(selectedNodes)
                 || !exactOriginalComposite && request.geometryMode() == AlignmentMode.PRECISE_SHAPE
                     && request.permissions().junctionPolicy() == JunctionPolicy.FIXED
-                    && !closure.protectedExistingNodeKeys().containsAll(selectedNodes)
-                || !exactOriginalComposite && request.geometryMode() == AlignmentMode.PRECISE_SHAPE
-                    && request.permissions().junctionPolicy() == JunctionPolicy.FIXED
-                    && (!closure.movableExistingNodeKeys().isEmpty()
-                        || !closure.editableExistingKeys().equals(Set.of(request.selectedWayKey())))) {
+                    && !hasOrdinaryFixedPreciseAuthority(request, before, selectedNodes)) {
             throw new IllegalArgumentException(
                 "Selected occurrence movement/protection authority is incomplete");
         }
         return selected;
+    }
+
+    /** Selected-way-only authority: protected boundaries and factual ordinary interior identities. */
+    private static boolean hasOrdinaryFixedPreciseAuthority(TraceRequest request,
+            NetworkSnapshot before, List<PrimitiveKey> selectedNodes) {
+        ClosureDescriptor closure = before.closure();
+        Set<PrimitiveKey> ordinary = new LinkedHashSet<>(closure.movableExistingNodeKeys());
+        ordinary.addAll(closure.removableExistingNodeKeys());
+        Set<PrimitiveKey> editable = new LinkedHashSet<>(ordinary);
+        editable.add(request.selectedWayKey());
+        if (!closure.editableExistingKeys().equals(editable)
+                || !closure.protectedExistingNodeKeys().contains(selectedNodes.get(0))
+                || !closure.protectedExistingNodeKeys().contains(selectedNodes.get(selectedNodes.size() - 1))
+                || !new HashSet<>(selectedNodes.subList(1, selectedNodes.size() - 1)).containsAll(ordinary)) {
+            return false;
+        }
+        for (PrimitiveKey key : ordinary) {
+            if (!(before.primitives().get(key) instanceof DetachedNode node)
+                    || node.deleted() || !node.tags().isEmpty()
+                    || !before.incomingReferrerWatches().getOrDefault(key, Set.of())
+                            .equals(Set.of(request.selectedWayKey()))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static List<PrimitiveKey> replacementNodes(ModernTracePipeline.Route route,
