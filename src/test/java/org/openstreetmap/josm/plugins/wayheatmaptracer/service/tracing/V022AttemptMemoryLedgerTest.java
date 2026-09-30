@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.junit.jupiter.api.Test;
@@ -106,6 +107,30 @@ class V022AttemptMemoryLedgerTest {
         fork.close();
         assertEquals(0, ledger.currentBytes());
         assertEquals(10, ledger.peakBytes());
+    }
+
+    @Test
+    void idempotentRetainUsesTheOwnerLeaseTableAtACompletelyFullCap() {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(10);
+        AttemptMemoryLedger.Owner root = ledger.rootOwner();
+        AttemptMemoryLedger.Owner child = root.child("idempotent-shared");
+        Object identity = new Object();
+        AttemptMemoryLedger.MemoryLease source = root.reserve(10).adopt(identity);
+
+        AttemptMemoryLedger.MemoryLease first = child.retainIfAbsent(identity);
+        AttemptMemoryLedger.MemoryLease repeated = child.retainIfAbsent(identity);
+
+        assertSame(first, repeated);
+        assertThrows(IllegalStateException.class, () -> child.retain(identity),
+                "the original strict retain contract still rejects a duplicate owner lease");
+        assertThrows(IllegalArgumentException.class,
+                () -> child.retainIfAbsent(new Object()));
+        assertEquals(10L, ledger.currentBytes());
+        assertEquals(10L, ledger.peakBytes());
+        source.close();
+        assertEquals(10L, ledger.currentBytes());
+        child.close();
+        assertEquals(0L, ledger.currentBytes());
     }
 
     @Test

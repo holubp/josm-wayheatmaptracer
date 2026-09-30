@@ -9,6 +9,7 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Evaluates the deterministic finite observation mixture on an admitted lateral lattice. */
 public final class ProbabilisticObservationModel {
@@ -30,13 +31,28 @@ public final class ProbabilisticObservationModel {
     /** Evaluates with an explicit caller-owned orientation-reliability capability. */
     InferenceProfile evaluate(ProbabilisticProfile profile, ProbabilisticStateLattice lattice,
         EvidenceModelParameters parameters, boolean attenuateOrientation) {
+        return evaluate(profile, lattice, parameters, attenuateOrientation, null);
+    }
+
+    /** Evaluates while charging temporary and retained arrays to the supplied attempt owner. */
+    InferenceProfile evaluate(ProbabilisticProfile profile, ProbabilisticStateLattice lattice,
+        EvidenceModelParameters parameters, boolean attenuateOrientation,
+        AttemptMemoryLedger.Owner retainedOwner) {
         if (profile == null || lattice == null || parameters == null) {
             throw new IllegalArgumentException("Observation evaluation requires complete inputs");
         }
         List<ObservationComponent> components = lattice.components();
         int states = lattice.cells().size();
-        ProfileStateEvidence evidence = ProfileStateEvidence.capture(profile, lattice.cells());
-        double[][] logDensity = new double[components.size()][states];
+        AttemptMemoryLedger.Owner temporaryOwner = retainedOwner == null ? null
+                : retainedOwner.child("observation-temporaries");
+        try {
+        ProfileStateEvidence evidence = ProfileStateEvidence.capture(profile, lattice.cells(),
+                temporaryOwner);
+        double[][] logDensity = temporaryOwner == null
+                ? new double[components.size()][states]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    ProbabilisticInference.deepArrayBytes(components.size(), states, Double.BYTES),
+                    "evaluated profiles", () -> new double[components.size()][states]);
         for (double[] row : logDensity) {
             java.util.Arrays.fill(row, Double.NEGATIVE_INFINITY);
         }
@@ -53,11 +69,21 @@ public final class ProbabilisticObservationModel {
             }
         }
 
-        double[] priors = effectiveComponentPriors(profile, components);
-        double[] unary = new double[states];
-        double[][] responsibilities = new double[states][components.size()];
+        double[] priors = effectiveComponentPriors(profile, components, temporaryOwner);
+        double[] unary = temporaryOwner == null ? new double[states]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    AttemptMemoryLedger.arrayBytes(states, Double.BYTES),
+                    "evaluated profiles", () -> new double[states]);
+        double[][] responsibilities = temporaryOwner == null
+                ? new double[states][components.size()]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    ProbabilisticInference.deepArrayBytes(states, components.size(), Double.BYTES),
+                    "evaluated profiles", () -> new double[states][components.size()]);
+        double[] terms = temporaryOwner == null ? new double[components.size()]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    AttemptMemoryLedger.arrayBytes(components.size(), Double.BYTES),
+                    "evaluated profiles", () -> new double[components.size()]);
         for (int state = 0; state < states; state++) {
-            double[] terms = new double[components.size()];
             for (int component = 0; component < components.size(); component++) {
                 double prior = priors[component];
                 terms[component] = prior == 0.0 ? Double.NEGATIVE_INFINITY
@@ -78,16 +104,43 @@ public final class ProbabilisticObservationModel {
             : profile.censoredModes().isEmpty() ? validSampleExists(profile)
                 ? ObservationOwnership.NO_SIGNAL_VALID_RASTER : ObservationOwnership.NO_RASTER
                 : ObservationOwnership.CORE_CENSORED;
-        return new InferenceProfile(profile.chainageMeters(), profile.anchor(), profile.normalUnit(),
-            lattice.cells(), unary, orientationByBranch(profile),
-            orientationReliabilityByBranch(profile, attenuateOrientation),
-            ownership, !localized, responsibilities);
+        Map<String, ImageOrientationSupport> orientations = orientationByBranch(profile,
+                temporaryOwner);
+        Map<String, Double> orientationReliability = orientationReliabilityByBranch(
+                profile, attenuateOrientation, temporaryOwner);
+        double[] guideCosts = temporaryOwner == null ? new double[states]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    AttemptMemoryLedger.arrayBytes(states, Double.BYTES),
+                    "evaluated profiles", () -> new double[states]);
+        InferenceProfile result = retainedOwner == null
+                ? new InferenceProfile(profile.chainageMeters(), profile.anchor(), profile.normalUnit(),
+                    lattice.cells(), unary, orientations, orientationReliability,
+                    ownership, !localized, responsibilities)
+                : InferenceProfile.accounted(profile.chainageMeters(), profile.anchor(),
+                    profile.normalUnit(), lattice.cells(), unary, orientations,
+                    orientationReliability, ownership, !localized, guideCosts,
+                    responsibilities, retainedOwner);
+        return result;
+        } finally {
+            if (temporaryOwner != null) temporaryOwner.close();
+        }
     }
 
     /** Applies frozen mode reliability after baseline mixture construction. */
     static double[] effectiveComponentPriors(ProbabilisticProfile profile,
             List<ObservationComponent> components) {
-        double[] result = components.stream().mapToDouble(ObservationComponent::priorWeight).toArray();
+        return effectiveComponentPriors(profile, components, null);
+    }
+
+    private static double[] effectiveComponentPriors(ProbabilisticProfile profile,
+            List<ObservationComponent> components, AttemptMemoryLedger.Owner owner) {
+        double[] result = owner == null ? new double[components.size()]
+                : ProbabilisticInference.allocated(owner,
+                    AttemptMemoryLedger.arrayBytes(components.size(), Double.BYTES),
+                    "evaluated profiles", () -> new double[components.size()]);
+        for (int index = 0; index < components.size(); index++) {
+            result[index] = components.get(index).priorWeight();
+        }
         int uniform = -1;
         for (int index = 0; index < components.size(); index++) {
             if (components.get(index).kind() == ObservationComponent.Kind.MISSING) uniform = index;
@@ -106,8 +159,8 @@ public final class ProbabilisticObservationModel {
     }
 
     private static Map<String, ImageOrientationSupport> orientationByBranch(
-        ProbabilisticProfile profile) {
-        Map<String, ImageOrientationSupport> result = new LinkedHashMap<>();
+        ProbabilisticProfile profile, AttemptMemoryLedger.Owner owner) {
+        Map<String, ImageOrientationSupport> result = map(profile.modes().size(), owner);
         ImageOrientationSupport profileSupport = profile.orientationSupport();
         profile.modes().forEach(mode -> {
             ImageOrientationSupport support = mode.orientationSupport();
@@ -121,11 +174,22 @@ public final class ProbabilisticObservationModel {
     }
 
     private static Map<String, Double> orientationReliabilityByBranch(
-        ProbabilisticProfile profile, boolean attenuateOrientation) {
-        Map<String, Double> result = new LinkedHashMap<>();
+        ProbabilisticProfile profile, boolean attenuateOrientation,
+        AttemptMemoryLedger.Owner owner) {
+        Map<String, Double> result = map(profile.modes().size(), owner);
         profile.modes().forEach(mode -> result.put(mode.id(),
                 attenuateOrientation ? mode.positionalReliability() : 1.0));
         return java.util.Collections.unmodifiableMap(result);
+    }
+
+    private static <T> Map<String, T> map(int maximumEntries,
+            AttemptMemoryLedger.Owner owner) {
+        if (owner == null) return new LinkedHashMap<>();
+        long bytes = AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.referenceArrayBytes(Math.max(1, maximumEntries * 2L))
+                + Math.multiplyExact(maximumEntries, AttemptMemoryLedger.objectBytes(40));
+        return ProbabilisticInference.allocated(owner, bytes, "evaluated profiles",
+                () -> new LinkedHashMap<>(Math.max(1, maximumEntries * 2)));
     }
 
     private static void fillMeasured(double[] output, ProbabilisticProfile profile,
@@ -162,10 +226,13 @@ public final class ProbabilisticObservationModel {
         }
 
         static ProfileStateEvidence capture(ProbabilisticProfile profile,
-            List<LateralStateCell> cells) {
+            List<LateralStateCell> cells, AttemptMemoryLedger.Owner owner) {
             double peak = profile.samples().stream().filter(ProbabilisticProfile.Sample::valid)
                 .mapToDouble(ProbabilisticProfile.Sample::intensity).max().orElse(profile.noiseFloor());
-            double[] intensities = new double[cells.size()];
+            double[] intensities = owner == null ? new double[cells.size()]
+                    : ProbabilisticInference.allocated(owner,
+                        AttemptMemoryLedger.arrayBytes(cells.size(), Double.BYTES),
+                        "evaluated profiles", () -> new double[cells.size()]);
             for (int state = 0; state < cells.size(); state++) {
                 intensities[state] = interpolate(profile.samples(), cells.get(state).offsetMeters());
             }

@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.OptionalDouble;
+import java.util.function.Supplier;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
@@ -12,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 
@@ -59,14 +61,24 @@ public final class ImageOrientationDescriptor {
     public Result describe(EvidenceSnapshot evidence, ScalarEvidenceField field,
         MetricPoint center, double sourcePitchMeters, EvidenceModelParameters parameters,
         CancellationProbe cancellation) {
+        return describe(evidence, field, center, sourcePitchMeters, parameters, cancellation, null);
+    }
+
+    /** Measures orientation while charging scratch and the immutable returned graph separately. */
+    public Result describe(EvidenceSnapshot evidence, ScalarEvidenceField field,
+        MetricPoint center, double sourcePitchMeters, EvidenceModelParameters parameters,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
         if (evidence == null || field == null || center == null || parameters == null
             || cancellation == null || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0) {
             throw new IllegalArgumentException("Image orientation inputs are incomplete");
         }
+        AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("orientation-scratch");
+        try {
         cancellation.checkpoint();
         OptionalDouble centerValue = sample(evidence, field, center);
         if (centerValue.isEmpty()) {
-            return unknown(ImageOrientationSupport.Status.INVALID_CENTER, parameters, 0.0, 0);
+            return unknown(ImageOrientationSupport.Status.INVALID_CENTER, parameters, 0.0, 0,
+                    owner, scratch);
         }
         EvidenceModelParameters.Localization localization = parameters.localization();
         double rayLength = Math.max(localization.minimumOrientationRayMeters(),
@@ -80,18 +92,26 @@ public final class ImageOrientationDescriptor {
             || requestedIntervals + 1.0
                 > localization.maximumOrientationSampleCount() / (double) headingRays) {
             return unknown(ImageOrientationSupport.Status.RESOURCE_LIMIT, parameters,
-                centerValue.getAsDouble(), 0);
+                centerValue.getAsDouble(), 0, owner, scratch);
         }
         int intervals = (int) requestedIntervals;
         int samplesPerRay = intervals + 1;
         long totalSamples = headingRays * samplesPerRay;
-        double[] distances = new double[samplesPerRay];
+        double[] distances = allocated(scratch,
+                AttemptMemoryLedger.arrayBytes(samplesPerRay, Double.BYTES),
+                () -> new double[samplesPerRay]);
         for (int index = 0; index < samplesPerRay; index++) {
             distances[index] = sourcePitchMeters
                 + (rayLength - sourcePitchMeters) * index / intervals;
         }
-        RaySamples[][] rays = new RaySamples[localization.orientationHeadingCount()][2];
-        double[] backgroundSamples = new double[(int) totalSamples + 1];
+        RaySamples[][] rays = allocated(scratch,
+                AttemptMemoryLedger.referenceArrayBytes(localization.orientationHeadingCount())
+                    + Math.multiplyExact(localization.orientationHeadingCount(),
+                        AttemptMemoryLedger.referenceArrayBytes(2)),
+                () -> new RaySamples[localization.orientationHeadingCount()][2]);
+        double[] backgroundSamples = allocated(scratch,
+                AttemptMemoryLedger.arrayBytes(totalSamples + 1L, Double.BYTES),
+                () -> new double[(int) totalSamples + 1]);
         int backgroundCount = 0;
         backgroundSamples[backgroundCount++] = centerValue.getAsDouble();
         for (int headingIndex = 0; headingIndex < localization.orientationHeadingCount(); headingIndex++) {
@@ -99,26 +119,40 @@ public final class ImageOrientationDescriptor {
             double heading = Math.PI * headingIndex / localization.orientationHeadingCount();
             for (int side = 0; side < 2; side++) {
                 double sign = side == 0 ? 1.0 : -1.0;
-                double[] values = new double[samplesPerRay];
+                double[] values = allocated(scratch,
+                        AttemptMemoryLedger.arrayBytes(samplesPerRay, Double.BYTES),
+                        () -> new double[samplesPerRay]);
                 Arrays.fill(values, Double.NaN);
                 for (int sampleIndex = 0; sampleIndex < samplesPerRay; sampleIndex++) {
                     cancellation.checkpoint();
                     double distance = sign * distances[sampleIndex];
-                    MetricPoint metricSample = new MetricPoint(
-                        center.xMeters() + StrictMath.cos(heading) * distance,
-                        center.yMeters() + StrictMath.sin(heading) * distance);
-                    OptionalDouble value = sample(evidence, field, metricSample);
+                    AttemptMemoryLedger.Owner sampleOwner = scratch == null ? null
+                            : scratch.child("ray-point");
+                    MetricPoint metricSample = allocated(sampleOwner,
+                            AttemptMemoryLedger.objectBytes(16), () -> new MetricPoint(
+                                center.xMeters() + StrictMath.cos(heading) * distance,
+                                center.yMeters() + StrictMath.sin(heading) * distance));
+                    OptionalDouble value;
+                    try {
+                        value = sample(evidence, field, metricSample);
+                    } finally {
+                        if (sampleOwner != null) sampleOwner.close();
+                    }
                     if (value.isPresent()) {
                         values[sampleIndex] = value.getAsDouble();
                         backgroundSamples[backgroundCount++] = value.getAsDouble();
                     }
                 }
-                rays[headingIndex][side] = new RaySamples(values, quadratureWeights(distances));
+                double[] weights = quadratureWeights(distances, scratch);
+                rays[headingIndex][side] = allocated(scratch,
+                        AttemptMemoryLedger.objectBytes(16), () -> new RaySamples(values, weights));
             }
         }
         double background = quantile(backgroundSamples, backgroundCount,
-            localization.orientationBackgroundQuantile());
-        List<AngularResponse> responses = new ArrayList<>(localization.orientationHeadingCount());
+            localization.orientationBackgroundQuantile(), scratch);
+        List<AngularResponse> responses = allocated(scratch,
+                listBytes(localization.orientationHeadingCount()),
+                () -> new ArrayList<>(localization.orientationHeadingCount()));
         for (int headingIndex = 0; headingIndex < localization.orientationHeadingCount(); headingIndex++) {
             RaySummary forward = summarize(rays[headingIndex][0], background);
             RaySummary backward = summarize(rays[headingIndex][1], background);
@@ -131,31 +165,41 @@ public final class ImageOrientationDescriptor {
                 : backwardComplete ? Visibility.BACKWARD_ONLY : Visibility.INSUFFICIENT;
             double response = visibility == Visibility.TWO_SIDED
                 ? Math.min(forward.meanExcess(), backward.meanExcess()) : 0.0;
-            responses.add(new AngularResponse(Math.PI * headingIndex
-                / localization.orientationHeadingCount(), response, forward.meanExcess(),
-                backward.meanExcess(), forward.validFraction(), backward.validFraction(), visibility));
+            double responseHeading = Math.PI * headingIndex / localization.orientationHeadingCount();
+            responses.add(allocated(owner, AttemptMemoryLedger.objectBytes(56),
+                    () -> new AngularResponse(responseHeading, response, forward.meanExcess(),
+                        backward.meanExcess(), forward.validFraction(), backward.validFraction(), visibility)));
         }
-        ImageOrientationSupport support = extractModes(responses, localization);
-        return new Result(support, responses, background, (int) totalSamples);
+        List<AngularResponse> retainedResponses = allocated(owner, listBytes(responses.size()),
+                () -> List.copyOf(responses));
+        ImageOrientationSupport support = extractModes(retainedResponses, localization, owner, scratch);
+        return allocated(owner, AttemptMemoryLedger.objectBytes(32),
+                () -> new Result(support, retainedResponses, background, (int) totalSamples));
+        } finally {
+            if (scratch != null) scratch.close();
+        }
     }
 
     private static ImageOrientationSupport extractModes(List<AngularResponse> responses,
-        EvidenceModelParameters.Localization parameters) {
+        EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+        AttemptMemoryLedger.Owner scratch) {
         double minimum = responses.stream().filter(response -> response.visibility() == Visibility.TWO_SIDED)
             .mapToDouble(AngularResponse::response).min().orElse(Double.NaN);
         double maximum = responses.stream().filter(response -> response.visibility() == Visibility.TWO_SIDED)
             .mapToDouble(AngularResponse::response).max().orElse(Double.NaN);
         if (!Double.isFinite(minimum)) {
-            return ImageOrientationSupport.unknown(
-                ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
+            return unknownSupport(ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT,
+                    owner);
         }
         double range = maximum - minimum;
         if (!(range > 1e-12) || !(maximum > 1e-12)) {
-            return ImageOrientationSupport.unknown(ImageOrientationSupport.Status.UNKNOWN_FLAT);
+            return unknownSupport(ImageOrientationSupport.Status.UNKNOWN_FLAT, owner);
         }
         int count = responses.size();
-        boolean[] visited = new boolean[count];
-        List<ImageOrientationSupport.AngularMode> modes = new ArrayList<>();
+        boolean[] visited = allocated(scratch, AttemptMemoryLedger.arrayBytes(count, 1),
+                () -> new boolean[count]);
+        List<ImageOrientationSupport.AngularMode> modes = allocated(scratch, listBytes(count),
+                () -> new ArrayList<>(count));
         for (int index = 0; index < count; index++) {
             if (visited[index] || responses.get(index).visibility() != Visibility.TWO_SIDED) {
                 continue;
@@ -202,13 +246,15 @@ public final class ImageOrientationDescriptor {
             double step = Math.PI / count;
             double peak = plateauSize == 1 ? interpolatePeak(responses, index, step)
                 : ImageOrientationSupport.normalize((start + 0.5 * (plateauSize - 1)) * step);
-            modes.add(new ImageOrientationSupport.AngularMode(
-                plateauSize == 1 ? peak : start * step,
-                plateauSize == 1 ? peak : end * step, peak, value));
+            double modeStart = plateauSize == 1 ? peak : start * step;
+            double modeEnd = plateauSize == 1 ? peak : end * step;
+            modes.add(allocated(owner, AttemptMemoryLedger.objectBytes(32),
+                    () -> new ImageOrientationSupport.AngularMode(
+                        modeStart, modeEnd, peak, value)));
         }
         if (modes.isEmpty()) {
-            return ImageOrientationSupport.unknown(
-                ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
+            return unknownSupport(ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT,
+                    owner);
         }
         modes.sort(Comparator.comparingDouble(ImageOrientationSupport.AngularMode::peakBearingRadians));
         double minimumRayFraction = responses.stream()
@@ -217,8 +263,11 @@ public final class ImageOrientationDescriptor {
                 response.forwardValidFraction(), response.backwardValidFraction())).min().orElse(0.0);
         double certainty = Math.max(0.0, Math.min(1.0,
             range / Math.max(maximum, 1e-12))) * minimumRayFraction;
-        return new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
-            modes, certainty);
+        List<ImageOrientationSupport.AngularMode> retainedModes = allocated(owner,
+                listBytes(modes.size()), () -> List.copyOf(modes));
+        return allocated(owner, AttemptMemoryLedger.objectBytes(24),
+                () -> new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+                    retainedModes, certainty));
     }
 
     private static boolean equalResponse(List<AngularResponse> responses, int index, double value) {
@@ -248,8 +297,11 @@ public final class ImageOrientationDescriptor {
         return field.sampleBilinear(raster.x(), raster.y());
     }
 
-    private static double[] quadratureWeights(double[] distances) {
-        double[] weights = new double[distances.length];
+    private static double[] quadratureWeights(double[] distances,
+            AttemptMemoryLedger.Owner owner) {
+        double[] weights = allocated(owner,
+                AttemptMemoryLedger.arrayBytes(distances.length, Double.BYTES),
+                () -> new double[distances.length]);
         for (int index = 0; index < distances.length - 1; index++) {
             double halfInterval = 0.5 * (distances[index + 1] - distances[index]);
             weights[index] += halfInterval;
@@ -278,22 +330,75 @@ public final class ImageOrientationDescriptor {
             validFraction);
     }
 
-    private static double quantile(double[] values, int length, double quantile) {
-        double[] sorted = Arrays.copyOf(values, length);
-        Arrays.sort(sorted);
-        int index = (int) Math.floor(quantile * (sorted.length - 1));
-        return sorted[index];
+    private static double quantile(double[] values, int length, double quantile,
+            AttemptMemoryLedger.Owner owner) {
+        AttemptMemoryLedger.Owner quantileOwner = owner == null ? null : owner.child("quantile");
+        try {
+            double[] sorted = allocated(quantileOwner,
+                    AttemptMemoryLedger.arrayBytes(length, Double.BYTES),
+                    () -> Arrays.copyOf(values, length));
+            Arrays.sort(sorted);
+            int index = (int) Math.floor(quantile * (sorted.length - 1));
+            return sorted[index];
+        } finally {
+            if (quantileOwner != null) quantileOwner.close();
+        }
     }
 
     private static Result unknown(ImageOrientationSupport.Status status,
-        EvidenceModelParameters parameters, double background, int sampledPoints) {
-        List<AngularResponse> responses = new ArrayList<>(parameters.localization().orientationHeadingCount());
+        EvidenceModelParameters parameters, double background, int sampledPoints,
+        AttemptMemoryLedger.Owner owner, AttemptMemoryLedger.Owner scratch) {
+        int count = parameters.localization().orientationHeadingCount();
+        List<AngularResponse> responses = allocated(scratch, listBytes(count),
+                () -> new ArrayList<>(count));
         for (int index = 0; index < parameters.localization().orientationHeadingCount(); index++) {
-            responses.add(new AngularResponse(Math.PI * index
-                / parameters.localization().orientationHeadingCount(), 0.0, 0.0, 0.0,
-                0.0, 0.0, Visibility.INSUFFICIENT));
+            double heading = Math.PI * index / count;
+            responses.add(allocated(owner, AttemptMemoryLedger.objectBytes(56),
+                    () -> new AngularResponse(heading, 0.0, 0.0, 0.0,
+                        0.0, 0.0, Visibility.INSUFFICIENT)));
         }
-        return new Result(ImageOrientationSupport.unknown(status), responses, background, sampledPoints);
+        List<AngularResponse> retained = allocated(owner, listBytes(responses.size()),
+                () -> List.copyOf(responses));
+        ImageOrientationSupport support = unknownSupport(status, owner);
+        return allocated(owner, AttemptMemoryLedger.objectBytes(32),
+                () -> new Result(support, retained, background, sampledPoints));
+    }
+
+    private static ImageOrientationSupport unknownSupport(ImageOrientationSupport.Status status,
+            AttemptMemoryLedger.Owner owner) {
+        return allocated(owner, AttemptMemoryLedger.objectBytes(24),
+                () -> ImageOrientationSupport.unknown(status));
+    }
+
+    private static long listBytes(long size) {
+        return AttemptMemoryLedger.objectBytes(16)
+                + AttemptMemoryLedger.referenceArrayBytes(size);
+    }
+
+    private static <T> T allocated(AttemptMemoryLedger.Owner owner, long bytes,
+            Supplier<T> allocation) {
+        if (owner == null) return allocation.get();
+        AttemptMemoryLedger.Reservation reservation;
+        try {
+            reservation = owner.reserve(bytes);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            throw new ResourceLimitException(exception);
+        }
+        try {
+            T result = allocation.get();
+            reservation.adopt(result);
+            return result;
+        } catch (RuntimeException | Error exception) {
+            reservation.close();
+            throw exception;
+        }
+    }
+
+    /** Typed descriptor allocation refusal translated at the owning engine boundary. */
+    public static final class ResourceLimitException extends RuntimeException {
+        private ResourceLimitException(AttemptMemoryLedger.ResourceLimitException cause) {
+            super("orientation descriptor: " + cause.getMessage(), cause);
+        }
     }
 
     private static boolean unit(double value) {

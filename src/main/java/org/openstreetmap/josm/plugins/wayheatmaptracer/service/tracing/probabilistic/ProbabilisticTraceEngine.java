@@ -19,8 +19,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
@@ -64,16 +69,20 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     @Override
     public TraceEngineRun traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation) {
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
         try {
-            return traceInternal(request, evidence, network, cancellation, null);
-        } catch (java.util.concurrent.CancellationException exception) {
-            return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
-        } catch (LongitudinalModeReliability.ResourceLimitException exception) {
-            return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
-                exception.getMessage()), 0, 0);
+            return traceWithUsage(request, evidence, network, cancellation, owner).value();
+        } finally {
+            owner.close();
         }
+    }
+
+    @Override
+    public Accounted<TraceEngineRun> traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner attemptOwner) {
+        return traceAccounted(request, evidence, network, null, cancellation, attemptOwner);
     }
 
     @Override
@@ -83,45 +92,160 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         if (guide == null) {
             throw new IllegalArgumentException("Structural guide is required");
         }
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
         try {
-            return traceInternal(request, evidence, network, cancellation, guide);
+            return traceGuidedWithUsage(request, evidence, network, guide, cancellation, owner).value();
+        } finally {
+            owner.close();
+        }
+    }
+
+    @Override
+    public Accounted<TraceEngineRun> traceGuidedWithUsage(TraceRequest request,
+            EvidenceSnapshot evidence, NetworkSnapshot network, ProbabilisticStructuralGuide guide,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
+        if (guide == null) {
+            throw new IllegalArgumentException("Structural guide is required");
+        }
+        return traceAccounted(request, evidence, network, guide, cancellation, attemptOwner);
+    }
+
+    private Accounted<TraceEngineRun> traceAccounted(TraceRequest request,
+            EvidenceSnapshot evidence, NetworkSnapshot network, ProbabilisticStructuralGuide guide,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
+        if (attemptOwner == null) {
+            throw new IllegalArgumentException("Attempt memory owner is required");
+        }
+        AttemptMemoryLedger.Owner engineOwner = attemptOwner.child(
+                guide == null ? "probabilistic-engine" : "guided-probabilistic-engine");
+        AttemptMemoryLedger.Owner candidateOwner = engineOwner.child("candidate-result");
+        AttemptMemoryLedger.Owner workingOwner = engineOwner.child("probabilistic-working-set");
+        EngineWork work = new EngineWork();
+        try {
+            TraceEngineRun result = traceInternal(request, evidence, network, cancellation,
+                    guide, candidateOwner, workingOwner, work);
+            closeIfOpen(workingOwner, null);
+            candidateOwner.transferTo(engineOwner);
+            candidateOwner.close();
+            return new Accounted<>(result, engineOwner);
         } catch (java.util.concurrent.CancellationException exception) {
-            return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.CANCELLED, false, 0, 0, "cancelled"), 0, 0);
+            closeIfOpen(workingOwner, exception);
+            closeIfOpen(candidateOwner, exception);
+            try {
+                return nativeFailure(request, TraceHypothesisSet.Status.CANCELLED,
+                        "cancelled", work, engineOwner);
+            } catch (ProbabilisticInference.MemoryLimit diagnosticFailure) {
+                closeIfOpen(engineOwner, exception);
+                exception.addSuppressed(diagnosticFailure);
+                throw exception;
+            }
         } catch (LongitudinalModeReliability.ResourceLimitException exception) {
-            return run(new TraceHypothesisSet(request.engine(), List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
-                exception.getMessage()), 0, 0);
+            return resourceFailure(request, exception.getMessage(), "sampled profiles",
+                    null, work, engineOwner, candidateOwner, workingOwner);
+        } catch (LocalScalarProfileExtractor.ResourceLimitException exception) {
+            return resourceFailure(request, exception.getMessage(), "sampled profiles",
+                    ledgerCause(exception), work, engineOwner, candidateOwner, workingOwner);
+        } catch (ImageOrientationDescriptor.ResourceLimitException exception) {
+            return resourceFailure(request, exception.getMessage(), "orientation descriptor",
+                    ledgerCause(exception), work, engineOwner, candidateOwner, workingOwner);
+        } catch (ProbabilisticInference.MemoryLimit exception) {
+            return resourceFailure(request, exception.getMessage(), exception.stage(),
+                    exception.limitCause(), work, engineOwner, candidateOwner, workingOwner);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            return resourceFailure(request, exception.getMessage(), "attempt memory",
+                    exception, work, engineOwner, candidateOwner, workingOwner);
+        } catch (TraceMemoryLimitException exception) {
+            Throwable cause = exception.getCause();
+            if (!(cause instanceof AttemptMemoryLedger.ResourceLimitException limit)) throw exception;
+            work.pairVisits = exception.pairVisits();
+            work.transitions = exception.transitions();
+            return resourceFailure(request, exception.getMessage(), exception.stage(), limit,
+                    work, engineOwner, candidateOwner, workingOwner);
+        } catch (RuntimeException | Error exception) {
+            closeIfOpen(workingOwner, exception);
+            closeIfOpen(candidateOwner, exception);
+            closeIfOpen(engineOwner, exception);
+            throw exception;
+        }
+    }
+
+    private Accounted<TraceEngineRun> resourceFailure(TraceRequest request, String explanation,
+            String stage, AttemptMemoryLedger.ResourceLimitException originalLimit,
+            EngineWork work, AttemptMemoryLedger.Owner engineOwner,
+            AttemptMemoryLedger.Owner candidateOwner, AttemptMemoryLedger.Owner workingOwner) {
+        closeIfOpen(workingOwner, null);
+        closeIfOpen(candidateOwner, null);
+        try {
+            return nativeFailure(request, TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                    explanation, work, engineOwner);
+        } catch (ProbabilisticInference.MemoryLimit diagnosticFailure) {
+            AttemptMemoryLedger.ResourceLimitException refusal = diagnosticFailure.limitCause();
+            closeIfOpen(engineOwner, diagnosticFailure);
+            Throwable cause = originalLimit == null ? refusal : originalLimit;
+            if (originalLimit != null) cause.addSuppressed(refusal);
+            throw new TraceMemoryLimitException(stage, work.pairVisits, work.transitions,
+                    engineOwner.currentBytes(), engineOwner.peakBytes(), refusal.limitBytes(),
+                    cause);
+        }
+    }
+
+    private static AttemptMemoryLedger.ResourceLimitException ledgerCause(RuntimeException exception) {
+        Throwable cause = exception.getCause();
+        if (!(cause instanceof AttemptMemoryLedger.ResourceLimitException limit)) {
+            throw exception;
+        }
+        return limit;
+    }
+
+    private static void closeIfOpen(AttemptMemoryLedger.Owner owner, Throwable primary) {
+        if (owner.isClosed()) return;
+        try {
+            owner.close();
+        } catch (RuntimeException | Error closeFailure) {
+            if (primary != null) primary.addSuppressed(closeFailure);
+            else throw closeFailure;
         }
     }
 
     private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation,
-        ProbabilisticStructuralGuide guide) {
+        ProbabilisticStructuralGuide guide, AttemptMemoryLedger.Owner candidateOwner,
+        AttemptMemoryLedger.Owner workingOwner, EngineWork work) {
         long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
         ScalarEvidenceField field = evidence.fields().get(fieldName);
         if (field == null) {
-            return run(noRoute(request, "scalar evidence field is unavailable"), 0, 0);
+            workingOwner.close();
+            TraceHypothesisSet unavailable = emptySet(request,
+                    TraceHypothesisSet.Status.NO_ROUTE,
+                    "scalar evidence field is unavailable", 0, 0, candidateOwner);
+            return accountedRun(unavailable, 0, 0, candidateOwner);
         }
-        List<MetricPoint> source = selectedPolyline(request, evidence, network);
+        AttemptMemoryLedger.Owner sourceOwner = workingOwner.child("selected-source");
+        List<MetricPoint> source = selectedPolyline(request, evidence, network, sourceOwner);
         boolean fixedEndpoints = request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
         List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
             evidence, field, parameters, cancellation,
-            reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
+            reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2, workingOwner);
+        sourceOwner.close();
         long profileSamplingNanos = System.nanoTime() - profileSamplingStarted;
         logReliability(profiles);
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(ProbabilisticProfile::orientationResourceLimited)) {
-            return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
-                TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
-                "orientation descriptor resource limit"), 0, 0);
+            TraceHypothesisSet limited = emptySet(request,
+                    TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                    "orientation descriptor resource limit", 0, 0, candidateOwner);
+            workingOwner.close();
+            return accountedRun(limited, 0, 0, candidateOwner);
         }
         long stateObservationStarted = System.nanoTime();
-        List<InferenceProfile> evaluated = new ArrayList<>(profiles.size());
+        List<InferenceProfile> evaluated = ProbabilisticInference.allocated(workingOwner,
+                ProbabilisticInference.listBytes(profiles.size()), "evaluated profiles",
+                () -> new ArrayList<>(profiles.size()));
         long stateCount = 0;
         int minimumStates = Integer.MAX_VALUE;
         int maximumStates = 0;
@@ -129,33 +253,54 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         ProbabilisticObservationModel observationModel = new ProbabilisticObservationModel();
         for (ProbabilisticProfile profile : profiles) {
             cancellation.checkpoint();
+            AttemptMemoryLedger.Owner evaluatedOwner = workingOwner.child(
+                    "evaluated-profile-" + profile.profileIndex());
+            AttemptMemoryLedger.Owner latticeOwner = evaluatedOwner.child("state-lattice");
             StateSpaceBuildResult stateResult = stateBuilder.build(profile,
-                request.budgets().maximumStatesPerProfile());
+                request.budgets().maximumStatesPerProfile(), latticeOwner);
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
-                return run(new TraceHypothesisSet(TrackerMode.PROBABILISTIC, List.of(),
-                    TraceHypothesisSet.Status.RESOURCE_LIMIT, false, stateCount, 0,
-                    "STATE_LIMIT at profile " + profile.profileIndex() + ": " + stateResult.explanation()), 0, 0);
+                TraceHypothesisSet limited = emptySet(request,
+                        TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                        "STATE_LIMIT at profile " + profile.profileIndex() + ": "
+                            + stateResult.explanation(), stateCount, 0, candidateOwner);
+                workingOwner.close();
+                return accountedRun(limited, 0, 0, candidateOwner);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
             stateCount += lattice.cells().size();
+            work.stateCount = stateCount;
             minimumStates = Math.min(minimumStates, lattice.cells().size());
             maximumStates = Math.max(maximumStates, lattice.cells().size());
+            AttemptMemoryLedger.Owner baselineOwner = evaluatedOwner.child("baseline-observation");
             InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters,
-                    reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2);
-            evaluated.add(guide == null ? evaluatedProfile
-                : guide.apply(evaluatedProfile, profile.sourcePitchMeters()));
+                    reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2, baselineOwner);
+            if (guide == null) {
+                baselineOwner.transferTo(evaluatedOwner);
+                evaluated.add(evaluatedProfile);
+            } else {
+                AttemptMemoryLedger.Owner guidedOwner = evaluatedOwner.child("guided-observation");
+                InferenceProfile guided = guide.apply(evaluatedProfile,
+                        profile.sourcePitchMeters(), guidedOwner);
+                baselineOwner.close();
+                guidedOwner.transferTo(evaluatedOwner);
+                evaluated.add(guided);
+            }
         }
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
         long inferenceStarted = System.nanoTime();
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
-            parameters, request.budgets(), evidence.decisionRegion(), cancellation);
+            parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner);
+        work.pairVisits = inference.evaluatedPairVisits();
+        work.transitions = inference.evaluatedTransitions();
+        work.rawAlternatives = inference.rawPaths().size();
         long inferenceNanos = System.nanoTime() - inferenceStarted;
         boolean usableRoutes = inference.status() == ProbabilisticInferenceResult.Status.COMPLETE
                 || inference.status() == ProbabilisticInferenceResult.Status.AMBIGUOUS
                 || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
         long materializationStarted = System.nanoTime();
         List<TraceHypothesis> hypotheses = usableRoutes
-                ? toHypotheses(inference, profiles, evaluated, evidence, guide) : List.of();
+                ? accountedHypotheses(inference, profiles, evaluated, evidence, guide,
+                    candidateOwner, workingOwner) : List.of();
         long materializationNanos = System.nanoTime() - materializationStarted;
         TraceHypothesisSet.Status status = switch (inference.status()) {
             case COMPLETE -> TraceHypothesisSet.Status.COMPLETE;
@@ -163,10 +308,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             case ALL_MISSING, NO_ROUTE, NUMERIC_FAILURE -> TraceHypothesisSet.Status.NO_ROUTE;
             case RESOURCE_LIMIT -> TraceHypothesisSet.Status.RESOURCE_LIMIT;
         };
-        TraceHypothesisSet result = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
-            hypotheses, status, inference.alternativeSearchTruncated(), stateCount,
-            inference.evaluatedTransitions(), guide == null ? inference.explanation()
-                : inference.explanation() + "; capped same-image structural guide applied");
+        TraceHypothesisSet result = accountedSet(candidateOwner, workingOwner, hypotheses,
+                status, inference.alternativeSearchTruncated(), stateCount,
+                inference.evaluatedTransitions(), guide == null ? inference.explanation()
+                    : inference.explanation() + "; capped same-image structural guide applied");
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.profileMs", millis(profileSamplingNanos));
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -187,7 +332,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             "trace.maxStates", maximumStates);
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.hypotheses", hypotheses.size());
-        return run(result, inference.evaluatedPairVisits(), inference.rawPaths().size());
+        TraceEngineRun run = accountedRun(result, inference.evaluatedPairVisits(),
+                inference.rawPaths().size(), candidateOwner);
+        workingOwner.close();
+        return run;
     }
 
     private void logReliability(List<ProbabilisticProfile> profiles) {
@@ -234,6 +382,93 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             "reliability.positionMean", totalPosition / count);
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "reliability.positionMax", maximumPosition);
+    }
+
+    private List<TraceHypothesis> accountedHypotheses(ProbabilisticInferenceResult inference,
+            List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
+            EvidenceSnapshot evidence, ProbabilisticStructuralGuide guide,
+            AttemptMemoryLedger.Owner resultOwner, AttemptMemoryLedger.Owner workingOwner) {
+        int hypothesisCount = inference.distinctPaths().size();
+        int diagnosticCount = guide == null ? 15 : 20;
+        long outputBytes = ProbabilisticInference.listBytes(hypothesisCount);
+        long temporaryBytes = ProbabilisticInference.listBytes(hypothesisCount) * 3L
+                + mapBytes(hypothesisCount);
+        for (ProbabilisticPath path : inference.distinctPaths()) {
+            outputBytes = Math.addExact(outputBytes, AttemptMemoryLedger.objectBytes(88));
+            outputBytes = Math.addExact(outputBytes,
+                    ProbabilisticInference.listBytes(path.points().size()));
+            outputBytes = Math.addExact(outputBytes, mapBytes(diagnosticCount));
+            temporaryBytes = Math.addExact(temporaryBytes,
+                    ProbabilisticInference.listBytes(path.points().size()));
+            temporaryBytes = Math.addExact(temporaryBytes, mapBytes(diagnosticCount));
+        }
+        AttemptMemoryLedger.Owner temporaryOwner = workingOwner.child("hypothesis-builders");
+        AttemptMemoryLedger.Reservation output = reserve(resultOwner, outputBytes,
+                "engine result materialization");
+        AttemptMemoryLedger.Reservation temporary = reserve(temporaryOwner, temporaryBytes,
+                "engine result materialization");
+        try {
+            for (ProbabilisticPath path : inference.distinctPaths()) {
+                resultOwner.retain(path.points());
+                for (MetricPoint point : path.points()) resultOwner.retain(point);
+            }
+            List<TraceHypothesis> hypotheses = toHypotheses(inference, sampledProfiles,
+                    profiles, evidence, guide);
+            output.adopt(hypotheses);
+            return hypotheses;
+        } catch (RuntimeException | Error exception) {
+            output.close();
+            throw exception;
+        } finally {
+            temporary.close();
+            temporaryOwner.close();
+        }
+    }
+
+    private static TraceHypothesisSet accountedSet(AttemptMemoryLedger.Owner resultOwner,
+            AttemptMemoryLedger.Owner workingOwner, List<TraceHypothesis> hypotheses,
+            TraceHypothesisSet.Status status, boolean alternativesTruncated, long stateCount,
+            long transitions, String explanation) {
+        AttemptMemoryLedger.Reservation output = reserve(resultOwner,
+                AttemptMemoryLedger.objectBytes(64), "engine result materialization");
+        AttemptMemoryLedger.Owner validationOwner = workingOwner.child("result-validation");
+        AttemptMemoryLedger.Reservation validation = reserve(validationOwner,
+                mapBytes(hypotheses.size()) * 2L, "engine result materialization");
+        try {
+            TraceHypothesisSet result = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
+                    hypotheses, status, alternativesTruncated, stateCount, transitions,
+                    explanation);
+            output.adopt(result);
+            return result;
+        } catch (RuntimeException | Error exception) {
+            output.close();
+            throw exception;
+        } finally {
+            validation.close();
+            validationOwner.close();
+        }
+    }
+
+    private static AttemptMemoryLedger.Reservation reserve(AttemptMemoryLedger.Owner owner,
+            long bytes, String stage) {
+        try {
+            return owner.reserve(bytes);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            throw new ProbabilisticInference.MemoryLimit(stage, exception);
+        }
+    }
+
+    private static long mapBytes(long entries) {
+        return AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.referenceArrayBytes(hashTableCapacity(entries))
+                + Math.multiplyExact(entries, AttemptMemoryLedger.objectBytes(48));
+    }
+
+    private static long hashTableCapacity(long entries) {
+        long required = Math.max(16L, Math.multiplyExact(entries, 2L));
+        long capacity = 16L;
+        while (capacity < required) capacity = Math.multiplyExact(capacity, 2L);
+        return capacity;
     }
 
     private List<TraceHypothesis> toHypotheses(ProbabilisticInferenceResult inference,
@@ -329,23 +564,37 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     }
 
     private static List<MetricPoint> selectedPolyline(TraceRequest request,
-        EvidenceSnapshot evidence, NetworkSnapshot network) {
+        EvidenceSnapshot evidence, NetworkSnapshot network, AttemptMemoryLedger.Owner owner) {
         DetachedPrimitive primitive = network.primitives().get(request.selectedWayKey());
         if (!(primitive instanceof DetachedWay way)
             || request.selectedRange().lastIndex() >= way.nodeKeys().size()
             || request.selectedRange().size() < 2) {
             throw new IllegalArgumentException("Selected occurrence range is absent from the network snapshot");
         }
-        List<MetricPoint> result = new ArrayList<>(request.selectedRange().size());
+        AttemptMemoryLedger.Owner builder = owner.child("source-list-builder");
+        int pointCount = request.selectedRange().size();
+        List<MetricPoint> result = ProbabilisticInference.allocated(builder,
+                ProbabilisticInference.listBytes(pointCount),
+                "sampled profiles", () -> new ArrayList<>(pointCount));
         for (int index = request.selectedRange().firstIndex(); index <= request.selectedRange().lastIndex(); index++) {
             PrimitiveKey nodeKey = way.nodeKeys().get(index);
             DetachedPrimitive nodePrimitive = network.primitives().get(nodeKey);
             if (!(nodePrimitive instanceof DetachedNode node)) {
                 throw new IllegalArgumentException("Selected way node is absent from the network snapshot");
             }
-            result.add(evidence.coordinateFrame().toMetric(node.coordinate()));
+            result.add(ProbabilisticInference.allocated(builder,
+                    AttemptMemoryLedger.objectBytes(16), "sampled profiles",
+                    () -> evidence.coordinateFrame().toMetric(node.coordinate())));
         }
-        return List.copyOf(result);
+        try {
+            List<MetricPoint> retained = ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(result.size()), "sampled profiles",
+                    () -> List.copyOf(result));
+            for (MetricPoint point : result) owner.retain(point);
+            return retained;
+        } finally {
+            builder.close();
+        }
     }
 
     private static void validateSnapshots(TraceRequest request, EvidenceSnapshot evidence,
@@ -372,8 +621,62 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             result.evaluatedTransitions(), rawAlternatives, result.hypotheses().size()));
     }
 
-    private static TraceHypothesisSet noRoute(TraceRequest request, String explanation) {
-        return new TraceHypothesisSet(request.engine(), List.of(), TraceHypothesisSet.Status.NO_ROUTE,
-            false, 0, 0, explanation);
+    private static TraceEngineRun accountedRun(TraceHypothesisSet result,
+            long pairVisits, int rawAlternatives, AttemptMemoryLedger.Owner owner) {
+        return ProbabilisticInference.allocated(owner,
+                AttemptMemoryLedger.objectBytes(24) + AttemptMemoryLedger.objectBytes(32),
+                "engine result", () -> {
+                    TraceWorkUsage usage = new TraceWorkUsage(pairVisits,
+                            result.evaluatedTransitions(), rawAlternatives,
+                            result.hypotheses().size());
+                    return new TraceEngineRun(result, usage, owner.peakBytes());
+                });
+    }
+
+    private static Accounted<TraceEngineRun> nativeFailure(TraceRequest request,
+            TraceHypothesisSet.Status status, String explanation, EngineWork work,
+            AttemptMemoryLedger.Owner engineOwner) {
+        AttemptMemoryLedger.Owner diagnostic = engineOwner.child("native-failure-result");
+        try {
+            TraceEngineRun run = failureRun(request, status, explanation, work, diagnostic);
+            diagnostic.transferTo(engineOwner);
+            diagnostic.close();
+            return new Accounted<>(run, engineOwner);
+        } catch (RuntimeException | Error exception) {
+            closeIfOpen(diagnostic, exception);
+            throw exception;
+        }
+    }
+
+    private static TraceEngineRun failureRun(TraceRequest request,
+            TraceHypothesisSet.Status status, String explanation, EngineWork work,
+            AttemptMemoryLedger.Owner owner) {
+        TraceHypothesisSet result = ProbabilisticInference.allocated(owner,
+                AttemptMemoryLedger.objectBytes(64),
+                "engine failure result", () -> new TraceHypothesisSet(request.engine(), List.of(),
+                    status, false, work.stateCount, work.transitions, explanation));
+        return ProbabilisticInference.allocated(owner,
+                AttemptMemoryLedger.objectBytes(24) + AttemptMemoryLedger.objectBytes(32),
+                "engine failure result", () -> {
+                    TraceWorkUsage usage = new TraceWorkUsage(work.pairVisits,
+                            work.transitions, 0, 0);
+                    return new TraceEngineRun(result, usage, owner.peakBytes());
+                });
+    }
+
+    private static final class EngineWork {
+        private long stateCount;
+        private long pairVisits;
+        private long transitions;
+        private int rawAlternatives;
+    }
+
+    private static TraceHypothesisSet emptySet(TraceRequest request,
+            TraceHypothesisSet.Status status, String explanation, long states, long transitions,
+            AttemptMemoryLedger.Owner owner) {
+        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(64),
+                "engine result materialization",
+                () -> new TraceHypothesisSet(request.engine(), List.of(), status,
+                    false, states, transitions, explanation));
     }
 }

@@ -8,6 +8,7 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Evaluated immutable profile consumed by the exact pair-state inference graph. */
 public final class InferenceProfile {
@@ -232,9 +233,24 @@ public final class InferenceProfile {
             componentResponsibilities);
     }
 
+    /** Creates the guided copy after reserving its concrete retained arrays and containers. */
+    InferenceProfile withStructuralGuideCosts(double[] costs, AttemptMemoryLedger.Owner owner) {
+        return accounted(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+                orientationByBranch, orientationReliabilityByBranch, ownership, entirelyMissing,
+                costs, componentResponsibilities, owner);
+    }
+
     /** Returns a defensive copy of component responsibilities. */
     public double[][] componentResponsibilities() {
         return deepCopy(componentResponsibilities);
+    }
+
+    int componentCount() {
+        return componentResponsibilities.length == 0 ? 0 : componentResponsibilities[0].length;
+    }
+
+    double componentResponsibility(int state, int component) {
+        return componentResponsibilities[state][component];
     }
 
     /** Converts one lateral cell to a metric route point. */
@@ -250,6 +266,50 @@ public final class InferenceProfile {
             copy[index] = values[index].clone();
         }
         return copy;
+    }
+
+    static InferenceProfile accounted(double chainageMeters, MetricPoint anchor,
+            MetricPoint normalUnit, List<LateralStateCell> cells, double[] unaryCosts,
+            Map<String, ImageOrientationSupport> orientationByBranch,
+            Map<String, Double> orientationReliabilityByBranch,
+            ObservationOwnership ownership, boolean entirelyMissing,
+            double[] structuralGuideCosts, double[][] componentResponsibilities,
+            AttemptMemoryLedger.Owner owner) {
+        long bytes = retainedBytes(cells, unaryCosts, orientationByBranch,
+                orientationReliabilityByBranch, structuralGuideCosts, componentResponsibilities);
+        return ProbabilisticInference.allocated(owner, bytes, "evaluated profiles",
+                () -> new InferenceProfile(chainageMeters, anchor, normalUnit, cells, unaryCosts,
+                    orientationByBranch, orientationReliabilityByBranch, ownership,
+                    entirelyMissing, structuralGuideCosts, componentResponsibilities));
+    }
+
+    private static long retainedBytes(List<LateralStateCell> cells, double[] unaryCosts,
+            Map<String, ImageOrientationSupport> orientationByBranch,
+            Map<String, Double> orientationReliabilityByBranch,
+            double[] structuralGuideCosts, double[][] componentResponsibilities) {
+        long bytes = AttemptMemoryLedger.objectBytes(80);
+        bytes = Math.addExact(bytes, ProbabilisticInference.listBytes(cells.size()));
+        bytes = Math.addExact(bytes,
+                AttemptMemoryLedger.arrayBytes(unaryCosts.length, Double.BYTES));
+        bytes = Math.addExact(bytes,
+                AttemptMemoryLedger.arrayBytes(structuralGuideCosts.length, Double.BYTES));
+        bytes = Math.addExact(bytes, mapBytes(orientationByBranch.size()));
+        bytes = Math.addExact(bytes, mapBytes(orientationReliabilityByBranch.size()));
+        long responsibilityValues = 0L;
+        for (double[] row : componentResponsibilities) {
+            responsibilityValues = Math.addExact(responsibilityValues,
+                    AttemptMemoryLedger.arrayBytes(row.length, Double.BYTES));
+        }
+        bytes = Math.addExact(bytes,
+                AttemptMemoryLedger.referenceArrayBytes(componentResponsibilities.length));
+        return Math.addExact(bytes, responsibilityValues);
+    }
+
+    private static long mapBytes(int entries) {
+        return Math.addExact(AttemptMemoryLedger.objectBytes(48),
+                Math.multiplyExact(entries,
+                    AttemptMemoryLedger.objectBytes(40)
+                        + AttemptMemoryLedger.referenceArrayBytes(2)));
     }
 
     private static Map<String, ImageOrientationSupport> uniformOrientation(

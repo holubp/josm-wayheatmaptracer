@@ -37,6 +37,11 @@ public final class ProbabilisticPath {
         return stateIndices.clone();
     }
 
+    /** Package-private identity seam used only to attach the constructor-owned clone to its lease. */
+    int[] ownedStateIndicesIdentity() {
+        return stateIndices;
+    }
+
     /** Returns immutable physical route points. */
     public List<MetricPoint> points() {
         return points;

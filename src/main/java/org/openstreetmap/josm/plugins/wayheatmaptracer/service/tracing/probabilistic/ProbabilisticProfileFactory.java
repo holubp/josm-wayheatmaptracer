@@ -15,6 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOri
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.StrictScalarSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Samples full scalar cross-sections and extracts deterministic finite observation hypotheses. */
 public final class ProbabilisticProfileFactory {
@@ -30,7 +31,7 @@ public final class ProbabilisticProfileFactory {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)) {
             throw new IllegalArgumentException("Profile chainage inputs are incomplete");
         }
-        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters);
+        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters, null);
         return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage(
                 curve.chainageMeters(), configuredStepMeters);
     }
@@ -67,32 +68,52 @@ public final class ProbabilisticProfileFactory {
         EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability) {
         return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters, fixedEndpoints,
-                evidence, field, parameters, cancellation, directLongitudinalReliability, 0.0);
+                evidence, field, parameters, cancellation, directLongitudinalReliability, 0.0, null);
     }
 
     private List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
         EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability,
-        double sourceOriginGroundMeters) {
+        double sourceOriginGroundMeters, AttemptMemoryLedger.Owner owner) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
             || !positive(searchHalfWidthMeters) || evidence == null || field == null
             || parameters == null || cancellation == null
             || !Double.isFinite(sourceOriginGroundMeters) || sourceOriginGroundMeters < 0.0) {
             throw new IllegalArgumentException("Profile sampling inputs are incomplete");
         }
-        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters);
+        AttemptMemoryLedger.Owner samplingOwner = owner == null ? null
+                : owner.child("profile-sampling-temporaries");
+        AttemptMemoryLedger.Owner rawOwner = owner == null ? null : owner.child("sampled-profiles");
+        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters, samplingOwner);
         ImageOrientationDescriptor orientationDescriptor = new ImageOrientationDescriptor();
         LocalScalarProfileExtractor profileExtractor = new LocalScalarProfileExtractor();
-        List<ProbabilisticProfile> result = new ArrayList<>(curve.points().size());
+        AttemptMemoryLedger.Owner rawListOwner = rawOwner == null ? null
+                : rawOwner.child("profile-list-builder");
+        List<ProbabilisticProfile> result = rawListOwner == null
+                ? new ArrayList<>(curve.points().size())
+                : ProbabilisticInference.allocated(rawListOwner,
+                    ProbabilisticInference.listBytes(curve.points().size()), "sampled profiles",
+                    () -> new ArrayList<>(curve.points().size()));
         for (int index = 0; index < curve.points().size(); index++) {
             cancellation.checkpoint();
+            AttemptMemoryLedger.Owner profileTemporary = samplingOwner == null ? null
+                    : samplingOwner.child("profile-" + index);
             double sourcePitch = evidence.resolution().effectivePitchMetersAt(
                     sourceOriginGroundMeters + curve.chainageMeters().get(index));
             double samplePitch = 0.5 * sourcePitch;
             MetricPoint anchor = curve.points().get(index);
-            MetricPoint tangent = tangent(curve.points(), index);
-            MetricPoint normal = new MetricPoint(-tangent.yMeters(), tangent.xMeters());
+            int sampledIndex = index;
+            if (rawOwner != null) rawOwner.retain(anchor);
+            MetricPoint tangent = profileTemporary == null ? tangent(curve.points(), index)
+                    : ProbabilisticInference.allocated(profileTemporary,
+                        AttemptMemoryLedger.objectBytes(16), "sampled profiles",
+                        () -> tangent(curve.points(), sampledIndex));
+            MetricPoint normal = rawOwner == null
+                    ? new MetricPoint(-tangent.yMeters(), tangent.xMeters())
+                    : ProbabilisticInference.allocated(rawOwner,
+                        AttemptMemoryLedger.objectBytes(16), "sampled profiles",
+                        () -> new MetricPoint(-tangent.yMeters(), tangent.xMeters()));
             double minimum = authorizedBoundary(anchor, normal, -1.0, searchHalfWidthMeters,
                 samplePitch, evidence);
             double maximum = authorizedBoundary(anchor, normal, 1.0, searchHalfWidthMeters,
@@ -102,27 +123,67 @@ public final class ProbabilisticProfileFactory {
                 maximum = Math.min(samplePitch, searchHalfWidthMeters);
             }
             List<ProbabilisticProfile.Sample> samples = sampleProfile(anchor, normal, minimum,
-                maximum, samplePitch, evidence, field);
-            LocalScalarProfileExtractor.Result scalarFeatures = profileExtractor.extract(samples.stream()
-                    .map(sample -> new LocalScalarProfileExtractor.Sample(sample.offsetMeters(),
-                            sample.intensity(), sample.valid())).toList(), sourcePitch,
-                    parameters.localization());
-            ExtractedModes extracted = adaptModes(scalarFeatures, index);
+                maximum, samplePitch, evidence, field, profileTemporary, rawOwner);
+            List<LocalScalarProfileExtractor.Sample> extractorSamples = profileTemporary == null
+                    ? samples.stream().map(sample -> new LocalScalarProfileExtractor.Sample(
+                        sample.offsetMeters(), sample.intensity(), sample.valid())).toList()
+                    : ProbabilisticInference.allocated(profileTemporary,
+                        ProbabilisticInference.listBytes(samples.size())
+                            + Math.multiplyExact(samples.size(),
+                                AttemptMemoryLedger.objectBytes(24)),
+                        "sampled profiles", () -> samples.stream()
+                            .map(sample -> new LocalScalarProfileExtractor.Sample(
+                                sample.offsetMeters(), sample.intensity(), sample.valid())).toList());
+            LocalScalarProfileExtractor.Result scalarFeatures = profileExtractor.extract(
+                    extractorSamples, sourcePitch, parameters.localization(), profileTemporary);
+            ExtractedModes extracted = adaptModes(scalarFeatures, index, profileTemporary, rawOwner);
             List<ProbabilisticProfile.Mode> orientedModes = bindOrientationToModes(
                 extracted.modes(), anchor, normal, sourcePitch, evidence, field, parameters,
-                cancellation, orientationDescriptor, directLongitudinalReliability);
-            ImageOrientationSupport orientation = aggregateOrientation(orientedModes);
+                cancellation, orientationDescriptor, directLongitudinalReliability,
+                profileTemporary, rawOwner);
+            ImageOrientationSupport orientation = aggregateOrientation(orientedModes, rawOwner);
             OptionalDouble exact = fixedEndpoints && (index == 0 || index == curve.points().size() - 1)
-                ? OptionalDouble.of(0.0) : OptionalDouble.empty();
-            result.add(new ProbabilisticProfile(index, curve.chainageMeters().get(index), anchor, normal,
-                minimum, maximum, sourcePitch, evidence.resolution().nativePitchMeters().isPresent(),
-                scalarFeatures.noiseFloor(),
-                samples, orientedModes, extracted.censoredModes(), exact, orientation));
+                ? rawOwner == null ? OptionalDouble.of(0.0)
+                    : ProbabilisticInference.allocated(rawOwner,
+                        AttemptMemoryLedger.objectBytes(16), "sampled profiles",
+                        () -> OptionalDouble.of(0.0))
+                : OptionalDouble.empty();
+            int profileIndex = index;
+            double chainage = curve.chainageMeters().get(index);
+            double retainedMinimum = minimum;
+            double retainedMaximum = maximum;
+            SupplierProfile allocation = () -> new ProbabilisticProfile(profileIndex, chainage,
+                    anchor, normal, retainedMinimum, retainedMaximum, sourcePitch,
+                    evidence.resolution().nativePitchMeters().isPresent(), scalarFeatures.noiseFloor(),
+                    samples, orientedModes, extracted.censoredModes(), exact, orientation);
+            result.add(rawOwner == null ? allocation.get()
+                    : ownedProfile(rawOwner, samples.size(), allocation));
+            if (profileTemporary != null) profileTemporary.close();
         }
-        return directLongitudinalReliability
-                ? LongitudinalModeReliability.apply(result,
-                        new RasterIntervalEvidence(evidence, field), cancellation).profiles()
-                : List.copyOf(result);
+        if (samplingOwner != null) samplingOwner.close();
+        if (directLongitudinalReliability) {
+            AttemptMemoryLedger.Owner intervalOwner = owner == null ? null
+                    : owner.child("reliability-raster-intervals");
+            try {
+                List<ProbabilisticProfile> reliable = LongitudinalModeReliability.apply(result,
+                        new RasterIntervalEvidence(evidence, field, intervalOwner), cancellation,
+                        owner).profiles();
+                if (rawOwner != null) rawOwner.close();
+                return reliable;
+            } finally {
+                if (intervalOwner != null) intervalOwner.close();
+            }
+        }
+        List<ProbabilisticProfile> copied = rawOwner == null ? List.copyOf(result)
+                : ProbabilisticInference.allocated(rawOwner,
+                    ProbabilisticInference.listBytes(result.size()), "sampled profiles",
+                    () -> List.copyOf(result));
+        if (rawOwner != null) {
+            rawListOwner.close();
+            rawOwner.transferTo(owner);
+            rawOwner.close();
+        }
+        return copied;
     }
 
     /** Samples profiles and proves that engine sampling matches the request-owned measured chainage. */
@@ -153,7 +214,7 @@ public final class ProbabilisticProfileFactory {
         }
         List<ProbabilisticProfile> result = create(sourcePolyline, profileChainage.configuredStepMeters(),
             searchHalfWidthMeters, fixedEndpoints, evidence, field, parameters, cancellation,
-            directLongitudinalReliability, profileChainage.sourceOriginGroundMeters());
+            directLongitudinalReliability, profileChainage.sourceOriginGroundMeters(), null);
         if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
             throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
         }
@@ -166,17 +227,149 @@ public final class ProbabilisticProfileFactory {
         return result;
     }
 
+    List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
+        ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
+        boolean directLongitudinalReliability, AttemptMemoryLedger.Owner owner) {
+        if (profileChainage == null || owner == null) {
+            throw new IllegalArgumentException("Measured profile chainage and memory owner are required");
+        }
+        List<ProbabilisticProfile> result = create(sourcePolyline,
+                profileChainage.configuredStepMeters(), searchHalfWidthMeters, fixedEndpoints,
+                evidence, field, parameters, cancellation, directLongitudinalReliability,
+                profileChainage.sourceOriginGroundMeters(), owner);
+        if (result.size() != profileChainage.cumulativeGroundMeters().size()) {
+            throw new IllegalArgumentException("Request chainage does not match deterministic profile sampling");
+        }
+        for (int index = 0; index < result.size(); index++) {
+            if (Math.abs(result.get(index).chainageMeters()
+                    - profileChainage.cumulativeGroundMeters().get(index)) > 1e-8) {
+                throw new IllegalArgumentException(
+                        "Request chainage differs from sampled profile anchors");
+            }
+        }
+        return result;
+    }
+
+    private static ProbabilisticProfile ownedProfile(AttemptMemoryLedger.Owner owner,
+            int sampleCount, SupplierProfile allocation) {
+        AttemptMemoryLedger.Reservation profile = null;
+        AttemptMemoryLedger.Reservation samples = null;
+        try {
+            profile = owner.reserve(AttemptMemoryLedger.objectBytes(104));
+            samples = owner.reserve(ProbabilisticInference.listBytes(sampleCount));
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            if (samples != null) samples.close();
+            if (profile != null) profile.close();
+            throw new ProbabilisticInference.MemoryLimit("sampled profiles", exception);
+        }
+        try {
+            ProbabilisticProfile result = allocation.get();
+            profile.adopt(result);
+            samples.adopt(result.samples());
+            return result;
+        } catch (RuntimeException | Error exception) {
+            profile.close();
+            samples.close();
+            throw exception;
+        }
+    }
+
+    static void retainSharedProfileGraph(ProbabilisticProfile profile,
+            AttemptMemoryLedger.Owner owner) {
+        owner.retainIfAbsent(profile.anchor());
+        owner.retainIfAbsent(profile.normalUnit());
+        for (int index = 0; index < profile.samples().size(); index++) {
+            owner.retainIfAbsent(profile.samples().get(index));
+        }
+        for (int index = 0; index < profile.modes().size(); index++) {
+            ProbabilisticProfile.Mode mode = profile.modes().get(index);
+            if (!mode.peakOffsetsMeters().isEmpty()) {
+                owner.retainIfAbsent(mode.peakOffsetsMeters());
+            }
+            if (!mode.nestedCenterOffsetsMeters().isEmpty()) {
+                owner.retainIfAbsent(mode.nestedCenterOffsetsMeters());
+            }
+            retainOrientationGraphIfAbsent(owner, mode.orientationSupport());
+        }
+        if (!profile.censoredModes().isEmpty()) {
+            owner.retainIfAbsent(profile.censoredModes());
+            for (int index = 0; index < profile.censoredModes().size(); index++) {
+                owner.retainIfAbsent(profile.censoredModes().get(index));
+            }
+        }
+        if (profile.exactAnchorOffsetMeters().isPresent()) {
+            owner.retainIfAbsent(profile.exactAnchorOffsetMeters());
+        }
+        retainOrientationGraphIfAbsent(owner, profile.orientationSupport());
+    }
+
+    static ProbabilisticProfile ownedReliabilityProfile(ProbabilisticProfile profile,
+            List<ProbabilisticProfile.Mode> modes, AttemptMemoryLedger.Owner owner) {
+        return ownedProfile(owner, profile.samples().size(), () -> new ProbabilisticProfile(
+                profile.profileIndex(), profile.chainageMeters(), profile.anchor(),
+                profile.normalUnit(), profile.minimumOffsetMeters(), profile.maximumOffsetMeters(),
+                profile.sourcePitchMeters(), profile.nativePitchKnown(), profile.noiseFloor(),
+                profile.samples(), modes, profile.censoredModes(),
+                profile.exactAnchorOffsetMeters(), profile.orientationSupport()));
+    }
+
+    @FunctionalInterface
+    private interface SupplierProfile {
+        ProbabilisticProfile get();
+    }
+
+    @FunctionalInterface
+    private interface SupplierMode {
+        ProbabilisticProfile.Mode get();
+    }
+
+    @FunctionalInterface
+    private interface SupplierSample {
+        ProbabilisticProfile.Sample get();
+    }
+
+    @FunctionalInterface
+    private interface SupplierCensored {
+        ProbabilisticProfile.CensoredMode get();
+    }
+
+    @FunctionalInterface
+    private interface SupplierPoint {
+        MetricPoint get();
+    }
+
     private static List<ProbabilisticProfile.Mode> bindOrientationToModes(
         List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
         double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
         EvidenceModelParameters parameters, CancellationProbe cancellation,
         ImageOrientationDescriptor descriptor, boolean directLongitudinalReliability) {
-        List<ProbabilisticProfile.Mode> result = new ArrayList<>(modes.size());
+        return bindOrientationToModes(modes, anchor, normal, sourcePitch, evidence, field,
+                parameters, cancellation, descriptor, directLongitudinalReliability, null, null);
+    }
+
+    private static List<ProbabilisticProfile.Mode> bindOrientationToModes(
+        List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
+        double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
+        EvidenceModelParameters parameters, CancellationProbe cancellation,
+        ImageOrientationDescriptor descriptor, boolean directLongitudinalReliability,
+        AttemptMemoryLedger.Owner owner, AttemptMemoryLedger.Owner retainedOwner) {
+        AttemptMemoryLedger.Owner builder = owner == null ? null : owner.child("oriented-modes");
+        long bytes = ProbabilisticInference.listBytes(modes.size());
+        List<ProbabilisticProfile.Mode> result = owner == null ? new ArrayList<>(modes.size())
+                : ProbabilisticInference.allocated(builder, bytes, "sampled profiles",
+                    () -> new ArrayList<>(modes.size()));
         for (ProbabilisticProfile.Mode mode : modes) {
             cancellation.checkpoint();
             MetricPoint center = offset(anchor, normal, mode.coreCenterMeters());
             ImageOrientationSupport support = descriptor.describe(evidence, field, center,
-                sourcePitch, parameters, cancellation).support();
+                sourcePitch, parameters, cancellation, owner).support();
+            if (retainedOwner != null) {
+                retainedOwner.retain(mode.peakOffsetsMeters());
+                retainedOwner.retain(mode.nestedCenterOffsetsMeters());
+                retainOrientationGraph(retainedOwner, support);
+            }
             double corroboration = directLongitudinalReliability
                     ? mode.localizationConfidence()
                     : mode.localizationConfidence() * support.certainty();
@@ -185,40 +378,128 @@ public final class ProbabilisticProfileFactory {
                             mode.scalarAmplitudeReliability(), corroboration)
                     : mode.scalarAmplitudeReliability()
                             + (1.0 - mode.scalarAmplitudeReliability()) * corroboration;
-            result.add(new ProbabilisticProfile.Mode(mode.id(), mode.evidenceLineage(),
-                mode.coreMinimumMeters(), mode.coreMaximumMeters(), mode.localizationSigmaMeters(),
-                mode.existenceConfidence(), mode.localizationConfidence(), mode.peakOffsetsMeters(),
-                mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support,
-                mode.scalarAmplitudeReliability(), corroboration, reliability));
+            SupplierMode allocation = () -> new ProbabilisticProfile.Mode(mode.id(),
+                    mode.evidenceLineage(), mode.coreMinimumMeters(), mode.coreMaximumMeters(),
+                    mode.localizationSigmaMeters(), mode.existenceConfidence(),
+                    mode.localizationConfidence(), mode.peakOffsetsMeters(),
+                    mode.nestedCenterOffsetsMeters(), mode.groupedParent(), support,
+                    mode.scalarAmplitudeReliability(), corroboration, reliability);
+            result.add(retainedOwner == null ? allocation.get()
+                    : ProbabilisticInference.allocated(retainedOwner,
+                        AttemptMemoryLedger.objectBytes(112), "sampled profiles", allocation::get));
         }
-        return List.copyOf(result);
+        if (owner == null) return List.copyOf(result);
+        try {
+            if (result.isEmpty()) return List.of();
+            return ProbabilisticInference.allocated(retainedOwner,
+                    ProbabilisticInference.listBytes(result.size()), "sampled profiles",
+                    () -> List.copyOf(result));
+        } finally {
+            builder.close();
+        }
     }
 
     private static ImageOrientationSupport aggregateOrientation(
-        List<ProbabilisticProfile.Mode> modes) {
+        List<ProbabilisticProfile.Mode> modes, AttemptMemoryLedger.Owner owner) {
         if (modes.stream().anyMatch(mode -> mode.orientationSupport().status()
             == ImageOrientationSupport.Status.RESOURCE_LIMIT)) {
-            return ImageOrientationSupport.unknown(ImageOrientationSupport.Status.RESOURCE_LIMIT);
+            return ownedOrientationUnknown(ImageOrientationSupport.Status.RESOURCE_LIMIT, owner);
         }
-        List<ImageOrientationSupport> measured = modes.stream()
-            .map(ProbabilisticProfile.Mode::orientationSupport)
-            .filter(support -> !support.modes().isEmpty()).toList();
+        AttemptMemoryLedger.Owner builder = owner == null ? null
+                : owner.child("aggregate-orientation-builder");
+        try {
+            return aggregateOrientation(modes, owner, builder);
+        } finally {
+            if (builder != null) builder.close();
+        }
+    }
+
+    private static ImageOrientationSupport aggregateOrientation(
+            List<ProbabilisticProfile.Mode> modes, AttemptMemoryLedger.Owner owner,
+            AttemptMemoryLedger.Owner builder) {
+        List<ImageOrientationSupport> measured = builder == null
+                ? new ArrayList<>(modes.size())
+                : ProbabilisticInference.allocated(builder,
+                    ProbabilisticInference.listBytes(modes.size()), "sampled profiles",
+                    () -> new ArrayList<>(modes.size()));
+        for (ProbabilisticProfile.Mode mode : modes) {
+            if (!mode.orientationSupport().modes().isEmpty()) {
+                measured.add(mode.orientationSupport());
+            }
+        }
         if (measured.isEmpty()) {
             ImageOrientationSupport.Status status = modes.stream()
                 .map(ProbabilisticProfile.Mode::orientationSupport)
                 .map(ImageOrientationSupport::status)
                 .filter(candidate -> candidate == ImageOrientationSupport.Status.INVALID_CENTER)
                 .findFirst().orElse(ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
-            return ImageOrientationSupport.unknown(status);
+            return ownedOrientationUnknown(status, owner);
         }
-        List<ImageOrientationSupport.AngularMode> angularModes = measured.stream()
-            .flatMap(support -> support.modes().stream())
-            .sorted(java.util.Comparator.comparingDouble(
-                ImageOrientationSupport.AngularMode::peakBearingRadians)).toList();
+        int angularModeCount = 0;
+        for (ImageOrientationSupport support : measured) {
+            angularModeCount = Math.addExact(angularModeCount, support.modes().size());
+        }
+        int retainedAngularModeCount = angularModeCount;
+        List<ImageOrientationSupport.AngularMode> angularModes = builder == null
+                ? new ArrayList<>(angularModeCount)
+                : ProbabilisticInference.allocated(builder,
+                    ProbabilisticInference.listBytes(angularModeCount), "sampled profiles",
+                    () -> new ArrayList<>(retainedAngularModeCount));
+        for (ImageOrientationSupport support : measured) angularModes.addAll(support.modes());
+        AttemptMemoryLedger.Reservation sortingScratch = builder == null ? null
+                : reserve(builder, AttemptMemoryLedger.referenceArrayBytes(angularModeCount));
+        try {
+            angularModes.sort(java.util.Comparator.comparingDouble(
+                    ImageOrientationSupport.AngularMode::peakBearingRadians));
+        } finally {
+            if (sortingScratch != null) sortingScratch.close();
+        }
         double certainty = measured.stream().mapToDouble(ImageOrientationSupport::certainty)
             .max().orElse(0.0);
-        return new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
-            angularModes, certainty);
+        if (owner == null) return new ImageOrientationSupport(
+                ImageOrientationSupport.Status.MEASURED_TWO_SIDED, angularModes, certainty);
+        List<ImageOrientationSupport.AngularMode> retained = ProbabilisticInference.allocated(owner,
+                ProbabilisticInference.listBytes(angularModes.size()), "sampled profiles",
+                () -> List.copyOf(angularModes));
+        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(24),
+                "sampled profiles", () -> new ImageOrientationSupport(
+                    ImageOrientationSupport.Status.MEASURED_TWO_SIDED, retained, certainty));
+    }
+
+    private static AttemptMemoryLedger.Reservation reserve(AttemptMemoryLedger.Owner owner,
+            long bytes) {
+        try {
+            return owner.reserve(bytes);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            throw new ProbabilisticInference.MemoryLimit("sampled profiles", exception);
+        }
+    }
+
+    private static ImageOrientationSupport ownedOrientationUnknown(
+            ImageOrientationSupport.Status status, AttemptMemoryLedger.Owner owner) {
+        if (owner == null) return ImageOrientationSupport.unknown(status);
+        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(24),
+                "sampled profiles", () -> ImageOrientationSupport.unknown(status));
+    }
+
+    private static void retainOrientationGraph(AttemptMemoryLedger.Owner owner,
+            ImageOrientationSupport support) {
+        owner.retain(support);
+        if (!support.modes().isEmpty()) {
+            owner.retain(support.modes());
+            for (ImageOrientationSupport.AngularMode mode : support.modes()) owner.retain(mode);
+        }
+    }
+
+    private static void retainOrientationGraphIfAbsent(AttemptMemoryLedger.Owner owner,
+            ImageOrientationSupport support) {
+        owner.retainIfAbsent(support);
+        if (!support.modes().isEmpty()) {
+            owner.retainIfAbsent(support.modes());
+            for (int index = 0; index < support.modes().size(); index++) {
+                owner.retainIfAbsent(support.modes().get(index));
+            }
+        }
     }
 
     /** Samples one scalar value using strict bilinear validity. */
@@ -229,22 +510,59 @@ public final class ProbabilisticProfileFactory {
 
     private List<ProbabilisticProfile.Sample> sampleProfile(MetricPoint anchor, MetricPoint normal,
         double minimum, double maximum, double pitch, EvidenceSnapshot evidence,
-        ScalarEvidenceField field) {
+        ScalarEvidenceField field, AttemptMemoryLedger.Owner owner,
+        AttemptMemoryLedger.Owner retainedOwner) {
         int intervals = Math.max(1, (int) Math.ceil((maximum - minimum) / pitch));
-        List<ProbabilisticProfile.Sample> result = new ArrayList<>(intervals + 1);
+        int count = intervals + 1;
+        AttemptMemoryLedger.Owner builder = owner == null ? null : owner.child("scalar-samples");
+        long bytes = ProbabilisticInference.listBytes(count);
+        List<ProbabilisticProfile.Sample> result = owner == null ? new ArrayList<>(count)
+                : ProbabilisticInference.allocated(builder, bytes, "sampled profiles",
+                    () -> new ArrayList<>(count));
         for (int index = 0; index <= intervals; index++) {
             double offset = index == intervals ? maximum : minimum + index * (maximum - minimum) / intervals;
-            MetricPoint point = offset(anchor, normal, offset);
-            OptionalDouble value = sample(evidence, field, point);
-            result.add(new ProbabilisticProfile.Sample(offset, value.orElse(Double.NaN), value.isPresent()));
+            AttemptMemoryLedger.Owner pointOwner = owner == null ? null : owner.child("scalar-point");
+            MetricPoint point = pointOwner == null ? offset(anchor, normal, offset)
+                    : ProbabilisticInference.allocated(pointOwner,
+                        AttemptMemoryLedger.objectBytes(16), "sampled profiles",
+                        () -> offset(anchor, normal, offset));
+            OptionalDouble value;
+            try {
+                value = sample(evidence, field, point);
+            } finally {
+                if (pointOwner != null) pointOwner.close();
+            }
+            SupplierSample allocation = () -> new ProbabilisticProfile.Sample(offset,
+                    value.orElse(Double.NaN), value.isPresent());
+            result.add(retainedOwner == null ? allocation.get()
+                    : ProbabilisticInference.allocated(retainedOwner,
+                        AttemptMemoryLedger.objectBytes(24), "sampled profiles", allocation::get));
         }
-        return List.copyOf(result);
+        if (owner == null) return List.copyOf(result);
+        try {
+            return ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(result.size()), "sampled profiles",
+                    () -> List.copyOf(result));
+        } finally {
+            builder.close();
+        }
     }
 
     private static ExtractedModes adaptModes(LocalScalarProfileExtractor.Result extracted,
-            int profileIndex) {
-        List<ProbabilisticProfile.Mode> modes = new ArrayList<>();
-        List<ProbabilisticProfile.CensoredMode> censored = new ArrayList<>();
+            int profileIndex, AttemptMemoryLedger.Owner owner,
+            AttemptMemoryLedger.Owner retainedOwner) {
+        int modeCount = extracted.modes().size();
+        int censoredCount = extracted.censoredModes().size();
+        AttemptMemoryLedger.Owner builder = owner == null ? null : owner.child("adapted-modes");
+        List<ProbabilisticProfile.Mode> modes = owner == null ? new ArrayList<>()
+                : ProbabilisticInference.allocated(builder,
+                    ProbabilisticInference.listBytes(modeCount)
+                        + Math.multiplyExact(modeCount, AttemptMemoryLedger.objectBytes(112)),
+                    "sampled profiles", () -> new ArrayList<>(modeCount));
+        List<ProbabilisticProfile.CensoredMode> censored = owner == null ? new ArrayList<>()
+                : ProbabilisticInference.allocated(builder,
+                    ProbabilisticInference.listBytes(censoredCount),
+                    "sampled profiles", () -> new ArrayList<>(censoredCount));
         int modeIndex = 0;
         for (LocalScalarProfileExtractor.Mode mode : extracted.modes()) {
             String id = "p" + profileIndex + "-m" + modeIndex++;
@@ -263,10 +581,32 @@ public final class ProbabilisticProfileFactory {
             ProbabilisticProfile.CensorSide side = mode.side()
                     == LocalScalarProfileExtractor.CensorSide.RIGHT
                     ? ProbabilisticProfile.CensorSide.RIGHT : ProbabilisticProfile.CensorSide.LEFT;
-            censored.add(new ProbabilisticProfile.CensoredMode(id, lineage, side,
-                    mode.boundaryOffsetMeters(), mode.existenceConfidence(), mode.gradientTowardEdge()));
+            SupplierCensored allocation = () -> new ProbabilisticProfile.CensoredMode(id, lineage,
+                    side, mode.boundaryOffsetMeters(), mode.existenceConfidence(),
+                    mode.gradientTowardEdge());
+            censored.add(retainedOwner == null ? allocation.get()
+                    : ProbabilisticInference.allocated(retainedOwner,
+                        AttemptMemoryLedger.objectBytes(40), "sampled profiles", allocation::get));
         }
-        return new ExtractedModes(List.copyOf(modes), List.copyOf(censored));
+        if (owner == null) return new ExtractedModes(List.copyOf(modes), List.copyOf(censored));
+        try {
+            // List.of() is a borrowed JVM singleton when empty, so only newly allocated
+            // nonempty immutable copies belong to this attempt.
+            List<ProbabilisticProfile.Mode> retainedModes = modes.isEmpty() ? List.of()
+                    : ProbabilisticInference.allocated(owner,
+                        ProbabilisticInference.listBytes(modes.size()), "sampled profiles",
+                        () -> List.copyOf(modes));
+            List<ProbabilisticProfile.CensoredMode> retainedCensored =
+                    censored.isEmpty() ? List.of()
+                    : ProbabilisticInference.allocated(retainedOwner,
+                        ProbabilisticInference.listBytes(censored.size()), "sampled profiles",
+                        () -> List.copyOf(censored));
+            return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(16),
+                    "sampled profiles",
+                    () -> new ExtractedModes(retainedModes, retainedCensored));
+        } finally {
+            builder.close();
+        }
     }
 
     private static double authorizedBoundary(MetricPoint anchor, MetricPoint normal, double direction,
@@ -286,8 +626,13 @@ public final class ProbabilisticProfileFactory {
         return direction * last;
     }
 
-    private static ResampledCurve resample(List<MetricPoint> points, double step) {
-        List<Double> sourceChainage = new ArrayList<>(points.size());
+    private static ResampledCurve resample(List<MetricPoint> points, double step,
+            AttemptMemoryLedger.Owner owner) {
+        long sourceBytes = ProbabilisticInference.listBytes(points.size())
+                + Math.multiplyExact(points.size(), AttemptMemoryLedger.objectBytes(8));
+        List<Double> sourceChainage = owner == null ? new ArrayList<>(points.size())
+                : ProbabilisticInference.allocated(owner, sourceBytes, "sampled profiles",
+                    () -> new ArrayList<>(points.size()));
         sourceChainage.add(0.0);
         for (int index = 1; index < points.size(); index++) {
             sourceChainage.add(sourceChainage.get(index - 1) + points.get(index - 1).distanceTo(points.get(index)));
@@ -297,8 +642,16 @@ public final class ProbabilisticProfileFactory {
             throw new IllegalArgumentException("Source polyline has zero length");
         }
         int intervals = Math.max(1, (int) Math.ceil(length / step));
-        List<MetricPoint> sampled = new ArrayList<>(intervals + 1);
-        List<Double> chainage = new ArrayList<>(intervals + 1);
+        int sampledCount = intervals + 1;
+        List<MetricPoint> sampled = owner == null ? new ArrayList<>(sampledCount)
+                : ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(sampledCount),
+                    "sampled profiles", () -> new ArrayList<>(sampledCount));
+        List<Double> chainage = owner == null ? new ArrayList<>(sampledCount)
+                : ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(sampledCount)
+                        + Math.multiplyExact(sampledCount, AttemptMemoryLedger.objectBytes(8)),
+                    "sampled profiles", () -> new ArrayList<>(sampledCount));
         int segment = 1;
         for (int index = 0; index <= intervals; index++) {
             double target = index == intervals ? length : index * length / intervals;
@@ -310,11 +663,23 @@ public final class ProbabilisticProfileFactory {
             double fraction = (target - startDistance) / (endDistance - startDistance);
             MetricPoint start = points.get(segment - 1);
             MetricPoint end = points.get(segment);
-            sampled.add(new MetricPoint(start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
-                start.yMeters() + fraction * (end.yMeters() - start.yMeters())));
+            SupplierPoint allocation = () -> new MetricPoint(
+                    start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
+                    start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
+            sampled.add(owner == null ? allocation.get()
+                    : ProbabilisticInference.allocated(owner,
+                        AttemptMemoryLedger.objectBytes(16), "sampled profiles", allocation::get));
             chainage.add(target);
         }
-        return new ResampledCurve(List.copyOf(sampled), List.copyOf(chainage));
+        if (owner == null) return new ResampledCurve(List.copyOf(sampled), List.copyOf(chainage));
+        List<MetricPoint> retainedSampled = ProbabilisticInference.allocated(owner,
+                ProbabilisticInference.listBytes(sampled.size()), "sampled profiles",
+                () -> List.copyOf(sampled));
+        List<Double> retainedChainage = ProbabilisticInference.allocated(owner,
+                ProbabilisticInference.listBytes(chainage.size()), "sampled profiles",
+                () -> List.copyOf(chainage));
+        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(16),
+                "sampled profiles", () -> new ResampledCurve(retainedSampled, retainedChainage));
     }
 
     private static MetricPoint tangent(List<MetricPoint> points, int index) {
@@ -344,6 +709,14 @@ public final class ProbabilisticProfileFactory {
     static boolean supportsEveryCrossedInterpolationCell(ScalarEvidenceField field,
             RasterMetricTransform transform, MetricPoint start, MetricPoint end,
             CancellationProbe cancellation, LongConsumer admission) {
+        return supportsEveryCrossedInterpolationCell(field, transform, start, end,
+                cancellation, admission, null);
+    }
+
+    private static boolean supportsEveryCrossedInterpolationCell(ScalarEvidenceField field,
+            RasterMetricTransform transform, MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission,
+            AttemptMemoryLedger.Owner owner) {
         if (field == null || transform == null || start == null || end == null
                 || cancellation == null || admission == null) {
             throw new IllegalArgumentException("Raster interval traversal inputs are incomplete");
@@ -363,35 +736,45 @@ public final class ProbabilisticProfileFactory {
             throw new LongitudinalModeReliability.ResourceLimitException();
         }
 
-        List<Double> events = new ArrayList<>((int) eventCount);
-        events.add(0.0);
-        events.add(1.0);
-        addGridCrossings(rasterStart.x(), rasterEnd.x(), events, cancellation);
-        addGridCrossings(rasterStart.y(), rasterEnd.y(), events, cancellation);
-        events.sort(Double::compare);
+        AttemptMemoryLedger.Owner eventOwner = owner == null ? null
+                : owner.child("raster-crossing-events");
+        List<Double> events = owner == null ? new ArrayList<>((int) eventCount)
+                : ProbabilisticInference.allocated(eventOwner,
+                    ProbabilisticInference.listBytes(eventCount)
+                        + Math.multiplyExact(eventCount, AttemptMemoryLedger.objectBytes(8)),
+                    "sampled profiles", () -> new ArrayList<>((int) eventCount));
+        try {
+            events.add(0.0);
+            events.add(1.0);
+            addGridCrossings(rasterStart.x(), rasterEnd.x(), events, cancellation);
+            addGridCrossings(rasterStart.y(), rasterEnd.y(), events, cancellation);
+            events.sort(Double::compare);
 
-        double previous = events.get(0);
-        for (int index = 1; index < events.size(); index++) {
-            double current = events.get(index);
-            if (current > previous) {
-                double midpoint = 0.5 * (previous + current);
-                if (!checkInterpolationPoint(field,
-                        rasterStart.x() + midpoint * (rasterEnd.x() - rasterStart.x()),
-                        rasterStart.y() + midpoint * (rasterEnd.y() - rasterStart.y()),
-                        cancellation)) {
+            double previous = events.get(0);
+            for (int index = 1; index < events.size(); index++) {
+                double current = events.get(index);
+                if (current > previous) {
+                    double midpoint = 0.5 * (previous + current);
+                    if (!checkInterpolationPoint(field,
+                            rasterStart.x() + midpoint * (rasterEnd.x() - rasterStart.x()),
+                            rasterStart.y() + midpoint * (rasterEnd.y() - rasterStart.y()),
+                            cancellation)) {
+                        return false;
+                    }
+                }
+                if (Double.compare(current, previous) != 0
+                        && !checkInterpolationPoint(field,
+                                rasterStart.x() + current * (rasterEnd.x() - rasterStart.x()),
+                                rasterStart.y() + current * (rasterEnd.y() - rasterStart.y()),
+                                cancellation)) {
                     return false;
                 }
+                previous = current;
             }
-            if (Double.compare(current, previous) != 0
-                    && !checkInterpolationPoint(field,
-                            rasterStart.x() + current * (rasterEnd.x() - rasterStart.x()),
-                            rasterStart.y() + current * (rasterEnd.y() - rasterStart.y()),
-                            cancellation)) {
-                return false;
-            }
-            previous = current;
+            return true;
+        } finally {
+            if (eventOwner != null) eventOwner.close();
         }
-        return true;
     }
 
     private static boolean checkInterpolationPoint(ScalarEvidenceField field, double x, double y,
@@ -443,11 +826,14 @@ public final class ProbabilisticProfileFactory {
 
         private final EvidenceSnapshot evidence;
         private final ScalarEvidenceField field;
+        private final AttemptMemoryLedger.Owner owner;
         private long samples;
 
-        RasterIntervalEvidence(EvidenceSnapshot evidence, ScalarEvidenceField field) {
+        RasterIntervalEvidence(EvidenceSnapshot evidence, ScalarEvidenceField field,
+                AttemptMemoryLedger.Owner owner) {
             this.evidence = evidence;
             this.field = field;
+            this.owner = owner;
         }
 
         @Override
@@ -470,7 +856,7 @@ public final class ProbabilisticProfileFactory {
                 return 0.0;
             }
             if (!supportsEveryCrossedInterpolationCell(field, evidence.transform(), left, right,
-                    cancellation, this::charge)) {
+                    cancellation, this::charge, owner)) {
                 return 0.0;
             }
             double samplingStep = 0.5 * evidence.resolution().outputRasterPitchMeters();

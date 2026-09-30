@@ -148,6 +148,19 @@ public final class AttemptMemoryLedger {
         return lease;
     }
 
+    private synchronized MemoryLease retainIfAbsent(Owner owner, Object identity) {
+        owner.ensureOpen();
+        Objects.requireNonNull(identity, "identity");
+        MemoryLease existing = owner.leases.get(identity);
+        if (existing != null) {
+            if (!existing.active || charges.get(identity) != existing.charge) {
+                throw new IllegalStateException("owner contains an invalid memory lease");
+            }
+            return existing;
+        }
+        return retain(owner, identity);
+    }
+
     private synchronized MemoryLease fork(MemoryLease lease, Owner coOwner) {
         lease.ensureActive();
         if (lease.ledger != coOwner.ledger) {
@@ -314,6 +327,11 @@ public final class AttemptMemoryLedger {
         /** Adds an uncharged co-ownership reference to an identity charged earlier in this attempt. */
         public MemoryLease retain(Object alreadyAccountedIdentity) {
             return ledger.retain(this, alreadyAccountedIdentity);
+        }
+
+        /** Co-owns an accounted identity once, returning this owner's existing lease on repeats. */
+        public MemoryLease retainIfAbsent(Object alreadyAccountedIdentity) {
+            return ledger.retainIfAbsent(this, alreadyAccountedIdentity);
         }
 
         /** Returns the current attempt-wide retained charge, regardless of which owner holds it. */

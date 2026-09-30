@@ -2,6 +2,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabil
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
@@ -35,6 +38,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
@@ -44,8 +48,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 
 class V022LocalizationCorrectionTest {
     private static final int WIDTH = 121;
@@ -362,13 +370,233 @@ class V022LocalizationCorrectionTest {
     @Test
     void allMissingActualEngineReturnsNoRouteWithoutExportingUnusablePaths() {
         EngineFixture fixture = engineFixture(snapshot((x, y) -> 0.02));
+        ProbabilisticTraceEngine engine = new ProbabilisticTraceEngine("scalar");
 
-        TraceHypothesisSet result = new ProbabilisticTraceEngine("scalar").trace(
+        TraceHypothesisSet result = engine.trace(
                 fixture.request(), fixture.evidence(), fixture.network(), CancellationProbe.NONE);
 
         assertEquals(TraceHypothesisSet.Status.NO_ROUTE, result.status());
         assertTrue(result.hypotheses().isEmpty());
         assertEquals("all profiles lack localized evidence", result.explanation());
+
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+        Accounted<TraceEngineRun> accounted = engine.traceWithUsage(fixture.request(),
+                fixture.evidence(), fixture.network(), CancellationProbe.NONE, owner);
+        assertEquals(result, accounted.value().result(),
+                "owner-aware execution must preserve the exact all-missing result");
+        assertTrue(accounted.value().peakAdditionalRetainedBytes() > 0L);
+        accounted.owner().close();
+        owner.close();
+        assertEquals(0L, ledger.currentBytes());
+    }
+
+    @Test
+    void actualEngineTransfersItsAccountedResultAndReportsTheAttemptPeak() {
+        EngineFixture fixture = engineFixture();
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner parent = ledger.rootOwner();
+
+        Accounted<TraceEngineRun> accounted = new ProbabilisticTraceEngine("scalar")
+                .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
+                        CancellationProbe.NONE, parent);
+
+        assertEquals(TraceHypothesisSet.Status.COMPLETE, accounted.value().result().status());
+        assertFalse(accounted.value().result().hypotheses().isEmpty());
+        long pathGraphBytes = ProbabilisticInference.listBytes(11)
+                + 11L * AttemptMemoryLedger.objectBytes(16);
+        long diagnosticMapBytes = AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.referenceArrayBytes(32)
+                + 15L * AttemptMemoryLedger.objectBytes(48);
+        long hypothesisGraphBytes = ProbabilisticInference.listBytes(1)
+                + AttemptMemoryLedger.objectBytes(88)
+                + ProbabilisticInference.listBytes(11)
+                + diagnosticMapBytes;
+        long resultBytes = AttemptMemoryLedger.objectBytes(64)
+                + AttemptMemoryLedger.objectBytes(24)
+                + AttemptMemoryLedger.objectBytes(32);
+        assertEquals(2_248L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
+        assertEquals(2_248L, ledger.currentBytes());
+        assertEquals(8_908_896L, ledger.peakBytes(),
+                "the full forward/backward solve, not the smaller pair helper, owns the peak");
+        assertEquals(6_786L, accounted.value().usage().pairVisits());
+        assertEquals(5_006_473L, accounted.value().usage().transitions());
+        assertEquals(32, accounted.value().usage().rawAlternatives());
+        assertEquals(1, accounted.value().usage().distinctAlternatives());
+        assertEquals(ledger.peakBytes(), accounted.value().peakAdditionalRetainedBytes());
+        assertTrue(ledger.currentBytes() > 0L);
+        accounted.owner().transferTo(parent);
+        accounted.owner().close();
+        assertTrue(ledger.currentBytes() > 0L, "the parent retains the returned engine result");
+        parent.close();
+        assertEquals(0L, ledger.currentBytes());
+    }
+
+    @Test
+    void reliabilityGenerationSharesRetainedProfileIdentitiesWithoutDoubleCharge() {
+        EvidenceSnapshot evidence = snapshot((x, y) -> 0.02 + 0.8 * gaussian(y, 50.0, 1.2));
+        List<MetricPoint> source = List.of(new MetricPoint(10, 50), new MetricPoint(30, 50));
+        ProbabilisticProfileFactory factory = new ProbabilisticProfileFactory();
+        var chainage = factory.profileChainage(source, 10.0);
+
+        AttemptMemoryLedger rawLedger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner rawOwner = rawLedger.rootOwner();
+        List<ProbabilisticProfile> raw = factory.create(source, chainage, 7.0, false,
+                evidence, evidence.fields().get("scalar"), EvidenceModelParameters.defaults(),
+                CancellationProbe.NONE, false, rawOwner);
+        long rawCurrent = rawLedger.currentBytes();
+        long rawPeak = rawLedger.peakBytes();
+        assertFalse(raw.isEmpty());
+
+        AttemptMemoryLedger.Owner sharedGraphOwner = rawOwner.child("shared-graph-proof");
+        ProbabilisticProfileFactory.retainSharedProfileGraph(raw.get(0), sharedGraphOwner);
+        ProbabilisticProfileFactory.retainSharedProfileGraph(raw.get(0), sharedGraphOwner);
+        assertEquals(rawCurrent, rawLedger.currentBytes(),
+                "co-ownership and repeated aliases add no retained bytes");
+        assertEquals(rawPeak, rawLedger.peakBytes(),
+                "profile graph traversal has no unaccounted dedup allocation owner");
+        sharedGraphOwner.close();
+        assertEquals(rawCurrent, rawLedger.currentBytes());
+
+        LongitudinalModeReliability.Result reliability = LongitudinalModeReliability.apply(raw,
+                (leftProfile, leftMode, rightProfile, rightMode, cancellation) -> 1.0,
+                CancellationProbe.NONE, rawOwner);
+        List<ProbabilisticProfile> reliable = reliability.profiles();
+
+        assertEquals(raw.size(), reliable.size());
+        long newGraphBytes = AttemptMemoryLedger.objectBytes(24)
+                + ProbabilisticInference.listBytes(reliable.size());
+        for (int index = 0; index < raw.size(); index++) {
+            ProbabilisticProfile before = raw.get(index);
+            ProbabilisticProfile after = reliable.get(index);
+            assertNotSame(before, after);
+            assertSame(before.anchor(), after.anchor());
+            assertSame(before.normalUnit(), after.normalUnit());
+            assertSame(before.censoredModes(), after.censoredModes());
+            assertSame(before.exactAnchorOffsetMeters(), after.exactAnchorOffsetMeters());
+            assertSame(before.orientationSupport(), after.orientationSupport());
+            assertNotSame(before.samples(), after.samples());
+            assertEquals(before.samples().size(), after.samples().size());
+            for (int sample = 0; sample < before.samples().size(); sample++) {
+                assertSame(before.samples().get(sample), after.samples().get(sample));
+            }
+            assertEquals(before.modes().size(), after.modes().size());
+            for (int mode = 0; mode < before.modes().size(); mode++) {
+                assertNotSame(before.modes().get(mode), after.modes().get(mode));
+                assertSame(before.modes().get(mode).peakOffsetsMeters(),
+                        after.modes().get(mode).peakOffsetsMeters());
+                assertSame(before.modes().get(mode).nestedCenterOffsetsMeters(),
+                        after.modes().get(mode).nestedCenterOffsetsMeters());
+                assertSame(before.modes().get(mode).orientationSupport(),
+                        after.modes().get(mode).orientationSupport());
+            }
+            newGraphBytes += AttemptMemoryLedger.objectBytes(104)
+                    + ProbabilisticInference.listBytes(after.samples().size())
+                    + (after.modes().isEmpty() ? 0L
+                        : ProbabilisticInference.listBytes(after.modes().size()))
+                    + after.modes().size() * AttemptMemoryLedger.objectBytes(112);
+        }
+        assertEquals(rawCurrent + newGraphBytes, rawLedger.currentBytes(),
+                "shared profile children add no second charge while both generations coexist");
+        rawOwner.close();
+        assertEquals(0L, rawLedger.currentBytes());
+    }
+
+    @Test
+    void impossibleDiagnosticCapsPropagateTypedAbortWithoutLeakingAPosterior() {
+        EngineFixture fixture = engineFixture();
+        AttemptMemoryLedger tinyLedger = new AttemptMemoryLedger(1);
+        AttemptMemoryLedger.Owner tinyOwner = tinyLedger.rootOwner();
+
+        TraceMemoryLimitException tiny = assertThrows(TraceMemoryLimitException.class,
+                () -> new ProbabilisticTraceEngine("scalar").traceWithUsage(fixture.request(),
+                    fixture.evidence(), fixture.network(), CancellationProbe.NONE, tinyOwner));
+
+        assertEquals(0L, tiny.pairVisits());
+        assertEquals(0L, tiny.transitions());
+        assertEquals(0L, tiny.currentBytes());
+        assertEquals(0L, tiny.peakBytes());
+        assertEquals(1L, tiny.limitBytes());
+        assertEquals(0L, tinyLedger.currentBytes());
+        tinyOwner.close();
+
+        AttemptMemoryLedger nearFullLedger = new AttemptMemoryLedger(1_000);
+        AttemptMemoryLedger.Owner nearFullOwner = nearFullLedger.rootOwner();
+        nearFullOwner.reserve(999).adopt(new Object());
+        TraceMemoryLimitException nearFull = assertThrows(TraceMemoryLimitException.class,
+                () -> new ProbabilisticTraceEngine("scalar").traceWithUsage(fixture.request(),
+                    fixture.evidence(), fixture.network(), CancellationProbe.NONE, nearFullOwner));
+        assertEquals(999L, nearFull.currentBytes());
+        assertEquals(999L, nearFull.peakBytes());
+        assertEquals(1_000L, nearFull.limitBytes());
+        assertEquals(999L, nearFullLedger.currentBytes());
+        nearFullOwner.close();
+        assertEquals(0L, nearFullLedger.currentBytes());
+
+        AttemptMemoryLedger diagnosticLedger = new AttemptMemoryLedger(168);
+        AttemptMemoryLedger.Owner diagnosticOwner = diagnosticLedger.rootOwner();
+        Accounted<TraceEngineRun> diagnostic = new ProbabilisticTraceEngine("scalar")
+                .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
+                        CancellationProbe.NONE, diagnosticOwner);
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                diagnostic.value().result().status());
+        assertTrue(diagnostic.value().result().hypotheses().isEmpty());
+        assertEquals(168L, diagnosticLedger.currentBytes());
+        assertEquals(168L, diagnosticLedger.peakBytes(),
+                "working allocations are closed before the atomic native diagnostic is built");
+        diagnostic.owner().close();
+        diagnosticOwner.close();
+        assertEquals(0L, diagnosticLedger.currentBytes());
+    }
+
+    @Test
+    void candidateOutputIsAtomicAtSetAndRunWrapperBoundaries() {
+        EngineFixture fixture = engineFixture();
+        for (long cap : List.of(79L, 120L)) {
+            AttemptMemoryLedger ledger = new AttemptMemoryLedger(cap);
+            AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+            TraceMemoryLimitException abort = assertThrows(TraceMemoryLimitException.class,
+                    () -> new ProbabilisticTraceEngine("absent").traceWithUsage(fixture.request(),
+                        fixture.evidence(), fixture.network(), CancellationProbe.NONE, owner));
+            assertTrue(abort.stage().contains("engine result"), abort.stage());
+            assertEquals(0L, abort.pairVisits());
+            assertEquals(0L, abort.transitions());
+            assertEquals(0L, ledger.currentBytes());
+            owner.close();
+        }
+
+        AttemptMemoryLedger enoughLedger = new AttemptMemoryLedger(168);
+        AttemptMemoryLedger.Owner enoughOwner = enoughLedger.rootOwner();
+        Accounted<TraceEngineRun> accounted = new ProbabilisticTraceEngine("absent")
+                .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
+                        CancellationProbe.NONE, enoughOwner);
+        assertEquals(TraceHypothesisSet.Status.NO_ROUTE, accounted.value().result().status());
+        assertTrue(accounted.value().result().hypotheses().isEmpty());
+        accounted.owner().close();
+        enoughOwner.close();
+        assertEquals(0L, enoughLedger.currentBytes());
+    }
+
+    @Test
+    void malformedChainageAfterSamplingReleasesEveryCandidateAllocation() {
+        EngineFixture fixture = engineFixture();
+        TraceRequest original = fixture.request();
+        TraceRequest malformed = new TraceRequest(original.selectedWayKey(), original.selectedRange(),
+                original.engine(), original.geometryMode(), original.permissions(), original.budgets(),
+                original.evidenceSnapshotId(), original.evidenceContentHash(),
+                original.networkSnapshotId(), original.networkContentHash(), original.settingsHash(),
+                original.parameterHash(), original.samplerId(), original.configuredSampleStepMeters(),
+                new ProfileChainage(List.of(0.0, 50.0), original.configuredSampleStepMeters()),
+                original.evidenceResolution(), original.corridorInput());
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new ProbabilisticTraceEngine("scalar").traceWithUsage(malformed,
+                    fixture.evidence(), fixture.network(), CancellationProbe.NONE, owner));
+
+        assertEquals(0L, ledger.currentBytes());
+        owner.close();
     }
 
     @Test

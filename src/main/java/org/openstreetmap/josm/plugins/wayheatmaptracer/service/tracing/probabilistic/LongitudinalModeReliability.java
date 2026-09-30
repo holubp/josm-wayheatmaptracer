@@ -8,6 +8,7 @@ import java.util.Map;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Bounded direct-observation continuation for Engine B weak-signal reliability. */
 final class LongitudinalModeReliability {
@@ -56,82 +57,213 @@ final class LongitudinalModeReliability {
     /** Applies the versioned direct-continuation policy without changing admitted modes or states. */
     static Result apply(List<ProbabilisticProfile> profiles,
             DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation) {
+        return apply(profiles, intervalEvidence, cancellation, null);
+    }
+
+    /** Applies reliability while retaining the copied output profiles in the attempt scope. */
+    static Result apply(List<ProbabilisticProfile> profiles,
+            DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner owner) {
         if (profiles == null || intervalEvidence == null || cancellation == null) {
             throw new IllegalArgumentException("Longitudinal reliability inputs are incomplete");
         }
+        AttemptMemoryLedger.Owner associationOwner = owner == null ? null
+                : owner.child("reliability-association");
         WorkBudget workBudget = new WorkBudget();
-        List<Map<Integer, Edge>> forward = new ArrayList<>(Math.max(0, profiles.size() - 1));
-        List<Map<Integer, Edge>> backward = new ArrayList<>(Math.max(0, profiles.size() - 1));
+        int edgeMapCount = Math.max(0, profiles.size() - 1);
+        List<Map<Integer, Edge>> forward = associationOwner == null
+                ? new ArrayList<>(edgeMapCount)
+                : ProbabilisticInference.allocated(associationOwner,
+                    ProbabilisticInference.listBytes(edgeMapCount), "sampled profiles",
+                    () -> new ArrayList<>(edgeMapCount));
+        List<Map<Integer, Edge>> backward = associationOwner == null
+                ? new ArrayList<>(edgeMapCount)
+                : ProbabilisticInference.allocated(associationOwner,
+                    ProbabilisticInference.listBytes(edgeMapCount), "sampled profiles",
+                    () -> new ArrayList<>(edgeMapCount));
         long pairEvaluations = 0L;
-        for (int index = 0; index + 1 < profiles.size(); index++) {
-            cancellation.checkpoint();
-            ProbabilisticProfile left = profiles.get(index);
-            ProbabilisticProfile right = profiles.get(index + 1);
-            long work = (long) left.modes().size() * right.modes().size();
-            if (work > MAXIMUM_PAIR_EVALUATIONS - pairEvaluations) {
-                throw new ResourceLimitException();
+        List<double[]> triplet;
+        try {
+            for (int index = 0; index + 1 < profiles.size(); index++) {
+                cancellation.checkpoint();
+                ProbabilisticProfile left = profiles.get(index);
+                ProbabilisticProfile right = profiles.get(index + 1);
+                long work = (long) left.modes().size() * right.modes().size();
+                if (work > MAXIMUM_PAIR_EVALUATIONS - pairEvaluations) {
+                    throw new ResourceLimitException();
+                }
+                pairEvaluations += work;
+                AttemptMemoryLedger.Owner pairScratch = associationOwner == null ? null
+                        : associationOwner.child("association-pair-scratch-" + index);
+                AttemptMemoryLedger.Owner retainedEdges = associationOwner == null ? null
+                        : associationOwner.child("association-pair-edges-" + index);
+                EdgeMaps maps = associate(left, right, intervalEvidence, cancellation,
+                        pairScratch, retainedEdges);
+                forward.add(maps.forward());
+                backward.add(maps.backward());
+                if (retainedEdges != null) {
+                    retainedEdges.transferTo(associationOwner);
+                    retainedEdges.close();
+                    pairScratch.close();
+                }
             }
-            pairEvaluations += work;
-            EdgeMaps maps = associate(left, right, intervalEvidence, cancellation);
-            forward.add(maps.forward());
-            backward.add(maps.backward());
+            triplet = tripletConfidence(profiles, forward, backward, cancellation,
+                    associationOwner);
+        } catch (RuntimeException | Error exception) {
+            if (associationOwner != null) associationOwner.close();
+            throw exception;
         }
+        AttemptMemoryLedger.Owner retainedOwner = owner == null ? null
+                : owner.child("reliability-result");
+        AttemptMemoryLedger.Owner resultTemporary = retainedOwner == null ? null
+                : retainedOwner.child("builder");
+        try {
+            List<ProbabilisticProfile> result = owner == null
+                    ? new ArrayList<>(profiles.size())
+                    : ProbabilisticInference.allocated(resultTemporary,
+                        ProbabilisticInference.listBytes(profiles.size()), "sampled profiles",
+                        () -> new ArrayList<>(profiles.size()));
+            for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
+                cancellation.checkpoint();
+                ProbabilisticProfile profile = profiles.get(profileIndex);
+                try {
+                    AttemptMemoryLedger.Owner modeBuilder = owner == null ? null
+                            : resultTemporary.child("reliability-modes-" + profileIndex);
+                    List<ProbabilisticProfile.Mode> modes = owner == null
+                            ? new ArrayList<>(profile.modes().size())
+                            : ProbabilisticInference.allocated(modeBuilder,
+                                ProbabilisticInference.listBytes(profile.modes().size()),
+                                "sampled profiles",
+                                () -> new ArrayList<>(profile.modes().size()));
+                    for (int modeIndex = 0; modeIndex < profile.modes().size(); modeIndex++) {
+                        ProbabilisticProfile.Mode mode = profile.modes().get(modeIndex);
+                        double left = integratedSupport(profiles, forward, backward, triplet,
+                                profileIndex, modeIndex, -1, workBudget, cancellation);
+                        double right = integratedSupport(profiles, forward, backward, triplet,
+                                profileIndex, modeIndex, 1, workBudget, cancellation);
+                        double continuation = Math.sqrt(left * right);
+                        double coherence = mode.localizationConfidence() * continuation;
+                        double reliability = ProbabilisticProfile.Mode.combineReliability(
+                                mode.scalarAmplitudeReliability(), coherence);
+                        modes.add(owner == null ? copy(mode, coherence, reliability)
+                                : ProbabilisticInference.allocated(retainedOwner,
+                                    AttemptMemoryLedger.objectBytes(112), "sampled profiles",
+                                    () -> copy(mode, coherence, reliability)));
+                    }
+                    if (owner != null) {
+                        List<ProbabilisticProfile.Mode> builtModes = modes;
+                        modes = modes.isEmpty() ? List.of()
+                                : ProbabilisticInference.allocated(retainedOwner,
+                                    ProbabilisticInference.listBytes(modes.size()),
+                                    "sampled profiles", () -> List.copyOf(builtModes));
+                        modeBuilder.close();
+                        ProbabilisticProfileFactory.retainSharedProfileGraph(profile, retainedOwner);
+                    }
+                    ProbabilisticProfile copied = owner == null ? copy(profile, modes)
+                            : ProbabilisticProfileFactory.ownedReliabilityProfile(
+                                profile, modes, retainedOwner);
+                    result.add(copied);
+                } catch (RuntimeException | Error exception) {
+                    throw exception;
+                }
+            }
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "reliability.associationPairs", pairEvaluations);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "reliability.supportEdgeVisits", workBudget.edgeVisits());
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "reliability.windowMeters", WINDOW_METERS);
+            if (owner == null) {
+                return new Result(result, pairEvaluations, workBudget.edgeVisits());
+            }
+            long retainedPairEvaluations = pairEvaluations;
+            long retainedSupportEdgeVisits = workBudget.edgeVisits();
+            Result finalResult = ProbabilisticInference.allocated(retainedOwner,
+                    AttemptMemoryLedger.objectBytes(24)
+                        + ProbabilisticInference.listBytes(result.size()),
+                    "sampled profiles",
+                    () -> new Result(result, retainedPairEvaluations,
+                            retainedSupportEdgeVisits));
+            resultTemporary.close();
+            associationOwner.close();
+            retainedOwner.transferTo(owner);
+            retainedOwner.close();
+            return finalResult;
+        } catch (RuntimeException | Error exception) {
+            if (retainedOwner != null) retainedOwner.close();
+            if (associationOwner != null) associationOwner.close();
+            throw exception;
+        }
+    }
 
-        List<double[]> triplet = tripletConfidence(profiles, forward, backward, cancellation);
-        List<ProbabilisticProfile> result = new ArrayList<>(profiles.size());
-        for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
-            cancellation.checkpoint();
-            ProbabilisticProfile profile = profiles.get(profileIndex);
-            List<ProbabilisticProfile.Mode> modes = new ArrayList<>(profile.modes().size());
-            for (int modeIndex = 0; modeIndex < profile.modes().size(); modeIndex++) {
-                ProbabilisticProfile.Mode mode = profile.modes().get(modeIndex);
-                double left = integratedSupport(profiles, forward, backward, triplet,
-                        profileIndex, modeIndex, -1, workBudget, cancellation);
-                double right = integratedSupport(profiles, forward, backward, triplet,
-                        profileIndex, modeIndex, 1, workBudget, cancellation);
-                double continuation = Math.sqrt(left * right);
-                double coherence = mode.localizationConfidence() * continuation;
-                modes.add(copy(mode, coherence,
-                        ProbabilisticProfile.Mode.combineReliability(
-                                mode.scalarAmplitudeReliability(), coherence)));
-            }
-            result.add(copy(profile, modes));
+    private static AttemptMemoryLedger.Reservation reserve(AttemptMemoryLedger.Owner owner,
+            long bytes, String stage) {
+        try {
+            return owner.reserve(bytes);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            throw new ProbabilisticInference.MemoryLimit(stage, exception);
         }
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "reliability.associationPairs", pairEvaluations);
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "reliability.supportEdgeVisits", workBudget.edgeVisits());
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "reliability.windowMeters", WINDOW_METERS);
-        return new Result(result, pairEvaluations, workBudget.edgeVisits());
     }
 
     private static EdgeMaps associate(ProbabilisticProfile left, ProbabilisticProfile right,
-            DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation) {
+            DirectIntervalEvidence intervalEvidence, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner scratchOwner, AttemptMemoryLedger.Owner retainedOwner) {
         int leftCount = left.modes().size();
         int rightCount = right.modes().size();
-        double[][] score = new double[leftCount][rightCount];
-        for (int leftIndex = 0; leftIndex < leftCount; leftIndex++) {
-            for (int rightIndex = 0; rightIndex < rightCount; rightIndex++) {
-                cancellation.checkpoint();
-                score[leftIndex][rightIndex] = pairScore(left, left.modes().get(leftIndex),
-                        right, right.modes().get(rightIndex));
+        double[][] score = scratchOwner == null ? new double[leftCount][rightCount]
+                : ProbabilisticInference.allocated(scratchOwner,
+                    ProbabilisticInference.deepArrayBytes(leftCount, rightCount, Double.BYTES),
+                    "sampled profiles", () -> new double[leftCount][rightCount]);
+        AttemptMemoryLedger.Reservation scorePointScratch = scratchOwner == null ? null
+                : reserve(scratchOwner, 2L * AttemptMemoryLedger.objectBytes(16),
+                    "sampled profiles");
+        try {
+            for (int leftIndex = 0; leftIndex < leftCount; leftIndex++) {
+                for (int rightIndex = 0; rightIndex < rightCount; rightIndex++) {
+                    cancellation.checkpoint();
+                    score[leftIndex][rightIndex] = pairScore(left, left.modes().get(leftIndex),
+                            right, right.modes().get(rightIndex));
+                }
             }
+        } finally {
+            if (scorePointScratch != null) scorePointScratch.close();
         }
-        Best[] leftBest = new Best[leftCount];
-        Best[] rightBest = new Best[rightCount];
+        Best[] leftBest = scratchOwner == null ? new Best[leftCount]
+                : ProbabilisticInference.allocated(scratchOwner,
+                    AttemptMemoryLedger.referenceArrayBytes(leftCount)
+                        + Math.multiplyExact(leftCount, AttemptMemoryLedger.objectBytes(24)),
+                    "sampled profiles", () -> new Best[leftCount]);
+        Best[] rightBest = scratchOwner == null ? new Best[rightCount]
+                : ProbabilisticInference.allocated(scratchOwner,
+                    AttemptMemoryLedger.referenceArrayBytes(rightCount)
+                        + Math.multiplyExact(rightCount, AttemptMemoryLedger.objectBytes(24)),
+                    "sampled profiles", () -> new Best[rightCount]);
         for (int leftIndex = 0; leftIndex < leftCount; leftIndex++) {
             leftBest[leftIndex] = best(score[leftIndex]);
         }
         for (int rightIndex = 0; rightIndex < rightCount; rightIndex++) {
-            double[] column = new double[leftCount];
+            AttemptMemoryLedger.Owner columnOwner = scratchOwner == null ? null
+                    : scratchOwner.child("reliability-column");
+            double[] column = scratchOwner == null ? new double[leftCount]
+                    : ProbabilisticInference.allocated(columnOwner,
+                        AttemptMemoryLedger.arrayBytes(leftCount, Double.BYTES),
+                        "sampled profiles", () -> new double[leftCount]);
             for (int leftIndex = 0; leftIndex < leftCount; leftIndex++) {
                 column[leftIndex] = score[leftIndex][rightIndex];
             }
             rightBest[rightIndex] = best(column);
+            if (columnOwner != null) columnOwner.close();
         }
-        Map<Integer, Edge> forward = new HashMap<>();
-        Map<Integer, Edge> backward = new HashMap<>();
+        int maximumEdges = Math.min(leftCount, rightCount);
+        long mapBytes = AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.referenceArrayBytes(hashTableCapacity(maximumEdges))
+                + Math.multiplyExact(maximumEdges, AttemptMemoryLedger.objectBytes(32));
+        Map<Integer, Edge> forward = retainedOwner == null ? new HashMap<>()
+                : ProbabilisticInference.allocated(retainedOwner, mapBytes, "sampled profiles",
+                    () -> new HashMap<>(Math.max(1, maximumEdges * 2)));
+        Map<Integer, Edge> backward = retainedOwner == null ? new HashMap<>()
+                : ProbabilisticInference.allocated(retainedOwner, mapBytes, "sampled profiles",
+                    () -> new HashMap<>(Math.max(1, maximumEdges * 2)));
         for (int leftIndex = 0; leftIndex < leftCount; leftIndex++) {
             Best fromLeft = leftBest[leftIndex];
             if (fromLeft.index() < 0) continue;
@@ -148,11 +280,22 @@ final class LongitudinalModeReliability {
             double confidence = fromLeft.score() * Math.sqrt(
                     margin(fromLeft) * margin(fromRight)) * intervalSupport;
             if (confidence <= 0.0) continue;
-            Edge edge = new Edge(leftIndex, fromLeft.index(), confidence);
+            int retainedLeftIndex = leftIndex;
+            Edge edge = retainedOwner == null ? new Edge(leftIndex, fromLeft.index(), confidence)
+                    : ProbabilisticInference.allocated(retainedOwner,
+                        AttemptMemoryLedger.objectBytes(24), "sampled profiles",
+                        () -> new Edge(retainedLeftIndex, fromLeft.index(), confidence));
             forward.put(leftIndex, edge);
             backward.put(fromLeft.index(), edge);
         }
-        return new EdgeMaps(Map.copyOf(forward), Map.copyOf(backward));
+        return new EdgeMaps(forward, backward);
+    }
+
+    private static long hashTableCapacity(long entries) {
+        long required = Math.max(1L, Math.multiplyExact(entries, 2L));
+        long capacity = 1L;
+        while (capacity < required) capacity = Math.multiplyExact(capacity, 2L);
+        return capacity;
     }
 
     private static double pairScore(ProbabilisticProfile leftProfile,
@@ -216,11 +359,17 @@ final class LongitudinalModeReliability {
 
     private static List<double[]> tripletConfidence(List<ProbabilisticProfile> profiles,
             List<Map<Integer, Edge>> forward, List<Map<Integer, Edge>> backward,
-            CancellationProbe cancellation) {
-        List<double[]> result = new ArrayList<>(profiles.size());
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        List<double[]> result = owner == null ? new ArrayList<>(profiles.size())
+                : ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(profiles.size()), "sampled profiles",
+                    () -> new ArrayList<>(profiles.size()));
         for (int profileIndex = 0; profileIndex < profiles.size(); profileIndex++) {
             ProbabilisticProfile profile = profiles.get(profileIndex);
-            double[] confidence = new double[profile.modes().size()];
+            double[] confidence = owner == null ? new double[profile.modes().size()]
+                    : ProbabilisticInference.allocated(owner,
+                        AttemptMemoryLedger.arrayBytes(profile.modes().size(), Double.BYTES),
+                        "sampled profiles", () -> new double[profile.modes().size()]);
             if (profileIndex > 0 && profileIndex + 1 < profiles.size()) {
                 for (int modeIndex = 0; modeIndex < profile.modes().size(); modeIndex++) {
                     cancellation.checkpoint();
@@ -251,7 +400,7 @@ final class LongitudinalModeReliability {
             }
             result.add(confidence);
         }
-        return List.copyOf(result);
+        return owner == null ? List.copyOf(result) : result;
     }
 
     private static double integratedSupport(List<ProbabilisticProfile> profiles,

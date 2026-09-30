@@ -11,6 +11,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnershi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 /** Qualified same-image Engine A geometry used only as a capped structural prior in Engine B. */
 public final class ProbabilisticStructuralGuide {
@@ -66,25 +67,45 @@ public final class ProbabilisticStructuralGuide {
 
     /** Adds bounded guide costs without changing scalar evidence or ownership. */
     public InferenceProfile apply(InferenceProfile profile, double sourcePitchMeters) {
+        return apply(profile, sourcePitchMeters, null);
+    }
+
+    /** Applies the guide while charging the temporary cost vector and retained profile copy. */
+    InferenceProfile apply(InferenceProfile profile, double sourcePitchMeters,
+            AttemptMemoryLedger.Owner owner) {
         if (profile == null || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0) {
             throw new IllegalArgumentException("Inference profile is required");
         }
-        double[] costs = new double[profile.cells().size()];
+        AttemptMemoryLedger.Owner temporaryOwner = owner == null ? null
+                : owner.child("guide-costs");
+        double[] costs = owner == null ? new double[profile.cells().size()]
+                : ProbabilisticInference.allocated(temporaryOwner,
+                    AttemptMemoryLedger.arrayBytes(profile.cells().size(), Double.BYTES),
+                    "guide evaluated profiles", () -> new double[profile.cells().size()]);
         if (profile.ownership() != ObservationOwnership.DIRECT_TWO_SIDED
                 || profile.entirelyMissing()) {
-            return profile.withStructuralGuideCosts(costs);
+            InferenceProfile result = owner == null ? profile.withStructuralGuideCosts(costs)
+                    : profile.withStructuralGuideCosts(costs, owner);
+            if (temporaryOwner != null) temporaryOwner.close();
+            return result;
         }
         Section section = sections.stream().filter(candidate -> candidate.contains(profile.chainageMeters()))
             .findFirst().orElse(null);
         if (section == null) {
-            return profile.withStructuralGuideCosts(costs);
+            InferenceProfile result = owner == null ? profile.withStructuralGuideCosts(costs)
+                    : profile.withStructuralGuideCosts(costs, owner);
+            if (temporaryOwner != null) temporaryOwner.close();
+            return result;
         }
         for (int state = 0; state < costs.length; state++) {
             double normalized = distanceToPolyline(profile.point(state), section.points())
                 / sourcePitchMeters;
             costs[state] = Math.min(MAXIMUM_COST, EvidenceModelParameters.huber(normalized));
         }
-        return profile.withStructuralGuideCosts(costs);
+        InferenceProfile result = owner == null ? profile.withStructuralGuideCosts(costs)
+                : profile.withStructuralGuideCosts(costs, owner);
+        if (temporaryOwner != null) temporaryOwner.close();
+        return result;
     }
 
     /** Returns the number of independently qualified direct sections. */

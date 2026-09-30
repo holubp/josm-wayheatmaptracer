@@ -22,6 +22,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 class V022ImageOrientationDescriptorTest {
     private static final int SIZE = 101;
@@ -233,6 +235,25 @@ class V022ImageOrientationDescriptorTest {
             new MetricPoint(CENTER, CENTER), 1e-12, EvidenceModelParameters.defaults(), () -> false);
         assertEquals(ImageOrientationSupport.Status.RESOURCE_LIMIT, limited.support().status());
         assertEquals(0, limited.sampledRayPoints());
+    }
+
+    @Test
+    void ownerAwareDescriptorReleasesScratchAndRetainsItsCompleteResultGraph() {
+        Fixture fixture = fixture(identity(), point -> ridge(point.yMeters() - CENTER,
+                0.02, 0.98, 1.0), (x, y, point) -> true);
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+
+        ImageOrientationDescriptor.Result result = new ImageOrientationDescriptor().describe(
+                fixture.evidence(), fixture.field(), new MetricPoint(CENTER, CENTER), 1.0,
+                EvidenceModelParameters.defaults(), CancellationProbe.NONE, owner);
+
+        assertEquals(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+                result.support().status());
+        assertTrue(owner.currentBytes() > 0L, "the result graph remains retained");
+        assertTrue(owner.peakBytes() > owner.currentBytes(), "ray and quantile scratch is released");
+        owner.close();
+        assertEquals(0L, ledger.currentBytes());
     }
 
     @Test

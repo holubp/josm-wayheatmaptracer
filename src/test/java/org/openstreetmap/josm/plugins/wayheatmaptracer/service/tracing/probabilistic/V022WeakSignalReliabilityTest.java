@@ -21,8 +21,35 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransfo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
 class V022WeakSignalReliabilityTest {
+    @Test
+    void manyPeakExtractionReleasesHelperScratchBetweenPeaks() {
+        List<LocalScalarProfileExtractor.Sample> samples = new ArrayList<>();
+        for (int index = 0; index <= 160; index++) {
+            double phase = index % 16;
+            double intensity = 0.02 + 0.85 * Math.exp(-0.5
+                    * Math.pow((phase - 8.0) / 1.2, 2.0));
+            samples.add(new LocalScalarProfileExtractor.Sample(index * 0.25,
+                    intensity, true));
+        }
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+
+        LocalScalarProfileExtractor.Result result = new LocalScalarProfileExtractor().extract(
+                samples, 1.0, EvidenceModelParameters.defaults().localization(), owner);
+
+        assertTrue(result.modes().size() >= 5, "fixture must exercise repeated peak helpers");
+        assertTrue(owner.currentBytes() > 0L, "retained mode graph remains charged");
+        assertTrue(owner.peakBytes() > owner.currentBytes(),
+                "profile and per-peak scratch must be released after extraction");
+        assertTrue(owner.peakBytes() - owner.currentBytes() < 20_000L,
+                "helper scratch is simultaneous rather than cumulative across peaks");
+        owner.close();
+        assertEquals(0L, ledger.currentBytes());
+    }
+
     @Test
     void scalarAmplitudeReliabilityFallsContinuouslyWithProminence() {
         LocalScalarProfileExtractor extractor = new LocalScalarProfileExtractor();
@@ -192,6 +219,40 @@ class V022WeakSignalReliabilityTest {
                         profileAt(0, 0.0, left), profileAt(1, 1.0, right)),
                         org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
                                 .CancellationProbe.NONE));
+    }
+
+    @Test
+    void pairScorePointScratchHasAnExactAdmissionBoundaryAndCleansUpOnRefusal() {
+        List<ProbabilisticProfile> profiles = List.of(
+                profileAt(0, 0.0, List.of(modeAt(0, 0, 0.0, measuredHorizontal()))),
+                profileAt(1, 1.0, List.of(modeAt(1, 0, 0.0, measuredHorizontal()))));
+
+        AttemptMemoryLedger below = new AttemptMemoryLedger(223);
+        AttemptMemoryLedger.Owner belowOwner = below.rootOwner();
+        ProbabilisticInference.MemoryLimit refused = assertThrows(
+                ProbabilisticInference.MemoryLimit.class,
+                () -> LongitudinalModeReliability.apply(profiles,
+                    (leftProfile, leftMode, rightProfile, rightMode, cancellation) -> 1.0,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                        .CancellationProbe.NONE, belowOwner));
+        assertEquals(64L, refused.limitCause().requestedBytes());
+        assertEquals(160L, refused.limitCause().currentBytes());
+        assertEquals(223L, refused.limitCause().limitBytes());
+        assertEquals(160L, below.peakBytes());
+        assertEquals(0L, below.currentBytes());
+
+        AttemptMemoryLedger exact = new AttemptMemoryLedger(224);
+        AttemptMemoryLedger.Owner exactOwner = exact.rootOwner();
+        ProbabilisticInference.MemoryLimit later = assertThrows(
+                ProbabilisticInference.MemoryLimit.class,
+                () -> LongitudinalModeReliability.apply(profiles,
+                    (leftProfile, leftMode, rightProfile, rightMode, cancellation) -> 1.0,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                        .CancellationProbe.NONE, exactOwner));
+        assertEquals(224L, later.limitCause().currentBytes(),
+                "the pair-score point scratch fits exactly before the next helper is refused");
+        assertEquals(224L, exact.peakBytes());
+        assertEquals(0L, exact.currentBytes());
     }
 
     @Test
