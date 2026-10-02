@@ -41,6 +41,58 @@ public final class ImageCostField {
     /** Cost and metric gradient from one frozen local branch field. */
     public record FrozenSample(double cost, double gradientX, double gradientY) { }
 
+    /** One independently measured outward ray direction for a possible physical corner arm. */
+    public record DirectedOrientationMode(double bearingRadians, double response) {
+        /** Normalizes the directed bearing over {@code [0, 2*pi)}. */
+        public DirectedOrientationMode {
+            if (!Double.isFinite(bearingRadians) || !Double.isFinite(response)
+                    || response < 0.0) {
+                throw new IllegalArgumentException("Directed orientation mode is invalid");
+            }
+            bearingRadians = normalizeDirectedBearing(bearingRadians);
+        }
+
+        /** Returns circular directed distance to another bearing. */
+        public double distanceTo(double otherBearingRadians) {
+            double difference = Math.abs(bearingRadians
+                    - normalizeDirectedBearing(otherBearingRadians));
+            return Math.min(difference, 2.0 * Math.PI - difference);
+        }
+    }
+
+    /** Measured separation of the selected core from competing or edge-censored modes. */
+    public record BranchIsolation(boolean measured,
+            double nearestCensoredBoundaryDistanceMeters,
+            double nearestCensoredExtentDistanceMeters,
+            double nearestCompleteCompetitorDistanceMeters) {
+        /** Validates physical distances while retaining measured infinity for absent modes. */
+        public BranchIsolation {
+            if ((!Double.isFinite(nearestCensoredBoundaryDistanceMeters)
+                        && nearestCensoredBoundaryDistanceMeters != Double.POSITIVE_INFINITY)
+                    || (!Double.isFinite(nearestCompleteCompetitorDistanceMeters)
+                        && nearestCompleteCompetitorDistanceMeters != Double.POSITIVE_INFINITY)
+                    || (!Double.isFinite(nearestCensoredExtentDistanceMeters)
+                        && nearestCensoredExtentDistanceMeters != Double.POSITIVE_INFINITY)
+                    || nearestCensoredBoundaryDistanceMeters < 0.0
+                    || nearestCensoredExtentDistanceMeters < 0.0
+                    || nearestCompleteCompetitorDistanceMeters < 0.0
+                    || !measured && (nearestCensoredBoundaryDistanceMeters
+                            != Double.POSITIVE_INFINITY
+                        || nearestCensoredExtentDistanceMeters
+                            != Double.POSITIVE_INFINITY
+                        || nearestCompleteCompetitorDistanceMeters
+                            != Double.POSITIVE_INFINITY)) {
+                throw new IllegalArgumentException("Branch-isolation summary is invalid");
+            }
+        }
+
+        private static BranchIsolation unknown() {
+            return new BranchIsolation(false, Double.POSITIVE_INFINITY,
+                    Double.POSITIVE_INFINITY,
+                    Double.POSITIVE_INFINITY);
+        }
+    }
+
     /**
      * Immutable background-relative one-dimensional field and measured image direction.
      * The selected mode and every interpolation ordinate are fixed before optimization.
@@ -50,7 +102,37 @@ public final class ImageCostField {
             double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
             List<ImageOrientationSupport.AngularMode> orientationModes,
             double orientationRadians, double orientationCertainty, double positionalReliability,
-            ObservedModeStatus observedModeStatus) {
+            ObservedModeStatus observedModeStatus, BranchIsolation branchIsolation,
+            List<ImageOrientationSupport.AngularMode> coreOrientationModes,
+            double coreOrientationRadians, double coreOrientationCertainty,
+            List<DirectedOrientationMode> directedOrientationModes) {
+        /** Retains callers that predate directed corner evidence. */
+        public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
+                double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
+                double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
+                List<ImageOrientationSupport.AngularMode> orientationModes,
+                double orientationRadians, double orientationCertainty, double positionalReliability,
+                ObservedModeStatus observedModeStatus, BranchIsolation branchIsolation) {
+            this(support, origin, normal, coreMinimumMeters, coreMaximumMeters,
+                    localizationSigmaMeters, noiseFloor, peakIntensity, offsetsMeters, values,
+                    orientationModes, orientationRadians, orientationCertainty,
+                    positionalReliability, observedModeStatus, branchIsolation,
+                    List.of(), 0.0, 0.0, List.of());
+        }
+
+        /** Retains callers that predate measured branch-isolation evidence. */
+        public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
+                double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
+                double noiseFloor, double peakIntensity, double[] offsetsMeters, double[] values,
+                List<ImageOrientationSupport.AngularMode> orientationModes,
+                double orientationRadians, double orientationCertainty, double positionalReliability,
+                ObservedModeStatus observedModeStatus) {
+            this(support, origin, normal, coreMinimumMeters, coreMaximumMeters,
+                    localizationSigmaMeters, noiseFloor, peakIntensity, offsetsMeters, values,
+                    orientationModes, orientationRadians, orientationCertainty,
+                    positionalReliability, observedModeStatus, BranchIsolation.unknown());
+        }
+
         /** Retains callers that predate explicit observed-mode evidence. */
         public FrozenProfile(FrozenSupport support, MetricPoint origin, MetricPoint normal,
                 double coreMinimumMeters, double coreMaximumMeters, double localizationSigmaMeters,
@@ -79,11 +161,19 @@ public final class ImageCostField {
             offsetsMeters = offsetsMeters.clone();
             values = values.clone();
             orientationModes = List.copyOf(orientationModes);
-            if (support == null || observedModeStatus == null || origin == null || normal == null
+            coreOrientationModes = List.copyOf(coreOrientationModes);
+            directedOrientationModes = List.copyOf(directedOrientationModes);
+            if (support == null || observedModeStatus == null || branchIsolation == null
+                    || coreOrientationModes == null
+                    || directedOrientationModes == null
+                    || origin == null || normal == null
                     || offsetsMeters.length != values.length || offsetsMeters.length < 2
                     || !Double.isFinite(localizationSigmaMeters) || localizationSigmaMeters <= 0.0
                     || !Double.isFinite(orientationRadians) || !Double.isFinite(orientationCertainty)
+                    || !Double.isFinite(coreOrientationRadians)
+                    || !Double.isFinite(coreOrientationCertainty)
                     || orientationCertainty < 0.0 || orientationCertainty > 1.0
+                    || coreOrientationCertainty < 0.0 || coreOrientationCertainty > 1.0
                     || positionalReliability < 0.0 || positionalReliability > 1.0) {
                 throw new IllegalArgumentException("Frozen profile is incomplete");
             }
@@ -255,6 +345,20 @@ public final class ImageCostField {
     /** Freezes one profile with bounded cooperative cancellation during scalar sampling. */
     public FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
             CancellationProbe cancellation) {
+        return freezeProfile(point, routeTangent, cancellation, false);
+    }
+
+    /**
+     * Freezes scalar evidence with direction measured at the selected core center.
+     * Origin-centered refit orientation remains absent on this explicit evidence path.
+     */
+    public FrozenProfile freezeProfileWithCoreOrientation(MetricPoint point,
+            MetricPoint routeTangent, CancellationProbe cancellation) {
+        return freezeProfile(point, routeTangent, cancellation, true);
+    }
+
+    private FrozenProfile freezeProfile(MetricPoint point, MetricPoint routeTangent,
+            CancellationProbe cancellation, boolean measureAtCoreCenter) {
         if (point == null || routeTangent == null) {
             throw new IllegalArgumentException("Frozen profile requires a point and tangent");
         }
@@ -298,6 +402,22 @@ public final class ImageCostField {
                 sourcePitchMeters, parameters);
         List<LocalScalarProfileExtractor.Mode> ordered = extracted.modes().stream()
                 .sorted(Comparator.comparingDouble(mode -> mode.distanceToCenterSet(0.0))).toList();
+        double nearestCensoredBoundary = extracted.censoredModes().stream()
+                .mapToDouble(mode -> Math.abs(mode.boundaryOffsetMeters()))
+                .min().orElse(Double.POSITIVE_INFINITY);
+        boolean censoredExtentMeasured = extracted.censoredModes().stream()
+                .allMatch(LocalScalarProfileExtractor.CensoredMode::inwardExtentMeasured);
+        double nearestCensoredExtent = extracted.censoredModes().stream()
+                .mapToDouble(mode -> distanceToInterval(0.0, mode.boundaryOffsetMeters(),
+                        mode.inwardSupportOffsetMeters()))
+                .min().orElse(Double.POSITIVE_INFINITY);
+        double nearestCompleteCompetitor = ordered.stream().skip(1)
+                .mapToDouble(mode -> mode.distanceToCenterSet(0.0))
+                .min().orElse(Double.POSITIVE_INFINITY);
+        BranchIsolation branchIsolation = censoredExtentMeasured
+                ? new BranchIsolation(true, nearestCensoredBoundary,
+                        nearestCensoredExtent, nearestCompleteCompetitor)
+                : BranchIsolation.unknown();
         ObservedModeStatus observedModeStatus = !extracted.censoredModes().isEmpty()
                 ? ObservedModeStatus.UNAVAILABLE
                 : ordered.size() == 1 ? ObservedModeStatus.OBSERVED_UNIQUE
@@ -305,25 +425,40 @@ public final class ImageCostField {
                 : ObservedModeStatus.UNAVAILABLE;
         if (ordered.isEmpty()) {
             return unavailable(FrozenSupport.MISSING, point, normal, offsets, values,
-                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus);
+                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus,
+                    branchIsolation);
         }
         LocalScalarProfileExtractor.Mode selected = ordered.get(0);
         if (ordered.size() > 1 && ordered.get(1).distanceToCenterSet(0.0)
                 <= selected.distanceToCenterSet(0.0) + sourcePitchMeters) {
             return unavailable(FrozenSupport.AMBIGUOUS, point, normal, offsets, values,
-                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus);
+                    extracted.noiseFloor(), extracted.maximumIntensity(), observedModeStatus,
+                    branchIsolation);
         }
-        Orientation orientation = measureOrientation(point, routeTangent, cancellation);
+        double selectedOffset = 0.5 * (selected.coreMinimumMeters()
+                + selected.coreMaximumMeters());
+        MetricPoint selectedCoreCenter = new MetricPoint(
+                point.xMeters() + normal.xMeters() * selectedOffset,
+                point.yMeters() + normal.yMeters() * selectedOffset);
+        Orientation originOrientation = measureAtCoreCenter ? Orientation.UNKNOWN
+                : measureOrientation(point, routeTangent, cancellation);
+        Orientation coreOrientation = measureAtCoreCenter
+                ? measureOrientation(selectedCoreCenter, routeTangent, cancellation)
+                : Orientation.UNKNOWN;
         double routeBearing = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
         return new FrozenProfile(FrozenSupport.MEASURED, point, normal,
                 selected.coreMinimumMeters(), selected.coreMaximumMeters(),
                 Math.max(sourcePitchMeters * 0.5, selected.localizationSigmaMeters()),
                 extracted.noiseFloor(), extracted.maximumIntensity(),
-                offsets, values, orientation.modes(),
-                orientation.measured() ? orientation.radians() : routeBearing,
-                orientation.measured() ? orientation.certainty() : 0.0,
+                offsets, values, originOrientation.modes(),
+                originOrientation.measured() ? originOrientation.radians() : routeBearing,
+                originOrientation.measured() ? originOrientation.certainty() : 0.0,
                 selected.scalarAmplitudeReliability() + (1.0 - selected.scalarAmplitudeReliability())
-                    * (orientation.measured() ? orientation.certainty() : 0.0), observedModeStatus);
+                    * (originOrientation.measured() ? originOrientation.certainty() : 0.0),
+                observedModeStatus, branchIsolation, coreOrientation.modes(),
+                coreOrientation.measured() ? coreOrientation.radians() : routeBearing,
+                coreOrientation.measured() ? coreOrientation.certainty() : 0.0,
+                coreOrientation.directedModes());
     }
 
     /**
@@ -641,10 +776,10 @@ public final class ImageCostField {
 
     private FrozenProfile unavailable(FrozenSupport support, MetricPoint point, MetricPoint normal,
             double[] offsets, double[] values, double noiseFloor, double peakIntensity,
-            ObservedModeStatus observedModeStatus) {
+            ObservedModeStatus observedModeStatus, BranchIsolation branchIsolation) {
         return new FrozenProfile(support, point, normal, 0.0, 0.0, sourcePitchMeters,
                 noiseFloor, peakIntensity, offsets, values, List.of(), 0.0, 0.0, 1.0,
-                observedModeStatus);
+                observedModeStatus, branchIsolation, List.of(), 0.0, 0.0, List.of());
     }
 
     private Orientation measureOrientation(MetricPoint center, MetricPoint routeTangent,
@@ -693,9 +828,14 @@ public final class ImageCostField {
         double background = backgroundValues[quantileIndex];
         double[] response = new double[headings];
         double[] validFraction = new double[headings];
+        double[] directedResponse = new double[2 * headings];
+        double[] directedValidFraction = new double[2 * headings];
         Arrays.fill(response, Double.NaN);
+        Arrays.fill(directedResponse, Double.NaN);
         double minimum = Double.POSITIVE_INFINITY;
         double maximum = Double.NEGATIVE_INFINITY;
+        double directedMinimum = Double.POSITIVE_INFINITY;
+        double directedMaximum = Double.NEGATIVE_INFINITY;
         for (int heading = 0; heading < headings; heading++) {
             double[] means = new double[2];
             double[] fractions = new double[2];
@@ -712,6 +852,14 @@ public final class ImageCostField {
                 fractions[side] = validCount / (double) samples;
                 complete &= fractions[side] + 1.0e-12 >= parameters.minimumOrientationValidFraction();
                 means[side] = validCount == 0 ? 0.0 : total / validCount;
+                if (fractions[side] + 1.0e-12
+                        >= parameters.minimumOrientationValidFraction()) {
+                    int directedIndex = heading + side * headings;
+                    directedResponse[directedIndex] = means[side];
+                    directedValidFraction[directedIndex] = fractions[side];
+                    directedMinimum = Math.min(directedMinimum, means[side]);
+                    directedMaximum = Math.max(directedMaximum, means[side]);
+                }
             }
             if (complete) {
                 response[heading] = Math.min(means[0], means[1]);
@@ -720,14 +868,17 @@ public final class ImageCostField {
                 maximum = Math.max(maximum, response[heading]);
             }
         }
+        List<DirectedOrientationMode> directedModes = extractDirectedOrientationModes(
+                directedResponse, directedValidFraction, directedMinimum, directedMaximum,
+                parameters);
         double range = maximum - minimum;
         if (!Double.isFinite(range) || !(maximum > 1.0e-12) || !(range > 1.0e-12)) {
-            return Orientation.UNKNOWN;
+            return new Orientation(false, 0.0, 0.0, List.of(), directedModes);
         }
         ImageOrientationSupport support = extractOrientationModes(response, validFraction,
                 minimum, maximum, parameters);
         if (support.status() != ImageOrientationSupport.Status.MEASURED_TWO_SIDED) {
-            return Orientation.UNKNOWN;
+            return new Orientation(false, 0.0, 0.0, List.of(), directedModes);
         }
         double routeAngle = normalizeBearing(StrictMath.atan2(routeTangent.yMeters(), routeTangent.xMeters()));
         ImageOrientationSupport.AngularMode selectedMode = support.modes().stream()
@@ -736,7 +887,95 @@ public final class ImageCostField {
                 : undirectedDistance(routeAngle, selectedMode.startRadians())
                         <= undirectedDistance(routeAngle, selectedMode.endRadians())
                                 ? selectedMode.startRadians() : selectedMode.endRadians();
-        return new Orientation(true, selected, support.certainty(), support.modes());
+        return new Orientation(true, selected, support.certainty(), support.modes(),
+                directedModes);
+    }
+
+    private static List<DirectedOrientationMode> extractDirectedOrientationModes(
+            double[] response, double[] validFraction, double minimum, double maximum,
+            EvidenceModelParameters.Localization parameters) {
+        double range = maximum - minimum;
+        if (!Double.isFinite(range) || !(maximum > 1.0e-12) || !(range > 1.0e-12)) {
+            return List.of();
+        }
+        int count = response.length;
+        List<DirectedOrientationMode> modes = new ArrayList<>();
+        boolean[] visited = new boolean[count];
+        for (int index = 0; index < count; index++) {
+            if (visited[index] || !Double.isFinite(response[index])) continue;
+            int previous = Math.floorMod(index - 1, count);
+            int next = (index + 1) % count;
+            double value = response[index];
+            if (!Double.isFinite(response[previous]) || !Double.isFinite(response[next])
+                    || value + 1.0e-12 < response[previous]
+                    || value + 1.0e-12 < response[next]
+                    || !(value > response[previous] + 1.0e-12
+                        || value > response[next] + 1.0e-12)) {
+                continue;
+            }
+            int start = index;
+            int end = index;
+            while (Math.floorMod(start - 1, count) != end
+                    && equalOrientationResponse(response,
+                            Math.floorMod(start - 1, count), value)) {
+                start = Math.floorMod(start - 1, count);
+            }
+            while ((end + 1) % count != start
+                    && equalOrientationResponse(response, (end + 1) % count, value)) {
+                end = (end + 1) % count;
+            }
+            int outsideBefore = Math.floorMod(start - 1, count);
+            int outsideAfter = (end + 1) % count;
+            if (!Double.isFinite(response[outsideBefore])
+                    || !Double.isFinite(response[outsideAfter])
+                    || !(value > response[outsideBefore] + 1.0e-12)
+                    || !(value > response[outsideAfter] + 1.0e-12)
+                    || value - minimum + 1.0e-12
+                            < parameters.orientationProminenceFraction() * range) {
+                continue;
+            }
+            int plateauSize = 1;
+            for (int cursor = start; cursor != end; cursor = (cursor + 1) % count) {
+                plateauSize++;
+            }
+            for (int cursor = start;; cursor = (cursor + 1) % count) {
+                visited[cursor] = true;
+                if (cursor == end) break;
+            }
+            double step = 2.0 * Math.PI / count;
+            double peak = plateauSize == 1
+                    ? interpolateDirectedPeak(response, index, step)
+                    : normalizeDirectedBearing((start + 0.5 * (plateauSize - 1)) * step);
+            double minimumFraction = Double.POSITIVE_INFINITY;
+            for (int cursor = start;; cursor = (cursor + 1) % count) {
+                minimumFraction = Math.min(minimumFraction, directedFraction(validFraction, cursor));
+                if (cursor == end) break;
+            }
+            if (minimumFraction + 1.0e-12
+                    >= parameters.minimumOrientationValidFraction()) {
+                modes.add(new DirectedOrientationMode(peak, value));
+            }
+        }
+        modes.sort(Comparator.comparingDouble(DirectedOrientationMode::bearingRadians));
+        return List.copyOf(modes);
+    }
+
+    private static double directedFraction(double[] fractions, int index) {
+        return index >= 0 && index < fractions.length ? fractions[index] : 0.0;
+    }
+
+    private static double interpolateDirectedPeak(double[] response, int index, double step) {
+        double left = response[Math.floorMod(index - 1, response.length)];
+        double center = response[index];
+        double right = response[(index + 1) % response.length];
+        double denominator = left - 2.0 * center + right;
+        if (Math.abs(denominator) <= 1.0e-15) {
+            return normalizeDirectedBearing(index * step);
+        }
+        double offset = 0.5 * (left - right) / denominator;
+        return !Double.isFinite(offset) || Math.abs(offset) > 1.0
+                ? normalizeDirectedBearing(index * step)
+                : normalizeDirectedBearing((index + offset) * step);
     }
 
     private static ImageOrientationSupport extractOrientationModes(double[] response,
@@ -822,14 +1061,28 @@ public final class ImageCostField {
         return result < 0.0 ? result + Math.PI : result;
     }
 
+    private static double normalizeDirectedBearing(double value) {
+        double turn = 2.0 * Math.PI;
+        double result = value % turn;
+        return result < 0.0 ? result + turn : result;
+    }
+
     private static double undirectedDistance(double first, double second) {
         double difference = Math.abs(normalizeBearing(first) - normalizeBearing(second));
         return Math.min(difference, Math.PI - difference);
     }
 
+    private static double distanceToInterval(double value, double first, double second) {
+        double minimum = Math.min(first, second);
+        double maximum = Math.max(first, second);
+        return value < minimum ? minimum - value : value > maximum ? value - maximum : 0.0;
+    }
+
     private record Orientation(boolean measured, double radians, double certainty,
-            List<ImageOrientationSupport.AngularMode> modes) {
-        private static final Orientation UNKNOWN = new Orientation(false, 0.0, 0.0, List.of());
+            List<ImageOrientationSupport.AngularMode> modes,
+            List<DirectedOrientationMode> directedModes) {
+        private static final Orientation UNKNOWN = new Orientation(false, 0.0, 0.0,
+                List.of(), List.of());
     }
 
     private double value(int x, int y) {

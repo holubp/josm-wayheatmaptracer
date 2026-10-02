@@ -12,6 +12,7 @@ import java.util.Set;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport.AngularMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
@@ -24,6 +25,7 @@ public final class FinalGeometryEvaluator {
     private static final double[] LOCAL_WINDOW_SPANS_METERS = {6.0, 10.0, 20.0};
     private static final int MAXIMUM_LOCAL_WINDOW_ROWS = 65_536;
     private static final int MAXIMUM_CACHED_PROFILE_ROWS = 65_536;
+    private static final long MAXIMUM_SINGLE_APEX_CHORD_EVALUATIONS = 4_000_000L;
     /** Stable defect codes shared by all modern engines. */
     public enum FindingCode {
         SELF_INTERSECTION,
@@ -171,7 +173,11 @@ public final class FinalGeometryEvaluator {
     /** Test-facing truthful counters for the bounded local-warning classifier. */
     record LocalWarningStats(long windowVisits, long qualifyingWindows,
             long candidateComparisons, long maximumDiagnosticRows,
-            long maximumCachedProfileRows, long rowBudgetAbstentions) { }
+            long maximumCachedProfileRows, long rowBudgetAbstentions,
+            long singleApexComparisons, long singleApexProfileAmbiguities,
+            long singleApexOrientationAmbiguities, long singleApexResidualAmbiguities,
+            long singleApexSegmentAmbiguities, long singleApexChordEvaluations,
+            long singleApexScanBudgetAbstentions) { }
 
     /** Local-warning result and its bounded-work evidence. */
     record LocalWarningInspection(List<Finding> findings, LocalWarningStats stats) {
@@ -187,6 +193,16 @@ public final class FinalGeometryEvaluator {
         MutableLocalWarningStats stats = new MutableLocalWarningStats();
         double onset = Math.max(0.75, 0.5 * request.sourcePitchMeters());
         inspectRepeatedShortWaves(request, findings, chainage(request.points()), onset,
+                cancellation, stats);
+        return new LocalWarningInspection(findings, stats.snapshot());
+    }
+
+    /** Focused complete local-shape entry point used to prove apex work bounds. */
+    LocalWarningInspection inspectLocalExcursionsForTest(Request request,
+            CancellationProbe cancellation) {
+        List<Finding> findings = new ArrayList<>();
+        MutableLocalWarningStats stats = new MutableLocalWarningStats();
+        inspectLocalExcursions(request, findings, new DirectedSamplingMemo(2_048),
                 cancellation, stats);
         return new LocalWarningInspection(findings, stats.snapshot());
     }
@@ -356,43 +372,129 @@ public final class FinalGeometryEvaluator {
         double[] chainage = chainage(request.points());
         inspectRepeatedShortWaves(request, findings, chainage, onset, cancellation,
                 localWarningStats);
+        PhysicalSampleIndex samples = PhysicalSampleIndex.create(request.points(), chainage,
+                Math.min(1.0, request.sourcePitchMeters() / 2.0), cancellation);
+        Map<Integer, List<SingleApexCandidate>> candidatesByApex = new LinkedHashMap<>();
+        boolean scanBudgetExceeded = false;
 
-        for (int first = 0; first < request.points().size() - 2; first++) {
+        scan:
+        for (int centerIndex = 0; centerIndex < samples.uniformCount(); centerIndex++) {
             cancellation.checkpoint();
-            for (int last = first + 2; last < request.points().size(); last++) {
-                double span = chainage[last] - chainage[first];
-                if (span > 20.0) {
+            double centerChainage = samples.uniformAt(centerIndex).chainageMeters();
+            for (double requestedSpan : LOCAL_WINDOW_SPANS_METERS) {
+                double start;
+                double end;
+                boolean wholeShortRoute = samples.totalLengthMeters() + 1.0e-9
+                        < requestedSpan;
+                if (wholeShortRoute) {
+                    if (centerIndex != 0 || requestedSpan != LOCAL_WINDOW_SPANS_METERS[0]) {
+                        continue;
+                    }
+                    start = 0.0;
+                    end = samples.totalLengthMeters();
+                } else {
+                    double halfSpan = 0.5 * requestedSpan;
+                    if (centerChainage < halfSpan - 1.0e-9
+                            || centerChainage > samples.totalLengthMeters()
+                                - halfSpan + 1.0e-9) {
+                        continue;
+                    }
+                    start = centerChainage - halfSpan;
+                    end = centerChainage + halfSpan;
+                }
+                double span = end - start;
+                if (!wholeShortRoute && span < 4.0) {
+                    continue;
+                }
+                MetricPoint firstPoint = samples.sampleAt(start).point();
+                MetricPoint lastPoint = samples.sampleAt(end).point();
+                double amplitude = 0.0;
+                int apex = -1;
+                int firstInterior = PhysicalSampleIndex.lowerBound(chainage, start + 1.0e-9);
+                int afterLastInterior = PhysicalSampleIndex.upperBound(chainage, end - 1.0e-9);
+                for (int index = firstInterior; index < afterLastInterior; index++) {
+                    if (localWarningStats.singleApexChordEvaluations
+                            >= MAXIMUM_SINGLE_APEX_CHORD_EVALUATIONS) {
+                        scanBudgetExceeded = true;
+                        break scan;
+                    }
+                    localWarningStats.singleApexChordEvaluations++;
+                    if ((localWarningStats.singleApexChordEvaluations & 1023L) == 0L) {
+                        cancellation.checkpoint();
+                    }
+                    double distance = pointSegmentDistance(request.points().get(index),
+                            firstPoint, lastPoint);
+                    if (distance > amplitude) {
+                        amplitude = distance;
+                        apex = index;
+                    }
+                }
+                if (apex < 0 || amplitude <= onset) {
+                    continue;
+                }
+                int first = Math.max(0, PhysicalSampleIndex.upperBound(chainage, start) - 1);
+                int last = Math.min(request.points().size() - 1,
+                        PhysicalSampleIndex.lowerBound(chainage, end));
+                SingleApexCandidate candidate = new SingleApexCandidate(first, last, apex,
+                        amplitude, span, start, end);
+                List<SingleApexCandidate> candidates = candidatesByApex
+                        .computeIfAbsent(apex, ignored -> new ArrayList<>());
+                int sameSpan = -1;
+                for (int index = 0; index < candidates.size(); index++) {
+                    if (Math.abs(candidates.get(index).spanMeters() - span) <= 1.0e-9) {
+                        sameSpan = index;
+                        break;
+                    }
+                }
+                if (sameSpan < 0) {
+                    candidates.add(candidate);
+                } else if (candidate.betterCenteredThan(candidates.get(sameSpan),
+                        chainage[apex])) {
+                    candidates.set(sameSpan, candidate);
+                }
+            }
+        }
+
+        if (scanBudgetExceeded) {
+            localWarningStats.singleApexScanBudgetAbstentions++;
+            findings.add(review(FindingCode.LOCAL_SHAPE_IMAGE_AMBIGUITY, 0,
+                    request.points().size() - 1, 0.0));
+            if (request.points().size() >= 3) {
+                inspectTerminalKink(request.points(), request.image(), onset, false, findings, sampling);
+                inspectTerminalKink(request.points(), request.image(), onset, true, findings, sampling);
+            }
+            return;
+        }
+
+        ProfileCache profiles = new ProfileCache(localWarningStats);
+        for (List<SingleApexCandidate> candidates : resolutionDistinctCandidateGroups(
+                candidatesByApex.values(), chainage, request.sourcePitchMeters())) {
+            cancellation.checkpoint();
+            SingleApexCandidate ambiguous = candidates.get(0);
+            double isolationAmplitude = candidates.stream()
+                    .mapToDouble(SingleApexCandidate::amplitudeMeters)
+                    .max().orElseThrow();
+            boolean resolved = false;
+            for (SingleApexCandidate candidate : candidates) {
+                localWarningStats.singleApexComparisons++;
+                LocalComparison comparison = compareSingleApex(request, samples, candidate,
+                        isolationAmplitude, profiles, onset, cancellation, localWarningStats);
+                if (comparison == LocalComparison.CONTRADICTED) {
+                    findings.add(review(FindingCode.UNSUPPORTED_ISOLATED_EXCURSION,
+                            candidate.firstVertex(), candidate.lastVertex(),
+                            candidate.amplitudeMeters()));
+                    resolved = true;
                     break;
                 }
-                if (span < 4.0) {
-                    continue;
+                if (comparison == LocalComparison.SUPPORTED) {
+                    resolved = true;
+                    break;
                 }
-                double amplitude = 0.0;
-                for (int index = first + 1; index < last; index++) {
-                    amplitude = Math.max(amplitude, pointSegmentDistance(request.points().get(index),
-                            request.points().get(first), request.points().get(last)));
-                }
-                if (amplitude <= onset) {
-                    continue;
-                }
-                List<MetricPoint> local = request.points().subList(first, last + 1);
-                double routeCost = sampling.routePolylineCost(local, request.image());
-                double chordCost = request.image().meanRouteSegmentCost(request.points().get(first),
-                        request.points().get(last));
-                SupportMetrics localSupport = supportMetrics(local, request.image(),
-                        request.sourcePitchMeters(), sampling);
-                boolean directlySupported = localSupport.directLength >= 0.95 * localSupport.totalLength;
-                boolean costsFinite = Double.isFinite(routeCost) && Double.isFinite(chordCost);
-                boolean routeUnknownWithinSourceUncertainty = !Double.isFinite(routeCost)
-                        && Double.isFinite(chordCost)
-                        && localSupport.worstUnsupportedSpan <= request.sourcePitchMeters();
-                boolean supportedBend = directlySupported
-                        || routeUnknownWithinSourceUncertainty
-                        || costsFinite && routeCost <= chordCost + 0.02;
-                if (!supportedBend) {
-                    findings.add(review(FindingCode.UNSUPPORTED_ISOLATED_EXCURSION,
-                            first, last, amplitude));
-                }
+            }
+            if (!resolved) {
+                findings.add(review(FindingCode.LOCAL_SHAPE_IMAGE_AMBIGUITY,
+                        ambiguous.firstVertex(), ambiguous.lastVertex(),
+                        ambiguous.amplitudeMeters()));
             }
         }
 
@@ -400,6 +502,402 @@ public final class FinalGeometryEvaluator {
             inspectTerminalKink(request.points(), request.image(), onset, false, findings, sampling);
             inspectTerminalKink(request.points(), request.image(), onset, true, findings, sampling);
         }
+    }
+
+    private static List<List<SingleApexCandidate>> resolutionDistinctCandidateGroups(
+            java.util.Collection<List<SingleApexCandidate>> candidateGroups, double[] chainage,
+            double sourcePitchMeters) {
+        List<List<SingleApexCandidate>> ordered = new ArrayList<>();
+        for (List<SingleApexCandidate> candidates : candidateGroups) {
+            candidates.sort((first, second) -> first.betterThan(second) ? -1
+                    : second.betterThan(first) ? 1 : 0);
+            ordered.add(List.copyOf(candidates));
+        }
+        ordered.sort(Comparator.comparingDouble(candidates ->
+                chainage[candidates.get(0).apexVertex()]));
+        List<List<SingleApexCandidate>> result = new ArrayList<>();
+        List<SingleApexCandidate> best = null;
+        double clusterRepresentative = Double.NEGATIVE_INFINITY;
+        for (List<SingleApexCandidate> candidates : ordered) {
+            SingleApexCandidate candidate = candidates.get(0);
+            double apexChainage = chainage[candidate.apexVertex()];
+            if (best == null || apexChainage - clusterRepresentative
+                    > sourcePitchMeters + 1.0e-9) {
+                if (best != null) result.add(best);
+                best = candidates;
+                clusterRepresentative = apexChainage;
+            } else if (candidate.betterThan(best.get(0))) {
+                best = candidates;
+            }
+        }
+        if (best != null) result.add(best);
+        result.sort(Comparator.comparingInt(candidates -> candidates.get(0).firstVertex()));
+        return List.copyOf(result);
+    }
+
+    static List<Integer> resolutionDistinctApexesForTest(List<Double> chainages,
+            double sourcePitchMeters) {
+        List<Integer> result = new ArrayList<>();
+        double representative = Double.NEGATIVE_INFINITY;
+        for (int index = 0; index < chainages.size(); index++) {
+            double chainage = chainages.get(index);
+            if (result.isEmpty() || chainage - representative > sourcePitchMeters + 1.0e-9) {
+                result.add(index);
+                representative = chainage;
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static LocalComparison compareSingleApex(Request request,
+            PhysicalSampleIndex samples, SingleApexCandidate candidate,
+            double isolationAmplitude, ProfileCache profiles, double onset,
+            CancellationProbe cancellation,
+            MutableLocalWarningStats stats) {
+        Set<Integer> sampledExact = new LinkedHashSet<>(request.protectedIndices());
+        sampledExact.add(candidate.apexVertex());
+        double start = candidate.startChainageMeters();
+        double end = candidate.endChainageMeters();
+        List<PhysicalSample> rows = samples.comparisonWindow(start, end, sampledExact,
+                cancellation, stats);
+        if (rows == null || stats.singleApexRows + rows.size() > MAXIMUM_LOCAL_WINDOW_ROWS) {
+            stats.rowBudgetAbstentions++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        stats.singleApexRows += rows.size();
+        MetricPoint windowStart = samples.sampleAt(start).point();
+        MetricPoint windowTangent = subtract(samples.sampleAt(end).point(), windowStart);
+        if (!(norm(windowTangent) > 1.0e-12)) return LocalComparison.AMBIGUOUS;
+        List<FrozenProfile> measured = new ArrayList<>(rows.size());
+        List<MetricPoint> centers = new ArrayList<>(rows.size());
+        List<MetricPoint> alternative = new ArrayList<>(rows.size());
+        double[] rowChainage = new double[rows.size()];
+        double[] squaredResidual = new double[rows.size()];
+        double[] candidateCosts = new double[rows.size()];
+        double[] alternativeCosts = new double[rows.size()];
+        double maximumResidual = 0.0;
+        boolean routeFollowsMeasuredCenter = true;
+        int apexRow = -1;
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            PhysicalSample row = rows.get(rowIndex);
+            cancellation.checkpoint();
+            rowChainage[rowIndex] = row.chainageMeters();
+            if (row.originalVertex() == candidate.apexVertex()) apexRow = rowIndex;
+            boolean exactBoundary = row.chainageMeters() == start
+                    || row.chainageMeters() == end;
+            FrozenProfile profile = frozenProfile(request.image(), row.point(), windowTangent,
+                    profiles, cancellation);
+            if (profile == null || profile.support() != ImageCostField.FrozenSupport.MEASURED) {
+                if (exactBoundary) {
+                    // An exact local boundary is never moved.  A supported bend may therefore
+                    // retain an image-edge endpoint, but an unmeasured endpoint cannot later
+                    // certify a contradictory alternative segment.
+                    measured.add(null);
+                    centers.add(null);
+                    alternative.add(row.point());
+                    squaredResidual[rowIndex] = Double.NaN;
+                    candidateCosts[rowIndex] = Double.NaN;
+                    alternativeCosts[rowIndex] = Double.NaN;
+                    continue;
+                }
+                stats.singleApexProfileAmbiguities++;
+                return LocalComparison.AMBIGUOUS;
+            }
+            double offset = 0.5 * (profile.coreMinimumMeters()
+                    + profile.coreMaximumMeters());
+            double interventionTube = Math.abs(offset) + isolationAmplitude
+                    + request.sourcePitchMeters();
+            boolean locallyIsolated = profile.branchIsolation().measured()
+                    && profile.branchIsolation().nearestCensoredExtentDistanceMeters()
+                        > interventionTube
+                    && profile.branchIsolation().nearestCompleteCompetitorDistanceMeters()
+                        > interventionTube;
+            if (!locallyIsolated) {
+                stats.singleApexProfileAmbiguities++;
+                return LocalComparison.AMBIGUOUS;
+            }
+            MetricPoint center = new MetricPoint(
+                    row.point().xMeters() + profile.normal().xMeters() * offset,
+                    row.point().yMeters() + profile.normal().yMeters() * offset);
+            boolean exact = exactBoundary
+                    || samples.isProtected(row.chainageMeters(), request.protectedIndices());
+            MetricPoint proposed = exact ? row.point() : center;
+            var currentSample = profile.evaluate(row.point());
+            var proposedSample = profile.evaluate(proposed);
+            if (currentSample.isEmpty() || proposedSample.isEmpty()) {
+                stats.singleApexProfileAmbiguities++;
+                return LocalComparison.AMBIGUOUS;
+            }
+            double residual = row.point().distanceTo(center);
+            squaredResidual[rowIndex] = residual * residual;
+            maximumResidual = Math.max(maximumResidual, residual);
+            candidateCosts[rowIndex] = currentSample.orElseThrow().cost();
+            alternativeCosts[rowIndex] = proposedSample.orElseThrow().cost();
+            routeFollowsMeasuredCenter &= residual
+                    <= 0.5 * request.sourcePitchMeters() + 1.0e-9;
+            measured.add(profile);
+            centers.add(center);
+            alternative.add(proposed);
+        }
+        if (apexRow < 0) {
+            stats.singleApexProfileAmbiguities++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        if (routeFollowsMeasuredCenter) {
+            boolean coherent = directionallyCoherent(
+                    rows.stream().map(PhysicalSample::point).toList(),
+                    centers, measured, rowChainage, apexRow, request.sourcePitchMeters());
+            if (coherent) {
+                return LocalComparison.SUPPORTED;
+            }
+            stats.singleApexOrientationAmbiguities++;
+            return LocalComparison.AMBIGUOUS;
+        }
+
+        if (measured.stream().anyMatch(Objects::isNull)) {
+            stats.singleApexProfileAmbiguities++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        double residualMean = weightedMean(rowChainage, squaredResidual);
+        double candidateCost = weightedMean(rowChainage, candidateCosts);
+        double alternativeCost = weightedMean(rowChainage, alternativeCosts);
+        double rmsResidual = StrictMath.sqrt(residualMean);
+        double scale = Math.max(1.0, Math.max(Math.abs(candidateCost), Math.abs(alternativeCost)));
+        if (!(maximumResidual > onset && rmsResidual > 0.5 * request.sourcePitchMeters()
+                && alternativeCost + 1.0e-12 * scale < candidateCost)) {
+            stats.singleApexResidualAmbiguities++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        double windowLength = norm(windowTangent);
+        double ux = windowTangent.xMeters() / windowLength;
+        double uy = windowTangent.yMeters() / windowLength;
+        MetricPoint firstAlternative = alternative.get(0);
+        double previousProjection = (firstAlternative.xMeters()
+                - windowStart.xMeters()) * ux
+                + (firstAlternative.yMeters()
+                - windowStart.yMeters()) * uy;
+        for (int index = 1; index < alternative.size(); index++) {
+            cancellation.checkpoint();
+            MetricPoint first = alternative.get(index - 1);
+            MetricPoint second = alternative.get(index);
+            double length = first.distanceTo(second);
+            double chainageDelta = rows.get(index).chainageMeters()
+                    - rows.get(index - 1).chainageMeters();
+            double maximumRowGap = Math.min(1.0, request.sourcePitchMeters() / 2.0);
+            double projection = (second.xMeters() - windowStart.xMeters())
+                    * ux + (second.yMeters()
+                    - windowStart.yMeters()) * uy;
+            if (!(length > 1.0e-12) || chainageDelta <= 0.0
+                    || chainageDelta > maximumRowGap + 1.0e-9
+                    || length > chainageDelta + request.sourcePitchMeters() + 1.0e-9
+                    || projection + 0.5 * request.sourcePitchMeters()
+                        < previousProjection) {
+                stats.singleApexSegmentAmbiguities++;
+                return LocalComparison.AMBIGUOUS;
+            }
+            previousProjection = projection;
+        }
+        if (!directionallyCoherent(centers, centers, measured, rowChainage, apexRow,
+                request.sourcePitchMeters())) {
+            stats.singleApexOrientationAmbiguities++;
+            return LocalComparison.AMBIGUOUS;
+        }
+        return LocalComparison.CONTRADICTED;
+    }
+
+    private static double angularUncertainty(double sourcePitchMeters, double lengthMeters) {
+        if (!(lengthMeters > sourcePitchMeters)) return Double.NaN;
+        return StrictMath.asin(Math.min(1.0, 0.5 * sourcePitchMeters / lengthMeters));
+    }
+
+    private static boolean directionallyCoherent(List<MetricPoint> route,
+            List<MetricPoint> centers, List<FrozenProfile> profiles, double[] chainage,
+            int apexIndex, double sourcePitchMeters) {
+        if (apexIndex < 0 || apexIndex >= centers.size() || centers.get(apexIndex) == null
+                || profiles.get(apexIndex) == null) {
+            return false;
+        }
+        int left = -1;
+        for (int index = 0; index < apexIndex; index++) {
+            if (centers.get(index) != null && profiles.get(index) != null
+                    && chainage[apexIndex] - chainage[index] > sourcePitchMeters + 1.0e-9) {
+                left = index;
+                break;
+            }
+        }
+        int right = -1;
+        for (int index = centers.size() - 1; index > apexIndex; index--) {
+            if (centers.get(index) != null && profiles.get(index) != null
+                    && chainage[index] - chainage[apexIndex] > sourcePitchMeters + 1.0e-9) {
+                right = index;
+                break;
+            }
+        }
+        return left >= 0 && right >= 0
+                && continuousCenters(centers, chainage, left, right, sourcePitchMeters)
+                && coherentLeg(route.get(left), route.get(apexIndex), centers.get(left),
+                        centers.get(apexIndex), profiles, left, apexIndex - 1,
+                        sourcePitchMeters)
+                && coherentLeg(route.get(apexIndex), route.get(right), centers.get(apexIndex),
+                        centers.get(right), profiles, apexIndex + 1, right,
+                        sourcePitchMeters)
+                && apexDirectionCoherent(centers.get(left), centers.get(apexIndex),
+                        centers.get(right), profiles.get(apexIndex), sourcePitchMeters);
+    }
+
+    private static boolean coherentLeg(MetricPoint routeFirst, MetricPoint routeSecond,
+            MetricPoint centerFirst, MetricPoint centerSecond, List<FrozenProfile> profiles,
+            int firstIndex, int secondIndex, double sourcePitchMeters) {
+        double routeLength = routeFirst.distanceTo(routeSecond);
+        double centerLength = centerFirst.distanceTo(centerSecond);
+        double baseline = Math.min(routeLength, centerLength);
+        double allowance = angularUncertainty(sourcePitchMeters, baseline);
+        if (!Double.isFinite(allowance)) {
+            return false;
+        }
+        double routeBearing = StrictMath.atan2(routeSecond.yMeters() - routeFirst.yMeters(),
+                routeSecond.xMeters() - routeFirst.xMeters());
+        double centerBearing = StrictMath.atan2(centerSecond.yMeters() - centerFirst.yMeters(),
+                centerSecond.xMeters() - centerFirst.xMeters());
+        if (undirectedDistance(routeBearing, centerBearing) > allowance + 1.0e-12) {
+            return false;
+        }
+        boolean hasMeasuredRayDirection = false;
+        boolean hasCoherentRayDirection = false;
+        for (int index = Math.min(firstIndex, secondIndex);
+                index <= Math.max(firstIndex, secondIndex); index++) {
+            FrozenProfile profile = profiles.get(index);
+            if (profile == null || profile.coreOrientationModes().isEmpty()
+                    || !(profile.coreOrientationCertainty() > 0.0)) {
+                continue;
+            }
+            hasMeasuredRayDirection = true;
+            hasCoherentRayDirection |= profile.coreOrientationModes().stream()
+                    .anyMatch(mode -> mode.distanceTo(centerBearing) <= allowance + 1.0e-12);
+        }
+        return hasMeasuredRayDirection && hasCoherentRayDirection;
+    }
+
+    private static boolean apexDirectionCoherent(MetricPoint left, MetricPoint apex,
+            MetricPoint right, FrozenProfile apexProfile, double sourcePitchMeters) {
+        double incomingLength = left.distanceTo(apex);
+        double outgoingLength = apex.distanceTo(right);
+        double centeredLength = left.distanceTo(right);
+        double incomingAllowance = angularUncertainty(sourcePitchMeters, incomingLength);
+        double outgoingAllowance = angularUncertainty(sourcePitchMeters, outgoingLength);
+        double centeredAllowance = angularUncertainty(sourcePitchMeters, centeredLength);
+        double incoming = StrictMath.atan2(apex.yMeters() - left.yMeters(),
+                apex.xMeters() - left.xMeters());
+        double outgoing = StrictMath.atan2(right.yMeters() - apex.yMeters(),
+                right.xMeters() - apex.xMeters());
+        double centered = StrictMath.atan2(right.yMeters() - left.yMeters(),
+                right.xMeters() - left.xMeters());
+        if (!Double.isFinite(incomingAllowance) || !Double.isFinite(outgoingAllowance)) {
+            return false;
+        }
+        boolean resolutionSignificantCorner = undirectedDistance(incoming, outgoing)
+                > incomingAllowance + outgoingAllowance + 1.0e-12;
+        if (!resolutionSignificantCorner) {
+            return Double.isFinite(centeredAllowance)
+                    && apexProfile.coreOrientationCertainty() > 0.0
+                    && apexProfile.coreOrientationModes().stream().anyMatch(mode ->
+                            mode.distanceTo(centered) <= centeredAllowance + 1.0e-12);
+        }
+        if (apexProfile.observedModeStatus() != ObservedModeStatus.OBSERVED_UNIQUE
+                || !apexProfile.branchIsolation().measured()
+                || apexProfile.branchIsolation().nearestCompleteCompetitorDistanceMeters()
+                        != Double.POSITIVE_INFINITY
+                || apexProfile.branchIsolation().nearestCensoredExtentDistanceMeters()
+                        != Double.POSITIVE_INFINITY) {
+            return false;
+        }
+        if (apexProfile.directedOrientationModes().size() != 2) return false;
+        double outwardLeft = incoming + Math.PI;
+        int leftMode = -1;
+        int rightMode = -1;
+        for (int index = 0; index < apexProfile.directedOrientationModes().size(); index++) {
+            var mode = apexProfile.directedOrientationModes().get(index);
+            if (mode.distanceTo(outwardLeft) <= incomingAllowance + 1.0e-12) leftMode = index;
+            if (mode.distanceTo(outgoing) <= outgoingAllowance + 1.0e-12) rightMode = index;
+        }
+        return leftMode >= 0 && rightMode >= 0 && leftMode != rightMode;
+    }
+
+    private static boolean continuousCenters(List<MetricPoint> centers, double[] chainage,
+            int first, int last, double sourcePitchMeters) {
+        double maximumRowGap = Math.min(1.0, sourcePitchMeters / 2.0);
+        for (int index = first + 1; index <= last; index++) {
+            if (centers.get(index - 1) == null || centers.get(index) == null) return false;
+            double delta = chainage[index] - chainage[index - 1];
+            double measured = centers.get(index - 1).distanceTo(centers.get(index));
+            if (!(delta > 0.0) || delta > maximumRowGap + 1.0e-9
+                    || !(measured > 1.0e-12)
+                    || measured > delta + sourcePitchMeters + 1.0e-9) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static double undirectedDistance(double first, double second) {
+        double normalizedFirst = normalizeBearing(first);
+        double normalizedSecond = normalizeBearing(second);
+        double difference = Math.abs(normalizedFirst - normalizedSecond);
+        return Math.min(difference, Math.PI - difference);
+    }
+
+    private static double normalizeBearing(double bearing) {
+        double normalized = bearing % Math.PI;
+        return normalized < 0.0 ? normalized + Math.PI : normalized;
+    }
+
+    private static double weightedMean(double[] chainage, double[] values) {
+        if (chainage.length != values.length || chainage.length < 2) {
+            throw new IllegalArgumentException("Physical quadrature inputs are incomplete");
+        }
+        double weighted = 0.0;
+        double totalWeight = 0.0;
+        for (int index = 0; index < values.length; index++) {
+            double previous = index == 0 ? chainage[index] : chainage[index - 1];
+            double next = index == values.length - 1 ? chainage[index] : chainage[index + 1];
+            double weight = 0.5 * (next - previous);
+            if (!Double.isFinite(values[index]) || !(weight >= 0.0)) {
+                return Double.NaN;
+            }
+            weighted += weight * values[index];
+            totalWeight += weight;
+        }
+        return totalWeight > 0.0 ? weighted / totalWeight : Double.NaN;
+    }
+
+    static double weightedMeanForTest(double[] chainage, double[] values) {
+        return weightedMean(chainage.clone(), values.clone());
+    }
+
+    static boolean directionallyCoherentForTest(List<MetricPoint> route,
+            List<MetricPoint> centers, List<AngularMode> modes, double sourcePitchMeters) {
+        if (route.size() != 3 || centers.size() != 3 || modes.size() != 3) return false;
+        return coherentLegForTest(route.get(0), route.get(1), centers.get(0), centers.get(1),
+                modes.get(0), modes.get(1), sourcePitchMeters)
+                && coherentLegForTest(route.get(1), route.get(2), centers.get(1), centers.get(2),
+                        modes.get(1), modes.get(2), sourcePitchMeters);
+    }
+
+    private static boolean coherentLegForTest(MetricPoint routeFirst, MetricPoint routeSecond,
+            MetricPoint centerFirst, MetricPoint centerSecond, AngularMode firstMode,
+            AngularMode secondMode, double sourcePitchMeters) {
+        double routeLength = routeFirst.distanceTo(routeSecond);
+        double centerLength = centerFirst.distanceTo(centerSecond);
+        double allowance = angularUncertainty(sourcePitchMeters,
+                Math.min(routeLength, centerLength));
+        if (!Double.isFinite(allowance)) return false;
+        double routeBearing = StrictMath.atan2(routeSecond.yMeters() - routeFirst.yMeters(),
+                routeSecond.xMeters() - routeFirst.xMeters());
+        double centerBearing = StrictMath.atan2(centerSecond.yMeters() - centerFirst.yMeters(),
+                centerSecond.xMeters() - centerFirst.xMeters());
+        return undirectedDistance(routeBearing, centerBearing) <= allowance + 1.0e-12
+                && firstMode.distanceTo(centerBearing) <= allowance + 1.0e-12
+                && secondMode.distanceTo(centerBearing) <= allowance + 1.0e-12;
     }
 
     private static void inspectRepeatedShortWaves(Request request, List<Finding> findings,
@@ -1098,6 +1596,40 @@ public final class FinalGeometryEvaluator {
         }
     }
 
+    private record SingleApexCandidate(int firstVertex, int lastVertex, int apexVertex,
+            double amplitudeMeters, double spanMeters, double startChainageMeters,
+            double endChainageMeters) {
+        boolean betterCenteredThan(SingleApexCandidate other, double apexChainageMeters) {
+            double centerDistance = Math.abs(0.5 * (startChainageMeters
+                    + endChainageMeters) - apexChainageMeters);
+            double otherCenterDistance = Math.abs(0.5 * (other.startChainageMeters
+                    + other.endChainageMeters) - apexChainageMeters);
+            int centered = Double.compare(centerDistance, otherCenterDistance);
+            if (centered != 0) return centered < 0;
+            int amplitude = Double.compare(amplitudeMeters, other.amplitudeMeters);
+            if (amplitude != 0) return amplitude > 0;
+            int start = Double.compare(startChainageMeters, other.startChainageMeters);
+            if (start != 0) return start < 0;
+            int end = Double.compare(endChainageMeters, other.endChainageMeters);
+            if (end != 0) return end < 0;
+            if (firstVertex != other.firstVertex) return firstVertex < other.firstVertex;
+            return lastVertex < other.lastVertex;
+        }
+
+        boolean betterThan(SingleApexCandidate other) {
+            int span = Double.compare(spanMeters, other.spanMeters);
+            if (span != 0) return span < 0;
+            int amplitude = Double.compare(amplitudeMeters, other.amplitudeMeters);
+            if (amplitude != 0) return amplitude > 0;
+            int start = Double.compare(startChainageMeters, other.startChainageMeters);
+            if (start != 0) return start < 0;
+            int end = Double.compare(endChainageMeters, other.endChainageMeters);
+            if (end != 0) return end < 0;
+            if (firstVertex != other.firstVertex) return firstVertex < other.firstVertex;
+            return lastVertex < other.lastVertex;
+        }
+    }
+
     private record WindowCandidate(double startChainageMeters, double endChainageMeters,
             List<ResidualPoint> lobes, int qualifiedReversals, double amplitudeMeters) {
         double firstLobeChainageMeters() {
@@ -1127,10 +1659,22 @@ public final class FinalGeometryEvaluator {
         private long maximumDiagnosticRows;
         private long maximumCachedProfileRows;
         private long rowBudgetAbstentions;
+        private long singleApexRows;
+        private long singleApexComparisons;
+        private long singleApexProfileAmbiguities;
+        private long singleApexOrientationAmbiguities;
+        private long singleApexResidualAmbiguities;
+        private long singleApexSegmentAmbiguities;
+        private long singleApexChordEvaluations;
+        private long singleApexScanBudgetAbstentions;
 
         LocalWarningStats snapshot() {
             return new LocalWarningStats(windowVisits, qualifyingWindows, candidateComparisons,
-                    maximumDiagnosticRows, maximumCachedProfileRows, rowBudgetAbstentions);
+                    maximumDiagnosticRows, maximumCachedProfileRows, rowBudgetAbstentions,
+                    singleApexComparisons, singleApexProfileAmbiguities,
+                    singleApexOrientationAmbiguities, singleApexResidualAmbiguities,
+                    singleApexSegmentAmbiguities, singleApexChordEvaluations,
+                    singleApexScanBudgetAbstentions);
         }
     }
 
@@ -1150,7 +1694,8 @@ public final class FinalGeometryEvaluator {
             if (cached != null) {
                 return cached;
             }
-            FrozenProfile measured = image.freezeProfile(key.point(), key.tangent(), cancellation);
+            FrozenProfile measured = image.freezeProfileWithCoreOrientation(
+                    key.point(), key.tangent(), cancellation);
             int rows = measured.sampleCount();
             if (rows > MAXIMUM_CACHED_PROFILE_ROWS) {
                 return null;
@@ -1222,6 +1767,10 @@ public final class FinalGeometryEvaluator {
 
         double totalLengthMeters() {
             return vertexChainage[vertexChainage.length - 1];
+        }
+
+        double vertexChainage(int index) {
+            return vertexChainage[index];
         }
 
         List<PhysicalSample> uniformWindow(double start, double end) {

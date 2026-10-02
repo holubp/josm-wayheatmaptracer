@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.FrozenSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField.ObservedModeStatus;
@@ -39,6 +40,22 @@ class V022ImageRefitterTest {
                 new double[] {0, 1, 0}, List.of(), 0.0, 0.0);
 
         assertEquals(ObservedModeStatus.UNKNOWN, legacy.observedModeStatus());
+        assertFalse(legacy.branchIsolation().measured(),
+                "compatibility constructors must not invent measured branch isolation");
+        assertTrue(legacy.directedOrientationModes().isEmpty(),
+                "compatibility profiles must not invent directed corner evidence");
+        assertTrue(legacy.coreOrientationModes().isEmpty());
+        assertEquals(0.0, legacy.coreOrientationCertainty(), 0.0);
+    }
+
+    @Test
+    void compatibilityCensoredModeDoesNotInventMeasuredInwardExtent() {
+        LocalScalarProfileExtractor.CensoredMode legacy =
+                new LocalScalarProfileExtractor.CensoredMode(
+                        LocalScalarProfileExtractor.CensorSide.RIGHT, 8.0, 0.75, true);
+
+        assertFalse(legacy.inwardExtentMeasured());
+        assertEquals(8.0, legacy.inwardSupportOffsetMeters(), 0.0);
     }
 
     @Test
@@ -153,10 +170,19 @@ class V022ImageRefitterTest {
         MetricPoint tangent = new MetricPoint(Math.cos(angle), Math.sin(angle));
 
         ImageCostField.FrozenProfile profile = image.freezeProfile(new MetricPoint(45, 0), tangent);
+        ImageCostField.FrozenProfile core = image.freezeProfileWithCoreOrientation(
+                new MetricPoint(45, 0), tangent, CancellationProbe.NONE);
 
         assertEquals(angle, profile.orientationRadians(), Math.toRadians(3.0));
         assertFalse(profile.orientationModes().isEmpty());
         assertTrue(profile.orientationCertainty() > 0.0);
+        assertTrue(profile.coreOrientationModes().isEmpty(),
+                "the refitter profile must retain origin-centered orientation provenance");
+        assertTrue(core.orientationModes().isEmpty(),
+                "the final-geometry profile must not expose core evidence as origin evidence");
+        assertEquals(angle, core.coreOrientationRadians(), Math.toRadians(3.0));
+        assertFalse(core.coreOrientationModes().isEmpty());
+        assertTrue(core.coreOrientationCertainty() > 0.0);
     }
 
     @Test

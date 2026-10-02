@@ -70,7 +70,28 @@ public final class LocalScalarProfileExtractor {
 
     /** One edge-censored component, which cannot provide a measured center. */
     public record CensoredMode(CensorSide side, double boundaryOffsetMeters,
-            double existenceConfidence, boolean gradientTowardEdge) { }
+            double existenceConfidence, boolean gradientTowardEdge,
+            boolean inwardExtentMeasured, double inwardSupportOffsetMeters) {
+        /** Retains callers that predate factual censored-interval extent. */
+        public CensoredMode(CensorSide side, double boundaryOffsetMeters,
+                double existenceConfidence, boolean gradientTowardEdge) {
+            this(side, boundaryOffsetMeters, existenceConfidence, gradientTowardEdge,
+                    false, boundaryOffsetMeters);
+        }
+
+        /** Validates the measured interval direction without inventing legacy support. */
+        public CensoredMode {
+            if (side == null || !Double.isFinite(boundaryOffsetMeters)
+                    || !Double.isFinite(existenceConfidence) || existenceConfidence < 0.0
+                    || existenceConfidence > 1.0
+                    || !Double.isFinite(inwardSupportOffsetMeters)
+                    || inwardExtentMeasured && (side == CensorSide.LEFT
+                            ? inwardSupportOffsetMeters < boundaryOffsetMeters
+                            : inwardSupportOffsetMeters > boundaryOffsetMeters)) {
+                throw new IllegalArgumentException("Censored scalar mode is invalid");
+            }
+        }
+    }
 
     /** Frozen profile features and raw scalar diagnostics. */
     public record Result(double noiseFloor, double maximumIntensity,
@@ -141,11 +162,14 @@ public final class LocalScalarProfileExtractor {
             if (leftCensored || rightCensored) {
                 boolean right = rightCensored && !leftCensored;
                 int edge = right ? interval.last() : interval.first();
+                int inward = right ? interval.first() : interval.last();
                 CensorSide side = right ? CensorSide.RIGHT : CensorSide.LEFT;
                 double boundary = samples.get(edge).offsetMeters();
+                double inwardSupport = samples.get(inward).offsetMeters();
                 boolean gradient = gradientTowardEdge(raw, edge, right);
-                censored.add(allocated(owner, AttemptMemoryLedger.objectBytes(40),
-                        () -> new CensoredMode(side, boundary, existence, gradient)));
+                censored.add(allocated(owner, AttemptMemoryLedger.objectBytes(48),
+                        () -> new CensoredMode(side, boundary, existence, gradient,
+                                true, inwardSupport)));
                 continue;
             }
             List<Double> centers = allocated(peakScratch,
