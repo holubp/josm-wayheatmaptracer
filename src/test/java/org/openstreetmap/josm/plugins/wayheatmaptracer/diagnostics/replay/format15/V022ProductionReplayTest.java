@@ -1274,6 +1274,28 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void strictCliNamesMissingCorridorInputForRequestedAAndHybrid(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput captured = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        TraceRequest source = captured.request();
+        TraceRequest request = new TraceRequest(source.selectedWayKey(), source.selectedRange(),
+            source.engine(), source.geometryMode(), source.permissions(), source.budgets(),
+            source.evidenceSnapshotId(), source.evidenceContentHash(),
+            source.networkSnapshotId(), source.networkContentHash(), source.settingsHash(),
+            source.parameterHash(), source.samplerId(), source.configuredSampleStepMeters(),
+            source.profileChainage(), source.evidenceResolution(), Optional.empty());
+        FrozenReplayInput withoutCorridor = new FrozenReplayInput(request, captured.evidence(),
+            captured.network(), captured.options());
+
+        CliRun result = runCli(directory, withoutCorridor, "A,HYBRID", 51.0, 55.0,
+            false, "{}");
+
+        assertEquals(2, result.exit());
+        assertEquals(2, occurrences(result.output(),
+            "\"reason\":\"corridor-input-missing\""));
+    }
+
+    @Test
     void strictCliReportsUnsupportedAndMissingCapabilitiesPerEngine(
             @TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE);

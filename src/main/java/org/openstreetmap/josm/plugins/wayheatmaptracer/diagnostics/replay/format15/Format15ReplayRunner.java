@@ -461,8 +461,7 @@ public final class Format15ReplayRunner {
         }
         if ((engine == TrackerMode.CORRIDOR_AWARE || engine == TrackerMode.HYBRID)
                 && input.request().corridorInput().isEmpty()) {
-            throw new ReplayMismatchException(
-                "Requested engine requires an exact frozen CorridorTraceInput");
+            throw new ReplayMismatchException("corridor-input-missing");
         }
         TrackerMode capturedEngine = input.request().engine();
         String inputHash = input.canonicalHash();
