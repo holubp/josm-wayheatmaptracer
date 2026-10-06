@@ -84,6 +84,25 @@ class V022ModernSingleWayEditPlanAdapterTest {
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
+    @Test
+    void applyRejectsEvidenceWhoseDerivationDisagreesWithCapturedIntensityMode() throws Exception {
+        LiveBPreviewService.Computed computed = compute(fixture(), TrackerMode.CORRIDOR_AWARE);
+        LiveBPreviewService.Captured source = computed.captured();
+        LiveBPreviewService.Captured inconsistent = new LiveBPreviewService.Captured(
+                source.raster(), source.managedRaster(), source.specification(), source.network(),
+                source.sourceGeographic(), source.sourceMetric(), source.outputGrid(), source.palette(),
+                source.searchRadiusMeters(), source.sampleStepMeters(), source.settingsHash(),
+                source.parameterHash(), source.cleanup(), source.geometryMode(), source.engine(),
+                source.projectionCode(), source.junctionDecision(), source.intervalPartition(),
+                IntensitySamplingMode.DIRECT_VALUE);
+        LiveBPreviewService.Computed mismatched = new LiveBPreviewService.Computed(inconsistent,
+                computed.evidence(), computed.request(), computed.pipeline(), computed.options(),
+                computed.counters(), null);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.SOURCE_LINEAGE_UNAVAILABLE,
+                new ModernSingleWayEditPlanAdapter().assess(mismatched, 0).availability());
+    }
+
     @BeforeEach
     void clearUndoStack() {
         UndoRedoHandler.getInstance().clean();
@@ -379,13 +398,16 @@ class V022ModernSingleWayEditPlanAdapterTest {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig(managed ? "key" : "",
                 managed ? "policy" : "", managed ? "signature" : "", managed ? "session" : "",
                 base.activity(), base.color(), base.manualLayerName(), base.layerRegex(),
-                testCase.geometryMode(), engine, base.verbose(), base.debug(), base.multiColorDetection(),
-                base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
+                testCase.geometryMode(), engine, base.verbose(), base.debug(),
+                testCase.intensityMode() != IntensitySamplingMode.COLOR_MAPPING
+                        || base.multiColorDetection(),
+                testCase.intensityMode() != IntensitySamplingMode.COLOR_MAPPING
+                        || base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
                 base.candidateRatingEnabled(), base.parallelWayAwareness(), base.allowUndownloadedAlignment(),
                 base.adjustJunctionNodes(), base.simplifyEnabled(), base.crossSectionHalfWidthPx(),
                 base.crossSectionStepPx(), base.simplifyTolerancePx(), base.inferenceMode(),
                 base.inferenceZoom(), base.validationZoom(), base.searchHalfWidthMeters(),
-                base.sampleStepMeters(), base.intensitySamplingMode(), base.cacheBuster());
+                base.sampleStepMeters(), testCase.intensityMode(), base.cacheBuster());
         AlignmentConfig attempt = new AlignmentConfig(heatmap, cleanup);
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured captured;
@@ -453,6 +475,10 @@ class V022ModernSingleWayEditPlanAdapterTest {
                         GeometryCleanupMode.NONE, true, AlignmentMode.PRECISE_SHAPE,
                         ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                         "Exact immutable plan available"),
+                new TaskFourAuthorityCase(TrackerMode.PROBABILISTIC, true,
+                        GeometryCleanupMode.NONE, true, AlignmentMode.PRECISE_SHAPE,
+                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                        "Exact immutable plan available", IntensitySamplingMode.DIRECT_LUMINANCE),
                 new TaskFourAuthorityCase(TrackerMode.HYBRID, false,
                         GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.MOVE_EXISTING_NODES,
                         ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
@@ -480,11 +506,19 @@ class V022ModernSingleWayEditPlanAdapterTest {
     private record TaskFourAuthorityCase(TrackerMode engine, boolean managedSource,
             GeometryCleanupMode cleanupMode, boolean subrange, AlignmentMode geometryMode,
             ModernSingleWayEditPlanAdapter.ApplyAvailability expectedAvailability,
-            String expectedDetail) {
+            String expectedDetail, IntensitySamplingMode intensityMode) {
+        private TaskFourAuthorityCase(TrackerMode engine, boolean managedSource,
+                GeometryCleanupMode cleanupMode, boolean subrange, AlignmentMode geometryMode,
+                ModernSingleWayEditPlanAdapter.ApplyAvailability expectedAvailability,
+                String expectedDetail) {
+            this(engine, managedSource, cleanupMode, subrange, geometryMode,
+                    expectedAvailability, expectedDetail, IntensitySamplingMode.COLOR_MAPPING);
+        }
         @Override
         public String toString() {
             return engine + "/" + (managedSource ? "managed" : "visible") + "/"
-                    + cleanupMode + "/" + (subrange ? "subrange" : "full-way") + "/" + geometryMode;
+                    + cleanupMode + "/" + (subrange ? "subrange" : "full-way") + "/"
+                    + geometryMode + "/" + intensityMode;
         }
     }
 

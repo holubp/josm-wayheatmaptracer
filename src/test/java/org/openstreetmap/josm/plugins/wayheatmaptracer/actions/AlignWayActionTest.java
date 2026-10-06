@@ -681,7 +681,7 @@ class AlignWayActionTest {
                 precise.keyPairId(), precise.policy(), precise.signature(), precise.sessionToken(),
                 precise.activity(), precise.color(), precise.manualLayerName(), precise.layerRegex(),
                 precise.alignmentMode(), precise.trackerMode(), precise.verbose(), precise.debug(),
-                precise.multiColorDetection(), precise.aggregateAllColorSchemes(),
+                true, true,
                 precise.showAggregateIntensityLayer(), precise.candidateRatingEnabled(),
                 precise.parallelWayAwareness(), precise.allowUndownloadedAlignment(),
                 precise.adjustJunctionNodes(), precise.simplifyEnabled(),
@@ -693,6 +693,21 @@ class AlignWayActionTest {
 
         assertEquals(AlignWayAction.ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE,
                 AlignWayAction.modernApplyPreflight(captured,
+                        new AlignmentConfig(directIntensity, GeometryCleanupConfig.disabled())));
+        var managed = new ManagedModernPreviewSource.Raster(
+                new java.awt.image.BufferedImage(2, 2, java.awt.image.BufferedImage.TYPE_INT_ARGB),
+                new boolean[] {true, true, true, true},
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence
+                    .SupportedInputRasterTransform.webMercator(15, 0.0, 0.0, 2.0),
+                "hot", 15, "managed-direct", new org.openstreetmap.josm.plugins.wayheatmaptracer
+                    .tile.ManagedTileGeneration(0L));
+        LiveBPreviewService.Captured directCaptured = new LiveBPreviewService.Captured(null,
+                managed, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,
+                "settings", "parameters", GeometryCleanupConfig.disabled(),
+                AlignmentMode.PRECISE_SHAPE, TrackerMode.CORRIDOR_AWARE, "EPSG:3857",
+                null, null, IntensitySamplingMode.DIRECT_LUMINANCE);
+        assertEquals(AlignWayAction.ModernApplyPreflight.READY,
+                AlignWayAction.modernApplyPreflight(directCaptured,
                         new AlignmentConfig(directIntensity, GeometryCleanupConfig.disabled())));
         LiveBPreviewService.Captured wrongProjection = new LiveBPreviewService.Captured(raster,
                 null, null, null, List.of(), List.of(), null, "hot", 1.0, 1.0,

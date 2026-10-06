@@ -51,6 +51,78 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
     @Test
+    void distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        Node junction = fixture.selection().segmentNodes().get(2);
+        Node distant = loadedNode(301, latitude(80), longitude(0));
+        fixture.dataSet().addPrimitive(distant);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(junction, distant));
+        receiver.setOsmId(302, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed = new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(), config(), true);
+            managed[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    managedConfig(), "distant-receiver");
+        });
+
+        PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId());
+        assertTrue(visible[0].network().closure().protectedExistingNodeKeys().contains(key));
+        assertTrue(managed[0].network().closure().protectedExistingNodeKeys().contains(key));
+        assertFalse(visible[0].network().closure().movableExistingNodeKeys().contains(key));
+        assertFalse(managed[0].network().closure().movableExistingNodeKeys().contains(key));
+    }
+
+    @Test
+    void managedDirectValueUsesPixelChannelsWithTruthfulSourceLineage() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap();
+        ManagedHeatmapConfig direct = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), true,
+                true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.DIRECT_VALUE, base.cacheBuster());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(direct, GeometryCleanupConfig.disabled()),
+                "direct-value"));
+        BufferedImage image = new BufferedImage(1024, 1024, BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D graphics = image.createGraphics();
+        try {
+            graphics.setColor(new java.awt.Color(64, 96, 128));
+            graphics.fillRect(0, 0, 1024, 1024);
+        } finally {
+            graphics.dispose();
+        }
+        boolean[] valid = new boolean[1024 * 1024];
+        java.util.Arrays.fill(valid, true);
+        LiveBPreviewService.Captured captured = service.attachManagedRaster(seed[0],
+                new ManagedModernPreviewSource.Raster(image, valid,
+                        SupportedInputRasterTransform.webMercator(15, 4_194_048, 4_194_048, 2.0),
+                        "hot", 15, "direct-value",
+                        new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0L)));
+
+        var field = service.captureEvidence(captured, CancellationProbe.NONE).fields()
+                .get("selected-visible-source");
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage
+                .DerivationKind.DIRECT_INTENSITY, field.lineage().derivationKind());
+        assertEquals(128.0 / 255.0, field.sample(field.width() / 2, field.height() / 2)
+                .orElseThrow(), 1.0e-6);
+    }
+
+    @Test
     void reattachEndpointWithoutProvedArmKeepsDisjointInteriorIntervals() throws Exception {
         DataSet dataSet = new DataSet();
         java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();

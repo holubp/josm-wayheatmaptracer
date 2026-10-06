@@ -26,6 +26,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.G
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
@@ -247,8 +248,16 @@ public final class ModernSingleWayEditPlanAdapter {
         var expectedAcquisition = computed.captured().managedRaster() == null
                 ? EvidenceFieldLineage.AcquisitionKind.VISIBLE_RENDER
                 : EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE;
+        var mode = computed.captured().intensityMode();
+        String directSource = computed.captured().palette() + "/" + mode.detectorName();
         return computed.evidence().fields().values().stream().allMatch(field ->
                 field.lineage().acquisitionKind() == expectedAcquisition
+                && (mode == IntensitySamplingMode.COLOR_MAPPING
+                        ? field.lineage().derivationKind()
+                                != EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY
+                        : field.lineage().derivationKind()
+                                == EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY
+                                && field.lineage().sourcePalette().equals(directSource))
                 && (field.lineage().derivationKind()
                         != EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE
                     || field.lineage().completeAggregate()));

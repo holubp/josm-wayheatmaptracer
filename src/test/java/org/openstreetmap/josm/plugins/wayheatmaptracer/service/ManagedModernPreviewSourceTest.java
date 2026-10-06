@@ -23,6 +23,11 @@ import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
@@ -39,6 +44,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 
 class ManagedModernPreviewSourceTest {
     @TempDir java.nio.file.Path temporary;
+
+    @Test
+    void directIntensityIgnoresColorDetectorFlagsWhenPlanningOneSelectedSource() {
+        ManagedHeatmapConfig config = new ManagedHeatmapConfig("key", "policy", "signature", "session",
+                "all", "blue", "", ".*", AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.PROBABILISTIC, false, false, true, true, false, false,
+                false, false, false, false, 7, 4, 3.0,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                IntensitySamplingMode.DIRECT_LUMINANCE, 0L);
+
+        ManagedModernPreviewSource.Request request = ManagedModernPreviewSource.selectedOnly(
+                List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                config, "direct-blue");
+
+        assertEquals("blue", request.palette());
+        assertEquals("direct-blue", request.sourceIdentity());
+    }
+
+    @Test
+    void unsupportedAllColorRequestNamesTheSettingsThatPreventModernPreview() {
+        ManagedHeatmapConfig config = new ManagedHeatmapConfig("key", "policy", "signature", "session",
+                "all", "blue", "", ".*", AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.PROBABILISTIC, false, false, true, true, false, false,
+                false, false, false, false, 7, 4, 3.0,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                IntensitySamplingMode.COLOR_MAPPING, 0L);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> ManagedModernPreviewSource.selectedOnly(
+                        List.of(new GeographicPoint(0.0, 0.0),
+                                new GeographicPoint(0.0, 0.001)), config, "all-colors"));
+        assertTrue(error.getMessage().contains(
+                "Aggregate all managed color schemes"));
+        assertTrue(error.getMessage().contains(
+                "Run alternative detector mappings"));
+    }
 
     @Test
     void selectedNativeTileUsesBoundaryCenterTransformAndPreservesMissingSupport() throws Exception {

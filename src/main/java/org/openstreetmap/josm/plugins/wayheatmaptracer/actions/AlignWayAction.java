@@ -1472,8 +1472,9 @@ public class AlignWayAction extends JosmAction {
         if (captured.engine() == TrackerMode.PROBABILISTIC && !config.cleanup().isDisabled()) {
             return ModernApplyPreflight.CLEANUP_UNAVAILABLE_FOR_ENGINE;
         }
-        if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING
-                || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()) {
+        if (captured.intensityMode() != heatmap.intensitySamplingMode()
+                || heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
+                        && (heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes())) {
             return ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE;
         }
         boolean engineSupported = captured.engine().capabilities().requiresEvidenceSnapshot();

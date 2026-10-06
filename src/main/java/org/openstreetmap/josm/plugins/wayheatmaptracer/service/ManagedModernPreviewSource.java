@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
@@ -27,6 +28,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileRequest;
 
 /** Builds one detached selected-palette native managed raster through the shared coordinator. */
 public final class ManagedModernPreviewSource {
+    public static final String UNSUPPORTED_COLOR_OPTIONS = "Modern managed tracing cannot yet use "
+            + "'Run alternative detector mappings on current source' or "
+            + "'Aggregate all managed color schemes into one intensity map'. "
+            + "Turn both off in Heatmap settings to trace the selected palette.";
     static final int TILE_SIZE = 512;
     private static final long MAX_INPUT_PIXELS = 16_777_216L;
     private final TileFetchCoordinator coordinator;
@@ -68,9 +73,10 @@ public final class ManagedModernPreviewSource {
             String sourceIdentity) {
         Objects.requireNonNull(config, "config");
         AlignmentTileSourcePlan plan = AlignmentTileSourcePlan.from(config);
-        if (plan.aggregateDetectorRequested() || config.multiColorDetection()) {
-            throw new IllegalArgumentException(
-                    "Managed modern preview supports the selected palette only");
+        if (plan.aggregateDetectorRequested()
+                || config.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
+                        && config.multiColorDetection()) {
+            throw new IllegalArgumentException(UNSUPPORTED_COLOR_OPTIONS);
         }
         return new Request(source, config.activity(), plan.selectedColor(), config.inferenceZoom(),
                 new ManagedTileGeneration(Math.max(0L, config.cacheBuster())),

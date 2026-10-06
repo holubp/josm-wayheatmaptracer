@@ -133,7 +133,21 @@ public final class LiveBPreviewService {
             String settingsHash, String parameterHash, GeometryCleanupConfig cleanup,
             AlignmentMode geometryMode, TrackerMode engine, String projectionCode,
             ManualJunctionEligibility.Decision junctionDecision,
-            SelectedWayIntervalPartitioner.Partition intervalPartition) {
+            SelectedWayIntervalPartitioner.Partition intervalPartition,
+            IntensitySamplingMode intensityMode) {
+        public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+                MetricRasterGrid outputGrid, String palette, double searchRadiusMeters,
+                double sampleStepMeters, String settingsHash, String parameterHash,
+                GeometryCleanupConfig cleanup, AlignmentMode geometryMode, TrackerMode engine,
+                String projectionCode, ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition) {
+            this(raster, managedRaster, specification, network, sourceGeographic, sourceMetric,
+                    outputGrid, palette, searchRadiusMeters, sampleStepMeters, settingsHash,
+                    parameterHash, cleanup, geometryMode, engine, projectionCode,
+                    junctionDecision, intervalPartition, IntensitySamplingMode.COLOR_MAPPING);
+        }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
                 List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
@@ -163,7 +177,7 @@ public final class LiveBPreviewService {
             }
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
-            if (cleanup == null || geometryMode == null || engine == null
+            if (cleanup == null || geometryMode == null || engine == null || intensityMode == null
                     || projectionCode == null || projectionCode.isBlank()
                     || intervalPartition != null && (network == null || specification == null
                             || junctionDecision != null
@@ -187,7 +201,21 @@ public final class LiveBPreviewService {
             String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
             TrackerMode engine, String sourceIdentity, String projectionCode,
             ManualJunctionEligibility.Decision junctionDecision,
-            SelectedWayIntervalPartitioner.Partition intervalPartition) {
+            SelectedWayIntervalPartitioner.Partition intervalPartition,
+            IntensitySamplingMode intensityMode) {
+        public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
+                NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
+                List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
+                double searchRadiusMeters, double sampleStepMeters, String settingsHash,
+                String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
+                TrackerMode engine, String sourceIdentity, String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition) {
+            this(specification, network, sourceGeographic, sourceMetric, frame, palette,
+                    searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash, cleanup,
+                    geometryMode, engine, sourceIdentity, projectionCode, junctionDecision,
+                    intervalPartition, IntensitySamplingMode.COLOR_MAPPING);
+        }
         public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
                 NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
                 List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
@@ -207,7 +235,7 @@ public final class LiveBPreviewService {
                     || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0.0
                     || !Double.isFinite(sampleStepMeters) || sampleStepMeters <= 0.0
                     || settingsHash == null || parameterHash == null || cleanup == null
-                    || geometryMode == null || engine == null
+                    || geometryMode == null || engine == null || intensityMode == null
                     || sourceIdentity == null || sourceIdentity.isBlank()
                     || projectionCode == null || projectionCode.isBlank()
                     || intervalPartition != null && (junctionDecision != null
@@ -551,8 +579,10 @@ public final class LiveBPreviewService {
                     List<MetricPoint> localMetric = incident.getNodes().subList(
                             local.firstIndex(), local.lastIndex() + 1).stream()
                             .map(LiveBPreviewService::geographic).map(frame::toMetric).toList();
-                    MetricRegion localRegion = MetricCorridorRegion.aroundPolyline(localMetric,
-                            MAXIMUM_JUNCTION_RELOCATION_METERS);
+                    MetricRegion localRegion = localMetric.size() == 1
+                            ? aroundPoint(localMetric.get(0), MAXIMUM_JUNCTION_RELOCATION_METERS)
+                            : MetricCorridorRegion.aroundPolyline(localMetric,
+                                    MAXIMUM_JUNCTION_RELOCATION_METERS);
                     if (localRegion.polygons().stream().flatMap(List::stream).allMatch(point -> {
                         try {
                             frame.toGeographic(point);
@@ -825,7 +855,8 @@ public final class LiveBPreviewService {
                             parameterIdentity(config.heatmap().trackerMode())),
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
-                    ProjectionRegistry.getProjection().toCode(), null, intervalPartition);
+                    ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
+                    config.heatmap().intensitySamplingMode());
         }
         ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
                 != JunctionPolicy.FIXED
@@ -851,7 +882,8 @@ public final class LiveBPreviewService {
                         parameterIdentity(config.heatmap().trackerMode())),
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
-                ProjectionRegistry.getProjection().toCode(), junction);
+                ProjectionRegistry.getProjection().toCode(), junction, null,
+                config.heatmap().intensitySamplingMode());
     }
 
     /** Attaches immutable native pixels to an EDT-captured seed without retaining credentials. */
@@ -867,7 +899,8 @@ public final class LiveBPreviewService {
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
                 seed.geometryMode(), seed.engine(),
-                seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition());
+                seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
+                seed.intensityMode());
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
@@ -1039,12 +1072,17 @@ public final class LiveBPreviewService {
                 captured.sourceGeographic().get(captured.sourceGeographic().size() / 2).latitudeDegrees());
         EvidenceResolution resolution = EvidenceResolution.nativeSource(pitch,
                 captured.outputGrid().pitchMeters());
+        IntensitySamplingMode mode = captured.intensityMode();
         EvidenceFieldLineage lineage = new EvidenceFieldLineage(
                 EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,
-                EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING,
-                captured.palette(), EvidenceCorrelationGroup.STRAVA_RENDERINGS, false);
+                mode == IntensitySamplingMode.COLOR_MAPPING
+                        ? EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING
+                        : EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                mode == IntensitySamplingMode.COLOR_MAPPING ? captured.palette()
+                        : captured.palette() + "/" + mode.detectorName(),
+                EvidenceCorrelationGroup.STRAVA_RENDERINGS, false);
         RasterEvidenceCapture.FieldSpec field = RasterEvidenceCapture.FieldSpec.direct(FIELD,
-                argb -> intensity(argb, captured.palette()), lineage);
+                argb -> intensity(argb, captured.palette(), mode), lineage);
         return new RasterEvidenceCapture().captureWithMetricSource(captured.network().snapshotId() + "-evidence",
                 raster.image(), raster.validity(), captured.sourceGeographic(), captured.sourceMetric(), raster.transform(),
                 captured.outputGrid(), resolution, captured.searchRadiusMeters(), raster.sourceIdentity(),
@@ -1192,11 +1230,14 @@ public final class LiveBPreviewService {
         var heatmap = config.heatmap();
         if (!heatmap.trackerMode().capabilities().supportsManagedSource()
                 || heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()
-                || heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes()
                 || heatmap.parallelWayAwareness()
-                || config.searchHalfWidthMetersOverride().isPresent()
-                || heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
-            throw new IllegalArgumentException("Managed modern alignment supports the selected palette only");
+                || config.searchHalfWidthMetersOverride().isPresent()) {
+            throw new IllegalArgumentException("Modern managed tracing cannot use this engine, "
+                    + "simplification, nearby-way awareness, or a temporary search-width override");
+        }
+        if (heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
+                && (heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes())) {
+            throw new IllegalArgumentException(ManagedModernPreviewSource.UNSUPPORTED_COLOR_OPTIONS);
         }
     }
 
@@ -1237,6 +1278,18 @@ public final class LiveBPreviewService {
         }
         return RenderedHeatmapSampler.colorIntensity((argb >>> 16) & 0xff,
                 (argb >>> 8) & 0xff, argb & 0xff, palette);
+    }
+
+    private static double intensity(int argb, String palette, IntensitySamplingMode mode) {
+        if (mode == IntensitySamplingMode.COLOR_MAPPING) {
+            return intensity(argb, palette);
+        }
+        int alpha = (argb >>> 24) & 0xff;
+        if (alpha == 0) {
+            return 0.0;
+        }
+        return RenderedHeatmapSampler.directIntensity((argb >>> 16) & 0xff,
+                (argb >>> 8) & 0xff, argb & 0xff, alpha, mode);
     }
 
     static String parameterIdentity(TrackerMode engine) {
