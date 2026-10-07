@@ -301,7 +301,14 @@ public final class ManagedModernPreviewSource {
         public AggregateAvailability aggregateAvailability() { return aggregateAvailability; }
         public AggregateFailure aggregateFailure() { return aggregateFailure; }
         public Map<Integer, ZoomReceipt> zoomReceipts() { return zoomReceipts; }
-        public boolean allRequiredZoomsAvailable() {
+        /**
+         * Reports whether every required zoom had a complete receipt when this immutable result was
+         * created. This historical snapshot is not a source-freshness authority; validate the live
+         * coordinator generation at consumption boundaries (and use the aggregate proof for fusion).
+         *
+         * @return whether all required-zoom receipts were complete at acquisition time
+         */
+        public boolean allRequiredZoomsWereAvailableAtAcquisition() {
             return zoomReceipts.keySet().equals(plan.requiredZooms())
                     && zoomReceipts.values().stream().allMatch(ZoomReceipt::complete);
         }
@@ -379,12 +386,13 @@ public final class ManagedModernPreviewSource {
         }
     }
 
-    private static byte[] rasterDigest(Raster raster, int zoom) {
+    private static byte[] rasterDigest(Raster raster, int zoom, TileBounds bounds) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(raster.palette().getBytes(StandardCharsets.US_ASCII));
-            digest.update(ByteBuffer.allocate(16).putInt(zoom).putInt(raster.image().getWidth())
-                    .putInt(raster.image().getHeight()).putInt(1).array());
+            digest.update(ByteBuffer.allocate(28).putInt(zoom).putInt(bounds.minimumX())
+                    .putInt(bounds.minimumY()).putInt(bounds.maximumX()).putInt(bounds.maximumY())
+                    .putInt(raster.image().getWidth()).putInt(raster.image().getHeight()).array());
             int width = raster.image().getWidth();
             int[] row = new int[width];
             ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(width, 4));
@@ -507,7 +515,7 @@ public final class ManagedModernPreviewSource {
         boolean selectedComplete = selectedAcquisition.failure() == null
                 && allValid(selectedAcquisition.raster().validity());
         if (selectedComplete) inferenceAcquired.add(request.palette());
-        byte[] inferenceDigest = rasterDigest(selected, inferenceZoom);
+        byte[] inferenceDigest = rasterDigest(selected, inferenceZoom, inferenceGrid.bounds());
         boolean inferencePaletteSetComplete = selectedComplete;
         if (aggregateRequested && allFramesBudgetAvailable) {
             if (!selectedComplete) {
@@ -536,7 +544,8 @@ public final class ManagedModernPreviewSource {
                     Raster paletteRaster = toRaster(acquired.raster(), transform, request, palette, inferenceZoom);
                     rasters.put(palette, paletteRaster);
                     inferenceAcquired.add(palette);
-                    inferenceDigest = combineDigests(inferenceDigest, rasterDigest(paletteRaster, inferenceZoom));
+                    inferenceDigest = combineDigests(inferenceDigest,
+                            rasterDigest(paletteRaster, inferenceZoom, inferenceGrid.bounds()));
                 }
             }
         }

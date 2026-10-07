@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -135,7 +136,7 @@ class ManagedModernPreviewSourceTest {
             }
             assertEquals(expected, paletteZoomPairs);
             assertEquals(Set.of(15, 14), sources.plan().requiredZooms());
-            assertTrue(sources.allRequiredZoomsAvailable());
+            assertTrue(sources.allRequiredZoomsWereAvailableAtAcquisition());
             assertEquals(Set.of(15, 14), sources.zoomReceipts().keySet());
             assertEquals(ManagedModernPreviewSource.ZoomAvailability.COMPLETE,
                     sources.zoomReceipts().get(14).availability());
@@ -148,6 +149,48 @@ class ManagedModernPreviewSourceTest {
             assertEquals(Set.of("hot", "blue", "bluered", "purple", "gray"),
                     sources.palettes().keySet(), "primary detector rasters remain inference-zoom only");
             assertTrue(sources.palettes().values().stream().allMatch(raster -> raster.zoom() == 15));
+        }
+    }
+
+    @Test
+    void inferenceReceiptDigestBindsSafeTileFootprintForIdenticalRasters() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 15);
+        Set<String> tileFootprints = java.util.Collections.synchronizedSet(new HashSet<>());
+        AtomicBoolean secondCapture = new AtomicBoolean();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            if (request.address().zoom() == 15) {
+                tileFootprints.add((secondCapture.get() ? "second/" : "first/")
+                        + request.address().x() + "/" + request.address().y());
+            }
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("footprint-digest"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var first = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "same-safe-source-id", CredentialSnapshot.fromConfig(null), () -> false);
+            secondCapture.set(true);
+            var second = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0439453125),
+                            new GeographicPoint(0.0, 0.0449453125)),
+                    config, "same-safe-source-id", CredentialSnapshot.fromConfig(null), () -> false);
+
+            var firstRaster = first.selectedRaster();
+            var secondRaster = second.selectedRaster();
+            assertEquals(firstRaster.image().getWidth(), secondRaster.image().getWidth());
+            assertEquals(firstRaster.image().getHeight(), secondRaster.image().getHeight());
+            assertEquals(firstRaster.image().getRGB(200, 200), secondRaster.image().getRGB(200, 200));
+            assertNotEquals(tileFootprints.stream().filter(value -> value.startsWith("first/"))
+                    .map(value -> value.substring("first/".length()))
+                    .collect(java.util.stream.Collectors.toSet()),
+                    tileFootprints.stream().filter(value -> value.startsWith("second/"))
+                            .map(value -> value.substring("second/".length()))
+                            .collect(java.util.stream.Collectors.toSet()));
+            assertNotEquals(first.zoomReceipts().get(15).contentSupportDigest(),
+                    second.zoomReceipts().get(15).contentSupportDigest());
         }
     }
 
@@ -174,7 +217,7 @@ class ManagedModernPreviewSourceTest {
             assertTrue(paletteZoomPairs.contains("purple/14"));
             assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
                     sources.aggregateAvailability());
-            assertFalse(sources.allRequiredZoomsAvailable());
+            assertFalse(sources.allRequiredZoomsWereAvailableAtAcquisition());
             assertEquals(ManagedModernPreviewSource.ZoomAvailability.PALETTE_UNAVAILABLE,
                     sources.zoomReceipts().get(14).availability());
             assertEquals("purple", sources.zoomReceipts().get(14).failedPalette());
@@ -209,7 +252,7 @@ class ManagedModernPreviewSourceTest {
             assertTrue(paletteZoomPairs.contains("blue/14"));
             assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
                     sources.aggregateAvailability());
-            assertFalse(sources.allRequiredZoomsAvailable());
+            assertFalse(sources.allRequiredZoomsWereAvailableAtAcquisition());
             assertEquals(TileFetchStatus.AUTH_FAILURE,
                     sources.zoomReceipts().get(14).failureStatus());
             assertEquals("blue", sources.zoomReceipts().get(14).failedPalette());
@@ -286,6 +329,8 @@ class ManagedModernPreviewSourceTest {
                     config, "stale-after-acquisition", CredentialSnapshot.fromConfig(null), () -> false);
             assertTrue(sources.provenCompleteAggregate(coordinator));
             coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster() + 1));
+            assertTrue(sources.allRequiredZoomsWereAvailableAtAcquisition(),
+                    "receipt completeness is historical and does not establish current freshness");
             assertFalse(sources.provenCompleteAggregate(coordinator));
             assertThrows(IllegalStateException.class, () -> sources.completeAggregateScalars(() -> false));
         }
@@ -423,7 +468,7 @@ class ManagedModernPreviewSourceTest {
         var unproven = new ManagedModernPreviewSource.SourceRasters(matching, plan);
         assertEquals(ManagedModernPreviewSource.AggregateAvailability.NOT_REQUESTED,
                 unproven.aggregateAvailability());
-        assertFalse(unproven.allRequiredZoomsAvailable());
+        assertFalse(unproven.allRequiredZoomsWereAvailableAtAcquisition());
         assertFalse(unproven.provenCompleteAggregate(null));
         assertThrows(IllegalStateException.class,
                 () -> unproven.completeAggregateScalars(() -> false));
