@@ -46,6 +46,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -664,6 +665,111 @@ class AlignWayActionTest {
                 TrackerMode.CORRIDOR_AWARE, "EPSG:3857");
         assertEquals(AlignWayAction.ModernApplyPreflight.READY,
                 AlignWayAction.modernApplyPreflight(engineA, enabled));
+    }
+
+    @Test
+    void ordinaryBRouteFreezesSupportedSettingsWithoutChangingRequestedPreferences() {
+        ManagedHeatmapConfig saved = configuredCorridor().withTrackerMode(TrackerMode.PROBABILISTIC);
+        saved = new ManagedHeatmapConfig(saved.keyPairId(), saved.policy(), saved.signature(),
+                saved.sessionToken(), saved.activity(), saved.color(), saved.manualLayerName(),
+                saved.layerRegex(), AlignmentMode.PRECISE_SHAPE, saved.trackerMode(),
+                saved.verbose(), saved.debug(), saved.multiColorDetection(),
+                saved.aggregateAllColorSchemes(), saved.showAggregateIntensityLayer(),
+                saved.candidateRatingEnabled(), saved.parallelWayAwareness(),
+                saved.allowUndownloadedAlignment(), saved.adjustJunctionNodes(), true,
+                saved.crossSectionHalfWidthPx(), saved.crossSectionStepPx(),
+                saved.simplifyTolerancePx(), saved.inferenceMode(), saved.inferenceZoom(),
+                saved.validationZoom(), saved.searchHalfWidthMeters(), saved.sampleStepMeters(),
+                saved.intensitySamplingMode(), saved.cacheBuster());
+        for (GeometryCleanupPreset preset : List.of(GeometryCleanupPreset.CONSERVATIVE,
+                GeometryCleanupPreset.BALANCED, GeometryCleanupPreset.STRONG,
+                GeometryCleanupPreset.CUSTOM)) {
+            AlignmentConfig requested = new AlignmentConfig(saved, preset.apply());
+            TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                    TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                    AlignmentSourceMode.MANAGED_TILES);
+            AlignWayAction.OrdinaryRoute route = AlignWayAction.resolveOrdinaryRoute(tracing,
+                    requested);
+            AlignmentConfig effective = route.invocation().config();
+            assertFalse(effective.heatmap().simplifyEnabled());
+            assertTrue(effective.cleanup().isDisabled());
+            assertEquals(preset, effective.cleanup().preset());
+            assertTrue(requested.heatmap().simplifyEnabled());
+            assertEquals(preset, requested.cleanup().preset());
+        }
+        ManagedHeatmapConfig savedA = saved.withTrackerMode(TrackerMode.CORRIDOR_AWARE)
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
+        AlignmentConfig persistedA = new AlignmentConfig(savedA,
+                GeometryCleanupPreset.BALANCED.apply());
+        TracingSettings tracingA = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.CORRIDOR_AWARE, RecoverySettings.defaults(7.01), false,
+                AlignmentSourceMode.MANAGED_TILES);
+        assertEquals(persistedA.cleanup(), AlignWayAction.resolveOrdinaryRoute(tracingA,
+                persistedA).invocation().config().cleanup());
+        AlignmentConfig oneShotB = new AlignmentConfig(
+                AlignWayAction.effectiveConfig(savedA, null, TrackerMode.PROBABILISTIC),
+                persistedA.cleanup()).forEffectiveModernAttempt();
+        assertEquals(AlignmentMode.PRECISE_SHAPE, oneShotB.heatmap().alignmentMode());
+        assertTrue(oneShotB.cleanup().isDisabled());
+        assertFalse(oneShotB.heatmap().simplifyEnabled());
+        assertTrue(AlignWayAction.matchesLivePreviewSettings(persistedA, oneShotB,
+                persistedA, null, TrackerMode.PROBABILISTIC));
+        ManagedHeatmapConfig savedMove = saved.withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
+        AlignmentConfig oneShotPrecise = new AlignmentConfig(
+                AlignWayAction.effectiveConfig(savedMove, AlignmentMode.PRECISE_SHAPE, null),
+                GeometryCleanupPreset.BALANCED.apply()).forEffectiveModernAttempt();
+        assertEquals(AlignmentMode.PRECISE_SHAPE, oneShotPrecise.heatmap().alignmentMode());
+        assertTrue(oneShotPrecise.cleanup().isDisabled());
+        assertTrue(savedMove.simplifyEnabled());
+        org.openstreetmap.josm.spi.preferences.IPreferences previousPreferences = Config.getPref();
+        try {
+            Config.setPreferencesInstance(new MemoryPreferences());
+            Config.getPref().putBoolean("wayheatmaptracer.simplifyEnabled", true);
+            ManagedHeatmapConfig legacyFresh = PluginPreferences.load()
+                    .withTrackerMode(TrackerMode.PROBABILISTIC);
+            assertTrue(legacyFresh.simplifyEnabled());
+            AlignmentConfig legacyEffective = AlignWayAction.resolveOrdinaryRoute(
+                    new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                            TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                            AlignmentSourceMode.VISIBLE_LAYER),
+                    new AlignmentConfig(legacyFresh, GeometryCleanupConfig.disabled()))
+                    .invocation().config();
+            assertFalse(legacyEffective.heatmap().simplifyEnabled());
+            assertTrue(Config.getPref().getBoolean("wayheatmaptracer.simplifyEnabled", false));
+            PluginPreferences.save(saved);
+            PluginPreferences.saveGeometryCleanup(GeometryCleanupPreset.STRONG.apply());
+            ManagedHeatmapConfig loadedHeatmap = PluginPreferences.load();
+            GeometryCleanupConfig loadedCleanup = PluginPreferences.loadGeometryCleanup();
+            AlignmentConfig loaded = new AlignmentConfig(loadedHeatmap, loadedCleanup);
+            AlignWayAction.resolveOrdinaryRoute(new TracingSettings(
+                    TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.PROBABILISTIC,
+                    RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES),
+                    loaded);
+            assertEquals(loadedHeatmap, PluginPreferences.load());
+            assertEquals(loadedCleanup, PluginPreferences.loadGeometryCleanup());
+            assertTrue(Config.getPref().getBoolean("wayheatmaptracer.simplifyEnabled", false));
+        } finally {
+            Config.setPreferencesInstance(previousPreferences);
+        }
+    }
+
+    @Test
+    void normalizedBPreviewStillMatchesUnchangedSavedSettings() {
+        ManagedHeatmapConfig saved = configuredCorridor().withTrackerMode(TrackerMode.PROBABILISTIC);
+        AlignmentConfig persisted = new AlignmentConfig(saved,
+                GeometryCleanupPreset.BALANCED.apply());
+        AlignmentConfig effective = persisted.forEffectiveModernAttempt();
+        assertTrue(AlignWayAction.modernSettingsNotice(persisted, effective)
+                .contains("cleanup"));
+        TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                AlignmentSourceMode.MANAGED_TILES);
+        assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, effective, persisted,
+                tracing, tracing, null, null));
+        AlignmentConfig changed = new AlignmentConfig(saved,
+                GeometryCleanupPreset.STRONG.apply());
+        assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, effective, changed,
+                tracing, tracing, null, null));
     }
 
     @Test

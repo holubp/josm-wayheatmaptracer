@@ -254,7 +254,8 @@ public final class LiveBPreviewService {
     /** Detached result from the actual common modern final pipeline. */
     public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
-            Map<String, Number> counters, IntervalTraceBatch intervalBatch) {
+            Map<String, Number> counters, IntervalTraceBatch intervalBatch,
+            String settingsResolutionJson) {
         public Computed {
             if (captured == null || evidence == null || request == null || options == null
                     || (pipeline == null) == (intervalBatch == null)) {
@@ -266,6 +267,19 @@ public final class LiveBPreviewService {
                 throw new IllegalArgumentException("Interval result must retain its frozen capture");
             }
             counters = Map.copyOf(counters);
+        }
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
+                Map<String, Number> counters, IntervalTraceBatch intervalBatch) {
+            this(captured, evidence, request, pipeline, options, counters, intervalBatch, null);
+        }
+        /** Attaches redacted requested/effective settings to the immutable result. */
+        public Computed withSettingsResolution(String redactedJson) {
+            if (redactedJson == null || redactedJson.isBlank()) {
+                throw new IllegalArgumentException("Settings resolution must be nonempty");
+            }
+            return new Computed(captured, evidence, request, pipeline, options, counters,
+                    intervalBatch, redactedJson);
         }
         /** Whether this result contains production interval runs instead of a full-way run. */
         public boolean partitioned() {

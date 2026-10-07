@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -36,6 +37,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -73,7 +75,8 @@ class OrdinaryModernAttemptAssemblyTest {
 
         for (RouteCase routeCase : cases) {
             Fixture fixture = fixture();
-            AlignmentConfig config = config(routeCase.engine());
+            AlignmentConfig config = routeCase.engine() == TrackerMode.PROBABILISTIC
+                    ? incompatibleBConfig() : config(routeCase.engine());
             RecoverySettings recovery = RecoverySettings.defaults(7.01);
             TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
                     routeCase.engine(), recovery, false, routeCase.sourceMode());
@@ -115,6 +118,15 @@ class OrdinaryModernAttemptAssemblyTest {
             assertEquals(routeCase.engine(), computed.request().engine());
             assertEquals(recovery.toPermissions(), computed.request().permissions());
             assertEquals(routeCase.engine(), computed.pipeline().inference().engine());
+            if (routeCase.engine() == TrackerMode.PROBABILISTIC) {
+                assertTrue(computed.captured().cleanup().isDisabled());
+                assertTrue(computed.options().cleanup().isDisabled());
+                assertTrue(config.heatmap().simplifyEnabled());
+                assertFalse(config.cleanup().isDisabled());
+                assertEquals(AlignWayAction.ModernApplyPreflight.READY,
+                        AlignWayAction.modernApplyPreflight(computed.captured(),
+                                routing.route().invocation().config()));
+            }
             assertEquals(routeCase.managed() ? 0 : 1, visibleCaptures.get());
             assertEquals(routeCase.managed() ? 1 : 0, managedAcquisitions.get());
             if (routeCase.managed()) {
@@ -135,6 +147,19 @@ class OrdinaryModernAttemptAssemblyTest {
                         .orElseThrow().bytes(), StandardCharsets.UTF_8).contains(status));
                     assertTrue(archive.artifact("frozen-input.bin").isPresent());
                     assertTrue(archive.artifact("numerical-policy.json").isPresent());
+                    String settings = new String(archive.artifact("settings-resolution.json")
+                            .orElseThrow().bytes(), StandardCharsets.UTF_8);
+                    assertTrue(settings.contains("\"requestedSimplification\":true"));
+                    assertTrue(settings.contains("\"effectiveSimplification\":false"));
+                    assertTrue(settings.contains("\"requestedCleanupMode\":\"CONSTRAINED_SMOOTH_AND_REDUCE\""));
+                    assertTrue(settings.contains("\"effectiveCleanupMode\":\"NONE\""));
+                    var identities = java.util.regex.Pattern.compile(
+                            "\\\"requestedIdentity\\\":\\\"([0-9a-f]{64})\\\",\\\"effectiveIdentity\\\":\\\"([0-9a-f]{64})\\\"")
+                            .matcher(settings);
+                    assertTrue(identities.find());
+                    assertFalse(identities.group(1).equals(identities.group(2)));
+                    assertFalse(settings.contains("key"));
+                    assertFalse(settings.contains("signature"));
                     String counters = new String(archive.artifact("performance-counters.json")
                         .orElseThrow().bytes(), StandardCharsets.UTF_8);
                     assertTrue(counters.contains("inference.pairVisits"));
@@ -218,6 +243,38 @@ class OrdinaryModernAttemptAssemblyTest {
         }
     }
 
+    @Test
+    void unsupportedOneShotWidthFailsBeforeManagedTileAcquisition() throws Exception {
+        Fixture fixture = fixture();
+        AlignmentConfig requested = incompatibleBConfig().withSearchHalfWidthMetersOverride(9.0);
+        TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                AlignmentSourceMode.MANAGED_TILES);
+        var routing = AlignWayAction.resolveOrdinaryAction(tracing, requested,
+                () -> "visible", () -> "legacy");
+        AtomicInteger tileAcquisitions = new AtomicInteger();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        try (PreviewSessionController<LiveBPreviewService.Computed> session =
+                new PreviewSessionController<>(Runnable::run)) {
+            PreviewSessionController.Owner owner = session.open(() -> { });
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    new AlignWayAction.OrdinaryModernAttemptAssembly().start(session, owner,
+                            routing, fixture.dataSet(), fixture.selection(), "managed-selected-hot-g0",
+                            (source, invocation, permissions) -> visibleRaster(),
+                            (seed, invocation, context) -> {
+                                tileAcquisitions.incrementAndGet();
+                                return managedRaster(seed.sourceIdentity());
+                            }, attempt -> { });
+                } catch (RuntimeException exception) {
+                    failure.set(exception);
+                }
+            });
+        }
+        assertInstanceOf(IllegalArgumentException.class, failure.get());
+        assertEquals(0, tileAcquisitions.get());
+    }
+
     private static AlignWayAction.OrdinaryActionRouting<String> routing(
             TrackerMode engine, AlignmentSourceMode sourceMode) {
         RecoverySettings recovery = RecoverySettings.defaults(7.01);
@@ -264,6 +321,22 @@ class OrdinaryModernAttemptAssemblyTest {
                 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
                 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
         return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static AlignmentConfig incompatibleBConfig() {
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig saved = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(),
+                base.trackerMode(), base.verbose(), base.debug(), base.multiColorDetection(),
+                base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), true,
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(),
+                base.simplifyTolerancePx(), base.inferenceMode(), base.inferenceZoom(),
+                base.validationZoom(), base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                base.intensitySamplingMode(), base.cacheBuster());
+        return new AlignmentConfig(saved, GeometryCleanupPreset.BALANCED.apply());
     }
 
     private static Fixture fixture() {

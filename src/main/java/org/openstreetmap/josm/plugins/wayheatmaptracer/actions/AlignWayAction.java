@@ -48,6 +48,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.LastSlideDebugBundle;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalArtifactStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory.IntervalSourceReceipt;
@@ -141,9 +142,11 @@ public class AlignWayAction extends JosmAction {
     }
 
     /** Complete source-routing decision used directly by the ordinary action. */
-    record OrdinaryActionRouting<T>(OrdinaryRoute route, T visibleSource) {
+    record OrdinaryActionRouting<T>(OrdinaryRoute route, T visibleSource,
+            AlignmentConfig requestedConfig) {
         OrdinaryActionRouting {
             Objects.requireNonNull(route, "route");
+            Objects.requireNonNull(requestedConfig, "requestedConfig");
             if ((route.pipeline() == OrdinaryPipeline.MODERN_VISIBLE) != (visibleSource != null)) {
                 if (route.pipeline() != OrdinaryPipeline.LEGACY_COMPATIBILITY) {
                     throw new IllegalArgumentException("Ordinary action route and visible source disagree");
@@ -205,13 +208,17 @@ public class AlignWayAction extends JosmAction {
                         "Legacy compatibility alignment cannot enter the modern attempt assembly");
             }, (captured, context) -> {
                 if (captured.visible() != null) {
-                    return previewService.compute(captured.visible(), context);
+                    return previewService.compute(captured.visible(), context)
+                            .withSettingsResolution(settingsResolutionJson(
+                                    routing.requestedConfig(), captured.invocation().config()));
                 }
                 context.checkpoint();
                 ManagedModernPreviewSource.Raster raster = managedAcquire.acquire(
                         captured.managed(), captured.invocation(), context);
                 return previewService.compute(
-                        previewService.attachManagedRaster(captured.managed(), raster), context);
+                        previewService.attachManagedRaster(captured.managed(), raster), context)
+                        .withSettingsResolution(settingsResolutionJson(
+                                routing.requestedConfig(), captured.invocation().config()));
             }, publisher);
         }
 
@@ -533,9 +540,14 @@ public class AlignWayAction extends JosmAction {
             }
             GeometryCleanupConfig cleanupConfig = PluginPreferences.loadGeometryCleanup();
             AlignmentConfig persistedSlideConfig = new AlignmentConfig(persistedConfig, cleanupConfig);
-            AlignmentConfig slideConfig = new AlignmentConfig(config, cleanupConfig);
+            AlignmentConfig requestedSlideConfig = new AlignmentConfig(config, cleanupConfig);
+            AlignmentConfig slideConfig = requestedSlideConfig.forEffectiveModernAttempt();
+            String settingsNotice = modernSettingsNotice(requestedSlideConfig, slideConfig);
+            if (!settingsNotice.isEmpty()) {
+                PluginLog.verbose("Modern attempt settings: %s", settingsNotice);
+            }
             OrdinaryActionRouting<ImageryLayer> ordinaryRouting = forcedLivePreviewEngine == null
-                    ? resolveOrdinaryAction(tracing, slideConfig, HeatmapLayerResolver::resolve,
+                    ? resolveOrdinaryAction(tracing, requestedSlideConfig, HeatmapLayerResolver::resolve,
                             () -> HeatmapLayerResolver.resolveOptional().orElse(null)) : null;
             OrdinaryRoute ordinaryRoute = ordinaryRouting == null ? null : ordinaryRouting.route();
             boolean modern = forcedLivePreviewEngine != null
@@ -554,6 +566,7 @@ public class AlignWayAction extends JosmAction {
                 RecoveryPermissions recovery = ordinaryRoute == null ? null
                         : ordinaryRoute.invocation().recovery().toPermissions();
                 startLiveBPreview(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        requestedSlideConfig,
                         persistedSlideConfig, tracing, recovery, ordinaryRouting,
                         sourceMode == AlignmentSourceMode.VISIBLE_LAYER,
                         sourceMode == AlignmentSourceMode.MANAGED_TILES,
@@ -599,6 +612,7 @@ public class AlignWayAction extends JosmAction {
 
     private void startLiveBPreview(DataSet dataSet, SelectionContext selection,
             ImageryLayer imageryLayer, MapView mapView, AlignmentConfig slideConfig,
+            AlignmentConfig requestedSlideConfig,
             AlignmentConfig persistedSlideConfig, TracingSettings tracingAtCapture,
             RecoveryPermissions recoveryPermissions,
             OrdinaryActionRouting<ImageryLayer> ordinaryRouting,
@@ -617,6 +631,10 @@ public class AlignWayAction extends JosmAction {
         JButton cancel = new JButton(tr("Cancel"));
         JPanel panel = new JPanel();
         panel.add(status);
+        String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
+        if (!settingsNotice.isEmpty()) {
+            panel.add(settingsNoticeComponent(settingsNotice));
+        }
         panel.add(cancel);
         progress.setContentPane(panel);
         progress.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
@@ -719,7 +737,9 @@ public class AlignWayAction extends JosmAction {
                     ManagedModernPreviewSource.Raster raster = source.acquire(
                             ManagedModernPreviewSource.selectedOnly(seed[0].sourceGeographic(),
                                     slideConfig.heatmap(), sourceIdentity), credentials, context);
-                    return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context);
+                    return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context)
+                            .withSettingsResolution(settingsResolutionJson(requestedSlideConfig,
+                                    slideConfig));
                 }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
                         slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
                         diagnosticAttemptIdentity, previewSourceOwner));
@@ -737,7 +757,9 @@ public class AlignWayAction extends JosmAction {
                             captured.network().snapshotId(), sourceIdentity, captured.settingsHash(),
                             captured.network().canonicalHash());
                     return new AlignmentJob.CapturedAttempt<>(snapshot, captured);
-                }, (captured, context) -> livePreviewService.compute(captured, context),
+                }, (captured, context) -> livePreviewService.compute(captured, context)
+                        .withSettingsResolution(settingsResolutionJson(requestedSlideConfig,
+                                slideConfig)),
                         attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
                                 slideConfig, persistedSlideConfig, tracingAtCapture, attempt.result(),
                                 diagnosticAttemptIdentity, null));
@@ -887,6 +909,10 @@ public class AlignWayAction extends JosmAction {
         boolean[] completed = {false};
         JScrollPane intervalScroll = new JScrollPane(intervalControls);
         intervalScroll.setPreferredSize(new Dimension(680, 180));
+        String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
+        if (!settingsNotice.isEmpty()) {
+            panel.add(settingsNoticeComponent(settingsNotice));
+        }
         panel.add(intervalScroll);
         panel.add(qualityScroll);
         panel.add(confirm);
@@ -1191,6 +1217,10 @@ public class AlignWayAction extends JosmAction {
         JPanel panel = new JPanel();
         panel.add(new JLabel(tr("{0} final geometry",
                 livePreviewEngineLabel(slideConfig.heatmap().trackerMode()))));
+        String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
+        if (!settingsNotice.isEmpty()) {
+            panel.add(settingsNoticeComponent(settingsNotice));
+        }
         if (candidates.size() > 1) {
             panel.add(choices);
         }
@@ -1460,6 +1490,75 @@ public class AlignWayAction extends JosmAction {
             case CONFIGURATION_UNSUPPORTED ->
                 tr("This engine, source, or geometry configuration is unavailable for Apply");
         };
+    }
+
+    /** User-visible per-attempt explanation for saved B settings that cannot be applied. */
+    static String modernSettingsNotice(AlignmentConfig requested, AlignmentConfig effective) {
+        if (requested == null || effective == null
+                || effective.heatmap().trackerMode() != TrackerMode.PROBABILISTIC) {
+            return "";
+        }
+        boolean cleanupSuppressed = !requested.cleanup().isDisabled()
+                && effective.cleanup().isDisabled();
+        boolean simplifySuppressed = requested.heatmap().simplifyEnabled()
+                && !effective.heatmap().simplifyEnabled();
+        if (!cleanupSuppressed && !simplifySuppressed) {
+            return "";
+        }
+        return tr("For this Probabilistic B attempt, geometry cleanup and legacy "
+                + "simplification are Off because B cannot apply them safely. Saved settings "
+                + "are unchanged; use Corridor-aware A with Precise Shape for cleanup.");
+    }
+
+    private static JTextArea settingsNoticeComponent(String notice) {
+        JTextArea component = new JTextArea(notice, 3, 60);
+        component.setEditable(false);
+        component.setLineWrap(true);
+        component.setWrapStyleWord(true);
+        component.setOpaque(false);
+        component.getAccessibleContext().setAccessibleName(tr("Effective alignment settings"));
+        return component;
+    }
+
+    private static String settingsResolutionJson(AlignmentConfig requested,
+            AlignmentConfig effective) {
+        return "{\"requestedIdentity\":\"" + settingsIdentity(requested)
+                + "\",\"effectiveIdentity\":\"" + settingsIdentity(effective)
+                + "\",\"requestedEngine\":\"" + requested.heatmap().trackerMode().name()
+                + "\",\"effectiveEngine\":\"" + effective.heatmap().trackerMode().name()
+                + "\",\"requestedGeometryMode\":\"" + requested.heatmap().alignmentMode().name()
+                + "\",\"effectiveGeometryMode\":\"" + effective.heatmap().alignmentMode().name()
+                + "\",\"requestedSimplification\":" + requested.heatmap().simplifyEnabled()
+                + ",\"effectiveSimplification\":" + effective.heatmap().simplifyEnabled()
+                + ",\"requestedCleanupMode\":\"" + requested.cleanup().mode().name()
+                + "\",\"effectiveCleanupMode\":\"" + effective.cleanup().mode().name()
+                + "\",\"requestedCleanupPreset\":\"" + requested.cleanup().preset().name()
+                + "\",\"effectiveCleanupPreset\":\"" + effective.cleanup().preset().name()
+                + "\"}";
+    }
+
+    private static String settingsIdentity(AlignmentConfig config) {
+        try {
+            String redacted = config.heatmap().toRedactedJson() + config.cleanup().toRedactedJson()
+                    + config.searchHalfWidthMetersOverride();
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                    redacted.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is required for settings identity", exception);
+        }
+    }
+
+    private static Format15Bundle withSettingsResolution(Format15Bundle bundle,
+            LiveBPreviewService.Computed computed) {
+        if (computed.settingsResolutionJson() == null) {
+            return bundle;
+        }
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put("settings-resolution.json", Format15Artifact.text(
+                "settings-resolution.json", computed.settingsResolutionJson()));
+        return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
+                bundle.parameterHash(), artifacts);
     }
 
     static ModernApplyPreflight modernApplyPreflight(LiveBPreviewService.Captured captured,
@@ -1780,9 +1879,9 @@ public class AlignWayAction extends JosmAction {
                 state.routeChoices(), intervalSourceReceipt(computed.captured()), status,
                 reviewed, applied);
         var batch = state.batch();
-        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
+        return withSettingsResolution(Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
                 new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
-                batch.fullRequest().engine());
+                batch.fullRequest().engine()), computed);
     }
 
     private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
@@ -1889,7 +1988,8 @@ public class AlignWayAction extends JosmAction {
                             && computed.pipeline().routes().isEmpty()
                                 ? ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE
                                 : null);
-        return Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle, input, input.request().engine());
+        return withSettingsResolution(Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                bundle, input, input.request().engine()), computed);
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */
@@ -1960,7 +2060,8 @@ public class AlignWayAction extends JosmAction {
         if (!tracing.engine().capabilities().requiresEvidenceSnapshot()) {
             return new OrdinaryRoute(OrdinaryPipeline.LEGACY_COMPATIBILITY, null);
         }
-        ModernAlignmentInvocation invocation = ModernAlignmentInvocation.resolve(tracing, config);
+        ModernAlignmentInvocation invocation = ModernAlignmentInvocation.resolve(tracing,
+                config.forEffectiveModernAttempt());
         OrdinaryPipeline pipeline = switch (invocation.resolvedSourceMode()) {
             case VISIBLE_LAYER -> OrdinaryPipeline.MODERN_VISIBLE;
             case MANAGED_TILES -> OrdinaryPipeline.MODERN_MANAGED;
@@ -1975,7 +2076,7 @@ public class AlignWayAction extends JosmAction {
             Supplier<T> legacyVisibleSource) {
         OrdinaryRoute route = resolveOrdinaryRoute(tracing, config);
         return new OrdinaryActionRouting<>(route, selectOrdinarySource(route, config.heatmap(),
-                requiredVisibleSource, legacyVisibleSource));
+                requiredVisibleSource, legacyVisibleSource), config);
     }
 
     /** Acquires only the source required by the frozen ordinary route. */
@@ -2001,7 +2102,8 @@ public class AlignWayAction extends JosmAction {
         }
         AlignmentConfig currentEffective = new AlignmentConfig(
                 effectiveConfig(currentPersisted.heatmap(), forcedAlignmentMode,
-                        forcedLivePreviewEngine), currentPersisted.cleanup());
+                        forcedLivePreviewEngine), currentPersisted.cleanup())
+                .forEffectiveModernAttempt();
         return effectiveAtCapture.equals(currentEffective);
     }
 
@@ -2021,7 +2123,7 @@ public class AlignWayAction extends JosmAction {
                 : currentPersisted.heatmap();
         AlignmentConfig currentEffective = new AlignmentConfig(
                 effectiveConfig(currentBase, forcedAlignmentMode, forcedLivePreviewEngine),
-                currentPersisted.cleanup());
+                currentPersisted.cleanup()).forEffectiveModernAttempt();
         return effectiveAtCapture.equals(currentEffective);
     }
 

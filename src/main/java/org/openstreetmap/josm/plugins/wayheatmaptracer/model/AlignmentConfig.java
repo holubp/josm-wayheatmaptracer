@@ -68,4 +68,28 @@ public record AlignmentConfig(
             ? heatmap.withSearchHalfWidthMeters(searchHalfWidthMetersOverride.getAsDouble())
             : heatmap;
     }
+
+    /** Resolves unsupported legacy B postprocessing for this attempt without changing preferences. */
+    public AlignmentConfig forEffectiveModernAttempt() {
+        if (heatmap.trackerMode() != TrackerMode.PROBABILISTIC
+                || cleanup.isDisabled() && !heatmap.simplifyEnabled()) {
+            return this;
+        }
+        ManagedHeatmapConfig effectiveHeatmap = heatmap;
+        if (heatmap.simplifyEnabled()) {
+            effectiveHeatmap = new ManagedHeatmapConfig(
+                heatmap.keyPairId(), heatmap.policy(), heatmap.signature(), heatmap.sessionToken(),
+                heatmap.activity(), heatmap.color(), heatmap.manualLayerName(), heatmap.layerRegex(),
+                heatmap.alignmentMode(), heatmap.trackerMode(), heatmap.verbose(), heatmap.debug(),
+                heatmap.multiColorDetection(), heatmap.aggregateAllColorSchemes(),
+                heatmap.showAggregateIntensityLayer(), heatmap.candidateRatingEnabled(),
+                heatmap.parallelWayAwareness(), heatmap.allowUndownloadedAlignment(),
+                heatmap.adjustJunctionNodes(), false, heatmap.crossSectionHalfWidthPx(),
+                heatmap.crossSectionStepPx(), heatmap.simplifyTolerancePx(), heatmap.inferenceMode(),
+                heatmap.inferenceZoom(), heatmap.validationZoom(), heatmap.searchHalfWidthMeters(),
+                heatmap.sampleStepMeters(), heatmap.intensitySamplingMode(), heatmap.cacheBuster());
+        }
+        return new AlignmentConfig(effectiveHeatmap, cleanup.withMode(GeometryCleanupMode.NONE),
+                searchHalfWidthMetersOverride);
+    }
 }

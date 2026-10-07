@@ -47,6 +47,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.E
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupPreset;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
@@ -132,6 +133,42 @@ class OrdinaryModernApplyPreparationTest {
             edt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
             assertEquals(applied, state(fixture.dataSet()));
             assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+        }
+    }
+
+    @Test
+    void incompatibleSavedBSettingsStillConfirmAndApplyBothGeometryModes() throws Exception {
+        for (AlignmentMode mode : List.of(AlignmentMode.PRECISE_SHAPE,
+                AlignmentMode.MOVE_EXISTING_NODES)) {
+            Fixture fixture = fixture(false, true);
+            List<Node> originalNodes = List.copyOf(fixture.way().getNodes());
+            List<GeographicPoint> originalGeometry = geometry(fixture.way());
+            AlignmentConfig requested = incompatibleBConfig(mode);
+            try (Attempt attempt = publish(fixture, TrackerMode.PROBABILISTIC, requested)) {
+                assertTrue(requested.heatmap().simplifyEnabled());
+                assertFalse(requested.cleanup().isDisabled());
+                assertTrue(attempt.computed.captured().cleanup().isDisabled());
+                assertEquals(mode, attempt.computed.request().geometryMode());
+                var assessment = new ModernSingleWayEditPlanAdapter().assess(attempt.computed, 0);
+                assertTrue(assessment.applyAvailable(), mode + ": " + assessment.detail());
+                AlignmentEditPlan plan = assessment.plan().orElseThrow();
+                PreviewReviewState pending = PreviewReviewState.fromEditPlan("ordinary-route", plan);
+                assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, pending.disposition(),
+                        mode + " must exercise the review boundary");
+                PreviewReviewState confirmation = pending.confirm();
+                assertTrue(confirmation.confirmed());
+                var prepared = edt(() -> attempt.prepare(confirmation));
+                edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
+                assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+                assertNotEquals(originalGeometry, geometry(fixture.way()),
+                        "the managed route must apply a genuine move");
+                if (mode == AlignmentMode.MOVE_EXISTING_NODES) {
+                    assertEquals(originalNodes, fixture.way().getNodes());
+                }
+                edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+                assertEquals(originalGeometry, geometry(fixture.way()));
+            }
+            UndoRedoHandler.getInstance().clean();
         }
     }
 
@@ -424,7 +461,10 @@ class OrdinaryModernApplyPreparationTest {
     }
 
     private Attempt publish(Fixture fixture, TrackerMode engine) throws Exception {
-        AlignmentConfig config = config(engine);
+        return publish(fixture, engine, config(engine));
+    }
+
+    private Attempt publish(Fixture fixture, TrackerMode engine, AlignmentConfig config) throws Exception {
         var routing = AlignWayAction.resolveOrdinaryAction(new TracingSettings(
                 TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                 RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES),
@@ -451,7 +491,8 @@ class OrdinaryModernApplyPreparationTest {
             throw new AssertionError("receipt validation must not acquire tiles");
         }, new ManagedTileCache(cacheDirectory, classifier), classifier, TileReliabilityPolicy.defaults());
         source.updateActiveGeneration(new ManagedTileGeneration(0L));
-        return new Attempt(fixture, result.get(), session, owner, source, config);
+        return new Attempt(fixture, result.get(), session, owner, source,
+                routing.route().invocation().config());
     }
 
     private static final class Attempt implements AutoCloseable {
@@ -515,6 +556,22 @@ class OrdinaryModernApplyPreparationTest {
                 false, false, false, false, false, false, false, false,
                 7, 4, 3, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L), GeometryCleanupConfig.disabled());
+    }
+
+    private static AlignmentConfig incompatibleBConfig(AlignmentMode mode) {
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        return new AlignmentConfig(new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), mode, base.trackerMode(),
+                base.verbose(), base.debug(), base.multiColorDetection(),
+                base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), true,
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(),
+                base.simplifyTolerancePx(), base.inferenceMode(), base.inferenceZoom(),
+                base.validationZoom(), base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                base.intensitySamplingMode(), base.cacheBuster()),
+                GeometryCleanupPreset.BALANCED.apply());
     }
 
     private static Fixture fixture(boolean subrange, boolean interior) {
