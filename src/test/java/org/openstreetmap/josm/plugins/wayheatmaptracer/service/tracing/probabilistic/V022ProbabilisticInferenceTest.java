@@ -18,8 +18,26 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 
 class V022ProbabilisticInferenceTest {
+    @Test
+    void boundedKBestAllocatesAncestryOnlyForRetainedExtensions() {
+        List<InferenceProfile> profiles = denseProfiles(4, 6);
+        TraceBudgets budgets = new TraceBudgets(96, 1_000, 1_000_000, 1, 1);
+        ModernDiagnosticCounters.begin();
+        try {
+            ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
+                EvidenceModelParameters.withoutShapeTerms(), budgets);
+            assertEquals(ProbabilisticInferenceResult.Status.REVIEW_REQUIRED, result.status());
+            var counters = ModernDiagnosticCounters.snapshot();
+            assertEquals(432L, counters.get("inference.extensionDescriptors").longValue());
+            assertTrue(counters.get("inference.ancestryRecordsAllocated").longValue() <= 144L,
+                "only initial paths and the retained per-pair extensions need ancestry");
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
+    }
     @Test
     void t019MapEnergyAndPathEqualIndependentBruteForce() {
         List<InferenceProfile> profiles = tinyProfiles();

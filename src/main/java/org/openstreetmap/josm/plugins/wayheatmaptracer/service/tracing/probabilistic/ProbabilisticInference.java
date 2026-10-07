@@ -207,6 +207,11 @@ public final class ProbabilisticInference {
             return failureOwned(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,
                     workCounter.pairVisits, workCounter.transitions, "numeric failure", profiles,
                     resultOwner);
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.extensionDescriptors", workCounter.extensionDescriptors);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "inference.ancestryRecordsAllocated", workCounter.ancestryRecordsAllocated);
         }
     }
 
@@ -365,7 +370,7 @@ public final class ProbabilisticInference {
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
-        PathArena arena = new PathArena(owner.child("reachable-ancestry"));
+        PathArena arena = new PathArena(owner.child("reachable-ancestry"), workCounter);
         if (profiles.size() == 1) {
             AttemptMemoryLedger.Owner frontierOwner = owner.child("single-profile-frontier");
             List<PathRecord> paths = allocated(frontierOwner,
@@ -417,9 +422,29 @@ public final class ProbabilisticInference {
             AttemptMemoryLedger.Owner nextOwner = owner.child("frontier-" + profileIndex);
             List<PathRecord>[][] next = pathGrid(previousStates, nextStates, nextOwner);
             int[][] nextCounts = intGrid(previousStates, nextStates, nextOwner);
+            int beforeStates = current.length;
+            int streamCapacity = Math.multiplyExact(beforeStates, cap);
+            AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
+            double[] extensionEnergy = allocated(scratchOwner,
+                AttemptMemoryLedger.arrayBytes(streamCapacity, Double.BYTES), "k-best descriptors",
+                () -> new double[streamCapacity]);
+            int[] streamOrder = allocated(scratchOwner,
+                AttemptMemoryLedger.arrayBytes(streamCapacity, Integer.BYTES), "k-best descriptors",
+                () -> new int[streamCapacity]);
+            int[] streamLengths = allocated(scratchOwner,
+                AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
+                () -> new int[beforeStates]);
+            int[] heapBefore = allocated(scratchOwner,
+                AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
+                () -> new int[beforeStates]);
+            int[] heapPosition = allocated(scratchOwner,
+                AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
+                () -> new int[beforeStates]);
             for (int prior = 0; prior < previousStates; prior++) {
                 for (int state = 0; state < nextStates; state++) {
-                    TopKPaths candidates = new TopKPaths(cap, nextOwner);
+                    Arrays.fill(streamLengths, 0);
+                    int heapSize = 0;
+                    int candidateCount = 0;
                     for (int before = 0; before < current.length; before++) {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
@@ -433,8 +458,8 @@ public final class ProbabilisticInference {
                         double increment = profileEnergy(profiles, profileIndex, state, parameters)
                             + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
                             + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
-                        double measure = logMeasure(profiles.get(profileIndex).cells().get(state));
-                        for (PathRecord prefix : prefixes) {
+                        int base = before * cap;
+                        for (int index = 0; index < prefixes.size(); index++) {
                             transitions++;
                             workCounter.transitions++;
                             if ((transitions & 1023L) == 0L) {
@@ -444,14 +469,77 @@ public final class ProbabilisticInference {
                                 return new KBestResult(List.of(), 0, true, transitions,
                                     "transition budget exceeded during k-best");
                             }
-                            PathRecord discarded = candidates.offer(
-                                    arena.extend(prefix, state, increment, measure));
-                            if (discarded != null) arena.release(discarded);
+                            extensionEnergy[base + index] = prefixes.get(index).energy() + increment;
+                            streamOrder[base + index] = index;
+                            workCounter.extensionDescriptors++;
+                        }
+                        streamLengths[before] = prefixes.size();
+                        candidateCount += prefixes.size();
+                        // A rounded addition can collapse distinct prefix energies. Sort on
+                        // the completed binary64 value before merging this retained stream.
+                        for (int index = 1; index < prefixes.size(); index++) {
+                            int candidate = streamOrder[base + index];
+                            int at = index;
+                            while (at > 0 && compareExtension(
+                                    extensionEnergy[base + candidate], prefixes.get(candidate).lexicalRank,
+                                    state, extensionEnergy[base + streamOrder[base + at - 1]],
+                                    prefixes.get(streamOrder[base + at - 1]).lexicalRank, state) < 0) {
+                                streamOrder[base + at] = streamOrder[base + at - 1];
+                                at--;
+                            }
+                            streamOrder[base + at] = candidate;
+                        }
+                        heapBefore[heapSize] = before;
+                        heapPosition[heapSize] = 0;
+                        int at = heapSize++;
+                        while (at > 0) {
+                            int parent = (at - 1) >>> 1;
+                            if (compareStreamHead(current, prior, state, cap, extensionEnergy,
+                                    streamOrder, heapBefore[at], heapPosition[at],
+                                    heapBefore[parent], heapPosition[parent]) >= 0) break;
+                            swap(heapBefore, at, parent);
+                            swap(heapPosition, at, parent);
+                            at = parent;
                         }
                     }
-                    next[prior][state] = candidates.paths();
+                    int selectedCount = Math.min(cap, candidateCount);
+                    List<PathRecord> selected = allocated(nextOwner, listBytes(cap),
+                        "k-best frontier", () -> new ArrayList<>(cap));
+                    double measure = logMeasure(profiles.get(profileIndex).cells().get(state));
+                    for (int selectedIndex = 0; selectedIndex < selectedCount; selectedIndex++) {
+                        int before = heapBefore[0];
+                        int position = heapPosition[0];
+                        int orderedIndex = streamOrder[before * cap + position];
+                        PathRecord prefix = current[before][prior].get(orderedIndex);
+                        selected.add(arena.extendRounded(prefix, state,
+                            extensionEnergy[before * cap + orderedIndex], measure));
+                        if (position + 1 < streamLengths[before]) {
+                            heapPosition[0] = position + 1;
+                        } else {
+                            heapSize--;
+                            heapBefore[0] = heapBefore[heapSize];
+                            heapPosition[0] = heapPosition[heapSize];
+                        }
+                        int at = 0;
+                        while (at < heapSize) {
+                            int left = 2 * at + 1;
+                            if (left >= heapSize) break;
+                            int right = left + 1;
+                            int child = right < heapSize && compareStreamHead(current, prior, state,
+                                cap, extensionEnergy, streamOrder, heapBefore[right], heapPosition[right],
+                                heapBefore[left], heapPosition[left]) < 0 ? right : left;
+                            if (compareStreamHead(current, prior, state, cap, extensionEnergy,
+                                    streamOrder, heapBefore[at], heapPosition[at],
+                                    heapBefore[child], heapPosition[child]) <= 0) break;
+                            swap(heapBefore, at, child);
+                            swap(heapPosition, at, child);
+                            at = child;
+                        }
+                    }
+                    next[prior][state] = selected;
                 }
             }
+            scratchOwner.close();
             assignLexicalRanks(next, nextOwner);
             arena.releaseFrontier(current);
             currentOwner.close();
@@ -963,6 +1051,31 @@ public final class ProbabilisticInference {
         return parent != 0 ? parent : Integer.compare(first.state(), second.state());
     }
 
+    static int compareExtension(double firstEnergy, long firstParentRank, int firstState,
+            double secondEnergy, long secondParentRank, int secondState) {
+        int energy = Double.compare(firstEnergy, secondEnergy);
+        if (energy != 0) return energy;
+        int parent = Long.compare(firstParentRank, secondParentRank);
+        return parent != 0 ? parent : Integer.compare(firstState, secondState);
+    }
+
+    private static int compareStreamHead(List<PathRecord>[][] current, int prior, int state,
+            int cap, double[] energies, int[] order, int firstBefore, int firstPosition,
+            int secondBefore, int secondPosition) {
+        int firstIndex = order[firstBefore * cap + firstPosition];
+        int secondIndex = order[secondBefore * cap + secondPosition];
+        return compareExtension(energies[firstBefore * cap + firstIndex],
+            current[firstBefore][prior].get(firstIndex).lexicalRank, state,
+            energies[secondBefore * cap + secondIndex],
+            current[secondBefore][prior].get(secondIndex).lexicalRank, state);
+    }
+
+    private static void swap(int[] values, int first, int second) {
+        int value = values[first];
+        values[first] = values[second];
+        values[second] = value;
+    }
+
     private static void assignLexicalRanks(List<PathRecord>[][] paths,
             AttemptMemoryLedger.Owner owner) {
         int count = 0;
@@ -977,30 +1090,6 @@ public final class ProbabilisticInference {
         ordered.sort(ProbabilisticInference::compareLexical);
         for (int index = 0; index < ordered.size(); index++) ordered.get(index).lexicalRank = index;
         temporary.close();
-    }
-
-    private static final class TopKPaths {
-        private final int cap;
-        private final List<PathRecord> paths;
-        private boolean truncated;
-        TopKPaths(int cap, AttemptMemoryLedger.Owner owner) {
-            this.cap = cap;
-            this.paths = allocated(owner, listBytes(cap), "k-best frontier",
-                    () -> new ArrayList<>(cap));
-        }
-        PathRecord offer(PathRecord candidate) {
-            int index = 0;
-            while (index < paths.size() && PATH_ORDER.compare(paths.get(index), candidate) <= 0) index++;
-            if (index >= cap) { truncated = true; return candidate; }
-            paths.add(index, candidate);
-            if (paths.size() > cap) {
-                truncated = true;
-                return paths.remove(paths.size() - 1);
-            }
-            return null;
-        }
-        boolean truncated() { return truncated; }
-        List<PathRecord> paths() { return paths; }
     }
 
     static final class PathRecord {
@@ -1059,13 +1148,19 @@ public final class ProbabilisticInference {
     static final class PathArena implements AutoCloseable {
         private static final long PATH_RECORD_BYTES = AttemptMemoryLedger.objectBytes(48);
         private final AttemptMemoryLedger.Owner owner;
+        private final WorkCounter counter;
         private final IdentityHashMap<PathRecord, AttemptMemoryLedger.MemoryLease> leases;
         private AttemptMemoryLedger.MemoryLease tableLease;
         private int tableLength = 64;
         private long releasedRecordCount;
 
         PathArena(AttemptMemoryLedger.Owner owner) {
+            this(owner, null);
+        }
+
+        PathArena(AttemptMemoryLedger.Owner owner, WorkCounter counter) {
             this.owner = owner;
+            this.counter = counter;
             AttemptMemoryLedger.Reservation mapReservation = null;
             AttemptMemoryLedger.Reservation tableReservation = null;
             try {
@@ -1105,6 +1200,12 @@ public final class ProbabilisticInference {
                     parent.logMeasure + logMeasureIncrement);
         }
 
+        PathRecord extendRounded(PathRecord parent, int state, double roundedEnergy,
+                double logMeasureIncrement) {
+            return create(parent, state, parent.length + 1, roundedEnergy,
+                    parent.logMeasure + logMeasureIncrement);
+        }
+
         private PathRecord create(PathRecord parent, int state, int length, double energy,
                 double logMeasure) {
             TableGrowth growth = reserveTableGrowth();
@@ -1118,6 +1219,7 @@ public final class ProbabilisticInference {
             try {
                 PathRecord record = new PathRecord(parent, state, length, energy, logMeasure);
                 leases.put(record, reservation.adopt(record));
+                if (counter != null) counter.ancestryRecordsAllocated++;
                 if (parent != null) parent.children = Math.addExact(parent.children, 1);
                 if (growth != null) growth.commit();
                 return record;
@@ -1230,6 +1332,8 @@ public final class ProbabilisticInference {
     private static final class WorkCounter {
         private long pairVisits;
         private long transitions;
+        private long extensionDescriptors;
+        private long ancestryRecordsAllocated;
     }
 
     static final class MemoryLimit extends RuntimeException {

@@ -33,7 +33,11 @@ class V022ProbabilisticMemoryTest {
         assertEquals(ProbabilisticInferenceFingerprint.capture(baseline),
                 ProbabilisticInferenceFingerprint.capture(accounted));
         assertEquals(14_032L, owner.currentBytes());
-        assertEquals(53_808L, owner.peakBytes());
+        long descriptorScratch = AttemptMemoryLedger.arrayBytes(3L * 32L, Double.BYTES)
+                + AttemptMemoryLedger.arrayBytes(3L * 32L, Integer.BYTES)
+                + 3L * AttemptMemoryLedger.arrayBytes(3L, Integer.BYTES);
+        assertEquals(53_808L + descriptorScratch, owner.peakBytes(),
+                "all descriptor energies, stream order and heap arrays must be admitted");
         assertEquals(36L, accounted.evaluatedPairVisits());
         assertEquals(513L, accounted.evaluatedTransitions());
         assertTrue(owner.currentBytes() > 0L, "the returned result must remain owned");
@@ -58,6 +62,25 @@ class V022ProbabilisticMemoryTest {
         assertLimitedAt(result, "k-best frontier");
         assertTrue(result.evaluatedPairVisits() > 0L);
         assertTrue(result.evaluatedTransitions() > 0L);
+    }
+
+    @Test
+    void descriptorScratchRefusalIsTypedAndReleasesEveryOwner() {
+        boolean foundScratchBoundary = false;
+        for (long limit = 2_400L; limit <= 8_000L && !foundScratchBoundary; limit += 16L) {
+            AttemptMemoryLedger ledger = new AttemptMemoryLedger(limit);
+            AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+            ProbabilisticInferenceResult result = new ProbabilisticInference().solve(
+                profiles(4, 3), PARAMETERS, TraceBudgets.defaults(), null,
+                CancellationProbe.NONE, owner);
+            if (result.explanation().contains("k-best descriptors")) {
+                assertLimitedAt(result, "k-best descriptors");
+                foundScratchBoundary = true;
+            }
+            owner.close();
+            assertEquals(0L, ledger.currentBytes());
+        }
+        assertTrue(foundScratchBoundary, "a charged descriptor array must be rejectable");
     }
 
     @Test
