@@ -112,6 +112,186 @@ class ManagedModernPreviewSourceTest {
     }
 
     @Test
+    void aggregateCompletenessRequiresEveryPaletteAtEachRequiredZoom() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        Set<String> paletteZoomPairs = java.util.Collections.synchronizedSet(new HashSet<>());
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            paletteZoomPairs.add(request.address().color() + "/" + request.address().zoom());
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("dual-zoom-complete"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "dual-zoom", CredentialSnapshot.fromConfig(null), () -> false);
+
+            Set<String> expected = new HashSet<>();
+            for (String palette : List.of("hot", "blue", "bluered", "purple", "gray")) {
+                expected.add(palette + "/15");
+                expected.add(palette + "/14");
+            }
+            assertEquals(expected, paletteZoomPairs);
+            assertEquals(Set.of(15, 14), sources.plan().requiredZooms());
+            assertTrue(sources.allRequiredZoomsAvailable());
+            assertEquals(Set.of(15, 14), sources.zoomReceipts().keySet());
+            assertEquals(ManagedModernPreviewSource.ZoomAvailability.COMPLETE,
+                    sources.zoomReceipts().get(14).availability());
+            assertEquals(Set.of("hot", "blue", "bluered", "purple", "gray"),
+                    sources.zoomReceipts().get(14).acquiredPalettes());
+            assertEquals(64, sources.zoomReceipts().get(14).contentSupportDigest().length());
+            assertThrows(UnsupportedOperationException.class, () -> sources.zoomReceipts().clear());
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.COMPLETE,
+                    sources.aggregateAvailability());
+            assertEquals(Set.of("hot", "blue", "bluered", "purple", "gray"),
+                    sources.palettes().keySet(), "primary detector rasters remain inference-zoom only");
+            assertTrue(sources.palettes().values().stream().allMatch(raster -> raster.zoom() == 15));
+        }
+    }
+
+    @Test
+    void aggregateCompletenessFailsWhenRequiredLowerZoomPaletteIsMissing() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        Set<String> paletteZoomPairs = java.util.Collections.synchronizedSet(new HashSet<>());
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            paletteZoomPairs.add(request.address().color() + "/" + request.address().zoom());
+            return request.address().zoom() == 14 && "purple".equals(request.address().color())
+                    ? new TransportResponse(TileFetchStatus.NO_TILE, 404, "", null,
+                            null, Duration.ZERO, "safe-no-tile")
+                    : new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                            sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("dual-zoom-missing"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "missing-lower-zoom", CredentialSnapshot.fromConfig(null), () -> false);
+
+            assertTrue(paletteZoomPairs.contains("purple/14"));
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertFalse(sources.allRequiredZoomsAvailable());
+            assertEquals(ManagedModernPreviewSource.ZoomAvailability.PALETTE_UNAVAILABLE,
+                    sources.zoomReceipts().get(14).availability());
+            assertEquals("purple", sources.zoomReceipts().get(14).failedPalette());
+            assertEquals(TileFetchStatus.NO_TILE, sources.zoomReceipts().get(14).failureStatus());
+            assertEquals(14, sources.aggregateFailure().zoom());
+            assertEquals(Set.of("blue"), sources.palettes().keySet());
+            assertThrows(IllegalStateException.class,
+                    () -> sources.completeAggregateScalars(() -> false));
+        }
+    }
+
+    @Test
+    void aggregateCompletenessFailsWhenRequiredLowerZoomIsUnauthorized() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        Set<String> paletteZoomPairs = java.util.Collections.synchronizedSet(new HashSet<>());
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            paletteZoomPairs.add(request.address().color() + "/" + request.address().zoom());
+            return request.address().zoom() == 14 && "blue".equals(request.address().color())
+                    ? new TransportResponse(TileFetchStatus.AUTH_FAILURE, 401, "", null,
+                            null, Duration.ZERO, "private-response-body")
+                    : new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                            sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("dual-zoom-auth"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "unauthorized-lower-zoom", CredentialSnapshot.fromConfig(null), () -> false);
+
+            assertTrue(paletteZoomPairs.contains("blue/14"));
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertFalse(sources.allRequiredZoomsAvailable());
+            assertEquals(TileFetchStatus.AUTH_FAILURE,
+                    sources.zoomReceipts().get(14).failureStatus());
+            assertEquals("blue", sources.zoomReceipts().get(14).failedPalette());
+            assertEquals(14, sources.aggregateFailure().zoom());
+            assertEquals(Set.of("blue"), sources.palettes().keySet());
+            assertFalse(sources.toString().contains("private-response-body"));
+        }
+    }
+
+    @Test
+    void staleRequiredLowerZoomCannotCompleteAggregate() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        Set<String> paletteZoomPairs = java.util.Collections.synchronizedSet(new HashSet<>());
+        java.util.concurrent.atomic.AtomicReference<TileFetchCoordinator> owner =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            paletteZoomPairs.add(request.address().color() + "/" + request.address().zoom());
+            if (request.address().zoom() == 14) {
+                owner.get().updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster() + 1));
+            }
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("dual-zoom-stale"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            owner.set(coordinator);
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            assertThrows(IllegalStateException.class, () ->
+                    new ManagedModernPreviewSource(coordinator).acquireSources(
+                            List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                            config, "stale-lower-zoom", CredentialSnapshot.fromConfig(null), () -> false));
+            assertTrue(paletteZoomPairs.stream().anyMatch(pair -> pair.endsWith("/14")));
+        }
+    }
+
+    @Test
+    void cancellationDuringRequiredLowerZoomReturnsNoPartialSourceSet() {
+        ManagedHeatmapConfig config = config(false, true,
+                IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicBoolean enteredLowerZoom = new AtomicBoolean();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            if (request.address().zoom() == 14) {
+                enteredLowerZoom.set(true);
+                cancelled.set(true);
+            }
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("cancel-lower-zoom"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            assertThrows(java.util.concurrent.CancellationException.class, () ->
+                    new ManagedModernPreviewSource(coordinator).acquireSources(
+                            List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                            config, "cancel-lower-zoom", CredentialSnapshot.fromConfig(null), cancelled::get));
+            assertTrue(enteredLowerZoom.get());
+        }
+    }
+
+    @Test
+    void staleCoordinatorGenerationInvalidatesPreviouslyCompleteZoomProof() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING, 15, 14);
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, ""),
+                new ManagedTileCache(temporary.resolve("stale-after-acquisition"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "stale-after-acquisition", CredentialSnapshot.fromConfig(null), () -> false);
+            assertTrue(sources.provenCompleteAggregate(coordinator));
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster() + 1));
+            assertFalse(sources.provenCompleteAggregate(coordinator));
+            assertThrows(IllegalStateException.class, () -> sources.completeAggregateScalars(() -> false));
+        }
+    }
+
+    @Test
     void missingAggregatePaletteRetainsOnlyNativeRasterWithTypedFailure() {
         ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
         TileDecoderClassifier decoder = new TileDecoderClassifier();
@@ -243,6 +423,7 @@ class ManagedModernPreviewSourceTest {
         var unproven = new ManagedModernPreviewSource.SourceRasters(matching, plan);
         assertEquals(ManagedModernPreviewSource.AggregateAvailability.NOT_REQUESTED,
                 unproven.aggregateAvailability());
+        assertFalse(unproven.allRequiredZoomsAvailable());
         assertFalse(unproven.provenCompleteAggregate(null));
         assertThrows(IllegalStateException.class,
                 () -> unproven.completeAggregateScalars(() -> false));
@@ -283,10 +464,15 @@ class ManagedModernPreviewSourceTest {
 
     private ManagedHeatmapConfig config(boolean alternatives, boolean aggregate,
             IntensitySamplingMode intensityMode) {
+        return config(alternatives, aggregate, intensityMode, 15, 15);
+    }
+
+    private ManagedHeatmapConfig config(boolean alternatives, boolean aggregate,
+            IntensitySamplingMode intensityMode, int inferenceZoom, int validationZoom) {
         return new ManagedHeatmapConfig("key", "policy", "signature", "session", "all", "blue", "",
                 ".*", AlignmentMode.PRECISE_SHAPE, TrackerMode.PROBABILISTIC, false, false,
                 alternatives, aggregate, false, false, false, false, false, false,
-                7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, inferenceZoom, validationZoom, 7.01, 1.56,
                 intensityMode, 17L);
     }
 

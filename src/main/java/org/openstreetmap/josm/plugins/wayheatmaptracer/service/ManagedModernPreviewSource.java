@@ -13,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
@@ -91,12 +92,64 @@ public final class ManagedModernPreviewSource {
         NOT_REQUESTED, COMPLETE, PALETTE_UNAVAILABLE, BUDGET_UNAVAILABLE
     }
 
-    /** Safe reason a requested aggregate could not acquire every native palette. */
-    public record AggregateFailure(String palette, TileFetchStatus status) {
+    /** Safe reason a requested aggregate could not acquire a native palette at a required zoom. */
+    public record AggregateFailure(int zoom, String palette, TileFetchStatus status) {
         public AggregateFailure {
-            if (!BASE_PALETTES.contains(palette) || status == null || status.usable()) {
+            if (zoom < 0 || zoom > 22 || !BASE_PALETTES.contains(palette)
+                    || status == null || status.usable()) {
                 throw new IllegalArgumentException("Aggregate failure reason is incomplete");
             }
+        }
+    }
+
+    public enum ZoomAvailability { COMPLETE, PALETTE_UNAVAILABLE, BUDGET_UNAVAILABLE }
+
+    /** Coordinator-created, credential-free proof of the exact planned palette set at one zoom. */
+    public static final class ZoomReceipt {
+        private final int zoom;
+        private final List<String> plannedPalettes;
+        private final java.util.Set<String> acquiredPalettes;
+        private final ZoomAvailability availability;
+        private final String failedPalette;
+        private final TileFetchStatus failureStatus;
+        private final ManagedTileGeneration generation;
+        private final String sourceIdentity;
+        private final String contentSupportDigest;
+
+        private ZoomReceipt(int zoom, List<String> plannedPalettes, java.util.Set<String> acquiredPalettes,
+                ZoomAvailability availability, String failedPalette, TileFetchStatus failureStatus,
+                ManagedTileGeneration generation, String sourceIdentity, byte[] frameDigest) {
+            this.zoom = zoom;
+            this.plannedPalettes = List.copyOf(plannedPalettes);
+            this.acquiredPalettes = Collections.unmodifiableSet(new LinkedHashSet<>(acquiredPalettes));
+            this.availability = Objects.requireNonNull(availability);
+            this.failedPalette = failedPalette;
+            this.failureStatus = failureStatus;
+            this.generation = Objects.requireNonNull(generation);
+            this.sourceIdentity = Objects.requireNonNull(sourceIdentity);
+            this.contentSupportDigest = java.util.HexFormat.of().formatHex(frameDigest);
+            if (zoom < 0 || zoom > 22 || this.plannedPalettes.isEmpty()
+                    || availability == ZoomAvailability.COMPLETE
+                            && (!this.acquiredPalettes.equals(new LinkedHashSet<>(this.plannedPalettes))
+                                    || failedPalette != null || failureStatus != null)
+                    || availability == ZoomAvailability.PALETTE_UNAVAILABLE
+                            && (failedPalette == null || failureStatus == null || failureStatus.usable())
+                    || availability == ZoomAvailability.BUDGET_UNAVAILABLE
+                            && (failedPalette != null || failureStatus != null)) {
+                throw new IllegalArgumentException("Managed zoom receipt is incomplete");
+            }
+        }
+        public int zoom() { return zoom; }
+        public List<String> plannedPalettes() { return plannedPalettes; }
+        public java.util.Set<String> acquiredPalettes() { return acquiredPalettes; }
+        public ZoomAvailability availability() { return availability; }
+        public String failedPalette() { return failedPalette; }
+        public TileFetchStatus failureStatus() { return failureStatus; }
+        /** SHA-256 over safe tile coordinates plus decoded pixels and support. */
+        public String contentSupportDigest() { return contentSupportDigest; }
+        public boolean complete() { return availability == ZoomAvailability.COMPLETE; }
+        private boolean sameSource(ManagedTileGeneration candidateGeneration, String candidateIdentity) {
+            return generation.equals(candidateGeneration) && sourceIdentity.equals(candidateIdentity);
         }
     }
 
@@ -106,11 +159,13 @@ public final class ManagedModernPreviewSource {
         private final Map<String, Raster> rasters;
         private final AlignmentTileSourcePlan plan;
         private final byte[] rasterFingerprint;
+        private final Map<Integer, ZoomReceipt> zoomReceipts;
         private AcquisitionProof(TileFetchCoordinator owner, Map<String, Raster> rasters,
-                AlignmentTileSourcePlan plan) {
+                AlignmentTileSourcePlan plan, Map<Integer, ZoomReceipt> zoomReceipts) {
             this.owner = owner;
             this.rasters = Map.copyOf(rasters);
             this.plan = plan;
+            this.zoomReceipts = Map.copyOf(zoomReceipts);
             this.rasterFingerprint = SourceRasters.fingerprint(rasters);
         }
         private boolean matches(Map<String, Raster> candidate, AlignmentTileSourcePlan candidatePlan) {
@@ -119,9 +174,18 @@ public final class ManagedModernPreviewSource {
         }
         private boolean matchesReferences(Map<String, Raster> candidate,
                 AlignmentTileSourcePlan candidatePlan) {
-            if (plan != candidatePlan || !rasters.keySet().equals(candidate.keySet())) return false;
+            if (plan != candidatePlan || !rasters.keySet().equals(candidate.keySet())
+                    || !zoomReceipts.keySet().equals(plan.requiredZooms())) return false;
             for (String palette : rasters.keySet()) {
                 if (rasters.get(palette) != candidate.get(palette)) return false;
+            }
+            Raster selected = candidate.get(plan.selectedColor());
+            if (selected == null || !owner.isActiveGeneration(selected.generation())) return false;
+            for (int zoom : plan.requiredZooms()) {
+                ZoomReceipt receipt = zoomReceipts.get(zoom);
+                if (receipt == null || !receipt.complete()
+                        || !receipt.plannedPalettes().equals(plan.orderedColors())
+                        || !receipt.sameSource(selected.generation(), selected.sourceIdentity())) return false;
             }
             return true;
         }
@@ -181,15 +245,16 @@ public final class ManagedModernPreviewSource {
         private final AggregateAvailability aggregateAvailability;
         private final AggregateFailure aggregateFailure;
         private final AcquisitionProof proof;
+        private final Map<Integer, ZoomReceipt> zoomReceipts;
 
         /** Creates a non-authoritative raster set; only coordinator acquisition can prove an aggregate. */
         public SourceRasters(Map<String, Raster> palettes, AlignmentTileSourcePlan plan) {
-            this(palettes, plan, AggregateAvailability.NOT_REQUESTED, null, null);
+            this(palettes, plan, AggregateAvailability.NOT_REQUESTED, null, null, Map.of());
         }
 
         private SourceRasters(Map<String, Raster> palettes, AlignmentTileSourcePlan plan,
                 AggregateAvailability aggregateAvailability, AggregateFailure aggregateFailure,
-                AcquisitionProof proof) {
+                AcquisitionProof proof, Map<Integer, ZoomReceipt> zoomReceipts) {
             if (palettes == null || plan == null || aggregateAvailability == null
                     || (aggregateAvailability == AggregateAvailability.PALETTE_UNAVAILABLE)
                             != (aggregateFailure != null)
@@ -224,12 +289,22 @@ public final class ManagedModernPreviewSource {
             this.aggregateAvailability = aggregateAvailability;
             this.aggregateFailure = aggregateFailure;
             this.proof = proof;
+            this.zoomReceipts = Collections.unmodifiableMap(new LinkedHashMap<>(zoomReceipts));
+            if (proof != null && (!this.zoomReceipts.keySet().equals(plan.requiredZooms())
+                    || !proof.matchesReferences(this.palettes, plan))) {
+                throw new IllegalArgumentException("Managed zoom receipts do not prove the source plan");
+            }
         }
 
         public Map<String, Raster> palettes() { return palettes; }
         public AlignmentTileSourcePlan plan() { return plan; }
         public AggregateAvailability aggregateAvailability() { return aggregateAvailability; }
         public AggregateFailure aggregateFailure() { return aggregateFailure; }
+        public Map<Integer, ZoomReceipt> zoomReceipts() { return zoomReceipts; }
+        public boolean allRequiredZoomsAvailable() {
+            return zoomReceipts.keySet().equals(plan.requiredZooms())
+                    && zoomReceipts.values().stream().allMatch(ZoomReceipt::complete);
+        }
         public Raster selectedRaster() { return palettes.get(plan.selectedColor()); }
         public boolean provenCompleteAggregate(TileFetchCoordinator owner) {
             return aggregateAvailability == AggregateAvailability.COMPLETE
@@ -285,6 +360,49 @@ public final class ManagedModernPreviewSource {
         }
     }
 
+    private static byte[] emptyDigest() {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static byte[] combineDigests(byte[] left, byte[] right) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(left);
+            digest.update(right);
+            return digest.digest();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static byte[] rasterDigest(Raster raster, int zoom) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(raster.palette().getBytes(StandardCharsets.US_ASCII));
+            digest.update(ByteBuffer.allocate(16).putInt(zoom).putInt(raster.image().getWidth())
+                    .putInt(raster.image().getHeight()).putInt(1).array());
+            int width = raster.image().getWidth();
+            int[] row = new int[width];
+            ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(width, 4));
+            boolean[] support = raster.validity();
+            for (int y = 0; y < raster.image().getHeight(); y++) {
+                raster.image().getRGB(0, y, width, 1, row, 0, width);
+                bytes.clear();
+                for (int argb : row) bytes.putInt(argb);
+                digest.update(bytes.array());
+                int start = y * width;
+                for (int x = 0; x < width; x++) digest.update(support[start + x] ? (byte) 1 : (byte) 0);
+            }
+            return digest.digest();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
     /**
      * Creates a compatibility request that acquires only the selected native palette.
      */
@@ -292,7 +410,7 @@ public final class ManagedModernPreviewSource {
             String sourceIdentity) {
         Objects.requireNonNull(config, "config");
         AlignmentTileSourcePlan plan = AlignmentTileSourcePlan.from(config);
-        return new Request(source, config.activity(), plan.selectedColor(), config.inferenceZoom(),
+        return new Request(source, config.activity(), plan.selectedColor(), inferenceZoom(plan),
                 new ManagedTileGeneration(Math.max(0L, config.cacheBuster())),
                 config.searchHalfWidthMeters(), config.sampleStepMeters(), sourceIdentity);
     }
@@ -302,7 +420,7 @@ public final class ManagedModernPreviewSource {
             String sourceIdentity) {
         Objects.requireNonNull(config, "config");
         AlignmentTileSourcePlan plan = AlignmentTileSourcePlan.from(config);
-        return new Request(source, config.activity(), plan.selectedColor(), config.inferenceZoom(),
+        return new Request(source, config.activity(), plan.selectedColor(), inferenceZoom(plan),
                 new ManagedTileGeneration(Math.max(0L, config.cacheBuster())),
                 config.searchHalfWidthMeters(), config.sampleStepMeters(), sourceIdentity,
                 plan.orderedColors());
@@ -343,56 +461,196 @@ public final class ManagedModernPreviewSource {
         Objects.requireNonNull(cancellation, "cancellation");
         cancellation.checkpoint();
         requireActiveGeneration(request);
-        TileBounds bounds = tileBounds(request);
-        int width = Math.multiplyExact(bounds.width(), TILE_SIZE);
-        int height = Math.multiplyExact(bounds.height(), TILE_SIZE);
-        long selectedPixels = (long) width * height;
+        int inferenceZoom = inferenceZoom(plan);
+        if (request.zoom() != inferenceZoom) {
+            throw new IllegalArgumentException("Managed preview request does not match its frozen inference zoom");
+        }
+        Map<Integer, ZoomGrid> grids = new LinkedHashMap<>();
+        long plannedPixels = 0L;
+        boolean preflightOverflow = false;
+        for (int zoom : plan.requiredZooms()) {
+            TileBounds bounds = tileBounds(request, zoom);
+            int width = Math.multiplyExact(bounds.width(), TILE_SIZE);
+            int height = Math.multiplyExact(bounds.height(), TILE_SIZE);
+            long pixels = Math.multiplyExact((long) width, height);
+            grids.put(zoom, new ZoomGrid(bounds, width, height, pixels));
+            if (!preflightOverflow) {
+                try {
+                    plannedPixels = Math.addExact(plannedPixels,
+                            Math.multiplyExact(pixels, plan.orderedColors().size()));
+                } catch (ArithmeticException overflow) {
+                    preflightOverflow = true;
+                }
+            }
+        }
+        ZoomGrid inferenceGrid = grids.get(inferenceZoom);
+        long selectedPixels = inferenceGrid.pixels();
         if (selectedPixels > MAX_INPUT_PIXELS) {
             throw new IllegalArgumentException("Managed preview capture exceeds the input-pixel cap");
         }
-        long plannedPixels = Math.multiplyExact(selectedPixels, request.requiredPalettes().size());
-        boolean aggregateBudgetAvailable = request.requiredPalettes().size() == 1
-                || plannedPixels <= MAX_INPUT_PIXELS;
+        boolean allFramesBudgetAvailable = !preflightOverflow && plannedPixels <= MAX_INPUT_PIXELS;
         Map<String, Raster> rasters = new LinkedHashMap<>();
-        PaletteAcquisition selectedAcquisition = acquirePalette(request, bounds, width, height,
+        Map<Integer, ZoomReceipt> receipts = new LinkedHashMap<>();
+        PaletteAcquisition selectedAcquisition = acquirePalette(request, inferenceZoom, inferenceGrid,
                 request.palette(), credentials, cancellation, false);
-        SupportedInputRasterTransform transform = rasterTransform(request, bounds);
+        SupportedInputRasterTransform transform = rasterTransform(request, inferenceZoom, inferenceGrid.bounds());
         Raster selected = toRaster(selectedAcquisition.raster(), transform, request,
-                request.palette());
+                request.palette(), inferenceZoom);
         rasters.put(request.palette(), selected);
-        AggregateAvailability availability = request.requiredPalettes().size() == 1
+        boolean aggregateRequested = plan.aggregateDetectorRequested();
+        AggregateAvailability availability = !aggregateRequested
                 ? AggregateAvailability.NOT_REQUESTED
-                : AggregateAvailability.BUDGET_UNAVAILABLE;
+                : allFramesBudgetAvailable ? AggregateAvailability.PALETTE_UNAVAILABLE
+                        : AggregateAvailability.BUDGET_UNAVAILABLE;
         AggregateFailure failure = null;
-        boolean aggregateComplete = false;
-        if (request.requiredPalettes().size() > 1 && aggregateBudgetAvailable) {
-            if (!allValid(selectedAcquisition.raster().validity())) {
+        LinkedHashSet<String> inferenceAcquired = new LinkedHashSet<>();
+        boolean selectedComplete = selectedAcquisition.failure() == null
+                && allValid(selectedAcquisition.raster().validity());
+        if (selectedComplete) inferenceAcquired.add(request.palette());
+        byte[] inferenceDigest = rasterDigest(selected, inferenceZoom);
+        boolean inferencePaletteSetComplete = selectedComplete;
+        if (aggregateRequested && allFramesBudgetAvailable) {
+            if (!selectedComplete) {
                 availability = AggregateAvailability.PALETTE_UNAVAILABLE;
-                failure = new AggregateFailure(request.palette(), selectedAcquisition.failure());
+                failure = new AggregateFailure(inferenceZoom, request.palette(),
+                        selectedAcquisition.failure() == null ? TileFetchStatus.DECODE_ERROR
+                                : selectedAcquisition.failure());
+                inferencePaletteSetComplete = false;
             } else {
-                availability = AggregateAvailability.COMPLETE;
-                aggregateComplete = true;
-                for (String palette : request.requiredPalettes()) {
+                inferencePaletteSetComplete = true;
+                for (String palette : plan.orderedColors()) {
                     if (palette.equals(request.palette())) continue;
                     cancellation.checkpoint();
                     requireActiveGeneration(request);
-                    PaletteAcquisition acquired = acquirePalette(request, bounds, width, height,
+                    PaletteAcquisition acquired = acquirePalette(request, inferenceZoom, inferenceGrid,
                             palette, credentials, cancellation, true);
-                    if (acquired.failure() != null) {
+                    if (acquired.failure() != null || !allValid(acquired.raster().validity())) {
                         availability = AggregateAvailability.PALETTE_UNAVAILABLE;
-                        failure = new AggregateFailure(palette, acquired.failure());
-                        aggregateComplete = false;
+                        failure = new AggregateFailure(inferenceZoom, palette,
+                                acquired.failure() == null ? TileFetchStatus.DECODE_ERROR : acquired.failure());
+                        inferencePaletteSetComplete = false;
                         rasters.clear();
                         rasters.put(request.palette(), selected);
                         break;
                     }
-                    rasters.put(palette, toRaster(acquired.raster(), transform, request, palette));
+                    Raster paletteRaster = toRaster(acquired.raster(), transform, request, palette, inferenceZoom);
+                    rasters.put(palette, paletteRaster);
+                    inferenceAcquired.add(palette);
+                    inferenceDigest = combineDigests(inferenceDigest, rasterDigest(paletteRaster, inferenceZoom));
                 }
             }
         }
+        ZoomAvailability inferenceStatus = !selectedComplete
+                ? ZoomAvailability.PALETTE_UNAVAILABLE
+                : !allFramesBudgetAvailable && aggregateRequested
+                        ? ZoomAvailability.BUDGET_UNAVAILABLE
+                        : inferencePaletteSetComplete ? ZoomAvailability.COMPLETE
+                                : ZoomAvailability.PALETTE_UNAVAILABLE;
+        receipts.put(inferenceZoom, new ZoomReceipt(inferenceZoom, plan.orderedColors(), inferenceAcquired,
+                inferenceStatus,
+                inferenceStatus == ZoomAvailability.PALETTE_UNAVAILABLE && failure != null
+                        ? failure.palette() : inferenceStatus == ZoomAvailability.PALETTE_UNAVAILABLE
+                                ? request.palette() : null,
+                inferenceStatus == ZoomAvailability.PALETTE_UNAVAILABLE && failure != null
+                        ? failure.status() : inferenceStatus == ZoomAvailability.PALETTE_UNAVAILABLE
+                                ? selectedAcquisition.failure() == null ? TileFetchStatus.DECODE_ERROR
+                                        : selectedAcquisition.failure()
+                                : null,
+                request.generation(), request.sourceIdentity(), inferenceDigest));
+
+        boolean secondaryZoomsComplete = true;
+        for (int zoom : plan.requiredZooms()) {
+            if (zoom == inferenceZoom) continue;
+            if (!allFramesBudgetAvailable) {
+                receipts.put(zoom, new ZoomReceipt(zoom, plan.orderedColors(), Set.of(),
+                        ZoomAvailability.BUDGET_UNAVAILABLE, null, null,
+                        request.generation(), request.sourceIdentity(), emptyDigest()));
+                secondaryZoomsComplete = false;
+                continue;
+            }
+            PaletteVerification verification = verifyZoom(request, zoom, grids.get(zoom),
+                    plan.orderedColors(), credentials, cancellation);
+            receipts.put(zoom, new ZoomReceipt(zoom, plan.orderedColors(), verification.acquiredPalettes(),
+                    verification.failure() == null ? ZoomAvailability.COMPLETE
+                            : ZoomAvailability.PALETTE_UNAVAILABLE,
+                    verification.failure() == null ? null : verification.failure().palette(),
+                    verification.failure() == null ? null : verification.failure().status(),
+                    request.generation(), request.sourceIdentity(), verification.digest()));
+            if (verification.failure() != null) {
+                secondaryZoomsComplete = false;
+                if (aggregateRequested && availability != AggregateAvailability.BUDGET_UNAVAILABLE) {
+                    availability = AggregateAvailability.PALETTE_UNAVAILABLE;
+                    failure = new AggregateFailure(zoom, verification.failure().palette(),
+                            verification.failure().status());
+                    rasters.clear();
+                    rasters.put(request.palette(), selected);
+                }
+            }
+        }
+        if (aggregateRequested && allFramesBudgetAvailable && inferencePaletteSetComplete
+                && secondaryZoomsComplete && failure == null) {
+            availability = AggregateAvailability.COMPLETE;
+        }
         requireActiveGeneration(request);
-        AcquisitionProof proof = aggregateComplete ? new AcquisitionProof(coordinator, rasters, plan) : null;
-        return new SourceRasters(rasters, plan, availability, failure, proof);
+        AcquisitionProof proof = availability == AggregateAvailability.COMPLETE
+                ? new AcquisitionProof(coordinator, rasters, plan, receipts) : null;
+        return new SourceRasters(rasters, plan, availability, failure, proof, receipts);
+    }
+
+    private record ZoomGrid(TileBounds bounds, int width, int height, long pixels) { }
+    private record PaletteFailure(String palette, TileFetchStatus status) { }
+    private record PaletteVerification(Set<String> acquiredPalettes, PaletteFailure failure, byte[] digest) { }
+    private record TileVerification(byte[] digest, TileFetchStatus failure) { }
+
+    private PaletteVerification verifyZoom(Request request, int zoom, ZoomGrid grid, List<String> palettes,
+            CredentialSnapshot credentials, CancellationProbe cancellation) {
+        LinkedHashSet<String> acquired = new LinkedHashSet<>();
+        byte[] digest = emptyDigest();
+        for (String palette : palettes) {
+            cancellation.checkpoint();
+            requireActiveGeneration(request);
+            TileVerification paletteVerification = verifyPaletteTiles(request, zoom, grid.bounds(), palette, credentials,
+                    cancellation, !palette.equals(request.palette()));
+            if (paletteVerification.failure() != null) {
+                return new PaletteVerification(acquired,
+                        new PaletteFailure(palette, paletteVerification.failure()), digest);
+            }
+            acquired.add(palette);
+            digest = combineDigests(digest, paletteVerification.digest());
+        }
+        return new PaletteVerification(acquired, null, digest);
+    }
+
+    private TileVerification verifyPaletteTiles(Request request, int zoom, TileBounds bounds, String palette,
+            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (int x = bounds.minimumX(); x <= bounds.maximumX(); x++) {
+                for (int y = bounds.minimumY(); y <= bounds.maximumY(); y++) {
+                    cancellation.checkpoint();
+                    TileFetchResult result = fetchTile(request, zoom, palette, x, y,
+                            credentials, cancellation, optional);
+                    if (!result.usable()) {
+                        return new TileVerification(null, result.status());
+                    }
+                    digest.update(palette.getBytes(StandardCharsets.US_ASCII));
+                    digest.update(ByteBuffer.allocate(16).putInt(zoom).putInt(x).putInt(y)
+                            .putInt(result.image().getWidth()).array());
+                    int[] row = new int[result.image().getWidth()];
+                    ByteBuffer bytes = ByteBuffer.allocate(Math.multiplyExact(row.length, 4));
+                    for (int rowIndex = 0; rowIndex < result.image().getHeight(); rowIndex++) {
+                        result.image().getRGB(0, rowIndex, row.length, 1, row, 0, row.length);
+                        bytes.clear();
+                        for (int argb : row) bytes.putInt(argb);
+                        digest.update(bytes.array());
+                        digest.update(new byte[row.length]); // all pixels in a usable decoded tile are supported
+                    }
+                }
+            }
+            return new TileVerification(digest.digest(), null);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private static AlignmentTileSourcePlan planForRequest(Request request) {
@@ -406,24 +664,31 @@ public final class ManagedModernPreviewSource {
                 request.requiredPalettes().size() > 1);
     }
 
+    private static int inferenceZoom(AlignmentTileSourcePlan plan) {
+        return plan.requiredZooms().iterator().next();
+    }
+
     private static Raster toRaster(PaletteRaster raster, SupportedInputRasterTransform transform,
-            Request request, String palette) {
-        return new Raster(raster.image(), raster.validity(), transform, palette, request.zoom(),
+            Request request, String palette, int zoom) {
+        return new Raster(raster.image(), raster.validity(), transform, palette, zoom,
                 request.sourceIdentity(), request.generation());
     }
 
-    private static SupportedInputRasterTransform rasterTransform(Request request, TileBounds bounds) {
+    private static SupportedInputRasterTransform rasterTransform(Request request, int zoom, TileBounds bounds) {
         double originX = bounds.minimumX() * (double) TILE_SIZE;
         double originY = bounds.minimumY() * (double) TILE_SIZE;
-        return SupportedInputRasterTransform.webMercator(request.zoom(),
+        return SupportedInputRasterTransform.webMercator(zoom,
                 originX / 2.0, originY / 2.0, 2.0);
     }
 
     private record PaletteAcquisition(PaletteRaster raster, TileFetchStatus failure) { }
 
-    private PaletteAcquisition acquirePalette(Request request, TileBounds bounds, int width, int height,
+    private PaletteAcquisition acquirePalette(Request request, int zoom, ZoomGrid grid,
             String palette, CredentialSnapshot credentials, CancellationProbe cancellation,
             boolean requiredForAggregate) {
+        TileBounds bounds = grid.bounds();
+        int width = grid.width();
+        int height = grid.height();
         BufferedImage mosaic = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         boolean[] valid = new boolean[Math.multiplyExact(width, height)];
         TileFetchStatus firstFailure = null;
@@ -432,21 +697,8 @@ public final class ManagedModernPreviewSource {
             for (int x = bounds.minimumX(); x <= bounds.maximumX(); x++) {
                 for (int y = bounds.minimumY(); y <= bounds.maximumY(); y++) {
                     cancellation.checkpoint();
-                    CancellationToken requestCancellation = new CancellationToken();
-                    TileRequest tile = new TileRequest(new ManagedTileAddress(request.activity(),
-                            palette, request.zoom(), x, y), request.generation(),
-                            requiredForAggregate ? TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE
-                                    : TilePurpose.ALIGNMENT_REQUIRED,
-                            TileCachePolicy.USE_CACHE, Instant.now().plusSeconds(30), requestCancellation);
-                    TileFetchResult result;
-                    try (CancellationProbe.Registration ignored =
-                            cancellation.onCancellation(requestCancellation::cancel)) {
-                        result = coordinator.fetch(tile, credentials).toCompletableFuture().join();
-                    }
-                    cancellation.checkpoint();
-                    if (result.status() == TileFetchStatus.STALE_GENERATION) {
-                        throw new IllegalStateException("Managed preview settings changed during acquisition");
-                    }
+                    TileFetchResult result = fetchTile(request, zoom, palette, x, y,
+                            credentials, cancellation, requiredForAggregate);
                     if (requiredForAggregate && !result.usable()) {
                         return new PaletteAcquisition(null, result.status());
                     }
@@ -468,6 +720,26 @@ public final class ManagedModernPreviewSource {
         return new PaletteAcquisition(new PaletteRaster(mosaic, valid), firstFailure);
     }
 
+    private TileFetchResult fetchTile(Request request, int zoom, String palette, int x, int y,
+            CredentialSnapshot credentials, CancellationProbe cancellation, boolean optional) {
+        cancellation.checkpoint();
+        CancellationToken requestCancellation = new CancellationToken();
+        TileRequest tile = new TileRequest(new ManagedTileAddress(request.activity(), palette, zoom, x, y),
+                request.generation(), optional ? TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE
+                        : TilePurpose.ALIGNMENT_REQUIRED,
+                TileCachePolicy.USE_CACHE, Instant.now().plusSeconds(30), requestCancellation);
+        TileFetchResult result;
+        try (CancellationProbe.Registration ignored =
+                cancellation.onCancellation(requestCancellation::cancel)) {
+            result = coordinator.fetch(tile, credentials).toCompletableFuture().join();
+        }
+        cancellation.checkpoint();
+        if (result.status() == TileFetchStatus.STALE_GENERATION) {
+            throw new IllegalStateException("Managed preview settings changed during acquisition");
+        }
+        return result;
+    }
+
     private static boolean allValid(boolean[] validity) {
         for (boolean value : validity) if (!value) return false;
         return true;
@@ -479,11 +751,11 @@ public final class ManagedModernPreviewSource {
         }
     }
 
-    private static TileBounds tileBounds(Request request) {
-        MetricRasterGrid grid = managedOutputGrid(request.source(), request.zoom(),
+    private static TileBounds tileBounds(Request request, int zoom) {
+        MetricRasterGrid grid = managedOutputGrid(request.source(), zoom,
                 request.searchRadiusMeters());
         SupportedInputRasterTransform world = SupportedInputRasterTransform.webMercator(
-                request.zoom(), 0.0, 0.0, 2.0);
+                zoom, 0.0, 0.0, 2.0);
         SupportedInputRasterTransform.RasterBounds support = world.boundsForMetricCell(
                 grid.coordinateFrame(), grid.footprint().polygons().get(0));
         int minimumPixelX = checkedFloor(support.minimumX());
@@ -494,7 +766,7 @@ public final class ManagedModernPreviewSource {
         int minimumY = Math.floorDiv(minimumPixelY, TILE_SIZE);
         int maximumX = Math.floorDiv(maximumPixelX, TILE_SIZE);
         int maximumY = Math.floorDiv(maximumPixelY, TILE_SIZE);
-        int tileCount = 1 << request.zoom();
+        int tileCount = 1 << zoom;
         if (minimumX < 0 || minimumY < 0 || maximumX >= tileCount || maximumY >= tileCount) {
             throw new IllegalArgumentException("Managed preview crosses an unsupported tile boundary");
         }
