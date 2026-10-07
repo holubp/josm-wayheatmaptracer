@@ -19,6 +19,114 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 /** Small admitted graphs with counts and work known without solver internals. */
 class V022BCompletenessContractTest {
     @Test
+    void thirtyTwoNearbyBestPathsCannotCertifyAnUnseenDistinctRival() {
+        double[] offsets = new double[41];
+        double[] costs = new double[41];
+        String[] labels = new String[41];
+        for (int state = 0; state < 40; state++) {
+            offsets[state] = state * 0.01;
+            labels[state] = "nearby";
+        }
+        offsets[40] = 5.0;
+        costs[40] = 1.0;
+        labels[40] = "rival";
+
+        List<InferenceProfile> graph = List.of(profile(0, offsets, costs, labels));
+        var capped = solve(graph, TraceBudgets.defaults());
+
+        assertEquals(32, capped.rawPaths().size());
+        assertEquals(1, capped.distinctPaths().size());
+        assertEquals(33, capped.completion().orElseThrow().completePathsAtSaturation());
+        assertTrue(capped.completion().orElseThrow().rawEnumerationCapped());
+        assertFalse(capped.completion().orElseThrow().requestedDiversityReached());
+        assertTrue(capped.alternativeSearchTruncated());
+        assertTrue(capped.rawPaths().get(31).stateIndices()[0] < 40,
+            "every retained raw state precedes the distinct rival");
+    }
+
+    @Test
+    void desiredEightSatisfiesBoundedRequestWithoutProvingGlobalExhaustion() {
+        double[] offsets = new double[34];
+        double[] costs = new double[34];
+        String[] labels = new String[34];
+        for (int state = 0; state < 8; state++) {
+            offsets[state] = state * 2.0;
+            labels[state] = "route-" + state;
+        }
+        for (int state = 8; state < 33; state++) {
+            offsets[state] = 0.01 * (state - 8);
+            labels[state] = "route-0";
+        }
+        offsets[33] = 20.0;
+        costs[33] = 0.5;
+        labels[33] = "hidden-rival";
+
+        var result = solve(List.of(profile(0, offsets, costs, labels)), TraceBudgets.defaults());
+
+        assertEquals(32, result.rawPaths().size());
+        assertEquals(8, result.distinctPaths().size());
+        assertTrue(result.completion().orElseThrow().rawEnumerationCapped());
+        assertTrue(result.completion().orElseThrow().requestedDiversityReached());
+        assertFalse(result.alternativeSearchTruncated(),
+            "the approved 32/8 request is satisfied, even though global coverage is unproved");
+        assertTrue(result.rawPaths().stream().noneMatch(path ->
+            path.branchSignature().equals("hidden-rival")));
+    }
+
+    @Test
+    void ordinarySizedLatticeSeparatesBoundedEightFromGlobalCoverage() {
+        double[] middleOffsets = new double[9];
+        double[] middleCosts = new double[9];
+        String[] middleLabels = new String[9];
+        for (int state = 0; state < 9; state++) {
+            middleOffsets[state] = state * 0.01;
+            middleLabels[state] = "route-" + state;
+        }
+        middleCosts[8] = 0.5;
+        List<InferenceProfile> graph = List.of(
+            profile(0, new double[] {-0.02, -0.01, 0, 0.01, 0.02}, new double[5],
+                new String[] {"zzcommon", "zzcommon", "zzcommon", "zzcommon", "zzcommon"}),
+            profile(10, middleOffsets, middleCosts, middleLabels),
+            profile(20, new double[] {0}, new double[] {0}, new String[] {"zzcommon"}));
+
+        var result = solve(graph, TraceBudgets.defaults());
+
+        assertEquals(32, result.rawPaths().size());
+        assertEquals(8, result.distinctPaths().size());
+        assertTrue(result.completion().orElseThrow().rawEnumerationCapped());
+        assertTrue(result.completion().orElseThrow().requestedDiversityReached());
+        assertFalse(result.alternativeSearchTruncated());
+        for (int state = 0; state < 8; state++) {
+            String label = "route-" + state;
+            assertTrue(result.distinctPaths().stream().anyMatch(path ->
+                path.branchSignature().equals(label)),
+                "the middle profile's quadrature tie gives the route label ownership");
+        }
+        assertTrue(result.rawPaths().stream().noneMatch(path ->
+            path.branchSignature().equals("route-8")));
+    }
+
+    @Test
+    void geometricDuplicateRuleIsNontransitiveAndGreedyOrderMatters() {
+        List<InferenceProfile> profiles = List.of(
+            profile(0, new double[] {0, 0.6, 1.2}, new double[3],
+                new String[] {"same", "same", "same"}),
+            profile(12, new double[] {0, 0.6, 1.2}, new double[3],
+                new String[] {"same", "same", "same"}));
+        ProbabilisticPath left = path(0, 0, profiles);
+        ProbabilisticPath middle = path(1, 1, profiles);
+        ProbabilisticPath right = path(2, 2, profiles);
+        PathAlternativeSelector selector = new PathAlternativeSelector();
+
+        assertEquals(List.of(left, right), selector.select(List.of(left, middle, right),
+            profiles, 1.0, 3));
+        ProbabilisticPath middleFirst = path(1, 0, profiles);
+        ProbabilisticPath leftSecond = path(0, 1, profiles);
+        assertEquals(List.of(middleFirst), selector.select(List.of(middleFirst, leftSecond, right),
+            profiles, 1.0, 3));
+    }
+
+    @Test
     void requestedLimitsCannotRaiseHardKOrDAndTerminalCountSaturates() {
         double[] offsets = new double[40];
         String[] labels = new String[40];
@@ -268,6 +376,12 @@ class V022BCompletenessContractTest {
 
     private static ProbabilisticInferenceResult solve(List<InferenceProfile> profiles, TraceBudgets budget) {
         return new ProbabilisticInference().solve(profiles, EvidenceModelParameters.withoutShapeTerms(), budget);
+    }
+
+    private static ProbabilisticPath path(int state, double energy, List<InferenceProfile> profiles) {
+        return new ProbabilisticPath(new int[] {state, state},
+            List.of(profiles.get(0).point(state), profiles.get(1).point(state)),
+            "same", energy, 0.0, 0.0);
     }
 
     private static void assertNoUsableResult(ProbabilisticInferenceResult aborted) {

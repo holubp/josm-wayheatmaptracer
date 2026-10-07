@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -63,6 +64,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSa
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.InferenceProfile;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.LateralStateCell;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticInference;
 
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
@@ -931,6 +936,51 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void saturatedDesiredEightPassesApprovedBoundedStrictAlternativeGate() {
+        double[] middleOffsets = new double[9];
+        double[] middleCosts = new double[9];
+        String[] middleLabels = new String[9];
+        for (int state = 0; state < 9; state++) {
+            middleOffsets[state] = state * 0.01;
+            middleLabels[state] = "route-" + state;
+        }
+        middleCosts[8] = 0.5;
+        List<InferenceProfile> graph = List.of(
+            completenessProfile(0, new double[] {-0.02, -0.01, 0, 0.01, 0.02},
+                new double[5], new String[] {"zzcommon", "zzcommon", "zzcommon",
+                    "zzcommon", "zzcommon"}),
+            completenessProfile(10, middleOffsets, middleCosts, middleLabels),
+            completenessProfile(20, new double[] {0}, new double[] {0},
+                new String[] {"zzcommon"}));
+        var solved = new ProbabilisticInference().solve(graph,
+            EvidenceModelParameters.withoutShapeTerms(), TraceBudgets.defaults());
+        assertTrue(solved.completion().orElseThrow().rawEnumerationCapped());
+        assertTrue(solved.completion().orElseThrow().requestedDiversityReached());
+        assertEquals(8, solved.distinctPaths().size());
+        assertFalse(solved.alternativeSearchTruncated());
+
+        List<TraceHypothesis> hypotheses = new ArrayList<>();
+        for (int index = 0; index < solved.distinctPaths().size(); index++) {
+            var path = solved.distinctPaths().get(index);
+            hypotheses.add(new TraceHypothesis("route-" + index, path.branchSignature(),
+                path.points(), List.of(ObservationOwnership.DIRECT_TWO_SIDED,
+                    ObservationOwnership.DIRECT_TWO_SIDED,
+                    ObservationOwnership.DIRECT_TWO_SIDED), path.energy(), OptionalDouble.empty(),
+                Map.of("completePathsAtSaturation",
+                    (double) solved.completion().orElseThrow().completePathsAtSaturation())));
+        }
+        TraceHypothesisSet inference = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
+            hypotheses, TraceHypothesisSet.Status.AMBIGUOUS,
+            solved.alternativeSearchTruncated(), 15, solved.evaluatedTransitions(),
+            "bounded raw search");
+        var replay = new Format15ReplayRunner.Result(ReplayLevel.SCALAR_INFERENCE,
+            TrackerMode.PROBABILISTIC, TrackerMode.PROBABILISTIC, inference, List.of(),
+            "synthetic-graph");
+        assertDoesNotThrow(() -> ProductionReplayValidator.validateScalar(replay),
+            "the approved bounded request is met before the raw cap stops enumeration");
+    }
+
+    @Test
     void uniformNoSignalCannotSatisfyAProductionReplayGate() {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.NO_SIGNAL);
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
@@ -1495,6 +1545,17 @@ class V022ProductionReplayTest {
             Map.of(diagnostic, 1.0));
         return new TraceHypothesisSet(TrackerMode.CORRIDOR_AWARE, List.of(hypothesis),
             TraceHypothesisSet.Status.COMPLETE, false, 2, 1, "synthetic");
+    }
+
+    private static InferenceProfile completenessProfile(double chainage, double[] offsets,
+            double[] costs, String[] labels) {
+        List<LateralStateCell> cells = new ArrayList<>();
+        for (int state = 0; state < offsets.length; state++) {
+            cells.add(new LateralStateCell(offsets[state], 1.0, false, true, labels[state]));
+        }
+        return new InferenceProfile(chainage, new MetricPoint(chainage, 0),
+            new MetricPoint(0, 1), cells, costs, List.of(), 0.0,
+            ObservationOwnership.DIRECT_TWO_SIDED, false);
     }
 
     private static String fingerprint(TraceHypothesisSet output) {
