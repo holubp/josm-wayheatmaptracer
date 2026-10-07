@@ -60,6 +60,39 @@ class V022RasterEvidenceCaptureTest {
                 CancellationProbe.NONE));
     }
 
+    @Test
+    void precomputedAggregateScalarKeepsDoublePrecisionThroughMetricResampling() {
+        LocalMetricFrame frame = frame();
+        BufferedImage image = image(40, 30);
+        double[] scalar = new double[40 * 30];
+        java.util.Arrays.fill(scalar, 0.73123456789);
+        MetricRasterGrid grid = new MetricRasterGrid(frame, new MetricPoint(0.25, 0.25),
+                1, 0, 0, 1, 1, 38, 30);
+        EvidenceFieldLineage aggregate = new EvidenceFieldLineage(
+                EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE,
+                "all-colors-combined", EvidenceCorrelationGroup.STRAVA_RENDERINGS, true);
+
+        EvidenceSnapshot snapshot = new RasterEvidenceCapture().captureWithMetricScalarSource(
+                "aggregate-capture", image, valid(image), scalar,
+                List.of(metric(frame, 10, 15), metric(frame, 28, 15)),
+                List.of(new MetricPoint(10, 15), new MetricPoint(28, 15)), inverse(frame), grid,
+                EvidenceResolution.nativeSource(1.0, 1.0), 3.0, "aggregate-source",
+                aggregate.acquisitionKind(), "aggregate", aggregate, CancellationProbe.NONE);
+
+        assertEquals(0.73123456789,
+                snapshot.fields().get("aggregate").sample(10, 15).orElseThrow(), 1.0e-12);
+        assertEquals(aggregate.derivationKind(),
+                snapshot.fields().get("aggregate").lineage().derivationKind());
+        assertThrows(IllegalArgumentException.class, () ->
+                new RasterEvidenceCapture().captureWithMetricScalarSource("bad-size", image,
+                        valid(image), new double[1],
+                        List.of(metric(frame, 10, 15), metric(frame, 28, 15)),
+                        List.of(new MetricPoint(10, 15), new MetricPoint(28, 15)), inverse(frame), grid,
+                        EvidenceResolution.nativeSource(1.0, 1.0), 3.0, "aggregate-source",
+                        aggregate.acquisitionKind(), "aggregate", aggregate, CancellationProbe.NONE));
+    }
+
     private static BufferedImage image(int width, int height) {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < height; y++) {

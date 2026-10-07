@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -31,6 +32,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRasterGrid;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
@@ -40,10 +42,276 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifie
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 
 class ManagedModernPreviewSourceTest {
     @TempDir java.nio.file.Path temporary;
+
+    @Test
+    void alternativesAcquireOnlyTheSelectedPalette() {
+        ManagedHeatmapConfig config = config(true, false, IntensitySamplingMode.COLOR_MAPPING);
+        Set<String> palettes = java.util.Collections.synchronizedSet(new HashSet<>());
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            palettes.add(request.address().color());
+            return new TransportResponse(TileFetchStatus.NO_TILE, 404, "", null, null,
+                    Duration.ZERO, "http-no-tile");
+        }, new ManagedTileCache(temporary, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            ManagedTileGeneration generation = new ManagedTileGeneration(config.cacheBuster());
+            coordinator.updateActiveGeneration(generation);
+
+            ManagedModernPreviewSource.SourceRasters sources = new ManagedModernPreviewSource(coordinator)
+                    .acquireSources(List.of(new GeographicPoint(0.0, 0.0),
+                            new GeographicPoint(0.0, 0.001)), config, "alternatives",
+                            CredentialSnapshot.fromConfig(null), () -> false);
+
+            assertEquals(Set.of("blue"), sources.palettes().keySet());
+            assertEquals(Set.of("blue"), palettes);
+            assertFalse(sources.plan().aggregateDetectorRequested());
+        }
+    }
+
+    @Test
+    void aggregateAcquisitionRequestsExactlyTheFiveNativePalettes() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
+        Set<String> palettes = java.util.Collections.synchronizedSet(new HashSet<>());
+        Map<String, TilePurpose> purposes = new java.util.concurrent.ConcurrentHashMap<>();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            palettes.add(request.address().color());
+            purposes.put(request.address().color(), request.purpose());
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary, decoder), decoder, TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+
+            ManagedModernPreviewSource.SourceRasters sources = new ManagedModernPreviewSource(coordinator)
+                    .acquireSources(List.of(new GeographicPoint(0.0, 0.0),
+                            new GeographicPoint(0.0, 0.001)), config, "aggregate",
+                            CredentialSnapshot.fromConfig(null), () -> false);
+
+            Set<String> expected = Set.of("hot", "blue", "bluered", "purple", "gray");
+            assertEquals(expected, sources.palettes().keySet(), sources.aggregateAvailability()
+                    + " failure=" + sources.aggregateFailure() + " requested=" + palettes);
+            assertEquals(expected, palettes);
+            assertTrue(sources.plan().aggregateDetectorRequested());
+            assertEquals(TilePurpose.ALIGNMENT_REQUIRED, purposes.get("blue"));
+            for (String palette : List.of("hot", "bluered", "purple", "gray")) {
+                assertEquals(TilePurpose.ALIGNMENT_OPTIONAL_AGGREGATE, purposes.get(palette));
+            }
+            var selected = sources.selectedRaster();
+            assertTrue(sources.palettes().values().stream().allMatch(raster ->
+                    raster.transform().equals(selected.transform())
+                            && raster.zoom() == selected.zoom()
+                            && raster.generation().equals(selected.generation())
+                            && raster.sourceIdentity().equals(selected.sourceIdentity())
+                            && raster.image().getWidth() == selected.image().getWidth()
+                            && raster.image().getHeight() == selected.image().getHeight()));
+        }
+    }
+
+    @Test
+    void missingAggregatePaletteRetainsOnlyNativeRasterWithTypedFailure() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                "purple".equals(request.address().color())
+                        ? new TransportResponse(TileFetchStatus.NO_TILE, 404, "", null,
+                                null, Duration.ZERO, "safe-status")
+                        : new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                                sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, ""),
+                new ManagedTileCache(temporary.resolve("missing"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "missing-purple", CredentialSnapshot.fromConfig(null), () -> false);
+
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertEquals("purple", sources.aggregateFailure().palette());
+            assertEquals(TileFetchStatus.NO_TILE, sources.aggregateFailure().status());
+            assertEquals(Set.of("blue"), sources.palettes().keySet());
+            assertThrows(IllegalStateException.class, () -> sources.completeAggregateScalars(() -> false));
+        }
+    }
+
+    @Test
+    void optionalAuthenticationFailureKeepsSelectedSourceAndSafeFailureStatus() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                "gray".equals(request.address().color())
+                        ? new TransportResponse(TileFetchStatus.AUTH_FAILURE, 401, "", null,
+                                null, Duration.ZERO, "credential-derived-body")
+                        : new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                                sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, ""),
+                new ManagedTileCache(temporary.resolve("auth"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "auth-gray", CredentialSnapshot.fromConfig(null), () -> false);
+
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertEquals(TileFetchStatus.AUTH_FAILURE, sources.aggregateFailure().status());
+            assertEquals(Set.of("blue"), sources.palettes().keySet());
+            assertFalse(sources.toString().contains("credential-derived-body"));
+        }
+    }
+
+    @Test
+    void completeAggregateUsesTheSharedCalibratedScalarFusion() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        Map<String, BufferedImage> acquiredImages = new java.util.concurrent.ConcurrentHashMap<>();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+            Color color = switch (request.address().color()) {
+                case "hot" -> new Color(255, 96, 0);
+                case "blue" -> new Color(32, 64, 255);
+                case "bluered" -> new Color(255, 32, 64);
+                case "purple" -> new Color(224, 176, 255);
+                default -> new Color(96, 96, 96);
+            };
+            return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                    sparsePng(color), null, Duration.ZERO, "");
+        }, new ManagedTileCache(temporary.resolve("scalar"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                    config, "scalar-fusion", CredentialSnapshot.fromConfig(null), () -> false);
+            sources.palettes().forEach((palette, raster) -> acquiredImages.put(palette, raster.image()));
+
+            assertTrue(sources.provenCompleteAggregate(coordinator));
+            double[] scalars = sources.completeAggregateScalars(() -> false);
+            var selected = sources.selectedRaster();
+            int width = selected.image().getWidth();
+            assertEquals(RenderedHeatmapSampler.aggregatedSourceIntensityAt(acquiredImages, 10, 10),
+                    scalars[10 * width + 10], 1.0e-12);
+            assertThrows(UnsupportedOperationException.class, () -> sources.palettes().clear());
+            sources.selectedRaster().image().setRGB(10, 10, 0xffff0000);
+            assertFalse(sources.provenCompleteAggregate(coordinator),
+                    "a caller-mutated source image must invalidate the acquisition proof");
+            assertThrows(IllegalStateException.class, () -> sources.completeAggregateScalars(() -> false));
+        }
+    }
+
+    @Test
+    void oneNativeRasterSupportsNamedAlternativesAndDirectScalarMappings() {
+        BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, 0xffff0000);
+        image.setRGB(1, 0, 0x80ffffff);
+        image.setRGB(0, 1, 0x0000ff00);
+        boolean[] valid = {true, true, true, false};
+        ManagedModernPreviewSource.Raster raster = new ManagedModernPreviewSource.Raster(image, valid,
+                SupportedInputRasterTransform.webMercator(1, 0.0, 0.0, 2.0),
+                "blue", 1, "scalar-mapping", new ManagedTileGeneration(3));
+
+        double hot = raster.scalarValues("hot", IntensitySamplingMode.COLOR_MAPPING, () -> false)[0];
+        double blue = raster.scalarValues("blue", IntensitySamplingMode.COLOR_MAPPING, () -> false)[0];
+        double[] luminance = raster.scalarValues("ignored", IntensitySamplingMode.DIRECT_LUMINANCE,
+                () -> false);
+        double[] maximum = raster.scalarValues("ignored", IntensitySamplingMode.DIRECT_VALUE, () -> false);
+        double[] alpha = raster.scalarValues("ignored", IntensitySamplingMode.DIRECT_ALPHA, () -> false);
+
+        assertTrue(hot > blue, "named alternatives map the same acquired raster independently");
+        assertEquals((0.2126 * 255.0) / 255.0, luminance[0], 1.0e-12);
+        assertEquals(1.0, maximum[0], 1.0e-12);
+        assertEquals(1.0, alpha[0], 1.0e-12);
+        assertEquals(128.0 / 255.0, alpha[1], 1.0e-12);
+        assertEquals(0.0, luminance[2], 1.0e-12);
+        assertFalse(raster.validity()[3]);
+        assertEquals(0.0, alpha[3], 1.0e-12);
+    }
+
+    @Test
+    void callerConstructedSourceSetCannotClaimAggregateAndRejectsMismatchedGrid() {
+        ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
+        AlignmentTileSourcePlan plan = AlignmentTileSourcePlan.from(config);
+        BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        boolean[] valid = {true, true, true, true};
+        var transform = SupportedInputRasterTransform.webMercator(1, 0.0, 0.0, 2.0);
+        Map<String, ManagedModernPreviewSource.Raster> matching = new java.util.LinkedHashMap<>();
+        for (String palette : plan.orderedColors()) {
+            matching.put(palette, new ManagedModernPreviewSource.Raster(image, valid,
+                    transform, palette, 1, "constructed", new ManagedTileGeneration(17)));
+        }
+
+        var unproven = new ManagedModernPreviewSource.SourceRasters(matching, plan);
+        assertEquals(ManagedModernPreviewSource.AggregateAvailability.NOT_REQUESTED,
+                unproven.aggregateAvailability());
+        assertFalse(unproven.provenCompleteAggregate(null));
+        assertThrows(IllegalStateException.class,
+                () -> unproven.completeAggregateScalars(() -> false));
+
+        Map<String, ManagedModernPreviewSource.Raster> mismatched = new java.util.LinkedHashMap<>(matching);
+        mismatched.put("gray", new ManagedModernPreviewSource.Raster(image, valid,
+                SupportedInputRasterTransform.webMercator(1, 1.0, 0.0, 2.0),
+                "gray", 1, "constructed", new ManagedTileGeneration(17)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new ManagedModernPreviewSource.SourceRasters(mismatched, plan));
+        assertThrows(UnsupportedOperationException.class, () -> unproven.palettes().clear());
+    }
+
+    @Test
+    void directScalarModeAcquiresOnePaletteEvenWhenColorFlagsAreEnabled() {
+        for (IntensitySamplingMode mode : List.of(IntensitySamplingMode.DIRECT_LUMINANCE,
+                IntensitySamplingMode.DIRECT_VALUE, IntensitySamplingMode.DIRECT_ALPHA)) {
+            ManagedHeatmapConfig config = config(true, true, mode);
+            Set<String> requested = java.util.Collections.synchronizedSet(new HashSet<>());
+            TileDecoderClassifier decoder = new TileDecoderClassifier();
+            try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) -> {
+                requested.add(request.address().color());
+                return new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        sparsePng(new Color(0, 255, 0)), null, Duration.ZERO, "");
+            }, new ManagedTileCache(temporary.resolve(mode.name()), decoder), decoder,
+                    TileReliabilityPolicy.defaults())) {
+                coordinator.updateActiveGeneration(new ManagedTileGeneration(config.cacheBuster()));
+                var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                        List.of(new GeographicPoint(0.0, 0.0), new GeographicPoint(0.0, 0.001)),
+                        config, "direct-" + mode.detectorName(),
+                        CredentialSnapshot.fromConfig(null), () -> false);
+                assertEquals(Set.of("blue"), sources.palettes().keySet());
+                assertEquals(Set.of("blue"), requested);
+                assertFalse(sources.plan().aggregateDetectorRequested());
+            }
+        }
+    }
+
+    private ManagedHeatmapConfig config(boolean alternatives, boolean aggregate,
+            IntensitySamplingMode intensityMode) {
+        return new ManagedHeatmapConfig("key", "policy", "signature", "session", "all", "blue", "",
+                ".*", AlignmentMode.PRECISE_SHAPE, TrackerMode.PROBABILISTIC, false, false,
+                alternatives, aggregate, false, false, false, false, false, false,
+                7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                intensityMode, 17L);
+    }
+
+    private static byte[] uncheckedPng(Color color) {
+        try {
+            return png(color);
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static byte[] sparsePng(Color color) {
+        try {
+            BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+            java.awt.Graphics2D graphics = image.createGraphics();
+            graphics.setColor(color);
+            graphics.fillRect(0, 0, 64, 64);
+            graphics.dispose();
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", bytes);
+            return bytes.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
 
     @Test
     void directIntensityIgnoresColorDetectorFlagsWhenPlanningOneSelectedSource() {
@@ -63,7 +331,7 @@ class ManagedModernPreviewSourceTest {
     }
 
     @Test
-    void unsupportedAllColorRequestNamesTheSettingsThatPreventModernPreview() {
+    void selectedOnlyRequestRemainsCompatibleWhenColorFeaturesAreEnabled() {
         ManagedHeatmapConfig config = new ManagedHeatmapConfig("key", "policy", "signature", "session",
                 "all", "blue", "", ".*", AlignmentMode.PRECISE_SHAPE,
                 TrackerMode.PROBABILISTIC, false, false, true, true, false, false,
@@ -71,14 +339,11 @@ class ManagedModernPreviewSourceTest {
                 InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
 
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class, () -> ManagedModernPreviewSource.selectedOnly(
-                        List.of(new GeographicPoint(0.0, 0.0),
-                                new GeographicPoint(0.0, 0.001)), config, "all-colors"));
-        assertTrue(error.getMessage().contains(
-                "Aggregate all managed color schemes"));
-        assertTrue(error.getMessage().contains(
-                "Run alternative detector mappings"));
+        ManagedModernPreviewSource.Request request = ManagedModernPreviewSource.selectedOnly(
+                List.of(new GeographicPoint(0.0, 0.0),
+                        new GeographicPoint(0.0, 0.001)), config, "selected-only");
+        assertEquals("blue", request.palette());
+        assertEquals(List.of("blue"), request.requiredPalettes());
     }
 
     @Test

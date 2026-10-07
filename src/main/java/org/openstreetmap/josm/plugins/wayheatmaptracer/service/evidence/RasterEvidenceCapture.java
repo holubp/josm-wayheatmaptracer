@@ -124,7 +124,7 @@ public final class RasterEvidenceCapture {
             CancellationProbe cancellation) {
         return captureInternal(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, null,
                 inputTransform, outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity,
-                acquisitionKind, fieldSpecs, cancellation);
+                acquisitionKind, fieldSpecs, cancellation, null);
     }
 
     /**
@@ -141,7 +141,36 @@ public final class RasterEvidenceCapture {
             CancellationProbe cancellation) {
         return captureInternal(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, metricSource,
                 inputTransform, outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity,
-                acquisitionKind, fieldSpecs, cancellation);
+                acquisitionKind, fieldSpecs, cancellation, null);
+    }
+
+    /** Resamples a complete semantic scalar field without converting it through 8-bit ARGB. */
+    public EvidenceSnapshot captureWithMetricScalarSource(String snapshotId,
+            BufferedImage inputRaster, boolean[] acquisitionValidity, double[] scalarSource,
+            List<GeographicPoint> sourcePolyline, List<MetricPoint> metricSource,
+            SupportedInputRasterTransform inputTransform, MetricRasterGrid outputGrid,
+            EvidenceResolution sourceResolution, double decisionRadiusMeters,
+            String sourceIdentity, EvidenceFieldLineage.AcquisitionKind acquisitionKind,
+            String fieldName, EvidenceFieldLineage lineage, CancellationProbe cancellation) {
+        if (inputRaster == null || acquisitionValidity == null || scalarSource == null
+                || scalarSource.length != (long) inputRaster.getWidth() * inputRaster.getHeight()
+                || scalarSource.length > MAX_INPUT_PIXELS
+                || acquisitionValidity.length != scalarSource.length || lineage == null
+                || lineage.acquisitionKind() != acquisitionKind) {
+            throw new IllegalArgumentException("Scalar source and native raster frame disagree");
+        }
+        for (int index = 0; index < scalarSource.length; index++) {
+            if (acquisitionValidity[index] && (!Double.isFinite(scalarSource[index])
+                    || scalarSource[index] < 0.0 || scalarSource[index] > 1.0)) {
+                throw new IllegalArgumentException("Valid scalar source must be normalized");
+            }
+        }
+        FieldSpec field = FieldSpec.direct(fieldName,
+                ignored -> { throw new IllegalStateException("Precomputed scalar mapping was bypassed"); },
+                lineage);
+        return captureInternal(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, metricSource,
+                inputTransform, outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity,
+                acquisitionKind, List.of(field), cancellation, scalarSource);
     }
 
     private EvidenceSnapshot captureInternal(String snapshotId, BufferedImage inputRaster,
@@ -151,7 +180,7 @@ public final class RasterEvidenceCapture {
             MetricRasterGrid outputGrid, EvidenceResolution sourceResolution,
             double decisionRadiusMeters, String sourceIdentity,
             EvidenceFieldLineage.AcquisitionKind acquisitionKind, List<FieldSpec> fieldSpecs,
-            CancellationProbe cancellation) {
+            CancellationProbe cancellation, double[] scalarOverride) {
         validateInputs(snapshotId, inputRaster, acquisitionValidity, sourcePolyline,
                 inputTransform, outputGrid, sourceResolution, decisionRadiusMeters,
                 sourceIdentity, acquisitionKind, fieldSpecs, cancellation);
@@ -161,6 +190,11 @@ public final class RasterEvidenceCapture {
         int inputCount = Math.multiplyExact(inputWidth, inputHeight);
         long outputCount = (long) outputGrid.width() * outputGrid.height();
         validateResourceBounds(inputCount, outputCount, fieldSpecs);
+        if (scalarOverride != null && Math.addExact(estimatedPeakWorkingBytes(
+                inputCount, outputCount, fieldSpecs), Math.multiplyExact((long) inputCount, 8L))
+                > MAX_WORKING_BYTES) {
+            throw new IllegalArgumentException("Scalar capture exceeds its working-memory budget");
+        }
         validateRetainedEvidenceBudget(inputCount, outputGrid.width(), outputGrid.height(),
                 sourcePolyline, sourceResolution, snapshotId, sourceIdentity, inputTransform,
                 fieldSpecs);
@@ -171,6 +205,8 @@ public final class RasterEvidenceCapture {
                     "Input raster transform kind is unsupported for this acquisition source");
         }
         cancellation.checkpoint();
+
+        if (scalarOverride != null) scalarOverride = scalarOverride.clone();
 
         LocalMetricFrame frame = outputGrid.coordinateFrame();
         MetricRegion footprint = outputGrid.footprint();
@@ -189,17 +225,21 @@ public final class RasterEvidenceCapture {
         }
 
         boolean[] inputValid = acquisitionValidity.clone();
-        int[] argb = new int[inputCount];
-        for (int y = 0; y < inputHeight; y++) {
-            cancellation.checkpoint();
-            inputRaster.getRGB(0, y, inputWidth, 1, argb, y * inputWidth, inputWidth);
+        int[] argb = scalarOverride == null ? new int[inputCount] : null;
+        if (argb != null) {
+            for (int y = 0; y < inputHeight; y++) {
+                cancellation.checkpoint();
+                inputRaster.getRGB(0, y, inputWidth, 1, argb, y * inputWidth, inputWidth);
+            }
         }
         InverseLookup lookup = inverseLookup(outputGrid, inputTransform,
                 inputWidth, inputHeight, inputValid, cancellation);
         Map<String, ScalarEvidenceField> fields = new LinkedHashMap<>();
         for (FieldSpec spec : fieldSpecs) {
-            double[] sourceValues = mapInput(argb, inputValid, inputWidth, inputHeight,
-                    spec.argbMapping(), cancellation);
+            double[] sourceValues = scalarOverride == null
+                    ? mapInput(argb, inputValid, inputWidth, inputHeight,
+                            spec.argbMapping(), cancellation)
+                    : scalarOverride;
             ScalarEvidenceField resampled = resample(sourceValues, inputWidth, outputGrid,
                     lookup, spec.lineage(), cancellation);
             ScalarEvidenceField result = spec.separableKernel().isEmpty() ? resampled
