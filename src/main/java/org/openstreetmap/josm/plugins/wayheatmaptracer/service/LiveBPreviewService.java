@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -71,10 +72,20 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 
 /** Detached live producer for the supported modern alignment engines. */
 public final class LiveBPreviewService {
+    private final RasterEvidenceCapture evidenceCapture;
+
+    public LiveBPreviewService() {
+        this(new RasterEvidenceCapture());
+    }
+
+    LiveBPreviewService(RasterEvidenceCapture evidenceCapture) {
+        this.evidenceCapture = Objects.requireNonNull(evidenceCapture, "evidenceCapture");
+    }
     private static final double WEB_MERCATOR_RADIUS = 6_378_137.0;
     private static final double MAXIMUM_JUNCTION_RELOCATION_METERS = 20.0;
     private static final String FIELD = "selected-visible-source";
@@ -134,7 +145,23 @@ public final class LiveBPreviewService {
             AlignmentMode geometryMode, TrackerMode engine, String projectionCode,
             ManualJunctionEligibility.Decision junctionDecision,
             SelectedWayIntervalPartitioner.Partition intervalPartition,
-            IntensitySamplingMode intensityMode) {
+            IntensitySamplingMode intensityMode,
+            ManagedModernPreviewSource.SourceRasters sourceRasters,
+            TileFetchCoordinator sourceOwner, List<String> alternativeMappings) {
+        public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+                MetricRasterGrid outputGrid, String palette, double searchRadiusMeters,
+                double sampleStepMeters, String settingsHash, String parameterHash,
+                GeometryCleanupConfig cleanup, AlignmentMode geometryMode, TrackerMode engine,
+                String projectionCode, ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode) {
+            this(raster, managedRaster, specification, network, sourceGeographic, sourceMetric,
+                    outputGrid, palette, searchRadiusMeters, sampleStepMeters, settingsHash,
+                    parameterHash, cleanup, geometryMode, engine, projectionCode, junctionDecision,
+                    intervalPartition, intensityMode, null, null, List.of());
+        }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
                 List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
@@ -177,6 +204,7 @@ public final class LiveBPreviewService {
             }
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
+            alternativeMappings = List.copyOf(alternativeMappings);
             if (cleanup == null || geometryMode == null || engine == null || intensityMode == null
                     || projectionCode == null || projectionCode.isBlank()
                     || intervalPartition != null && (network == null || specification == null
@@ -190,6 +218,12 @@ public final class LiveBPreviewService {
                                     intervalPartition, network))) {
                 throw new IllegalArgumentException("Live preview engine or interval proof is invalid");
             }
+            if ((sourceRasters == null) != (sourceOwner == null)
+                    || sourceRasters != null && (managedRaster != sourceRasters.selectedRaster()
+                            || !palette.equals(sourceRasters.plan().selectedColor()))
+                    || raster != null && !alternativeMappings.isEmpty()) {
+                throw new IllegalArgumentException("Live preview source choices do not match capture");
+            }
         }
     }
 
@@ -202,7 +236,22 @@ public final class LiveBPreviewService {
             TrackerMode engine, String sourceIdentity, String projectionCode,
             ManualJunctionEligibility.Decision junctionDecision,
             SelectedWayIntervalPartitioner.Partition intervalPartition,
-            IntensitySamplingMode intensityMode) {
+            IntensitySamplingMode intensityMode,
+            AlignmentTileSourcePlan sourcePlan, List<String> alternativeMappings) {
+        public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
+                NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
+                List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
+                double searchRadiusMeters, double sampleStepMeters, String settingsHash,
+                String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
+                TrackerMode engine, String sourceIdentity, String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode) {
+            this(specification, network, sourceGeographic, sourceMetric, frame, palette,
+                    searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash, cleanup,
+                    geometryMode, engine, sourceIdentity, projectionCode, junctionDecision,
+                    intervalPartition, intensityMode, null, List.of());
+        }
         public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
                 NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
                 List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
@@ -230,6 +279,7 @@ public final class LiveBPreviewService {
         public ManagedCaptureSeed {
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
+            alternativeMappings = List.copyOf(alternativeMappings);
             if (specification == null || network == null || frame == null || sourceGeographic.size() < 2
                     || sourceMetric.size() != sourceGeographic.size() || palette == null || palette.isBlank()
                     || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0.0
@@ -238,6 +288,10 @@ public final class LiveBPreviewService {
                     || geometryMode == null || engine == null || intensityMode == null
                     || sourceIdentity == null || sourceIdentity.isBlank()
                     || projectionCode == null || projectionCode.isBlank()
+                    || sourcePlan != null && (!palette.equals(sourcePlan.selectedColor())
+                            || intensityMode != IntensitySamplingMode.COLOR_MAPPING
+                                    && (!alternativeMappings.isEmpty()
+                                            || sourcePlan.aggregateDetectorRequested()))
                     || intervalPartition != null && (junctionDecision != null
                             || !intervalPartition.selectedWayKey().equals(
                                     specification.selectedWayKey())
@@ -251,11 +305,25 @@ public final class LiveBPreviewService {
         }
     }
 
+    /** Typed outcome for every explicitly requested detector mapping. */
+    public enum DetectorAttemptStatus { PRODUCED, SOURCE_UNAVAILABLE, RESOURCE_LIMIT }
+
+    /** One detector's immutable production owner, or a factual refusal before inference. */
+    public record DetectorAttempt(String mapping, String sourceTier, DetectorAttemptStatus status,
+            Computed owner) {
+        public DetectorAttempt {
+            if (mapping == null || mapping.isBlank() || sourceTier == null || sourceTier.isBlank()
+                    || status == null || (status == DetectorAttemptStatus.PRODUCED) != (owner != null)) {
+                throw new IllegalArgumentException("Detector attempt has incomplete ownership");
+            }
+        }
+    }
+
     /** Detached result from the actual common modern final pipeline. */
     public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
             Map<String, Number> counters, IntervalTraceBatch intervalBatch,
-            String settingsResolutionJson) {
+            String settingsResolutionJson, List<DetectorAttempt> sourceAttempts) {
         public Computed {
             if (captured == null || evidence == null || request == null || options == null
                     || (pipeline == null) == (intervalBatch == null)) {
@@ -267,6 +335,37 @@ public final class LiveBPreviewService {
                 throw new IllegalArgumentException("Interval result must retain its frozen capture");
             }
             counters = Map.copyOf(counters);
+            sourceAttempts = List.copyOf(sourceAttempts);
+            if (sourceAttempts.stream().anyMatch(attempt -> attempt.owner() != null
+                    && (attempt.owner().captured() != captured
+                            || !attempt.owner().sourceAttempts().isEmpty()
+                            || !attempt.owner().options().sourceTier().equals(attempt.sourceTier())))) {
+                throw new IllegalArgumentException("Detector run has a different captured owner");
+            }
+        }
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
+                Map<String, Number> counters, IntervalTraceBatch intervalBatch,
+                String settingsResolutionJson) {
+            this(captured, evidence, request, pipeline, options, counters, intervalBatch,
+                    settingsResolutionJson, List.of());
+        }
+        /** Stable native-first then complete aggregate then alternative detector attempts. */
+        public List<DetectorAttempt> detectorAttempts() {
+            List<DetectorAttempt> attempts = new ArrayList<>(1 + sourceAttempts.size());
+            attempts.add(new DetectorAttempt(captured.palette(), options.sourceTier(),
+                    DetectorAttemptStatus.PRODUCED, this));
+            attempts.addAll(sourceAttempts);
+            return List.copyOf(attempts);
+        }
+        /** Only successfully produced, separately owned inference runs. */
+        public List<Computed> productionRuns() {
+            return detectorAttempts().stream().filter(attempt -> attempt.owner() != null)
+                    .map(DetectorAttempt::owner).toList();
+        }
+        public Computed withSourceAttempts(List<DetectorAttempt> attempts) {
+            return new Computed(captured, evidence, request, pipeline, options, counters,
+                    intervalBatch, settingsResolutionJson, attempts);
         }
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
                 ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
@@ -278,8 +377,12 @@ public final class LiveBPreviewService {
             if (redactedJson == null || redactedJson.isBlank()) {
                 throw new IllegalArgumentException("Settings resolution must be nonempty");
             }
+            List<DetectorAttempt> updated = sourceAttempts.stream().map(attempt ->
+                    attempt.owner() == null ? attempt : new DetectorAttempt(attempt.mapping(),
+                            attempt.sourceTier(), attempt.status(),
+                            attempt.owner().withSettingsResolution(redactedJson))).toList();
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, redactedJson);
+                    intervalBatch, redactedJson, updated);
         }
         /** Whether this result contains production interval runs instead of a full-way run. */
         public boolean partitioned() {
@@ -950,7 +1053,9 @@ public final class LiveBPreviewService {
                     config.cleanup(), config.heatmap().alignmentMode(),
                     config.heatmap().trackerMode(), sourceIdentity,
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
-                    config.heatmap().intensitySamplingMode());
+                    config.heatmap().intensitySamplingMode(),
+                    AlignmentTileSourcePlan.from(config.heatmap()),
+                    requestedAlternativeMappings(config.heatmap()));
         }
         ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
                 specification);
@@ -976,7 +1081,19 @@ public final class LiveBPreviewService {
                 config.cleanup(), config.heatmap().alignmentMode(),
                 config.heatmap().trackerMode(), sourceIdentity,
                 ProjectionRegistry.getProjection().toCode(), junction, null,
-                config.heatmap().intensitySamplingMode());
+                config.heatmap().intensitySamplingMode(),
+                AlignmentTileSourcePlan.from(config.heatmap()),
+                requestedAlternativeMappings(config.heatmap()));
+    }
+
+    private static List<String> requestedAlternativeMappings(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig heatmap) {
+        if (heatmap.intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING
+                || !heatmap.multiColorDetection()) {
+            return List.of();
+        }
+        return AlignmentService.alternativeDetectorMappings().stream()
+                .filter(mapping -> !mapping.equals(heatmap.color())).toList();
     }
 
     /** Attaches immutable native pixels to an EDT-captured seed without retaining credentials. */
@@ -996,6 +1113,29 @@ public final class LiveBPreviewService {
                 seed.intensityMode());
     }
 
+    /** Attaches the exact coordinator-owned source set and frozen selected-raster detector plan. */
+    public Captured attachManagedSources(ManagedCaptureSeed seed,
+            ManagedModernPreviewSource.SourceRasters sources, TileFetchCoordinator owner) {
+        if (seed == null || sources == null || owner == null || seed.sourcePlan() == null
+                || !seed.sourcePlan().equals(sources.plan())
+                || !seed.palette().equals(sources.selectedRaster().palette())
+                || !seed.sourceIdentity().equals(sources.selectedRaster().sourceIdentity())
+                || seed.specification().sourceGeneration()
+                        != sources.selectedRaster().generation().value()
+                || !owner.isActiveGeneration(sources.selectedRaster().generation())) {
+            throw new IllegalArgumentException("Managed source set does not match its captured seed");
+        }
+        ManagedModernPreviewSource.Raster selected = sources.selectedRaster();
+        MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
+                seed.sourceMetric(), selected.zoom(), seed.searchRadiusMeters());
+        return new Captured(null, selected, seed.specification(), seed.network(),
+                seed.sourceGeographic(), seed.sourceMetric(), grid, seed.palette(),
+                seed.searchRadiusMeters(), seed.sampleStepMeters(), seed.settingsHash(),
+                seed.parameterHash(), seed.cleanup(), seed.geometryMode(), seed.engine(),
+                seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
+                seed.intensityMode(), sources, owner, seed.alternativeMappings());
+    }
+
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
     public Computed compute(Captured captured, CancellationProbe cancellation) {
         if (SwingUtilities.isEventDispatchThread()) {
@@ -1011,22 +1151,122 @@ public final class LiveBPreviewService {
                 && !SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured.network())) {
             throw new IllegalStateException("Frozen interval source changed before inference");
         }
-        if (hasInteriorManualIsland(partition)) {
-            IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation);
-            return Computed.partitioned(captured, batch, Map.of());
+        TraceBudgets limit = captured.engine() == TrackerMode.HYBRID
+                ? TraceBudgets.fundedHybrid() : TraceBudgets.defaults();
+        ChoiceRun nativeRun = computeChoice(captured, partition, null, "selected-visible", 0,
+                limit, cancellation);
+        if (captured.sourceRasters() == null || captured.intensityMode()
+                != IntensitySamplingMode.COLOR_MAPPING) {
+            return nativeRun.computed();
+        }
+        long remainingPairs = limit.maximumPairVisits() - nativeRun.usage().pairVisits();
+        long remainingTransitions = limit.maximumTransitions() - nativeRun.usage().transitions();
+        boolean budgetBlocked = false;
+        List<DetectorAttempt> attempts = new ArrayList<>();
+        ManagedModernPreviewSource.SourceRasters sources = captured.sourceRasters();
+        if (sources.plan().aggregateDetectorRequested()) {
+            String mapping = "all-colors-combined";
+            if (sources.aggregateAvailability()
+                    != ManagedModernPreviewSource.AggregateAvailability.COMPLETE) {
+                attempts.add(new DetectorAttempt(mapping, mapping,
+                        DetectorAttemptStatus.SOURCE_UNAVAILABLE, null));
+            } else {
+                if (!sources.provenCompleteAggregate(captured.sourceOwner())) {
+                    throw new IllegalStateException("Managed aggregate source proof became stale");
+                }
+                if (remainingPairs <= 0 || remainingTransitions <= 0) {
+                    attempts.add(new DetectorAttempt(mapping, mapping,
+                            DetectorAttemptStatus.RESOURCE_LIMIT, null));
+                } else {
+                    try {
+                        ChoiceRun aggregate = computeChoice(captured, partition, mapping, mapping, 1,
+                                remainingBudget(limit, remainingPairs, remainingTransitions), cancellation);
+                        attempts.add(new DetectorAttempt(mapping, mapping,
+                                DetectorAttemptStatus.PRODUCED, aggregate.computed()));
+                        remainingPairs -= aggregate.usage().pairVisits();
+                        remainingTransitions -= aggregate.usage().transitions();
+                    } catch (IntervalTraceBatch.ResourceLimitException
+                            | RasterEvidenceCapture.ResourceLimitException exception) {
+                        // A partially completed interval has unreported work. No later choice
+                        // may spend from a budget whose remaining amount is now unknown.
+                        attempts.add(new DetectorAttempt(mapping, mapping,
+                                DetectorAttemptStatus.RESOURCE_LIMIT, null));
+                        budgetBlocked = true;
+                    }
+                }
+            }
+        }
+        int preference = 2;
+        for (String mapping : captured.alternativeMappings()) {
+            cancellation.checkpoint();
+            String tier = "selected-mapping-" + mapping;
+            if (budgetBlocked || remainingPairs <= 0 || remainingTransitions <= 0) {
+                attempts.add(new DetectorAttempt(mapping, tier,
+                        DetectorAttemptStatus.RESOURCE_LIMIT, null));
+                continue;
+            }
+            try {
+                ChoiceRun choice = computeChoice(captured, partition, mapping, tier, preference++,
+                        remainingBudget(limit, remainingPairs, remainingTransitions), cancellation);
+                attempts.add(new DetectorAttempt(mapping, tier,
+                        DetectorAttemptStatus.PRODUCED, choice.computed()));
+                remainingPairs -= choice.usage().pairVisits();
+                remainingTransitions -= choice.usage().transitions();
+            } catch (IntervalTraceBatch.ResourceLimitException
+                    | RasterEvidenceCapture.ResourceLimitException exception) {
+                attempts.add(new DetectorAttempt(mapping, tier,
+                        DetectorAttemptStatus.RESOURCE_LIMIT, null));
+                budgetBlocked = true;
+            }
+        }
+        return nativeRun.computed().withSourceAttempts(attempts);
+    }
+
+    private record ChoiceRun(Computed computed, TraceWorkUsage usage) { }
+
+    private static TraceBudgets remainingBudget(TraceBudgets initial, long pairs, long transitions) {
+        return new TraceBudgets(initial.maximumStatesPerProfile(), pairs, transitions,
+                initial.maximumRawAlternatives(), initial.maximumDistinctAlternatives());
+    }
+
+    private ChoiceRun computeChoice(Captured captured,
+            SelectedWayIntervalPartitioner.Partition partition, String mapping, String sourceTier,
+            int preference, TraceBudgets budget, CancellationProbe cancellation) {
+        if (captured.sourceOwner() != null && !captured.sourceOwner()
+                .isActiveGeneration(captured.managedRaster().generation())) {
+            throw new IllegalStateException("Managed source generation changed during inference");
         }
         ModernDiagnosticCounters.begin();
         try {
-            EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
-            TraceRequest request = fullRequest(captured, evidence);
-            ModernTracePipeline.Options options = optionsFor(captured);
-            ModernTracePipeline.Result pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
-                    .run(request, evidence, captured.network(), options, cancellation);
-            return new Computed(captured, evidence, request, pipeline, options,
-                    ModernDiagnosticCounters.snapshot());
+            EvidenceSnapshot evidence = mapping == null ? captureEvidence(captured, cancellation)
+                    : "all-colors-combined".equals(mapping)
+                            ? captureManagedAggregateEvidence(captured, cancellation)
+                            : captureManagedMappingEvidence(captured, mapping, cancellation);
+            ModernTracePipeline.Options options = new ModernTracePipeline.Options(FIELD,
+                    captured.cleanup(), sourceTier, preference);
+            if (hasInteriorManualIsland(partition)) {
+                IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation,
+                        evidence, options, budget);
+                return new ChoiceRun(Computed.partitioned(captured, batch,
+                        ModernDiagnosticCounters.snapshot()), batch.totalUsage());
+            }
+            TraceRequest request = withBudgets(fullRequest(captured, evidence), budget);
+            ModernTracePipeline.PipelineRun run = new ModernTracePipeline(new CorridorEngineAdapter(FIELD))
+                    .runWithUsage(request, evidence, captured.network(), options, cancellation, Set.of());
+            return new ChoiceRun(new Computed(captured, evidence, request, run.result(), options,
+                    ModernDiagnosticCounters.snapshot()), run.usage());
         } finally {
             ModernDiagnosticCounters.end();
         }
+    }
+
+    private static TraceRequest withBudgets(TraceRequest request, TraceBudgets budget) {
+        return new TraceRequest(request.selectedWayKey(), request.selectedRange(), request.engine(),
+                request.geometryMode(), request.permissions(), budget, request.evidenceSnapshotId(),
+                request.evidenceContentHash(), request.networkSnapshotId(), request.networkContentHash(),
+                request.settingsHash(), request.parameterHash(), request.samplerId(),
+                request.configuredSampleStepMeters(), request.profileChainage(),
+                request.evidenceResolution(), request.corridorInput());
     }
 
     private static boolean hasInteriorManualIsland(SelectedWayIntervalPartitioner.Partition partition) {
@@ -1040,6 +1280,20 @@ public final class LiveBPreviewService {
     /** Captures evidence once and runs every owned interval through the production modern pipeline. */
     public IntervalTraceBatch computePartitioned(Captured captured,
             SelectedWayIntervalPartitioner.Partition partition, CancellationProbe cancellation) {
+        ModernDiagnosticCounters.begin();
+        try {
+            return computePartitioned(captured, partition, cancellation,
+                    captureEvidence(captured, cancellation), optionsFor(captured),
+                    captured.engine() == TrackerMode.HYBRID
+                            ? TraceBudgets.fundedHybrid() : TraceBudgets.defaults());
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
+    }
+
+    private IntervalTraceBatch computePartitioned(Captured captured,
+            SelectedWayIntervalPartitioner.Partition partition, CancellationProbe cancellation,
+            EvidenceSnapshot evidence, ModernTracePipeline.Options options, TraceBudgets budget) {
         if (SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Live preview inference must execute off the EDT");
         }
@@ -1049,12 +1303,8 @@ public final class LiveBPreviewService {
                 || !SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured.network())) {
             throw new IllegalArgumentException("Interval partition does not match the frozen capture");
         }
-        ModernDiagnosticCounters.begin();
-        try {
-            cancellation.checkpoint();
-            EvidenceSnapshot evidence = captureEvidence(captured, cancellation);
-            TraceRequest fullRequest = fullRequest(captured, evidence);
-            ModernTracePipeline.Options options = optionsFor(captured);
+        cancellation.checkpoint();
+            TraceRequest fullRequest = withBudgets(fullRequest(captured, evidence), budget);
             ModernTracePipeline pipeline = new ModernTracePipeline(new CorridorEngineAdapter(FIELD));
             IntervalTraceRequestFactory factory = new IntervalTraceRequestFactory();
             List<IntervalTraceBatch.IntervalRun> runs = new ArrayList<>();
@@ -1102,9 +1352,6 @@ public final class LiveBPreviewService {
             cancellation.checkpoint();
             return new IntervalTraceBatch(fullRequest, evidence, captured.network(), partition,
                     runs, options, captured.specification());
-        } finally {
-            ModernDiagnosticCounters.end();
-        }
     }
 
     private static TraceRequest fullRequest(Captured captured, EvidenceSnapshot evidence) {
@@ -1152,7 +1399,7 @@ public final class LiveBPreviewService {
         SupportedInputRasterTransform transform = SupportedInputRasterTransform.visibleWebMercator(
                 captured.raster().minimumEast(), captured.raster().maximumNorth(),
                 captured.raster().projectionUnitsPerViewPixel(), RenderedHeatmapSampler.RASTER_SCALE);
-        return new RasterEvidenceCapture().captureWithMetricSource(
+        return evidenceCapture.captureWithMetricSource(
                 captured.network().snapshotId() + "-evidence", captured.raster().image(), valid,
                 captured.sourceGeographic(), captured.sourceMetric(), transform, captured.outputGrid(), resolution,
                 captured.searchRadiusMeters(), captured.raster().sourceIdentity(),
@@ -1176,10 +1423,56 @@ public final class LiveBPreviewService {
                 EvidenceCorrelationGroup.STRAVA_RENDERINGS, false);
         RasterEvidenceCapture.FieldSpec field = RasterEvidenceCapture.FieldSpec.direct(FIELD,
                 argb -> intensity(argb, captured.palette(), mode), lineage);
-        return new RasterEvidenceCapture().captureWithMetricSource(captured.network().snapshotId() + "-evidence",
+        return evidenceCapture.captureWithMetricSource(captured.network().snapshotId() + "-evidence",
                 raster.image(), raster.validity(), captured.sourceGeographic(), captured.sourceMetric(), raster.transform(),
                 captured.outputGrid(), resolution, captured.searchRadiusMeters(), raster.sourceIdentity(),
                 EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE, List.of(field), cancellation);
+    }
+
+    /** Derives one alternative detector from the captured selected raster before tracing. */
+    private EvidenceSnapshot captureManagedMappingEvidence(Captured captured, String mapping,
+            CancellationProbe cancellation) {
+        if (captured.sourceRasters() == null || !captured.alternativeMappings().contains(mapping)
+                || captured.intensityMode() != IntensitySamplingMode.COLOR_MAPPING) {
+            throw new IllegalArgumentException("Selected-raster detector mapping was not captured");
+        }
+        return captureManagedScalarEvidence(captured, mapping,
+                captured.managedRaster().scalarValues(mapping, IntensitySamplingMode.COLOR_MAPPING,
+                        cancellation), false, cancellation);
+    }
+
+    /** Derives the complete five-palette scalar aggregate only from live coordinator proof. */
+    private EvidenceSnapshot captureManagedAggregateEvidence(Captured captured,
+            CancellationProbe cancellation) {
+        if (captured.sourceRasters() == null || captured.sourceOwner() == null
+                || !captured.sourceRasters().provenCompleteAggregate(captured.sourceOwner())
+                || captured.intensityMode() != IntensitySamplingMode.COLOR_MAPPING) {
+            throw new IllegalStateException("Complete managed all-color evidence is unavailable");
+        }
+        return captureManagedScalarEvidence(captured, "all-colors-combined",
+                captured.sourceRasters().completeAggregateScalars(cancellation), true, cancellation);
+    }
+
+    private EvidenceSnapshot captureManagedScalarEvidence(Captured captured, String mapping,
+            double[] scalar, boolean aggregate, CancellationProbe cancellation) {
+        ManagedModernPreviewSource.Raster raster = captured.managedRaster();
+        double pitch = TileHeatmapSampler.metersPerPixel(raster.zoom(),
+                captured.sourceGeographic().get(captured.sourceGeographic().size() / 2)
+                        .latitudeDegrees());
+        EvidenceResolution resolution = EvidenceResolution.nativeSource(pitch,
+                captured.outputGrid().pitchMeters());
+        EvidenceFieldLineage lineage = new EvidenceFieldLineage(
+                EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE,
+                aggregate ? EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE
+                        : EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING,
+                mapping, EvidenceCorrelationGroup.STRAVA_RENDERINGS, aggregate);
+        String identity = raster.sourceIdentity() + "/" + mapping;
+        return evidenceCapture.captureWithMetricScalarSource(
+                captured.network().snapshotId() + "-" + mapping + "-evidence",
+                raster.image(), raster.validity(), scalar,
+                captured.sourceGeographic(), captured.sourceMetric(), raster.transform(),
+                captured.outputGrid(), resolution, captured.searchRadiusMeters(), identity,
+                EvidenceFieldLineage.AcquisitionKind.MANAGED_TILE, FIELD, lineage, cancellation);
     }
 
     /** Repeats the exact bounded live query and rejects any relevant source or referrer change. */
@@ -1269,6 +1562,43 @@ public final class LiveBPreviewService {
                 computed.captured().sourceMetric(), projector);
     }
 
+    /** A displayed route retains its exact production evidence owner and local route index. */
+    public record PreviewChoice(Computed owner, int localRouteIndex,
+            CenterlineCandidate candidate, String sourceLabel) {
+        public PreviewChoice {
+            if (owner == null || owner.partitioned() || candidate == null
+                    || localRouteIndex < 0 || localRouteIndex >= owner.pipeline().routes().size()
+                    || sourceLabel == null || sourceLabel.isBlank()) {
+                throw new IllegalArgumentException("Preview route owner is incomplete");
+            }
+        }
+        public String reviewIdentity() {
+            return owner.options().sourceTier() + ":" + owner.request().evidenceContentHash()
+                    + ":" + localRouteIndex + ":" + candidate.id();
+        }
+    }
+
+    /** Flattens only produced whole-way runs while keeping every choice's owning computation. */
+    public List<PreviewChoice> adaptChoices(Computed computed,
+            Function<GeographicPoint, EastNorth> projector) {
+        if (computed == null || projector == null || computed.partitioned()) {
+            throw new IllegalArgumentException("Whole-way source choices are required");
+        }
+        List<PreviewChoice> choices = new ArrayList<>();
+        for (Computed run : computed.productionRuns()) {
+            String tier = run.options().sourceTier();
+            String label = "all-colors-combined".equals(tier) ? "All-color aggregate"
+                    : tier.startsWith("selected-mapping-")
+                            ? "Selected raster: " + tier.substring("selected-mapping-".length())
+                            : "Selected palette";
+            List<CenterlineCandidate> candidates = adapt(run, projector);
+            for (int index = 0; index < candidates.size(); index++) {
+                choices.add(new PreviewChoice(run, index, candidates.get(index), label));
+            }
+        }
+        return List.copyOf(choices);
+    }
+
     /** Rejects unsupported live settings before any raster or network acquisition. */
     public static void requireSupported(SelectionContext selection, String projectionCode,
             AlignmentConfig config) {
@@ -1327,10 +1657,6 @@ public final class LiveBPreviewService {
                 || config.searchHalfWidthMetersOverride().isPresent()) {
             throw new IllegalArgumentException("Modern managed tracing cannot use this engine, "
                     + "simplification, nearby-way awareness, or a temporary search-width override");
-        }
-        if (heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
-                && (heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes())) {
-            throw new IllegalArgumentException(ManagedModernPreviewSource.UNSUPPORTED_COLOR_OPTIONS);
         }
     }
 

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.Optional;
 import java.util.Set;
@@ -461,6 +462,55 @@ class AlignWayActionTest {
         String cancelledIndex = new String(cancelled.artifact("interval-production.json")
                 .bytes(), StandardCharsets.UTF_8);
         assertTrue(cancelledIndex.contains("\"appliedPlanIdentity\":null"));
+    }
+
+    @Test
+    void intervalPreviewCanSwitchFrozenSourceOwnersAndClearsReview() throws Exception {
+        LiveBPreviewService.Computed nativeRun = computedIntervalFixture();
+        var nativeBatch = nativeRun.intervalBatch();
+        var alternativeOptions = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .ModernTracePipeline.Options(nativeBatch.options().fieldName(),
+                        nativeBatch.options().cleanup(), "selected-mapping-hot-corridor", 2);
+        var alternativeBatch = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .IntervalTraceBatch(nativeBatch.fullRequest(), nativeBatch.evidence(),
+                        nativeBatch.network(), nativeBatch.partition(), nativeBatch.runs(),
+                        alternativeOptions, nativeBatch.authoritySpecification());
+        var alternative = LiveBPreviewService.Computed.partitioned(nativeRun.captured(),
+                alternativeBatch, Map.of());
+        var choices = nativeRun.withSourceAttempts(List.of(new LiveBPreviewService.DetectorAttempt(
+                "hot-corridor", "selected-mapping-hot-corridor",
+                LiveBPreviewService.DetectorAttemptStatus.PRODUCED, alternative)));
+
+        var state = new AlignWayAction.IntervalPreviewState(choices);
+        assertEquals(2, state.sourceRuns().size());
+        assertSame(nativeBatch, state.batch());
+        state.confirmReview();
+        assertTrue(state.review().confirmed());
+        state.chooseSource(1);
+        assertSame(alternativeBatch, state.batch());
+        assertFalse(state.review().confirmed());
+        assertEquals(Map.of(), state.routeChoices());
+        var diagnostic = AlignWayAction.createIntervalDiagnostics(choices, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW);
+        assertTrue(diagnostic.artifactNames().contains("interval-production.json"));
+        String sourceOwners = new String(diagnostic.artifact("source-choices.json").bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(sourceOwners.contains("\"selectedTier\":\"selected-mapping-hot-corridor\""));
+        assertTrue(sourceOwners.contains("\"nativeTier\":\"selected-visible\""));
+        assertTrue(sourceOwners.contains("\"evidenceHash\":\""
+                + alternative.request().evidenceContentHash() + "\""));
+    }
+
+    @Test
+    void optionalAggregateFailureHasSafeProminentWarningText() {
+        var failure = new org.openstreetmap.josm.plugins.wayheatmaptracer.service
+                .ManagedModernPreviewSource.AggregateFailure(15, "bluered",
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus.AUTH_FAILURE);
+        String warning = AlignWayAction.aggregateSourceWarning(failure);
+        assertTrue(warning.contains("bluered"));
+        assertTrue(warning.contains("15"));
+        assertTrue(warning.contains("AUTH_FAILURE"));
+        assertTrue(warning.contains("selected"));
     }
 
     private static LiveBPreviewService.Computed computedIntervalFixture() throws Exception {

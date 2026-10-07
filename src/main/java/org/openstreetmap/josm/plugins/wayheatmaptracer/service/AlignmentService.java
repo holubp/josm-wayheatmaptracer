@@ -78,6 +78,10 @@ public final class AlignmentService {
         "multi-combined"
     );
     private static final List<String> BASE_SOURCE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
+    /** Stable selected-raster detector mappings used by both legacy and modern previews. */
+    public static List<String> alternativeDetectorMappings() {
+        return ALL_COLOR_MODES;
+    }
     private static final String AGGREGATED_COLOR_MODE = "all-colors-combined";
     private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
     private static final double REFERENCE_VIEW_METERS_PER_PIXEL = TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;

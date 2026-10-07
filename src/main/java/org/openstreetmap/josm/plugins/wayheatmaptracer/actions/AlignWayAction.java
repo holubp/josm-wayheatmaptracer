@@ -173,6 +173,13 @@ public class AlignWayAction extends JosmAction {
                 ModernAlignmentInvocation invocation, AlignmentJob.JobContext context) throws Exception;
     }
 
+    /** Acquires every frozen managed source choice through one coordinator owner. */
+    @FunctionalInterface
+    interface OrdinaryManagedSourcesAcquire {
+        ManagedModernPreviewSource.SourceRasters acquire(LiveBPreviewService.ManagedCaptureSeed seed,
+                ModernAlignmentInvocation invocation, AlignmentJob.JobContext context) throws Exception;
+    }
+
     /** Production ordinary capture, compute, and current-owner publication assembly. */
     static final class OrdinaryModernAttemptAssembly {
         private final LiveBPreviewService previewService = new LiveBPreviewService();
@@ -183,6 +190,29 @@ public class AlignWayAction extends JosmAction {
                 DataSet dataSet, SelectionContext selection, String sourceIdentity,
                 OrdinaryVisibleRasterCapture<S> visibleCapture,
                 OrdinaryManagedRasterAcquire managedAcquire,
+                AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
+            return startInternal(session, owner, routing, dataSet, selection, sourceIdentity,
+                    visibleCapture, managedAcquire, null, null, publisher);
+        }
+
+        <S> AlignmentJob.StartResult<LiveBPreviewService.Computed> startWithSources(
+                PreviewSessionController<LiveBPreviewService.Computed> session,
+                PreviewSessionController.Owner owner, OrdinaryActionRouting<S> routing,
+                DataSet dataSet, SelectionContext selection, String sourceIdentity,
+                OrdinaryVisibleRasterCapture<S> visibleCapture,
+                OrdinaryManagedSourcesAcquire managedAcquire, TileFetchCoordinator sourceOwner,
+                AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
+            return startInternal(session, owner, routing, dataSet, selection, sourceIdentity,
+                    visibleCapture, null, managedAcquire, sourceOwner, publisher);
+        }
+
+        private <S> AlignmentJob.StartResult<LiveBPreviewService.Computed> startInternal(
+                PreviewSessionController<LiveBPreviewService.Computed> session,
+                PreviewSessionController.Owner owner, OrdinaryActionRouting<S> routing,
+                DataSet dataSet, SelectionContext selection, String sourceIdentity,
+                OrdinaryVisibleRasterCapture<S> visibleCapture,
+                OrdinaryManagedRasterAcquire rasterAcquire,
+                OrdinaryManagedSourcesAcquire sourcesAcquire, TileFetchCoordinator sourceOwner,
                 AlignmentJob.PreviewPublisher<LiveBPreviewService.Computed> publisher) {
             Objects.requireNonNull(session, "session");
             Objects.requireNonNull(routing, "routing");
@@ -217,10 +247,13 @@ public class AlignWayAction extends JosmAction {
                                     routing.requestedConfig(), captured.invocation().config()));
                 }
                 context.checkpoint();
-                ManagedModernPreviewSource.Raster raster = managedAcquire.acquire(
-                        captured.managed(), captured.invocation(), context);
-                return previewService.compute(
-                        previewService.attachManagedRaster(captured.managed(), raster), context)
+                LiveBPreviewService.Captured managed = sourcesAcquire == null
+                        ? previewService.attachManagedRaster(captured.managed(),
+                                rasterAcquire.acquire(captured.managed(), captured.invocation(), context))
+                        : previewService.attachManagedSources(captured.managed(),
+                                sourcesAcquire.acquire(captured.managed(), captured.invocation(), context),
+                                sourceOwner);
+                return previewService.compute(managed, context)
                         .withSettingsResolution(settingsResolutionJson(
                                 routing.requestedConfig(), captured.invocation().config()));
             }, publisher);
@@ -253,7 +286,9 @@ public class AlignWayAction extends JosmAction {
 
     /** Session-local route choices and exact composed review state for one frozen interval batch. */
     public static final class IntervalPreviewState {
-        private final IntervalTraceBatch batch;
+        private IntervalTraceBatch batch;
+        private final List<LiveBPreviewService.Computed> sourceRuns;
+        private int sourceIndex;
         private final FixedIntervalEditPlanComposer composer = new FixedIntervalEditPlanComposer();
         private Map<Integer, Integer> routeChoices = Map.of();
         private FixedIntervalEditPlanComposer.Assessment assessment;
@@ -262,11 +297,39 @@ public class AlignWayAction extends JosmAction {
         /** Composes the initial ranked routes from the immutable production batch. */
         public IntervalPreviewState(IntervalTraceBatch batch) {
             this.batch = Objects.requireNonNull(batch, "batch");
+            this.sourceRuns = List.of();
+            recompose();
+        }
+
+        /** Retains every produced interval source choice and its own immutable batch. */
+        public IntervalPreviewState(LiveBPreviewService.Computed computed) {
+            if (computed == null || !computed.partitioned()) {
+                throw new IllegalArgumentException("Partitioned source choices are required");
+            }
+            this.sourceRuns = computed.productionRuns().stream()
+                    .filter(LiveBPreviewService.Computed::partitioned).toList();
+            this.batch = sourceRuns.get(0).intervalBatch();
             recompose();
         }
 
         /** Returns the sole frozen inference batch for this preview session. */
         public IntervalTraceBatch batch() { return batch; }
+        /** Immutable produced source owners in native-first order. */
+        public List<LiveBPreviewService.Computed> sourceRuns() { return sourceRuns; }
+        /** Selected source owner, or null for the legacy single-batch constructor. */
+        public LiveBPreviewService.Computed selectedRun() {
+            return sourceRuns.isEmpty() ? null : sourceRuns.get(sourceIndex);
+        }
+        /** Switches complete source evidence and interval runs, clearing route review. */
+        public void chooseSource(int index) {
+            if (index < 0 || index >= sourceRuns.size()) {
+                throw new IllegalArgumentException("Source choice index is unavailable");
+            }
+            sourceIndex = index;
+            batch = sourceRuns.get(index).intervalBatch();
+            routeChoices = Map.of();
+            recompose();
+        }
         /** Returns selected production route indexes keyed by ordered interval index. */
         public Map<Integer, Integer> routeChoices() { return routeChoices; }
         /** Returns the current complete selected and affected-way assessment. */
@@ -324,7 +387,9 @@ public class AlignWayAction extends JosmAction {
         }
 
         private String choiceIdentity() {
-            return "intervals:" + batch.runs().size() + ":" + java.util.stream.IntStream
+            return "intervals:" + batch.options().sourceTier() + ":"
+                    + batch.fullRequest().evidenceContentHash() + ":" + batch.runs().size() + ":"
+                    + java.util.stream.IntStream
                     .range(0, batch.runs().size())
                     .mapToObj(index -> index + "=" + routeChoices.getOrDefault(index, 0))
                     .reduce((left, right) -> left + "," + right).orElse("");
@@ -711,17 +776,16 @@ public class AlignWayAction extends JosmAction {
                 final CredentialSnapshot credentials = managedSource
                         ? CredentialSnapshot.fromConfig(slideConfig.heatmap()) : null;
                 final TileFetchCoordinator coordinator = previewSourceOwner;
-                ordinaryAttemptAssembly.start(livePreviewSession, previewOwner, ordinaryRouting,
+                ordinaryAttemptAssembly.startWithSources(livePreviewSession, previewOwner, ordinaryRouting,
                         dataSet, selection, sourceIdentity,
                         (frozenSource, invocation, permissions) ->
                                 alignmentService.captureLiveBVisibleRaster(selection, frozenSource,
                                         mapView, invocation.config(), sourceIdentity, permissions),
                         (seed, invocation, context) -> {
                             ManagedModernPreviewSource source = new ManagedModernPreviewSource(coordinator);
-                            return source.acquire(ManagedModernPreviewSource.selectedOnly(
-                                    seed.sourceGeographic(), invocation.config().heatmap(), sourceIdentity),
-                                    credentials, context);
-                        }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
+                            return source.acquireSources(seed.sourceGeographic(),
+                                    invocation.config().heatmap(), sourceIdentity, credentials, context);
+                        }, coordinator, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection,
                                 imageryLayer, mapView, slideConfig, persistedSlideConfig,
                                 tracingAtCapture, attempt.result(), diagnosticAttemptIdentity,
                                 previewSourceOwner));
@@ -738,10 +802,11 @@ public class AlignWayAction extends JosmAction {
                             seed[0].settingsHash(), seed[0].network().canonicalHash());
                 }, (snapshot, context) -> {
                     ManagedModernPreviewSource source = new ManagedModernPreviewSource(coordinator);
-                    ManagedModernPreviewSource.Raster raster = source.acquire(
-                            ManagedModernPreviewSource.selectedOnly(seed[0].sourceGeographic(),
-                                    slideConfig.heatmap(), sourceIdentity), credentials, context);
-                    return livePreviewService.compute(livePreviewService.attachManagedRaster(seed[0], raster), context)
+                    ManagedModernPreviewSource.SourceRasters rasters = source.acquireSources(
+                            seed[0].sourceGeographic(), slideConfig.heatmap(), sourceIdentity,
+                            credentials, context);
+                    return livePreviewService.compute(livePreviewService.attachManagedSources(
+                            seed[0], rasters, coordinator), context)
                             .withSettingsResolution(settingsResolutionJson(requestedSlideConfig,
                                     slideConfig));
                 }, attempt -> publishLiveBPreview(previewOwner, progress, dataSet, selection, imageryLayer, mapView,
@@ -796,6 +861,7 @@ public class AlignWayAction extends JosmAction {
                 requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                         persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
                 progress.dispose();
+                warnOptionalAggregateSource(computed);
                 showIntervalPreviewDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
                         slideConfig, persistedSlideConfig, tracingAtCapture, computed,
                         diagnosticAttemptIdentity, previewSourceOwner);
@@ -842,10 +908,12 @@ public class AlignWayAction extends JosmAction {
                     computed.pipeline().routes().size(), computed.counters().size());
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     tracingAtCapture, computed.captured(), previewSourceOwner);
-            List<CenterlineCandidate> candidates = livePreviewService.adapt(computed,
+            List<LiveBPreviewService.PreviewChoice> previewChoices = livePreviewService.adaptChoices(computed,
                     point -> ProjectionRegistry.getProjection().latlon2eastNorth(
                             new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
-            if (candidates.isEmpty()) {
+            progress.dispose();
+            warnOptionalAggregateSource(computed);
+            if (previewChoices.isEmpty()) {
                 terminalStatus = modernPreviewStatus(computed.pipeline().inference().status(),
                         initialDisposition);
                 ManualJunctionEligibility.Decision manual = noRouteJunctionDecision(
@@ -854,9 +922,8 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException(noPreviewableRouteMessage(computed.captured(),
                         slideConfig.heatmap().trackerMode()));
             }
-            progress.dispose();
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
-                    slideConfig, persistedSlideConfig, tracingAtCapture, computed, candidates,
+                    slideConfig, persistedSlideConfig, tracingAtCapture, computed, previewChoices,
                     diagnosticAttemptIdentity, previewSourceOwner);
         } catch (RuntimeException exception) {
             recordModernDiagnostics(computed, terminalStatus, 0, null, false, false,
@@ -878,12 +945,20 @@ public class AlignWayAction extends JosmAction {
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
             String diagnosticAttemptIdentity, TileFetchCoordinator previewSourceOwner) {
-        IntervalPreviewState state = new IntervalPreviewState(computed.intervalBatch());
+        IntervalPreviewState state = new IntervalPreviewState(computed);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("Interval Alignment Preview"), false);
         JPanel panel = new JPanel();
         JPanel intervalControls = new JPanel(new java.awt.GridLayout(0, 2));
         List<JComboBox<String>> choices = new java.util.ArrayList<>();
+        JComboBox<String> sourceChoices = new JComboBox<>(state.sourceRuns().stream()
+                .map(run -> run.options().sourceTier().equals("selected-visible")
+                        ? tr("Selected palette")
+                        : run.options().sourceTier().equals("all-colors-combined")
+                                ? tr("All-color aggregate")
+                                : tr("Selected raster: {0}", run.options().sourceTier()
+                                        .substring("selected-mapping-".length())))
+                .toArray(String[]::new));
         for (int index = 0; index < state.batch().runs().size(); index++) {
             IntervalTraceBatch.IntervalRun run = state.batch().runs().get(index);
             intervalControls.add(new JLabel(tr("Interval {0} ({1}–{2})", index + 1,
@@ -917,6 +992,7 @@ public class AlignWayAction extends JosmAction {
         if (!settingsNotice.isEmpty()) {
             panel.add(settingsNoticeComponent(settingsNotice));
         }
+        if (sourceChoices.getItemCount() > 1) panel.add(sourceChoices);
         panel.add(intervalScroll);
         panel.add(qualityScroll);
         panel.add(confirm);
@@ -962,7 +1038,8 @@ public class AlignWayAction extends JosmAction {
                     PluginPreferences.isDebugEnabled(), finalWays);
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             boolean sourceApply = intervalApplySourceAvailable(computed.captured());
-            quality.setText(intervalPreviewSummary(state)
+            quality.setText("Source: " + state.batch().options().sourceTier() + "\n"
+                    + intervalPreviewSummary(state)
                     + "\nApply: " + (preflight == ModernApplyPreflight.READY && sourceApply
                             && state.applyAvailable() ? "available" : "unavailable")
                     + (preflight == ModernApplyPreflight.READY ? ""
@@ -987,9 +1064,40 @@ public class AlignWayAction extends JosmAction {
                 showError(tr("Interval preview became stale; run alignment again."));
             }
         };
+        boolean[] rebuildingChoices = {false};
+        sourceChoices.addActionListener(event -> {
+            try {
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                state.chooseSource(sourceChoices.getSelectedIndex());
+                rebuildingChoices[0] = true;
+                try {
+                    for (int index = 0; index < choices.size(); index++) {
+                        var run = state.batch().runs().get(index);
+                        var choice = choices.get(index);
+                        choice.removeAllItems();
+                        if (run.routes().isEmpty()) choice.addItem(tr("No production route"));
+                        else for (int route = 0; route < run.routes().size(); route++) {
+                            choice.addItem(route == 0 ? tr("Route {0} (recommended)", route + 1)
+                                    : tr("Route {0}", route + 1));
+                        }
+                        choice.setEnabled(!run.routes().isEmpty());
+                        choice.setSelectedIndex(0);
+                    }
+                } finally {
+                    rebuildingChoices[0] = false;
+                }
+                refresh.run();
+                recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
+                        diagnosticAttemptIdentity);
+            } catch (RuntimeException stale) {
+                staleFailure.run();
+            }
+        });
         for (int index = 0; index < choices.size(); index++) {
             final int intervalIndex = index;
             choices.get(index).addActionListener(event -> {
+                if (rebuildingChoices[0]) return;
                 try {
                     requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
                             persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
@@ -1040,7 +1148,8 @@ public class AlignWayAction extends JosmAction {
                         currentPlan,
                         () -> ManagedTileRuntime.initializedCoordinator().activeGenerationValue());
                 ManagedSourceReceipt managedReceipt = ManagedSourceReceipt.forCurrentPlugin(
-                        previewSourceOwner, computed.captured(), slideConfig.heatmap());
+                        previewSourceOwner, computed.captured(), slideConfig.heatmap(),
+                        state.batch().options().sourceTier());
                 ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet,
                         currentPlan, new ManagedSourceLockedApplyValidator(network, livePreviewService,
                             computed.captured(), () -> {
@@ -1193,21 +1302,25 @@ public class AlignWayAction extends JosmAction {
             SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
             AlignmentConfig slideConfig, AlignmentConfig persistedSlideConfig,
             TracingSettings tracingAtCapture, LiveBPreviewService.Computed computed,
-            List<CenterlineCandidate> candidates, String diagnosticAttemptIdentity,
+            List<LiveBPreviewService.PreviewChoice> previewChoices, String diagnosticAttemptIdentity,
             TileFetchCoordinator previewSourceOwner) {
-        JComboBox<CenterlineCandidate> choices = new JComboBox<>(
-                candidates.toArray(CenterlineCandidate[]::new));
+        List<CenterlineCandidate> candidates = previewChoices.stream()
+                .map(LiveBPreviewService.PreviewChoice::candidate).toList();
+        JComboBox<LiveBPreviewService.PreviewChoice> choices = new JComboBox<>(
+                previewChoices.toArray(LiveBPreviewService.PreviewChoice[]::new));
         choices.setRenderer(new DefaultListCellRenderer() {
             @Override public java.awt.Component getListCellRendererComponent(JList<?> list,
                     Object value, int index, boolean selected, boolean focused) {
                 super.getListCellRendererComponent(list, value, index, selected, focused);
-                if (value instanceof CenterlineCandidate candidate) {
-                    setText(candidate.displayName());
+                if (value instanceof LiveBPreviewService.PreviewChoice choice) {
+                    setText(choice.sourceLabel() + " — " + choice.candidate().displayName());
                 }
                 return this;
             }
         });
-        JTextArea quality = new JTextArea(liveBQualitySummary(computed, 0), 5, 76);
+        LiveBPreviewService.PreviewChoice firstChoice = previewChoices.get(0);
+        JTextArea quality = new JTextArea(liveBQualitySummary(firstChoice.owner(),
+                firstChoice.localRouteIndex()), 5, 76);
         quality.setEditable(false);
         quality.setLineWrap(true);
         quality.setWrapStyleWord(true);
@@ -1260,28 +1373,31 @@ public class AlignWayAction extends JosmAction {
                 throw new IllegalStateException("The preview window no longer owns this attempt");
             }
             int index = Math.max(0, choices.getSelectedIndex());
+            LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
+            LiveBPreviewService.Computed run = choice.owner();
+            int routeIndex = choice.localRouteIndex();
             requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
                     tracingAtCapture, computed.captured(), previewSourceOwner);
-            CenterlineCandidate candidate = candidates.get(index);
+            CenterlineCandidate candidate = choice.candidate();
             FinalGeometryEvaluator.Disposition disposition =
-                    computed.pipeline().routes().get(index).quality().disposition();
+                    run.pipeline().routes().get(routeIndex).quality().disposition();
             plan[0] = null;
             review[0] = null;
             assessment[0] = null;
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             if (preflight == ModernApplyPreflight.READY) {
-                assessment[0] = planAdapter.assess(computed, index);
+                assessment[0] = planAdapter.assess(run, routeIndex);
                 if (assessment[0].availability()
                         == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
-                    requireNoChangeCurrent(assessment[0], computed,
+                    requireNoChangeCurrent(assessment[0], run,
                             NetworkSnapshotCapture.capture(dataSet, computed.captured().specification()));
                 }
                 if (assessment[0].plan().isPresent()) {
                     plan[0] = assessment[0].plan().orElseThrow();
-                    review[0] = PreviewReviewState.fromEditPlan(candidate.id(), plan[0]);
+                    review[0] = PreviewReviewState.fromEditPlan(choice.reviewIdentity(), plan[0]);
                 }
             }
-            AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
+            AlignmentResult display = liveBDisplayResult(selection, run, candidates,
                     candidate, plan[0]);
             ValidationReport.Disposition displayedDisposition = liveBDisplayedDisposition(
                     disposition, assessment[0], plan[0]);
@@ -1299,7 +1415,7 @@ public class AlignWayAction extends JosmAction {
             String availability = assessment[0] == null ? modernApplyPreflightMessage(preflight)
                     : modernApplyAvailabilityMessage(assessment[0], preflight);
             List<String> reasons = plan[0] == null
-                    ? computed.pipeline().routes().get(index).quality().findings().stream()
+                    ? run.pipeline().routes().get(routeIndex).quality().findings().stream()
                             .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
                             .toList()
                     : plan[0].validation().findingCodes();
@@ -1309,9 +1425,9 @@ public class AlignWayAction extends JosmAction {
                     ? "MANUAL_JUNCTION"
                     : plan[0] == null ? disposition.name()
                     : plan[0].validation().disposition().name();
-            recordModernDiagnostics(computed, modernPreviewStatus(
-                    computed.pipeline().inference().status(), displayedDisposition),
-                    index, plan[0], false, false, diagnosticAttemptIdentity,
+            recordModernDiagnostics(computed, run, modernPreviewStatus(
+                    run.pipeline().inference().status(), displayedDisposition),
+                    routeIndex, plan[0], false, false, diagnosticAttemptIdentity,
                     assessment[0] == null ? null : assessment[0].junctionReason());
             String sourceLabel = computed.captured().managedRaster() == null
                     ? tr("visible layer") : tr("managed tiles");
@@ -1324,9 +1440,9 @@ public class AlignWayAction extends JosmAction {
                         ? "\n" + tr("Recovery: a one-shot Precise Shape rerun is available")
                         : "\n" + tr("Precise Shape recovery unavailable: {0}", preciseRecovery);
             }
-            quality.setText(liveBQualitySummary(computed, index) + "\n\n"
-                    + modernPreviewSummary(livePreviewEngineLabel(computed.request().engine()),
-                            sourceLabel, finalDisposition,
+            quality.setText(liveBQualitySummary(run, routeIndex) + "\n\n"
+                    + modernPreviewSummary(livePreviewEngineLabel(run.request().engine()),
+                            sourceLabel + " / " + choice.sourceLabel(), finalDisposition,
                             plan[0] == null ? null : plan[0].affectedWayKeys().size(), reasons,
                             review[0] != null && review[0].confirmed(), availability));
             quality.setCaretPosition(0);
@@ -1349,7 +1465,9 @@ public class AlignWayAction extends JosmAction {
                 refresh.run();
             } catch (RuntimeException exception) {
                 completed[0] = true;
-                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
+                        Math.max(0, choices.getSelectedIndex()));
+                recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         plan[0], false, false, diagnosticAttemptIdentity);
                 boolean closed = livePreviewSession.close(previewOwner);
                 dialog.dispose();
@@ -1366,7 +1484,10 @@ public class AlignWayAction extends JosmAction {
                 boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner, () -> {
                     if (!completed[0]) {
                         completed[0] = true;
-                        recordModernDiagnostics(computed, "cancelled", Math.max(0, choices.getSelectedIndex()),
+                        LiveBPreviewService.PreviewChoice closingChoice = previewChoices.get(
+                                Math.max(0, choices.getSelectedIndex()));
+                        recordModernDiagnostics(computed, closingChoice.owner(), "cancelled",
+                                closingChoice.localRouteIndex(),
                                 plan[0], review[0] != null && review[0].confirmed(), false,
                                 diagnosticAttemptIdentity);
                     }
@@ -1395,13 +1516,16 @@ public class AlignWayAction extends JosmAction {
                 }
                 review[0] = review[0].confirm();
                 int index = Math.max(0, choices.getSelectedIndex());
-                recordModernDiagnostics(computed, "confirmed", index, plan[0], true, false,
+                LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
+                LiveBPreviewService.Computed run = choice.owner();
+                int routeIndex = choice.localRouteIndex();
+                recordModernDiagnostics(computed, run, "confirmed", routeIndex, plan[0], true, false,
                         diagnosticAttemptIdentity);
                 confirm.setEnabled(false);
                 apply.setEnabled(modernApplyEnabled(assessment[0] != null
                         && assessment[0].applyAvailable(), review[0], applying[0], false));
-                CenterlineCandidate candidate = candidates.get(index);
-                AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
+                CenterlineCandidate candidate = choice.candidate();
+                AlignmentResult display = liveBDisplayResult(selection, run, candidates,
                         candidate, plan[0]);
                 Map<PrimitiveKey, List<EastNorth>> projectedPreview =
                         assessment[0].projectFinalPreviewWays(point -> ProjectionRegistry.getProjection()
@@ -1410,17 +1534,20 @@ public class AlignWayAction extends JosmAction {
                 overlay.show(selection, display, candidate,
                         CandidateAssessment.Disposition.REVIEW_REQUIRED, true,
                         PluginPreferences.isDebugEnabled(), projectedPreview);
-                quality.setText(liveBQualitySummary(computed, index) + "\n\n"
-                        + modernPreviewSummary(livePreviewEngineLabel(computed.request().engine()),
+                quality.setText(liveBQualitySummary(run, routeIndex) + "\n\n"
+                        + modernPreviewSummary(livePreviewEngineLabel(run.request().engine()),
                                 computed.captured().managedRaster() == null
-                                        ? tr("visible layer") : tr("managed tiles"),
+                                        ? tr("visible layer") : tr("managed tiles / ")
+                                            + choice.sourceLabel(),
                                 plan[0].validation().disposition().name(),
                                 plan[0].affectedWayKeys().size(),
                                 plan[0].validation().findingCodes(), true,
                                 tr("review confirmed; Apply available")));
             } catch (RuntimeException exception) {
                 completed[0] = true;
-                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
+                        Math.max(0, choices.getSelectedIndex()));
+                recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         plan[0], false, false, diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
@@ -1467,8 +1594,11 @@ public class AlignWayAction extends JosmAction {
             apply.setEnabled(false);
             try {
                 int index = Math.max(0, choices.getSelectedIndex());
-                PreparedModernApply prepared = prepareModernApply(dataSet, computed, index,
-                        candidates.get(index).id(), review[0], () -> {
+                LiveBPreviewService.PreviewChoice choice = previewChoices.get(index);
+                LiveBPreviewService.Computed run = choice.owner();
+                int routeIndex = choice.localRouteIndex();
+                PreparedModernApply prepared = prepareModernApply(dataSet, run, routeIndex,
+                        choice.reviewIdentity(), review[0], () -> {
                             if (!livePreviewSession.isCurrentWindow(previewOwner, dialog, activePreviewDialog,
                                     dialog.isDisplayable())) {
                                 throw new IllegalStateException("The preview window no longer owns this attempt");
@@ -1482,7 +1612,7 @@ public class AlignWayAction extends JosmAction {
                         (network, currentPlan) -> {
                             ManagedSourceReceipt managedReceipt = computed.captured().managedRaster() == null ? null
                                 : ManagedSourceReceipt.forCurrentPlugin(previewSourceOwner,
-                                    computed.captured(), slideConfig.heatmap());
+                                    computed.captured(), slideConfig.heatmap(), run.options().sourceTier());
                             return computed.captured().managedRaster() != null
                             ? new ManagedSourceLockedApplyValidator(network, livePreviewService,
                                 computed.captured(), () -> {
@@ -1504,7 +1634,7 @@ public class AlignWayAction extends JosmAction {
                 AlignmentEditPlan currentPlan = prepared.plan();
                 ApplyAlignmentEditPlanCommand command = prepared.command();
                 applyWithPreparedDiagnostics(
-                    () -> createModernDiagnostics(computed, "applied", index, currentPlan,
+                    () -> createModernDiagnostics(computed, run, "applied", routeIndex, currentPlan,
                             review[0].confirmed(), true, null),
                     () -> UndoRedoHandler.getInstance().add(command));
                 completed[0] = true;
@@ -1516,7 +1646,9 @@ public class AlignWayAction extends JosmAction {
                 }
             } catch (RuntimeException exception) {
                 completed[0] = true;
-                recordModernDiagnostics(computed, "failed", Math.max(0, choices.getSelectedIndex()),
+                LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
+                        Math.max(0, choices.getSelectedIndex()));
+                recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
                         plan[0], review[0] != null && review[0].confirmed(), false,
                         diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
@@ -1633,6 +1765,59 @@ public class AlignWayAction extends JosmAction {
                 bundle.parameterHash(), artifacts);
     }
 
+    /** Records requested detector outcomes and the exact frozen owner selected for this bundle. */
+    private static Format15Bundle withSourceChoices(Format15Bundle bundle,
+            LiveBPreviewService.Computed root, LiveBPreviewService.Computed selected) {
+        if (root == null || selected == null || root.productionRuns().stream()
+                .noneMatch(run -> run == selected)) {
+            throw new IllegalArgumentException("Diagnostic source owner is not part of this attempt");
+        }
+        StringBuilder json = new StringBuilder("{\"nativeTier\":\"selected-visible\",\"selectedTier\":\"")
+                .append(safeChoiceToken(selected.options().sourceTier())).append("\",\"attempts\":[");
+        boolean first = true;
+        for (LiveBPreviewService.DetectorAttempt attempt : root.detectorAttempts()) {
+            if (!first) json.append(',');
+            first = false;
+            json.append("{\"mapping\":\"").append(safeChoiceToken(attempt.mapping()))
+                    .append("\",\"tier\":\"").append(safeChoiceToken(attempt.sourceTier()))
+                    .append("\",\"status\":\"").append(attempt.status().name()).append('"');
+            if (attempt.owner() != null) {
+                var owner = attempt.owner();
+                json.append(",\"evidenceHash\":\"")
+                        .append(owner.request().evidenceContentHash())
+                        .append("\",\"networkHash\":\"")
+                        .append(owner.request().networkContentHash())
+                        .append("\",\"intervals\":")
+                        .append(owner.partitioned() ? owner.intervalBatch().runs().size() : 0)
+                        .append(",\"routes\":")
+                        .append(owner.partitioned() ? owner.intervalBatch().runs().stream()
+                                .mapToInt(run -> run.routes().size()).sum()
+                                : owner.pipeline().routes().size());
+            }
+            json.append('}');
+        }
+        json.append(']');
+        var sources = root.captured().sourceRasters();
+        if (sources != null) {
+            json.append(",\"aggregateAvailability\":\"")
+                    .append(sources.aggregateAvailability().name())
+                    .append("\",\"liveCompleteAggregateProof\":")
+                    .append(sources.provenCompleteAggregate(root.captured().sourceOwner()));
+        }
+        json.append("}\n");
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put("source-choices.json", Format15Artifact.text("source-choices.json", json.toString()));
+        return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
+                bundle.parameterHash(), artifacts);
+    }
+
+    private static String safeChoiceToken(String value) {
+        if (value == null || !value.matches("[A-Za-z0-9_-]{1,80}")) {
+            throw new IllegalArgumentException("Detector choice token is unsafe");
+        }
+        return value;
+    }
+
     static ModernApplyPreflight modernApplyPreflight(LiveBPreviewService.Captured captured,
             AlignmentConfig config) {
         if (captured == null || config == null
@@ -1645,7 +1830,13 @@ public class AlignWayAction extends JosmAction {
         }
         if (captured.intensityMode() != heatmap.intensitySamplingMode()
                 || heatmap.intensitySamplingMode() == IntensitySamplingMode.COLOR_MAPPING
-                        && (heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes())) {
+                        && (heatmap.multiColorDetection() || heatmap.aggregateAllColorSchemes())
+                        && (captured.sourceRasters() == null
+                                || !captured.sourceRasters().plan()
+                                        .equals(org.openstreetmap.josm.plugins.wayheatmaptracer.service
+                                                .AlignmentTileSourcePlan.from(heatmap))
+                                || heatmap.multiColorDetection()
+                                        && captured.alternativeMappings().isEmpty())) {
             return ModernApplyPreflight.SOURCE_LINEAGE_UNAVAILABLE;
         }
         boolean engineSupported = captured.engine().capabilities().requiresEvidenceSnapshot();
@@ -1796,13 +1987,6 @@ public class AlignWayAction extends JosmAction {
                 }
                 if (routed.heatmap().parallelWayAwareness()) {
                     return tr("Managed Precise Shape preview cannot use nearby-way awareness");
-                }
-                if (routed.heatmap().intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
-                    return tr("Managed Precise Shape preview requires Color mapping");
-                }
-                if (routed.heatmap().multiColorDetection()
-                        || routed.heatmap().aggregateAllColorSchemes()) {
-                    return tr("Managed Precise Shape preview cannot prove alternate-color source lineage");
                 }
                 if (routed.searchHalfWidthMetersOverride().isPresent()) {
                     return tr("Managed Precise Shape preview cannot use a temporary search-width override");
@@ -2065,7 +2249,10 @@ public class AlignWayAction extends JosmAction {
     /** Serializes the exact composer state displayed by the interval preview. */
     static Format15Bundle createIntervalDiagnostics(LiveBPreviewService.Computed computed,
             IntervalPreviewState state, IntervalArtifactStatus status) {
-        if (!computed.partitioned() || state.batch() != computed.intervalBatch()) {
+        LiveBPreviewService.Computed selected = state.selectedRun() == null
+                ? computed : state.selectedRun();
+        if (!computed.partitioned() || computed.productionRuns().stream().noneMatch(run -> run == selected)
+                || state.batch() != selected.intervalBatch()) {
             throw new IllegalArgumentException("Interval diagnostics require the current production batch");
         }
         if (status == IntervalArtifactStatus.PREVIEW) {
@@ -2091,12 +2278,13 @@ public class AlignWayAction extends JosmAction {
                 ? state.assessment().plan().orElseThrow().canonicalHash() : null;
         Format15Bundle bundle = Format15ProductionBundleFactory.createLiveIntervals(
                 LastSlideDebugBundle.buildIdentity(), state.batch(), state.assessment(),
-                state.routeChoices(), intervalSourceReceipt(computed.captured()), status,
+                state.routeChoices(), intervalSourceReceipt(selected.captured()), status,
                 reviewed, applied);
         var batch = state.batch();
-        return withSettingsResolution(Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
+        return withSourceChoices(withSettingsResolution(
+                Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
                 new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
-                batch.fullRequest().engine()), computed);
+                batch.fullRequest().engine()), selected), computed, selected);
     }
 
     private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
@@ -2151,10 +2339,26 @@ public class AlignWayAction extends JosmAction {
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
             boolean applied, String attemptIdentity,
             ManualJunctionEligibility.Reason assessedManualReason) {
+        recordModernDiagnostics(computed, computed, status, routeIndex, plan, reviewed,
+                applied, attemptIdentity, assessedManualReason);
+    }
+
+    private static void recordModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            String attemptIdentity) {
+        recordModernDiagnostics(root, computed, status, routeIndex, plan, reviewed,
+                applied, attemptIdentity, null);
+    }
+
+    private static void recordModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            String attemptIdentity, ManualJunctionEligibility.Reason assessedManualReason) {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
-            DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(computed,
+            DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(root, computed,
                     status, routeIndex, plan, reviewed, applied, assessedManualReason));
         } catch (RuntimeException failure) {
             String reason = failure.getMessage() == null ? "" : failure.getMessage()
@@ -2183,6 +2387,14 @@ public class AlignWayAction extends JosmAction {
     private static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed computed,
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
             boolean applied, ManualJunctionEligibility.Reason assessedManualReason) {
+        return createModernDiagnostics(computed, computed, status, routeIndex, plan, reviewed,
+                applied, assessedManualReason);
+    }
+
+    static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            ManualJunctionEligibility.Reason assessedManualReason) {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
                 computed.evidence(), computed.captured().network(), computed.options());
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
@@ -2203,8 +2415,9 @@ public class AlignWayAction extends JosmAction {
                             && computed.pipeline().routes().isEmpty()
                                 ? ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE
                                 : null);
-        return withSettingsResolution(Format15ProductionBundleFactory.withCurrentNumericalPolicy(
-                bundle, input, input.request().engine()), computed);
+        return withSourceChoices(withSettingsResolution(
+                Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                        bundle, input, input.request().engine()), computed), root, computed);
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */
@@ -3300,6 +3513,33 @@ public class AlignWayAction extends JosmAction {
             tr("WayHeatmapTracer"),
             JOptionPane.ERROR_MESSAGE
         );
+    }
+
+    static String aggregateSourceWarning(ManagedModernPreviewSource.AggregateFailure failure) {
+        if (failure == null) return "";
+        return tr("All-color aggregate unavailable: {0} at z{1} returned {2}. "
+                        + "The selected-source preview can continue where its own evidence is usable.",
+                failure.palette(), failure.zoom(), failure.status().name());
+    }
+
+    static String aggregateSourceWarning(LiveBPreviewService.Computed computed) {
+        var sources = computed.captured().sourceRasters();
+        if (sources == null) return "";
+        return switch (sources.aggregateAvailability()) {
+            case NOT_REQUESTED, COMPLETE -> "";
+            case PALETTE_UNAVAILABLE -> aggregateSourceWarning(sources.aggregateFailure());
+            case BUDGET_UNAVAILABLE -> tr("All-color aggregate unavailable: the required "
+                    + "five-palette sampling frame exceeds the alignment input-pixel budget. "
+                    + "The selected-source preview can continue where its own evidence is usable.");
+        };
+    }
+
+    private void warnOptionalAggregateSource(LiveBPreviewService.Computed computed) {
+        String warning = aggregateSourceWarning(computed);
+        if (warning.isEmpty()) return;
+        JOptionPane.showMessageDialog(MainApplication.getMainFrame(),
+                warning,
+                tr("WayHeatmapTracer source warning"), JOptionPane.WARNING_MESSAGE);
     }
 
     static String previewFailureText(String message) {

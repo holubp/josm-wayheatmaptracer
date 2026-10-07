@@ -22,6 +22,19 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Detached scalar-capture regressions for modern engines. */
 class V022RasterEvidenceCaptureTest {
     @Test
+    void selectedRasterCanFitWhileOptionalScalarCopyGetsTypedResourceRefusal() {
+        long inputPixels = 16_777_216L;
+        long outputPixels = 3_000_000L;
+        var fields = List.of(RasterEvidenceCapture.FieldSpec.direct("selected",
+                pixel -> 1.0, lineage()));
+        assertTrue(RasterEvidenceCapture.estimatedPeakWorkingBytes(
+                inputPixels, outputPixels, fields) <= RasterEvidenceCapture.MAX_WORKING_BYTES);
+        assertThrows(RasterEvidenceCapture.ResourceLimitException.class,
+                () -> RasterEvidenceCapture.requireScalarCaptureBudget(
+                        inputPixels, outputPixels, fields));
+    }
+
+    @Test
     void scalarMappingPrecedesMetricResamplingAndFiltering() {
         LocalMetricFrame frame = frame();
         BufferedImage image = image(40, 30);

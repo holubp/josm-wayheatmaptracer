@@ -26,6 +26,20 @@ public final class RasterEvidenceCapture {
     static final long MAX_OUTPUT_PIXELS = 16_777_216L;
     static final int MAX_FIELDS = 16;
     static final long MAX_WORKING_BYTES = 512L * 1024L * 1024L;
+    private final long workingBudgetBytes;
+
+    /** Uses the fixed production working-memory envelope. */
+    public RasterEvidenceCapture() {
+        this(MAX_WORKING_BYTES);
+    }
+
+    /** Allows a smaller immutable envelope for bounded deterministic resource verification. */
+    public RasterEvidenceCapture(long workingBudgetBytes) {
+        if (workingBudgetBytes <= 0 || workingBudgetBytes > MAX_WORKING_BYTES) {
+            throw new IllegalArgumentException("Raster working-memory budget is invalid");
+        }
+        this.workingBudgetBytes = workingBudgetBytes;
+    }
     static final long MAX_RETAINED_EVIDENCE_BYTES = 256L * 1024L * 1024L;
     private static final long RETAINED_ARRAY_HEADER_BYTES = 32L;
     private static final long RETAINED_FIELD_OBJECT_AND_PROVENANCE_BYTES = 2_048L;
@@ -190,10 +204,9 @@ public final class RasterEvidenceCapture {
         int inputCount = Math.multiplyExact(inputWidth, inputHeight);
         long outputCount = (long) outputGrid.width() * outputGrid.height();
         validateResourceBounds(inputCount, outputCount, fieldSpecs);
-        if (scalarOverride != null && Math.addExact(estimatedPeakWorkingBytes(
-                inputCount, outputCount, fieldSpecs), Math.multiplyExact((long) inputCount, 8L))
-                > MAX_WORKING_BYTES) {
-            throw new IllegalArgumentException("Scalar capture exceeds its working-memory budget");
+        if (scalarOverride != null) {
+            requireScalarCaptureBudgetForLimit(inputCount, outputCount, fieldSpecs,
+                    workingBudgetBytes);
         }
         validateRetainedEvidenceBudget(inputCount, outputGrid.width(), outputGrid.height(),
                 sourcePolyline, sourceResolution, snapshotId, sourceIdentity, inputTransform,
@@ -281,15 +294,40 @@ public final class RasterEvidenceCapture {
         }
     }
 
-    private static void validateResourceBounds(long inputPixels, long outputPixels,
+    private void validateResourceBounds(long inputPixels, long outputPixels,
             List<FieldSpec> fieldSpecs) {
         int fieldCount = fieldSpecs.size();
         if (inputPixels > MAX_INPUT_PIXELS || outputPixels > MAX_OUTPUT_PIXELS
                 || fieldCount > MAX_FIELDS) {
             throw new IllegalArgumentException("Raster capture exceeds its pixel or field budget");
         }
-        if (estimatedPeakWorkingBytes(inputPixels, outputPixels, fieldSpecs) > MAX_WORKING_BYTES) {
+        if (estimatedPeakWorkingBytes(inputPixels, outputPixels, fieldSpecs) > workingBudgetBytes) {
             throw new IllegalArgumentException("Raster capture exceeds its working-memory budget");
+        }
+    }
+
+    /** Rejects only the additional immutable scalar copy as a typed optional-source refusal. */
+    static void requireScalarCaptureBudget(long inputPixels, long outputPixels,
+            List<FieldSpec> fieldSpecs) {
+        requireScalarCaptureBudgetForLimit(inputPixels, outputPixels, fieldSpecs, MAX_WORKING_BYTES);
+    }
+
+    private static void requireScalarCaptureBudgetForLimit(long inputPixels, long outputPixels,
+            List<FieldSpec> fieldSpecs, long workingBudgetBytes) {
+        try {
+            if (Math.addExact(estimatedPeakWorkingBytes(inputPixels, outputPixels, fieldSpecs),
+                    Math.multiplyExact(inputPixels, 8L)) > workingBudgetBytes) {
+                throw new ResourceLimitException();
+            }
+        } catch (ArithmeticException exception) {
+            throw new ResourceLimitException();
+        }
+    }
+
+    /** Recognized optional scalar-copy refusal; malformed evidence still fails closed. */
+    public static final class ResourceLimitException extends IllegalArgumentException {
+        public ResourceLimitException() {
+            super("Scalar capture exceeds its working-memory budget");
         }
     }
 

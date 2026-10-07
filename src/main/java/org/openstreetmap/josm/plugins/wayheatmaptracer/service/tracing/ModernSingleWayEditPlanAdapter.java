@@ -299,7 +299,25 @@ public final class ModernSingleWayEditPlanAdapter {
         String capturedIdentity = computed.captured().managedRaster() == null
                 ? computed.captured().raster().sourceIdentity()
                 : computed.captured().managedRaster().sourceIdentity();
-        if (!capturedIdentity.equals(computed.evidence().sourceIdentity())) {
+        String sourceTier = computed.options().sourceTier();
+        boolean aggregate = "all-colors-combined".equals(sourceTier);
+        boolean alternative = sourceTier.startsWith("selected-mapping-");
+        String mapping = alternative ? sourceTier.substring("selected-mapping-".length()) : null;
+        if (aggregate) {
+            if (computed.captured().sourceRasters() == null
+                    || computed.captured().sourceOwner() == null
+                    || !computed.captured().sourceRasters()
+                            .provenCompleteAggregate(computed.captured().sourceOwner())
+                    || !computed.evidence().sourceIdentity().equals(
+                            capturedIdentity + "/all-colors-combined")) return false;
+        } else if (alternative) {
+            if (computed.captured().sourceRasters() == null
+                    || !computed.captured().alternativeMappings().contains(mapping)
+                    || !computed.evidence().sourceIdentity().equals(capturedIdentity + "/" + mapping)) {
+                return false;
+            }
+        } else if (!"selected-visible".equals(sourceTier)
+                || !capturedIdentity.equals(computed.evidence().sourceIdentity())) {
             return false;
         }
         var expectedAcquisition = computed.captured().managedRaster() == null
@@ -309,15 +327,25 @@ public final class ModernSingleWayEditPlanAdapter {
         String directSource = computed.captured().palette() + "/" + mode.detectorName();
         return computed.evidence().fields().values().stream().allMatch(field ->
                 field.lineage().acquisitionKind() == expectedAcquisition
-                && (mode == IntensitySamplingMode.COLOR_MAPPING
+                && (aggregate
                         ? field.lineage().derivationKind()
-                                != EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY
+                                == EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE
+                                && field.lineage().completeAggregate()
+                                && field.lineage().sourcePalette().equals("all-colors-combined")
+                        : alternative
+                            ? mode == IntensitySamplingMode.COLOR_MAPPING
+                                && field.lineage().derivationKind()
+                                        == EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING
+                                && !field.lineage().completeAggregate()
+                                && field.lineage().sourcePalette().equals(mapping)
+                        : mode == IntensitySamplingMode.COLOR_MAPPING
+                        ? field.lineage().derivationKind()
+                                == EvidenceFieldLineage.DerivationKind.NATIVE_PALETTE_MAPPING
+                                && field.lineage().sourcePalette().equals(computed.captured().palette())
                         : field.lineage().derivationKind()
                                 == EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY
                                 && field.lineage().sourcePalette().equals(directSource))
-                && (field.lineage().derivationKind()
-                        != EvidenceFieldLineage.DerivationKind.ALL_COLOR_AGGREGATE
-                    || field.lineage().completeAggregate()));
+                && (!aggregate || computed.evidence().fields().size() == 1));
     }
 
     /**

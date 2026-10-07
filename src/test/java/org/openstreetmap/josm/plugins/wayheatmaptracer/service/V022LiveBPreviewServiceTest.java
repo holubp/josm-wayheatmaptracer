@@ -3,6 +3,9 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.OptionalDouble;
 import java.util.Set;
@@ -12,6 +15,7 @@ import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.data.ProjectionBounds;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -37,6 +41,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
@@ -45,11 +50,275 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWork
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LiveBPreviewServiceTest {
+    @TempDir Path managedTileCache;
+
+    @Test
+    void managedCompleteSourceSetRunsNativeAndAggregateSeparately() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        String sourceIdentity = "managed-five-source-runs";
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                sourceIdentity));
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache, decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(requested.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), requested, sourceIdentity,
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            assertTrue(sources.provenCompleteAggregate(coordinator),
+                    sources.aggregateAvailability() + " / " + sources.aggregateFailure()
+                            + " / " + sources.zoomReceipts());
+
+            var captured = service.attachManagedSources(seed[0], sources, coordinator);
+            var computed = service.compute(captured, CancellationProbe.NONE);
+            assertSame(sources, captured.sourceRasters());
+            assertEquals("selected-visible", computed.options().sourceTier());
+            assertEquals("hot", computed.evidence().fields().get("selected-visible-source")
+                    .lineage().sourcePalette());
+            assertEquals(2, computed.productionRuns().size(),
+                    "native and complete all-color aggregate have independent runs");
+            assertEquals("all-colors-combined", computed.productionRuns().get(1).options().sourceTier());
+            assertEquals(2, computed.productionRuns().stream()
+                    .map(run -> run.request().evidenceContentHash()).distinct().count());
+            assertTrue(computed.productionRuns().stream().allMatch(run ->
+                    run.pipeline().inference().engine() == TrackerMode.PROBABILISTIC));
+        }
+    }
+
+    @Test
+    void failedOptionalPaletteKeepsNativeRunAndTypedAggregateAttempt() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        String identity = "managed-optional-palette";
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                identity));
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                request.address().color().equals("gray")
+                        ? new TransportResponse(TileFetchStatus.AUTH_FAILURE, 401, "", null,
+                                null, Duration.ZERO, "")
+                        : new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                                tile, null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache.resolve("missing-gray"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(requested.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), requested, identity,
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.PALETTE_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertEquals(TileFetchStatus.AUTH_FAILURE, sources.aggregateFailure().status());
+            assertFalse(sources.provenCompleteAggregate(coordinator));
+            var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                    CancellationProbe.NONE);
+            assertEquals(1, computed.productionRuns().size());
+            assertEquals("selected-visible", computed.productionRuns().get(0).options().sourceTier());
+            assertEquals(LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE,
+                    computed.detectorAttempts().get(1).status());
+            assertEquals("all-colors-combined", computed.detectorAttempts().get(1).mapping());
+        }
+    }
+
+    @Test
+    void managedAlternativeAttemptsUseOnlyTheSelectedRasterAndRemainVisibleWhenBudgeted() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), true, false, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        String sourceIdentity = "managed-alternative-runs";
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                sourceIdentity));
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache.resolve("alternatives"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(requested.cacheBuster()));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), requested, sourceIdentity,
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            assertEquals(Set.of("hot"), sources.palettes().keySet());
+
+            var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                    CancellationProbe.NONE);
+            assertEquals(20, computed.detectorAttempts().size());
+            assertEquals("selected-visible", computed.detectorAttempts().get(0).sourceTier());
+            assertEquals(Set.of("hot", "blue", "blue-corridor", "bluered", "purple",
+                            "purple-corridor", "gray", "gray-magenta", "gray-corridor", "dual",
+                            "hot-corridor", "hot-strict", "bluered-cool", "bluered-corridor",
+                            "dual-corridor", "gray-strict", "purple-strict", "bluered-combined",
+                            "gray-combined", "multi-combined"),
+                    computed.detectorAttempts().stream().map(attempt -> attempt.mapping()).collect(
+                            java.util.stream.Collectors.toSet()));
+            assertTrue(computed.detectorAttempts().stream().allMatch(attempt ->
+                    attempt.status() == LiveBPreviewService.DetectorAttemptStatus.PRODUCED
+                            || attempt.status() == LiveBPreviewService.DetectorAttemptStatus.RESOURCE_LIMIT));
+        }
+    }
+
+    @Test
+    void optionalScalarCopyRefusalKeepsRealNativeProductionAndAllRequestedDiagnostics()
+            throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), true, false, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        LiveBPreviewService service = new LiveBPreviewService(
+                new RasterEvidenceCapture(40L * 1024L * 1024L));
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                "managed-scalar-budget"));
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        budgetedRoutePng(request.address().y()), null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache.resolve("scalar-budget"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), requested, seed[0].sourceIdentity(),
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                    CancellationProbe.NONE);
+            assertEquals(20, computed.detectorAttempts().size());
+            assertEquals(1, computed.productionRuns().size());
+            assertEquals("selected-visible", computed.productionRuns().get(0).options().sourceTier());
+            assertFalse(computed.pipeline().routes().isEmpty(),
+                    computed.pipeline().inference().explanation());
+            assertEquals(LiveBPreviewService.DetectorAttemptStatus.RESOURCE_LIMIT,
+                    computed.detectorAttempts().get(1).status());
+            assertTrue(computed.detectorAttempts().stream().skip(1).allMatch(attempt ->
+                    attempt.status() == LiveBPreviewService.DetectorAttemptStatus.RESOURCE_LIMIT));
+        }
+    }
+
+    private static byte[] budgetedRoutePng(int tileY) {
+        try {
+            BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+            for (int row = 0; row < 512; row++) {
+                double distance = tileY * 512.0 + row - 8_388_607.5;
+                double strength = Math.exp(-0.5 * distance * distance / 1.44);
+                for (int column = 0; column < 512; column++) {
+                    int background = 3 + (column * 7 + row * 3) % 29;
+                    int channel = (int) Math.round(background + strength * (255 - background));
+                    image.setRGB(column, row, 0xff000000 | channel << 16 | channel << 8 | channel);
+                }
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(image, "png", bytes);
+            return bytes.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static byte[] colorRoutePng() throws Exception {
+        BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < 512; y++) {
+            int distance = Math.abs(y - 256);
+            int pixel = distance <= 2 ? 0xffffffff : distance <= 5 ? 0xffff6600 : 0x00000000;
+            for (int x = 0; x < 512; x++) image.setRGB(x, y, pixel);
+        }
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "png", bytes);
+        return bytes.toByteArray();
+    }
+
+    @Test
+    void managedColorChoicesReachFrozenCaptureBeforeTileAcquisition() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), true, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                "managed-color-choices"));
+
+        assertNotNull(seed[0]);
+        assertTrue(seed[0].sourcePlan().aggregateDetectorRequested());
+        assertEquals(Set.of("hot", "blue", "bluered", "purple", "gray"),
+                Set.copyOf(seed[0].sourcePlan().orderedColors()));
+        assertTrue(seed[0].alternativeMappings().contains("bluered-combined"));
+    }
+
     @Test
     void distantCompleteReceiverKeepsInteriorJunctionFixedDuringCapture() throws Exception {
         Fixture fixture = fiveNodeFixture();
@@ -98,6 +367,8 @@ class V022LiveBPreviewServiceTest {
         SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
                 fixture.selection(), new AlignmentConfig(direct, GeometryCleanupConfig.disabled()),
                 "direct-value"));
+        assertFalse(seed[0].sourcePlan().aggregateDetectorRequested());
+        assertTrue(seed[0].alternativeMappings().isEmpty());
         BufferedImage image = new BufferedImage(1024, 1024, BufferedImage.TYPE_INT_ARGB);
         java.awt.Graphics2D graphics = image.createGraphics();
         try {
@@ -120,6 +391,52 @@ class V022LiveBPreviewServiceTest {
                 .DerivationKind.DIRECT_INTENSITY, field.lineage().derivationKind());
         assertEquals(128.0 / 255.0, field.sample(field.width() / 2, field.height() / 2)
                 .orElseThrow(), 1.0e-6);
+    }
+
+    @Test
+    void eachDirectModeIgnoresColorFlagsThroughRealManagedAcquisitionAndInference() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache.resolve("all-direct"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(base.cacheBuster()));
+            for (IntensitySamplingMode mode : List.of(IntensitySamplingMode.DIRECT_LUMINANCE,
+                    IntensitySamplingMode.DIRECT_VALUE, IntensitySamplingMode.DIRECT_ALPHA)) {
+                ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                        base.signature(), base.sessionToken(), base.activity(), base.color(),
+                        base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                        base.verbose(), base.debug(), true, true, base.showAggregateIntensityLayer(),
+                        base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                        base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                        base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                        base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                        base.searchHalfWidthMeters(), base.sampleStepMeters(), mode, base.cacheBuster());
+                String identity = "managed-direct-" + mode.name();
+                LiveBPreviewService service = new LiveBPreviewService();
+                LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+                SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                        fixture.selection(), new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                        identity));
+                var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                        seed[0].sourceGeographic(), requested, identity,
+                        CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+                assertEquals(Set.of(base.color()), sources.palettes().keySet(), mode.name());
+                assertEquals(ManagedModernPreviewSource.AggregateAvailability.NOT_REQUESTED,
+                        sources.aggregateAvailability(), mode.name());
+                var computed = service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                        CancellationProbe.NONE);
+                assertEquals(1, computed.detectorAttempts().size(), mode.name());
+                assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceFieldLineage
+                                .DerivationKind.DIRECT_INTENSITY,
+                        computed.evidence().fields().get("selected-visible-source")
+                                .lineage().derivationKind(), mode.name());
+            }
+        }
     }
 
     @Test
@@ -240,6 +557,50 @@ class V022LiveBPreviewServiceTest {
                 computed.captured(), computed.evidence(), computed.request(),
                 computed.intervalBatch().runs().get(0).result(), computed.options(),
                 java.util.Map.of(), computed.intervalBatch()));
+
+        ManagedHeatmapConfig base = managedConfig().heatmap().withTrackerMode(TrackerMode.PROBABILISTIC);
+        ManagedHeatmapConfig aggregateRequested = new ManagedHeatmapConfig(base.keyPairId(),
+                base.policy(), base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                IntensitySamplingMode.COLOR_MAPPING, base.cacheBuster());
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(dataSet, selection,
+                new AlignmentConfig(aggregateRequested, GeometryCleanupConfig.disabled()),
+                "managed-two-fixed-islands"));
+        byte[] tile = colorRoutePng();
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png", tile,
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(managedTileCache.resolve("two-fixed-islands"), decoder),
+                decoder, TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed[0].sourceGeographic(), aggregateRequested, seed[0].sourceIdentity(),
+                    CredentialSnapshot.fromConfig(null), CancellationProbe.NONE);
+            assertTrue(sources.provenCompleteAggregate(coordinator));
+            var managed = service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                    CancellationProbe.NONE);
+            assertEquals(2, managed.productionRuns().size());
+            assertEquals(List.of("selected-visible", "all-colors-combined"),
+                    managed.productionRuns().stream().map(run -> run.options().sourceTier()).toList());
+            for (var run : managed.productionRuns()) {
+                assertTrue(run.partitioned());
+                assertEquals(2, run.intervalBatch().partition().fixedIslands().size());
+                assertEquals(3, run.intervalBatch().runs().size());
+                assertSame(managed.captured().network(), run.intervalBatch().network());
+                assertTrue(run.intervalBatch().runs().stream().allMatch(interval ->
+                        interval.request().evidenceContentHash().equals(run.evidence().canonicalHash())));
+            }
+            assertNotEquals(managed.productionRuns().get(0).evidence().canonicalHash(),
+                    managed.productionRuns().get(1).evidence().canonicalHash());
+        }
     }
 
     private static LiveBPreviewService.VisibleRaster wideFlatRaster() {

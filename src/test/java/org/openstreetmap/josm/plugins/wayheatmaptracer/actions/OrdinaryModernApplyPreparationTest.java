@@ -4,11 +4,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -61,6 +65,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
@@ -69,14 +78,19 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceReceipt;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -92,6 +106,562 @@ class OrdinaryModernApplyPreparationTest {
 
     @BeforeEach void clearUndo() { UndoRedoHandler.getInstance().clean(); }
     @AfterEach void leaveUndoClean() { UndoRedoHandler.getInstance().clean(); }
+
+    @Test
+    void completeManagedAggregateChoiceAppliesItsOwnFinalPreviewThroughHostHistory() throws Exception {
+        Fixture fixture = fixture(false, true);
+        List<String> original = state(fixture.dataSet());
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                base.intensitySamplingMode(), base.cacheBuster());
+        AlignmentConfig config = new AlignmentConfig(requested, GeometryCleanupConfig.disabled());
+        String identity = "managed-selected-hot-g0";
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed seed = edt(() -> service.captureManagedSeed(
+                fixture.dataSet(), fixture.selection(), config, identity));
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        managedChoicePng(request.address().y(), request.address().color()),
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(cacheDirectory.resolve("aggregate-apply"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed.sourceGeographic(), requested, identity, CredentialSnapshot.fromConfig(null),
+                    () -> false);
+            assertTrue(sources.provenCompleteAggregate(coordinator),
+                    sources.aggregateAvailability() + " / " + sources.aggregateFailure()
+                            + " / " + sources.zoomReceipts());
+            var computed = service.compute(service.attachManagedSources(seed, sources, coordinator),
+                    () -> false);
+            assertEquals(2, computed.productionRuns().size());
+            var aggregate = computed.productionRuns().get(1);
+            assertEquals("all-colors-combined", aggregate.options().sourceTier());
+            assertFalse(aggregate.pipeline().routes().isEmpty(),
+                    "aggregate must yield real B routes: " + aggregate.pipeline().inference().status()
+                            + " / " + aggregate.pipeline().inference().explanation());
+            var previewBundle = AlignWayAction.createModernDiagnostics(computed, aggregate,
+                    "preview-open", 0, null, false, false, null);
+            String sourceChoices = new String(previewBundle.artifact("source-choices.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(sourceChoices.contains("\"selectedTier\":\"all-colors-combined\""));
+            assertTrue(sourceChoices.contains("\"liveCompleteAggregateProof\":true"));
+            assertTrue(sourceChoices.contains(aggregate.request().evidenceContentHash()));
+            Path archivePath = cacheDirectory.resolve("aggregate-preview.zip");
+            Format15BundleWriter.write(previewBundle, archivePath);
+            var archive = Format15ArchiveReader.read(archivePath);
+            assertEquals(ReplayLevel.FINAL_GEOMETRY, Format15ReplayRunner.replay(archive,
+                    ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
+                    archive.parameterHash()).level());
+            assertThrows(RuntimeException.class, () -> Format15ReplayRunner.replay(archive,
+                    ReplayLevel.FULL_EDIT_PLAN, archive.sourceIdentityHash(),
+                    archive.parameterHash()));
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(aggregate, 0);
+            assertTrue(assessment.applyAvailable(), assessment.detail());
+            var plan = assessment.plan().orElseThrow();
+            PreviewReviewState review = review(plan);
+            AtomicReference<ManagedHeatmapConfig> currentSettings = new AtomicReference<>(requested);
+            ManagedSourceReceipt receipt = new ManagedSourceReceipt(coordinator, computed.captured(),
+                    requested, "all-colors-combined", () -> coordinator, currentSettings::get,
+                    computed.captured()::projectionCode);
+            var prepared = edt(() -> AlignWayAction.prepareModernApply(fixture.dataSet(), aggregate,
+                    0, "ordinary-route", review, () -> {
+                        receipt.requireCurrent();
+                        service.requireCurrent(fixture.dataSet(), computed.captured());
+                    }, coordinator::activeGenerationValue,
+                    (network, currentPlan) -> new ManagedSourceLockedApplyValidator(network, service,
+                            computed.captured(), receipt::requireCurrent,
+                            failure -> { throw new AssertionError(failure); })));
+            assertEquals(original, state(fixture.dataSet()));
+            edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
+            assertNotEquals(original, state(fixture.dataSet()));
+            assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+            edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(original, state(fixture.dataSet()));
+            currentSettings.set(new ManagedHeatmapConfig(requested.keyPairId(), requested.policy(),
+                    requested.signature(), requested.sessionToken(), requested.activity(), requested.color(),
+                    requested.manualLayerName(), requested.layerRegex(), requested.alignmentMode(),
+                    requested.trackerMode(), requested.verbose(), requested.debug(),
+                    requested.multiColorDetection(), false, requested.showAggregateIntensityLayer(),
+                    requested.candidateRatingEnabled(), requested.parallelWayAwareness(),
+                    requested.allowUndownloadedAlignment(), requested.adjustJunctionNodes(),
+                    requested.simplifyEnabled(), requested.crossSectionHalfWidthPx(),
+                    requested.crossSectionStepPx(), requested.simplifyTolerancePx(),
+                    requested.inferenceMode(), requested.inferenceZoom(), requested.validationZoom(),
+                    requested.searchHalfWidthMeters(), requested.sampleStepMeters(),
+                    requested.intensitySamplingMode(), requested.cacheBuster()));
+            assertThrows(IllegalStateException.class, receipt::requireCurrent,
+                    "removed aggregate request invalidates the chosen source receipt");
+            currentSettings.set(requested);
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(1L));
+            assertThrows(IllegalStateException.class, receipt::requireCurrent,
+                    "changed generation invalidates the chosen source receipt");
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            edt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+            assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+        }
+    }
+
+    @Test
+    void aggregatePixelBudgetRefusalKeepsNativePreviewAndVisibleTypedWarning() throws Exception {
+        Fixture fixture = diagonalBudgetFixture();
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), 16, 16, base.searchHalfWidthMeters(), 10.0,
+                base.intensitySamplingMode(), base.cacheBuster());
+        LiveBPreviewService service = new LiveBPreviewService();
+        var seed = edt(() -> service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
+                "managed-aggregate-budget"));
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        managedDiagonalPng(request.address().zoom(), request.address().x(),
+                                request.address().y()),
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(cacheDirectory.resolve("aggregate-budget"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
+                    seed.sourceGeographic(), requested, seed.sourceIdentity(),
+                    CredentialSnapshot.fromConfig(null), () -> false);
+            assertEquals(ManagedModernPreviewSource.AggregateAvailability.BUDGET_UNAVAILABLE,
+                    sources.aggregateAvailability());
+            assertNull(sources.aggregateFailure());
+            var computed = service.compute(service.attachManagedSources(seed, sources, coordinator),
+                    () -> false);
+            assertEquals(1, computed.productionRuns().size());
+            assertEquals("selected-visible", computed.productionRuns().get(0).options().sourceTier());
+            assertFalse(computed.pipeline().routes().isEmpty(),
+                    computed.pipeline().inference().explanation());
+            assertEquals(LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE,
+                    computed.detectorAttempts().get(1).status());
+            assertTrue(AlignWayAction.aggregateSourceWarning(computed)
+                    .contains("budget"), "ordinary preview must disclose optional budget refusal");
+        }
+    }
+
+    @Test
+    void ordinaryManagedAggregateOwnsConfirmedTwoIslandApplyAndIntervalArchive() throws Exception {
+        Fixture fixture = twoIslandFixture();
+        List<String> original = state(fixture.dataSet());
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), base.inferenceZoom(), base.validationZoom(),
+                10.0, base.sampleStepMeters(),
+                base.intensitySamplingMode(), base.cacheBuster());
+        AlignmentConfig saved = new AlignmentConfig(requested, GeometryCleanupConfig.disabled());
+        TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(10.0), false,
+                AlignmentSourceMode.MANAGED_TILES);
+        var routing = AlignWayAction.resolveOrdinaryAction(tracing, saved,
+                () -> "visible", () -> "legacy");
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        managedChoicePng(request.address().x(), request.address().y(),
+                                request.address().color(), 4.0), null, Duration.ZERO, ""),
+                new ManagedTileCache(cacheDirectory.resolve("aggregate-two-island-apply"), decoder),
+                decoder, TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            LiveBPreviewService service = new LiveBPreviewService();
+            var computed = ordinaryManagedSourcesResult(fixture, routing, coordinator,
+                    "managed-selected-hot-g0");
+            assertEquals(2, computed.productionRuns().size());
+            var preview = new AlignWayAction.IntervalPreviewState(computed);
+            assertEquals(2, preview.batch().partition().fixedIslands().size());
+            preview.chooseSource(1);
+            assertEquals("all-colors-combined", preview.selectedRun().options().sourceTier());
+            assertEquals(3, preview.batch().runs().size());
+            assertTrue(preview.assessment().plan().isPresent(), preview.batch().runs().stream()
+                    .map(run -> run.result().inference().status() + ":" + run.routes().stream()
+                            .map(route -> route.quality().findings().toString()).toList())
+                    .toList().toString());
+            var planned = preview.assessment().plan().orElseThrow();
+            assertNotEquals(geometry(fixture.way()),
+                    planned.finalPreviewWays().get(planned.selectedWayKey()));
+            assertNotNull(preview.review());
+            preview.confirmReview();
+            assertTrue(preview.applyAvailable());
+            var exactPlan = preview.currentPlanForApply();
+            assertEquals(planned.canonicalHash(), exactPlan.canonicalHash());
+            var bundle = AlignWayAction.createIntervalDiagnostics(computed, preview,
+                    Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED);
+            String inventory = new String(bundle.artifact("source-choices.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(inventory.contains("\"selectedTier\":\"all-colors-combined\""));
+            assertTrue(inventory.contains(preview.selectedRun().evidence().canonicalHash()));
+            Path archivePath = cacheDirectory.resolve("aggregate-two-island-preview.zip");
+            Format15BundleWriter.write(bundle, archivePath);
+            var archive = Format15ArchiveReader.read(archivePath);
+            assertTrue(archive.artifact("interval-production.json").isPresent());
+            var replay = Format15ReplayRunner.replayIntervals(archive,
+                    archive.sourceIdentityHash(), archive.parameterHash());
+            assertEquals("MATCH", replay.outputComponentStatus());
+            assertEquals(planned.canonicalHash(), replay.assessment().plan().orElseThrow().canonicalHash());
+            assertEquals(preview.selectedRun().evidence().canonicalHash(),
+                    replay.batch().evidence().canonicalHash());
+            assertEquals("all-colors-combined", replay.batch().options().sourceTier());
+            assertThrows(RuntimeException.class, () -> Format15ReplayRunner.replay(archive,
+                    ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
+                    archive.parameterHash()), "interval archive must not claim unreconstructable replay");
+            ManagedSourceReceipt receipt = new ManagedSourceReceipt(coordinator, computed.captured(),
+                    requested, "all-colors-combined", () -> coordinator, () -> requested,
+                    computed.captured()::projectionCode);
+            receipt.requireCurrent();
+            var bound = edt(() -> NetworkSnapshotCapture.captureBound(fixture.dataSet(),
+                    computed.captured().specification()));
+            var network = new LiveNetworkSnapshotValidator(bound, exactPlan,
+                    coordinator::activeGenerationValue);
+            var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), exactPlan,
+                    new ManagedSourceLockedApplyValidator(network, service, computed.captured(),
+                            receipt::requireCurrent,
+                            failure -> { throw new AssertionError(failure); }),
+                    "Apply managed two-island aggregate");
+            assertEquals(original, state(fixture.dataSet()));
+            edt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
+            assertEquals(exactPlan.finalPreviewWays().get(exactPlan.selectedWayKey()),
+                    geometry(fixture.way()));
+            assertNotEquals(original, state(fixture.dataSet()));
+            var appliedBundle = AlignWayAction.createIntervalDiagnostics(computed, preview,
+                    Format15ProductionBundleFactory.IntervalArtifactStatus.APPLIED_AFTER_REVIEW);
+            Path appliedArchive = cacheDirectory.resolve("aggregate-two-island-applied.zip");
+            Format15BundleWriter.write(appliedBundle, appliedArchive);
+            var appliedRead = Format15ArchiveReader.read(appliedArchive);
+            var appliedReplay = Format15ReplayRunner.replayIntervals(appliedRead,
+                    appliedRead.sourceIdentityHash(), appliedRead.parameterHash());
+            assertEquals("MATCH", appliedReplay.outputComponentStatus());
+            assertEquals(exactPlan.canonicalHash(),
+                    appliedReplay.assessment().plan().orElseThrow().canonicalHash());
+            edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(original, state(fixture.dataSet()));
+            edt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+            assertEquals(exactPlan.finalPreviewWays().get(exactPlan.selectedWayKey()),
+                    geometry(fixture.way()));
+        }
+    }
+
+    private static byte[] managedChoicePng(int tileY, String palette) {
+        return managedChoicePng(0, tileY, palette, 0.0);
+    }
+
+    private static byte[] managedChoicePng(int tileX, int tileY, String palette,
+            double bendMeters) {
+        try {
+            BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+            int center = switch (palette) {
+                case "blue" -> 0xff4ca9ff;
+                case "bluered" -> 0xffff24b2;
+                case "purple" -> 0xffbd9cff;
+                case "gray" -> 0xffe84bea;
+                default -> 0xfffdfdfd;
+            };
+            for (int row = 0; row < 512; row++) {
+                for (int column = 0; column < 512; column++) {
+                    double eastMeters = (tileX * 512.0 + column - 8_388_608.0)
+                            * nativeTilePixelMeters(15);
+                    double bend = bendMeters * Math.max(0.0,
+                            Math.cos(Math.PI * eastMeters / 64.0));
+                    double target = 8_388_607.5 - bend
+                            / nativeTilePixelMeters(15);
+                    double distance = tileY * 512.0 + row - target;
+                    double strength = Math.exp(-0.5 * distance * distance / 1.44);
+                    int background = 3 + (column * 7 + row * 3) % 29;
+                    int red = (int) Math.round(background + strength * (((center >>> 16) & 255) - background));
+                    int green = (int) Math.round(background + strength * (((center >>> 8) & 255) - background));
+                    int blue = (int) Math.round(background + strength * ((center & 255) - background));
+                    image.setRGB(column, row, 0xff000000 | red << 16 | green << 8 | blue);
+                }
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(image, "png", bytes);
+            return bytes.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static byte[] managedDiagonalPng(int zoom, int tileX, int tileY) {
+        try {
+            BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+            double equator = Math.scalb(512.0, zoom - 1);
+            for (int row = 0; row < 512; row++) {
+                for (int column = 0; column < 512; column++) {
+                    double worldX = tileX * 512.0 + column;
+                    double worldY = tileY * 512.0 + row;
+                    double distance = (worldX + worldY - 2.0 * equator - 1.0)
+                            / Math.sqrt(2.0);
+                    double strength = Math.exp(-0.5 * distance * distance / 1.44);
+                    int background = 3 + (column * 7 + row * 3) % 29;
+                    int channel = (int) Math.round(background + strength * (255 - background));
+                    image.setRGB(column, row, 0xff000000 | channel << 16
+                            | channel << 8 | channel);
+                }
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(image, "png", bytes);
+            return bytes.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    @Test
+    void managedUndersampledMoveRequiresOneShotPreciseWithCurrentSourceProof() throws Exception {
+        Fixture fixture = twoNodeLongFixture();
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), AlignmentMode.MOVE_EXISTING_NODES,
+                base.trackerMode(), base.verbose(), base.debug(), false, false,
+                base.showAggregateIntensityLayer(), base.candidateRatingEnabled(),
+                base.parallelWayAwareness(), base.allowUndownloadedAlignment(),
+                base.adjustJunctionNodes(), base.simplifyEnabled(), base.crossSectionHalfWidthPx(),
+                base.crossSectionStepPx(), base.simplifyTolerancePx(), base.inferenceMode(),
+                17, 17, 7.01, base.sampleStepMeters(), base.intensitySamplingMode(),
+                base.cacheBuster());
+        AlignmentConfig saved = new AlignmentConfig(requested, GeometryCleanupConfig.disabled());
+        String identity = "managed-selected-hot-g0";
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        managedOffsetPng(request.address().zoom(), request.address().y(), 3.0),
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(cacheDirectory.resolve("managed-precise-recovery"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                    TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                    AlignmentSourceMode.MANAGED_TILES);
+            var moveRouting = AlignWayAction.resolveOrdinaryAction(tracing, saved,
+                    () -> "visible", () -> "legacy");
+            LiveBPreviewService service = new LiveBPreviewService();
+            var move = ordinaryManagedSourcesResult(fixture, moveRouting, coordinator, identity);
+            assertFalse(move.pipeline().routes().isEmpty(), move.pipeline().inference().explanation());
+            var moveAssessment = new ModernSingleWayEditPlanAdapter().assess(move, 0);
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                    moveAssessment.availability(), moveAssessment.detail());
+            assertTrue(moveAssessment.plan().isEmpty());
+            var rerun = AlignWayAction.resolvePreciseRerun(moveAssessment.availability(),
+                    tracing, saved, () -> "visible", () -> "legacy");
+            assertEquals(AlignmentMode.MOVE_EXISTING_NODES, saved.heatmap().alignmentMode());
+            assertEquals(AlignmentMode.PRECISE_SHAPE,
+                    rerun.route().invocation().config().heatmap().alignmentMode());
+            var precise = ordinaryManagedSourcesResult(fixture, rerun, coordinator, identity);
+            assertSame(coordinator, precise.captured().sourceOwner());
+            assertEquals(1, precise.productionRuns().size());
+            assertFalse(precise.pipeline().routes().isEmpty(), precise.pipeline().inference().explanation());
+            var preciseAssessment = new ModernSingleWayEditPlanAdapter().assess(precise, 0);
+            assertTrue(preciseAssessment.applyAvailable(), preciseAssessment.detail());
+            var plan = preciseAssessment.plan().orElseThrow();
+            List<GeographicPoint> original = geometry(fixture.way());
+            assertNotEquals(original, plan.finalPreviewWays().get(plan.selectedWayKey()));
+            String candidateId = "managed-precise-recovery";
+            PreviewReviewState review = PreviewReviewState.fromEditPlan(candidateId, plan);
+            if (review.disposition() == ValidationReport.Disposition.REVIEW_REQUIRED) review = review.confirm();
+            PreviewReviewState exactReview = review;
+            ManagedSourceReceipt receipt = new ManagedSourceReceipt(coordinator, precise.captured(),
+                    rerun.route().invocation().config().heatmap(), "selected-visible",
+                    () -> coordinator, () -> requested, precise.captured()::projectionCode);
+            receipt.requireCurrent();
+            var prepared = edt(() -> AlignWayAction.prepareModernApply(fixture.dataSet(), precise,
+                    0, candidateId, exactReview, () -> {
+                        receipt.requireCurrent();
+                        service.requireCurrent(fixture.dataSet(), precise.captured());
+                    }, coordinator::activeGenerationValue,
+                    (network, currentPlan) -> new ManagedSourceLockedApplyValidator(network, service,
+                            precise.captured(), receipt::requireCurrent,
+                            failure -> { throw new AssertionError(failure); })));
+            edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
+            assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+            assertNotEquals(original, geometry(fixture.way()));
+            edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(original, geometry(fixture.way()));
+            edt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+            assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+        }
+    }
+
+    private static LiveBPreviewService.Computed ordinaryManagedSourcesResult(Fixture fixture,
+            AlignWayAction.OrdinaryActionRouting<String> routing, TileFetchCoordinator coordinator,
+            String sourceIdentity) throws Exception {
+        PreviewSessionController<LiveBPreviewService.Computed> session =
+                new PreviewSessionController<>(SwingUtilities::invokeLater);
+        PreviewSessionController.Owner owner = session.open(() -> { });
+        AtomicReference<LiveBPreviewService.Computed> result = new AtomicReference<>();
+        CountDownLatch ready = new CountDownLatch(1);
+        try {
+            edt(() -> {
+                new AlignWayAction.OrdinaryModernAttemptAssembly().startWithSources(session, owner,
+                        routing, fixture.dataSet(), fixture.selection(), sourceIdentity,
+                        (source, invocation, permissions) -> {
+                            throw new AssertionError("managed ordinary action cannot capture visible imagery");
+                        },
+                        (seed, invocation, cancellation) -> new ManagedModernPreviewSource(coordinator)
+                                .acquireSources(seed.sourceGeographic(), invocation.config().heatmap(),
+                                        seed.sourceIdentity(), CredentialSnapshot.fromConfig(null), cancellation),
+                        coordinator, attempt -> { result.set(attempt.result()); ready.countDown(); });
+                return null;
+            });
+            assertTrue(ready.await(60, TimeUnit.SECONDS), session.currentAttempt().toString());
+            assertNotNull(result.get());
+            return result.get();
+        } finally {
+            session.close();
+        }
+    }
+
+    private static byte[] managedOffsetPng(int zoom, int tileY, double northOffsetMeters) {
+        try {
+            BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+            double equator = Math.scalb(512.0, zoom - 1);
+            double nativePitch = nativeTilePixelMeters(zoom);
+            double target = equator - northOffsetMeters / nativePitch;
+            for (int row = 0; row < 512; row++) {
+                double distance = tileY * 512.0 + row - target;
+                double strength = Math.exp(-0.5 * distance * distance / 4.0);
+                for (int column = 0; column < 512; column++) {
+                    int background = 3 + (column * 7 + row * 3) % 29;
+                    int gray = (int) Math.round(background + strength * (250 - background));
+                    image.setRGB(column, row, 0xff000000 | gray << 16 | gray << 8 | gray);
+                }
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(image, "png", bytes);
+            return bytes.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static double nativeTilePixelMeters(int zoom) {
+        return 2.0 * Math.PI * 6_378_137.0 / Math.scalb(512.0, zoom);
+    }
+
+    @Test
+    void ordinaryDenseMoveAppliesNativeAndSelectedRasterAlternativeWithExactHistory() throws Exception {
+        Fixture fixture = denseFixture();
+        List<String> original = state(fixture.dataSet());
+        List<Long> identities = fixture.way().getNodes().stream().map(Node::getUniqueId).toList();
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), AlignmentMode.MOVE_EXISTING_NODES,
+                base.trackerMode(), base.verbose(), base.debug(), true, false,
+                base.showAggregateIntensityLayer(), base.candidateRatingEnabled(),
+                base.parallelWayAwareness(), base.allowUndownloadedAlignment(),
+                base.adjustJunctionNodes(), base.simplifyEnabled(), base.crossSectionHalfWidthPx(),
+                base.crossSectionStepPx(), base.simplifyTolerancePx(), base.inferenceMode(),
+                base.inferenceZoom(), base.validationZoom(), base.searchHalfWidthMeters(),
+                base.sampleStepMeters(), base.intensitySamplingMode(), base.cacheBuster());
+        AlignmentConfig config = new AlignmentConfig(requested, GeometryCleanupConfig.disabled());
+        String identity = "managed-selected-hot-g0";
+        TileDecoderClassifier decoder = new TileDecoderClassifier();
+        try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
+                new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
+                        managedChoicePng(request.address().y(), request.address().color()),
+                        null, Duration.ZERO, ""),
+                new ManagedTileCache(cacheDirectory.resolve("dense-move"), decoder), decoder,
+                TileReliabilityPolicy.defaults())) {
+            coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
+            var routing = AlignWayAction.resolveOrdinaryAction(new TracingSettings(
+                    TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.PROBABILISTIC,
+                    RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES),
+                    config, () -> "visible", () -> "legacy");
+            PreviewSessionController<LiveBPreviewService.Computed> session =
+                    new PreviewSessionController<>(SwingUtilities::invokeLater);
+            PreviewSessionController.Owner owner = session.open(() -> { });
+            AtomicReference<LiveBPreviewService.Computed> published = new AtomicReference<>();
+            CountDownLatch ready = new CountDownLatch(1);
+            try {
+                edt(() -> {
+                    new AlignWayAction.OrdinaryModernAttemptAssembly().startWithSources(session, owner,
+                            routing, fixture.dataSet(), fixture.selection(), identity,
+                            (source, invocation, permissions) -> {
+                                throw new AssertionError("managed ordinary action cannot capture visible imagery");
+                            },
+                            (seed, invocation, cancellation) -> new ManagedModernPreviewSource(coordinator)
+                                    .acquireSources(seed.sourceGeographic(), invocation.config().heatmap(),
+                                            seed.sourceIdentity(), CredentialSnapshot.fromConfig(null),
+                                            cancellation), coordinator,
+                            attempt -> { published.set(attempt.result()); ready.countDown(); });
+                    return null;
+                });
+                assertTrue(ready.await(60, TimeUnit.SECONDS), session.currentAttempt().toString());
+                var computed = published.get();
+                assertNotNull(computed);
+                assertEquals(Set.of("hot"), computed.captured().sourceRasters().palettes().keySet());
+                assertEquals(20, computed.detectorAttempts().size());
+                assertEquals("selected-visible", computed.productionRuns().get(0).options().sourceTier());
+                LiveBPreviewService.Computed nativeRun = computed.productionRuns().get(0);
+                LiveBPreviewService.Computed alternative = computed.productionRuns().stream()
+                        .filter(run -> run.options().sourceTier().startsWith("selected-mapping-"))
+                        .filter(run -> !run.pipeline().routes().isEmpty())
+                        .filter(run -> new ModernSingleWayEditPlanAdapter().assess(run, 0).applyAvailable())
+                        .findFirst().orElseThrow(() -> new AssertionError(
+                                "at least one requested selected-raster detector must have an applicable route"));
+                assertNotEquals(nativeRun.request().evidenceContentHash(),
+                        alternative.request().evidenceContentHash());
+                for (LiveBPreviewService.Computed run : List.of(nativeRun, alternative)) {
+                    assertFalse(run.pipeline().routes().isEmpty());
+                    var assessment = new ModernSingleWayEditPlanAdapter().assess(run, 0);
+                    assertTrue(assessment.applyAvailable(), assessment.detail());
+                    var plan = assessment.plan().orElseThrow();
+                    assertNotEquals(geometry(fixture.way()), plan.finalPreviewWays().get(plan.selectedWayKey()),
+                            "Move must actually change the dense way");
+                    String candidateId = run.options().sourceTier();
+                    PreviewReviewState review = PreviewReviewState.fromEditPlan(candidateId, plan);
+                    if (review.disposition() == ValidationReport.Disposition.REVIEW_REQUIRED) review = review.confirm();
+                    ManagedSourceReceipt receipt = new ManagedSourceReceipt(coordinator, computed.captured(),
+                            requested, run.options().sourceTier(), () -> coordinator, () -> requested,
+                            computed.captured()::projectionCode);
+                    PreviewReviewState exactReview = review;
+                    var prepared = edt(() -> AlignWayAction.prepareModernApply(fixture.dataSet(), run,
+                            0, candidateId, exactReview, () -> {
+                                receipt.requireCurrent();
+                                new LiveBPreviewService().requireCurrent(fixture.dataSet(), computed.captured());
+                            }, coordinator::activeGenerationValue,
+                            (network, currentPlan) -> new ManagedSourceLockedApplyValidator(network,
+                                    new LiveBPreviewService(), computed.captured(), receipt::requireCurrent,
+                                    failure -> { throw new AssertionError(failure); })));
+                    edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
+                    assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+                    assertEquals(identities, fixture.way().getNodes().stream().map(Node::getUniqueId).toList());
+                    assertEquals(identities.size(), fixture.way().getNodesCount());
+                    assertNotEquals(original, state(fixture.dataSet()));
+                    edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+                    assertEquals(original, state(fixture.dataSet()));
+                    edt(() -> { UndoRedoHandler.getInstance().redo(); return null; });
+                    assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+                    edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+                    assertEquals(original, state(fixture.dataSet()));
+                }
+            } finally {
+                session.close();
+            }
+        }
+    }
 
     @Test
     void ordinaryManagedBRetainsAndMovesItsCapturedInteriorThroughActualApply() throws Exception {
@@ -749,6 +1319,94 @@ class OrdinaryModernApplyPreparationTest {
         int first = subrange ? 1 : 0, last = nodes.size() - 1 - (subrange ? 1 : 0);
         return new Fixture(dataSet, way, new SelectionContext(way, first, last,
                 nodes.subList(first, last + 1), Set.of(nodes.get(first), nodes.get(last))), middle);
+    }
+
+    private static Fixture denseFixture() {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = new ArrayList<>();
+        for (int index = 0; index < 9; index++) {
+            Node node = node(100 + index, (index - 4) * 8.0);
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(110, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        return new Fixture(dataSet, way, new SelectionContext(way, 0, nodes.size() - 1,
+                nodes, Set.of(nodes.get(0), nodes.get(nodes.size() - 1))), nodes.get(4));
+    }
+
+    private static Fixture twoNodeLongFixture() {
+        DataSet dataSet = new DataSet();
+        Node first = node(201, -32.0);
+        Node last = node(202, 32.0);
+        dataSet.addPrimitive(first);
+        dataSet.addPrimitive(last);
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        way.setOsmId(210, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        return new Fixture(dataSet, way, new SelectionContext(way, 0, 1,
+                List.of(first, last), Set.of(first, last)), null);
+    }
+
+    private static Fixture twoIslandFixture() {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = new ArrayList<>();
+        for (int index = 0; index <= 30; index++) {
+            Node current = node(5000 + index, (index - 15) * 10.0);
+            nodes.add(current);
+            dataSet.addPrimitive(current);
+        }
+        for (int index : List.of(4, 12, 18, 26)) {
+            nodes.get(index).put("note", "manual junction boundary");
+        }
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        selected.setOsmId(5100, 1);
+        selected.setModified(false);
+        dataSet.addPrimitive(selected);
+        for (int index : List.of(8, 22)) {
+            double east = (index - 15) * 10.0;
+            Node south = loadedNode(5200 + index, new GeographicPoint(
+                    Math.toDegrees(-40.0 / 6_378_137.0),
+                    Math.toDegrees(east / 6_378_137.0)));
+            Node north = loadedNode(5300 + index, new GeographicPoint(
+                    Math.toDegrees(40.0 / 6_378_137.0),
+                    Math.toDegrees(east / 6_378_137.0)));
+            dataSet.addPrimitive(south);
+            dataSet.addPrimitive(north);
+            Way crossing = new Way();
+            crossing.setNodes(List.of(south, nodes.get(index), north));
+            crossing.setOsmId(5400 + index, 1);
+            crossing.setModified(false);
+            dataSet.addPrimitive(crossing);
+        }
+        return new Fixture(dataSet, selected, new SelectionContext(selected, 0, 30,
+                nodes, Set.of(nodes.get(0), nodes.get(30))), nodes.get(15));
+    }
+
+    private static Fixture diagonalBudgetFixture() {
+        DataSet dataSet = new DataSet();
+        List<Node> nodes = new ArrayList<>();
+        for (int index = -1; index <= 1; index++) {
+            double metres = index * 900.0;
+            Node current = loadedNode(5600 + index, new GeographicPoint(
+                    Math.toDegrees(metres / 6_378_137.0),
+                    Math.toDegrees(metres / 6_378_137.0)));
+            nodes.add(current);
+            dataSet.addPrimitive(current);
+        }
+        Way way = new Way();
+        way.setNodes(nodes);
+        way.setOsmId(5700, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        return new Fixture(dataSet, way, new SelectionContext(way, 0, 2,
+                nodes, Set.of(nodes.get(0), nodes.get(2))), nodes.get(1));
     }
 
     private static Node node(long id, double metres) {
