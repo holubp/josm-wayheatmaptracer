@@ -1,5 +1,6 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -195,6 +196,15 @@ public final class ModernSingleWayEditPlanAdapter {
                             : "Exact immutable plan available", null,
                     manual ? junction.reason() : null);
         } catch (IllegalArgumentException failure) {
+            if (junction != null && junction.automaticallyEligible()
+                    && failure instanceof UnsupportedExplicitComponentException) {
+                ManualJunctionEligibility.Reason reason =
+                        ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE;
+                return unavailable(ApplyAvailability.MANUAL_JUNCTION,
+                        failure.getMessage() + " " + new ManualJunctionEligibility.Decision(reason,
+                                junction.junction(), junction.receiver(), junction.affectedNodes())
+                                .manualInstruction(), reason);
+            }
             boolean missingReceiverEvidence = junction != null && junction.automaticallyEligible()
                     && failure instanceof IncidentWayReconstructor.MissingEvidenceException;
             if (missingReceiverEvidence) {
@@ -1049,6 +1059,55 @@ public final class ModernSingleWayEditPlanAdapter {
         return Set.copyOf(result);
     }
 
+    private static final class UnsupportedExplicitComponentException
+            extends IllegalArgumentException {
+        private UnsupportedExplicitComponentException() {
+            super("Explicit junction component extends outside the certified frame");
+        }
+    }
+
+    /** Selects the real editable junction component; spatial collision context stays detached. */
+    private static Map<PrimitiveKey, DetachedPrimitive> explicitComponentValues(
+            NetworkSnapshot before, Map<PrimitiveKey, DetachedPrimitive> values,
+            PrimitiveKey selectedWay, Set<PrimitiveKey> sharedJunctions) {
+        Set<PrimitiveKey> included = new LinkedHashSet<>();
+        ArrayDeque<PrimitiveKey> pending = new ArrayDeque<>();
+        pending.add(selectedWay);
+        before.closure().editableExistingKeys().stream().sorted().forEach(pending::add);
+        for (PrimitiveKey junction : sharedJunctions) {
+            before.incomingReferrerWatches().getOrDefault(junction, Set.of()).stream()
+                    .filter(key -> key.type() == PrimitiveKey.Type.WAY).sorted()
+                    .forEach(pending::add);
+        }
+        while (!pending.isEmpty()) {
+            PrimitiveKey key = pending.removeFirst();
+            if (!included.add(key)) continue;
+            DetachedPrimitive primitive = values.get(key);
+            if (primitive == null) {
+                throw new IllegalArgumentException("Explicit topology component is incomplete");
+            }
+            if (primitive instanceof DetachedWay way) {
+                pending.addAll(way.nodeKeys());
+            } else if (primitive instanceof DetachedRelation relation) {
+                relation.members().forEach(member -> pending.add(member.memberKey()));
+            } else if (primitive instanceof DetachedNode
+                    && (sharedJunctions.contains(key)
+                        || before.closure().movableExistingNodeKeys().contains(key))) {
+                before.incomingReferrerWatches().getOrDefault(key, Set.of()).stream()
+                        .filter(referrer -> referrer.type() == PrimitiveKey.Type.WAY)
+                        .forEach(pending::add);
+            }
+            before.incomingReferrerWatches().getOrDefault(key, Set.of()).stream()
+                    .filter(referrer -> referrer.type() == PrimitiveKey.Type.RELATION)
+                    .forEach(pending::add);
+        }
+        Map<PrimitiveKey, DetachedPrimitive> component = new LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (included.contains(key)) component.put(key, value);
+        });
+        return component;
+    }
+
     private static Map<PrimitiveKey, DetachedPrimitive> applyReattachment(
             Map<PrimitiveKey, DetachedPrimitive> baseValues, NetworkSnapshot before,
             ModernTracePipeline.Route route, TraceRequest request, EvidenceSnapshot evidence,
@@ -1063,11 +1122,26 @@ public final class ModernSingleWayEditPlanAdapter {
             Map<FinalRoutePointId, MetricPoint> assignments,
             TraceRequest request, EvidenceSnapshot evidence,
             Set<PrimitiveKey> sharedJunctions) {
+        Map<PrimitiveKey, DetachedPrimitive> sourceComponent = explicitComponentValues(
+                before, before.primitives(), request.selectedWayKey(), sharedJunctions);
+        // Reconstruction can project source nodes. Check its real component first so an
+        // unsupported frame is reported as the manual junction path, including with=true.
+        for (DetachedPrimitive primitive : sourceComponent.values()) {
+            if (primitive instanceof DetachedNode node) {
+                try {
+                    evidence.coordinateFrame().toMetric(node.coordinate());
+                } catch (IllegalArgumentException outside) {
+                    throw new UnsupportedExplicitComponentException();
+                }
+            }
+        }
         Map<PrimitiveKey, DetachedPrimitive> evidenced = request.permissions().reconstructIncidentWays()
                 ? IncidentWayReconstructor.reconstruct(before, baseValues, evidence,
                         request.selectedWayKey(), sharedJunctions)
                 : baseValues;
-        TopologyConversion conversion = new TopologyConversion(before.primitives(), evidence);
+        // The topology planner edits real node identities. Read-only collision context is
+        // independently checked against the final proposal by finalTopologyFindings.
+        TopologyConversion conversion = new TopologyConversion(sourceComponent, evidence);
         long firstAvailablePlanNodeId = baseValues.keySet().stream()
                 .filter(key -> key.type() == PrimitiveKey.Type.NODE
                         && key.identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL)
@@ -1174,8 +1248,9 @@ public final class ModernSingleWayEditPlanAdapter {
                     + planned.findings().stream().map(finding -> finding.code().name())
                             .distinct().toList());
         }
-        Map<PrimitiveKey, DetachedPrimitive> combined = new LinkedHashMap<>(conversion.toDetached(
-                planned.plan().orElseThrow().after(), before.primitives()));
+        Map<PrimitiveKey, DetachedPrimitive> combined = new LinkedHashMap<>(before.primitives());
+        combined.putAll(conversion.toDetached(planned.plan().orElseThrow().after(),
+                before.primitives()));
         for (Map.Entry<PrimitiveKey, DetachedPrimitive> entry : baseValues.entrySet()) {
             if (before.primitives().containsKey(entry.getKey())) {
                 continue;
@@ -1217,7 +1292,8 @@ public final class ModernSingleWayEditPlanAdapter {
                         "Topology adjustment would make the edit plan differ from the reviewed route");
             }
         }
-        TopologyNetwork combinedTopology = new TopologyConversion(combined, evidence).toTopology();
+        TopologyNetwork combinedTopology = new TopologyConversion(explicitComponentValues(
+                before, combined, request.selectedWayKey(), sharedJunctions), evidence).toTopology();
         List<JunctionReattachmentPlanner.Finding> wholeComponentFindings =
                 planner.validateWholeComponent(topology, combinedTopology);
         if (!wholeComponentFindings.isEmpty()) {
@@ -1553,7 +1629,8 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private record Segment(PrimitiveKey wayKey, int index, PrimitiveKey firstKey,
             PrimitiveKey secondKey, MetricPoint first, MetricPoint second, boolean changed,
-            boolean insideSelectedRange) { }
+            boolean insideSelectedRange, boolean originalFirst, boolean originalSecond,
+            CertifiedContextSegmentClipper.ExactChord originalChord) { }
 
     private static List<String> finalTopologyFindings(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
@@ -1562,6 +1639,7 @@ public final class ModernSingleWayEditPlanAdapter {
         PrimitiveKey selectedFirst = beforeSelected.nodeKeys().get(selectedRange.firstIndex());
         PrimitiveKey selectedLast = beforeSelected.nodeKeys().get(selectedRange.lastIndex());
         List<Segment> segments = new ArrayList<>();
+        boolean[] clippedOrExcludedContext = {false};
         after.values().stream().filter(DetachedWay.class::isInstance)
                 .map(DetachedWay.class::cast).sorted(java.util.Comparator.comparing(DetachedWay::key))
                 .forEach(way -> {
@@ -1572,17 +1650,58 @@ public final class ModernSingleWayEditPlanAdapter {
                     for (int index = 1; index < way.nodeKeys().size(); index++) {
                         PrimitiveKey firstKey = way.nodeKeys().get(index - 1);
                         PrimitiveKey secondKey = way.nodeKeys().get(index);
-                        MetricPoint first = metric(after, firstKey, evidence);
-                        MetricPoint second = metric(after, secondKey, evidence);
+                        GeographicPoint geographicFirst = geographic(after, firstKey);
+                        GeographicPoint geographicSecond = geographic(after, secondKey);
+                        var originalChord = CertifiedContextSegmentClipper.originalChord(
+                                geographicFirst, geographicSecond, evidence.coordinateFrame());
+                        boolean changed = segmentChanged(before, way.key(), firstKey,
+                                secondKey, after);
+                        MetricPoint first;
+                        MetricPoint second;
+                        boolean originalFirst = true;
+                        boolean originalSecond = true;
+                        if (changed) {
+                            // Edited geometry retains the full certified-domain requirement.
+                            first = metric(after, firstKey, evidence);
+                            second = metric(after, secondKey, evidence);
+                        } else {
+                            var clipped = CertifiedContextSegmentClipper.clip(
+                                    geographicFirst, geographicSecond,
+                                    evidence.coordinateFrame());
+                            if (clipped.isEmpty()) {
+                                clippedOrExcludedContext[0] = true;
+                                first = null;
+                                second = null;
+                                originalFirst = false;
+                                originalSecond = false;
+                            } else {
+                                var value = clipped.orElseThrow();
+                                first = value.start();
+                                second = value.end();
+                                originalFirst = value.originalStart();
+                                originalSecond = value.originalEnd();
+                                if (!originalFirst || !originalSecond) {
+                                    clippedOrExcludedContext[0] = true;
+                                }
+                            }
+                        }
                         boolean insideSelectedRange = selectedFirstIndex >= 0
                                 && selectedLastIndex > selectedFirstIndex
                                 && index - 1 >= selectedFirstIndex
                                 && index - 1 < selectedLastIndex;
                         segments.add(new Segment(way.key(), index - 1, firstKey, secondKey,
-                                first, second, segmentChanged(before, way.key(), firstKey,
-                                        secondKey, after), insideSelectedRange));
+                                first, second, changed, insideSelectedRange,
+                                originalFirst, originalSecond, originalChord));
                     }
                 });
+        if (clippedOrExcludedContext[0]) {
+            for (Segment segment : segments) {
+                if (segment.changed()) {
+                    CertifiedContextSegmentClipper.requireChangedInside(
+                            segment.first(), segment.second(), evidence.coordinateFrame());
+                }
+            }
+        }
         Set<String> findings = new LinkedHashSet<>();
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             Segment first = segments.get(firstIndex);
@@ -1601,8 +1720,9 @@ public final class ModernSingleWayEditPlanAdapter {
                             && (first.changed() || second.changed());
                     boolean changedIncidentContinuation = !first.wayKey().equals(selectedWay)
                             && (first.changed() || second.changed());
-                    if (changedSelectedContinuation && classify(first.first(), first.second(),
-                            second.first(), second.second()) == TopologyDefect.COLLINEAR_OVERLAP) {
+                    if (changedSelectedContinuation && pairDecision(first, second,
+                            evidence.coordinateFrame()).defect()
+                                    == TopologyDefect.COLLINEAR_OVERLAP) {
                         findings.add("final-topology:COLLINEAR_OVERLAP");
                     }
                     if ((selectedBoundary || changedIncidentContinuation)
@@ -1611,16 +1731,12 @@ public final class ModernSingleWayEditPlanAdapter {
                     }
                     continue;
                 }
-                TopologyDefect defect = classify(first.first(), first.second(),
-                        second.first(), second.second());
+                PairDecision decision = pairDecision(first, second, evidence.coordinateFrame());
+                TopologyDefect defect = decision.defect();
                 if (defect == TopologyDefect.NONE) {
                     continue;
                 }
-                boolean sharedEndpoint = first.firstKey().equals(second.firstKey())
-                        || first.firstKey().equals(second.secondKey())
-                        || first.secondKey().equals(second.firstKey())
-                        || first.secondKey().equals(second.secondKey());
-                if (defect == TopologyDefect.VERTEX_TOUCH && sharedEndpoint) {
+                if (defect == TopologyDefect.VERTEX_TOUCH && decision.soleSharedContact()) {
                     continue;
                 }
                 findings.add("final-topology:" + defect.name());
@@ -1631,11 +1747,16 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private static MetricPoint metric(Map<PrimitiveKey, DetachedPrimitive> values,
             PrimitiveKey nodeKey, EvidenceSnapshot evidence) {
+        return evidence.coordinateFrame().toMetric(geographic(values, nodeKey));
+    }
+
+    private static GeographicPoint geographic(Map<PrimitiveKey, DetachedPrimitive> values,
+            PrimitiveKey nodeKey) {
         DetachedPrimitive primitive = values.get(nodeKey);
         if (!(primitive instanceof DetachedNode node)) {
             throw new IllegalArgumentException("Final topology references an absent node");
         }
-        return evidence.coordinateFrame().toMetric(node.coordinate());
+        return node.coordinate();
     }
 
     private static boolean segmentChanged(NetworkSnapshot before, PrimitiveKey wayKey,
@@ -1663,7 +1784,36 @@ public final class ModernSingleWayEditPlanAdapter {
     private static boolean continuationReverses(Segment first, Segment second) {
         Segment earlier = first.index() < second.index() ? first : second;
         Segment later = earlier == first ? second : first;
-        return continuationReverses(earlier.first(), earlier.second(), later.second());
+        return CertifiedContextSegmentClipper.originalContinuationReverses(
+                earlier.originalChord(), later.originalChord());
+    }
+
+    private record PairDecision(TopologyDefect defect, boolean soleSharedContact) { }
+
+    private static PairDecision pairDecision(Segment first, Segment second,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame frame) {
+        var original = CertifiedContextSegmentClipper.originalContactEvidence(
+                first.originalChord(), first.firstKey(), first.secondKey(),
+                second.originalChord(), second.firstKey(), second.secondKey(), frame);
+        TopologyDefect robust = switch (original.displayDefect()) {
+            case NONE -> TopologyDefect.NONE;
+            case CROSSING -> TopologyDefect.CROSSING;
+            case VERTEX_TOUCH, PROXIMITY_TOUCH -> TopologyDefect.VERTEX_TOUCH;
+            case COLLINEAR_OVERLAP -> TopologyDefect.COLLINEAR_OVERLAP;
+        };
+        TopologyDefect metric = first.first() == null || second.first() == null
+                ? TopologyDefect.NONE : classify(first.first(), first.second(),
+                        second.first(), second.second());
+        TopologyDefect decision = robust == TopologyDefect.CROSSING
+                || metric == TopologyDefect.CROSSING ? TopologyDefect.CROSSING
+                : robust == TopologyDefect.COLLINEAR_OVERLAP
+                    || metric == TopologyDefect.COLLINEAR_OVERLAP
+                        ? TopologyDefect.COLLINEAR_OVERLAP
+                        : robust == TopologyDefect.VERTEX_TOUCH
+                            || metric == TopologyDefect.VERTEX_TOUCH
+                                ? TopologyDefect.VERTEX_TOUCH : TopologyDefect.NONE;
+        return new PairDecision(decision, original.soleOwnedContact()
+                && decision == TopologyDefect.VERTEX_TOUCH);
     }
 
     static boolean continuationReverses(MetricPoint before, MetricPoint boundary,

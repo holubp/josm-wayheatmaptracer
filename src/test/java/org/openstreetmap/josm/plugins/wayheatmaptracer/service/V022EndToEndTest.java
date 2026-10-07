@@ -192,6 +192,103 @@ class V022EndToEndTest {
     }
 
     @Test
+    void eligibleReattachmentKeepsUnrelatedFarContextReadOnly() throws Exception {
+        JunctionFixture fixture = junctionFixture(0.0, false);
+        Node near = loadedNode(20, latitude(5), longitude(0));
+        Node far = loadedNode(21, latitude(1_000), longitude(0));
+        Way context = loadedWay(22, near, far);
+        fixture.dataSet().addPrimitive(near);
+        fixture.dataSet().addPrimitive(far);
+        fixture.dataSet().addPrimitive(context);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, false);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionRaster(), visibleConfig(),
+                false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+        PrimitiveKey contextKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                context.getUniqueId());
+        assertTrue(captured[0].network().primitives().containsKey(contextKey));
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                captured[0].junctionDecision().reason());
+
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        var plan = assessment.plan().orElseThrow();
+        for (Node node : List.of(near, far)) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertEquals(plan.before().primitives().get(contextKey),
+                plan.after().primitives().get(contextKey));
+
+        near.setCoor(new LatLon(latitude(-1_000), longitude(0)));
+        LiveBPreviewService.Captured[] crossingCapture = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> crossingCapture[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionRaster(), visibleConfig(),
+                false, permissions));
+        var crossing = new LiveBPreviewService().compute(crossingCapture[0],
+                CancellationProbe.NONE);
+        var refused = new ModernSingleWayEditPlanAdapter().assess(crossing, 0);
+        assertTrue(refused.availability()
+                == ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING
+                || refused.availability()
+                    == ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION
+                    && refused.manualReason()
+                        == ManualJunctionEligibility.Reason.AMBIGUOUS_CROSSING,
+                refused.detail());
+        assertFalse(refused.applyAvailable());
+    }
+
+    @Test
+    void explicitReattachmentWithOutOfFrameContextUsesManualPath() throws Exception {
+        JunctionFixture fixture = junctionFixture(0.0, false);
+        fixture.receiver().getNode(0).setCoor(new LatLon(latitude(-1_000), longitude(8)));
+        fixture.receiver().getNode(fixture.receiver().getNodesCount() - 1)
+                .setCoor(new LatLon(latitude(1_000), longitude(8)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, false);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionRaster(), visibleConfig(),
+                false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                captured[0].junctionDecision().reason());
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION,
+                assessment.availability(), assessment.detail());
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.plan().isEmpty());
+    }
+
+    @Test
+    void reconstructingOutOfFrameComponentUsesManualPathBeforeProjection() throws Exception {
+        JunctionFixture fixture = junctionFixture(0.0, false);
+        fixture.receiver().getNode(0).setCoor(new LatLon(latitude(-1_000), longitude(8)));
+        fixture.receiver().getNode(fixture.receiver().getNodesCount() - 1)
+                .setCoor(new LatLon(latitude(1_000), longitude(8)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                fixture.dataSet(), fixture.selection(), junctionRaster(), visibleConfig(),
+                false, permissions));
+        var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+
+        assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
+                captured[0].junctionDecision().reason());
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.MANUAL_JUNCTION,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.plan().isEmpty());
+        assertFalse(assessment.applyAvailable());
+    }
+
+    @Test
     void T168_fixedMoveAndReattachProduceDistinctExactJunctionPlans() throws Exception {
         JunctionFixture fixture = junctionFixture(0.0, false);
         Map<JunctionPolicy, AlignmentEditPlan> plans = new java.util.EnumMap<>(JunctionPolicy.class);
@@ -339,33 +436,87 @@ class V022EndToEndTest {
     }
 
     @Test
-    void movedSubrangeBoundaryCannotHideAReversedUnselectedContinuation() throws Exception {
+    void partialSelectionKeepsBoundariesAndOutsideContinuationExactWhileInteriorApplies()
+            throws Exception {
         DataSet dataSet = new DataSet();
-        Node west = loadedNode(401, 0.0, longitude(-8));
-        Node boundary = loadedNode(402, 0.0, longitude(8));
-        Node continuation = loadedNode(403, latitude(1), longitude(6));
-        Way selected = loadedWay(410, west, boundary, continuation);
-        for (Node node : List.of(west, boundary, continuation)) {
+        Node prefix = loadedNode(401, 0.0, longitude(-8));
+        Node westBoundary = loadedNode(402, 0.0, longitude(-4));
+        Node interior = loadedNode(403, 0.0, longitude(0));
+        Node eastBoundary = loadedNode(404, 0.0, longitude(4));
+        Node continuation = loadedNode(405, 0.0, longitude(8));
+        Way selected = loadedWay(410, prefix, westBoundary, interior, eastBoundary,
+                continuation);
+        for (Node node : List.of(prefix, westBoundary, interior, eastBoundary, continuation)) {
             dataSet.addPrimitive(node);
         }
         dataSet.addPrimitive(selected);
-        SelectionContext selection = new SelectionContext(selected, 0, 1,
-                List.of(west, boundary), Set.of());
+        SelectionContext selection = new SelectionContext(selected, 1, 3,
+                List.of(westBoundary, interior, eastBoundary), Set.of());
+        LatLon originalPrefix = prefix.getCoor();
+        LatLon originalWestBoundary = westBoundary.getCoor();
+        LatLon originalInterior = interior.getCoor();
+        LatLon originalEastBoundary = eastBoundary.getCoor();
+        LatLon originalContinuation = continuation.getCoor();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
-                dataSet, selection, junctionRaster(), visibleConfig(), false,
-                new RecoveryPermissions(false, 7.0, 7.0,
+                dataSet, selection, visibleRaster(), visibleConfig(), false,
+                new RecoveryPermissions(false, 7.01, 7.01,
                         JunctionPolicy.LEGACY_BOUNDED_MOVE, false)));
+        PrimitiveKey prefixKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                prefix.getUniqueId());
+        PrimitiveKey westBoundaryKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                westBoundary.getUniqueId());
+        PrimitiveKey interiorKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                interior.getUniqueId());
+        PrimitiveKey eastBoundaryKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                eastBoundary.getUniqueId());
+        PrimitiveKey continuationKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                continuation.getUniqueId());
+        var closure = captured[0].network().closure();
+        assertTrue(closure.protectedExistingNodeKeys().containsAll(
+                Set.of(westBoundaryKey, eastBoundaryKey)));
+        assertFalse(closure.movableExistingNodeKeys().contains(westBoundaryKey));
+        assertFalse(closure.movableExistingNodeKeys().contains(eastBoundaryKey));
+        assertTrue(closure.movableExistingNodeKeys().contains(interiorKey));
         LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
                 captured[0], CancellationProbe.NONE);
-
         ModernSingleWayEditPlanAdapter.Assessment assessment =
                 new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        for (PrimitiveKey fixed : List.of(prefixKey, westBoundaryKey, eastBoundaryKey,
+                continuationKey)) {
+            assertEquals(plan.before().primitives().get(fixed), plan.after().primitives().get(fixed));
+        }
+        assertNotEquals(((DetachedNode) plan.before().primitives().get(interiorKey)).coordinate(),
+                ((DetachedNode) plan.after().primitives().get(interiorKey)).coordinate());
+        List<GeographicPoint> preview = plan.finalPreviewWays().get(plan.selectedWayKey());
+        assertEquals(new GeographicPoint(originalPrefix.lat(), originalPrefix.lon()),
+                preview.get(0));
+        assertEquals(new GeographicPoint(originalContinuation.lat(), originalContinuation.lon()),
+                preview.get(preview.size() - 1));
+        assertTrue(preview.contains(new GeographicPoint(originalWestBoundary.lat(),
+                originalWestBoundary.lon())));
+        assertTrue(preview.contains(new GeographicPoint(originalEastBoundary.lat(),
+                originalEastBoundary.lon())));
 
-        assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
-                .contains("final-topology:CONTINUATION"), () -> assessment.plan()
-                        .orElseThrow().validation().findingCodes().toString());
-        assertFalse(assessment.applyAvailable());
+        UndoRedoHandler.getInstance().clean();
+        try {
+            assertTrue(PreviewReviewState.fromEditPlan("partial-boundary", plan)
+                    .confirm().confirmed());
+            ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(dataSet,
+                    plan, plan.before().datasetIdentity(),
+                    () -> plan.before().sourceGeneration(), "Apply protected partial selection");
+            SwingUtilities.invokeAndWait(() -> UndoRedoHandler.getInstance().add(command));
+            assertEquals(originalPrefix, prefix.getCoor());
+            assertEquals(originalWestBoundary, westBoundary.getCoor());
+            assertNotEquals(originalInterior, interior.getCoor());
+            assertEquals(originalEastBoundary, eastBoundary.getCoor());
+            assertEquals(originalContinuation, continuation.getCoor());
+        } finally {
+            SwingUtilities.invokeAndWait(() -> UndoRedoHandler.getInstance().clean());
+        }
     }
 
     @Test

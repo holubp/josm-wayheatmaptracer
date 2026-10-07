@@ -59,6 +59,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
@@ -106,6 +113,322 @@ class V022ModernSingleWayEditPlanAdapterTest {
     @BeforeEach
     void clearUndoStack() {
         UndoRedoHandler.getInstance().clean();
+    }
+
+    @Test
+    void farContextDoesNotPreventFixedApply() throws Exception {
+        Fixture fixture = fixture();
+        Node near = loadedNode(30, longitude(5), 0.0);
+        Node far = loadedNode(31, longitude(1_000), 0.0);
+        Way context = new Way();
+        context.setNodes(List.of(near, far));
+        context.setOsmId(32, 1);
+        context.setModified(false);
+        fixture.dataSet().addPrimitive(near);
+        fixture.dataSet().addPrimitive(far);
+        fixture.dataSet().addPrimitive(context);
+        List<String> before = state(fixture);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.applyAvailable());
+        assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void clippedEndpointDoesNotBecomeSharedOsmTouch() throws Exception {
+        Fixture fixture = fixture();
+        Node shared = fixture.way().getNode(0);
+        Node far = loadedNode(36, longitude(1_000), longitude(-8));
+        Way context = new Way();
+        context.setNodes(List.of(shared, far));
+        context.setOsmId(37, 1);
+        context.setModified(false);
+        fixture.dataSet().addPrimitive(far);
+        fixture.dataSet().addPrimitive(context);
+        List<String> before = state(fixture);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.applyAvailable());
+        PrimitiveKey contextKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                context.getUniqueId());
+        assertEquals(assessment.plan().orElseThrow().before().primitives().get(contextKey),
+                assessment.plan().orElseThrow().after().primitives().get(contextKey));
+        assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void sharedEndpointDoesNotExemptNearParallelOverlapInEitherOrder() throws Exception {
+        for (boolean reverseContext : new boolean[] {false, true}) {
+            List<String> findings = sharedEndpointFindings(reverseContext, longitude(1e-9),
+                    longitude(-7));
+            assertTrue(findings.contains("final-topology:COLLINEAR_OVERLAP"),
+                    reverseContext + ": " + findings);
+        }
+    }
+
+    @Test
+    void ordinaryNonparallelSharedEndpointRemainsExempt() throws Exception {
+        assertEquals(List.of(), sharedEndpointFindings(false, longitude(1),
+                longitude(-8)));
+    }
+
+    @Test
+    void oppositeSharedRaysRemainExemptButRemoteOutwardWitnessBlocks() throws Exception {
+        assertEquals(List.of(), sharedEndpointFindings(false, longitude(1e-9),
+                longitude(-9)));
+        List<String> outward = sharedEndpointFindings(true,
+                Math.toDegrees(0.50000025 / FRAME_NORTH_METERS_PER_RADIAN),
+                longitude(-7.5), true,
+                Math.toDegrees(1 / FRAME_NORTH_METERS_PER_RADIAN));
+        assertTrue(outward.contains("final-topology:VERTEX_TOUCH"), outward.toString());
+    }
+
+    @Test
+    void coincidentButDistinctOsmNodeIsNotASharedContact() throws Exception {
+        List<String> findings = sharedEndpointFindings(false, longitude(1),
+                longitude(-8), false);
+        assertTrue(findings.contains("final-topology:VERTEX_TOUCH"), findings.toString());
+    }
+
+    private static final double FRAME_NORTH_METERS_PER_RADIAN =
+            LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
+                    new GeographicPoint(-0.001, -0.001),
+                    new GeographicPoint(0.001, 0.001))
+                    .distortionCertificate().northMetersPerRadian();
+
+    private static List<String> sharedEndpointFindings(boolean reverseContext,
+            double contextEndLatitude, double contextEndLongitude) throws Exception {
+        return sharedEndpointFindings(reverseContext, contextEndLatitude,
+                contextEndLongitude, true);
+    }
+
+    private static List<String> sharedEndpointFindings(boolean reverseContext,
+            double contextEndLatitude, double contextEndLongitude,
+            boolean sharedIdentity) throws Exception {
+        return sharedEndpointFindings(reverseContext, contextEndLatitude,
+                contextEndLongitude, sharedIdentity, 0);
+    }
+
+    private static List<String> sharedEndpointFindings(boolean reverseContext,
+            double contextEndLatitude, double contextEndLongitude,
+            boolean sharedIdentity, double selectedEndLatitude) throws Exception {
+        Fixture fixture = fixture();
+        Node shared = sharedIdentity ? fixture.way().getNode(0)
+                : loadedNode(55, 0, longitude(-8));
+        Node other = loadedNode(53, contextEndLatitude, contextEndLongitude);
+        Way context = new Way();
+        context.setNodes(reverseContext ? List.of(other, shared) : List.of(shared, other));
+        context.setOsmId(54, 1);
+        context.setModified(false);
+        if (!sharedIdentity) fixture.dataSet().addPrimitive(shared);
+        fixture.dataSet().addPrimitive(other);
+        fixture.dataSet().addPrimitive(context);
+        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        NetworkSnapshot before = computed.captured().network();
+        PrimitiveKey selectedLast = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(1).getUniqueId());
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(before.primitives());
+        DetachedNode originalLast = (DetachedNode) after.get(selectedLast);
+        after.put(selectedLast, new DetachedNode(selectedLast,
+                new GeographicPoint(selectedEndLatitude, longitude(-7)),
+                originalLast.tags(), false, true));
+        var method = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "finalTopologyFindings", NetworkSnapshot.class, Map.class, PrimitiveKey.class,
+                OccurrenceRange.class, EvidenceSnapshot.class);
+        method.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<String> findings = (List<String>) method.invoke(null, before, after,
+                computed.request().selectedWayKey(), computed.request().selectedRange(),
+                computed.evidence());
+        return findings;
+    }
+
+    @Test
+    void unselectedContinuationOutsideFrameRetainsOriginalWay() throws Exception {
+        Fixture fixture = fixtureWithPrefixAndSuffix();
+        fixture.way().getNode(0).setCoor(new LatLon(0, longitude(-1_000)));
+        fixture.way().getNode(3).setCoor(new LatLon(0, longitude(1_000)));
+        List<String> before = state(fixture);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.applyAvailable());
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        for (Node outside : List.of(fixture.way().getNode(0), fixture.way().getNode(3))) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, outside.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void outsideEndpointsStillDetectCrossing() throws Exception {
+        Fixture fixture = fixture();
+        Node south = loadedNode(33, longitude(-1_000), 0.0);
+        Node north = loadedNode(34, longitude(1_000), 0.0);
+        Way context = new Way();
+        context.setNodes(List.of(south, north));
+        context.setOsmId(35, 1);
+        context.setModified(false);
+        fixture.dataSet().addPrimitive(south);
+        fixture.dataSet().addPrimitive(north);
+        fixture.dataSet().addPrimitive(context);
+        List<String> before = state(fixture);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                assessment.availability(), assessment.detail());
+        assertFalse(assessment.applyAvailable());
+        assertTrue(assessment.plan().isPresent());
+        assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void outsideChangedGeometryStillFailsClosed() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        List<String> before = state(fixture);
+        NetworkSnapshot source = computed.captured().network();
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(source.primitives());
+        PrimitiveKey first = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(0).getUniqueId());
+        DetachedNode original = (DetachedNode) after.get(first);
+        after.put(first, new DetachedNode(first,
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint(
+                        longitude(1_000), 0.0), original.tags(), false, true));
+        var method = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "finalTopologyFindings", NetworkSnapshot.class, Map.class, PrimitiveKey.class,
+                OccurrenceRange.class, EvidenceSnapshot.class);
+        method.setAccessible(true);
+
+        InvocationTargetException failure = assertThrows(InvocationTargetException.class,
+                () -> method.invoke(null, source, after, computed.request().selectedWayKey(),
+                        computed.request().selectedRange(), computed.evidence()));
+        assertTrue(failure.getCause() instanceof IllegalArgumentException);
+        assertTrue(failure.getCause().getMessage().contains("certified metric-frame domain"));
+        assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void narrowCertificateLongContextCrossingIsStillBlocked() throws Exception {
+        Fixture fixture = fixture();
+        Node west = loadedNode(38, 0, -0.01);
+        Node east = loadedNode(39, 0, 0.01);
+        Way context = new Way();
+        context.setNodes(List.of(west, east));
+        context.setOsmId(40, 1);
+        context.setModified(false);
+        fixture.dataSet().addPrimitive(west);
+        fixture.dataSet().addPrimitive(east);
+        fixture.dataSet().addPrimitive(context);
+        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        NetworkSnapshot before = computed.captured().network();
+        PrimitiveKey contextKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                context.getUniqueId());
+        assertTrue(before.primitives().containsKey(contextKey));
+        LocalMetricFrame narrow = LocalMetricFrame.certifiedEquirectangular(
+                new GeographicPoint(0, 0), new GeographicPoint(-1e-5, -1.5e-10),
+                new GeographicPoint(1e-5, 1.5e-10));
+        EvidenceSnapshot source = computed.evidence();
+        EvidenceSnapshot evidence = new EvidenceSnapshot(source.snapshotId(), narrow,
+                source.transform(), source.resolution(), source.decisionRegion(),
+                source.evidenceRegion(), source.fields(), source.resampling(),
+                source.sourceIdentity());
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(before.primitives());
+        PrimitiveKey first = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(0).getUniqueId());
+        PrimitiveKey last = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(1).getUniqueId());
+        DetachedNode oldFirst = (DetachedNode) after.get(first);
+        DetachedNode oldLast = (DetachedNode) after.get(last);
+        after.put(first, new DetachedNode(first, new GeographicPoint(2e-13, 0),
+                oldFirst.tags(), false, true));
+        after.put(last, new DetachedNode(last, new GeographicPoint(-9e-6, 0),
+                oldLast.tags(), false, true));
+        var method = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "finalTopologyFindings", NetworkSnapshot.class, Map.class, PrimitiveKey.class,
+                OccurrenceRange.class, EvidenceSnapshot.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<String> findings = (List<String>) method.invoke(null, before, after,
+                computed.request().selectedWayKey(), computed.request().selectedRange(), evidence);
+        assertTrue(findings.contains("final-topology:CROSSING"), findings.toString());
+    }
+
+    @Test
+    void asymmetricClippingPreservesOriginalEndpointTouch() throws Exception {
+        Fixture fixture = fixture();
+        Node contextFirst = loadedNode(41, 0, longitude(-10));
+        Node contextLast = loadedNode(42, 0, longitude(10));
+        Way context = new Way();
+        context.setNodes(List.of(contextFirst, contextLast));
+        context.setOsmId(43, 1);
+        context.setModified(false);
+        fixture.dataSet().addPrimitive(contextFirst);
+        fixture.dataSet().addPrimitive(contextLast);
+        fixture.dataSet().addPrimitive(context);
+        LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        NetworkSnapshot captured = computed.captured().network();
+        PrimitiveKey selectedFirst = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(0).getUniqueId());
+        PrimitiveKey selectedLast = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                fixture.way().getNode(1).getUniqueId());
+        PrimitiveKey contextFirstKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                contextFirst.getUniqueId());
+        PrimitiveKey contextLastKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                contextLast.getUniqueId());
+        Map<PrimitiveKey, DetachedPrimitive> sourceValues = new LinkedHashMap<>(
+                captured.primitives());
+        sourceValues.put(selectedFirst, new DetachedNode(selectedFirst,
+                new GeographicPoint(50, 14), Map.of(), false, false));
+        sourceValues.put(selectedLast, new DetachedNode(selectedLast,
+                new GeographicPoint(49.9996, 14.0006), Map.of(), false, false));
+        sourceValues.put(contextFirstKey, new DetachedNode(contextFirstKey,
+                new GeographicPoint(49.99, 13.98), Map.of(), false, false));
+        sourceValues.put(contextLastKey, new DetachedNode(contextLastKey,
+                new GeographicPoint(50.01, 14.02), Map.of(), false, false));
+        NetworkSnapshot before = new NetworkSnapshot(captured.snapshotId(), captured.role(),
+                captured.datasetIdentity(), captured.sourceGeneration(), captured.closure(),
+                sourceValues, captured.incomingReferrerWatches());
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(sourceValues);
+        after.put(selectedLast, new DetachedNode(selectedLast,
+                new GeographicPoint(49.9995, 14.0005), Map.of(), false, true));
+        LocalMetricFrame frame = LocalMetricFrame.certifiedEquirectangular(
+                new GeographicPoint(50, 14),
+                new GeographicPoint(49.998999000000005, 13.9988),
+                new GeographicPoint(50.0011, 14.0013));
+        EvidenceSnapshot source = computed.evidence();
+        EvidenceSnapshot evidence = new EvidenceSnapshot(source.snapshotId(), frame,
+                source.transform(), source.resolution(), source.decisionRegion(),
+                source.evidenceRegion(), source.fields(), source.resampling(),
+                source.sourceIdentity());
+        var method = ModernSingleWayEditPlanAdapter.class.getDeclaredMethod(
+                "finalTopologyFindings", NetworkSnapshot.class, Map.class, PrimitiveKey.class,
+                OccurrenceRange.class, EvidenceSnapshot.class);
+        method.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        List<String> findings = (List<String>) method.invoke(null, before, after,
+                computed.request().selectedWayKey(), computed.request().selectedRange(), evidence);
+        assertTrue(findings.contains("final-topology:VERTEX_TOUCH"), findings.toString());
     }
 
     @AfterEach
