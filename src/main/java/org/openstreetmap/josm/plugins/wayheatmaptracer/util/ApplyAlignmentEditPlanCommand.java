@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
 import javax.swing.SwingUtilities;
@@ -23,6 +24,7 @@ import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
 import org.openstreetmap.josm.data.osm.Relation;
 import org.openstreetmap.josm.data.osm.RelationMember;
 import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.gui.Notification;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
@@ -49,6 +51,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     private final String description;
     private final MutationProbe mutationProbe;
     private final LockedApplyValidator lockedValidator;
+    private final Consumer<NotificationOperation> notificationWarning;
     private final String canonicalPlanHash;
     private Map<PrimitiveKey, Node> createdNodes = Map.of();
     private final List<PrimitiveKey> writeKeys;
@@ -61,6 +64,8 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
 
     private boolean applied;
     private boolean appliedSuccessfullyBefore;
+
+    enum NotificationOperation { APPLY, REDO, UNDO }
 
     /**
      * Creates a side-effect-free command for a detached or unit-test edit plan.
@@ -113,9 +118,26 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             validator::currentSourceGeneration, description, mutationProbe, validator);
     }
 
+    ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+            LiveNetworkSnapshotValidator validator, String description,
+            MutationProbe mutationProbe, Consumer<NotificationOperation> notificationWarning) {
+        this(dataSet, plan, Objects.requireNonNull(validator, "validator").datasetIdentity(),
+            validator::currentSourceGeneration, description, mutationProbe, validator,
+            notificationWarning);
+    }
+
     private ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
         String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
         MutationProbe mutationProbe, LockedApplyValidator lockedValidator) {
+        this(dataSet, plan, liveDatasetIdentity, liveSourceGeneration, description,
+                mutationProbe, lockedValidator,
+                ApplyAlignmentEditPlanCommand::showNotificationWarning);
+    }
+
+    private ApplyAlignmentEditPlanCommand(DataSet dataSet, AlignmentEditPlan plan,
+        String liveDatasetIdentity, LongSupplier liveSourceGeneration, String description,
+        MutationProbe mutationProbe, LockedApplyValidator lockedValidator,
+        Consumer<NotificationOperation> notificationWarning) {
         super(Objects.requireNonNull(dataSet, "dataSet"));
         this.plan = Objects.requireNonNull(plan, "plan");
         this.liveDatasetIdentity = requireText(liveDatasetIdentity, "liveDatasetIdentity");
@@ -123,6 +145,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         this.description = requireText(description, "description");
         this.mutationProbe = Objects.requireNonNull(mutationProbe, "mutationProbe");
         this.lockedValidator = lockedValidator;
+        this.notificationWarning = Objects.requireNonNull(notificationWarning, "notificationWarning");
         if (plan.validation().disposition() == ValidationReport.Disposition.HARD_BLOCKED) {
             throw new IllegalArgumentException("A structurally blocked alignment plan cannot be applied");
         }
@@ -152,6 +175,10 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         if (applied) {
             throw new IllegalStateException("Alignment edit plan is already applied");
         }
+        if (lockedValidator != null
+                && !lockedValidator.returnsNormallyAfterCompletedTransaction()) {
+            throw new IllegalStateException("Alignment source wrapper has no notification boundary contract");
+        }
         Runnable sourceReceipt = () -> { };
         if (lockedValidator != null) {
             try {
@@ -164,43 +191,102 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
             }
         }
         Runnable preparedSourceReceipt = sourceReceipt;
+        boolean redo = appliedSuccessfullyBefore;
+        boolean[] commandSnapshotReady = {false};
+        boolean[] bodyCompleted = {false};
+        RuntimeException[] bodyFailure = {null};
         Runnable transaction = () -> {
-            getAffectedDataSet().update(() -> {
-                if (lockedValidator != null) {
+            try {
+                getAffectedDataSet().update(() -> {
                     try {
+                        if (lockedValidator != null) {
+                            preparedSourceReceipt.run();
+                            lockedValidator.validateLocked(getAffectedDataSet(), plan, true);
+                            preparedSourceReceipt.run();
+                        } else if (liveSourceGeneration.getAsLong()
+                                != plan.before().sourceGeneration()) {
+                            throw new IllegalStateException(
+                                    "Alignment source generation changed before Apply or Redo");
+                        }
+                        if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
+                            createdNodes = allocatePlanLocalNodes(plan);
+                        }
+                        prepareAndValidateBeforeState();
+                        ApplyAlignmentEditPlanCommand.super.executeCommand();
+                        commandSnapshotReady[0] = true;
+                        applyMutationPhases();
+                        validateAfterState();
                         preparedSourceReceipt.run();
-                        lockedValidator.validateLocked(getAffectedDataSet(), plan, true);
-                        preparedSourceReceipt.run();
+                        // JOSM can throw later while notifying listeners at endUpdate.
+                        // The complete mutation must already own its Undo/Redo state.
+                        applied = true;
+                        appliedSuccessfullyBefore = true;
+                        bodyCompleted[0] = true;
                     } catch (RuntimeException failure) {
-                        reportRejectedRedo(failure);
-                        throw failure;
+                        RuntimeException rejected = failure;
+                        if (commandSnapshotReady[0]) {
+                            try {
+                                restoreBeforeState();
+                                rejected = new IllegalStateException(
+                                        "Alignment edit failed; all mutations were rolled back", failure);
+                            } catch (RuntimeException rollbackFailure) {
+                                IllegalStateException incomplete = new IllegalStateException(
+                                        "Alignment edit failed and rollback was incomplete", failure);
+                                incomplete.addSuppressed(rollbackFailure);
+                                rejected = incomplete;
+                            }
+                        }
+                        bodyFailure[0] = rejected;
+                        throw rejected;
                     }
-                } else if (liveSourceGeneration.getAsLong() != plan.before().sourceGeneration()) {
-                    throw new IllegalStateException("Alignment source generation changed before Apply or Redo");
+                });
+            } catch (RuntimeException failure) {
+                if (!bodyCompleted[0]) {
+                    if (bodyFailure[0] != null && failure != bodyFailure[0]) {
+                        bodyFailure[0].addSuppressed(failure);
+                        throw bodyFailure[0];
+                    }
+                    throw failure;
                 }
-                if (createdNodes.isEmpty() && !createdKeys.isEmpty()) {
-                    createdNodes = allocatePlanLocalNodes(plan);
-                }
-                prepareAndValidateBeforeState();
-                ApplyAlignmentEditPlanCommand.super.executeCommand();
-                try {
-                    applyMutationPhases();
-                    validateAfterState();
-                    preparedSourceReceipt.run();
-                } catch (RuntimeException failure) {
-                    reportRejectedRedo(failure);
-                    rollbackFailedExecution(failure);
-                }
-            });
-            applied = true;
-            appliedSuccessfullyBefore = true;
+                queueNotificationWarning(redo ? NotificationOperation.REDO
+                        : NotificationOperation.APPLY);
+            }
         };
-        if (lockedValidator == null) {
-            transaction.run();
-        } else {
-            lockedValidator.executeWithPreparedSource(transaction);
+        try {
+            if (lockedValidator == null) {
+                transaction.run();
+            } else {
+                lockedValidator.executeWithPreparedSource(transaction);
+            }
+        } catch (RuntimeException failure) {
+            reportRejectedRedo(failure);
+            throw failure;
         }
         return true;
+    }
+
+    private void queueNotificationWarning(NotificationOperation operation) {
+        try {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    notificationWarning.accept(operation);
+                } catch (RuntimeException ignored) {
+                    // A UI warning cannot revoke an edit already committed by JOSM.
+                }
+            });
+        } catch (RuntimeException ignored) {
+            // Scheduling a UI warning cannot revoke an edit already committed by JOSM.
+        }
+    }
+
+    private static void showNotificationWarning(NotificationOperation operation) {
+        String message = operation == NotificationOperation.UNDO
+                ? "Alignment Undo completed, but a map update notification failed. "
+                    + "The edit is in Redo history."
+                : "Alignment " + (operation == NotificationOperation.REDO ? "Redo" : "Apply")
+                    + " completed, but a map update notification failed. "
+                    + "The edit is in Undo history.";
+        new Notification(message).show();
     }
 
     private void reportRejectedRedo(RuntimeException failure) {
@@ -222,8 +308,17 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         if (!applied) {
             throw new IllegalStateException("Alignment edit plan is not currently applied");
         }
-        getAffectedDataSet().update(this::restoreBeforeState);
-        applied = false;
+        boolean[] restored = {false};
+        try {
+            getAffectedDataSet().update(() -> {
+                restoreBeforeState();
+                applied = false;
+                restored[0] = true;
+            });
+        } catch (RuntimeException failure) {
+            if (!restored[0]) throw failure;
+            queueNotificationWarning(NotificationOperation.UNDO);
+        }
     }
 
     /** Registers every changed existing object and every command-owned created/removed node. */
@@ -353,18 +448,6 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
                 requireLivePrimitive(key).setModified(detached.modified());
             }
         }
-    }
-
-    private void rollbackFailedExecution(RuntimeException originalFailure) {
-        try {
-            restoreBeforeState();
-        } catch (RuntimeException rollbackFailure) {
-            IllegalStateException failure = new IllegalStateException(
-                "Alignment edit failed and rollback was incomplete", originalFailure);
-            failure.addSuppressed(rollbackFailure);
-            throw failure;
-        }
-        throw new IllegalStateException("Alignment edit failed; all mutations were rolled back", originalFailure);
     }
 
     private void restoreBeforeState() {

@@ -1070,6 +1070,11 @@ class V022ModernSingleWayEditPlanAdapterTest {
         LiveBPreviewService.Computed computed = compute(fixture, TrackerMode.PROBABILISTIC);
         ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
         AlignmentEditPlan plan = plan(computed);
+        assertTrue(plan.validation().reviewRequired());
+        PreviewReviewState review = PreviewReviewState.fromEditPlan(route.hypothesis().id(), plan)
+                .confirm();
+        assertTrue(review.confirmed());
+        assertEquals(plan.canonicalHash(), review.exactEditPlanHash());
         Node first = fixture.way().getNode(0);
         Node last = fixture.way().getNode(1);
         List<Node> original = List.of(first, last);
@@ -1080,7 +1085,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
         var prepared = Format15ProductionBundleFactory.createLive("test",
             new FrozenReplayInput(computed.request(), computed.evidence(),
                 computed.captured().network(), computed.options()), computed.pipeline(),
-            "applied", "visible-layer", 0, plan, false, true);
+            "applied", "visible-layer", 0, plan, review.confirmed(), true);
         onEdt(() -> AlignWayAction.applyWithPreparedDiagnostics(() -> prepared,
             () -> UndoRedoHandler.getInstance().add(command)));
         Path appliedArchive = directory.resolve("applied.zip");
@@ -1088,6 +1093,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
         var appliedStatus = Format15ArchiveReader.read(appliedArchive);
         assertTrue(new String(appliedStatus.artifact("attempt-status.json").orElseThrow().bytes(),
             StandardCharsets.UTF_8).contains("\"status\":\"applied\""));
+        assertTrue(new String(appliedStatus.artifact("plan-availability.json").orElseThrow().bytes(),
+            StandardCharsets.UTF_8).contains("\"status\":\"REVIEW_REQUIRED_CONFIRMED\""));
         assertTrue(new String(appliedStatus.artifact("edit-plan-identity.json").orElseThrow().bytes(),
             StandardCharsets.UTF_8).contains(plan.canonicalHash()));
         assertTrue(appliedStatus.artifact("applied-geometry.json").isPresent());

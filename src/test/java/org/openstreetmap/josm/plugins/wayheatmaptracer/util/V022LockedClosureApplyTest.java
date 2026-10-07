@@ -93,6 +93,7 @@ class V022LockedClosureApplyTest {
             @Override public String datasetIdentity() {
                 return fixture.plan.before().datasetIdentity();
             }
+            @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
             @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan,
                     boolean firstExecution) {
                 writeLockObserved.set(firstExecution && readLockBlockedForAnotherThread(dataSet));

@@ -51,6 +51,8 @@ public final class VisibleSourceLockedApplyValidator implements LockedApplyValid
         return network.datasetIdentity();
     }
 
+    @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+
     @Override
     public Runnable prepareExecution(DataSet dataSet, boolean redo) {
         if (sourceEpoch == null && redo) {

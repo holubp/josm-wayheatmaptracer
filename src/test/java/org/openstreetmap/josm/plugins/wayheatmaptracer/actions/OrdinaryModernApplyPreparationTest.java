@@ -308,6 +308,10 @@ class OrdinaryModernApplyPreparationTest {
             assertEquals(planned.canonicalHash(), exactPlan.canonicalHash());
             var bundle = AlignWayAction.createIntervalDiagnostics(computed, preview,
                     Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED);
+            assertTrue(bundle.artifactNames().contains("plan-availability.json"));
+            assertTrue(new String(bundle.artifact("plan-availability.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("\"reason\":\"PLAN_AVAILABLE\""));
             String inventory = new String(bundle.artifact("source-choices.json").bytes(),
                     java.nio.charset.StandardCharsets.UTF_8);
             assertTrue(inventory.contains("\"selectedTier\":\"all-colors-combined\""));
@@ -463,6 +467,11 @@ class OrdinaryModernApplyPreparationTest {
             assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
                     moveAssessment.availability(), moveAssessment.detail());
             assertTrue(moveAssessment.plan().isEmpty());
+            var unavailable = AlignWayAction.createModernDiagnostics(move, move,
+                    "preview-open", 0, null, false, false, null, moveAssessment, null);
+            assertTrue(new String(unavailable.artifact("plan-availability.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("\"reason\":\"PRECISE_SHAPE_REQUIRED\""));
             var rerun = AlignWayAction.resolvePreciseRerun(moveAssessment.availability(),
                     tracing, saved, () -> "visible", () -> "legacy");
             assertEquals(AlignmentMode.MOVE_EXISTING_NODES, saved.heatmap().alignmentMode());
@@ -493,6 +502,13 @@ class OrdinaryModernApplyPreparationTest {
                     (network, currentPlan) -> new ManagedSourceLockedApplyValidator(network, service,
                             precise.captured(), receipt::requireCurrent,
                             failure -> { throw new AssertionError(failure); })));
+            assertEquals(plan.canonicalHash(), prepared.plan().canonicalHash());
+            var applyDiagnostics = AlignWayAction.createModernDiagnostics(precise, precise,
+                    "applied", 0, prepared.plan(), exactReview.confirmed(), true, null,
+                    preciseAssessment, null);
+            assertTrue(new String(applyDiagnostics.artifact("plan-availability.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("\"reason\":\"PLAN_AVAILABLE\""));
             edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
             assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
             assertNotEquals(original, geometry(fixture.way()));
@@ -807,6 +823,25 @@ class OrdinaryModernApplyPreparationTest {
             var current = edt(() -> NetworkSnapshotCapture.capture(fixture.dataSet(),
                     attempt.computed.captured().specification()));
             AlignWayAction.requireNoChangeCurrent(assessment, attempt.computed, current);
+            var noChange = AlignWayAction.createModernDiagnostics(attempt.computed,
+                    attempt.computed, "preview-open", 0, null, false, false, null,
+                    assessment, current);
+            assertTrue(new String(noChange.artifact("plan-availability.json").bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("\"status\":\"NO_CHANGE\""));
+            assertFalse(noChange.artifactNames().contains("frozen-edit-plan.bin"));
+            LiveBPreviewService.Computed otherOwner = new LiveBPreviewService.Computed(
+                    attempt.computed.captured(), attempt.computed.evidence(),
+                    attempt.computed.request(), attempt.computed.pipeline(),
+                    attempt.computed.options(), attempt.computed.counters());
+            assertThrows(IllegalArgumentException.class,
+                    () -> AlignWayAction.createModernDiagnostics(attempt.computed,
+                            otherOwner, "preview-open", 0, null, false, false, null,
+                            assessment, current));
+            assertThrows(IllegalArgumentException.class, () -> assessment.noChangeProof()
+                    .orElseThrow().requireMatches(attempt.computed.request(),
+                            attempt.computed.evidence(), attempt.computed.captured().network(),
+                            attempt.computed.options(), attempt.computed.pipeline(), 1, current));
             var watch = assessment.noChangeWatch().orElseThrow();
             var wrongGeneration = new ModernSingleWayEditPlanAdapter.Assessment(
                     java.util.Optional.empty(),
@@ -831,6 +866,10 @@ class OrdinaryModernApplyPreparationTest {
                     attempt.computed.captured().specification()));
             assertThrows(IllegalStateException.class,
                     () -> AlignWayAction.requireNoChangeCurrent(assessment, attempt.computed, changed));
+            assertThrows(IllegalArgumentException.class,
+                    () -> AlignWayAction.createModernDiagnostics(attempt.computed,
+                            attempt.computed, "preview-open", 0, null, false, false, null,
+                            assessment, changed));
             assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         }
     }

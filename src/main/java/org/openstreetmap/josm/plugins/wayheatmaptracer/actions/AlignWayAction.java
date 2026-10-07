@@ -1331,6 +1331,7 @@ public class AlignWayAction extends JosmAction {
         AlignmentEditPlan[] plan = {null};
         PreviewReviewState[] review = {null};
         ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
+        NetworkSnapshot[] noChangeCurrent = {null};
         boolean[] applying = {false};
         boolean[] completed = {false};
         JButton confirm = new JButton(tr("Confirm review"));
@@ -1384,13 +1385,15 @@ public class AlignWayAction extends JosmAction {
             plan[0] = null;
             review[0] = null;
             assessment[0] = null;
+            noChangeCurrent[0] = null;
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             if (preflight == ModernApplyPreflight.READY) {
                 assessment[0] = planAdapter.assess(run, routeIndex);
                 if (assessment[0].availability()
                         == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
-                    requireNoChangeCurrent(assessment[0], run,
-                            NetworkSnapshotCapture.capture(dataSet, computed.captured().specification()));
+                    noChangeCurrent[0] = NetworkSnapshotCapture.capture(dataSet,
+                            computed.captured().specification());
+                    requireNoChangeCurrent(assessment[0], run, noChangeCurrent[0]);
                 }
                 if (assessment[0].plan().isPresent()) {
                     plan[0] = assessment[0].plan().orElseThrow();
@@ -1428,7 +1431,8 @@ public class AlignWayAction extends JosmAction {
             recordModernDiagnostics(computed, run, modernPreviewStatus(
                     run.pipeline().inference().status(), displayedDisposition),
                     routeIndex, plan[0], false, false, diagnosticAttemptIdentity,
-                    assessment[0] == null ? null : assessment[0].junctionReason());
+                    assessment[0] == null ? null : assessment[0].junctionReason(),
+                    assessment[0], noChangeCurrent[0]);
             String sourceLabel = computed.captured().managedRaster() == null
                     ? tr("visible layer") : tr("managed tiles");
             String preciseRecovery = preciseRerunUnsupportedReason(selection, tracingAtCapture,
@@ -1468,7 +1472,7 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
-                        plan[0], false, false, diagnosticAttemptIdentity);
+                        null, false, false, diagnosticAttemptIdentity);
                 boolean closed = livePreviewSession.close(previewOwner);
                 dialog.dispose();
                 if (closed) {
@@ -1488,7 +1492,7 @@ public class AlignWayAction extends JosmAction {
                                 Math.max(0, choices.getSelectedIndex()));
                         recordModernDiagnostics(computed, closingChoice.owner(), "cancelled",
                                 closingChoice.localRouteIndex(),
-                                plan[0], review[0] != null && review[0].confirmed(), false,
+                                null, false, false,
                                 diagnosticAttemptIdentity);
                     }
                 });
@@ -1520,7 +1524,7 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.Computed run = choice.owner();
                 int routeIndex = choice.localRouteIndex();
                 recordModernDiagnostics(computed, run, "confirmed", routeIndex, plan[0], true, false,
-                        diagnosticAttemptIdentity);
+                        diagnosticAttemptIdentity, null, assessment[0], null);
                 confirm.setEnabled(false);
                 apply.setEnabled(modernApplyEnabled(assessment[0] != null
                         && assessment[0].applyAvailable(), review[0], applying[0], false));
@@ -1548,7 +1552,7 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
-                        plan[0], false, false, diagnosticAttemptIdentity);
+                        null, false, false, diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
             }
@@ -1635,7 +1639,7 @@ public class AlignWayAction extends JosmAction {
                 ApplyAlignmentEditPlanCommand command = prepared.command();
                 applyWithPreparedDiagnostics(
                     () -> createModernDiagnostics(computed, run, "applied", routeIndex, currentPlan,
-                            review[0].confirmed(), true, null),
+                            review[0].confirmed(), true, null, assessment[0], null),
                     () -> UndoRedoHandler.getInstance().add(command));
                 completed[0] = true;
                 try {
@@ -1649,7 +1653,7 @@ public class AlignWayAction extends JosmAction {
                 LiveBPreviewService.PreviewChoice failedChoice = previewChoices.get(
                         Math.max(0, choices.getSelectedIndex()));
                 recordModernDiagnostics(computed, failedChoice.owner(), "failed", failedChoice.localRouteIndex(),
-                        plan[0], review[0] != null && review[0].confirmed(), false,
+                        null, false, false,
                         diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment Apply failed: {0}", exception.getMessage()));
@@ -2355,11 +2359,22 @@ public class AlignWayAction extends JosmAction {
             LiveBPreviewService.Computed computed, String status, int routeIndex,
             AlignmentEditPlan plan, boolean reviewed, boolean applied,
             String attemptIdentity, ManualJunctionEligibility.Reason assessedManualReason) {
+        recordModernDiagnostics(root, computed, status, routeIndex, plan, reviewed, applied,
+                attemptIdentity, assessedManualReason, null, null);
+    }
+
+    private static void recordModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            String attemptIdentity, ManualJunctionEligibility.Reason assessedManualReason,
+            ModernSingleWayEditPlanAdapter.Assessment assessment,
+            NetworkSnapshot currentNoChangeNetwork) {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
             DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(root, computed,
-                    status, routeIndex, plan, reviewed, applied, assessedManualReason));
+                    status, routeIndex, plan, reviewed, applied, assessedManualReason,
+                    assessment, currentNoChangeNetwork));
         } catch (RuntimeException failure) {
             String reason = failure.getMessage() == null ? "" : failure.getMessage()
                     .toLowerCase(java.util.Locale.ROOT);
@@ -2395,6 +2410,16 @@ public class AlignWayAction extends JosmAction {
             LiveBPreviewService.Computed computed, String status, int routeIndex,
             AlignmentEditPlan plan, boolean reviewed, boolean applied,
             ManualJunctionEligibility.Reason assessedManualReason) {
+        return createModernDiagnostics(root, computed, status, routeIndex, plan, reviewed,
+                applied, assessedManualReason, null, null);
+    }
+
+    static Format15Bundle createModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            ManualJunctionEligibility.Reason assessedManualReason,
+            ModernSingleWayEditPlanAdapter.Assessment assessment,
+            NetworkSnapshot currentNoChangeNetwork) {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
                 computed.evidence(), computed.captured().network(), computed.options());
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
@@ -2404,17 +2429,49 @@ public class AlignWayAction extends JosmAction {
                     ? computed.captured().junctionDecision()
                     : ManualJunctionEligibility.evaluate(computed.captured().network(),
                             computed.captured().specification());
-        Format15Bundle bundle = Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
-                input, computed.pipeline(), status,
-                computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles",
-                selectedRoute, plan, reviewed, applied, computed.counters(),
-                assessedManualReason != null ? assessedManualReason
+        ManualJunctionEligibility.Reason reason = assessedManualReason != null ? assessedManualReason
                         : junction != null && junction.manualOnly() ? junction.reason()
                         : junction != null && junction.reason()
                             == ManualJunctionEligibility.Reason.SIMPLE_T
                             && computed.pipeline().routes().isEmpty()
                                 ? ManualJunctionEligibility.Reason.MISSING_RECEIVER_EVIDENCE
-                                : null);
+                                : null;
+        String sourceLineage = computed.captured().managedRaster() == null
+                ? "visible-layer" : "managed-tiles";
+        Format15Bundle bundle;
+        if (assessment == null && !"failed".equals(status) && !"cancelled".equals(status)) {
+            bundle = Format15ProductionBundleFactory.createLive(LastSlideDebugBundle.buildIdentity(),
+                    input, computed.pipeline(), status, sourceLineage, selectedRoute,
+                    plan, reviewed, applied, computed.counters(), reason);
+        } else {
+            Format15ProductionBundleFactory.PlanAvailability availability;
+            if ("failed".equals(status)) {
+                availability = Format15ProductionBundleFactory.PlanAvailability.failed();
+            } else if ("cancelled".equals(status)) {
+                availability = Format15ProductionBundleFactory.PlanAvailability.cancelled();
+            } else if (assessment.availability()
+                    == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
+                assessment.noChangeProof().orElseThrow().requireOwner(computed);
+                availability = Format15ProductionBundleFactory.PlanAvailability.noChange(assessment);
+            } else if (assessment.availability()
+                    == ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE) {
+                availability = plan != null && plan.validation().reviewRequired()
+                        ? Format15ProductionBundleFactory.PlanAvailability.reviewRequired(reviewed,
+                                assessment.availability())
+                        : Format15ProductionBundleFactory.PlanAvailability.available();
+            } else {
+                availability = Format15ProductionBundleFactory.PlanAvailability.unavailable(
+                        assessment.availability());
+            }
+            if (assessment != null && !"failed".equals(status) && !"cancelled".equals(status)
+                    && !Objects.equals(assessment.plan().orElse(null), plan)) {
+                throw new IllegalArgumentException("Diagnostic plan differs from selected assessment");
+            }
+            bundle = Format15ProductionBundleFactory.createLiveWithPlanAvailability(
+                    LastSlideDebugBundle.buildIdentity(), input, computed.pipeline(), status,
+                    sourceLineage, selectedRoute, plan, reviewed, applied, computed.counters(),
+                    reason, availability, currentNoChangeNetwork);
+        }
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(
                         bundle, input, input.request().engine()), computed), root, computed);

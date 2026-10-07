@@ -54,6 +54,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 
 class V022LocalizationCorrectionTest {
     private static final int WIDTH = 121;
@@ -397,9 +398,17 @@ class V022LocalizationCorrectionTest {
         AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
         AttemptMemoryLedger.Owner parent = ledger.rootOwner();
 
-        Accounted<TraceEngineRun> accounted = new ProbabilisticTraceEngine("scalar")
-                .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
-                        CancellationProbe.NONE, parent);
+        ModernDiagnosticCounters.begin();
+        Accounted<TraceEngineRun> accounted;
+        long maximumStates;
+        try {
+            accounted = new ProbabilisticTraceEngine("scalar")
+                    .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
+                            CancellationProbe.NONE, parent);
+            maximumStates = ModernDiagnosticCounters.snapshot().get("trace.maxStates").longValue();
+        } finally {
+            ModernDiagnosticCounters.end();
+        }
 
         assertEquals(TraceHypothesisSet.Status.COMPLETE, accounted.value().result().status());
         assertFalse(accounted.value().result().hypotheses().isEmpty());
@@ -417,7 +426,12 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(32);
         assertEquals(2_248L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
         assertEquals(2_248L, ledger.currentBytes());
-        assertEquals(8_908_896L, ledger.peakBytes(),
+        assertEquals(29L, maximumStates);
+        long descriptorScratch = AttemptMemoryLedger.arrayBytes(maximumStates * 32L, Double.BYTES)
+                + AttemptMemoryLedger.arrayBytes(maximumStates * 32L, Integer.BYTES)
+                + 3L * AttemptMemoryLedger.arrayBytes(maximumStates, Integer.BYTES);
+        assertEquals(11_576L, descriptorScratch);
+        assertEquals(8_908_896L + descriptorScratch, ledger.peakBytes(),
                 "the full forward/backward solve, not the smaller pair helper, owns the peak");
         assertEquals(6_786L, accounted.value().usage().pairVisits());
         assertEquals(5_006_473L, accounted.value().usage().transitions());

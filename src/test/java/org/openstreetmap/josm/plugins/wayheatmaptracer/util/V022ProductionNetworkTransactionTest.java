@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.util;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -10,6 +11,7 @@ import java.util.OptionalDouble;
 import java.util.Set;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
@@ -29,14 +31,21 @@ import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.OsmPrimitiveType;
 import org.openstreetmap.josm.data.osm.Relation;
 import org.openstreetmap.josm.data.osm.RelationMember;
 import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.osm.event.DataChangedEvent;
+import org.openstreetmap.josm.data.osm.event.DataSetListenerAdapter;
+import org.openstreetmap.josm.data.osm.event.NodeMovedEvent;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
+import org.openstreetmap.josm.gui.MainApplication;
+import org.openstreetmap.josm.gui.layer.OsmDataLayer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
@@ -111,6 +120,318 @@ class V022ProductionNetworkTransactionTest {
             before.assertMatches(fixture.dataSet());
             assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
             assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+        }
+    }
+
+    @Test
+    void listenerFailureAfterValidatedApplyRetainsCommittedEditAndHostHistory() throws Exception {
+        Fixture fixture = fixture();
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        AtomicBoolean armed = new AtomicBoolean(true);
+        AtomicBoolean fired = new AtomicBoolean();
+        var listener = new DataSetListenerAdapter(event -> {
+            if ((event instanceof NodeMovedEvent || event instanceof DataChangedEvent)
+                    && armed.compareAndSet(true, false)) {
+                fired.set(true);
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            List<ApplyAlignmentEditPlanCommand.NotificationOperation> warnings =
+                    new CopyOnWriteArrayList<>();
+            var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                    fixture.validator(), "Host listener failure on Apply", point -> { }, warnings::add);
+            V022AtomicApplyTest.onEdt(() -> {
+                UndoRedoHandler.getInstance().add(command);
+            });
+            V022AtomicApplyTest.onEdt(() -> { });
+            assertTrue(fired.get(), "the host listener must throw at update exit");
+            assertEquals(List.of(ApplyAlignmentEditPlanCommand.NotificationOperation.APPLY), warnings);
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+            before.assertMatches(fixture.dataSet());
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getRedoCommands());
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+    }
+
+    @Test
+    void listenerFailureAfterValidatedRedoRetainsCommittedEditAndUnrelatedHistory() throws Exception {
+        Fixture fixture = fixture();
+        Node unrelated = new Node(new LatLon(10, 10));
+        V022AtomicApplyTest.onEdt(() -> {
+            UndoRedoHandler.getInstance().add(new AddCommand(fixture.dataSet(), unrelated));
+        });
+        var prior = UndoRedoHandler.getInstance().getUndoCommands().get(0);
+        List<ApplyAlignmentEditPlanCommand.NotificationOperation> warnings =
+                new CopyOnWriteArrayList<>();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Host listener failure on Redo", point -> { }, warnings::add);
+        V022AtomicApplyTest.onEdt(() -> {
+            UndoRedoHandler.getInstance().add(command);
+            UndoRedoHandler.getInstance().undo();
+        });
+        V022AtomicApplyTest.LiveState beforeRedo =
+                V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        AtomicBoolean armed = new AtomicBoolean(true);
+        AtomicBoolean fired = new AtomicBoolean();
+        var listener = new DataSetListenerAdapter(event -> {
+            if ((event instanceof NodeMovedEvent || event instanceof DataChangedEvent)
+                    && armed.compareAndSet(true, false)) {
+                fired.set(true);
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            V022AtomicApplyTest.onEdt(() -> {
+                UndoRedoHandler.getInstance().redo();
+            });
+            V022AtomicApplyTest.onEdt(() -> { });
+            assertTrue(fired.get(), "the host listener must throw at Redo update exit");
+            assertEquals(List.of(ApplyAlignmentEditPlanCommand.NotificationOperation.REDO), warnings);
+            assertEquals(List.of(prior, command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+            beforeRedo.assertMatches(fixture.dataSet());
+            assertEquals(List.of(prior), UndoRedoHandler.getInstance().getUndoCommands());
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getRedoCommands());
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+    }
+
+    private static final class ListenerFailure extends RuntimeException { }
+
+    @Test
+    void unknownRejectingSourceWrapperIsRefusedBeforeMutationOrInvocation() throws Exception {
+        Fixture fixture = fixture();
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        AtomicBoolean wrapperInvoked = new AtomicBoolean();
+        LockedApplyValidator unsupported = new LockedApplyValidator() {
+            @Override public String datasetIdentity() { return fixture.validator().datasetIdentity(); }
+            @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan,
+                    boolean requireSourceGeneration) {
+                fixture.validator().validateLocked(dataSet, plan, requireSourceGeneration);
+            }
+            @Override public void executeWithPreparedSource(Runnable transaction) {
+                wrapperInvoked.set(true);
+                transaction.run();
+                throw new ListenerFailure();
+            }
+        };
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                unsupported, "Unsupported source wrapper");
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command)));
+        assertTrue(failure.getMessage().contains("notification boundary contract"));
+        assertFalse(wrapperInvoked.get());
+        before.assertMatches(fixture.dataSet());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+    }
+
+    @Test
+    void warningReporterFailureCannotRevokeCommittedHostApply() throws Exception {
+        Fixture fixture = fixture();
+        AtomicBoolean armed = new AtomicBoolean(true);
+        var listener = new DataSetListenerAdapter(event -> {
+            if (armed.compareAndSet(true, false)) throw new ListenerFailure();
+        });
+        AtomicInteger warningCalls = new AtomicInteger();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Failing warning reporter", point -> { }, operation -> {
+                    warningCalls.incrementAndGet();
+                    throw new ListenerFailure();
+                });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+            V022AtomicApplyTest.onEdt(() -> { });
+            assertEquals(1, warningCalls.get());
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+    }
+
+    @Test
+    void queuedWriterAfterNotificationFailureIsNeverErasedByASecondRollbackUpdate() throws Exception {
+        Fixture fixture = fixture();
+        PrimitiveKey movingKey = fixture.plan().writePrimitiveKeys().stream()
+                .filter(key -> fixture.plan().before().primitives().get(key) instanceof DetachedNode before
+                        && fixture.plan().after().primitives().get(key) instanceof DetachedNode after
+                        && !before.coordinate().equals(after.coordinate()))
+                .findFirst().orElseThrow();
+        Node target = (Node) fixture.dataSet().getPrimitiveById(movingKey.id(), OsmPrimitiveType.NODE);
+        LatLon original = target.getCoor();
+        LatLon sentinel = new LatLon(original.lat() + 0.0001, original.lon() + 0.0001);
+        AtomicBoolean restoredBeforeWriter = new AtomicBoolean();
+        AtomicBoolean observedCommittedMove = new AtomicBoolean();
+        var observer = new DataSetListenerAdapter(event -> {
+            if (event instanceof NodeMovedEvent) {
+                if (target.getCoor().equals(original)) restoredBeforeWriter.set(true);
+                else if (!target.getCoor().equals(sentinel)) observedCommittedMove.set(true);
+            }
+        });
+        CountDownLatch writerAttempting = new CountDownLatch(1);
+        CountDownLatch writerFinished = new CountDownLatch(1);
+        AtomicReference<Thread> writer = new AtomicReference<>();
+        AtomicBoolean armed = new AtomicBoolean(true);
+        var failing = new DataSetListenerAdapter(event -> {
+            if (event instanceof NodeMovedEvent && armed.compareAndSet(true, false)) {
+                Thread queued = new Thread(() -> {
+                    writerAttempting.countDown();
+                    fixture.dataSet().update(() -> target.setCoor(sentinel));
+                    writerFinished.countDown();
+                }, "alignment-notification-queued-writer");
+                writer.set(queued);
+                queued.start();
+                try {
+                    assertTrue(writerAttempting.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interruption);
+                }
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(observer);
+        fixture.dataSet().addDataSetListener(failing);
+        List<ApplyAlignmentEditPlanCommand.NotificationOperation> warnings =
+                new CopyOnWriteArrayList<>();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Queued writer notification boundary", point -> { }, warnings::add);
+        try {
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+            assertTrue(writerFinished.await(2, TimeUnit.SECONDS));
+            V022AtomicApplyTest.onEdt(() -> { });
+            assertTrue(observedCommittedMove.get());
+            assertFalse(restoredBeforeWriter.get(), "notification recovery must not restore primitives");
+            assertEquals(sentinel, target.getCoor(), "the ordered later writer must survive");
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertEquals(List.of(ApplyAlignmentEditPlanCommand.NotificationOperation.APPLY), warnings);
+        } finally {
+            fixture.dataSet().removeDataSetListener(failing);
+            fixture.dataSet().removeDataSetListener(observer);
+            if (writer.get() != null) writer.get().join(2000);
+        }
+    }
+
+    @Test
+    void postSealManagedSourceChangeThenListenerFailureCommitsButRefusesLaterRedo()
+            throws Exception {
+        AtomicLong generation = new AtomicLong(37L);
+        ManagedFixture fixture = managedFixture(37L, generation::get);
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        List<ApplyAlignmentEditPlanCommand.NotificationOperation> warnings =
+                new CopyOnWriteArrayList<>();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Managed notification source change", point -> { }, warnings::add);
+        AtomicBoolean armed = new AtomicBoolean(true);
+        var listener = new DataSetListenerAdapter(event -> {
+            if (armed.compareAndSet(true, false)) {
+                generation.incrementAndGet();
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+            V022AtomicApplyTest.onEdt(() -> { });
+            assertEquals(38L, generation.get());
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertEquals(List.of(ApplyAlignmentEditPlanCommand.NotificationOperation.APPLY), warnings);
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+            before.assertMatches(fixture.dataSet());
+            assertThrows(IllegalStateException.class,
+                    () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo()));
+            before.assertMatches(fixture.dataSet());
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertEquals(List.of(ApplyAlignmentEditPlanCommand.NotificationOperation.APPLY), warnings);
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+    }
+
+    @Test
+    void bodyFailureRemainsRejectedWhenItsRollbackNotificationAlsoThrows() throws Exception {
+        Fixture fixture = fixture();
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        List<ApplyAlignmentEditPlanCommand.NotificationOperation> warnings =
+                new CopyOnWriteArrayList<>();
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Mutation and notification failure", point -> {
+                    if (point == ApplyAlignmentEditPlanCommand.MutationPoint.AFTER_MOVE_NODES) {
+                        throw new InjectedFailure(point);
+                    }
+                }, warnings::add);
+        AtomicBoolean fired = new AtomicBoolean();
+        var listener = new DataSetListenerAdapter(event -> {
+            if (fired.compareAndSet(false, true)) {
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            IllegalStateException rejected = assertThrows(IllegalStateException.class,
+                    () -> V022AtomicApplyTest.onEdt(() ->
+                            UndoRedoHandler.getInstance().add(command)));
+            assertTrue(rejected.getCause() instanceof InjectedFailure);
+            assertTrue(fired.get(), "rollback notification must exercise the masking path");
+            assertEquals(1, rejected.getSuppressed().length);
+            assertTrue(rejected.getSuppressed()[0] instanceof ListenerFailure);
+            before.assertMatches(fixture.dataSet());
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertTrue(warnings.isEmpty());
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+    }
+
+    @Test
+    void hostOuterUndoNotificationFailureLeavesRestoredStateAndRedoOwnership() throws Exception {
+        Config.setBaseDirectoriesProvider(new IBaseDirectories() {
+            @Override public java.io.File getPreferencesDirectory(boolean create) { return temporary.toFile(); }
+            @Override public java.io.File getUserDataDirectory(boolean create) { return temporary.toFile(); }
+            @Override public java.io.File getCacheDirectory(boolean create) { return temporary.toFile(); }
+        });
+        Fixture fixture = fixture();
+        OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(), "host outer Undo", null);
+        V022AtomicApplyTest.onEdt(() -> MainApplication.getLayerManager().addLayer(layer));
+        try {
+        Node unrelated = new Node(new LatLon(10, 10));
+        V022AtomicApplyTest.onEdt(() ->
+                UndoRedoHandler.getInstance().add(new AddCommand(fixture.dataSet(), unrelated)));
+        var prior = UndoRedoHandler.getInstance().getUndoCommands().get(0);
+        V022AtomicApplyTest.LiveState before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(),
+                fixture.validator(), "Host outer Undo notification");
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        AtomicBoolean fired = new AtomicBoolean();
+        var listener = new DataSetListenerAdapter(event -> {
+            if (fired.compareAndSet(false, true)) {
+                throw new ListenerFailure();
+            }
+        });
+        fixture.dataSet().addDataSetListener(listener);
+        try {
+            assertThrows(ListenerFailure.class,
+                    () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo()));
+            assertTrue(fired.get());
+            before.assertMatches(fixture.dataSet());
+            assertEquals(List.of(prior), UndoRedoHandler.getInstance().getUndoCommands());
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getRedoCommands());
+        } finally {
+            fixture.dataSet().removeDataSetListener(listener);
+        }
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertEquals(List.of(prior, command), UndoRedoHandler.getInstance().getUndoCommands());
+        } finally {
+            V022AtomicApplyTest.onEdt(() -> MainApplication.getLayerManager().removeLayer(layer));
         }
     }
 
@@ -250,6 +571,7 @@ class V022ProductionNetworkTransactionTest {
                 V022ProductionNetworkTransactionTest::raster, epoch, () -> { }, message -> { });
         LockedApplyValidator racingSource = new LockedApplyValidator() {
             @Override public String datasetIdentity() { return source.datasetIdentity(); }
+            @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
             @Override public Runnable prepareExecution(DataSet dataSet, boolean redo) {
                 Runnable receipt = source.prepareExecution(dataSet, redo);
                 epoch.sourceChanged();

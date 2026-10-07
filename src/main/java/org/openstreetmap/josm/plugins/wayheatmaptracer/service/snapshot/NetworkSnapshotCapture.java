@@ -480,9 +480,14 @@ public final class NetworkSnapshotCapture {
             for (OccurrenceRange range : ranges) {
                 for (int index = range.firstIndex(); index <= range.lastIndex(); index++) {
                     PrimitiveKey node = key(way.getNode(index));
-                    if (!specification.explicitlyProtectedNodeKeys().contains(node)) {
-                        result.add(node);
-                    }
+                    boolean fixedSelectedBoundary = wayKey.equals(specification.selectedWayKey())
+                            && (index == specification.selectedRange().firstIndex()
+                                || index == specification.selectedRange().lastIndex())
+                            && specification.explicitlyProtectedNodeKeys().contains(node);
+                    // Fixed outer boundaries need only their referrer-identity watch. Interior
+                    // protected islands need complete read-only referrers to prove their bounds.
+                    // Movable/removable boundaries remain in result from the initial authority.
+                    if (!fixedSelectedBoundary) result.add(node);
                 }
             }
         });

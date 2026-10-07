@@ -34,6 +34,8 @@ public final class ManagedSourceLockedApplyValidator implements LockedApplyValid
 
     @Override public String datasetIdentity() { return network.datasetIdentity(); }
 
+    @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+
     @Override public Runnable prepareExecution(DataSet dataSet, boolean redo) {
         return requireSourceOwnerCurrent;
     }

@@ -49,7 +49,12 @@ public final class Format15ProductionBundleFactory {
     }
 
     /** Typed plan availability carried independently of private geometry and arbitrary detail. */
-    public record PlanAvailability(PlanAvailabilityStatus status, PlanAvailabilityReason reason) {
+    public record PlanAvailability(PlanAvailabilityStatus status, PlanAvailabilityReason reason,
+            ModernSingleWayEditPlanAdapter.NoChangeProof noChangeProof) {
+        public PlanAvailability(PlanAvailabilityStatus status, PlanAvailabilityReason reason) {
+            this(status, reason, null);
+        }
+
         public PlanAvailability {
             if (status == null || reason == null) {
                 throw new IllegalArgumentException("Plan availability receipt is incomplete");
@@ -58,10 +63,8 @@ public final class Format15ProductionBundleFactory {
                 case PLAN_AVAILABLE -> reason == PlanAvailabilityReason.PLAN_AVAILABLE;
                 case REVIEW_REQUIRED_UNCONFIRMED, REVIEW_REQUIRED_CONFIRMED ->
                         reason == PlanAvailabilityReason.PLAN_AVAILABLE;
-                // NO_CHANGE is reserved until the live adapter can bind its factual
-                // selected-route proof into this receipt. A caller-created enum pair
-                // must never relabel a changed route as unchanged.
-                case NO_CHANGE -> false;
+                case NO_CHANGE -> reason == PlanAvailabilityReason.NO_CHANGE
+                        && noChangeProof != null;
                 case UNAVAILABLE -> reason != PlanAvailabilityReason.PLAN_AVAILABLE
                         && reason != PlanAvailabilityReason.NO_CHANGE
                         && reason != PlanAvailabilityReason.ATTEMPT_CANCELLED
@@ -69,7 +72,9 @@ public final class Format15ProductionBundleFactory {
                 case CANCELLED -> reason == PlanAvailabilityReason.ATTEMPT_CANCELLED;
                 case FAILED -> reason == PlanAvailabilityReason.ATTEMPT_FAILED;
             };
-            if (!valid) throw new IllegalArgumentException("Plan availability reason contradicts status");
+            if (!valid || status != PlanAvailabilityStatus.NO_CHANGE && noChangeProof != null) {
+                throw new IllegalArgumentException("Plan availability reason contradicts status");
+            }
         }
 
         public static PlanAvailability available() {
@@ -89,6 +94,17 @@ public final class Format15ProductionBundleFactory {
 
         public static PlanAvailability noChange() {
             throw new IllegalArgumentException("NO_CHANGE requires an adapter-bound selected-route proof");
+        }
+
+        /** Accepts only a genuine adapter assessment with its private source/route witness. */
+        public static PlanAvailability noChange(ModernSingleWayEditPlanAdapter.Assessment assessment) {
+            if (assessment == null || assessment.availability()
+                    != ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE
+                    || assessment.noChangeWatch().isEmpty() || assessment.noChangeProof().isEmpty()) {
+                throw new IllegalArgumentException("NO_CHANGE requires an adapter-bound selected-route proof");
+            }
+            return new PlanAvailability(PlanAvailabilityStatus.NO_CHANGE,
+                    PlanAvailabilityReason.NO_CHANGE, assessment.noChangeProof().orElseThrow());
         }
 
         public static PlanAvailability unavailable(
@@ -271,6 +287,18 @@ public final class Format15ProductionBundleFactory {
             boolean applied, Map<String, Number> counters,
             ManualJunctionEligibility.Reason manualJunctionReason,
             PlanAvailability planAvailability) {
+        return createLiveWithPlanAvailability(buildIdentity, input, actual, status,
+                sourceLineage, routeIndex, plan, reviewed, applied, counters,
+                manualJunctionReason, planAvailability, null);
+    }
+
+    /** Binds an adapter-issued no-write result to the same selected route and live recapture. */
+    public static Format15Bundle createLiveWithPlanAvailability(String buildIdentity,
+            FrozenReplayInput input, ModernTracePipeline.Result actual, String status,
+            String sourceLineage, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
+            boolean applied, Map<String, Number> counters,
+            ManualJunctionEligibility.Reason manualJunctionReason,
+            PlanAvailability planAvailability, NetworkSnapshot currentNoChangeNetwork) {
         if (actual == null || status == null || status.isBlank()
                 || sourceLineage == null || sourceLineage.isBlank()
                 || planAvailability == null
@@ -282,6 +310,12 @@ public final class Format15ProductionBundleFactory {
             throw new IllegalArgumentException("Live diagnostic attempt is incomplete");
         }
         requirePlanAvailabilityBinding(status, plan, reviewed, applied, planAvailability);
+        if (planAvailability.status() == PlanAvailabilityStatus.NO_CHANGE) {
+            planAvailability.noChangeProof().requireMatches(input.request(), input.evidence(),
+                    input.network(), input.options(), actual, routeIndex, currentNoChangeNetwork);
+        } else if (currentNoChangeNetwork != null) {
+            throw new IllegalArgumentException("Current no-change network is unrelated to this plan state");
+        }
         if ((planAvailability.status() == PlanAvailabilityStatus.PLAN_AVAILABLE
                 || planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED
                 || planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED)
@@ -372,7 +406,9 @@ public final class Format15ProductionBundleFactory {
             boolean reviewed, boolean applied, PlanAvailability availability) {
         String terminalStatus = attemptStatus.toLowerCase(java.util.Locale.ROOT);
         PlanAvailabilityStatus state = availability.status();
-        if (state == PlanAvailabilityStatus.NO_CHANGE || terminalStatus.equals("no-change")) {
+        if (terminalStatus.equals("no-change") && state != PlanAvailabilityStatus.NO_CHANGE
+                || state == PlanAvailabilityStatus.NO_CHANGE
+                    && (plan != null || reviewed || applied)) {
             throw new IllegalArgumentException("NO_CHANGE requires an adapter-bound selected-route proof");
         }
         if (terminalStatus.equals("cancelled") || terminalStatus.equals("failed")) {
@@ -657,6 +693,8 @@ public final class Format15ProductionBundleFactory {
                         new String(indexBytes, StandardCharsets.UTF_8)));
         artifacts.put(INTERVAL_PREVIEW_ARTIFACT,
                 Format15Artifact.text(INTERVAL_PREVIEW_ARTIFACT, preview));
+        artifacts.put(PLAN_AVAILABILITY_ARTIFACT,
+                planAvailabilityArtifact(intervalPlanAvailability(assessment, status)));
         if (frozenIntervals != null) {
             artifacts.put(FrozenIntervalReplayCodec.ARTIFACT,
                     Format15Artifact.binary(FrozenIntervalReplayCodec.ARTIFACT, frozenIntervals));
@@ -671,6 +709,26 @@ public final class Format15ProductionBundleFactory {
         }
         addIntervalOutputComponents(artifacts, buildIdentity, batch, frozenIntervals != null);
         return new Format15Bundle(buildIdentity, sourceHash, batch.fullRequest().parameterHash(), artifacts);
+    }
+
+    private static PlanAvailability intervalPlanAvailability(
+            FixedIntervalEditPlanComposer.Assessment assessment, IntervalArtifactStatus status) {
+        if (status == IntervalArtifactStatus.CANCELLED) return PlanAvailability.cancelled();
+        if (status == IntervalArtifactStatus.FAILED) return PlanAvailability.failed();
+        if (!assessment.applyAvailable()) {
+            // The interval composer has no adapter ApplyAvailability enum. Keep the
+            // exact per-interval findings in its index and report the generic fact here.
+            return PlanAvailability.unavailable(
+                    ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE);
+        }
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        if (plan.validation().reviewRequired()) {
+            boolean confirmed = status == IntervalArtifactStatus.CONFIRMED
+                    || status == IntervalArtifactStatus.APPLIED_AFTER_REVIEW;
+            return PlanAvailability.reviewRequired(confirmed,
+                    ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE);
+        }
+        return PlanAvailability.available();
     }
 
     private static void addIntervalOutputComponents(Map<String, Format15Artifact> artifacts,

@@ -40,6 +40,8 @@ public final class LiveNetworkSnapshotValidator implements LockedApplyValidator 
         return captured.snapshot().datasetIdentity();
     }
 
+    @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+
     /** Returns the current factual source generation. */
     public long currentSourceGeneration() {
         return liveSourceGeneration.getAsLong();

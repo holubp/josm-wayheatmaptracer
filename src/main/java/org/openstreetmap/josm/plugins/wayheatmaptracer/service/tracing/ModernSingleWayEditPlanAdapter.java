@@ -89,12 +89,71 @@ public final class ModernSingleWayEditPlanAdapter {
         }
     }
 
+    /** Adapter-issued proof of an exact no-write assessment for one selected source owner and route. */
+    public static final class NoChangeProof {
+        private final LiveBPreviewService.Computed owner;
+        private final int routeIndex;
+        private final ModernTracePipeline.Route route;
+        private final NoChangeWatch watch;
+
+        private NoChangeProof(LiveBPreviewService.Computed owner, int routeIndex,
+                ModernTracePipeline.Route route, NoChangeWatch watch) {
+            this.owner = owner;
+            this.routeIndex = routeIndex;
+            this.route = route;
+            this.watch = watch;
+        }
+
+        /** Prevents another computed source choice from borrowing this factual assessment. */
+        public void requireOwner(LiveBPreviewService.Computed selected) {
+            if (selected != owner) {
+                throw new IllegalArgumentException("No-change proof belongs to another source choice");
+            }
+        }
+
+        /** Rejects a different selected route, source owner, frozen input or current network. */
+        public void requireMatches(TraceRequest request, EvidenceSnapshot evidence,
+                NetworkSnapshot frozen, ModernTracePipeline.Options options,
+                ModernTracePipeline.Result actual, int selectedRouteIndex,
+                NetworkSnapshot current) {
+            if (owner.request() != request || owner.evidence() != evidence
+                    || owner.captured().network() != frozen || owner.options() != options
+                    || owner.pipeline() != actual || routeIndex != selectedRouteIndex
+                    || routeIndex < 0 || routeIndex >= actual.routes().size()
+                    || actual.routes().get(routeIndex) != route
+                    || !route.hypothesis().id().equals(
+                            actual.routes().get(routeIndex).hypothesis().id())
+                    || current == null
+                    || !watch.selectedWayKey().equals(request.selectedWayKey())
+                    || !watch.selectedRange().equals(request.selectedRange())
+                    || !watch.snapshotId().equals(frozen.snapshotId())
+                    || !watch.datasetIdentity().equals(frozen.datasetIdentity())
+                    || watch.sourceGeneration() != frozen.sourceGeneration()
+                    || !watch.networkContentHash().equals(frozen.canonicalHash())
+                    || !watch.snapshotId().equals(current.snapshotId())
+                    || !watch.datasetIdentity().equals(current.datasetIdentity())
+                    || watch.sourceGeneration() != current.sourceGeneration()
+                    || !watch.networkContentHash().equals(current.canonicalHash())) {
+                throw new IllegalArgumentException("No-change proof differs from selected source or current network");
+            }
+        }
+    }
+
     /** Exact immutable plan when inspectable, plus its typed Apply availability. */
     public record Assessment(Optional<AlignmentEditPlan> plan,
             ApplyAvailability availability, String detail,
             ManualJunctionEligibility.Reason manualReason,
             ManualJunctionEligibility.Reason junctionReason,
-            Optional<NoChangeWatch> noChangeWatch) {
+            Optional<NoChangeWatch> noChangeWatch,
+            Optional<NoChangeProof> noChangeProof) {
+        public Assessment(Optional<AlignmentEditPlan> plan,
+                ApplyAvailability availability, String detail,
+                ManualJunctionEligibility.Reason manualReason,
+                ManualJunctionEligibility.Reason junctionReason,
+                Optional<NoChangeWatch> noChangeWatch) {
+            this(plan, availability, detail, manualReason, junctionReason,
+                    noChangeWatch, Optional.empty());
+        }
         public Assessment(Optional<AlignmentEditPlan> plan,
                 ApplyAvailability availability, String detail) {
             this(plan, availability, detail, null, null, Optional.empty());
@@ -123,8 +182,10 @@ public final class ModernSingleWayEditPlanAdapter {
                     || availability == ApplyAvailability.FINAL_TOPOLOGY_CONTINUATION
                     || availability == ApplyAvailability.FINAL_GEOMETRY_BLOCKED);
             if (plan == null || availability == null || detail == null || detail.isBlank()
-                    || noChangeWatch == null
+                    || noChangeWatch == null || noChangeProof == null
                     || (availability == ApplyAvailability.NO_CHANGE) != noChangeWatch.isPresent()
+                    || noChangeProof.isPresent() && (availability != ApplyAvailability.NO_CHANGE
+                            || noChangeProof.orElseThrow().watch != noChangeWatch.orElseThrow())
                     || inspectable != plan.isPresent()
                     || manualReason != null && availability != ApplyAvailability.MANUAL_JUNCTION
                     || manualReason != null && manualReason != junctionReason
@@ -218,7 +279,8 @@ public final class ModernSingleWayEditPlanAdapter {
                                     ? "The final candidate proposes no edit; review findings remain: "
                                             + draft.validation().findingCodes()
                                     : "The final candidate already matches captured geometry; "
-                                            + "no edit is needed", null, null, Optional.of(watch));
+                                            + "no edit is needed", null, null, Optional.of(watch),
+                            Optional.of(new NoChangeProof(computed, routeIndex, route, watch)));
                 }
                 return unavailable(ApplyAvailability.PLAN_UNAVAILABLE,
                         "The unchanged final candidate is not applicable: "

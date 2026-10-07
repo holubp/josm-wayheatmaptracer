@@ -21,6 +21,9 @@ public interface LockedApplyValidator {
         transaction.run();
     }
 
+    /** Explicitly certifies that the wrapper never rejects after a normally returned transaction. */
+    default boolean returnsNormallyAfterCompletedTransaction() { return false; }
+
     /** Validates the exact plan before every Apply or Redo allocation, snapshot, or mutation. */
     void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean requireSourceGeneration);
 
