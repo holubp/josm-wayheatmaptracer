@@ -61,6 +61,7 @@ public final class ModernSingleWayEditPlanAdapter {
     /** Typed product reason describing whether the exact final preview can reach Apply. */
     public enum ApplyAvailability {
         PLAN_AVAILABLE,
+        NO_CHANGE,
         CLEANUP_UNAVAILABLE_FOR_ENGINE,
         PRECISE_SHAPE_REQUIRED,
         SOURCE_LINEAGE_UNAVAILABLE,
@@ -74,20 +75,42 @@ public final class ModernSingleWayEditPlanAdapter {
         PLAN_UNAVAILABLE
     }
 
+    /** Frozen network identity for a no-write result's separate live-source check. */
+    public record NoChangeWatch(PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+            String snapshotId, String datasetIdentity, long sourceGeneration,
+            String networkContentHash) {
+        public NoChangeWatch {
+            if (selectedWayKey == null || selectedWayKey.type() != PrimitiveKey.Type.WAY
+                    || selectedRange == null || snapshotId == null || snapshotId.isBlank()
+                    || datasetIdentity == null || datasetIdentity.isBlank()
+                    || networkContentHash == null || networkContentHash.isBlank()) {
+                throw new IllegalArgumentException("No-change network watch is incomplete");
+            }
+        }
+    }
+
     /** Exact immutable plan when inspectable, plus its typed Apply availability. */
     public record Assessment(Optional<AlignmentEditPlan> plan,
             ApplyAvailability availability, String detail,
             ManualJunctionEligibility.Reason manualReason,
-            ManualJunctionEligibility.Reason junctionReason) {
+            ManualJunctionEligibility.Reason junctionReason,
+            Optional<NoChangeWatch> noChangeWatch) {
         public Assessment(Optional<AlignmentEditPlan> plan,
                 ApplyAvailability availability, String detail) {
-            this(plan, availability, detail, null, null);
+            this(plan, availability, detail, null, null, Optional.empty());
         }
 
         public Assessment(Optional<AlignmentEditPlan> plan,
                 ApplyAvailability availability, String detail,
                 ManualJunctionEligibility.Reason manualReason) {
-            this(plan, availability, detail, manualReason, manualReason);
+            this(plan, availability, detail, manualReason, manualReason, Optional.empty());
+        }
+
+        public Assessment(Optional<AlignmentEditPlan> plan,
+                ApplyAvailability availability, String detail,
+                ManualJunctionEligibility.Reason manualReason,
+                ManualJunctionEligibility.Reason junctionReason) {
+            this(plan, availability, detail, manualReason, junctionReason, Optional.empty());
         }
 
         /** Validates a bounded user-visible assessment. */
@@ -100,6 +123,8 @@ public final class ModernSingleWayEditPlanAdapter {
                     || availability == ApplyAvailability.FINAL_TOPOLOGY_CONTINUATION
                     || availability == ApplyAvailability.FINAL_GEOMETRY_BLOCKED);
             if (plan == null || availability == null || detail == null || detail.isBlank()
+                    || noChangeWatch == null
+                    || (availability == ApplyAvailability.NO_CHANGE) != noChangeWatch.isPresent()
                     || inspectable != plan.isPresent()
                     || manualReason != null && availability != ApplyAvailability.MANUAL_JUNCTION
                     || manualReason != null && manualReason != junctionReason
@@ -177,7 +202,29 @@ public final class ModernSingleWayEditPlanAdapter {
                     "The exact candidate-owned final assignments are unavailable");
         }
         try {
-            AlignmentEditPlan plan = adapt(computed, routeIndex);
+            SingleWayDraft draft = draftSingleWay(computed, routeIndex);
+            if (draft.exactPrimitiveValuesUnchanged()) {
+                // No edit authority can be exercised when the complete primitive graph and
+                // referrer watches are exactly unchanged. Still require the ordinary final
+                // quality/topology result to be applicable; review findings remain visible.
+                if (draft.validation().applicable() && draft.preview().isEmpty()) {
+                    NetworkSnapshot frozen = draft.before();
+                    NoChangeWatch watch = new NoChangeWatch(
+                            computed.request().selectedWayKey(), computed.request().selectedRange(),
+                            frozen.snapshotId(), frozen.datasetIdentity(),
+                            frozen.sourceGeneration(), frozen.canonicalHash());
+                    return new Assessment(Optional.empty(), ApplyAvailability.NO_CHANGE,
+                            draft.validation().reviewRequired()
+                                    ? "The final candidate proposes no edit; review findings remain: "
+                                            + draft.validation().findingCodes()
+                                    : "The final candidate already matches captured geometry; "
+                                            + "no edit is needed", null, null, Optional.of(watch));
+                }
+                return unavailable(ApplyAvailability.PLAN_UNAVAILABLE,
+                        "The unchanged final candidate is not applicable: "
+                                + draft.validation().findingCodes());
+            }
+            AlignmentEditPlan plan = draft.toPlan();
             ApplyAvailability topology = topologyAvailability(plan.validation().findingCodes());
             if (topology != ApplyAvailability.PLAN_AVAILABLE) {
                 return new Assessment(Optional.of(plan), topology,
@@ -281,6 +328,32 @@ public final class ModernSingleWayEditPlanAdapter {
      * @return complete validated single-way edit plan
      */
     public AlignmentEditPlan adapt(LiveBPreviewService.Computed computed, int routeIndex) {
+        return draftSingleWay(computed, routeIndex).toPlan();
+    }
+
+    /** Validated proposal before the edit plan's deliberately nonempty write invariant. */
+    private record SingleWayDraft(LiveBPreviewService.Computed computed,
+            NetworkSnapshot before, NetworkSnapshot after,
+            Map<PrimitiveKey, List<GeographicPoint>> preview,
+            ValidationReport validation, String routeIdentity) {
+        boolean exactPrimitiveValuesUnchanged() {
+            return before.primitives().equals(after.primitives())
+                    && before.incomingReferrerWatches().equals(after.incomingReferrerWatches());
+        }
+
+        AlignmentEditPlan toPlan() {
+            TraceRequest request = computed.request();
+            LiveBPreviewService.Captured captured = computed.captured();
+            EvidenceSnapshot evidence = computed.evidence();
+            return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
+                    before, after, evidence.coordinateFrame(), request.permissions(),
+                    captured.settingsHash(), evidence.canonicalHash(), captured.parameterHash(),
+                    routeIdentity, preview, validation);
+        }
+    }
+
+    private static SingleWayDraft draftSingleWay(LiveBPreviewService.Computed computed,
+            int routeIndex) {
         if (computed == null || computed.captured() == null || computed.evidence() == null
                 || computed.request() == null || computed.pipeline() == null
                 || routeIndex < 0 || routeIndex >= computed.pipeline().routes().size()) {
@@ -325,6 +398,9 @@ public final class ModernSingleWayEditPlanAdapter {
                     && before.closure().movableExistingNodeKeys().contains(existing.nodeKey())
                     && !deferredJunctions.contains(existing.nodeKey())) {
                 DetachedNode old = (DetachedNode) before.primitives().get(existing.nodeKey());
+                if (metric.equals(evidence.coordinateFrame().toMetric(old.coordinate()))) {
+                    geographic = old.coordinate();
+                }
                 afterValues.put(existing.nodeKey(), new DetachedNode(existing.nodeKey(), geographic,
                         old.tags(), old.deleted(), old.modified() || !old.coordinate().equals(geographic)));
             }
@@ -355,10 +431,8 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         ValidationReport validation = validation(route.quality(),
                 request.permissions().junctionPolicy(), topologyFindings);
-        return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
-            before, after, evidence.coordinateFrame(), request.permissions(),
-            captured.settingsHash(), evidence.canonicalHash(), captured.parameterHash(),
-            route.hypothesis().id(), preview, validation);
+        return new SingleWayDraft(computed, before, after, preview, validation,
+                route.hypothesis().id());
     }
 
     /** Builds one exact plan from ordered, candidate-owned interval geometry. */

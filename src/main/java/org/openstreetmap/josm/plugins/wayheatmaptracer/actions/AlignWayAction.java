@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.openstreetmap.josm.tools.I18n.tr;
 
+import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
@@ -20,6 +21,7 @@ import java.util.function.BiFunction;
 import java.util.function.LongSupplier;
 
 import javax.swing.JButton;
+import javax.swing.JComponent;
 import javax.swing.JCheckBox;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.JComboBox;
@@ -69,6 +71,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConf
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
@@ -98,6 +101,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.ManagedHeatmapLay
 import org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FindingSummary;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewOverlay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
@@ -1114,7 +1118,9 @@ public class AlignWayAction extends JosmAction {
                 : state.batch().partition().fixedIslands()) {
             summary.append("Fixed junction occurrences ").append(island.range().firstIndex())
                     .append('–').append(island.range().lastIndex()).append(": ")
-                    .append(island.reasons()).append(". Adjust this junction manually first.\n");
+                    .append(FindingSummary.summarize(island.reasons().stream()
+                            .map(Enum::name).toList()))
+                    .append(". Adjust this junction manually first.\n");
         }
         for (FixedIntervalEditPlanComposer.IntervalAssessment interval
                 : state.assessment().intervals()) {
@@ -1123,7 +1129,7 @@ public class AlignWayAction extends JosmAction {
                 case FROZEN_LOCAL_FAILURE -> "Kept in place";
                 case BLOCKED_GLOBAL -> "Blocked by whole-way validation";
                 case UNCHANGED_NOOP -> "No change";
-            };
+        };
             summary.append("Interval ").append(interval.intervalIndex() + 1).append(": ")
                     .append(outcome).append(" (").append(interval.reason())
                     .append("); route ").append(interval.routeIndex() + 1).append('\n');
@@ -1132,7 +1138,14 @@ public class AlignWayAction extends JosmAction {
             AlignmentEditPlan plan = state.assessment().plan().orElseThrow();
             summary.append("Complete preview: ").append(plan.validation().disposition())
                     .append("; affected ways: ").append(plan.affectedWayKeys().size())
-                    .append("; findings: ").append(plan.validation().findingCodes()).append('\n');
+                    .append("; findings: ").append(FindingSummary.summarize(
+                            plan.validation().findingCodes())).append('\n');
+        } else if (!state.assessment().intervals().isEmpty()
+                && state.assessment().intervals().stream().allMatch(interval ->
+                        interval.disposition()
+                                == FixedIntervalEditPlanComposer.Disposition.UNCHANGED_NOOP)) {
+            summary.append("Already aligned: no changes are proposed; no edit command or history entry "
+                    + "will be created.\n");
         }
         return summary.toString();
     }
@@ -1199,8 +1212,6 @@ public class AlignWayAction extends JosmAction {
         quality.setLineWrap(true);
         quality.setWrapStyleWord(true);
         quality.setCaretPosition(0);
-        JScrollPane qualityScroll = new JScrollPane(quality);
-        qualityScroll.setPreferredSize(new Dimension(640, 110));
         JLabel diagnostics = new JLabel(tr(
                 "This preview is bound to its captured source and network snapshot."));
         ModernSingleWayEditPlanAdapter planAdapter = new ModernSingleWayEditPlanAdapter();
@@ -1211,24 +1222,29 @@ public class AlignWayAction extends JosmAction {
         boolean[] completed = {false};
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
+        JButton preciseRerun = new JButton(tr("Rerun once with Precise Shape"));
         confirm.setEnabled(false);
         apply.setEnabled(false);
+        preciseRerun.setVisible(false);
         JButton close = new JButton(tr("Close preview"));
-        JPanel panel = new JPanel();
-        panel.add(new JLabel(tr("{0} final geometry",
+        JPanel header = new JPanel();
+        header.add(new JLabel(tr("{0} final geometry",
                 livePreviewEngineLabel(slideConfig.heatmap().trackerMode()))));
         String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
         if (!settingsNotice.isEmpty()) {
-            panel.add(settingsNoticeComponent(settingsNotice));
+            header.add(settingsNoticeComponent(settingsNotice));
         }
         if (candidates.size() > 1) {
-            panel.add(choices);
+            header.add(choices);
         }
-        panel.add(qualityScroll);
-        panel.add(diagnostics);
-        panel.add(confirm);
-        panel.add(apply);
-        panel.add(close);
+        header.add(diagnostics);
+        JPanel buttons = new JPanel(new java.awt.GridLayout(0, 2, 6, 4));
+        buttons.add(confirm);
+        buttons.add(apply);
+        buttons.add(preciseRerun);
+        buttons.add(close);
+        JPanel panel = modernReviewContent(quality, buttons);
+        panel.add(header, BorderLayout.NORTH);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("{0} Alignment Preview",
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode())), false);
@@ -1255,6 +1271,11 @@ public class AlignWayAction extends JosmAction {
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             if (preflight == ModernApplyPreflight.READY) {
                 assessment[0] = planAdapter.assess(computed, index);
+                if (assessment[0].availability()
+                        == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
+                    requireNoChangeCurrent(assessment[0], computed,
+                            NetworkSnapshotCapture.capture(dataSet, computed.captured().specification()));
+                }
                 if (assessment[0].plan().isPresent()) {
                     plan[0] = assessment[0].plan().orElseThrow();
                     review[0] = PreviewReviewState.fromEditPlan(candidate.id(), plan[0]);
@@ -1276,10 +1297,11 @@ public class AlignWayAction extends JosmAction {
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
             }, false, PluginPreferences.isDebugEnabled(), projectedPreview);
             String availability = assessment[0] == null ? modernApplyPreflightMessage(preflight)
-                    : assessment[0].detail();
+                    : modernApplyAvailabilityMessage(assessment[0], preflight);
             List<String> reasons = plan[0] == null
                     ? computed.pipeline().routes().get(index).quality().findings().stream()
-                            .map(finding -> finding.code().name()).toList()
+                            .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
+                            .toList()
                     : plan[0].validation().findingCodes();
             String finalDisposition = assessment[0] != null
                     && assessment[0].availability()
@@ -1293,10 +1315,19 @@ public class AlignWayAction extends JosmAction {
                     assessment[0] == null ? null : assessment[0].junctionReason());
             String sourceLabel = computed.captured().managedRaster() == null
                     ? tr("visible layer") : tr("managed tiles");
+            String preciseRecovery = preciseRerunUnsupportedReason(selection, tracingAtCapture,
+                    persistedSlideConfig, imageryLayer);
+            boolean needsPrecise = assessment[0] != null && assessment[0].availability()
+                    == ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED;
+            if (needsPrecise) {
+                availability += preciseRecovery == null
+                        ? "\n" + tr("Recovery: a one-shot Precise Shape rerun is available")
+                        : "\n" + tr("Precise Shape recovery unavailable: {0}", preciseRecovery);
+            }
             quality.setText(liveBQualitySummary(computed, index) + "\n\n"
                     + modernPreviewSummary(livePreviewEngineLabel(computed.request().engine()),
                             sourceLabel, finalDisposition,
-                            plan[0] == null ? 0 : plan[0].affectedWayKeys().size(), reasons,
+                            plan[0] == null ? null : plan[0].affectedWayKeys().size(), reasons,
                             review[0] != null && review[0].confirmed(), availability));
             quality.setCaretPosition(0);
             if (assessment[0] != null && !assessment[0].applyAvailable()) {
@@ -1304,9 +1335,15 @@ public class AlignWayAction extends JosmAction {
                         candidate.id(), assessment[0].detail());
             }
             confirm.setEnabled(review[0] != null && review[0].disposition()
-                    == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED);
-            apply.setEnabled(review[0] != null && review[0].canApply() && !applying[0]);
-        };
+                    == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED
+                    && assessment[0] != null && assessment[0].applyAvailable());
+            apply.setEnabled(modernApplyEnabled(assessment[0] != null
+                    && assessment[0].applyAvailable(), review[0], applying[0], false));
+            preciseRerun.setVisible(needsPrecise);
+            preciseRerun.setEnabled(needsPrecise && preciseRecovery == null);
+            preciseRerun.setToolTipText(needsPrecise && preciseRecovery != null
+                    ? preciseRecovery : tr("Runs one new preview in Precise Shape without changing saved settings"));
+            };
         choices.addActionListener(event -> {
             try {
                 refresh.run();
@@ -1352,7 +1389,8 @@ public class AlignWayAction extends JosmAction {
             try {
                 refresh.run();
                 if (review[0] == null || review[0].disposition()
-                        != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED) {
+                        != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED
+                        || assessment[0] == null || !assessment[0].applyAvailable()) {
                     throw new IllegalStateException("This candidate does not require a confirmable review");
                 }
                 review[0] = review[0].confirm();
@@ -1360,7 +1398,8 @@ public class AlignWayAction extends JosmAction {
                 recordModernDiagnostics(computed, "confirmed", index, plan[0], true, false,
                         diagnosticAttemptIdentity);
                 confirm.setEnabled(false);
-                apply.setEnabled(true);
+                apply.setEnabled(modernApplyEnabled(assessment[0] != null
+                        && assessment[0].applyAvailable(), review[0], applying[0], false));
                 CenterlineCandidate candidate = candidates.get(index);
                 AlignmentResult display = liveBDisplayResult(selection, computed, candidates,
                         candidate, plan[0]);
@@ -1385,6 +1424,39 @@ public class AlignWayAction extends JosmAction {
                         plan[0], false, false, diagnosticAttemptIdentity);
                 dialog.dispatchEvent(new WindowEvent(dialog, WindowEvent.WINDOW_CLOSING));
                 showError(tr("Alignment preview became stale: {0}", exception.getMessage()));
+            }
+        });
+        preciseRerun.addActionListener(event -> {
+            try {
+                if (assessment[0] == null || assessment[0].availability()
+                        != ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED) {
+                    throw new IllegalStateException(tr("Precise Shape rerun is not available for this candidate"));
+                }
+                requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, slideConfig,
+                        persistedSlideConfig, tracingAtCapture, computed.captured(), previewSourceOwner);
+                OrdinaryActionRouting<ImageryLayer> rerun = resolvePreciseRerun(
+                        assessment[0].availability(), tracingAtCapture, persistedSlideConfig,
+                        () -> imageryLayer, () -> imageryLayer);
+                AlignmentConfig routedConfig = rerun.route().invocation().config();
+                if (rerun.route().pipeline() == OrdinaryPipeline.MODERN_VISIBLE) {
+                    LiveBPreviewService.requireSupported(selection,
+                            ProjectionRegistry.getProjection().toCode(), routedConfig, true);
+                } else if (!routedConfig.heatmap().trackerMode().capabilities().supportsManagedSource()) {
+                    throw new IllegalStateException(tr("The selected engine cannot use the managed source for Precise Shape"));
+                }
+                completed[0] = true;
+                if (!livePreviewSession.close(previewOwner)) {
+                    throw new IllegalStateException(tr("The preview is no longer current"));
+                }
+                dialog.dispose();
+                startLiveBPreview(dataSet, selection, rerun.visibleSource(), mapView,
+                        routedConfig, rerun.requestedConfig(), persistedSlideConfig, tracingAtCapture,
+                        rerun.route().invocation().recovery().toPermissions(), rerun,
+                        rerun.route().pipeline() == OrdinaryPipeline.MODERN_VISIBLE,
+                        rerun.route().pipeline() == OrdinaryPipeline.MODERN_MANAGED,
+                        diagnosticAttemptIdentity + "-precise-rerun");
+            } catch (RuntimeException exception) {
+                showError(tr("Precise Shape rerun is unavailable: {0}", exception.getMessage()));
             }
         });
         apply.addActionListener(event -> {
@@ -1590,14 +1662,158 @@ public class AlignWayAction extends JosmAction {
     }
 
     static String modernPreviewSummary(String engine, String source, String disposition,
-            int affectedWayCount, List<String> reasons, boolean confirmed,
+            Integer affectedWayCount, List<String> reasons, boolean confirmed,
             String applyAvailability) {
-        String reasonText = reasons == null || reasons.isEmpty() ? tr("none")
-                : String.join(", ", reasons);
+        String reasonText = FindingSummary.summarize(reasons == null ? List.of() : reasons);
+        String affected = affectedWayCount == null
+                ? tr("unavailable (no applicable plan)") : affectedWayCount.toString();
+        String confirmation = affectedWayCount == null
+                ? tr("unavailable (no exact plan)")
+                : disposition.equals(ValidationReport.Disposition.APPLICABLE.name())
+                    ? tr("not required")
+                    : disposition.equals(ValidationReport.Disposition.HARD_BLOCKED.name())
+                        ? tr("unavailable (plan is blocked)")
+                        : confirmed ? tr("confirmed") : tr("not confirmed");
         return tr("Engine: {0}\nSource: {1}\nDisposition: {2}\nAffected ways: {3}"
                         + "\nReasons: {4}\nConfirmation: {5}\nApply: {6}",
-                engine, source, disposition, affectedWayCount, reasonText,
-                confirmed ? tr("confirmed") : tr("not confirmed"), applyAvailability);
+                engine, source, disposition, affected, reasonText,
+                confirmation, applyAvailability);
+    }
+
+    /** Builds a fixed-height scrollable review body with controls outside the scroll region. */
+    static JPanel modernReviewContent(JTextArea summary, JComponent footer) {
+        Objects.requireNonNull(summary, "summary");
+        Objects.requireNonNull(footer, "footer");
+        JScrollPane scroll = new JScrollPane(summary);
+        scroll.setPreferredSize(new Dimension(640, 170));
+        JPanel content = new JPanel(new BorderLayout(0, 6));
+        content.add(scroll, BorderLayout.CENTER);
+        content.add(footer, BorderLayout.SOUTH);
+        content.setPreferredSize(new Dimension(680, 235));
+        return content;
+    }
+
+    /** Applies only when an exact safe plan exists and its separate review state permits it. */
+    static boolean modernApplyEnabled(boolean safePlanAvailable, PreviewReviewState review,
+            boolean applying, boolean stale) {
+        return safePlanAvailable && review != null && review.canApply() && !applying && !stale;
+    }
+
+    /** Builds the one-shot geometry-mode copy while leaving caller preferences untouched. */
+    static AlignmentConfig oneShotPreciseConfig(AlignmentConfig saved) {
+        Objects.requireNonNull(saved, "saved");
+        return new AlignmentConfig(saved.heatmap().withAlignmentMode(AlignmentMode.PRECISE_SHAPE),
+                saved.cleanup(), saved.searchHalfWidthMetersOverride());
+    }
+
+    /** The same requested/effective route used by the one-shot recovery button. */
+    static <T> OrdinaryActionRouting<T> resolvePreciseRerun(TracingSettings tracing,
+            AlignmentConfig saved, Supplier<T> requiredVisibleSource,
+            Supplier<T> legacyVisibleSource) {
+        return resolveOrdinaryAction(tracing, oneShotPreciseConfig(saved),
+                requiredVisibleSource, legacyVisibleSource);
+    }
+
+    static <T> OrdinaryActionRouting<T> resolvePreciseRerun(
+            ModernSingleWayEditPlanAdapter.ApplyAvailability availability,
+            TracingSettings tracing, AlignmentConfig saved,
+            Supplier<T> requiredVisibleSource, Supplier<T> legacyVisibleSource) {
+        if (availability != ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED) {
+            throw new IllegalStateException("Precise Shape rerun requires an exact typed recovery reason");
+        }
+        return resolvePreciseRerun(tracing, saved, requiredVisibleSource, legacyVisibleSource);
+    }
+
+    private static String modernApplyAvailabilityMessage(
+            ModernSingleWayEditPlanAdapter.Assessment assessment, ModernApplyPreflight preflight) {
+        if (preflight != ModernApplyPreflight.READY) {
+            return tr("Apply unavailable: {0}", modernApplyPreflightMessage(preflight));
+        }
+        if (assessment == null) {
+            return tr("Apply unavailable: exact plan assessment is unavailable");
+        }
+        if (assessment.applyAvailable()) {
+            return assessment.plan().orElseThrow().validation().reviewRequired()
+                    ? tr("available after explicit confirmation") : tr("available");
+        }
+        if (assessment.availability() == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
+            return tr("Already aligned: no edit command or history entry will be created");
+        }
+        return tr("Apply unavailable: {0}", assessment.detail());
+    }
+
+    /** Binds a no-write assessment to the same frozen and freshly recaptured network. */
+    static void requireNoChangeCurrent(ModernSingleWayEditPlanAdapter.Assessment assessment,
+            LiveBPreviewService.Computed computed, NetworkSnapshot current) {
+        if (assessment == null || assessment.availability()
+                    != ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE
+                || computed == null || computed.captured() == null
+                || computed.captured().specification() == null
+                || computed.captured().network() == null || current == null) {
+            throw new IllegalStateException("The no-change preview has no current source proof");
+        }
+        ModernSingleWayEditPlanAdapter.NoChangeWatch watch =
+                assessment.noChangeWatch().orElseThrow(() -> new IllegalStateException(
+                        "The no-change preview has no frozen network watch"));
+        NetworkSnapshot frozen = computed.captured().network();
+        if (!watch.selectedWayKey().equals(computed.request().selectedWayKey())
+                || !watch.selectedRange().equals(computed.request().selectedRange())
+                || !watch.selectedWayKey().equals(computed.captured().specification().selectedWayKey())
+                || !watch.selectedRange().equals(computed.captured().specification().selectedRange())
+                || !watch.snapshotId().equals(frozen.snapshotId())
+                || !watch.datasetIdentity().equals(frozen.datasetIdentity())
+                || watch.sourceGeneration() != frozen.sourceGeneration()
+                || !watch.networkContentHash().equals(frozen.canonicalHash())
+                || !watch.snapshotId().equals(current.snapshotId())
+                || !watch.datasetIdentity().equals(current.datasetIdentity())
+                || watch.sourceGeneration() != current.sourceGeneration()
+                || !watch.networkContentHash().equals(current.canonicalHash())) {
+            throw new IllegalStateException("The no-change preview became stale after capture");
+        }
+    }
+
+    private static String preciseRerunUnsupportedReason(SelectionContext selection,
+            TracingSettings tracing, AlignmentConfig persistedConfig, ImageryLayer imageryLayer) {
+        try {
+            OrdinaryActionRouting<ImageryLayer> route = resolvePreciseRerun(
+                    tracing, persistedConfig, () -> imageryLayer, () -> imageryLayer);
+            if (route.route().pipeline() == OrdinaryPipeline.LEGACY_COMPATIBILITY) {
+                return tr("The saved engine has no Precise Shape live-preview route");
+            }
+            AlignmentConfig routed = route.route().invocation().config();
+            if (route.route().pipeline() == OrdinaryPipeline.MODERN_VISIBLE) {
+                LiveBPreviewService.requireSupported(selection,
+                        ProjectionRegistry.getProjection().toCode(), routed, true);
+            } else {
+                if (!routed.heatmap().hasManagedAccessValues()) {
+                    return tr("The configured managed source is unavailable");
+                }
+                if (!routed.heatmap().trackerMode().capabilities().supportsManagedSource()) {
+                    return tr("The selected engine cannot use the managed source");
+                }
+                if (routed.heatmap().simplifyEnabled()) {
+                    return tr("Precise Shape requires simplification Off for this engine");
+                }
+                if (routed.heatmap().parallelWayAwareness()) {
+                    return tr("Managed Precise Shape preview cannot use nearby-way awareness");
+                }
+                if (routed.heatmap().intensitySamplingMode() != IntensitySamplingMode.COLOR_MAPPING) {
+                    return tr("Managed Precise Shape preview requires Color mapping");
+                }
+                if (routed.heatmap().multiColorDetection()
+                        || routed.heatmap().aggregateAllColorSchemes()) {
+                    return tr("Managed Precise Shape preview cannot prove alternate-color source lineage");
+                }
+                if (routed.searchHalfWidthMetersOverride().isPresent()) {
+                    return tr("Managed Precise Shape preview cannot use a temporary search-width override");
+                }
+            }
+            return null;
+        } catch (RuntimeException unsupported) {
+            return unsupported.getMessage() == null
+                    ? tr("The source does not support this Precise Shape rerun")
+                    : unsupported.getMessage();
+        }
     }
 
     private AlignmentResult liveBDisplayResult(SelectionContext selection,
@@ -1647,10 +1863,9 @@ public class AlignWayAction extends JosmAction {
 
     private String liveBQualitySummary(LiveBPreviewService.Computed computed, int index) {
         FinalGeometryEvaluator.Result quality = computed.pipeline().routes().get(index).quality();
-        String findings = quality.findings().isEmpty() ? tr("none")
-                : quality.findings().stream()
-                        .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
-                        .reduce((left, right) -> left + ", " + right).orElse(tr("none"));
+        String findings = FindingSummary.summarize(quality.findings().stream()
+                .map(finding -> finding.code().name() + " (" + finding.severity().name() + ")")
+                .toList());
         return tr("Final quality: {0}; findings: {1}; supported length: {2} m of {3} m",
                 quality.disposition().name(), findings,
                 String.format(Locale.ROOT, "%.1f", quality.directlySupportedLengthMeters()),

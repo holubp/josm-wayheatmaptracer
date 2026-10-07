@@ -65,6 +65,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
@@ -137,6 +138,191 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 assessment.availability(), assessment.detail());
         assertTrue(assessment.applyAvailable());
         assertEquals(before, state(fixture));
+    }
+
+    @Test
+    void alreadyAlignedSingleWayReportsNoChangeWithoutPlanOrHistory() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService.Computed computed = computeAlreadyAligned(fixture);
+        List<String> before = state(fixture);
+        ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
+        ModernSingleWayEditPlanAdapter.Assessment assessment = adapter.assess(computed, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.plan().isEmpty());
+        assertFalse(assessment.applyAvailable());
+        var watch = assessment.noChangeWatch().orElseThrow();
+        assertEquals(computed.request().selectedWayKey(), watch.selectedWayKey());
+        assertEquals(computed.request().selectedRange(), watch.selectedRange());
+        assertEquals(computed.captured().network().snapshotId(), watch.snapshotId());
+        assertEquals(computed.captured().network().datasetIdentity(), watch.datasetIdentity());
+        assertEquals(computed.captured().network().sourceGeneration(), watch.sourceGeneration());
+        assertEquals(computed.captured().network().canonicalHash(), watch.networkContentHash());
+        assertThrows(IllegalArgumentException.class, () -> adapter.adapt(computed, 0),
+                "the edit-plan type must keep its nonempty write invariant");
+        assertEquals(before, state(fixture));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void reviewRequiredProbabilisticNoChangeRetainsItsFindingWithoutAnEdit() throws Exception {
+        Fixture fixture = fixture();
+        LiveBPreviewService.Computed computed = computeAlreadyAligned(fixture,
+                TrackerMode.PROBABILISTIC);
+        assertTrue(computed.pipeline().routes().get(0).quality()
+                .has(FinalGeometryEvaluator.FindingCode.SEARCH_TRUNCATED));
+        List<String> before = state(fixture);
+
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE,
+                assessment.availability(), assessment.detail());
+        assertTrue(assessment.detail().contains("SEARCH_TRUNCATED"));
+        assertTrue(assessment.plan().isEmpty());
+        assertFalse(assessment.applyAvailable());
+        assertEquals(computed.captured().network().canonicalHash(),
+                assessment.noChangeWatch().orElseThrow().networkContentHash());
+        assertEquals(before, state(fixture));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @Test
+    void unchangedSelectedWayCannotHideAReconstructedIncidentApproachWrite() throws Exception {
+        Fixture fixture = fixture();
+        Node junction = fixture.way().getNode(0);
+        Node farSouth = loadedNode(41, longitude(-70), longitude(-8));
+        Node southPort = loadedNode(42, longitude(-31), longitude(-8));
+        Node south = loadedNode(43, longitude(-8), longitude(-6));
+        Node north = loadedNode(44, longitude(8), longitude(-10));
+        Node northPort = loadedNode(45, longitude(31), longitude(-8));
+        Node farNorth = loadedNode(46, longitude(70), longitude(-8));
+        for (Node node : List.of(farSouth, southPort, south, north, northPort, farNorth)) {
+            fixture.dataSet().addPrimitive(node);
+        }
+        Way receiver = new Way();
+        receiver.setNodes(List.of(farSouth, southPort, south, junction,
+                north, northPort, farNorth));
+        receiver.setOsmId(47, 1);
+        receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService service = new LiveBPreviewService();
+        AlignmentConfig move = new AlignmentConfig(config(TrackerMode.CORRIDOR_AWARE).heatmap()
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES), GeometryCleanupConfig.disabled());
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), alignedCrossRaster(), move, true, permissions));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
+        // Make the selected occurrences exactly captured; the real fitter otherwise shifts
+        // the shared endpoint by a sub-millimetre projection round trip. Receiver evidence
+        // and reconstruction remain the production result of the crossed raster.
+        Map<FinalRoutePointId, MetricPoint> exactAssignments = new LinkedHashMap<>(route.assignments());
+        List<MetricPoint> exactPoints = new ArrayList<>(route.hypothesis().points());
+        for (int index = 0; index < route.pointIds().size(); index++) {
+            FinalRoutePointId id = route.pointIds().get(index);
+            if (id instanceof ExistingWayNodeOccurrence existing) {
+                GeographicPoint original = ((DetachedNode) computed.captured().network().primitives()
+                        .get(existing.nodeKey())).coordinate();
+                MetricPoint exact = computed.evidence().coordinateFrame().toMetric(original);
+                exactAssignments.put(id, exact);
+                exactPoints.set(index, exact);
+            }
+        }
+        TraceHypothesis hypothesis = route.hypothesis();
+        TraceHypothesis exactHypothesis = new TraceHypothesis(hypothesis.id(),
+                hypothesis.branchSignature(), exactPoints, hypothesis.support(),
+                hypothesis.objective(), hypothesis.posteriorProbability(), hypothesis.diagnostics());
+        computed = withRoute(computed, new ModernTracePipeline.Route(route.rawHypothesis(),
+                exactHypothesis, route.pointIds(), exactAssignments, route.sourceOwnership(),
+                route.quality(), route.cleanupStatus(), route.geometryChanged()));
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        var plan = assessment.plan().orElseThrow();
+        PrimitiveKey selectedKey = computed.request().selectedWayKey();
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 47);
+        PrimitiveKey southKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 43);
+        PrimitiveKey northKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 44);
+        assertEquals(plan.before().primitives().get(selectedKey),
+                plan.after().primitives().get(selectedKey));
+        for (Node selectedNode : fixture.way().getNodes()) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                    selectedNode.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertTrue(!plan.before().primitives().get(southKey).equals(plan.after().primitives().get(southKey))
+                || !plan.before().primitives().get(northKey).equals(plan.after().primitives().get(northKey)));
+        assertTrue(plan.affectedWayKeys().contains(receiverKey));
+        assertTrue(plan.writePrimitiveKeys().contains(southKey)
+                || plan.writePrimitiveKeys().contains(northKey));
+    }
+
+    @Test
+    void noChangeNeverHidesBlockedStaleOrUnauthorizedRoutes() throws Exception {
+        LiveBPreviewService.Computed computed = computeAlreadyAligned(fixture());
+        ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
+        ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
+        FinalGeometryEvaluator.Finding finding = new FinalGeometryEvaluator.Finding(
+                FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
+                FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, 0, 1.0);
+        FinalGeometryEvaluator.Result blocked = new FinalGeometryEvaluator.Result(
+                route.quality().id(), FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                List.of(finding), route.quality().totalLengthMeters(),
+                route.quality().directlySupportedLengthMeters(),
+                route.quality().worstUnsupportedSpanMeters(),
+                route.quality().meanImageCenterCost(),
+                route.quality().bendPreservingRoughness());
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE,
+                adapter.assess(withRoute(computed, copy(route, route.pointIds(),
+                        route.assignments(), route.sourceOwnership(), blocked)), 0).availability());
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE,
+                adapter.assess(withCapturedIdentities(computed, "stale-settings",
+                        computed.captured().parameterHash()), 0).availability());
+
+        ExistingWayNodeOccurrence first = (ExistingWayNodeOccurrence) route.pointIds().get(0);
+        ExistingWayNodeOccurrence last = (ExistingWayNodeOccurrence)
+                route.pointIds().get(route.pointIds().size() - 1);
+        ExistingWayNodeOccurrence wrong = new ExistingWayNodeOccurrence(first.wayKey(),
+                last.nodeKey(), first.originalOccurrenceIndex());
+        List<FinalRoutePointId> wrongIds = new ArrayList<>(route.pointIds());
+        wrongIds.set(0, wrong);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE,
+                adapter.assess(withRoute(computed, copy(route, wrongIds,
+                        replaceKey(route.assignments(), first, wrong),
+                        replaceKey(route.sourceOwnership(), first, wrong), route.quality())),
+                        0).availability());
+
+        MetricPoint original = route.assignments().get(first);
+        MetricPoint shifted = new MetricPoint(original.xMeters(), original.yMeters() + 1.0);
+        Map<FinalRoutePointId, MetricPoint> moved = new LinkedHashMap<>(route.assignments());
+        moved.put(first, shifted);
+        List<MetricPoint> points = new ArrayList<>(route.hypothesis().points());
+        points.set(0, shifted);
+        var source = route.hypothesis();
+        var changed = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis(
+                source.id(), source.branchSignature(), points, source.support(),
+                source.objective(), source.posteriorProbability(), source.diagnostics());
+        ModernTracePipeline.Route unauthorized = new ModernTracePipeline.Route(
+                route.rawHypothesis(), changed, route.pointIds(), moved,
+                route.sourceOwnership(), route.quality(), route.cleanupStatus(), true);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE,
+                adapter.assess(withRoute(computed, unauthorized), 0).availability());
+    }
+
+    @Test
+    void meaningfulChangedRouteStillBuildsMaterialEditPlan() throws Exception {
+        ModernSingleWayEditPlanAdapter.Assessment assessment =
+                new ModernSingleWayEditPlanAdapter().assess(
+                        compute(fixture(), TrackerMode.CORRIDOR_AWARE), 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        assertFalse(assessment.plan().orElseThrow().writePrimitiveKeys().isEmpty());
     }
 
     @Test
@@ -1094,12 +1280,31 @@ class V022ModernSingleWayEditPlanAdapterTest {
         return compute(fixture, mode, config(mode));
     }
 
+    private static LiveBPreviewService.Computed computeAlreadyAligned(Fixture fixture)
+            throws Exception {
+        return computeAlreadyAligned(fixture, TrackerMode.CORRIDOR_AWARE);
+    }
+
+    private static LiveBPreviewService.Computed computeAlreadyAligned(Fixture fixture,
+            TrackerMode engine) throws Exception {
+        AlignmentConfig moveExisting = new AlignmentConfig(
+                config(engine).heatmap()
+                        .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES),
+                GeometryCleanupConfig.disabled());
+        return compute(fixture, engine, moveExisting, alignedRaster());
+    }
+
     private static LiveBPreviewService.Computed compute(Fixture fixture, TrackerMode mode,
             AlignmentConfig config) throws Exception {
+        return compute(fixture, mode, config, raster());
+    }
+
+    private static LiveBPreviewService.Computed compute(Fixture fixture, TrackerMode mode,
+            AlignmentConfig config, LiveBPreviewService.VisibleRaster input) throws Exception {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
-            fixture.dataSet(), fixture.selection(), raster(), config,
+            fixture.dataSet(), fixture.selection(), input, config,
             mode == TrackerMode.DIRECTIONAL_IMAGE));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
         assertFalse(computed.pipeline().routes().isEmpty(),
@@ -1179,11 +1384,40 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     private static LiveBPreviewService.VisibleRaster raster() {
+        return rasterAtRow(288.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster alignedRaster() {
+        return rasterAtRow(300.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster alignedCrossRaster() {
+        int width = 1200;
+        int height = 1200;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double northMeters = (600.0 - y) / RenderedHeatmapSampler.RASTER_SCALE;
+            double horizontal = Math.exp(-0.5 * northMeters * northMeters / 1.44);
+            for (int x = 0; x < width; x++) {
+                double eastMeters = (x - 600.0) / RenderedHeatmapSampler.RASTER_SCALE;
+                double separation = eastMeters + 8.0;
+                double vertical = Math.exp(-0.5 * separation * separation / 1.44);
+                int gray = (int) Math.round(255.0 * (0.02 + 0.80 * Math.max(
+                        horizontal, vertical)));
+                argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
+            }
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -100.0, -100.0, 100.0, 100.0, 1.0, 1.0,
+                OptionalDouble.of(1.0), "aligned-cross", "EPSG:3857");
+    }
+
+    private static LiveBPreviewService.VisibleRaster rasterAtRow(double ridgeRow) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
         for (int y = 0; y < height; y++) {
-            double distance = (y - 288.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double distance = (y - ridgeRow) / RenderedHeatmapSampler.RASTER_SCALE;
             double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / (1.2 * 1.2));
             int gray = (int) Math.round(255.0 * intensity);
             int pixel = 0xff000000 | gray << 16 | gray << 8 | gray;

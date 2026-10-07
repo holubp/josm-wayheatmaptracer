@@ -64,6 +64,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
@@ -76,6 +77,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolic
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceLockedApplyValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ManagedSourceReceipt;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.VisibleSourceLockedApplyValidator;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
@@ -169,6 +171,97 @@ class OrdinaryModernApplyPreparationTest {
                 assertEquals(originalGeometry, geometry(fixture.way()));
             }
             UndoRedoHandler.getInstance().clean();
+        }
+    }
+
+    @Test
+    void preciseShapeRecoveryWithIncompatibleSavedBSettingsRunsOrdinaryAttemptAndApplies() throws Exception {
+        Fixture fixture = fixture(false, false);
+        AlignmentConfig saved = incompatibleBConfig(AlignmentMode.MOVE_EXISTING_NODES);
+        List<GeographicPoint> originalGeometry = geometry(fixture.way());
+        LiveBPreviewService.VisibleRaster rendered = offsetVisibleRaster();
+        TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                AlignmentSourceMode.VISIBLE_LAYER);
+        var initial = AlignWayAction.resolveOrdinaryAction(tracing, saved,
+                () -> "visible", () -> "legacy");
+        try (Attempt moveAttempt = publishVisible(fixture, initial, rendered)) {
+            var moveAssessment = new ModernSingleWayEditPlanAdapter().assess(moveAttempt.computed, 0);
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                    moveAssessment.availability(), moveAssessment.detail());
+            assertTrue(moveAssessment.plan().isEmpty());
+        }
+        var rerun = AlignWayAction.resolvePreciseRerun(
+                ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
+                tracing, saved,
+                () -> "visible", () -> "legacy");
+        assertEquals(AlignmentMode.MOVE_EXISTING_NODES, saved.heatmap().alignmentMode());
+        assertTrue(saved.heatmap().simplifyEnabled());
+        assertFalse(saved.cleanup().isDisabled());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, rerun.requestedConfig().heatmap().alignmentMode());
+        assertTrue(rerun.requestedConfig().heatmap().simplifyEnabled());
+        assertFalse(rerun.requestedConfig().cleanup().isDisabled());
+        assertEquals(AlignmentMode.PRECISE_SHAPE,
+                rerun.route().invocation().config().heatmap().alignmentMode());
+        assertFalse(rerun.route().invocation().config().heatmap().simplifyEnabled());
+        assertTrue(rerun.route().invocation().config().cleanup().isDisabled());
+        try (Attempt preciseAttempt = publishVisible(fixture, rerun, rendered)) {
+            assertNotNull(preciseAttempt.computed.settingsResolutionJson());
+            assertTrue(preciseAttempt.computed.settingsResolutionJson()
+                    .contains("\"requestedCleanupMode\":\"CONSTRAINED_SMOOTH_AND_REDUCE\""));
+            assertTrue(preciseAttempt.computed.settingsResolutionJson()
+                    .contains("\"effectiveCleanupMode\":\"NONE\""));
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(preciseAttempt.computed, 0);
+            assertTrue(assessment.applyAvailable(), assessment.detail());
+            var plan = assessment.plan().orElseThrow();
+            PreviewReviewState pending = PreviewReviewState.fromEditPlan("ordinary-route", plan);
+            assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, pending.disposition());
+            var prepared = edt(() -> preciseAttempt.prepare(pending.confirm()));
+            edt(() -> { UndoRedoHandler.getInstance().add(prepared.command()); return null; });
+            assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), geometry(fixture.way()));
+            assertNotEquals(originalGeometry, geometry(fixture.way()));
+            edt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
+            assertEquals(originalGeometry, geometry(fixture.way()));
+        }
+    }
+
+    @Test
+    void noChangeIsCurrentOnlyForTheExactCapturedNetworkAndCreatesNoHistory() throws Exception {
+        Fixture fixture = fixture(false, false);
+        try (Attempt attempt = publish(fixture, TrackerMode.PROBABILISTIC,
+                incompatibleBConfig(AlignmentMode.MOVE_EXISTING_NODES))) {
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(attempt.computed, 0);
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE,
+                    assessment.availability(), assessment.detail());
+            assertTrue(assessment.plan().isEmpty());
+            var current = edt(() -> NetworkSnapshotCapture.capture(fixture.dataSet(),
+                    attempt.computed.captured().specification()));
+            AlignWayAction.requireNoChangeCurrent(assessment, attempt.computed, current);
+            var watch = assessment.noChangeWatch().orElseThrow();
+            var wrongGeneration = new ModernSingleWayEditPlanAdapter.Assessment(
+                    java.util.Optional.empty(),
+                    ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE,
+                    assessment.detail(), null, null,
+                    java.util.Optional.of(new ModernSingleWayEditPlanAdapter.NoChangeWatch(
+                            watch.selectedWayKey(), watch.selectedRange(), watch.snapshotId(),
+                            watch.datasetIdentity(), watch.sourceGeneration() + 1,
+                            watch.networkContentHash())));
+            assertThrows(IllegalStateException.class,
+                    () -> AlignWayAction.requireNoChangeCurrent(wrongGeneration,
+                            attempt.computed, current));
+            var regeneratedSource = new NetworkSnapshot(current.snapshotId(), current.role(),
+                    current.datasetIdentity(), current.sourceGeneration() + 1,
+                    current.closure(), current.primitives(), current.incomingReferrerWatches());
+            assertThrows(IllegalStateException.class,
+                    () -> AlignWayAction.requireNoChangeCurrent(assessment,
+                            attempt.computed, regeneratedSource));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            edt(() -> { fixture.way().getNode(0).setCoor(new LatLon(0.00001, 0)); return null; });
+            var changed = edt(() -> NetworkSnapshotCapture.capture(fixture.dataSet(),
+                    attempt.computed.captured().specification()));
+            assertThrows(IllegalStateException.class,
+                    () -> AlignWayAction.requireNoChangeCurrent(assessment, attempt.computed, changed));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
         }
     }
 
@@ -469,6 +562,11 @@ class OrdinaryModernApplyPreparationTest {
                 TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                 RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES),
                 config, () -> "visible", () -> "legacy");
+        return publish(fixture, routing);
+    }
+
+    private Attempt publish(Fixture fixture, AlignWayAction.OrdinaryActionRouting<String> routing)
+            throws Exception {
         PreviewSessionController<LiveBPreviewService.Computed> session =
                 new PreviewSessionController<>(SwingUtilities::invokeLater);
         PreviewSessionController.Owner owner = session.open(() -> { });
@@ -492,7 +590,36 @@ class OrdinaryModernApplyPreparationTest {
         }, new ManagedTileCache(cacheDirectory, classifier), classifier, TileReliabilityPolicy.defaults());
         source.updateActiveGeneration(new ManagedTileGeneration(0L));
         return new Attempt(fixture, result.get(), session, owner, source,
-                routing.route().invocation().config());
+                routing.route().invocation().config(), null);
+    }
+
+    private Attempt publishVisible(Fixture fixture,
+            AlignWayAction.OrdinaryActionRouting<String> routing,
+            LiveBPreviewService.VisibleRaster raster) throws Exception {
+        PreviewSessionController<LiveBPreviewService.Computed> session =
+                new PreviewSessionController<>(SwingUtilities::invokeLater);
+        PreviewSessionController.Owner owner = session.open(() -> { });
+        AtomicReference<LiveBPreviewService.Computed> result = new AtomicReference<>();
+        CountDownLatch published = new CountDownLatch(1);
+        edt(() -> {
+            new AlignWayAction.OrdinaryModernAttemptAssembly().start(session, owner, routing,
+                    fixture.dataSet(), fixture.selection(), raster.sourceIdentity(),
+                    (source, invocation, permissions) -> raster,
+                    (seed, invocation, cancellation) -> {
+                        throw new AssertionError("visible rerun must not acquire managed tiles");
+                    }, attempt -> {
+                        assertTrue(SwingUtilities.isEventDispatchThread());
+                        result.set(attempt.result()); published.countDown();
+                    });
+            return null;
+        });
+        assertTrue(published.await(30, TimeUnit.SECONDS), session.currentAttempt().toString());
+        TileDecoderClassifier classifier = new TileDecoderClassifier();
+        TileFetchCoordinator source = new TileFetchCoordinator((request, credentials) -> {
+            throw new AssertionError("visible rerun must not acquire managed tiles");
+        }, new ManagedTileCache(cacheDirectory, classifier), classifier, TileReliabilityPolicy.defaults());
+        return new Attempt(fixture, result.get(), session, owner, source,
+                routing.route().invocation().config(), raster);
     }
 
     private static final class Attempt implements AutoCloseable {
@@ -506,14 +633,19 @@ class OrdinaryModernApplyPreparationTest {
         final AtomicReference<Object> activeWindow = new AtomicReference<>(window);
         final LiveBPreviewService service = new LiveBPreviewService();
         final ManagedSourceReceipt receipt;
+        final LiveBPreviewService.VisibleRaster visibleRaster;
 
         Attempt(Fixture fixture, LiveBPreviewService.Computed computed,
                 PreviewSessionController<LiveBPreviewService.Computed> session,
-                PreviewSessionController.Owner owner, TileFetchCoordinator source, AlignmentConfig config) {
+                PreviewSessionController.Owner owner, TileFetchCoordinator source,
+                AlignmentConfig config, LiveBPreviewService.VisibleRaster visibleRaster) {
             this.fixture = fixture; this.computed = computed; this.session = session; this.owner = owner;
             this.source = source; currentSource = new AtomicReference<>(source);
-            receipt = new ManagedSourceReceipt(source, computed.captured(), config.heatmap(),
-                    currentSource::get, () -> config.heatmap(), () -> ProjectionRegistry.getProjection().toCode());
+            this.visibleRaster = visibleRaster;
+            receipt = visibleRaster == null
+                    ? new ManagedSourceReceipt(source, computed.captured(), config.heatmap(),
+                            currentSource::get, () -> config.heatmap(),
+                            () -> ProjectionRegistry.getProjection().toCode()) : null;
         }
 
         AlignWayAction.PreparedModernApply prepare(PreviewReviewState review) {
@@ -526,11 +658,20 @@ class OrdinaryModernApplyPreparationTest {
                         if (!session.isCurrentWindow(owner, window, activeWindow.get(), true)) {
                             throw new IllegalStateException("The preview window no longer owns this attempt");
                         }
-                        receipt.requireCurrent();
-                        service.requireCurrent(fixture.dataSet(), selected.captured());
-                    }, source::activeGenerationValue, (network, plan) ->
-                            new ManagedSourceLockedApplyValidator(network, service, selected.captured(),
-                                    receipt::requireCurrent, failure -> { throw new AssertionError(failure); }));
+                        if (visibleRaster == null) {
+                            receipt.requireCurrent();
+                            service.requireCurrent(fixture.dataSet(), selected.captured());
+                        } else {
+                            service.requireCurrent(fixture.dataSet(), selected.captured(), visibleRaster);
+                        }
+                    }, visibleRaster == null ? source::activeGenerationValue
+                            : () -> selected.captured().network().sourceGeneration(),
+                    (network, plan) -> visibleRaster == null
+                            ? new ManagedSourceLockedApplyValidator(network, service, selected.captured(),
+                                    receipt::requireCurrent, failure -> { throw new AssertionError(failure); })
+                            : new VisibleSourceLockedApplyValidator(network, service, selected.captured(),
+                                    () -> visibleRaster, null, () -> { },
+                                    failure -> { throw new AssertionError(failure); }));
         }
 
         @Override public void close() { session.close(); source.close(); }
@@ -540,14 +681,34 @@ class OrdinaryModernApplyPreparationTest {
         int size = 256;
         BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < size; y++) {
-            int gray = (int) Math.round(255 * (0.02 + 0.80 * Math.exp(-0.5 * (y - 127.0) * (y - 127.0) / 1.44)));
-            for (int x = 0; x < size; x++) image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            int gray = (int) Math.round(255 * (0.02 + 0.80 * Math.exp(-0.5
+                    * (y - 127.0) * (y - 127.0) / 1.44)));
+            for (int x = 0; x < size; x++) image.setRGB(x, y,
+                    0xff000000 | gray << 16 | gray << 8 | gray);
         }
         boolean[] valid = new boolean[size * size]; Arrays.fill(valid, true);
         double equator = Math.scalb(256.0, 15) / 2.0;
         return new ManagedModernPreviewSource.Raster(image, valid,
-                SupportedInputRasterTransform.webMercator(15, equator - size / 4.0, equator - size / 4.0, 2),
+                SupportedInputRasterTransform.webMercator(15, equator - size / 4.0,
+                        equator - size / 4.0, 2),
                 "hot", 15, identity, new ManagedTileGeneration(0L));
+    }
+
+    private static LiveBPreviewService.VisibleRaster offsetVisibleRaster() {
+        int width = 600;
+        int height = 600;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distanceMeters = (y - 288.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double intensity = 0.02 + 0.80 * Math.exp(-0.5
+                    * distanceMeters * distanceMeters / (1.2 * 1.2));
+            int gray = (int) Math.round(255.0 * intensity);
+            int pixel = 0xff000000 | gray << 16 | gray << 8 | gray;
+            Arrays.fill(argb, y * width, (y + 1) * width, pixel);
+        }
+        return new LiveBPreviewService.VisibleRaster(width, height, argb,
+                -50.0, -50.0, 50.0, 50.0, 1.0, 1.0,
+                java.util.OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
     }
 
     private static AlignmentConfig config(TrackerMode engine) {

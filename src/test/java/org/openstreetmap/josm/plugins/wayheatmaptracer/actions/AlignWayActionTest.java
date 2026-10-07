@@ -14,6 +14,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import javax.swing.SwingUtilities;
+import javax.swing.JButton;
+import javax.swing.JPanel;
+import javax.swing.JTextArea;
+import javax.swing.JScrollPane;
 
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.osm.DataSet;
@@ -30,6 +34,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -838,6 +843,85 @@ class AlignWayActionTest {
         assertTrue(summary.contains("Confirmation: confirmed"));
         assertTrue(summary.contains("Apply: review confirmed; Apply available"));
         assertFalse(summary.toLowerCase(java.util.Locale.ROOT).contains("experimental"));
+    }
+
+    @Test
+    void hundredsOfReasonsKeepButtonsReachable() {
+        JTextArea summary = new JTextArea(String.join(", ", java.util.stream.IntStream.range(0, 250)
+                .mapToObj(index -> "REASON_" + index + " × 1").toList()));
+        summary.setLineWrap(true);
+        summary.setWrapStyleWord(true);
+        JButton apply = new JButton("Apply");
+        JPanel footer = new JPanel();
+        footer.add(apply);
+
+        JPanel content = AlignWayAction.modernReviewContent(summary, footer);
+        content.setSize(720, 380);
+        content.doLayout();
+        footer.setSize(content.getWidth(), footer.getPreferredSize().height);
+        footer.doLayout();
+
+        assertEquals(2, content.getComponentCount());
+        assertTrue(content.getComponent(0) instanceof JScrollPane);
+        assertTrue(apply.getY() + apply.getHeight() <= footer.getHeight());
+        assertTrue(footer.getY() + footer.getHeight() <= content.getHeight());
+    }
+
+    @Test
+    void reviewConfirmationEnablesOnlyAvailableSafePlan() {
+        PreviewReviewState reviewRequired = PreviewReviewState.create("candidate", "plan",
+                "permissions", "source", ValidationReport.Disposition.REVIEW_REQUIRED);
+
+        assertFalse(AlignWayAction.modernApplyEnabled(false, reviewRequired, true, false));
+        assertFalse(AlignWayAction.modernApplyEnabled(true, reviewRequired, false, false));
+        assertTrue(AlignWayAction.modernApplyEnabled(true, reviewRequired.confirm(), false, false));
+        assertFalse(AlignWayAction.modernApplyEnabled(true, reviewRequired.confirm(), false, true));
+        assertFalse(AlignWayAction.modernApplyEnabled(false, reviewRequired.confirm(), false, false));
+        assertFalse(reviewRequired.confirm().matches(reviewRequired.withCandidate("another-candidate")));
+        assertFalse(reviewRequired.confirm().matches(PreviewReviewState.create("candidate",
+                "changed-plan", "permissions", "source", ValidationReport.Disposition.REVIEW_REQUIRED)));
+    }
+
+    @Test
+    void preciseShapeRecoveryIsOneShotAndPreservesSavedMode() {
+        AlignmentConfig saved = new AlignmentConfig(configuredCorridor()
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES), GeometryCleanupConfig.disabled());
+
+        AlignmentConfig retry = AlignWayAction.oneShotPreciseConfig(saved);
+
+        assertEquals(AlignmentMode.MOVE_EXISTING_NODES, saved.heatmap().alignmentMode());
+        assertEquals(AlignmentMode.PRECISE_SHAPE, retry.heatmap().alignmentMode());
+        assertEquals(saved, new AlignmentConfig(configuredCorridor()
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES), GeometryCleanupConfig.disabled()));
+    }
+
+    @Test
+    void noPlanSummaryDoesNotReportAnAffectedWayCount() {
+        String summary = AlignWayAction.modernPreviewSummary("Corridor A", "visible layer",
+                "REVIEW_REQUIRED", null, List.of("LOCAL_SHAPE_IMAGE_AMBIGUITY (REVIEW)"),
+                false, "Apply unavailable: final plan is blocked");
+
+        assertTrue(summary.contains("Affected ways: unavailable"));
+        assertTrue(summary.contains("Confirmation: unavailable (no exact plan)"));
+        assertTrue(summary.contains("Apply: Apply unavailable: final plan is blocked"));
+        assertTrue(summary.contains("LOCAL_SHAPE_IMAGE_AMBIGUITY (REVIEW) × 1"));
+    }
+
+    @Test
+    void planReasonDisplayGroupsRepeatedCodesInFirstOccurrenceOrder() {
+        List<String> reasons = new java.util.ArrayList<>();
+        for (int index = 0; index < 93; index++) {
+            reasons.add("LOCAL_SHAPE_IMAGE_AMBIGUITY");
+        }
+        reasons.add("SEARCH_TRUNCATED");
+
+        String summary = AlignWayAction.modernPreviewSummary("Corridor A", "managed tiles",
+                "REVIEW_REQUIRED", 1, reasons, false, "Apply unavailable: review required");
+
+        assertTrue(summary.contains("LOCAL_SHAPE_IMAGE_AMBIGUITY × 93"));
+        assertTrue(summary.contains("SEARCH_TRUNCATED × 1"));
+        assertTrue(summary.indexOf("LOCAL_SHAPE_IMAGE_AMBIGUITY")
+                < summary.indexOf("SEARCH_TRUNCATED"));
     }
 
     @Test
