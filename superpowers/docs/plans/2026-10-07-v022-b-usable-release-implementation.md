@@ -70,6 +70,20 @@ finding-summary units with the focused responsibilities above.
 
 **Interfaces:** `Optional<ClippedSegment> clip(GeographicPoint start, GeographicPoint end, LocalMetricFrame frame)`; nested `ClippedSegment(MetricPoint start, MetricPoint end, boolean originalStart, boolean originalEnd)` and `InvalidContextGeometryException extends IllegalArgumentException`. `Optional.empty()` means proved disjoint from the certificate rectangle; malformed/ambiguous geometry throws that exception. Only unchanged contextual segments consume clipping. Changed segments retain strict full-domain projection.
 
+**Reviewed correction during execution (2026-10-07):** Sol review and focused
+Astra consultation rejected nominal clipped metric endpoints as topology decision
+authority. A valid narrow-frame crossing and ordinary-frame vertex touch both
+returned NONE in local commit `c9e03f2`, despite the inset guard. Use original
+unwrapped geographic chords with robust/exact incidence and conservative physical
+separation/contact bounds instead. Preserve coordinate `1e-8 m` and orientation
+`1e-8 m²` units independently, bound numerical uncertainty, and fail closed when
+separation is unproved. No off-domain edited projection or artificial OSM identity.
+Clipped metric endpoints may support diagnostics, not sole safety decisions.
+The durable counterexamples and correction contract are in
+`2026-10-07-v022-context-safety-correction.md`; the detailed bounded packet is in
+this plan's SDD `task-2-astra-proof.md`. Retain both as actual adapter regressions.
+This supersedes the defective decision mechanism only, not Task 2's scope or gates.
+
 - [ ] Add RED tests named `farContextDoesNotPreventFixedApply`, `outsideEndpointsStillDetectCrossing`, `clippedEndpointDoesNotBecomeSharedOsmTouch`, `antimeridianBranchIsConsistent`, and `outsideChangedGeometryStillFailsClosed`. Assert safe plan availability, unsafe crossing refusal, and unchanged context—not merely absence of exceptions.
 - [ ] Run `sh ./gradlew --no-daemon test --tests '*V022CertifiedContextSegmentClipperTest' --tests '*V022ModernSingleWayEditPlanAdapterTest' --console=plain`; establish RED for the production refusal.
 - [ ] Implement conservative parametric clipping in unwrapped geographic coordinates on the frame's longitude branch, then project only admitted points. Preserve original segment identity/index and endpoint provenance. Prove boundary/tangency cases conservatively; uncertain clipping cannot mean disjoint. Do not extrapolate `toMetric` or enlarge its epsilon. Keep real shared-node exemptions limited to real endpoints.
