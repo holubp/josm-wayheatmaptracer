@@ -400,9 +400,8 @@ public final class LiveBPreviewService {
                     config.cleanup(), config.heatmap().alignmentMode(), engine,
                     raster.projectionCode(), null, intervalPartition);
         }
-        ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
-                != JunctionPolicy.FIXED
-                ? ManualJunctionEligibility.evaluate(network, specification) : null;
+        ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
+                specification);
         if (junction != null && junction.manualOnly()) {
             NetworkSnapshot originalNetwork = network;
             authority = freezeManualJunction(authority, way, junction);
@@ -447,10 +446,28 @@ public final class LiveBPreviewService {
         List<List<MetricPoint>> editPolygons = new ArrayList<>(decision.polygons());
         List<List<MetricPoint>> collisionPolygons = new ArrayList<>(decision.polygons());
         if (permissions.junctionPolicy() != JunctionPolicy.FIXED) {
-            List<Node> candidates = permissions.junctionPolicy() == JunctionPolicy.REATTACH
-                    ? selection.segmentNodes()
-                    : List.of(selection.segmentNodes().get(0),
-                            selection.segmentNodes().get(selection.segmentNodes().size() - 1));
+            List<Node> candidates;
+            if (permissions.junctionPolicy() == JunctionPolicy.REATTACH) {
+                candidates = selection.segmentNodes();
+            } else if (permissions.junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE) {
+                List<Node> legacyCandidates = new ArrayList<>(2);
+                Node first = selection.segmentNodes().get(0);
+                if (selectedRange.firstIndex() == 0
+                        && legacyEndpointMovementEligible(dataSet, first)) {
+                    legacyCandidates.add(first);
+                }
+                if (selectedRange.lastIndex() == selection.way().getNodesCount() - 1) {
+                    Node last = selection.segmentNodes().get(selection.segmentNodes().size() - 1);
+                    if ((legacyCandidates.isEmpty() || legacyCandidates.get(0) != last)
+                            && legacyEndpointMovementEligible(dataSet, last)) {
+                        legacyCandidates.add(last);
+                    }
+                }
+                candidates = legacyCandidates;
+            } else {
+                candidates = List.of(selection.segmentNodes().get(0),
+                        selection.segmentNodes().get(selection.segmentNodes().size() - 1));
+            }
             for (Node boundary : candidates) {
                 boolean incompleteIncident = dataSet.getWays().stream()
                         .anyMatch(incident -> !incident.isDeleted()
@@ -558,11 +575,32 @@ public final class LiveBPreviewService {
         // Read-only closure for fixed islands under either modern junction policy.
         // These arm polygons never add edit authority.
         if (permissions.junctionPolicy() == JunctionPolicy.FIXED
-                || permissions.junctionPolicy() == JunctionPolicy.REATTACH) {
-            for (int selectedIndex = 1; selectedIndex < selection.segmentNodes().size() - 1;
+                || permissions.junctionPolicy() == JunctionPolicy.REATTACH
+                || permissions.junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE) {
+            for (int selectedIndex = 0; selectedIndex < selection.segmentNodes().size();
                     selectedIndex++) {
                 Node selectedNode = selection.segmentNodes().get(selectedIndex);
+                boolean legacyFixed = permissions.junctionPolicy()
+                        == JunctionPolicy.LEGACY_BOUNDED_MOVE
+                        && !movable.contains(key(selectedNode));
+                boolean modernInterior = permissions.junctionPolicy()
+                        != JunctionPolicy.LEGACY_BOUNDED_MOVE
+                        && selectedIndex > 0
+                        && selectedIndex < selection.segmentNodes().size() - 1;
+                if (!legacyFixed && !modernInterior) {
+                    continue;
+                }
                 for (var referrer : selectedNode.getReferrers()) {
+                    if (permissions.junctionPolicy() == JunctionPolicy.LEGACY_BOUNDED_MOVE
+                            && legacyFixed && referrer instanceof Way incomplete
+                            && !incomplete.isDeleted()
+                            && incomplete.getUniqueId() != selectedWay.id()
+                            && (incomplete.isIncomplete() || incomplete.hasIncompleteNodes()
+                                    || incomplete.getNodesCount() < 2)) {
+                        throw new ManualJunctionCaptureException(
+                                ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                                "incomplete fixed incident way");
+                    }
                     if (!(referrer instanceof Way incident) || incident.isDeleted()
                             || incident.getUniqueId() == selectedWay.id()
                             || incident.isIncomplete() || incident.hasIncompleteNodes()
@@ -599,6 +637,48 @@ public final class LiveBPreviewService {
         return new CaptureAuthority(Map.copyOf(occurrences), Set.copyOf(editable),
                 Set.copyOf(movable), Set.copyOf(removable), Set.copyOf(protectedNodes), Map.copyOf(reasons),
                 new MetricRegion(collisionPolygons), new MetricRegion(editPolygons));
+    }
+
+    private static boolean legacyEndpointMovementEligible(DataSet dataSet, Node boundary) {
+        return !boundary.hasKeys()
+                && boundary.getReferrers().stream().allMatch(referrer -> referrer instanceof Way)
+                && dataSet.getRelations().stream().noneMatch(relation -> relation.getMembers().stream()
+                        .anyMatch(member -> member.getMember() == boundary));
+    }
+
+    private static ManualJunctionEligibility.Decision evaluateCapturedJunction(
+            NetworkSnapshot network, NetworkSnapshotCapture.Specification specification) {
+        JunctionPolicy policy = specification.permissions().junctionPolicy();
+        if (policy == JunctionPolicy.FIXED) {
+            return null;
+        }
+        if (policy != JunctionPolicy.LEGACY_BOUNDED_MOVE) {
+            return ManualJunctionEligibility.evaluate(network, specification);
+        }
+        if (!(network.primitives().get(specification.selectedWayKey()) instanceof DetachedWay selected)) {
+            return new ManualJunctionEligibility.Decision(
+                    ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE, null, null, Set.of());
+        }
+        OccurrenceRange range = specification.selectedRange();
+        int wayLastIndex = selected.nodeKeys().size() - 1;
+        if (range.firstIndex() == 0 && range.lastIndex() == wayLastIndex) {
+            // Preserve the established full-way legacy junction policy exactly.
+            return ManualJunctionEligibility.evaluate(network, specification);
+        }
+        for (int selectedIndex = range.firstIndex(); selectedIndex <= range.lastIndex(); selectedIndex++) {
+            boolean fixedPartialBoundary = selectedIndex == range.firstIndex()
+                    && range.firstIndex() > 0
+                    || selectedIndex == range.lastIndex() && range.lastIndex() < wayLastIndex;
+            if (fixedPartialBoundary) {
+                continue;
+            }
+            ManualJunctionEligibility.Decision decision = ManualJunctionEligibility.evaluateOccurrence(
+                    network, specification, selectedIndex);
+            if (decision.manualOnly()) {
+                return decision;
+            }
+        }
+        return null;
     }
 
     /** A junction-specific capture refusal before a complete detached closure exists. */
@@ -858,9 +938,8 @@ public final class LiveBPreviewService {
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
                     config.heatmap().intensitySamplingMode());
         }
-        ManualJunctionEligibility.Decision junction = permissions.junctionPolicy()
-                != JunctionPolicy.FIXED
-                ? ManualJunctionEligibility.evaluate(network, specification) : null;
+        ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
+                specification);
         if (junction != null && junction.manualOnly()) {
             NetworkSnapshot originalNetwork = network;
             authority = freezeManualJunction(authority, way, junction);

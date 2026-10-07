@@ -692,6 +692,307 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
+    void partialLegacyBoundariesStayFixedInManagedAndVisibleCapture() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(1, 4);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(full.dataSet(), selection, raster(), config(), true,
+                    permissions);
+            managed[0] = service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                    "managed-partial-legacy-boundaries", permissions);
+        });
+
+        Set<PrimitiveKey> boundaries = Set.of(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, selectedNodes.get(0).getUniqueId()),
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, selectedNodes.get(2).getUniqueId()));
+        PrimitiveKey interior = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                selectedNodes.get(1).getUniqueId());
+        for (var closure : List.of(visible[0].network().closure(),
+                managed[0].network().closure())) {
+            assertTrue(closure.protectedExistingNodeKeys().containsAll(boundaries));
+            assertTrue(java.util.Collections.disjoint(closure.movableExistingNodeKeys(), boundaries));
+            assertTrue(closure.movableExistingNodeKeys().contains(interior));
+        }
+    }
+
+    @Test
+    void fullWayEndpointOptInStillWorksForPartialLegacySelection() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(0, 3);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 0, 2,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                full.dataSet(), selection, raster(), config(), true, permissions));
+
+        PrimitiveKey actualEndpoint = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                selectedNodes.get(0).getUniqueId());
+        PrimitiveKey partialBoundary = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                selectedNodes.get(2).getUniqueId());
+        assertTrue(captured[0].network().closure().movableExistingNodeKeys().contains(actualEndpoint));
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(partialBoundary));
+        assertFalse(captured[0].network().closure().movableExistingNodeKeys().contains(partialBoundary));
+    }
+
+    @Test
+    void partialLegacyTaggedSharedAndRelationBoundariesStayFixedInBothCaptures() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> wayNodes = full.selection().way().getNodes();
+        List<Node> selectedNodes = wayNodes.subList(1, 4);
+        Node taggedBoundary = selectedNodes.get(0);
+        Node relatedBoundary = selectedNodes.get(2);
+        taggedBoundary.put("barrier", "gate");
+        Node branch = loadedNode(310, latitude(0.00001), longitude(5.0));
+        full.dataSet().addPrimitive(branch);
+        Way shared = new Way();
+        shared.setNodes(List.of(relatedBoundary, branch));
+        shared.setOsmId(311, 1);
+        shared.setModified(false);
+        full.dataSet().addPrimitive(shared);
+        Relation relation = new Relation();
+        relation.setOsmId(312, 1);
+        relation.setModified(false);
+        relation.setMembers(List.of(new RelationMember("via", relatedBoundary)));
+        full.dataSet().addPrimitive(relation);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(taggedBoundary, relatedBoundary));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(full.dataSet(), selection, raster(), config(), true,
+                    permissions);
+            managed[0] = service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                    "managed-partial-protected-boundaries", permissions);
+        });
+
+        Set<PrimitiveKey> boundaries = Set.of(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, taggedBoundary.getUniqueId()),
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, relatedBoundary.getUniqueId()));
+        PrimitiveKey sharedKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, shared.getUniqueId());
+        PrimitiveKey relationKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION,
+                relation.getUniqueId());
+        PrimitiveKey relatedBoundaryKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                relatedBoundary.getUniqueId());
+        for (var network : List.of(visible[0].network(), managed[0].network())) {
+            assertTrue(network.closure().protectedExistingNodeKeys().containsAll(boundaries));
+            assertTrue(java.util.Collections.disjoint(network.closure().movableExistingNodeKeys(),
+                    boundaries));
+            assertTrue(network.primitives().containsKey(sharedKey),
+                    "fixed shared boundary must retain its collision context");
+            assertTrue(network.incomingReferrerWatches().get(relatedBoundaryKey).contains(relationKey),
+                    "fixed relation boundary must retain its relation referrer watch");
+        }
+    }
+
+    @Test
+    void sharedPartialBoundaryRetainsOrdinaryInteriorMovementAuthority() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(1, 4);
+        Node boundary = selectedNodes.get(0);
+        Node branch = loadedNode(325, boundary.lat() + 0.00001, boundary.lon());
+        full.dataSet().addPrimitive(branch);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(boundary, branch));
+        receiver.setOsmId(326, 1);
+        receiver.setModified(false);
+        full.dataSet().addPrimitive(receiver);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(full.dataSet(), selection, raster(), config(), true,
+                    permissions);
+            managed[0] = service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                    "managed-partial-shared-boundary", permissions);
+        });
+
+        PrimitiveKey boundaryKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                boundary.getUniqueId());
+        PrimitiveKey ordinaryInterior = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                selectedNodes.get(1).getUniqueId());
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY,
+                receiver.getUniqueId());
+        for (var network : List.of(visible[0].network(), managed[0].network())) {
+            assertTrue(network.closure().protectedExistingNodeKeys().contains(boundaryKey));
+            assertFalse(network.closure().movableExistingNodeKeys().contains(boundaryKey));
+            assertTrue(network.closure().movableExistingNodeKeys().contains(ordinaryInterior));
+            assertTrue(network.primitives().containsKey(receiverKey),
+                    "fixed shared boundary retains read-only receiver geometry");
+            assertFalse(network.closure().editableExistingKeys().contains(receiverKey));
+        }
+    }
+
+    @Test
+    void sharedJunctionInsideSelectedRangeRetainsManualFreezePolicy() throws Exception {
+        DataSet dataSet = new DataSet();
+        List<Node> wayNodes = new java.util.ArrayList<>();
+        for (int i = 0; i <= 30; i++) {
+            Node node = loadedNode(328 + i, latitude(0), longitude((i - 15) * 10.0));
+            wayNodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way selectedWay = new Way();
+        selectedWay.setNodes(wayNodes);
+        selectedWay.setOsmId(360, 1);
+        selectedWay.setModified(false);
+        dataSet.addPrimitive(selectedWay);
+        Node sharedInterior = wayNodes.get(15);
+        Node north = loadedNode(361, latitude(40), longitude(0.0));
+        Node south = loadedNode(362, latitude(-40), longitude(0.0));
+        dataSet.addPrimitive(north);
+        dataSet.addPrimitive(south);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(north, sharedInterior, south));
+        receiver.setOsmId(363, 1);
+        receiver.setModified(false);
+        dataSet.addPrimitive(receiver);
+        List<Node> selectedNodes = wayNodes.subList(1, 30);
+        SelectionContext selection = new SelectionContext(selectedWay, 1, 29,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(28)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, wideFlatRaster(), config(), true, permissions));
+
+        assertNotNull(captured[0].intervalPartition(),
+                "an internal shared junction retains its fixed-island proof");
+        assertTrue(captured[0].intervalPartition().junctionDispositions().stream().anyMatch(
+                disposition -> disposition.selectedOccurrenceIndex() == 15
+                        && disposition.reason() == ManualJunctionEligibility.Reason.SELECTED_INTERIOR));
+        assertEquals(1, captured[0].intervalPartition().fixedIslands().size());
+        assertEquals(2, captured[0].intervalPartition().slideIntervals().size(),
+                "ordinary interiors on both sides of the manual junction remain usable");
+        PrimitiveKey sharedKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                sharedInterior.getUniqueId());
+        assertTrue(captured[0].network().closure().protectedExistingNodeKeys().contains(sharedKey));
+        assertFalse(captured[0].network().closure().movableExistingNodeKeys().contains(sharedKey));
+        for (Node disjointInterior : List.of(wayNodes.get(5), wayNodes.get(25))) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                    disjointInterior.getUniqueId());
+            assertTrue(captured[0].network().closure().movableExistingNodeKeys().contains(key));
+        }
+    }
+
+    @Test
+    void incompleteRelationOnFixedPartialBoundaryRemainsWatchedWithoutFreezingInteriors()
+            throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(1, 4);
+        Node boundary = selectedNodes.get(0);
+        Node incompleteMember = new Node(99);
+        full.dataSet().addPrimitive(incompleteMember);
+        Relation relation = new Relation();
+        relation.setOsmId(327, 1);
+        relation.setModified(false);
+        relation.setMembers(List.of(new RelationMember("boundary", boundary),
+                new RelationMember("incomplete", incompleteMember)));
+        full.dataSet().addPrimitive(relation);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(full.dataSet(), selection, raster(), config(), true,
+                    permissions);
+            managed[0] = service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                    "managed-partial-incomplete-relation", permissions);
+        });
+
+        PrimitiveKey boundaryKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                boundary.getUniqueId());
+        PrimitiveKey ordinaryInterior = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                selectedNodes.get(1).getUniqueId());
+        PrimitiveKey relationKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION,
+                relation.getUniqueId());
+        for (var network : List.of(visible[0].network(), managed[0].network())) {
+            assertTrue(network.closure().protectedExistingNodeKeys().contains(boundaryKey));
+            assertTrue(network.closure().movableExistingNodeKeys().contains(ordinaryInterior));
+            assertTrue(network.incomingReferrerWatches().get(boundaryKey)
+                    .contains(relationKey));
+            assertFalse(network.primitives().containsKey(relationKey),
+                    "fixed-boundary relation is watched but does not authorize geometry movement");
+        }
+    }
+
+    @Test
+    void unrelatedIncompleteGeometryOutsideSelectionDoesNotBlockPartialCapture() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(1, 4);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        Node farA = loadedNode(320, latitude(1.0), longitude(1.0));
+        Node farB = loadedNode(321, latitude(1.1), longitude(1.1));
+        full.dataSet().addPrimitive(farA);
+        full.dataSet().addPrimitive(farB);
+        Way unrelatedIncomplete = new Way();
+        unrelatedIncomplete.setNodes(List.of(farA));
+        unrelatedIncomplete.setOsmId(322, 1);
+        full.dataSet().addPrimitive(unrelatedIncomplete);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+
+        assertDoesNotThrow(() -> SwingUtilities.invokeAndWait(() -> {
+            service.capture(full.dataSet(), selection, raster(), config(), true, permissions);
+            service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                    "managed-partial-unrelated-incomplete", permissions);
+        }));
+    }
+
+    @Test
+    void incompleteSharedPartialBoundaryStillRefusesBothCaptureSources() throws Exception {
+        Fixture full = fiveNodeFixture();
+        List<Node> selectedNodes = full.selection().way().getNodes().subList(1, 4);
+        SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
+                selectedNodes, Set.of(selectedNodes.get(0), selectedNodes.get(2)));
+        Way incompleteArm = new Way();
+        incompleteArm.setNodes(List.of(selectedNodes.get(0)));
+        incompleteArm.setOsmId(323, 1);
+        incompleteArm.setModified(false);
+        full.dataSet().addPrimitive(incompleteArm);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+
+        SwingUtilities.invokeAndWait(() -> {
+            assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                    assertThrows(LiveBPreviewService.ManualJunctionCaptureException.class,
+                            () -> service.capture(full.dataSet(), selection, raster(), config(), true,
+                                    permissions)).reason());
+            assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
+                    assertThrows(LiveBPreviewService.ManualJunctionCaptureException.class,
+                            () -> service.captureManagedSeed(full.dataSet(), selection, managedConfig(),
+                                    "managed-partial-incomplete-arm", permissions)).reason());
+        });
+    }
+
+    @Test
     void productionBMovesOrdinaryInteriorsTowardAnOffsetRidgeWithoutReturnSpikes() throws Exception {
         Fixture fixture = fiveNodeFixture();
         for (int index = 1; index < fixture.selection().segmentNodes().size() - 1; index++) {
@@ -751,6 +1052,34 @@ class V022LiveBPreviewServiceTest {
                 related.selection().segmentNodes().get(0).getUniqueId());
         assertTrue(relatedCapture[0].network().closure().protectedExistingNodeKeys().contains(relatedKey));
         assertFalse(relatedCapture[0].network().closure().movableExistingNodeKeys().contains(relatedKey));
+    }
+
+    @Test
+    void protectedActualEndpointUsesFixedClosureChecksBeforeMovementExpansion() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        Node endpoint = fixture.selection().segmentNodes().get(0);
+        endpoint.put("barrier", "gate");
+        Way incomplete = new Way();
+        incomplete.setNodes(List.of(endpoint));
+        incomplete.setOsmId(324, 1);
+        incomplete.setModified(false);
+        fixture.dataSet().addPrimitive(incomplete);
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.0, 7.0,
+                JunctionPolicy.LEGACY_BOUNDED_MOVE, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+
+        SwingUtilities.invokeAndWait(() -> {
+            LiveBPreviewService.ManualJunctionCaptureException visible = assertThrows(
+                    LiveBPreviewService.ManualJunctionCaptureException.class,
+                    () -> service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                            config(), true, permissions));
+            LiveBPreviewService.ManualJunctionCaptureException managed = assertThrows(
+                    LiveBPreviewService.ManualJunctionCaptureException.class,
+                    () -> service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                            managedConfig(), "managed-protected-actual-endpoint", permissions));
+            assertTrue(visible.getMessage().contains("incomplete fixed incident way"));
+            assertTrue(managed.getMessage().contains("incomplete fixed incident way"));
+        });
     }
 
     @Test
