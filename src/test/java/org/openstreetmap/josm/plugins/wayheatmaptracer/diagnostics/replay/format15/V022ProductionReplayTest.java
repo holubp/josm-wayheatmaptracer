@@ -26,9 +26,19 @@ import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import javax.swing.SwingUtilities;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.osm.DataSet;
+import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.osm.Way;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
@@ -43,7 +53,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
@@ -60,14 +72,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService.VisibleRaster;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.InferenceProfile;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.LateralStateCell;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticInference;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
@@ -269,6 +290,247 @@ class V022ProductionReplayTest {
             FinalReplayFingerprint.sha256(Format15ReplayRunner.replay(archive,
                 ReplayLevel.FINAL_GEOMETRY, archive.sourceIdentityHash(),
                 archive.parameterHash())));
+    }
+
+    @Test
+    void reviewRequiredGeometryCanHaveUnavailablePlanAndCountersMatchProductionOutput(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+        Format15ReplayRunner.Result produced;
+        Map<String, Number> actualCounters;
+        try {
+            produced = Format15ReplayRunner.replay(input,
+                    ReplayLevel.FINAL_GEOMETRY, TrackerMode.PROBABILISTIC);
+            actualCounters = org.openstreetmap.josm.plugins.wayheatmaptracer.util
+                    .ModernDiagnosticCounters.snapshot();
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();
+        }
+        ModernTracePipeline.Result actual = new ModernTracePipeline.Result(
+                produced.inference(), produced.routes());
+        assertFalse(produced.routes().isEmpty());
+        assertTrue(actualCounters.containsKey("inference.extensionDescriptors"));
+        assertTrue(actualCounters.containsKey("inference.ancestryRecordsAllocated"));
+
+        var availability = Format15ProductionBundleFactory.PlanAvailability.unavailable(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                    .ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE);
+        Format15Bundle live = Format15ProductionBundleFactory.createLiveWithPlanAvailability(
+                "test", input, actual, "review-required", "visible-layer", 0, null,
+                false, false, actualCounters, null, availability);
+
+        var planJson = Format15ArchiveReader.parseObject(
+                live.artifact("plan-availability.json").bytes(), "plan-availability.json");
+        assertEquals("UNAVAILABLE", planJson.get("status"));
+        assertEquals("PLAN_UNAVAILABLE", planJson.get("reason"));
+        var attempt = Format15ArchiveReader.parseObject(
+                live.artifact("attempt-status.json").bytes(), "attempt-status.json");
+        assertEquals("review-required", attempt.get("status"),
+                "geometry review findings remain visible when no exact edit plan is available");
+        assertFalse(live.artifactNames().contains("frozen-edit-plan.bin"));
+        assertFalse(live.artifactNames().contains("applied-geometry.json"));
+        var counters = Format15ArchiveReader.parseObject(
+                live.artifact("performance-counters.json").bytes(), "performance-counters.json");
+        assertEquals(produced.inference().status().name(), counters.get("inferenceStatus"));
+        assertEquals(produced.inference().alternativesTruncated(), counters.get("alternativesTruncated"));
+        assertEquals(produced.inference().evaluatedStates(), ((Number) counters.get("evaluatedStates")).longValue());
+        assertEquals(produced.inference().evaluatedTransitions(),
+                ((Number) counters.get("evaluatedTransitions")).longValue());
+        assertEquals("AVAILABLE", counters.get("logicalWorkAvailability"));
+        assertEquals(true, counters.get("workerCountersAvailable"));
+        assertEquals(produced.routes().size(), ((Number) counters.get("routes")).intValue());
+        assertEquals(((Number) actualCounters.get("inference.extensionDescriptors")).longValue(),
+                ((Number) ((Map<?, ?>) counters.get("counters"))
+                .get("inference.extensionDescriptors")).longValue());
+        Map<?, ?> physical = (Map<?, ?>) counters.get("physicalCounters");
+        Map<?, ?> extensionAvailability = (Map<?, ?>) physical.get("inference.extensionDescriptors");
+        assertEquals("AVAILABLE", extensionAvailability.get("availability"));
+        assertEquals(((Number) actualCounters.get("inference.extensionDescriptors")).longValue(),
+                ((Number) extensionAvailability.get("value")).longValue());
+        Map<?, ?> absentAncestry = (Map<?, ?>) physical.get("inference.ancestryRecordsAllocated");
+        assertEquals("AVAILABLE", absentAncestry.get("availability"));
+        assertEquals(((Number) actualCounters.get("inference.ancestryRecordsAllocated")).longValue(),
+                ((Number) absentAncestry.get("value")).longValue());
+        Format15Bundle noPhysicalCounters = Format15ProductionBundleFactory
+                .createLiveWithPlanAvailability("test", input, actual, "blocked",
+                        "visible-layer", 0, null, false, false, Map.of(), null, availability);
+        var missingWork = Format15ArchiveReader.parseObject(
+                noPhysicalCounters.artifact("performance-counters.json").bytes(),
+                "performance-counters.json");
+        Map<?, ?> missingPhysical = (Map<?, ?>) missingWork.get("physicalCounters");
+        Map<?, ?> missingExtensions = (Map<?, ?>) missingPhysical.get("inference.extensionDescriptors");
+        Map<?, ?> missingAncestry = (Map<?, ?>) missingPhysical.get("inference.ancestryRecordsAllocated");
+        assertEquals("UNAVAILABLE", missingExtensions.get("availability"));
+        assertEquals("UNAVAILABLE", missingAncestry.get("availability"));
+        assertFalse(missingExtensions.containsKey("value"), "unavailable physical work is not zero");
+        assertFalse(missingAncestry.containsKey("value"), "unavailable physical work is not zero");
+        assertFalse(live.artifactNames().contains("frozen-edit-plan.bin"));
+        assertFalse(live.artifactNames().contains("applied-geometry.json"));
+        assertTrue(new String(live.artifact("attempt-status.json").bytes(), StandardCharsets.UTF_8)
+                .contains("\"FULL_EDIT_PLAN\":false"));
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "review-required", "visible-layer", 0, null, false, false,
+                        Map.of(), null, Format15ProductionBundleFactory.PlanAvailability
+                                .reviewRequired(false, org.openstreetmap.josm.plugins.wayheatmaptracer
+                                        .service.tracing.ModernSingleWayEditPlanAdapter
+                                        .ApplyAvailability.PLAN_AVAILABLE)));
+        for (Format15ProductionBundleFactory.PlanAvailability expected : List.of(
+                Format15ProductionBundleFactory.PlanAvailability.available(),
+                Format15ProductionBundleFactory.PlanAvailability.reviewRequired(true,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                        .ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE),
+                Format15ProductionBundleFactory.PlanAvailability.unavailable(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                        .ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED),
+                Format15ProductionBundleFactory.PlanAvailability.cancelled(),
+                Format15ProductionBundleFactory.PlanAvailability.failed())) {
+            var artifact = Format15ProductionBundleFactory.planAvailabilityArtifact(expected);
+            var parsed = Format15ArchiveReader.parseObject(artifact.bytes(), artifact.name());
+            assertEquals(expected.status().name(), parsed.get("status"));
+            assertEquals(expected.reason().name(), parsed.get("reason"));
+        }
+    }
+
+    @Test
+    void ordinaryStrictBReplayRequiresTheAnalyticRidgeInvariant(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        CliRun run = runCli(directory, input, "B", 51.0, 55.0, false, "{}");
+        assertEquals(0, run.exit(), run.output());
+        assertTrue(run.output().contains("\"status\":\"ok\""), run.output());
+        assertTrue(run.output().contains("\"engine\":\"B\""), run.output());
+        assertTrue(run.output().contains("\"actualStatus\":\"COMPLETE\""), run.output());
+        assertTrue(run.output().contains("\"qualityStatus\":\"PASS\""), run.output());
+    }
+
+    @Test
+    void changedAnalyticRouteCannotBeLabeledNoChange() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15ReplayRunner.Result produced = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.PROBABILISTIC);
+        assertTrue(interiorMeanY(produced.routes().get(0).hypothesis().points()) > 51.0,
+                "the analytic fixture contains a changed ridge");
+        assertThrows(IllegalArgumentException.class,
+                () -> Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        new ModernTracePipeline.Result(produced.inference(), produced.routes()),
+                        "no-change", "visible-layer", 0, null, false, false, Map.of(), null,
+                        new Format15ProductionBundleFactory.PlanAvailability(
+                                Format15ProductionBundleFactory.PlanAvailabilityStatus.NO_CHANGE,
+                                Format15ProductionBundleFactory.PlanAvailabilityReason.NO_CHANGE)),
+                "NO_CHANGE requires the adapter's factual route-bound proof");
+    }
+
+    @Test
+    void terminalPlanAvailabilityCannotDescribeAnOrdinaryPreview() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15ReplayRunner.Result produced = Format15ReplayRunner.replay(input,
+                ReplayLevel.FINAL_GEOMETRY, TrackerMode.PROBABILISTIC);
+        ModernTracePipeline.Result actual = new ModernTracePipeline.Result(
+                produced.inference(), produced.routes());
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "preview-open", "visible-layer", 0, null, false, false,
+                        Map.of(), null, Format15ProductionBundleFactory.PlanAvailability.cancelled()));
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "applied", "visible-layer", 0, null, false, false,
+                        Map.of(), null, Format15ProductionBundleFactory.PlanAvailability.unavailable(
+                                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                                    .ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE)),
+                "an applied attempt requires the exact plan and matching actual Apply state");
+    }
+
+    @Test
+    void blockedAdapterPlanRemainsInspectableButCannotBeReviewedOrApplied() throws Exception {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        AdapterFixture fixture = adapterFixture();
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
+                fixture.selection(), adapterRaster(), adapterConfig(), false));
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        ModernTracePipeline.Route route = computed.pipeline().routes().get(0);
+        ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
+        AlignmentEditPlan ordinaryPlan = adapter.adapt(computed, 0);
+        assertTrue(ordinaryPlan.validation().applicable(),
+                "the production adapter must first produce a real applicable exact plan");
+        FinalGeometryEvaluator.Result sourceQuality = route.quality();
+        FinalGeometryEvaluator.Result blockedQuality = new FinalGeometryEvaluator.Result(
+                sourceQuality.id(), FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                List.of(new FinalGeometryEvaluator.Finding(
+                        FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
+                        FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, 0, 1.0)),
+                sourceQuality.totalLengthMeters(), sourceQuality.directlySupportedLengthMeters(),
+                sourceQuality.worstUnsupportedSpanMeters(), sourceQuality.meanImageCenterCost(),
+                sourceQuality.bendPreservingRoughness());
+        ModernTracePipeline.Route blockedRoute = copyRoute(route, route.rawHypothesis(),
+                route.hypothesis(), route.pointIds(), route.assignments(), route.sourceOwnership(),
+                blockedQuality, route.cleanupStatus(), route.geometryChanged());
+        List<ModernTracePipeline.Route> blockedRoutes = new ArrayList<>(computed.pipeline().routes());
+        blockedRoutes.set(0, blockedRoute);
+        ModernTracePipeline.Result actual = new ModernTracePipeline.Result(
+                computed.pipeline().inference(), blockedRoutes);
+        LiveBPreviewService.Computed blocked = new LiveBPreviewService.Computed(
+                computed.captured(), computed.evidence(), computed.request(), actual,
+                computed.options(), computed.counters(), null);
+        AlignmentEditPlan blockedPlan = adapter.adapt(blocked, 0);
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport
+                .Disposition.HARD_BLOCKED, blockedPlan.validation().disposition());
+
+        FrozenReplayInput input = new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options());
+        var blockedAvailability = Format15ProductionBundleFactory.PlanAvailability.unavailable(
+                ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED);
+        Format15Bundle diagnostic = Format15ProductionBundleFactory.createLiveWithPlanAvailability(
+                "test", input, actual, "blocked", "visible-layer", 0, blockedPlan,
+                false, false, computed.counters(), null, blockedAvailability);
+        assertTrue(diagnostic.artifactNames().contains("frozen-edit-plan.bin"));
+        assertTrue(diagnostic.artifactNames().contains("planned-geometry.json"));
+        assertFalse(diagnostic.artifactNames().contains("reviewed-route.json"));
+        assertFalse(diagnostic.artifactNames().contains("applied-geometry.json"));
+        var receipt = Format15ArchiveReader.parseObject(
+                diagnostic.artifact("plan-availability.json").bytes(), "plan-availability.json");
+        assertEquals("UNAVAILABLE", receipt.get("status"));
+        assertEquals("FINAL_GEOMETRY_BLOCKED", receipt.get("reason"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "blocked", "visible-layer", 0, blockedPlan, false, false,
+                        computed.counters(), null, Format15ProductionBundleFactory.PlanAvailability
+                                .unavailable(ModernSingleWayEditPlanAdapter.ApplyAvailability
+                                        .FINAL_TOPOLOGY_CROSSING)),
+                "the typed reason must match the adapter-produced blocked plan");
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "confirmed", "visible-layer", 0, blockedPlan, true, false,
+                        computed.counters(), null, blockedAvailability),
+                "a blocked inspection plan cannot acquire review confirmation");
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        actual, "failed", "visible-layer", 0, blockedPlan, false, false,
+                        computed.counters(), null, Format15ProductionBundleFactory.PlanAvailability.failed()),
+                "a terminal failure cannot retain a blocked edit plan");
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        computed.pipeline(), "failed", "visible-layer", 0, ordinaryPlan,
+                        false, false, computed.counters(), null,
+                        Format15ProductionBundleFactory.PlanAvailability.failed()),
+                "a terminal failure cannot retain an applicable plan");
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        computed.pipeline(), "cancelled", "visible-layer", 0, ordinaryPlan,
+                        false, false, computed.counters(), null,
+                        Format15ProductionBundleFactory.PlanAvailability.cancelled()),
+                "a terminal cancellation cannot retain an applicable plan");
+        assertThrows(IllegalArgumentException.class, () ->
+                Format15ProductionBundleFactory.createLiveWithPlanAvailability("test", input,
+                        computed.pipeline(), "applied", "visible-layer", 0, ordinaryPlan,
+                        false, false, computed.counters(), null, Format15ProductionBundleFactory
+                                .PlanAvailability.available()),
+                "applied attempt status requires an actual Apply state");
     }
 
     @Test
@@ -1628,6 +1890,58 @@ class V022ProductionReplayTest {
     static FrozenReplayInput syntheticNoSignalInput() {
         return fixture(TrackerMode.PROBABILISTIC, Scene.NO_SIGNAL);
     }
+
+    private static AdapterFixture adapterFixture() {
+        DataSet dataSet = new DataSet();
+        Node first = adapterNode(1, 0.0, adapterLongitude(-8));
+        Node last = adapterNode(2, 0.0, adapterLongitude(8));
+        Way way = new Way();
+        way.setNodes(List.of(first, last));
+        way.setOsmId(10, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(first);
+        dataSet.addPrimitive(last);
+        dataSet.addPrimitive(way);
+        return new AdapterFixture(dataSet,
+                new SelectionContext(way, 0, 1, List.of(first, last), Set.of(first, last)));
+    }
+
+    private static Node adapterNode(long id, double latitude, double longitude) {
+        Node node = new Node(new LatLon(latitude, longitude));
+        node.setOsmId(id, 1);
+        node.setModified(false);
+        return node;
+    }
+
+    private static double adapterLongitude(double meters) {
+        return Math.toDegrees(meters / 6_378_137.0);
+    }
+
+    private static AlignmentConfig adapterConfig() {
+        ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("", "", "", "", "all",
+                "hot", "", ".*", AlignmentMode.PRECISE_SHAPE, TrackerMode.PROBABILISTIC,
+                false, false, false, false, false, false, false, false, false, false,
+                7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15, 7.01, 1.56,
+                IntensitySamplingMode.COLOR_MAPPING, 0L);
+        return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
+    }
+
+    private static VisibleRaster adapterRaster() {
+        int width = 600;
+        int height = 600;
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++) {
+            double distance = (y - 288.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / (1.2 * 1.2));
+            int gray = (int) Math.round(255.0 * intensity);
+            Arrays.fill(argb, y * width, (y + 1) * width,
+                    0xff000000 | gray << 16 | gray << 8 | gray);
+        }
+        return new VisibleRaster(width, height, argb, -50.0, -50.0, 50.0, 50.0,
+                1.0, 1.0, OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
+    }
+
+    private record AdapterFixture(DataSet dataSet, SelectionContext selection) { }
 
     private static FrozenReplayInput fixture(TrackerMode engine, Scene scene) {
         return fixture(engine, scene, RasterFixture.FINE);

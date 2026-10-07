@@ -25,11 +25,100 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalT
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 
 /** Produces the named, checksummed frozen inputs consumed by strict production replay. */
 public final class Format15ProductionBundleFactory {
     private static final String INTERVAL_INDEX_ARTIFACT = "interval-production.json";
     private static final String INTERVAL_PREVIEW_ARTIFACT = "private/interval-composed-preview.json";
+    public static final String PLAN_AVAILABILITY_ARTIFACT = "plan-availability.json";
+
+    /** Stable terminal plan/apply states for coordinate-free live-attempt diagnostics. */
+    public enum PlanAvailabilityStatus {
+        PLAN_AVAILABLE, REVIEW_REQUIRED_UNCONFIRMED, REVIEW_REQUIRED_CONFIRMED,
+        NO_CHANGE, UNAVAILABLE, CANCELLED, FAILED
+    }
+
+    /** Allow-listed adapter reason codes; no free-form detail enters this receipt. */
+    public enum PlanAvailabilityReason {
+        PLAN_AVAILABLE, NO_CHANGE, CLEANUP_UNAVAILABLE_FOR_ENGINE, PRECISE_SHAPE_REQUIRED,
+        SOURCE_LINEAGE_UNAVAILABLE, CANDIDATE_ASSIGNMENTS_UNAVAILABLE, MANUAL_JUNCTION,
+        FINAL_TOPOLOGY_CROSSING, FINAL_TOPOLOGY_VERTEX_TOUCH,
+        FINAL_TOPOLOGY_COLLINEAR_OVERLAP, FINAL_TOPOLOGY_CONTINUATION,
+        FINAL_GEOMETRY_BLOCKED, PLAN_UNAVAILABLE, ATTEMPT_CANCELLED, ATTEMPT_FAILED
+    }
+
+    /** Typed plan availability carried independently of private geometry and arbitrary detail. */
+    public record PlanAvailability(PlanAvailabilityStatus status, PlanAvailabilityReason reason) {
+        public PlanAvailability {
+            if (status == null || reason == null) {
+                throw new IllegalArgumentException("Plan availability receipt is incomplete");
+            }
+            boolean valid = switch (status) {
+                case PLAN_AVAILABLE -> reason == PlanAvailabilityReason.PLAN_AVAILABLE;
+                case REVIEW_REQUIRED_UNCONFIRMED, REVIEW_REQUIRED_CONFIRMED ->
+                        reason == PlanAvailabilityReason.PLAN_AVAILABLE;
+                // NO_CHANGE is reserved until the live adapter can bind its factual
+                // selected-route proof into this receipt. A caller-created enum pair
+                // must never relabel a changed route as unchanged.
+                case NO_CHANGE -> false;
+                case UNAVAILABLE -> reason != PlanAvailabilityReason.PLAN_AVAILABLE
+                        && reason != PlanAvailabilityReason.NO_CHANGE
+                        && reason != PlanAvailabilityReason.ATTEMPT_CANCELLED
+                        && reason != PlanAvailabilityReason.ATTEMPT_FAILED;
+                case CANCELLED -> reason == PlanAvailabilityReason.ATTEMPT_CANCELLED;
+                case FAILED -> reason == PlanAvailabilityReason.ATTEMPT_FAILED;
+            };
+            if (!valid) throw new IllegalArgumentException("Plan availability reason contradicts status");
+        }
+
+        public static PlanAvailability available() {
+            return new PlanAvailability(PlanAvailabilityStatus.PLAN_AVAILABLE,
+                    PlanAvailabilityReason.PLAN_AVAILABLE);
+        }
+
+        public static PlanAvailability reviewRequired(boolean confirmed,
+                ModernSingleWayEditPlanAdapter.ApplyAvailability availability) {
+            if (availability != ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE) {
+                throw new IllegalArgumentException("Review confirmation requires an available exact plan");
+            }
+            return new PlanAvailability(confirmed ? PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED
+                    : PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED,
+                    PlanAvailabilityReason.PLAN_AVAILABLE);
+        }
+
+        public static PlanAvailability noChange() {
+            throw new IllegalArgumentException("NO_CHANGE requires an adapter-bound selected-route proof");
+        }
+
+        public static PlanAvailability unavailable(
+                ModernSingleWayEditPlanAdapter.ApplyAvailability availability) {
+            if (availability == null || availability == ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE
+                    || availability == ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE) {
+                throw new IllegalArgumentException("Unavailable plan requires an unavailable adapter reason");
+            }
+            return new PlanAvailability(PlanAvailabilityStatus.UNAVAILABLE,
+                    PlanAvailabilityReason.valueOf(availability.name()));
+        }
+
+        public static PlanAvailability cancelled() {
+            return new PlanAvailability(PlanAvailabilityStatus.CANCELLED,
+                    PlanAvailabilityReason.ATTEMPT_CANCELLED);
+        }
+
+        public static PlanAvailability failed() {
+            return new PlanAvailability(PlanAvailabilityStatus.FAILED,
+                    PlanAvailabilityReason.ATTEMPT_FAILED);
+        }
+    }
+
+    /** Serializes only stable enum names; coordinates, identities and free-form errors are excluded. */
+    public static Format15Artifact planAvailabilityArtifact(PlanAvailability availability) {
+        if (availability == null) throw new IllegalArgumentException("Plan availability is required");
+        String json = "{\"schema\":1,\"status\":" + quote(availability.status().name())
+                + ",\"reason\":" + quote(availability.reason().name()) + "}\n";
+        return Format15Artifact.text(PLAN_AVAILABILITY_ARTIFACT, json);
+    }
 
     /** Typed per-interval failure/no-op reasons exported by the additive interval artifact. */
     public enum IntervalReason {
@@ -170,15 +259,41 @@ public final class Format15ProductionBundleFactory {
             ModernTracePipeline.Result actual, String status, String sourceLineage,
             int routeIndex, AlignmentEditPlan plan, boolean reviewed, boolean applied,
             Map<String, Number> counters, ManualJunctionEligibility.Reason manualJunctionReason) {
+        return createLiveWithPlanAvailability(buildIdentity, input, actual, status, sourceLineage,
+                routeIndex, plan, reviewed, applied, counters, manualJunctionReason,
+                inferPlanAvailability(status, plan, reviewed));
+    }
+
+    /** Adds an explicitly typed plan state to the actual live output without changing replay inputs. */
+    public static Format15Bundle createLiveWithPlanAvailability(String buildIdentity,
+            FrozenReplayInput input, ModernTracePipeline.Result actual, String status,
+            String sourceLineage, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
+            boolean applied, Map<String, Number> counters,
+            ManualJunctionEligibility.Reason manualJunctionReason,
+            PlanAvailability planAvailability) {
         if (actual == null || status == null || status.isBlank()
                 || sourceLineage == null || sourceLineage.isBlank()
+                || planAvailability == null
+                || input == null
                 || routeIndex < -1 || routeIndex >= actual.routes().size()
                 || (routeIndex == -1 && !actual.routes().isEmpty())
                 || (routeIndex == -1 && (plan != null || reviewed || applied))
-                || ((reviewed || applied) && plan == null)
-                || ("applied".equals(status) && !applied)
-                || ("confirmed".equals(status) && !reviewed)) {
+                || ((reviewed || applied) && plan == null)) {
             throw new IllegalArgumentException("Live diagnostic attempt is incomplete");
+        }
+        requirePlanAvailabilityBinding(status, plan, reviewed, applied, planAvailability);
+        if ((planAvailability.status() == PlanAvailabilityStatus.PLAN_AVAILABLE
+                || planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED
+                || planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED)
+                && plan == null) {
+            throw new IllegalArgumentException("Available plan diagnostics require the exact edit plan");
+        }
+        if (planAvailability.status() == PlanAvailabilityStatus.PLAN_AVAILABLE
+                && plan != null && !plan.validation().applicable()
+                || (planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED
+                    || planAvailability.status() == PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED)
+                    && plan != null && !plan.validation().reviewRequired()) {
+            throw new IllegalArgumentException("Plan availability differs from final plan validation");
         }
         Format15Safety.requireSafeExportedMetadata(status);
         Format15Safety.requireSafeExportedMetadata(sourceLineage);
@@ -238,6 +353,7 @@ public final class Format15ProductionBundleFactory {
         }
         artifacts.put("performance-counters.json", Format15Artifact.text(
             "performance-counters.json", performanceCounters(actual, counters)));
+        artifacts.put(PLAN_AVAILABILITY_ARTIFACT, planAvailabilityArtifact(planAvailability));
         artifacts.put("attempt-status.json", Format15Artifact.text("attempt-status.json",
             "{\"status\":" + quote(status) + ",\"sourceLineage\":"
                 + quote(sourceLineage) + ",\"routeIndex\":" + routeIndex
@@ -250,6 +366,128 @@ public final class Format15ProductionBundleFactory {
         addFinalOutputComponents(artifacts, expectation, finalResult);
         return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
             base.parameterHash(), artifacts);
+    }
+
+    private static void requirePlanAvailabilityBinding(String attemptStatus, AlignmentEditPlan plan,
+            boolean reviewed, boolean applied, PlanAvailability availability) {
+        String terminalStatus = attemptStatus.toLowerCase(java.util.Locale.ROOT);
+        PlanAvailabilityStatus state = availability.status();
+        if (state == PlanAvailabilityStatus.NO_CHANGE || terminalStatus.equals("no-change")) {
+            throw new IllegalArgumentException("NO_CHANGE requires an adapter-bound selected-route proof");
+        }
+        if (terminalStatus.equals("cancelled") || terminalStatus.equals("failed")) {
+            PlanAvailabilityStatus expected = terminalStatus.equals("cancelled")
+                    ? PlanAvailabilityStatus.CANCELLED : PlanAvailabilityStatus.FAILED;
+            if (state != expected || plan != null || reviewed || applied) {
+                throw new IllegalArgumentException("Terminal attempt state cannot carry edit or apply artifacts");
+            }
+            return;
+        }
+        if (state == PlanAvailabilityStatus.CANCELLED || state == PlanAvailabilityStatus.FAILED) {
+            throw new IllegalArgumentException("Terminal availability must match the attempt state");
+        }
+        boolean appliedStatus = terminalStatus.equals("applied")
+                || terminalStatus.equals("applied-after-review");
+        if (applied != appliedStatus) {
+            throw new IllegalArgumentException("Applied state differs from the attempt status");
+        }
+        if (applied && state != PlanAvailabilityStatus.PLAN_AVAILABLE
+                && state != PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED) {
+            throw new IllegalArgumentException("Apply requires an available or confirmed exact plan");
+        }
+        if ((terminalStatus.equals("confirmed") || terminalStatus.equals("applied-after-review"))
+                && !reviewed) {
+            throw new IllegalArgumentException("Confirmed attempt must carry review confirmation");
+        }
+        if (reviewed != (state == PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED)
+                && state != PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED) {
+            throw new IllegalArgumentException("Review flag differs from typed plan availability");
+        }
+        if (state == PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED && reviewed) {
+            throw new IllegalArgumentException("Unconfirmed review state cannot be marked reviewed");
+        }
+        if (plan == null) {
+            if (state == PlanAvailabilityStatus.PLAN_AVAILABLE
+                    || state == PlanAvailabilityStatus.REVIEW_REQUIRED_UNCONFIRMED
+                    || state == PlanAvailabilityStatus.REVIEW_REQUIRED_CONFIRMED) {
+                throw new IllegalArgumentException("Available plan diagnostics require the exact edit plan");
+            }
+            if (state == PlanAvailabilityStatus.UNAVAILABLE
+                    && isInspectableBlockReason(availability.reason())) {
+                throw new IllegalArgumentException("Inspectable block reason requires its exact blocked plan");
+            }
+            return;
+        }
+        var disposition = plan.validation().disposition();
+        switch (state) {
+            case PLAN_AVAILABLE -> {
+                if (disposition != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport
+                        .Disposition.APPLICABLE) {
+                    throw new IllegalArgumentException("Available state requires an applicable exact plan");
+                }
+            }
+            case REVIEW_REQUIRED_UNCONFIRMED, REVIEW_REQUIRED_CONFIRMED -> {
+                if (disposition != org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport
+                        .Disposition.REVIEW_REQUIRED
+                        || availability.reason() != PlanAvailabilityReason.PLAN_AVAILABLE) {
+                    throw new IllegalArgumentException("Review state requires an exact review-required plan");
+                }
+            }
+            case UNAVAILABLE -> {
+                if (reviewed || applied || disposition != org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .ValidationReport.Disposition.HARD_BLOCKED
+                        || !blockedPlanMatchesReason(plan, availability.reason())) {
+                    throw new IllegalArgumentException("Unavailable plan must be an inspectable blocked preview");
+                }
+            }
+            case NO_CHANGE, CANCELLED, FAILED -> throw new IllegalArgumentException(
+                    "Terminal availability cannot carry an edit plan");
+        }
+    }
+
+    private static boolean isInspectableBlockReason(PlanAvailabilityReason reason) {
+        return reason == PlanAvailabilityReason.FINAL_TOPOLOGY_CROSSING
+                || reason == PlanAvailabilityReason.FINAL_TOPOLOGY_VERTEX_TOUCH
+                || reason == PlanAvailabilityReason.FINAL_TOPOLOGY_COLLINEAR_OVERLAP
+                || reason == PlanAvailabilityReason.FINAL_TOPOLOGY_CONTINUATION
+                || reason == PlanAvailabilityReason.FINAL_GEOMETRY_BLOCKED;
+    }
+
+    private static boolean blockedPlanMatchesReason(AlignmentEditPlan plan, PlanAvailabilityReason reason) {
+        return isInspectableBlockReason(reason)
+                && blockedPlanAvailability(plan).name().equals(reason.name());
+    }
+
+    private static PlanAvailability inferPlanAvailability(String status, AlignmentEditPlan plan,
+            boolean reviewed) {
+        if ("cancelled".equalsIgnoreCase(status)) return PlanAvailability.cancelled();
+        if ("failed".equalsIgnoreCase(status)) return PlanAvailability.failed();
+        if (plan == null) return PlanAvailability.unavailable(
+                ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE);
+        return switch (plan.validation().disposition()) {
+            case APPLICABLE -> PlanAvailability.available();
+            case REVIEW_REQUIRED -> PlanAvailability.reviewRequired(reviewed,
+                    ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE);
+            case HARD_BLOCKED -> PlanAvailability.unavailable(blockedPlanAvailability(plan));
+        };
+    }
+
+    private static ModernSingleWayEditPlanAdapter.ApplyAvailability blockedPlanAvailability(
+            AlignmentEditPlan plan) {
+        List<String> findings = plan.validation().findingCodes();
+        if (findings.contains("final-topology:CROSSING")) {
+            return ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING;
+        }
+        if (findings.contains("final-topology:VERTEX_TOUCH")) {
+            return ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_VERTEX_TOUCH;
+        }
+        if (findings.contains("final-topology:COLLINEAR_OVERLAP")) {
+            return ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_COLLINEAR_OVERLAP;
+        }
+        if (findings.contains("final-topology:CONTINUATION")) {
+            return ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CONTINUATION;
+        }
+        return ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED;
     }
 
     /**
@@ -758,6 +996,16 @@ public final class Format15ProductionBundleFactory {
             .append(actual.inference().evaluatedTransitions())
             .append(",\"routes\":").append(actual.routes().size())
             .append(",\"hypotheses\":").append(actual.inference().hypotheses().size())
+            .append(",\"inferenceStatus\":").append(quote(actual.inference().status().name()))
+            .append(",\"alternativesTruncated\":").append(actual.inference().alternativesTruncated())
+            .append(",\"logicalWorkAvailability\":\"AVAILABLE\"")
+            .append(",\"workerCountersAvailable\":")
+            .append(!counters.isEmpty())
+            .append(",\"physicalCounters\":{\"inference.extensionDescriptors\":")
+            .append(physicalCounterJson(counters, "inference.extensionDescriptors"))
+            .append(",\"inference.ancestryRecordsAllocated\":")
+            .append(physicalCounterJson(counters, "inference.ancestryRecordsAllocated"))
+            .append('}')
             .append(",\"counters\":{");
         boolean first = true;
         for (Map.Entry<String, Number> counter : new java.util.TreeMap<>(counters).entrySet()) {
@@ -774,6 +1022,15 @@ public final class Format15ProductionBundleFactory {
         return json.append("}}\n").toString();
     }
 
+    private static String physicalCounterJson(Map<String, Number> counters, String name) {
+        Number value = counters.get(name);
+        if (value == null) return "{\"availability\":\"UNAVAILABLE\"}";
+        if (!Double.isFinite(value.doubleValue())) {
+            throw new IllegalArgumentException("Modern physical counter value is invalid");
+        }
+        return "{\"availability\":\"AVAILABLE\",\"value\":" + value + "}";
+    }
+
     /** Emits a truthful terminal attempt even when capture failed before detached input existed. */
     public static Format15Bundle createUnavailableLive(String buildIdentity, String status,
             String sourceLineage, String attemptIdentity) {
@@ -784,9 +1041,31 @@ public final class Format15ProductionBundleFactory {
     public static Format15Bundle createUnavailableLive(String buildIdentity, String status,
             String sourceLineage, String attemptIdentity,
             ManualJunctionEligibility.Reason manualJunctionReason) {
+        return createUnavailableLiveWithPlanAvailability(buildIdentity, status, sourceLineage,
+                attemptIdentity, manualJunctionReason, inferUnavailablePlanAvailability(status));
+    }
+
+    /** Emits an unavailable terminal attempt with a caller-supplied typed terminal reason. */
+    public static Format15Bundle createUnavailableLiveWithPlanAvailability(String buildIdentity,
+            String status, String sourceLineage, String attemptIdentity,
+            PlanAvailability planAvailability) {
+        return createUnavailableLiveWithPlanAvailability(buildIdentity, status, sourceLineage,
+                attemptIdentity, null, planAvailability);
+    }
+
+    /** Adds a bounded manual-junction reason and typed plan disposition before detached input exists. */
+    public static Format15Bundle createUnavailableLiveWithPlanAvailability(String buildIdentity,
+            String status, String sourceLineage, String attemptIdentity,
+            ManualJunctionEligibility.Reason manualJunctionReason,
+            PlanAvailability planAvailability) {
         if (status == null || status.isBlank() || sourceLineage == null
-                || sourceLineage.isBlank() || attemptIdentity == null || attemptIdentity.isBlank()) {
+                || sourceLineage.isBlank() || attemptIdentity == null || attemptIdentity.isBlank()
+                || planAvailability == null) {
             throw new IllegalArgumentException("Unavailable attempt metadata is incomplete");
+        }
+        PlanAvailability expectedAvailability = inferUnavailablePlanAvailability(status);
+        if (!expectedAvailability.equals(planAvailability)) {
+            throw new IllegalArgumentException("Unavailable attempt status differs from plan disposition");
         }
         Format15Safety.requireSafeExportedMetadata(sourceLineage);
         Format15Safety.requireSafeExportedMetadata(attemptIdentity);
@@ -801,7 +1080,15 @@ public final class Format15ProductionBundleFactory {
                 + ",\"privateData\":true,\"capabilities\":{\"SCALAR_INFERENCE\":false,"
                 + "\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,"
                 + "\"FULL_EDIT_PLAN\":false}}\n"));
+        artifacts.put(PLAN_AVAILABILITY_ARTIFACT, planAvailabilityArtifact(planAvailability));
         return new Format15Bundle(buildIdentity, identity, identity, artifacts);
+    }
+
+    private static PlanAvailability inferUnavailablePlanAvailability(String status) {
+        if ("cancelled".equalsIgnoreCase(status)) return PlanAvailability.cancelled();
+        if ("failed".equalsIgnoreCase(status)) return PlanAvailability.failed();
+        return PlanAvailability.unavailable(
+                ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_UNAVAILABLE);
     }
 
     private static String originalGeometry(NetworkSnapshot network, PrimitiveKey key,

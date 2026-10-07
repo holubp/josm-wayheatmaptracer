@@ -63,6 +63,17 @@ class V022FinalOutputCompanionTest {
                 FinalReplayFingerprint.sha256(reconstructed));
         assertEquals(FinalOutputComponentsCodec.componentDigests(produced), snapshot.digests());
         assertEquals(produced, reconstructed);
+        assertEquals(produced.routes().get(0).quality().findings(),
+                reconstructed.routes().get(0).quality().findings(),
+                "UI grouping must not replace detailed exported findings");
+        var planAvailability = Format15ArchiveReader.parseObject(
+                archive.artifact("plan-availability.json").orElseThrow().bytes(),
+                "plan-availability.json");
+        assertEquals("UNAVAILABLE", planAvailability.get("status"));
+        assertEquals("PLAN_UNAVAILABLE", planAvailability.get("reason"));
+        assertFalse(archive.artifactNames().contains("frozen-edit-plan.bin"));
+        assertFalse(archive.artifactNames().contains("applied-geometry.json"));
+        assertFalse(archive.capability().supports(ReplayLevel.FULL_EDIT_PLAN));
         assertTrue(FinalOutputComponentsCodec.summaryJson(snapshot.summary())
                 .contains("imageCenterCostAvailability"));
     }
