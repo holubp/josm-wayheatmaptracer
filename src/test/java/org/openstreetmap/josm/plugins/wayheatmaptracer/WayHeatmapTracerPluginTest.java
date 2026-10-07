@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -19,6 +21,7 @@ import org.openstreetmap.josm.actions.JosmAction;
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.GeometryCleanupSettingsAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.SelectLongestSegmentAction;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
@@ -45,6 +48,19 @@ class WayHeatmapTracerPluginTest {
     }
 
     @Test
+    void junctionlessSelectionHasAnIdentifiableDefaultShortcut() {
+        SelectLongestSegmentAction action = new SelectLongestSegmentAction();
+        try {
+            assertEquals("Select Longest Junctionless Segment", action.getValue(Action.NAME));
+            assertEquals(KeyEvent.VK_J, action.getShortcut().getAssignedKey());
+            assertEquals(InputEvent.CTRL_DOWN_MASK | InputEvent.SHIFT_DOWN_MASK,
+                    action.getShortcut().getAssignedModifier());
+        } finally {
+            action.destroy();
+        }
+    }
+
+    @Test
     void registeredActionsKeepOrdinaryRoutingWithoutExperimentalLaunchers() throws Exception {
         PreviewSessionController<LiveBPreviewService.Computed> session =
                 new PreviewSessionController<>(Runnable::run);
@@ -60,7 +76,7 @@ class WayHeatmapTracerPluginTest {
                     "Align Way to Heatmap",
                     "Align Way to Heatmap Precisely",
                     "Align Way to Heatmap by Moving Nodes",
-                    "Select Longest Heatmap Segment",
+                    "Select Longest Junctionless Segment",
                     "Heatmap Layer Settings",
                     "Geometry Cleanup Settings...",
                     "Export Heatmap Calibration Tiles",

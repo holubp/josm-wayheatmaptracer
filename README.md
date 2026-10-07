@@ -41,12 +41,12 @@ The normal workflow is:
 
 1. Configure the plugin-managed heatmap source once in `More tools -> Heatmap Layer Settings`.
 2. Select one OSM way, or select one way plus two nodes to limit the operation to a segment.
-3. For long ways, optionally run `More tools -> Select Longest Heatmap Segment`. Select only the way for its globally longest non-branching section. You can also select one node alone when exactly one live way contains it, or select the way plus one node to target the section containing that node.
+3. For long ways, optionally run `More tools -> Select Longest Junctionless Segment`. Select only the way for its globally longest non-branching section. You can also select one node alone when exactly one live way contains it, or select the way plus one node to target the section containing that node.
 4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 5. Inspect the modeless preview, switch ridge candidates if needed, pan/zoom the map, and toggle layers on/off while the preview stays visible. Candidates are labeled `Applicable`, `Review required`, or `Blocked`. A meaningful-signal candidate with incomplete longitudinal evidence can be explicitly confirmed after you review its exact final preview; ordinary 7-10 m half-width searches remain supported, and wider retry is explicit and run-scoped. The confirmation is session-local, is cleared when the candidate changes, and is rejected if the source changes before Apply.
 6. Apply the result only if the proposed geometry is justified by the heatmap and other evidence.
 
-For longer ways, `Select Longest Heatmap Segment` uses endpoints and shared-way nodes to divide the way into maximal candidate ranges, then removes branching or uncertain junction nodes from each candidate's ends. It chooses the longest remaining range with at least two occurrences. A junction can remain an endpoint only when exactly two complete, non-degenerate ways in the active data layer meet there at their respective endpoints. With one node selected alone, the containing way is inferred only when exactly one live way in the active data layer refers to that node and the way has complete geometry. If the node belongs to multiple live ways, select the intended way too. With a way and one node selected, the selector considers the original adjacent ranges containing the hint, trims their junction endpoints, and chooses the longer eligible result. An unsafe junction hint is excluded from the returned range; a safe end-to-end continuation can remain an endpoint. The hint is replaced by the chosen range's two safe endpoints, ready for immediate alignment. Repeated-node ambiguity is rejected and may require splitting the way or choosing a simpler section.
+For longer ways, `Select Longest Junctionless Segment` uses endpoints and shared-way nodes to divide the way into maximal candidate ranges, then removes branching or uncertain junction nodes from each candidate's ends. It chooses the longest remaining range with at least two occurrences. A junction can remain an endpoint only when exactly two complete, non-degenerate ways in the active data layer meet there at their respective endpoints. With one node selected alone, the containing way is inferred only when exactly one live way in the active data layer refers to that node and the way has complete geometry. If the node belongs to multiple live ways, select the intended way too. With a way and one node selected, the selector considers the original adjacent ranges containing the hint, trims their junction endpoints, and chooses the longer eligible result. An unsafe junction hint is excluded from the returned range; a safe end-to-end continuation can remain an endpoint. The hint is replaced by the chosen range's two safe endpoints, ready for immediate alignment. Repeated-node ambiguity is rejected and may require splitting the way or choosing a simpler section.
 
 The current implementation is designed for private development:
 - build a local plugin jar
@@ -175,7 +175,7 @@ Shortcuts:
 
 1. Download the OSM area around the way unless you intentionally enabled the no-download option.
 2. Select exactly one way. To align only part of it, select the way and the two endpoint nodes of the segment.
-3. For long ways, run `More tools -> Select Longest Heatmap Segment` with only the way selected for its globally longest eligible range after branching junction nodes are trimmed. To work near a particular location, select one node alone if exactly one live way contains it, or select the way plus one node to disambiguate a shared node. The helper replaces the hint with the chosen range's two safe endpoints. At a junction, it chooses the longer eligible adjacent result.
+3. For long ways, run `More tools -> Select Longest Junctionless Segment` with only the way selected for its globally longest eligible range after branching junction nodes are trimmed. To work near a particular location, select one node alone if exactly one live way contains it, or select the way plus one node to disambiguate a shared node. The helper replaces the hint with the chosen range's two safe endpoints. At a junction, it chooses the longer eligible adjacent result.
 4. The selected segment does not need to be fully visible on screen. With managed Strava access the plugin samples source tiles; without managed access it temporarily renders the selected extent through one or more normal-resolution JOSM viewport captures and then restores the previous viewport.
 5. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 6. In the preview, inspect the solid blue proposed result, orange dashed original segment, and dashed labeled alternative ridges.
@@ -199,7 +199,7 @@ All actions are under JOSM `More tools`:
 - `Align Way to Heatmap by Moving Nodes`: `Alt+Ctrl+Shift+M`
 - `Heatmap Layer Settings`: `Ctrl+Shift+U`
 - `Geometry Cleanup Settings`: no default shortcut
-- `Select Longest Heatmap Segment`: no default shortcut
+- `Select Longest Junctionless Segment`: `Ctrl+Shift+J`
 - `Export Heatmap Calibration Tiles`: `Alt+Ctrl+Shift+P`
 - `Export Last Alignment Diagnostics`: `Alt+Ctrl+Shift+D`
 
@@ -320,7 +320,7 @@ The script also accepts image directories and extracted JOSM cache tiles. It wri
 5. In the settings dialog, enter the exact cookie values named `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`, or use `Paste cookie header...` to split a copied cookie header into those fields.
 6. Select the desired Strava activity and color for the managed layer.
 7. Choose either `Move Existing Nodes` or `Precise Shape`. Configure future cleanup through `Geometry cleanup...`; leave the effective cleanup choice at `Off` when only the raw slide candidate is required.
-8. Use `Select Longest Heatmap Segment` after selecting only a way for the globally longest eligible range after junction trimming, after selecting one node that belongs to exactly one live way, or after selecting the way plus one node to disambiguate a shared node.
+8. Use `Select Longest Junctionless Segment` after selecting only a way for the globally longest eligible range after junction trimming, after selecting one node that belongs to exactly one live way, or after selecting the way plus one node to disambiguate a shared node.
 9. Test `Align Way to Heatmap`.
 10. If the result is wrong, enable `Verbose logging` and `Debug overlay` before rerunning.
 11. Export the last alignment diagnostics bundle from the plugin menu after each reference attempt.

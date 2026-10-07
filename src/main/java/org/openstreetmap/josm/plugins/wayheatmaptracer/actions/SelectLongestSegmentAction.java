@@ -30,14 +30,14 @@ public final class SelectLongestSegmentAction extends JosmAction {
      */
     public SelectLongestSegmentAction() {
         super(
-            tr("Select Longest Heatmap Segment"),
+            tr("Select Longest Junctionless Segment"),
             null,
             tr("Select the longest non-branching segment of a way, optionally containing a selected node; a node alone works when its way is unambiguous"),
             Shortcut.registerShortcut(
                 "wayheatmaptracer:select-longest-segment",
-                tr("WayHeatmapTracer: Select Longest Heatmap Segment"),
-                KeyEvent.CHAR_UNDEFINED,
-                Shortcut.NONE
+                tr("WayHeatmapTracer: Select Longest Junctionless Segment"),
+                KeyEvent.VK_J,
+                Shortcut.CTRL_SHIFT
             ),
             true
         );
