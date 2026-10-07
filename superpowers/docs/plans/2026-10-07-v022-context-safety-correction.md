@@ -59,3 +59,40 @@ count alone cannot close this proof gate.
 Detailed temporary proof artifacts are in this plan's SDD
 `task-2-astra-proof.md`; this durable correction preserves the decisions and
 fixtures independently of that scratch workspace. Implementation/re-review pending.
+
+## Reviewed sole-shared-contact correction
+
+The revised exact-chord implementation also failed independent review: an early
+VERTEX_TOUCH could hide near-parallel overlap; moving the tolerant-collinear
+branch earlier then rejected safe opposite rays with zero overlap. A focused
+Astra/high follow-up specifies witness aggregation, rather than another enum
+priority change. The bounded packet is SDD `task-2-shared-contact-contract.md`.
+
+For each consistent longitude branch collect all four endpoint-to-other-segment
+witnesses (exact, outward tolerant and conservative proximity), plus proper
+crossing, positive exact/tolerant overlap and uncertainty flags. A tested endpoint
+is owned only when its original real OSM key and exact branch coordinates coincide
+with an endpoint of the other segment. Union all branches. An owned shared contact
+cannot erase a remote witness or another branch's contact; artificial endpoints
+never own incidence. Any blocking flag or unowned contact blocks. Only an exact
+shared incidence whose entire witness set is owned can receive the exemption.
+
+With shared S=(0,0), changed S→(1,0) and context S→(1,1e-9) in synthetic metric
+units, positive near-parallel overlap blocks. Context S→(-1,1e-9) has exactly zero
+dominant-axis overlap at S and remains allowed when no remote witness exists.
+Distinct OSM keys at coincident coordinates remain blocked. Exact positive overlap
+blocks however short. Axis/branch or interval uncertainty remains fail-closed;
+correlated projection of the same shared coordinate must be preserved.
+
+Remote witnesses must be evaluated independently of all-four collinearity.
+S=(0,0), U=(1,1), V=(0.5,0.50000025), with chords S→U and V→S, provides a
+remote outward-tolerance witness even when another orientation fails its outward
+bound. The fixed-epsilon exact affine theorem differs from these origin-dependent
+outward predicates; exemption does not rely on that delicate implication.
+
+Retain reversal/pair-order permutations, perpendicular shared safe controls,
+positive-overlap and opposite-ray controls, remote/distinct-node contacts,
+cross-branch aggregation, antimeridian identity and degenerate refusal. Source
+and proof receive scoped independent review before another long regression gate.
+This corrects Task 2's safety mechanism without narrowing its scope or waiving
+the normal-user Apply requirement.
