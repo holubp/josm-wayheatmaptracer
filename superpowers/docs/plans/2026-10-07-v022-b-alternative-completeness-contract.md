@@ -1,6 +1,6 @@
 # Engine B alternative completeness contract
 
-Status: **design gate open; stable v0.22.0 blocked** while real capped/D-unmet
+Status: **design independently approved; production gate open and stable v0.22.0 blocked** while real capped/D-unmet
 runs have no proof that further admitted distinct alternatives are absent.
 This document is a Task 5 design and test packet, not a production certificate.
 Basis: approved 2026-10-07 usable-release design and Task 4 source at `82ea716`.
@@ -208,9 +208,11 @@ exit 0 (`BUILD SUCCESSFUL in 2m 43s`). Final-source XML reports 17 and 49
 tests, zero failures/errors/skips, at 2026-10-07 10:48-10:50 UTC.
 
 The current source has no proof that the D-unmet capped cases have no further
-distinct admitted alternatives. **Task 5 design remains subject to independent
-rereview; production completeness for those cases and stable-release
-completeness remain BLOCKED.** D-reached bounded results retain their existing
+distinct admitted alternatives. **Production completeness for those cases and
+stable-release completeness remain BLOCKED.** The design-only Sol/high rereview approved worker
+revision `2734fcc`; its corrected document and tests were integrated as `809505c`.
+This records design approval without claiming implementation of a production
+certificate. D-reached bounded results retain their existing
 accepted meaning. The approved safe test RC path remains independent. Runtime
 model/effort was requested as Sol/high; effective metadata and token usage
 were not surfaced.
