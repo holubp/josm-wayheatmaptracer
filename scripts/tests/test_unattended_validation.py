@@ -17,20 +17,31 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-RUNNER = ROOT / "scripts" / "run-validation.py"
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_RUNNER = SOURCE_ROOT / "scripts" / "run-validation.py"
+ROOT = SOURCE_ROOT
+RUNNER = SOURCE_RUNNER
 
 
 @pytest.fixture(autouse=True)
-def preserve_build_jar():
-    jar = ROOT / "build" / "libs" / "wayheatmaptracer.jar"
-    previous = jar.read_bytes() if jar.is_file() else None
-    yield
-    if previous is None:
-        jar.unlink(missing_ok=True)
-    else:
-        jar.parent.mkdir(parents=True, exist_ok=True)
-        jar.write_bytes(previous)
+def isolate_runner_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every fake subprocess and runner import in a disposable mini-checkout."""
+    root = tmp_path / "runner-checkout"
+    (root / "scripts" / "tests").mkdir(parents=True)
+    shutil.copy2(SOURCE_RUNNER, root / "scripts" / "run-validation.py")
+    shutil.copy2(Path(__file__).resolve(), root / "scripts" / "tests" / "test_unattended_validation.py")
+    shutil.copy2(SOURCE_ROOT / "gradle.properties", root / "gradle.properties")
+    shutil.copy2(SOURCE_ROOT / "scripts" / "run-v022-benchmark.py",
+                 root / "scripts" / "run-v022-benchmark.py")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "-qm", "isolated runner fixture"],
+                   check=True)
+    (root / "build" / "libs").mkdir(parents=True)
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "ROOT", root)
+    monkeypatch.setattr(module, "RUNNER", root / "scripts" / "run-validation.py")
 
 
 def fake_tools(tmp_path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
@@ -60,9 +71,16 @@ def fake_tools(tmp_path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
         "    with zipfile.ZipFile(jar, 'w') as z:\n"
         "      z.writestr('META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\\nPlugin-Version: ' + os.environ.get('FAKE_PLUGIN_VERSION', '" + plugin_version + "') + '\\nPlugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\\nPlugin-Mainversion: 19555\\n')\n"
         "      z.write(os.environ['FAKE_PLUGIN_CLASS'], 'org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class')\n"
-        "    reports = pathlib.Path('build/test-results/test')\n"
-        "    reports.mkdir(parents=True, exist_ok=True)\n"
-        "    (reports / 'TEST-fake.xml').write_text('<testsuite tests=\"2\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase name=\"one\"/><testcase name=\"two\"/></testsuite>')\n"
+        "  reports = pathlib.Path('build/test-results/test')\n"
+        "  reports.mkdir(parents=True, exist_ok=True)\n"
+        "  (reports / 'TEST-fake.xml').write_text('<testsuite tests=\"2\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase name=\"one\"/><testcase name=\"two\"/></testsuite>')\n"
+        "  custom_report = os.environ.get('FAKE_JUNIT_REPORT')\n"
+        "  if custom_report: (reports / 'TEST-fake.xml').write_text(pathlib.Path(custom_report).read_text())\n"
+        "  html = pathlib.Path('build/reports/tests/test')\n"
+        "  html.mkdir(parents=True, exist_ok=True)\n"
+        "  (html / 'index.html').write_text('<html>fake report</html>')\n"
+        "  mutate = os.environ.get('FAKE_MUTATE_FIXTURE')\n"
+        "  if mutate: pathlib.Path(mutate).write_bytes(b'mutated during Gradle')\n"
         "  raise SystemExit(int(os.environ.get('FAKE_GRADLE_EXIT', '0')))\n"
         "raise SystemExit(0)\n",
         encoding="utf-8",
@@ -104,6 +122,25 @@ def env_for(path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
     return env
 
 
+def _source_build_sentinel_snapshot() -> dict[str, str]:
+    """Hash retained build evidence in the source checkout, including absence."""
+    snapshot: dict[str, str] = {}
+    for relative in (Path("build/libs/wayheatmaptracer.jar"),
+                     Path("build/test-results/test"), Path("build/reports/tests/test")):
+        path = SOURCE_ROOT / relative
+        if path.is_file():
+            paths = (path,)
+        elif path.is_dir():
+            paths = tuple(sorted(child for child in path.rglob("*") if child.is_file()))
+        else:
+            snapshot[relative.as_posix()] = "missing"
+            continue
+        for child in paths:
+            key = child.relative_to(SOURCE_ROOT).as_posix()
+            snapshot[key] = hashlib.sha256(child.read_bytes()).hexdigest()
+    return snapshot
+
+
 def test_failed_java_stage_is_nonzero_and_persisted(tmp_path: Path) -> None:
     tools = fake_tools(tmp_path, gradle_exit=7)
     output = tmp_path / "reports"
@@ -114,6 +151,21 @@ def test_failed_java_stage_is_nonzero_and_persisted(tmp_path: Path) -> None:
     assert state["stages"][1]["exit_code"] == 7
     assert (output / "stages" / "java-build.log").exists()
     assert json.loads((output / "summary.json").read_text())["result"] == "FAIL"
+    assert json.loads((output / "summary.json").read_text())["private_fixture_scope"] == "not-executed"
+    assert (output / "reports/java/junit-xml/TEST-fake.xml").is_file()
+    assert (output / "reports/java/html/index.html").is_file()
+
+
+def test_fake_success_writes_only_disposable_build_and_preserves_source_sentinels(tmp_path: Path) -> None:
+    source_before = _source_build_sentinel_snapshot()
+    tools = fake_tools(tmp_path)
+    output = tmp_path / "reports"
+    result = invoke(tmp_path, "--profile", "public", "--output", str(output), env=env_for(tools))
+    assert result.returncode == 0, result.stderr
+    assert (ROOT / "build/libs/wayheatmaptracer.jar").is_file()
+    assert (ROOT / "build/test-results/test/TEST-fake.xml").is_file()
+    assert (ROOT / "build/reports/tests/test/index.html").is_file()
+    assert _source_build_sentinel_snapshot() == source_before
 
 
 def test_resume_reuses_only_successful_stages_and_rechecks_changed_inputs(tmp_path: Path) -> None:
@@ -127,6 +179,9 @@ def test_resume_reuses_only_successful_stages_and_rechecks_changed_inputs(tmp_pa
     assert len(status_before["identity_components"]["source_sha256"]) == 64
     assert len(status_before["identity_components"]["environment_sha256"]) == 64
     assert (output / "artifacts" / "wayheatmaptracer.jar").is_file()
+    assert json.loads((output / "summary.json").read_text())["private_fixture_scope"] == "not-executed"
+    assert (output / "reports/java/junit-xml/TEST-fake.xml").is_file()
+    assert (output / "reports/java/html/index.html").is_file()
     assert invoke(tmp_path, *args, "--resume", env=env).returncode == 0
     status_after = json.loads((output / "status.json").read_text())
     assert status_after["reused_stages"] == len(status_before["stages"]) - 2
@@ -488,7 +543,7 @@ def test_output_under_build_is_rejected_without_touching_it(tmp_path: Path) -> N
     assert not output.exists()
 
 
-def test_rc_missing_benchmark_implementation_is_explicitly_unavailable(tmp_path: Path) -> None:
+def test_rc_requires_private_junit_case_evidence_before_private_stages(tmp_path: Path) -> None:
     tools = fake_tools(tmp_path)
     benchmark, _, _, _ = _benchmark_fixture(tmp_path, tools / "java")
     replay = tmp_path / "replay.json"
@@ -501,12 +556,15 @@ def test_rc_missing_benchmark_implementation_is_explicitly_unavailable(tmp_path:
     output = tmp_path / "private-reports"
     result = invoke(tmp_path, "--profile", "rc", "--output", str(output),
                     "--benchmark-manifest", str(benchmark), "--replay-manifest", str(replay),
+                    "--fixture-manifest", str(_fixture_manifest(tmp_path)),
                     env=env_for(tools))
     assert result.returncode != 0
     state = json.loads((output / "status.json").read_text())
-    assert state["state"] == "unavailable"
-    assert state["stages"][0]["state"] == "unavailable"
-    assert "run-v022-benchmark.py" in (output / "stages" / "rc-input-availability.log").read_text()
+    assert state["state"] == "failed"
+    assert next(stage for stage in state["stages"] if stage["name"] == "junit-report-integrity")["state"] == "failed"
+    assert not any(stage["name"] == "strict-production-replay" for stage in state["stages"])
+    assert "required private fixture testcase identities" in (
+        output / "stages" / "junit-report-integrity.log").read_text()
 
 
 def test_resume_never_reuses_a_failed_stage(tmp_path: Path) -> None:
@@ -636,3 +694,232 @@ def test_sigterm_marks_run_interrupted_and_stops_stage_process(tmp_path: Path) -
         pass
     else:
         raise AssertionError("interrupted stage process remained alive")
+
+
+PRIVATE_CASES = {
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.FixtureRegressionTest",
+     "tracedChangedSegmentsStayCloseToManualBaseline()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.FixtureRegressionTest",
+     "corridorAwareTrackerStaysInsideRealWorldAcceptanceEnvelope()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.HeatmapFixtureArchiveTest",
+     "realHeatmapArchiveDecodesAndContainsExpectedStructure()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.HeatmapFixtureArchiveTest",
+     "corridorAwareTrackerConsumesCompleteProfilesFromRealSparseAndDenseTiles()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.SparseCorridorDebugReplayTest",
+     "currentTrackerBuildsAStableCompleteCandidateFromTheKnownSparseCorridor()"),
+}
+
+
+def _runner_module():
+    spec = importlib.util.spec_from_file_location("validation_fixture_contract", RUNNER)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fixture_manifest(tmp_path: Path) -> Path:
+    fixture_paths = {}
+    for name in ("fixtureRegression", "heatmapArchive", "sparseCorridorDebug"):
+        fixture = tmp_path / f"{name}.zip"
+        fixture.write_bytes((name + " private fixture").encode())
+        fixture_paths[name] = {"path": str(fixture), "sha256": hashlib.sha256(fixture.read_bytes()).hexdigest()}
+    manifest = tmp_path / "fixtures.json"
+    manifest.write_text(json.dumps({"schemaVersion": 1, "fixtures": fixture_paths}))
+    return manifest
+
+
+def _write_junit(tmp_path: Path, cases: list[tuple[str, str, bool]]) -> None:
+    report_dir = tmp_path / "build" / "test-results" / "test"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    rows = "".join(
+        f'<testcase classname="{classname}" name="{method}">' + ("<skipped/>" if skipped else "")
+        + "</testcase>"
+        for classname, method, skipped in cases
+    )
+    (report_dir / "TEST-fixtures.xml").write_text(
+        f'<testsuite tests="{len(cases)}" failures="0" errors="0" '
+        f'skipped="{sum(skipped for _, _, skipped in cases)}">{rows}</testsuite>'
+    )
+
+
+def test_fixture_manifest_binds_exact_archive_set_bytes_and_resume_identity(tmp_path: Path) -> None:
+    module = _runner_module()
+    manifest = _fixture_manifest(tmp_path)
+    first = module.fixture_manifest_identity(manifest)
+    identity, details, error = module.run_identity("rc", None, None, manifest)
+    assert len(first) == 64
+    assert details["fixture_input_sha256"] == first
+    assert error is None
+    archive = tmp_path / "fixtureRegression.zip"
+    archive.write_bytes(b"changed private fixture")
+    with pytest.raises(module.ValidationError, match="SHA-256 mismatch"):
+        module.fixture_manifest_identity(manifest)
+    assert module.run_identity("rc", None, None, manifest)[0] != identity
+
+
+def test_fixture_manifest_rejects_missing_or_extra_archive_descriptors(tmp_path: Path) -> None:
+    module = _runner_module()
+    manifest = _fixture_manifest(tmp_path)
+    data = json.loads(manifest.read_text())
+    del data["fixtures"]["sparseCorridorDebug"]
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(module.ValidationError, match="exactly"):
+        module.fixture_manifest_identity(manifest)
+    data["fixtures"]["sparseCorridorDebug"] = {"path": "x", "sha256": "0" * 64}
+    data["fixtures"]["unreviewed"] = {"path": "x", "sha256": "0" * 64}
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(module.ValidationError, match="exactly"):
+        module.fixture_manifest_identity(manifest)
+
+
+def test_fixture_archives_may_remain_inside_the_local_checkout(tmp_path: Path) -> None:
+    module = _runner_module()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    descriptors = {}
+    for name in ("fixtureRegression", "heatmapArchive", "sparseCorridorDebug"):
+        archive = checkout / f"{name}.zip"
+        archive.write_bytes(name.encode())
+        descriptors[name] = {"path": str(archive), "sha256": hashlib.sha256(archive.read_bytes()).hexdigest()}
+    manifest = tmp_path / "fixtures.json"
+    manifest.write_text(json.dumps({"schemaVersion": 1, "fixtures": descriptors}))
+    module.ROOT = checkout
+    assert len(module.fixture_manifest_identity(manifest)) == 64
+
+
+def test_junit_profile_proves_private_fixture_case_scope_and_execution(tmp_path: Path) -> None:
+    module = _runner_module()
+    module.ROOT = tmp_path
+    private = sorted((classname, method, False) for classname, method in PRIVATE_CASES)
+    _write_junit(tmp_path, [("PublicTest", "works", False)])
+    module.check_junit_reports("public")
+    with pytest.raises(module.ValidationError, match="private fixture"):
+        module.check_junit_reports("rc")
+    _write_junit(tmp_path, private)
+    module.check_junit_reports("rc")
+    _write_junit(tmp_path, private[:-1])
+    with pytest.raises(module.ValidationError, match="required private fixture testcase"):
+        module.check_junit_reports("rc")
+    _write_junit(tmp_path, [(a, b, index == 4) for index, (a, b, _) in enumerate(private)])
+    with pytest.raises(module.ValidationError, match="skipped"):
+        module.check_junit_reports("rc")
+
+
+def test_public_junit_rejects_any_private_case_in_stale_reports(tmp_path: Path) -> None:
+    module = _runner_module()
+    module.ROOT = tmp_path
+    classname, method = next(iter(PRIVATE_CASES))
+    _write_junit(tmp_path, [(classname, method, False)])
+    with pytest.raises(module.ValidationError, match="private fixture"):
+        module.check_junit_reports("public")
+
+
+def test_rc_fixture_manifest_is_required_and_public_rejects_it(tmp_path: Path) -> None:
+    output = tmp_path / "reports"
+    missing = invoke(tmp_path, "--profile", "rc", "--output", str(output))
+    assert missing.returncode == 1
+    missing_status = json.loads((output / "status.json").read_text())
+    assert missing_status["state"] == "unavailable"
+    assert missing_status["stages"][0]["name"] == "rc-input-availability"
+    assert json.loads((output / "summary.json").read_text())["private_fixture_scope"] == "required"
+    assert not (output / "stages" / "java-build.log").exists()
+    manifest = _fixture_manifest(tmp_path)
+    tools = fake_tools(tmp_path)
+    result = invoke(tmp_path, "--profile", "public", "--fixture-manifest", str(manifest),
+                    "--output", str(output), env=env_for(tools))
+    assert result.returncode == 2
+    assert "public" in result.stderr.lower()
+
+
+def test_public_runner_rejects_a_private_case_left_in_junit_xml(tmp_path: Path) -> None:
+    tools = fake_tools(tmp_path)
+    classname, method = next(iter(PRIVATE_CASES))
+    stale_report = tmp_path / "stale-junit.xml"
+    stale_report.write_text(
+        f'<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        f'<testcase classname="{classname}" name="{method}"/></testsuite>'
+    )
+    env = env_for(tools)
+    env["FAKE_JUNIT_REPORT"] = str(stale_report)
+    output = tmp_path / "public-output"
+    result = invoke(tmp_path, "--profile", "public", "--output", str(output), env=env)
+    assert result.returncode != 0
+    state = json.loads((output / "status.json").read_text())
+    assert state["stages"][-1]["name"] == "junit-report-integrity"
+    assert "private fixture testcases" in (output / "stages/junit-report-integrity.log").read_text()
+
+
+def test_rc_rejects_fixture_mutation_between_preflight_and_junit_gate(tmp_path: Path) -> None:
+    tools = fake_tools(tmp_path)
+    benchmark, _, _, _ = _benchmark_fixture(tmp_path, tools / "java")
+    corpus = tmp_path / "case.wthb"
+    corpus.write_bytes(b"private replay payload")
+    replay = tmp_path / "replay.json"
+    replay.write_text(json.dumps({"schema": "wayheatmaptracer-v022-corpus-1", "cases": [
+        {"caseId": "case", "sourcePath": str(corpus),
+         "outerSha256": hashlib.sha256(corpus.read_bytes()).hexdigest(), "bundleSha256": "b" * 64}
+    ]}))
+    fixture_manifest = _fixture_manifest(tmp_path)
+    mutate = tmp_path / "fixtureRegression.zip"
+    env = env_for(tools)
+    env["FAKE_MUTATE_FIXTURE"] = str(mutate)
+    output = tmp_path / "rc-output"
+    result = invoke(tmp_path, "--profile", "rc", "--output", str(output),
+                    "--benchmark-manifest", str(benchmark), "--replay-manifest", str(replay),
+                    "--fixture-manifest", str(fixture_manifest), env=env)
+    assert result.returncode != 0
+    state = json.loads((output / "status.json").read_text())
+    assert state["state"] == "failed"
+    assert state["stages"][-1]["name"] == "junit-report-integrity"
+    assert "fixture archive changed" in (output / "stages/junit-report-integrity.log").read_text()
+
+
+def test_rc_manifest_mutation_at_availability_boundary_is_durable(tmp_path: Path, monkeypatch) -> None:
+    tools = fake_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    benchmark, _, _, _ = _benchmark_fixture(tmp_path, tools / "java")
+    corpus = tmp_path / "case.wthb"
+    corpus.write_bytes(b"private replay payload")
+    replay = tmp_path / "replay.json"
+    replay.write_text(json.dumps({"schema": "wayheatmaptracer-v022-corpus-1", "cases": [
+        {"caseId": "case", "sourcePath": str(corpus),
+         "outerSha256": hashlib.sha256(corpus.read_bytes()).hexdigest(), "bundleSha256": "c" * 64}
+    ]}))
+    fixture_manifest = _fixture_manifest(tmp_path)
+    module = _runner_module()
+    original_identity = module.run_identity
+
+    def identity_then_remove_archive(profile, benchmark_path, replay_path, fixture_path=None):
+        result = original_identity(profile, benchmark_path, replay_path, fixture_path)
+        (tmp_path / "fixtureRegression.zip").unlink()
+        return result
+
+    monkeypatch.setattr(module, "run_identity", identity_then_remove_archive)
+    output = tmp_path / "rc-preflight-output"
+    result = module.run_profile("rc", output, benchmark, replay, fixture_manifest, False)
+    assert result == 1
+    status = json.loads((output / "status.json").read_text())
+    assert status["state"] == "unavailable"
+    assert status["stages"][0]["name"] == "rc-input-availability"
+    assert status["stages"][0]["state"] == "unavailable"
+    assert "fixture inputs changed" in (output / "stages/rc-input-availability.log").read_text()
+    assert json.loads((output / "summary.json").read_text())["result"] == "UNAVAILABLE"
+    assert not (output / "stages/java-build.log").exists()
+
+
+def test_explicit_gradle_profiles_route_private_fixtures_without_changing_default() -> None:
+    module = _runner_module()
+    public = module.java_validation_command("public", None)
+    assert "-PvalidationProfile=public" in public
+    rc = module.java_validation_command("rc", {
+        "fixtureRegression": Path("/private/fixture-regression.zip"),
+        "heatmapArchive": Path("/private/extracted-tiles.zip"),
+        "sparseCorridorDebug": Path("/private/sparse-debug.zip"),
+    })
+    assert "-PvalidationProfile=rc" in rc
+    assert "-PfixtureRegressionArchive=/private/fixture-regression.zip" in rc
+    assert "-PheatmapFixtureArchive=/private/extracted-tiles.zip" in rc
+    assert "-PsparseCorridorDebugArchive=/private/sparse-debug.zip" in rc
+    default = module.java_validation_command(None, None)
+    assert not any(arg.startswith("-PvalidationProfile=") for arg in default)

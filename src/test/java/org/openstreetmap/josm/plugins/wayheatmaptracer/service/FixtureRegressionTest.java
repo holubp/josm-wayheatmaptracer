@@ -31,6 +31,7 @@ import javax.imageio.ImageIO;
 import javax.xml.parsers.DocumentBuilderFactory;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -52,9 +53,11 @@ class FixtureRegressionTest {
     private static final Path ACCEPTABLE_LIMITS_OSM = VISUALIZATION_DIR.resolve("acceptable-limits.osm");
     private static final Path VIOLATIONS_OSM = VISUALIZATION_DIR.resolve("violations.osm");
 
+    @Tag("private-fixture")
     @Test
     void tracedChangedSegmentsStayCloseToManualBaseline() throws Exception {
-        Path archive = Path.of(FIXTURE_ARCHIVE).toAbsolutePath().normalize();
+        Path archive = Path.of(System.getProperty("wayheatmaptracer.fixtureRegressionArchive", FIXTURE_ARCHIVE))
+            .toAbsolutePath().normalize();
         assertTrue(Files.exists(archive), "Expected fixture archive at " + archive);
 
         FixtureBundle fixture = FixtureBundle.load(archive);
@@ -95,9 +98,11 @@ class FixtureRegressionTest {
             "Changed-way fixture regression exceeded tolerance:\n" + String.join("\n", failures));
     }
 
+    @Tag("private-fixture")
     @Test
     void corridorAwareTrackerStaysInsideRealWorldAcceptanceEnvelope() throws Exception {
-        Path archive = Path.of(FIXTURE_ARCHIVE).toAbsolutePath().normalize();
+        Path archive = Path.of(System.getProperty("wayheatmaptracer.fixtureRegressionArchive", FIXTURE_ARCHIVE))
+            .toAbsolutePath().normalize();
         FixtureBundle fixture = FixtureBundle.load(archive);
         List<ChangedWaySegment> regressionCases = fixture.changedWays().stream()
             .filter(this::isMaterialRegressionCase)

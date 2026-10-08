@@ -42,7 +42,45 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    val validationProfile = providers.gradleProperty("validationProfile")
+    val fixtureArchives = listOf(
+        "fixtureRegressionArchive" to "wayheatmaptracer.fixtureRegressionArchive",
+        "heatmapFixtureArchive" to "wayheatmaptracer.heatmapFixtureArchive",
+        "sparseCorridorDebugArchive" to "wayheatmaptracer.sparseCorridorDebugArchive"
+    )
+    inputs.property("validationProfile", validationProfile.orNull ?: "default")
+    fixtureArchives.forEach { (gradleName, _) ->
+        inputs.property(gradleName, providers.gradleProperty(gradleName).orNull ?: "missing")
+    }
+    inputs.files(fixtureArchives.mapNotNull { (gradleName, _) ->
+        providers.gradleProperty(gradleName).orNull?.let { file(it) }
+    })
+    doFirst {
+        when (validationProfile.orNull) {
+            null -> Unit
+            "public" -> Unit
+            "rc" -> fixtureArchives.forEach { (gradleName, _) ->
+                val archive = providers.gradleProperty(gradleName).orNull
+                    ?: throw GradleException("RC validation requires -P$gradleName=<archive>")
+                if (!file(archive).isFile) {
+                    throw GradleException("RC validation archive is missing: $gradleName")
+                }
+            }
+            else -> throw GradleException("validationProfile must be public or rc")
+        }
+    }
+    if (validationProfile.orNull == "public") {
+        useJUnitPlatform { excludeTags("private-fixture") }
+    } else {
+        useJUnitPlatform()
+    }
+    if (validationProfile.orNull == "rc") {
+        fixtureArchives.forEach { (gradleName, systemName) ->
+            providers.gradleProperty(gradleName).orNull?.let { archive ->
+                systemProperty(systemName, file(archive).absolutePath)
+            }
+        }
+    }
 }
 
 tasks.register<JavaExec>("extractJosmTmsCache") {

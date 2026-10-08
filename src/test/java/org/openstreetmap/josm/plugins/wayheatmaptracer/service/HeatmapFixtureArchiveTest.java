@@ -20,6 +20,7 @@ import java.util.zip.ZipFile;
 import javax.imageio.ImageIO;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 
 class HeatmapFixtureArchiveTest {
@@ -29,9 +30,11 @@ class HeatmapFixtureArchiveTest {
     private static final String DENSE_TILE =
         "extracted-tiles/Strava_All_15_https_content-a.strava.com_identified_globalheat_all_hot__zoom___x___y_.png_15_17895_11215.png";
 
+    @Tag("private-fixture")
     @Test
     void realHeatmapArchiveDecodesAndContainsExpectedStructure() throws Exception {
-        Path archive = Path.of(ARCHIVE_NAME).toAbsolutePath().normalize();
+        Path archive = Path.of(System.getProperty("wayheatmaptracer.heatmapFixtureArchive", ARCHIVE_NAME))
+            .toAbsolutePath().normalize();
         assertTrue(Files.exists(archive), "Expected real heatmap fixture archive at " + archive);
 
         try (ZipFile zip = new ZipFile(archive.toFile())) {
@@ -67,9 +70,11 @@ class HeatmapFixtureArchiveTest {
         }
     }
 
+    @Tag("private-fixture")
     @Test
     void corridorAwareTrackerConsumesCompleteProfilesFromRealSparseAndDenseTiles() throws Exception {
-        Path archive = Path.of(ARCHIVE_NAME).toAbsolutePath().normalize();
+        Path archive = Path.of(System.getProperty("wayheatmaptracer.heatmapFixtureArchive", ARCHIVE_NAME))
+            .toAbsolutePath().normalize();
         try (ZipFile zip = new ZipFile(archive.toFile())) {
             BufferedImage sparse = readImage(zip, SPARSE_TILE);
             BufferedImage dense = readImage(zip, DENSE_TILE);

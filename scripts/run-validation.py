@@ -29,6 +29,19 @@ ROOT = Path(__file__).resolve().parents[1]
 TIMEOUT_SECONDS = 4 * 60 * 60
 MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 SHA256_LENGTH = 64
+PRIVATE_FIXTURE_KEYS = ("fixtureRegression", "heatmapArchive", "sparseCorridorDebug")
+PRIVATE_FIXTURE_CASES = {
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.FixtureRegressionTest",
+     "tracedChangedSegmentsStayCloseToManualBaseline()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.FixtureRegressionTest",
+     "corridorAwareTrackerStaysInsideRealWorldAcceptanceEnvelope()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.HeatmapFixtureArchiveTest",
+     "realHeatmapArchiveDecodesAndContainsExpectedStructure()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.HeatmapFixtureArchiveTest",
+     "corridorAwareTrackerConsumesCompleteProfilesFromRealSparseAndDenseTiles()"),
+    ("org.openstreetmap.josm.plugins.wayheatmaptracer.service.SparseCorridorDebugReplayTest",
+     "currentTrackerBuildsAStableCompleteCandidateFromTheKnownSparseCorridor()"),
+}
 ACTIVE_PROCESS: subprocess.Popen[str] | None = None
 INTERRUPTED = False
 
@@ -125,6 +138,22 @@ def _required_file(value: Any, base: Path) -> str:
     if actual != expected.lower() or any(char not in "0123456789abcdef" for char in expected.lower()):
         raise ValidationError("manifest input SHA-256 mismatch")
     return actual
+
+
+def _fixture_file(path_value: str, base: Path) -> Path:
+    if "\0" in path_value:
+        raise ValidationError("fixture archive path is malformed")
+    raw = Path(path_value)
+    unresolved = raw if raw.is_absolute() else base / raw
+    if unresolved.is_symlink():
+        raise ValidationError("fixture archive must not be a symlink")
+    try:
+        path = unresolved.resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        raise ValidationError("fixture archive path is malformed") from exc
+    if not path.is_file():
+        raise ValidationError("fixture archive is missing or not a regular file")
+    return path
 
 
 def _tile_payload_identity(value: Any, base: Path) -> list[tuple[str, str]]:
@@ -315,10 +344,46 @@ def replay_manifest_identity(path: Path) -> str:
     return hashlib.sha256(json.dumps({"manifest": manifest_hash, "archives": sorted(evidence)}, sort_keys=True).encode()).hexdigest()
 
 
+def fixture_manifest_identity(path: Path) -> str:
+    """Validate and hash the exact private Java fixture archive set and bytes."""
+    manifest, manifest_hash = _json_file(path)
+    if set(manifest) != {"schemaVersion", "fixtures"} or type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1:
+        raise ValidationError("fixture manifest fields do not match schema version 1")
+    fixtures = manifest.get("fixtures")
+    if not isinstance(fixtures, dict) or set(fixtures) != set(PRIVATE_FIXTURE_KEYS):
+        raise ValidationError("fixture manifest must contain exactly the three required private archives")
+    evidence: list[tuple[str, str]] = []
+    for name in PRIVATE_FIXTURE_KEYS:
+        descriptor = fixtures[name]
+        if not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256"}:
+            raise ValidationError("fixture descriptor must contain exactly path and sha256")
+        path_value, expected = descriptor["path"], descriptor["sha256"]
+        if (not isinstance(path_value, str) or not path_value or not isinstance(expected, str)
+                or len(expected) != SHA256_LENGTH or any(char not in "0123456789abcdef" for char in expected.lower())):
+            raise ValidationError("fixture archive path or SHA-256 is malformed")
+        actual = sha256_file(_fixture_file(path_value, path.parent))
+        if actual != expected.lower():
+            raise ValidationError("fixture archive SHA-256 mismatch")
+        evidence.append((name, actual))
+    return hashlib.sha256(json.dumps({"manifest": manifest_hash, "fixtures": evidence}, sort_keys=True).encode()).hexdigest()
+
+
+def fixture_manifest_paths(path: Path) -> dict[str, Path]:
+    manifest, _ = _json_file(path)
+    if set(manifest) != {"schemaVersion", "fixtures"} or not isinstance(manifest.get("fixtures"), dict):
+        raise ValidationError("fixture manifest fields do not match schema version 1")
+    if set(manifest["fixtures"]) != set(PRIVATE_FIXTURE_KEYS):
+        raise ValidationError("fixture manifest must contain exactly the three required private archives")
+    return {name: _fixture_file(manifest["fixtures"][name]["path"], path.parent)
+            for name in PRIVATE_FIXTURE_KEYS}
+
+
 def manifest_input_identity(path: Path) -> str:
-    """Bind a private benchmark or strict replay manifest and its referenced payloads."""
+    """Bind a private benchmark, replay, or Java fixture manifest and payloads."""
     manifest, _ = _json_file(path)
     if "schemaVersion" in manifest:
+        if "fixtures" in manifest:
+            return fixture_manifest_identity(path)
         return benchmark_manifest_identity(path)
     return replay_manifest_identity(path)
 
@@ -364,7 +429,8 @@ def command_identity() -> dict[str, str]:
     return result
 
 
-def run_identity(profile: str, benchmark: Path | None, replay: Path | None) -> tuple[str, dict[str, str | None], str | None]:
+def run_identity(profile: str, benchmark: Path | None, replay: Path | None,
+                 fixtures: Path | None = None) -> tuple[str, dict[str, str | None], str | None]:
     input_error = None
 
     def input_hash(path: Path | None) -> str | None:
@@ -384,6 +450,7 @@ def run_identity(profile: str, benchmark: Path | None, replay: Path | None) -> t
         "source_sha256": source_identity(),
         "benchmark_input_sha256": input_hash(benchmark),
         "replay_input_sha256": input_hash(replay),
+        "fixture_input_sha256": input_hash(fixtures),
         # Hash environment and executable versions without persisting possibly secret values.
         "environment_sha256": hashlib.sha256(json.dumps({
             "variables": sorted(os.environ.items()),
@@ -561,12 +628,13 @@ def check_artifact() -> None:
         raise ValidationError("plugin class file failed Java 17 structural verification")
 
 
-def check_junit_reports() -> None:
+def check_junit_reports(profile: str = "default") -> None:
     report_dir = ROOT / "build/test-results/test"
     reports = sorted(report_dir.glob("TEST-*.xml")) if report_dir.is_dir() else []
     if not reports:
         raise ValidationError("Gradle produced no JUnit XML test reports")
     total_tests = total_failures = total_errors = total_skipped = 0
+    observed_private_cases: set[tuple[str, str]] = set()
     for report in reports:
         if report.is_symlink() or not report.is_file() or report.stat().st_size > 16 * 1024 * 1024:
             raise ValidationError("JUnit XML report is missing, linked, or exceeds its size limit")
@@ -594,6 +662,10 @@ def check_junit_reports() -> None:
                 child_failures = sum(1 for case in cases for item in case.iter("failure"))
                 child_errors = sum(1 for case in cases for item in case.iter("error"))
                 child_skipped = sum(1 for case in cases for item in case.iter("skipped"))
+                for case in cases:
+                    identity = (case.attrib.get("classname", ""), case.attrib.get("name", ""))
+                    if identity in PRIVATE_FIXTURE_CASES:
+                        observed_private_cases.add(identity)
                 if ((failures, errors, skipped) != (child_failures, child_errors, child_skipped)
                         or child_failures or child_errors or child_skipped):
                     raise ValidationError("JUnit XML contains failed, errored, or skipped testcases")
@@ -607,6 +679,29 @@ def check_junit_reports() -> None:
         raise ValidationError("JUnit XML reports no executed tests")
     if total_failures or total_errors or total_skipped:
         raise ValidationError("JUnit XML reports failures, errors, or skipped tests")
+
+    if profile == "public" and observed_private_cases:
+        raise ValidationError("public JUnit reports contain private fixture testcases")
+    if profile == "rc" and observed_private_cases != PRIVATE_FIXTURE_CASES:
+        missing = PRIVATE_FIXTURE_CASES - observed_private_cases
+        raise ValidationError(f"required private fixture testcase identities are absent: {len(missing)}")
+
+
+def java_validation_command(profile: str | None, fixtures: dict[str, Path] | None) -> list[str]:
+    command = ["sh", "./gradlew", "--no-daemon", "test", "build", "javadoc", "compileToolsJava", "--console=plain"]
+    if profile is None:
+        return command
+    command.append(f"-PvalidationProfile={profile}")
+    if profile == "rc":
+        if fixtures is None or set(fixtures) != set(PRIVATE_FIXTURE_KEYS):
+            raise ValidationError("RC fixture archives are required for the Gradle profile")
+        property_names = {
+            "fixtureRegression": "fixtureRegressionArchive",
+            "heatmapArchive": "heatmapFixtureArchive",
+            "sparseCorridorDebug": "sparseCorridorDebugArchive",
+        }
+        command.extend(f"-P{property_names[name]}={fixtures[name]}" for name in PRIVATE_FIXTURE_KEYS)
+    return command
 
 
 def java_evidence_identity() -> str:
@@ -629,20 +724,24 @@ def check_environment() -> None:
         raise ValidationError("Java 17 is required for this validation profile")
 
 
-def check_rc_available(benchmark: Path | None, replay: Path | None) -> None:
+def check_rc_available(benchmark: Path | None, replay: Path | None,
+                       fixtures: Path | None) -> None:
     if benchmark is None or not benchmark.is_file():
         raise ValidationError("unavailable: RC benchmark manifest is missing")
     if replay is None or not replay.is_file():
         raise ValidationError("unavailable: strict production replay manifest is missing")
+    if fixtures is None or not fixtures.is_file():
+        raise ValidationError("unavailable: private fixture manifest is missing")
     if not (ROOT / "scripts/run-v022-benchmark.py").is_file():
         raise ValidationError("unavailable: scripts/run-v022-benchmark.py has not been implemented")
 
 
 def preserve_reports(output: Path, *, copy_jar: bool = False) -> None:
     """Retain public Gradle reports after failures and a verified jar after success."""
-    for relative in (Path("build/test-results/test"), Path("build/reports/tests/test")):
+    for relative, report_name in ((Path("build/test-results/test"), "junit-xml"),
+                                  (Path("build/reports/tests/test"), "html")):
         source = ROOT / relative
-        destination = output / "reports" / "java" / relative.name
+        destination = output / "reports" / "java" / report_name
         if destination.exists():
             shutil.rmtree(destination)
         if source.is_dir():
@@ -724,7 +823,7 @@ def validate_profile_output(output: Path, profile: str, old: dict[str, Any]) -> 
 
 
 def run_profile(profile: str, output: Path, benchmark: Path | None,
-                replay: Path | None, resume: bool, *, lock_already_acquired: bool = False,
+                replay: Path | None, fixtures: Path | None, resume: bool, *, lock_already_acquired: bool = False,
                 run_id: str | None = None) -> int:
     output.mkdir(parents=True, exist_ok=True)
     lock = worktree_lock_path()
@@ -737,13 +836,13 @@ def run_profile(profile: str, output: Path, benchmark: Path | None,
     else:
         acquire_lock(lock)
     try:
-        return _run_profile_locked(profile, output, benchmark, replay, resume, run_id or uuid.uuid4().hex)
+        return _run_profile_locked(profile, output, benchmark, replay, fixtures, resume, run_id or uuid.uuid4().hex)
     finally:
         release_lock(lock, os.getpid())
 
 
 def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
-                        replay: Path | None, resume: bool, run_id: str) -> int:
+                        replay: Path | None, fixtures: Path | None, resume: bool, run_id: str) -> int:
     global INTERRUPTED
     old: dict[str, Any] = {}
     status_file = output / "status.json"
@@ -755,18 +854,30 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
     if not isinstance(old, dict):
         old = {}
     validate_profile_output(output, profile, old)
-    identity, identity_details, input_error = run_identity(profile, benchmark, replay)
+    identity, identity_details, input_error = run_identity(profile, benchmark, replay, fixtures)
     records: list[dict[str, Any]] = []
+    fixture_archive_paths: dict[str, Path] | None = None
     reusable = old.get("stages", []) if old.get("identity") == identity and old.get("profile") == profile else []
     reused = 0
     if old.get("identity") != identity or old.get("profile") != profile:
         discard_saved_java_outputs(output)
 
+    def check_fixture_inputs_unchanged() -> None:
+        if profile != "rc":
+            return
+        expected = identity_details.get("fixture_input_sha256")
+        try:
+            actual = fixture_manifest_identity(fixtures) if fixtures is not None else None
+        except (ValidationError, OSError, ValueError) as exc:
+            raise ValidationError("private fixture archive changed or became unavailable during validation") from exc
+        if actual is None or actual != expected:
+            raise ValidationError("private fixture archive changed during validation")
+
     def run_or_reuse(name: str, command: list[str] | None, check: Any = None) -> dict[str, Any]:
         nonlocal reused
         previous = next((row for row in reusable if row.get("name") == name and row.get("state") == "passed"), None)
         # The artifact is mutable build output, so verify its current bytes every run.
-        if name in {"artifact-integrity", "junit-report-integrity"} or (
+        if name in {"artifact-integrity", "junit-report-integrity", "rc-input-availability"} or (
                 profile == "rc" and name in {"strict-production-replay", "production-benchmark"}):
             previous = None
         if name == "java-build" and previous is not None:
@@ -790,11 +901,12 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
             preserve_reports(output)
         elif name == "junit-report-integrity":
             def check_bound_junit_reports() -> None:
+                check_fixture_inputs_unchanged()
                 java_record = next((item for item in records if item.get("name") == "java-build"), None)
                 if (java_record is None or java_record.get("state") != "passed"
                         or java_record.get("evidence_sha256") != java_evidence_identity()):
                     raise ValidationError("Java build report/JAR evidence changed before JUnit validation")
-                check_junit_reports()
+                check_junit_reports(profile)
             record = stage(name, command, output, check_bound_junit_reports)
         elif name == "strict-production-replay":
             record = stage(name, command, output, check)
@@ -817,7 +929,8 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
     state: dict[str, Any] = {"schema": 1, "run_id": run_id, "profile": profile, "identity": identity,
                              "identity_components": identity_details,
                              "state": "running", "started_at": utc_now(), "stages": records,
-                             "reused_stages": 0, "private_inputs": profile == "rc"}
+                             "reused_stages": 0, "private_inputs": profile == "rc",
+                             "private_fixture_scope": "not-executed" if profile == "public" else "required"}
     atomic_json(status_file, state)
 
     def interrupt(signum: int, _frame: Any) -> None:
@@ -842,9 +955,15 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
         offset = 0
         if profile == "rc":
             def check_rc_inputs() -> None:
+                nonlocal fixture_archive_paths
                 if input_error:
                     raise ValidationError("unavailable: private manifest input validation failed")
-                check_rc_available(benchmark, replay)
+                check_rc_available(benchmark, replay, fixtures)
+                try:
+                    check_fixture_inputs_unchanged()
+                    fixture_archive_paths = fixture_manifest_paths(fixtures) if fixtures is not None else None
+                except (ValidationError, OSError, ValueError, KeyError, TypeError) as exc:
+                    raise ValidationError("unavailable: private fixture inputs changed or became unavailable during preflight") from exc
 
             state["current_stage"] = "rc-input-availability"
             atomic_json(status_file, state)
@@ -860,15 +979,17 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
                 atomic_json(output / "summary.json", {"result": summary_result, "profile": profile,
                                                       "identity": identity,
                                                       "identity_components": identity_details,
+                                                      "private_fixture_scope": "required",
                                                       "stages": records})
                 atomic_json(status_file, state)
                 (output / "launch.json").unlink(missing_ok=True)
                 return 1
-        java_command = ["sh", "./gradlew", "--no-daemon", "test", "build", "javadoc", "compileToolsJava", "--console=plain"]
+        java_command = java_validation_command(profile if profile in {"public", "rc"} else None,
+                                               fixture_archive_paths if profile == "rc" else None)
         commands: list[tuple[str, list[str] | None, Any]] = [
             ("java-environment", None, check_environment),
             ("java-build", java_command, None),
-            ("junit-report-integrity", None, check_junit_reports),
+            ("junit-report-integrity", None, lambda: check_junit_reports(profile)),
             ("python-tests", ["python3", "-m", "pytest", "-q", "scripts/tests"], None),
             ("sampling-scale", ["python3", "scripts/validate-sampling-scale.py", "--pretty"], None),
             ("diff-check", ["git", "-c", f"safe.directory={ROOT}", "diff", "--check", "HEAD"], None),
@@ -905,6 +1026,7 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
             state["current_stage"] = "artifact-integrity"
             atomic_json(status_file, state)
             def check_bound_artifact() -> None:
+                check_fixture_inputs_unchanged()
                 java_record = next((item for item in records if item.get("name") == "java-build"), None)
                 if (java_record is None or java_record.get("state") != "passed"
                         or java_record.get("evidence_sha256") != java_evidence_identity()):
@@ -925,6 +1047,7 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
         summary = {
             "result": "PASS" if passed else ("INTERRUPTED" if INTERRUPTED else "FAIL"),
             "profile": profile,
+            "private_fixture_scope": "not-executed" if profile == "public" else "required",
             "source_identity": identity,
             "identity_components": identity_details,
             "stages": [{"name": row["name"], "state": row["state"], "exit_code": row.get("exit_code")}
@@ -945,6 +1068,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output", type=Path, required=True)
     result.add_argument("--benchmark-manifest", type=Path)
     result.add_argument("--replay-manifest", type=Path)
+    result.add_argument("--fixture-manifest", type=Path)
     result.add_argument("--background", action="store_true")
     result.add_argument("--resume", action="store_true")
     result.add_argument("--status", action="store_true", help="print the existing run status and exit")
@@ -1020,17 +1144,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.profile is None:
             raise ValidationError("--profile is required unless --status is used")
-        if args.profile == "public" and (args.benchmark_manifest or args.replay_manifest):
+        if args.profile == "public" and (args.benchmark_manifest or args.replay_manifest or args.fixture_manifest):
             raise ValidationError("public profile does not accept private manifests")
         benchmark = regular_external_input(args.benchmark_manifest, "benchmark manifest", False)
         replay = regular_external_input(args.replay_manifest, "replay manifest", False)
+        fixtures = regular_external_input(args.fixture_manifest, "fixture manifest", False)
         if args._background_child:
             if args.background:
                 raise ValidationError("background child cannot launch another background process")
             if sys.stdin.readline().strip() != "GO":
                 release_lock(worktree_lock_path(), os.getpid())
                 raise ValidationError("background launch handshake failed")
-            return run_profile(args.profile, output, benchmark, replay, args.resume,
+            return run_profile(args.profile, output, benchmark, replay, fixtures, args.resume,
                                lock_already_acquired=True, run_id=args._run_id)
         if args.background:
             output.mkdir(parents=True, exist_ok=True)
@@ -1058,6 +1183,8 @@ def main(argv: list[str] | None = None) -> int:
                     child_args += ["--benchmark-manifest", str(benchmark)]
                 if replay:
                     child_args += ["--replay-manifest", str(replay)]
+                if fixtures:
+                    child_args += ["--fixture-manifest", str(fixtures)]
                 if args.resume:
                     child_args.append("--resume")
                 log = (output / "runner.log").open("a", encoding="utf-8")
@@ -1079,7 +1206,7 @@ def main(argv: list[str] | None = None) -> int:
                 (output / "launch.json").unlink(missing_ok=True)
                 release_lock(lock, child.pid if "child" in locals() else os.getpid())
                 raise
-        return run_profile(args.profile, output, benchmark, replay, args.resume)
+        return run_profile(args.profile, output, benchmark, replay, fixtures, args.resume)
     except (ValidationError, OSError, subprocess.SubprocessError) as exc:
         print(f"validation error: {exc}", file=sys.stderr)
         return 2

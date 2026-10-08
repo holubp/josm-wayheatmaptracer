@@ -147,14 +147,40 @@ The identity includes the installed pytest version. Java build, report, and JAR
 evidence use the same advisory build lock as the private benchmark; do not
 delete that lock file while validation is running.
 The private `rc` profile also requires explicit benchmark and strict replay
-manifest paths; its inputs and reports stay local and are never part of CI:
+manifest paths plus an explicit private fixture manifest; its inputs and reports
+stay local and are never part of CI. A public result records
+`private_fixture_scope: not-executed`; it does not claim private fixture, RC, or
+release validation.
 
 ```bash
 python3 scripts/run-validation.py --profile rc \
   --benchmark-manifest /path/to/private-benchmark.json \
   --replay-manifest /path/to/private-replay.json \
+  --fixture-manifest /path/to/private-fixtures.json \
   --output /tmp/josm-private-validation
 ```
+
+The fixture manifest is an external JSON file with this exact schema and three
+archive keys. Each SHA-256 is checked against the archive bytes before Gradle
+starts and bound into resume identity; archives may remain in the local checkout
+or be stored elsewhere. Do not add these files or reports to CI artifacts.
+
+```json
+{
+  "schemaVersion": 1,
+  "fixtures": {
+    "fixtureRegression": {"path": "/private/wayheatmaptracer-testing.zip", "sha256": "<64 hex digits>"},
+    "heatmapArchive": {"path": "/private/extracted-tiles.zip", "sha256": "<64 hex digits>"},
+    "sparseCorridorDebug": {"path": "/private/last-slide-debug.zip", "sha256": "<64 hex digits>"}
+  }
+}
+```
+
+An explicit Gradle `-PvalidationProfile=public` excludes only the five tagged
+private archive cases. `-PvalidationProfile=rc` runs the full suite and requires
+all three archive paths. Calling `./gradlew test` without a profile preserves
+the historical full-suite behavior, including the sparse replay's optional
+assumption when no explicit archive property is supplied.
 
 ## Optimum JOSM Workflow
 

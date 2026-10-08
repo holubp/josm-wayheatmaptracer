@@ -19,20 +19,27 @@ import java.util.zip.ZipFile;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler.IntensitySample;
 
 /** Replays exported scalar profiles through the current tracker when the private calibration bundle is present. */
 class SparseCorridorDebugReplayTest {
-    private static final Path ARCHIVE = Path.of("last-slide-debug-1785794101840.zip");
+    private static final String ARCHIVE_PROPERTY = "wayheatmaptracer.sparseCorridorDebugArchive";
+    private static final Path DEFAULT_ARCHIVE = Path.of("last-slide-debug-1785794101840.zip");
     private static final String DETECTOR = "hot-corridor";
 
+    @Tag("private-fixture")
     @Test
     void currentTrackerBuildsAStableCompleteCandidateFromTheKnownSparseCorridor() throws Exception {
-        Assumptions.assumeTrue(Files.exists(ARCHIVE), "Private sparse-corridor calibration bundle is optional");
+        String configuredArchive = System.getProperty(ARCHIVE_PROPERTY);
+        Path archive = configuredArchive == null ? DEFAULT_ARCHIVE : Path.of(configuredArchive);
+        if (configuredArchive == null) {
+            Assumptions.assumeTrue(Files.exists(archive), "Private sparse-corridor calibration bundle is optional");
+        }
 
-        try (ZipFile zip = new ZipFile(ARCHIVE.toFile())) {
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
             String diagnostics = new String(zip.getInputStream(zip.getEntry("diagnostics.json")).readAllBytes(),
                 StandardCharsets.UTF_8);
             double sourcePixelRasterPx = jsonNumber(diagnostics, "trackerNormalizationRasterPx");
