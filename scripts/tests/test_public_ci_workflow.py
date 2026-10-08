@@ -76,7 +76,7 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     assert any(step.get("run") == "command -v xvfb-run" for step in steps)
     smoke_run = next(step for step in steps if "v022PublicGuiSmoke" in step.get("run", ""))
     assert smoke_run["run"] == (
-        "xvfb-run -a -s '-screen 0 1920x1080x24' "
+        "timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' "
         "sh gradlew v022PublicGuiSmoke --console=plain"
     )
     require_summary = next(step for step in steps if step.get("name") == "Require public GUI smoke summary after a passing run")
