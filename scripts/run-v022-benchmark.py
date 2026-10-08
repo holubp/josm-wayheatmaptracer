@@ -21,6 +21,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+from types import MappingProxyType
 
 
 HOST_CLASS = "org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkHostMain"
@@ -28,6 +29,22 @@ COMPARE_CLASS = "org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisi
 PRODUCER = "AlignWayAction.production-preview-v1"
 BASELINE_REVISION = "6288aafe6dc79e948a6981ae795d27ee56a653fe"
 HEX64 = set("0123456789abcdef")
+_RC6_SOURCE = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
+REVIEWED_RC6_SOURCE_SHA256 = MappingProxyType({
+    _RC6_SOURCE + "BenchmarkHostMain.java": "a19182f30ac065c670630f174c5e4a79eee1b317e5109bb47eb12b87b43a5b5a",
+    _RC6_SOURCE + "actions/AlignWayAction.java": "9f14bcbc59668c1201699b01fd1387952f7be5ecaf3d9bdc01ebfa0bb3166ae7",
+    _RC6_SOURCE + "actions/OrdinaryActionBenchmarkObserver.java": "887381014611049364712f1e4a546062367eb2fa11353e735ceb00d64fdd28a4",
+    _RC6_SOURCE + "diagnostics/replay/format15/Format15ProductionBundleFactory.java":
+        "d93a58d44bf1d773ee2b30e8bf205bbdf47169b271678cd4fee9d596451a3385",
+    _RC6_SOURCE + "tile/ManagedTileRuntime.java": "4ae919ec3076ff1f686a9740d9deee5db011d5aa26845cda5a42b4364ffd1b20",
+})
+REVIEWED_RC6_DIRTY = frozenset({
+    " M " + _RC6_SOURCE + "actions/AlignWayAction.java",
+    " M " + _RC6_SOURCE + "diagnostics/replay/format15/Format15ProductionBundleFactory.java",
+    " M " + _RC6_SOURCE + "tile/ManagedTileRuntime.java",
+    "?? " + _RC6_SOURCE + "BenchmarkHostMain.java",
+    "?? " + _RC6_SOURCE + "actions/OrdinaryActionBenchmarkObserver.java",
+})
 
 
 class GateFailure(Exception):
@@ -154,6 +171,13 @@ def checked_revision(worktree: Path, revision: str, output: Path, name: str) -> 
         raise GateFailure(f"{name}: revision differs")
 
 
+def require_reviewed_rc6(source_hashes: dict[str, str], dirty_lines: list[str]) -> None:
+    if source_hashes != REVIEWED_RC6_SOURCE_SHA256:
+        raise GateFailure("Baseline adapter bytes differ from the reviewed RC6 instrumentation")
+    if len(dirty_lines) != len(REVIEWED_RC6_DIRTY) or set(dirty_lines) != REVIEWED_RC6_DIRTY:
+        raise GateFailure("Baseline has an unreviewed RC6 worktree delta")
+
+
 def validate_plugin(spec: dict, name: str, output: Path) -> Path:
     worktree = Path(spec["worktree"]).expanduser().resolve()
     revision = spec["revision"]
@@ -171,9 +195,13 @@ def validate_plugin(spec: dict, name: str, output: Path) -> Path:
     status_log = output / f"{name}-delta.log"
     checked_process(["git", "-c", f"safe.directory={worktree}", "status", "--porcelain",
                      "--untracked-files=all"], worktree, status_log, 15)
-    changed = {line[3:] for line in status_log.read_text().splitlines() if len(line) >= 4}
-    if not changed.issubset(source_hashes):
-        raise GateFailure(f"{name}: unpinned worktree delta exists")
+    dirty_lines = status_log.read_text().splitlines()
+    if name == "baseline":
+        require_reviewed_rc6(source_hashes, dirty_lines)
+    else:
+        changed = {line[3:] for line in dirty_lines if len(line) >= 4}
+        if not changed.issubset(source_hashes):
+            raise GateFailure(f"{name}: unpinned worktree delta exists")
     return worktree
 
 

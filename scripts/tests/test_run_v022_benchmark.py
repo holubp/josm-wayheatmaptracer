@@ -18,6 +18,42 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_rc6_requires_exact_reviewed_instrumentation_and_no_engine_delta(self):
+        base = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
+        approved = {
+            base + "BenchmarkHostMain.java": "a19182f30ac065c670630f174c5e4a79eee1b317e5109bb47eb12b87b43a5b5a",
+            base + "actions/AlignWayAction.java": "9f14bcbc59668c1201699b01fd1387952f7be5ecaf3d9bdc01ebfa0bb3166ae7",
+            base + "actions/OrdinaryActionBenchmarkObserver.java": "887381014611049364712f1e4a546062367eb2fa11353e735ceb00d64fdd28a4",
+            base + "diagnostics/replay/format15/Format15ProductionBundleFactory.java": "d93a58d44bf1d773ee2b30e8bf205bbdf47169b271678cd4fee9d596451a3385",
+            base + "tile/ManagedTileRuntime.java": "4ae919ec3076ff1f686a9740d9deee5db011d5aa26845cda5a42b4364ffd1b20",
+        }
+        dirty = [" M " + base + "actions/AlignWayAction.java",
+                 " M " + base + "diagnostics/replay/format15/Format15ProductionBundleFactory.java",
+                 " M " + base + "tile/ManagedTileRuntime.java",
+                 "?? " + base + "BenchmarkHostMain.java",
+                 "?? " + base + "actions/OrdinaryActionBenchmarkObserver.java"]
+        benchmark.require_reviewed_rc6(approved, dirty)
+        with self.assertRaisesRegex(benchmark.GateFailure, "unreviewed RC6 worktree delta"):
+            benchmark.require_reviewed_rc6(approved, dirty + [" M " + base + "service/ProbabilisticInference.java"])
+        spoofed = dict(approved)
+        spoofed[base + "actions/AlignWayAction.java"] = "0" * 64
+        with self.assertRaisesRegex(benchmark.GateFailure, "adapter bytes"):
+            benchmark.require_reviewed_rc6(spoofed, dirty)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worktree = root / "rc6"
+            worktree.mkdir()
+            (worktree / "gradlew").write_text("#!/bin/sh\n")
+            spec = {"worktree": str(worktree), "revision": benchmark.BASELINE_REVISION,
+                    "sourceHashes": approved}
+            with (mock.patch.object(benchmark, "checked_revision"),
+                  mock.patch.object(benchmark, "required_file")):
+                def status(_command, _cwd, log, _timeout):
+                    log.write_text("\n".join(dirty + [" M " + base + "service/ProbabilisticInference.java"]) + "\n")
+                with mock.patch.object(benchmark, "checked_process", side_effect=status):
+                    with self.assertRaisesRegex(benchmark.GateFailure, "unreviewed RC6 worktree delta"):
+                        benchmark.validate_plugin(spec, "baseline", root)
+
     def test_fixed_worktree_lock_serializes_without_shared_storage_flock(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
