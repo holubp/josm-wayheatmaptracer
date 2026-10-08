@@ -106,6 +106,26 @@ tasks.register<JavaExec>("v022GenerateFixtures") {
     outputs.file(layout.buildDirectory.file("v022/synthetic/manifest.json"))
 }
 
+tasks.register<JavaExec>("v022PublicGuiSmoke") {
+    group = "verification"
+    description = "Runs the public analytic Engine B fixture through the real JOSM GUI"
+    dependsOn(tasks.jar)
+    classpath = sourceSets["tools"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.PublicGuiSmokeMain")
+    val root = layout.buildDirectory.dir("reports/public-gui-smoke")
+    doFirst {
+        root.get().asFile.mkdirs()
+        root.get().file("isolated-home").asFile.mkdirs()
+    }
+    systemProperty("user.home", root.get().file("isolated-home").asFile.absolutePath)
+    systemProperty("josm.home", root.get().file("isolated-home").asFile.absolutePath)
+    systemProperty("josm.pref", root.get().file("isolated-home/preferences").asFile.absolutePath)
+    systemProperty("josm.userdata", root.get().file("isolated-home/userdata").asFile.absolutePath)
+    systemProperty("josm.cache", root.get().file("isolated-home/cache").asFile.absolutePath)
+    args(root.get().file("summary.json").asFile.absolutePath,
+        tasks.jar.get().archiveFile.get().asFile.absolutePath)
+}
+
 tasks.jar {
     archiveBaseName.set("wayheatmaptracer")
     archiveVersion.set("")
