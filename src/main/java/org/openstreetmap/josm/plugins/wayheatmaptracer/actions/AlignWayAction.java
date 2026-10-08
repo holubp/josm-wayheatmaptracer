@@ -575,6 +575,7 @@ public class AlignWayAction extends JosmAction {
             }
             return;
         }
+        OrdinaryActionBenchmarkObserver.actionStarted();
         ManagedHeatmapConfig config = null;
         String diagnosticAttemptIdentity = beginDiagnosticAttempt();
         String diagnosticSourceLineage = "unavailable";
@@ -758,6 +759,7 @@ public class AlignWayAction extends JosmAction {
                         () -> recordModernUnavailable("cancelled", sourceLineage,
                                 diagnosticAttemptIdentity));
                 if (closed) {
+                    OrdinaryActionBenchmarkObserver.actionCancelled(livePreviewSession.currentAttempt());
                     overlay.hide();
                     PluginLog.endSlideSession();
                 }
@@ -1208,6 +1210,10 @@ public class AlignWayAction extends JosmAction {
             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
                     diagnosticAttemptIdentity);
             dialog.setVisible(true);
+            OrdinaryActionBenchmarkObserver.previewReady("interval", computed, () ->
+                    state.assessment().plan().orElseThrow(() -> new IllegalStateException(
+                            "Benchmark interval has no final edit plan"))
+                            .finalPreviewWays().get(computed.request().selectedWayKey()));
         } catch (RuntimeException failure) {
             dialog.dispose();
             throw failure;
@@ -1664,6 +1670,9 @@ public class AlignWayAction extends JosmAction {
         try {
             refresh.run();
             dialog.setVisible(true);
+            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () ->
+                    plan[0] == null ? null
+                            : plan[0].finalPreviewWays().get(computed.request().selectedWayKey()));
         } catch (RuntimeException exception) {
             dialog.dispose();
             throw exception;

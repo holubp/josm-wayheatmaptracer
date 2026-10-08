@@ -699,6 +699,10 @@ public final class Format15ProductionBundleFactory {
             artifacts.put(FrozenIntervalReplayCodec.ARTIFACT,
                     Format15Artifact.binary(FrozenIntervalReplayCodec.ARTIFACT, frozenIntervals));
         }
+        if (plan != null && System.getProperty("wayheatmaptracer.benchmark.receipt") != null) {
+            String name = "private/interval-frozen-edit-plan.bin";
+            artifacts.put(name, Format15Artifact.binary(name, FrozenReplayCodec.encodeEditPlan(plan)));
+        }
         artifacts.put("private/interval-point-provenance.json", Format15Artifact.text(
                 "private/interval-point-provenance.json",
                 intervalPointProvenanceJson(batch, assessment, plan, previewWays)));

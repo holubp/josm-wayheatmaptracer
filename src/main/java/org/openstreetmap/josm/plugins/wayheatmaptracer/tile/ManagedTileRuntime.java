@@ -25,8 +25,12 @@ public final class ManagedTileRuntime {
             File data = PluginDirectories.ensurePluginDataDirectory();
             Path root = new File(data, "managed-source-tile-cache").toPath();
             ManagedTileCache cache = new ManagedTileCache(root, classifier, policy.maximumBodyBytes());
-            coordinator = new TileFetchCoordinator(new HttpUrlConnectionTileTransport(policy), cache,
-                classifier, policy);
+            ManagedTileTransport transport = Boolean.getBoolean("wayheatmaptracer.benchmark.offline")
+                ? (request, credentials) -> {
+                    throw new IllegalStateException("Offline benchmark tile cache miss");
+                }
+                : new HttpUrlConnectionTileTransport(policy);
+            coordinator = new TileFetchCoordinator(transport, cache, classifier, policy);
         }
         if (config != null) {
             coordinator.updateActiveGeneration(new ManagedTileGeneration(Math.max(0L, config.cacheBuster())));
