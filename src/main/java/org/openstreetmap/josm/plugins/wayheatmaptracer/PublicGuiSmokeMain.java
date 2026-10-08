@@ -1,0 +1,305 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer;
+
+import java.awt.AWTEvent;
+import java.awt.GraphicsEnvironment;
+import java.awt.Toolkit;
+import java.awt.Window;
+import java.awt.event.AWTEventListener;
+import java.awt.event.WindowEvent;
+import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+
+import javax.swing.JDialog;
+import javax.swing.JMenuItem;
+import javax.swing.SwingUtilities;
+
+import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
+import org.openstreetmap.josm.gui.MainApplication;
+import org.openstreetmap.josm.gui.layer.OsmDataLayer;
+import org.openstreetmap.josm.plugins.PluginInformation;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRegistry;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Archive;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.data.UndoRedoHandler;
+
+/** Runs a public analytic fixture through the registered ordinary JOSM GUI action. */
+public final class PublicGuiSmokeMain {
+    private PublicGuiSmokeMain() { }
+
+    public static void main(String[] args) throws Exception {
+        if (args.length != 2) throw new IllegalArgumentException("summary path and plugin jar required");
+        Path report = Path.of(args[0]).toAbsolutePath().normalize();
+        Path jar = Path.of(args[1]).toAbsolutePath().normalize();
+        String stage = "preflight";
+        try {
+            requireDisplay(GraphicsEnvironment.isHeadless());
+            if (!Files.isRegularFile(jar)) throw new IllegalStateException("Plugin jar is missing");
+            // Both JOSM and plugin-direct source acquisition are forced offline.
+            System.setProperty("wayheatmaptracer.benchmark.offline", "true");
+            stage = "fixture";
+            PublicGuiSmokeFixture fixture = PublicGuiSmokeFixture.create(
+                    report.getParent().resolve("public-input"));
+            if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
+            stage = "josm";
+            MainApplication.main(new String[] {"--offline=ALL"});
+            ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+            PluginPreferences.save(config());
+            PluginPreferences.saveTracingSettings(new TracingSettings(
+                    TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.PROBABILISTIC,
+                    RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
+            PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
+            Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
+            fixture.seedTiles();
+            WayHeatmapTracerPlugin plugin = onEventThread(() -> {
+                WayHeatmapTracerPlugin loaded = new WayHeatmapTracerPlugin(
+                        new PluginInformation(jar.toFile()));
+                OsmDataLayer layer = new OsmDataLayer(fixture.dataSet(),
+                        "public-analytic-osm", null);
+                MainApplication.getLayerManager().addLayer(layer);
+                MainApplication.getLayerManager().setActiveLayer(layer);
+                fixture.dataSet().setSelected(fixture.selectedWay());
+                return loaded;
+            });
+            AlignWayAction action = onEventThread(PublicGuiSmokeMain::registeredOrdinaryAction);
+            PreviewSessionController<?> session = productionSession(plugin);
+            List<String> original = wayState(fixture);
+            int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
+            stage = "preview";
+            CompletableFuture<JDialog> visiblePreview = new CompletableFuture<>();
+            AWTEventListener listener = event -> {
+                if (event instanceof WindowEvent windowEvent
+                        && windowEvent.getID() == WindowEvent.WINDOW_OPENED
+                        && windowEvent.getWindow() instanceof JDialog dialog
+                        && isPreview(dialog)) visiblePreview.complete(dialog);
+            };
+            Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.WINDOW_EVENT_MASK);
+            try {
+                onEventThread(() -> { action.actionPerformed(null); return null; });
+                JDialog preview = visiblePreview.get(180, TimeUnit.SECONDS);
+                if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
+                    throw new IllegalStateException("Production preview is not visible");
+                }
+                var ready = session.currentAttempt();
+                if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
+                    throw new IllegalStateException("Production preview attempt is not ready");
+                }
+                Format15Archive archive = latestArchive(report.getParent());
+                String status = artifactText(archive, "attempt-status.json");
+                if (!status.contains("\"status\":\"preview-open\"")
+                        && !status.contains("\"status\":\"review-required\"")) {
+                    throw new IllegalStateException("Production preview diagnostics are not open");
+                }
+                if (!status.contains("\"sourceLineage\":\"managed-tiles\"")) {
+                    throw new IllegalStateException("Production preview did not use managed source tiles");
+                }
+                var frozen = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin")
+                        .orElseThrow().bytes());
+                if (frozen.request().engine() != TrackerMode.PROBABILISTIC) {
+                    throw new IllegalStateException("Ordinary action did not run Engine B");
+                }
+                var plan = FrozenReplayCodec.decodeEditPlan(archive.artifact("frozen-edit-plan.bin")
+                        .orElseThrow().bytes());
+                List<GeographicPoint> geometry = plan.finalPreviewWays().get(plan.selectedWayKey());
+                PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
+                requireUnchanged(fixture, original, originalUndo);
+                onEventThread(() -> {
+                    preview.dispatchEvent(new WindowEvent(preview, WindowEvent.WINDOW_CLOSING));
+                    return null;
+                });
+            } finally {
+                Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
+            }
+            stage = "cancel";
+            long cancelledSequence = onEventThread(() -> {
+                action.actionPerformed(null);
+                JDialog progress = currentProgressDialog();
+                var active = session.currentAttempt();
+                if (active == null || active.state().terminal()) {
+                    throw new IllegalStateException("Cancellation had no live nonterminal attempt");
+                }
+                long sequence = active.sequence();
+                progress.dispatchEvent(new WindowEvent(progress, WindowEvent.WINDOW_CLOSING));
+                var cancelled = session.currentAttempt();
+                if (cancelled == null || cancelled.sequence() != sequence
+                        || cancelled.state() != AlignmentJob.State.CANCELLED) {
+                    throw new IllegalStateException("Production cancellation was not terminal");
+                }
+                return sequence;
+            });
+            // The actual job uses one worker. This queued task completes only after
+            // its earlier production worker; the EDT barrier drains its publication.
+            productionExecutor(session).submit(() -> { }).get(90, TimeUnit.SECONDS);
+            onEventThread(() -> { return null; });
+            var terminal = session.currentAttempt();
+            if (terminal == null || terminal.sequence() != cancelledSequence
+                    || terminal.state() != AlignmentJob.State.CANCELLED
+                    || hasVisiblePreview()) {
+                throw new IllegalStateException("Cancelled attempt published a late preview");
+            }
+            String cancelStatus = artifactText(latestArchive(report.getParent()),
+                    "attempt-status.json");
+            if (!cancelStatus.contains("\"status\":\"cancelled\"")) {
+                throw new IllegalStateException("Cancelled attempt has no terminal diagnostics");
+            }
+            requireUnchanged(fixture, original, originalUndo);
+            writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+                    + "\"status\":\"PASS\",\"source\":\"public-analytic-hot\","
+                    + "\"engine\":\"PROBABILISTIC\",\"ordinaryAction\":true,"
+                    + "\"visiblePreview\":true,\"geometryOracle\":true,"
+                    + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
+                    + "\"datasetUnchanged\":true,\"undoUnchanged\":true}\n");
+            System.exit(0);
+        } catch (Exception failure) {
+            writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+                    + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
+                    + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
+                    + "\"}\n");
+            failure.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    static void requireDisplay(boolean headless) {
+        if (headless) throw new IllegalStateException("Real JOSM GUI display is unavailable");
+    }
+
+    private static ManagedHeatmapConfig config() {
+        return new ManagedHeatmapConfig("public-key", "public-policy", "public-signature",
+                "public-session", "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
+                TrackerMode.PROBABILISTIC, false, false, false, false, false,
+                false, false, false, false, false, 7, 4, 3.0,
+                InferenceMode.RAW_HIGH_RESOLUTION, 15, 14, 7.01, 1.56,
+                IntensitySamplingMode.COLOR_MAPPING, 0L);
+    }
+
+    private static AlignWayAction registeredOrdinaryAction() {
+        for (var component : MainApplication.getMenu().moreToolsMenu.getMenuComponents()) {
+            if (component instanceof JMenuItem item
+                    && item.getAction() instanceof AlignWayAction action
+                    && action.forcedAlignmentMode() == null) return action;
+        }
+        throw new IllegalStateException("Registered ordinary Align action is missing");
+    }
+
+    private static JDialog currentProgressDialog() {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof JDialog dialog && dialog.isVisible()
+                    && dialog.getTitle().endsWith("alignment preview")) return dialog;
+        }
+        throw new IllegalStateException("Production progress dialog is unavailable");
+    }
+
+    private static boolean isPreview(JDialog dialog) {
+        return dialog.getTitle().endsWith("Alignment Preview") && dialog.isVisible();
+    }
+
+    private static boolean hasVisiblePreview() throws Exception {
+        return onEventThread(() -> {
+            for (Window window : Window.getWindows()) {
+                if (window instanceof JDialog dialog && isPreview(dialog)) return true;
+            }
+            return false;
+        });
+    }
+
+    private static PreviewSessionController<?> productionSession(WayHeatmapTracerPlugin plugin)
+            throws Exception {
+        Field field = WayHeatmapTracerPlugin.class.getDeclaredField("modernPreviewSession");
+        field.setAccessible(true);
+        return (PreviewSessionController<?>) field.get(plugin);
+    }
+
+    private static ExecutorService productionExecutor(PreviewSessionController<?> session)
+            throws Exception {
+        Field jobField = PreviewSessionController.class.getDeclaredField("job");
+        jobField.setAccessible(true);
+        Object job = jobField.get(session);
+        Field executorField = AlignmentJob.class.getDeclaredField("executor");
+        executorField.setAccessible(true);
+        return (ExecutorService) executorField.get(job);
+    }
+
+    private static Format15Archive latestArchive(Path directory) throws Exception {
+        Path archive = Files.createTempFile(directory, ".public-gui-", ".zip");
+        try {
+            DiagnosticsRegistry.writeLatest(archive.toFile());
+            return Format15ArchiveReader.read(archive);
+        } finally {
+            Files.deleteIfExists(archive);
+        }
+    }
+
+    private static String artifactText(Format15Archive archive, String name) {
+        return new String(archive.artifact(name).orElseThrow().bytes(), StandardCharsets.UTF_8);
+    }
+
+    private static List<String> wayState(PublicGuiSmokeFixture fixture) {
+        List<String> state = new ArrayList<>();
+        for (Node node : fixture.selectedWay().getNodes()) {
+            state.add(node.getUniqueId() + ":" + Double.toHexString(node.lat()) + ":"
+                    + Double.toHexString(node.lon()) + ":" + node.isModified());
+        }
+        state.add("way:" + fixture.selectedWay().getUniqueId() + ":"
+                + fixture.selectedWay().isModified() + ":"
+                + fixture.dataSet().allPrimitives().size());
+        return List.copyOf(state);
+    }
+
+    private static void requireUnchanged(PublicGuiSmokeFixture fixture, List<String> original,
+            int originalUndo) {
+        if (!wayState(fixture).equals(original)
+                || UndoRedoHandler.getInstance().getUndoCommands().size() != originalUndo) {
+            throw new IllegalStateException("GUI smoke mutated OSM data or Undo history");
+        }
+    }
+
+    private static <T> T onEventThread(Callable<T> action) throws Exception {
+        FutureTask<T> task = new FutureTask<>(action);
+        if (SwingUtilities.isEventDispatchThread()) task.run();
+        else SwingUtilities.invokeAndWait(task);
+        return task.get();
+    }
+
+    private static String safeToken(String token) {
+        return token != null && token.matches("[A-Za-z0-9._-]{1,80}") ? token : "unknown";
+    }
+
+    private static void writeSummary(Path report, String json) throws Exception {
+        Files.createDirectories(report.getParent());
+        Path temporary = Files.createTempFile(report.getParent(), ".public-gui-", ".tmp");
+        try {
+            Files.writeString(temporary, json, StandardCharsets.UTF_8);
+            Files.move(temporary, report, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+}

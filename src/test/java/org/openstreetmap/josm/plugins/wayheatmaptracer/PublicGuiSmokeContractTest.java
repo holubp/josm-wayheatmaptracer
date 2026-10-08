@@ -1,0 +1,67 @@
+package org.openstreetmap.josm.plugins.wayheatmaptracer;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.nio.file.Path;
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
+
+class PublicGuiSmokeContractTest {
+    @TempDir Path temporary;
+
+    @BeforeAll
+    static void configureJosm() {
+        Config.setPreferencesInstance(new MemoryPreferences());
+    }
+
+    @Test
+    void generatedPublicFixtureHasKnownGoodElevenNodeWayAndUsableAnalyticTiles() throws Exception {
+        var fixture = PublicGuiSmokeFixture.create(temporary);
+        assertEquals(11, fixture.selectedWay().getNodesCount());
+        assertEquals(0.01, fixture.selectedWay().getNode(5).lat(), 1.0e-8);
+        assertEquals(2, fixture.tileCount());
+        assertTrue(fixture.tilesUsable());
+        assertTrue(fixture.measuredRidgeOffsetMeters() > 2.5);
+        assertTrue(fixture.measuredRidgeOffsetMeters() < 5.0);
+    }
+
+    @Test
+    void analyticOracleRejectsUnchangedDisplacedWay() {
+        List<GeographicPoint> unchanged = List.of(
+                PublicGuiSmokeOracle.point(-40, 0),
+                PublicGuiSmokeOracle.point(0, 0),
+                PublicGuiSmokeOracle.point(40, 0));
+        assertThrows(IllegalStateException.class,
+                () -> PublicGuiSmokeOracle.verifyFinalGeometry(unchanged));
+    }
+
+    @Test
+    void analyticOracleRequiresFixedEndpointsAndCentralRidge() {
+        List<GeographicPoint> aligned = List.of(
+                PublicGuiSmokeOracle.point(-40, 0),
+                PublicGuiSmokeOracle.point(-16, 2.8),
+                PublicGuiSmokeOracle.point(0, 4),
+                PublicGuiSmokeOracle.point(16, 2.8),
+                PublicGuiSmokeOracle.point(40, 0));
+        PublicGuiSmokeOracle.verifyFinalGeometry(aligned);
+        List<GeographicPoint> movedEndpoint = List.of(
+                PublicGuiSmokeOracle.point(-40, 0.2),
+                PublicGuiSmokeOracle.point(0, 4),
+                PublicGuiSmokeOracle.point(40, 0));
+        assertThrows(IllegalStateException.class,
+                () -> PublicGuiSmokeOracle.verifyFinalGeometry(movedEndpoint));
+    }
+
+    @Test
+    void guiHostFailsClosedWithoutRealDisplay() {
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireDisplay(true));
+    }
+}
