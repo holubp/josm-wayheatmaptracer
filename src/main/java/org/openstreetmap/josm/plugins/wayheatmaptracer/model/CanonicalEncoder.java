@@ -7,11 +7,21 @@ import java.util.HexFormat;
 
 /** Length-prefixed canonical encoding helper for review and stale-state identities. */
 final class CanonicalEncoder {
-    private final StringBuilder value = new StringBuilder();
+    private final MessageDigest digest;
+
+    CanonicalEncoder() {
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("Java runtime has no SHA-256 implementation", exception);
+        }
+    }
 
     CanonicalEncoder field(String text) {
         String safe = text == null ? "" : text;
-        value.append(safe.length()).append(':').append(safe);
+        digest.update(Integer.toString(safe.length()).getBytes(StandardCharsets.US_ASCII));
+        digest.update((byte) ':');
+        digest.update(safe.getBytes(StandardCharsets.UTF_8));
         return this;
     }
 
@@ -25,10 +35,9 @@ final class CanonicalEncoder {
 
     String sha256() {
         try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                .digest(value.toString().getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("Java runtime has no SHA-256 implementation", exception);
+            return HexFormat.of().formatHex(((MessageDigest) digest.clone()).digest());
+        } catch (CloneNotSupportedException exception) {
+            throw new IllegalStateException("SHA-256 provider cannot snapshot digest state", exception);
         }
     }
 }
