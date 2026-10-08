@@ -628,6 +628,90 @@ def test_artifact_validation_rejects_missing_or_wrong_plugin_manifest(tmp_path: 
             jar.write_bytes(previous)
 
 
+def _write_manifest_test_jar(module, plugin_class: Path, manifest: bytes) -> None:
+    binary_name = "org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin"
+    artifact = module.ROOT / "build/libs/wayheatmaptracer.jar"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", manifest)
+        archive.write(plugin_class, binary_name.replace(".", "/") + ".class")
+    module.shutil = SimpleNamespace(which=lambda _name: "javap")
+    module.subprocess = SimpleNamespace(
+        PIPE=subprocess.PIPE,
+        run=lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 0, f"major version: 61\n{binary_name.replace('.', '/')}", ""),
+    )
+
+
+def test_artifact_validation_unfolds_realistic_wrapped_main_class_and_utf8_bytes(tmp_path: Path) -> None:
+    module = _runner_module()
+    tools = fake_tools(tmp_path)
+    plugin_class = tools.parent / "plugin-class/org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class"
+    manifest = (
+        b"Manifest-Version: 1.0\r\n"
+        b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmap\r\n"
+        b" TracerPlugin\r\n"
+        b"Plugin-Description: Align heatmap \xc3\r\n \xa9 OSM\r\n"
+        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Mainversion: 19555\r\n\r\n"
+    )
+    _write_manifest_test_jar(module, plugin_class, manifest)
+    module.check_artifact()
+
+
+def test_artifact_validation_uses_only_main_manifest_section(tmp_path: Path) -> None:
+    module = _runner_module()
+    tools = fake_tools(tmp_path)
+    plugin_class = tools.parent / "plugin-class/org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class"
+    manifest = (
+        b"Manifest-Version: 1.0\r\n"
+        b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
+        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Mainversion: 19555\r\n\r\n"
+        b"Name: plugin-entry.class\r\n"
+        b"Plugin-Class: invalid.Override\r\n"
+        b"Plugin-Version: invalid\r\n"
+        b"Plugin-Mainversion: 1\r\n\r\n"
+    )
+    _write_manifest_test_jar(module, plugin_class, manifest)
+    module.check_artifact()
+
+
+def test_artifact_validation_rejects_a_folded_wrong_plugin_class(tmp_path: Path) -> None:
+    module = _runner_module()
+    tools = fake_tools(tmp_path)
+    plugin_class = tools.parent / "plugin-class/org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class"
+    manifest = (
+        b"Manifest-Version: 1.0\r\n"
+        b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmap\r\n"
+        b" WrongPlugin\r\n"
+        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Mainversion: 19555\r\n\r\n"
+    )
+    _write_manifest_test_jar(module, plugin_class, manifest)
+    with pytest.raises(module.ValidationError):
+        module.check_artifact()
+
+
+@pytest.mark.parametrize("manifest", [
+    b"Manifest-Version: 1.0\r\nPlugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
+    b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
+    b"Plugin-Version: 0.22.0-rc.6\r\nPlugin-Mainversion: 19555\r\n\r\n",
+    b" orphaned continuation\r\nManifest-Version: 1.0\r\n"
+    b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
+    b"Plugin-Version: 0.22.0-rc.6\r\nPlugin-Mainversion: 19555\r\n\r\n",
+])
+def test_artifact_validation_rejects_duplicate_or_orphan_manifest_fields(
+    tmp_path: Path, manifest: bytes,
+) -> None:
+    module = _runner_module()
+    tools = fake_tools(tmp_path)
+    plugin_class = tools.parent / "plugin-class/org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class"
+    _write_manifest_test_jar(module, plugin_class, manifest)
+    with pytest.raises(module.ValidationError):
+        module.check_artifact()
+
+
 def test_stage_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location("validation_runner", RUNNER)
     assert spec and spec.loader

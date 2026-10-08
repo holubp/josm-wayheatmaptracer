@@ -580,6 +580,41 @@ def expected_plugin_version() -> str:
     raise ValidationError("gradle.properties has no version")
 
 
+def _main_manifest_fields(manifest: bytes) -> dict[str, str]:
+    """Parse the main JAR-manifest section after unfolding byte continuations."""
+    normalized = manifest.replace(b"\r\n", b"\n")
+    if b"\r" in normalized:
+        raise ValidationError("plugin jar manifest has invalid line endings")
+    physical_lines = normalized.split(b"\n")
+    logical_lines: list[bytes] = []
+    for line in physical_lines:
+        if line.startswith(b" "):
+            if not logical_lines or not logical_lines[-1]:
+                raise ValidationError("plugin jar manifest contains an orphan continuation")
+            logical_lines[-1] += line[1:]
+        else:
+            logical_lines.append(line)
+
+    relevant = {"plugin-version", "plugin-class", "plugin-mainversion"}
+    fields: dict[str, str] = {}
+    for line in logical_lines:
+        if not line:
+            break
+        key_bytes, separator, value_bytes = line.partition(b": ")
+        if not separator or not key_bytes:
+            raise ValidationError("plugin jar manifest contains a malformed main attribute")
+        try:
+            key = key_bytes.decode("ascii", errors="strict").lower()
+            value = value_bytes.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError as exc:
+            raise ValidationError("plugin jar manifest contains invalid attribute encoding") from exc
+        if key in relevant:
+            if key in fields:
+                raise ValidationError(f"plugin jar manifest duplicates {key}")
+            fields[key] = value
+    return fields
+
+
 def check_artifact() -> None:
     artifact = ROOT / "build/libs/wayheatmaptracer.jar"
     if not artifact.is_file() or artifact.is_symlink():
@@ -587,16 +622,12 @@ def check_artifact() -> None:
     try:
         with zipfile.ZipFile(artifact) as jar:
             bad_member = jar.testzip()
-            manifest = jar.read("META-INF/MANIFEST.MF").decode("utf-8", errors="strict")
-    except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError) as exc:
+            manifest = jar.read("META-INF/MANIFEST.MF")
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
         raise ValidationError(f"plugin jar integrity failed: {type(exc).__name__}") from exc
     if bad_member:
         raise ValidationError("plugin jar contains a corrupt member")
-    fields: dict[str, str] = {}
-    for line in manifest.replace("\r\n", "\n").splitlines():
-        key, separator, value = line.partition(":")
-        if separator:
-            fields[key.strip().lower()] = value.strip()
+    fields = _main_manifest_fields(manifest)
     if fields.get("plugin-version") != expected_plugin_version():
         raise ValidationError("plugin jar Plugin-Version does not match gradle.properties")
     expected_josm = next((line.partition("=")[2].strip() for line in
