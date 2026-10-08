@@ -184,6 +184,60 @@ def test_status_reports_live_background_stage_after_handshake(tmp_path: Path) ->
         raise AssertionError("background validation did not finish")
 
 
+def test_status_reports_killed_background_run_as_interrupted(tmp_path: Path) -> None:
+    tools = fake_tools(tmp_path, gradle_sleep=30)
+    env = env_for(tools, gradle_sleep=30)
+    output = tmp_path / "killed-progress"
+    gradle_pid_file = tmp_path / "gradle.pid"
+    env["FAKE_PID_FILE"] = str(gradle_pid_file)
+    start = invoke(tmp_path, "--profile", "public", "--output", str(output), "--background", env=env)
+    assert start.returncode == 0
+    deadline = time.monotonic() + 5
+    current = {}
+    while time.monotonic() < deadline:
+        result = invoke(tmp_path, "--output", str(output), "--status", env=env)
+        if result.returncode == 0:
+            current = json.loads(result.stdout)
+            if current.get("current_stage") == "java-build":
+                break
+        time.sleep(0.03)
+    assert current.get("current_stage") == "java-build"
+    deadline = time.monotonic() + 5
+    while not gradle_pid_file.is_file() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert gradle_pid_file.is_file()
+    launch = json.loads((output / "launch.json").read_text())
+    try:
+        gradle_pid = int(gradle_pid_file.read_text())
+        os.kill(launch["pid"], signal.SIGKILL)
+        os.kill(gradle_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            result = invoke(tmp_path, "--output", str(output), "--status", env=env)
+            assert result.returncode == 0
+            current = json.loads(result.stdout)
+            if current.get("state") in {"interrupted", "failed"}:
+                break
+            time.sleep(0.05)
+    finally:
+        for pid in (int(launch["pid"]), int(gradle_pid_file.read_text())):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    assert current["state"] in {"interrupted", "failed"}
+    assert current["run_id"] == launch["run_id"]
+    assert current["current_stage"] == "java-build"
+    (output / "status.json").write_text(json.dumps({"run_id": "older-run", "state": "passed",
+                                                     "current_stage": "stale-stage"}))
+    status = invoke(tmp_path, "--output", str(output), "--status", env=env)
+    assert status.returncode == 0
+    current = json.loads(status.stdout)
+    assert current["state"] == "interrupted"
+    assert current["run_id"] == launch["run_id"]
+    assert current.get("current_stage") != "stale-stage"
+
+
 def test_worktree_lock_serializes_different_output_directories(tmp_path: Path) -> None:
     tools = fake_tools(tmp_path, gradle_sleep=1.5)
     env = env_for(tools, gradle_sleep=1.5)

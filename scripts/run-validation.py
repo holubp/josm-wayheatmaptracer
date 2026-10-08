@@ -962,26 +962,57 @@ def main(argv: list[str] | None = None) -> int:
             if launch.is_file():
                 try:
                     launch_state = json.loads(launch.read_text(encoding="utf-8"))
+                    if not isinstance(launch_state, dict):
+                        raise ValueError("invalid launch state")
                     pid = int(launch_state["pid"])
-                    if pid > 0:
-                        os.kill(pid, 0)
-                    status = output / "status.json"
-                    if status.is_file():
-                        try:
-                            status_state = json.loads(status.read_text(encoding="utf-8"))
-                        except (ValueError, OSError):
-                            status_state = None
-                        if (isinstance(status_state, dict)
-                                and status_state.get("run_id") == launch_state.get("run_id")):
-                            print(json.dumps(status_state, sort_keys=True))
-                            return 0
-                    print(json.dumps({**launch_state, "state": "launching"}, sort_keys=True))
-                    return 0
+                    if pid < 0:
+                        raise ValueError("invalid launch state")
                 except (OSError, ValueError, KeyError):
-                    # A launch record is authoritative for this run. Never fall
-                    # through to a stale status from an earlier invocation.
-                    print(json.dumps({"state": "launching"}, sort_keys=True))
+                    # Do not fall through to a possibly stale status from an
+                    # earlier run when the current launch record is malformed.
+                    print(json.dumps({"state": "failed", "detail": "invalid launch record"}, sort_keys=True))
                     return 0
+
+                status_state = None
+                status = output / "status.json"
+                if status.is_file():
+                    try:
+                        loaded = json.loads(status.read_text(encoding="utf-8"))
+                        if (isinstance(loaded, dict)
+                                and loaded.get("run_id") == launch_state.get("run_id")):
+                            status_state = loaded
+                    except (ValueError, OSError):
+                        pass
+                if (status_state is not None and status_state.get("state") in
+                        {"passed", "failed", "interrupted", "unavailable"}):
+                    print(json.dumps(status_state, sort_keys=True))
+                    return 0
+                pid_running: bool | None = None
+                if pid > 0:
+                    try:
+                        os.kill(pid, 0)
+                        pid_running = True
+                    except ProcessLookupError:
+                        pid_running = False
+                    except PermissionError:
+                        pid_running = True
+                if pid_running is False:
+                    stopped = {"schema": launch_state.get("schema", 1),
+                               "run_id": launch_state.get("run_id"),
+                               "profile": launch_state.get("profile"),
+                               "pid": pid, "state": "interrupted",
+                               "detail": "background process exited before recording a terminal status"}
+                    current_stage = ((status_state or {}).get("current_stage")
+                                     or launch_state.get("current_stage"))
+                    if current_stage is not None:
+                        stopped["current_stage"] = current_stage
+                    print(json.dumps(stopped, sort_keys=True))
+                    return 0
+                if status_state is not None:
+                    print(json.dumps(status_state, sort_keys=True))
+                else:
+                    print(json.dumps({**launch_state, "state": "launching"}, sort_keys=True))
+                return 0
             status = output / "status.json"
             if not status.is_file():
                 raise ValidationError("no validation status exists at the requested output")
