@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayCapability;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
@@ -50,6 +51,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
 /** Public synthetic numerical-frame witnesses; no real capture coordinates or identities. */
@@ -234,6 +236,33 @@ class V022FrozenFrameTest {
     }
 
     @Test
+    void benchmarkIntervalComparatorAllowsOnlyRunLocalDatasetIdentity() throws IOException {
+        FrozenReplayInput original = input(frame());
+        FrozenReplayInput secondRun = withDatasetIdentity(original, "second-run-local-dataset");
+        AlignmentEditPlan originalPlan = plan(original);
+        AlignmentEditPlan secondPlan = plan(secondRun);
+        assertNotEquals(original.canonicalHash(), secondRun.canonicalHash());
+        assertNotEquals(originalPlan.canonicalHash(), secondPlan.canonicalHash());
+        var originalPartition = SelectedWayIntervalPartitioner.partition(original.network(), scope(original));
+        var secondPartition = SelectedWayIntervalPartitioner.partition(secondRun.network(), scope(secondRun));
+        assertNotEquals(FrozenReplayCodec.partitionProofHash(originalPartition),
+                FrozenReplayCodec.partitionProofHash(secondPartition));
+        Format15Archive first = benchmarkIntervalArchive(original, originalPlan, null);
+        Format15Archive equal = benchmarkIntervalArchive(secondRun, secondPlan, null);
+        assertDoesNotThrow(() -> BenchmarkIntervalDecisionComparison.compare(first, equal));
+
+        AlignmentEditPlan alteredSettings = new AlignmentEditPlan(secondPlan.selectedWayKey(),
+                secondPlan.selectedRange(), secondPlan.before(), secondPlan.after(),
+                secondPlan.metricFrame(), secondPlan.permissions(), "changed-settings",
+                secondPlan.evidenceHash(), secondPlan.parameterHash(), secondPlan.routeIdentity(),
+                secondPlan.finalPreviewWays(), secondPlan.validation());
+        assertThrows(IllegalStateException.class, () -> BenchmarkIntervalDecisionComparison.compare(
+                first, benchmarkIntervalArchive(secondRun, alteredSettings, null)));
+        assertThrows(IllegalStateException.class, () -> BenchmarkIntervalDecisionComparison.compare(
+                first, benchmarkIntervalArchive(secondRun, secondPlan, "f".repeat(64))));
+    }
+
+    @Test
     void scopeAndEditPlanRoundtripsRetainTheSameCompleteFrame() {
         LocalMetricFrame source = frame();
         assertEquals(EAST, source.distortionCertificate().eastMetersPerRadian());
@@ -317,6 +346,57 @@ class V022FrozenFrameTest {
             out.writeBoolean(false); // no apply plan
         }
         return bytes.toByteArray();
+    }
+
+    private static FrozenReplayInput withDatasetIdentity(FrozenReplayInput base, String identity) {
+        NetworkSnapshot old = base.network();
+        NetworkSnapshot network = new NetworkSnapshot(old.snapshotId(), old.role(), identity,
+                old.sourceGeneration(), old.closure(), old.primitives(), old.incomingReferrerWatches());
+        TraceRequest request = base.request();
+        TraceRequest rebound = new TraceRequest(request.selectedWayKey(), request.selectedRange(),
+                request.engine(), request.geometryMode(), request.permissions(), request.budgets(),
+                request.evidenceSnapshotId(), request.evidenceContentHash(),
+                request.networkSnapshotId(), network.canonicalHash(), request.settingsHash(),
+                request.parameterHash(), request.samplerId(), request.configuredSampleStepMeters(),
+                request.profileChainage(), request.evidenceResolution(), request.corridorInput());
+        return new FrozenReplayInput(rebound, base.evidence(), network, base.options());
+    }
+
+    private static Format15Archive benchmarkIntervalArchive(FrozenReplayInput base,
+            AlignmentEditPlan plan, String proofOverride) throws IOException {
+        String proof = proofOverride == null ? FrozenReplayCodec.partitionProofHash(
+                SelectedWayIntervalPartitioner.partition(base.network(), scope(base))) : proofOverride;
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeInt(0x57544952);
+            out.writeInt(3);
+            byte[][] parts = {FrozenReplayCodec.encode(base), FrozenReplayCodec.encodeAuthority(scope(base))};
+            for (byte[] part : parts) {
+                out.writeInt(part.length);
+                out.write(part);
+            }
+            out.writeUTF(proof);
+            out.writeInt(1);
+            byte[] request = FrozenReplayCodec.encodeRequestOnly(base.request());
+            out.writeInt(request.length);
+            out.write(request);
+            out.writeDouble(base.request().profileChainage().sourceOriginGroundMeters());
+            out.writeUTF("b".repeat(64));
+            out.writeUTF("c".repeat(64));
+            out.writeInt(0);
+            out.writeInt(0);
+            out.writeInt(3);
+            out.writeInt(0);
+            out.writeUTF("d".repeat(64));
+            out.writeBoolean(true);
+            out.writeUTF(plan.canonicalHash());
+        }
+        String inputName = FrozenIntervalReplayCodec.ARTIFACT;
+        String planName = "private/interval-frozen-edit-plan.bin";
+        return new Format15Archive(15, "synthetic", "synthetic", "synthetic", Map.of(
+                inputName, Format15Artifact.binary(inputName, bytes.toByteArray()),
+                planName, Format15Artifact.binary(planName, FrozenReplayCodec.encodeEditPlan(plan))),
+                new ReplayCapability(15, Set.of(), List.of()));
     }
 
     static LocalMetricFrame frame() {

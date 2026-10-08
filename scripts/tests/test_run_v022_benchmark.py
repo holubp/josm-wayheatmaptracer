@@ -120,6 +120,14 @@ class BenchmarkRunnerTest(unittest.TestCase):
             write_receipt()
             with self.assertRaises(benchmark.GateFailure):
                 benchmark.receipt_file(publication, expected, {15})
+            for status in ("blocked", "resource-limited"):
+                with zipfile.ZipFile(diagnostics, "w") as archive:
+                    archive.writestr("attempt-status.json", json.dumps(
+                        {"status": status, "sourceLineage": "managed-tiles"}))
+                    archive.writestr("frozen-input.bin", b"native-frozen-input")
+                write_receipt()
+                with self.assertRaisesRegex(benchmark.GateFailure, "not preview-ready"):
+                    benchmark.receipt_file(publication, expected, {15})
 
     def test_cancellation_refuses_publication_claim(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -151,7 +159,7 @@ class BenchmarkRunnerTest(unittest.TestCase):
                 archive.writestr("private/frozen-interval-input.bin", b"native-input")
                 archive.writestr("interval-production.json", json.dumps({
                     "artifactKind": "INTERVAL_PRODUCTION", "status": "PREVIEW",
-                    "planIdentity": "a" * 64}))
+                    "planIdentity": "a" * 64, "applyAvailable": True}))
             tile_file.write_text(json.dumps({"stats": {"transportExecutions": 0,
                 "diskHits": 1}, "recentResults": [{"status": "SUCCESS_DISK_CACHE",
                 "color": "hot", "activity": "all", "zoom": 15}]}))
@@ -165,6 +173,18 @@ class BenchmarkRunnerTest(unittest.TestCase):
                 "tileDiagnosticsFile": tile_file.name,
                 "tileDiagnosticsSha256": benchmark.sha256(tile_file)}))
             with self.assertRaisesRegex(benchmark.GateFailure, "interval edit plan"):
+                benchmark.receipt_file(publication,
+                    {"nonce": "bound", "caseId": "N1", "version": "baseline"}, {15})
+            with zipfile.ZipFile(diagnostics, "w") as archive:
+                archive.writestr("private/frozen-interval-input.bin", b"native-input")
+                archive.writestr("private/interval-frozen-edit-plan.bin", b"native-plan")
+                archive.writestr("interval-production.json", json.dumps({
+                    "artifactKind": "INTERVAL_PRODUCTION", "status": "PREVIEW",
+                    "planIdentity": "a" * 64, "applyAvailable": False}))
+            receipt = json.loads(publication.read_text())
+            receipt["diagnosticsSha256"] = benchmark.sha256(diagnostics)
+            publication.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(benchmark.GateFailure, "not preview-ready"):
                 benchmark.receipt_file(publication,
                     {"nonce": "bound", "caseId": "N1", "version": "baseline"}, {15})
 

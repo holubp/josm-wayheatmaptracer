@@ -218,14 +218,16 @@ def receipt_file(path: Path, expected: dict, expected_zooms: set[int]) -> dict:
             if "attempt-status.json" not in names:
                 raise GateFailure(f"Production status absent: {path}")
             attempt = json.loads(archive.read("attempt-status.json"))
-            if (attempt.get("status") in {"failed", "cancelled", "started"}
+            if (attempt.get("status") not in {"preview-open", "review-required"}
                     or attempt.get("sourceLineage") != "managed-tiles"):
                 raise GateFailure(f"Production diagnostic status is not preview-ready: {path}")
         else:
             if "interval-production.json" not in names:
                 raise GateFailure(f"Interval production index absent: {path}")
             attempt = json.loads(archive.read("interval-production.json"))
-            if attempt.get("artifactKind") != "INTERVAL_PRODUCTION" or attempt.get("status") != "PREVIEW":
+            if (attempt.get("artifactKind") != "INTERVAL_PRODUCTION"
+                    or attempt.get("status") != "PREVIEW"
+                    or attempt.get("applyAvailable") is not True):
                 raise GateFailure(f"Interval production status is not preview-ready: {path}")
             interval_plan = "private/interval-frozen-edit-plan.bin"
             if (interval_plan in names) != (attempt.get("planIdentity") is not None):
