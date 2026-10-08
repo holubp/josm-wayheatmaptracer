@@ -125,6 +125,27 @@ The plugin jar is produced at:
 build/libs/wayheatmaptracer.jar
 ```
 
+For unattended local validation, run the same public checks used by CI and keep
+the JSON status, stage logs, JUnit reports, and a verified plugin jar outside
+`build/`:
+
+```bash
+python3 scripts/run-validation.py --profile public --output /tmp/josm-validation
+```
+
+Use `--background` to launch a plain local process, then inspect its durable
+state with `--status --output /tmp/josm-validation`. `--resume` reuses only
+successful stages whose source, inputs, and environment identity still match.
+The private `rc` profile also requires explicit benchmark and strict replay
+manifest paths; its inputs and reports stay local and are never part of CI:
+
+```bash
+python3 scripts/run-validation.py --profile rc \
+  --benchmark-manifest /path/to/private-benchmark.json \
+  --replay-manifest /path/to/private-replay.json \
+  --output /tmp/josm-private-validation
+```
+
 ## Optimum JOSM Workflow
 
 ### 1. Configure Heatmap Access
