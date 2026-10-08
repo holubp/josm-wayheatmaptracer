@@ -39,20 +39,36 @@ class BenchmarkRunnerTest(unittest.TestCase):
         spoofed[base + "actions/AlignWayAction.java"] = "0" * 64
         with self.assertRaisesRegex(benchmark.GateFailure, "adapter bytes"):
             benchmark.require_reviewed_rc6(spoofed, dirty)
+        self.assert_rc6_preflight_rejects_manifest_pinned_mutations(benchmark, base, dirty)
+
+    def assert_rc6_preflight_rejects_manifest_pinned_mutations(self, runner, base, dirty):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             worktree = root / "rc6"
             worktree.mkdir()
             (worktree / "gradlew").write_text("#!/bin/sh\n")
-            spec = {"worktree": str(worktree), "revision": benchmark.BASELINE_REVISION,
-                    "sourceHashes": approved}
-            with (mock.patch.object(benchmark, "checked_revision"),
-                  mock.patch.object(benchmark, "required_file")):
-                def status(_command, _cwd, log, _timeout):
-                    log.write_text("\n".join(dirty + [" M " + base + "service/ProbabilisticInference.java"]) + "\n")
-                with mock.patch.object(benchmark, "checked_process", side_effect=status):
-                    with self.assertRaisesRegex(benchmark.GateFailure, "unreviewed RC6 worktree delta"):
-                        benchmark.validate_plugin(spec, "baseline", root)
+            adapter_paths = [line[3:] for line in dirty]
+            engine = base + "service/ProbabilisticInference.java"
+            for relative in adapter_paths + [engine]:
+                file = worktree / relative
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text("controlled altered source: " + relative)
+            source_hashes = {relative: runner.sha256(worktree / relative)
+                             for relative in adapter_paths + [engine]}
+            spec = {"worktree": str(worktree), "revision": runner.BASELINE_REVISION,
+                    "sourceHashes": source_hashes}
+            status_lines = dirty + [" M " + engine]
+            def status(_command, _cwd, log, _timeout):
+                log.write_text("\n".join(status_lines) + "\n")
+            with (mock.patch.object(runner, "checked_revision"),
+                  mock.patch.object(runner, "checked_process", side_effect=status)):
+                with self.assertRaisesRegex(runner.GateFailure, "adapter bytes"):
+                    runner.validate_plugin(spec, "baseline", root)
+                spec["sourceHashes"] = {relative: source_hashes[relative]
+                                        for relative in adapter_paths}
+                status_lines = dirty
+                with self.assertRaisesRegex(runner.GateFailure, "adapter bytes"):
+                    runner.validate_plugin(spec, "baseline", root)
 
     def test_fixed_worktree_lock_serializes_without_shared_storage_flock(self):
         with tempfile.TemporaryDirectory() as directory:
