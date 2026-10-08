@@ -61,7 +61,7 @@ jobs:
       - name: Check Xvfb runner availability
         run: command -v xvfb-run
       - name: Run public synthetic GUI smoke test
-        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh gradlew v022PublicGuiSmoke --console=plain
+        run: timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' sh gradlew v022PublicGuiSmoke --console=plain
       - name: Require public GUI smoke summary after a passing run
         if: success()
         run: test -s build/reports/public-gui-smoke/summary.json
