@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -245,7 +246,7 @@ def benchmark_manifest_identity(path: Path) -> str:
     java_value = environment.get("java")
     if (not isinstance(java_value, str) or not Path(java_value).is_absolute()
             or type(environment.get("javaMajor")) is not int or environment.get("javaMajor") != 17
-            or not isinstance(environment.get("josmVersion"), str)):
+            or type(environment.get("josmVersion")) is not int):
         raise ValidationError("benchmark environment must pin an absolute Java 17 binary")
     java_path = Path(java_value)
     if java_path.is_symlink() or not java_path.is_file() or not os.access(java_path, os.X_OK):
@@ -257,9 +258,13 @@ def benchmark_manifest_identity(path: Path) -> str:
                                   stderr=subprocess.STDOUT, check=False, timeout=15)
     if java_version.returncode != 0 or 'version "17' not in java_version.stdout:
         raise ValidationError("benchmark Java binary does not report Java 17")
-    expected_josm = next((line.partition("=")[2].strip() for line in
-                          (ROOT / "gradle.properties").read_text(encoding="utf-8").splitlines()
-                          if line.startswith("josmVersion=")), None)
+    expected_josm_text = next((line.partition("=")[2].strip() for line in
+                               (ROOT / "gradle.properties").read_text(encoding="utf-8").splitlines()
+                               if line.startswith("josmVersion=")), None)
+    try:
+        expected_josm = int(expected_josm_text) if expected_josm_text is not None else None
+    except ValueError as exc:
+        raise ValidationError("gradle.properties josmVersion is not numeric") from exc
     if environment.get("josmVersion") != expected_josm:
         raise ValidationError("benchmark JOSM version differs from this build")
     josm_jar_hash = _required_file(environment.get("josmJar"), path.parent)
@@ -570,14 +575,32 @@ def check_junit_reports() -> None:
         except (ET.ParseError, OSError) as exc:
             raise ValidationError("JUnit XML report is malformed") from exc
         root = document.getroot()
-        suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+        # Gradle emits either one suite or a wrapper containing direct suites. Do
+        # not recursively count nested suites: wrapper counters include them.
+        suites = [root] if root.tag == "testsuite" else (
+            [item for item in list(root) if item.tag == "testsuite"]
+            if root.tag == "testsuites" else [])
         if not suites:
             raise ValidationError("JUnit XML contains no test suites")
         try:
-            total_tests += sum(int(item.attrib.get("tests", "0")) for item in suites)
-            total_failures += sum(int(item.attrib.get("failures", "0")) for item in suites)
-            total_errors += sum(int(item.attrib.get("errors", "0")) for item in suites)
-            total_skipped += sum(int(item.attrib.get("skipped", "0")) for item in suites)
+            for suite in suites:
+                tests = int(suite.attrib.get("tests", "0"))
+                failures = int(suite.attrib.get("failures", "0"))
+                errors = int(suite.attrib.get("errors", "0"))
+                skipped = int(suite.attrib.get("skipped", "0"))
+                cases = [item for item in list(suite) if item.tag == "testcase"]
+                if min(tests, failures, errors, skipped) < 0 or tests != len(cases):
+                    raise ValidationError("JUnit suite counters do not match testcase elements")
+                child_failures = sum(1 for case in cases for item in case.iter("failure"))
+                child_errors = sum(1 for case in cases for item in case.iter("error"))
+                child_skipped = sum(1 for case in cases for item in case.iter("skipped"))
+                if ((failures, errors, skipped) != (child_failures, child_errors, child_skipped)
+                        or child_failures or child_errors or child_skipped):
+                    raise ValidationError("JUnit XML contains failed, errored, or skipped testcases")
+                total_tests += tests
+                total_failures += failures
+                total_errors += errors
+                total_skipped += skipped
         except ValueError as exc:
             raise ValidationError("JUnit XML has invalid suite counts") from exc
     if total_tests <= 0:
@@ -701,7 +724,8 @@ def validate_profile_output(output: Path, profile: str, old: dict[str, Any]) -> 
 
 
 def run_profile(profile: str, output: Path, benchmark: Path | None,
-                replay: Path | None, resume: bool, *, lock_already_acquired: bool = False) -> int:
+                replay: Path | None, resume: bool, *, lock_already_acquired: bool = False,
+                run_id: str | None = None) -> int:
     output.mkdir(parents=True, exist_ok=True)
     lock = worktree_lock_path()
     if lock_already_acquired:
@@ -713,13 +737,13 @@ def run_profile(profile: str, output: Path, benchmark: Path | None,
     else:
         acquire_lock(lock)
     try:
-        return _run_profile_locked(profile, output, benchmark, replay, resume)
+        return _run_profile_locked(profile, output, benchmark, replay, resume, run_id or uuid.uuid4().hex)
     finally:
         release_lock(lock, os.getpid())
 
 
 def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
-                        replay: Path | None, resume: bool) -> int:
+                        replay: Path | None, resume: bool, run_id: str) -> int:
     global INTERRUPTED
     old: dict[str, Any] = {}
     status_file = output / "status.json"
@@ -790,7 +814,7 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
                 ) from exc
             return stage(name, None, output, record_failure)
 
-    state: dict[str, Any] = {"schema": 1, "profile": profile, "identity": identity,
+    state: dict[str, Any] = {"schema": 1, "run_id": run_id, "profile": profile, "identity": identity,
                              "identity_components": identity_details,
                              "state": "running", "started_at": utc_now(), "stages": records,
                              "reused_stages": 0, "private_inputs": profile == "rc"}
@@ -822,8 +846,11 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
                     raise ValidationError("unavailable: private manifest input validation failed")
                 check_rc_available(benchmark, replay)
 
+            state["current_stage"] = "rc-input-availability"
+            atomic_json(status_file, state)
             record = run_or_reuse("rc-input-availability", None, check_rc_inputs)
             records.append(record)
+            state.pop("current_stage", None)
             offset = 1
             atomic_json(status_file, state)
             if record["state"] != "passed":
@@ -859,11 +886,14 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
                                            str(benchmark), "--output", str(output / "private" / "benchmark")], None),
             ])
         for name, command, check in commands:
+            state["current_stage"] = name
+            atomic_json(status_file, state)
             if name in {"java-build", "junit-report-integrity", "strict-production-replay"}:
                 record = locked_stage(name, command, check)
             else:
                 record = run_or_reuse(name, command, check)
             records.append(record)
+            state.pop("current_stage", None)
             state["reused_stages"] = reused
             atomic_json(status_file, state)
             if INTERRUPTED:
@@ -872,6 +902,8 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
             if record["state"] != "passed":
                 break
         if not INTERRUPTED and (not records or records[-1]["state"] == "passed"):
+            state["current_stage"] = "artifact-integrity"
+            atomic_json(status_file, state)
             def check_bound_artifact() -> None:
                 java_record = next((item for item in records if item.get("name") == "java-build"), None)
                 if (java_record is None or java_record.get("state") != "passed"
@@ -881,6 +913,7 @@ def _run_profile_locked(profile: str, output: Path, benchmark: Path | None,
                 preserve_reports(output, copy_jar=True)
             record = locked_stage("artifact-integrity", None, check_bound_artifact)
             records.append(record)
+            state.pop("current_stage", None)
             if record["state"] != "passed":
                 (output / "artifacts" / "wayheatmaptracer.jar").unlink(missing_ok=True)
             atomic_json(status_file, state)
@@ -916,6 +949,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--resume", action="store_true")
     result.add_argument("--status", action="store_true", help="print the existing run status and exit")
     result.add_argument("--_background-child", action="store_true", help=argparse.SUPPRESS)
+    result.add_argument("--_run-id", help=argparse.SUPPRESS)
     return result
 
 
@@ -931,10 +965,23 @@ def main(argv: list[str] | None = None) -> int:
                     pid = int(launch_state["pid"])
                     if pid > 0:
                         os.kill(pid, 0)
+                    status = output / "status.json"
+                    if status.is_file():
+                        try:
+                            status_state = json.loads(status.read_text(encoding="utf-8"))
+                        except (ValueError, OSError):
+                            status_state = None
+                        if (isinstance(status_state, dict)
+                                and status_state.get("run_id") == launch_state.get("run_id")):
+                            print(json.dumps(status_state, sort_keys=True))
+                            return 0
                     print(json.dumps({**launch_state, "state": "launching"}, sort_keys=True))
                     return 0
                 except (OSError, ValueError, KeyError):
-                    pass
+                    # A launch record is authoritative for this run. Never fall
+                    # through to a stale status from an earlier invocation.
+                    print(json.dumps({"state": "launching"}, sort_keys=True))
+                    return 0
             status = output / "status.json"
             if not status.is_file():
                 raise ValidationError("no validation status exists at the requested output")
@@ -953,7 +1000,7 @@ def main(argv: list[str] | None = None) -> int:
                 release_lock(worktree_lock_path(), os.getpid())
                 raise ValidationError("background launch handshake failed")
             return run_profile(args.profile, output, benchmark, replay, args.resume,
-                               lock_already_acquired=True)
+                               lock_already_acquired=True, run_id=args._run_id)
         if args.background:
             output.mkdir(parents=True, exist_ok=True)
             lock = worktree_lock_path()
@@ -969,12 +1016,13 @@ def main(argv: list[str] | None = None) -> int:
                     except (ValueError, OSError):
                         pass
                 validate_profile_output(output, args.profile, old_state)
-                launch_data: dict[str, Any] = {"schema": 1, "profile": args.profile,
+                run_id = uuid.uuid4().hex
+                launch_data: dict[str, Any] = {"schema": 1, "run_id": run_id, "profile": args.profile,
                                                "state": "launching", "pid": 0,
                                                "started_at": utc_now()}
                 atomic_json(output / "launch.json", launch_data)
                 child_args = [sys.executable, str(Path(__file__).resolve()), "--profile", args.profile,
-                              "--output", str(output), "--_background-child"]
+                              "--output", str(output), "--_background-child", "--_run-id", run_id]
                 if benchmark:
                     child_args += ["--benchmark-manifest", str(benchmark)]
                 if replay:

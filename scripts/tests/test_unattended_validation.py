@@ -62,7 +62,7 @@ def fake_tools(tmp_path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
         "      z.write(os.environ['FAKE_PLUGIN_CLASS'], 'org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class')\n"
         "    reports = pathlib.Path('build/test-results/test')\n"
         "    reports.mkdir(parents=True, exist_ok=True)\n"
-        "    (reports / 'TEST-fake.xml').write_text('<testsuite tests=\"2\" failures=\"0\" errors=\"0\" skipped=\"0\"/>')\n"
+        "    (reports / 'TEST-fake.xml').write_text('<testsuite tests=\"2\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase name=\"one\"/><testcase name=\"two\"/></testsuite>')\n"
         "  raise SystemExit(int(os.environ.get('FAKE_GRADLE_EXIT', '0')))\n"
         "raise SystemExit(0)\n",
         encoding="utf-8",
@@ -156,6 +156,34 @@ def test_background_status_reports_plain_process_state(tmp_path: Path) -> None:
     assert state["state"] == "passed"
 
 
+def test_status_reports_live_background_stage_after_handshake(tmp_path: Path) -> None:
+    tools = fake_tools(tmp_path, gradle_sleep=8)
+    env = env_for(tools, gradle_sleep=8)
+    output = tmp_path / "progress"
+    start = invoke(tmp_path, "--profile", "public", "--output", str(output), "--background", env=env)
+    assert start.returncode == 0
+    deadline = time.monotonic() + 4
+    status = None
+    while time.monotonic() < deadline:
+        result = invoke(tmp_path, "--output", str(output), "--status", env=env)
+        if result.returncode == 0:
+            status = json.loads(result.stdout)
+            if status.get("current_stage") == "java-build":
+                break
+        time.sleep(0.03)
+    assert status is not None
+    assert status["state"] == "running"
+    assert status["current_stage"] == "java-build"
+    final_deadline = time.monotonic() + 12
+    while time.monotonic() < final_deadline:
+        result = invoke(tmp_path, "--output", str(output), "--status", env=env)
+        if result.returncode == 0 and json.loads(result.stdout)["state"] == "passed":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("background validation did not finish")
+
+
 def test_worktree_lock_serializes_different_output_directories(tmp_path: Path) -> None:
     tools = fake_tools(tmp_path, gradle_sleep=1.5)
     env = env_for(tools, gradle_sleep=1.5)
@@ -242,15 +270,18 @@ def test_background_resume_preserves_and_reuses_prior_success(tmp_path: Path) ->
     args = ("--profile", "public", "--output", str(output))
     assert invoke(tmp_path, *args, env=env).returncode == 0
     previous = json.loads((output / "status.json").read_text())
+    assert previous.get("run_id")
     launch = invoke(tmp_path, *args, "--resume", "--background", env=env)
     assert launch.returncode == 0
     state = json.loads(invoke(tmp_path, "--output", str(output), "--status", env=env).stdout)
     assert state["state"] in {"launching", "running", "passed"}
+    assert state["run_id"] != previous["run_id"]
     deadline = time.monotonic() + 8
     while state["state"] not in {"passed", "failed", "interrupted"} and time.monotonic() < deadline:
         time.sleep(0.05)
         state = json.loads(invoke(tmp_path, "--output", str(output), "--status", env=env).stdout)
     assert state["state"] == "passed"
+    assert state["run_id"] != previous["run_id"]
     assert state["reused_stages"] >= len(previous["stages"]) - 2
 
 
@@ -272,12 +303,7 @@ def _required_file(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, Path, Path]:
-    spec = importlib.util.spec_from_file_location("validation_manifest_test", RUNNER)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, Path, Path, Path]:
     input_root = tmp_path / "payloads"
     input_root.mkdir()
     paths = {}
@@ -309,7 +335,7 @@ def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, 
         java.chmod(0o755)
     manifest = {
         "schemaVersion": 1, "warmups": 1, "repetitions": 3, "runTimeoutSeconds": 60,
-        "environment": {"java": str(java), "javaMajor": 17, "josmVersion": "19555",
+        "environment": {"java": str(java), "javaMajor": 17, "josmVersion": 19555,
                          "josmJar": _required_file(paths["jar"])},
         "baseline": {"worktree": str(baseline), "revision": baseline_revision,
                      "sourceHashes": {"src/Plugin.java": baseline_source_hash}},
@@ -324,6 +350,23 @@ def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, 
     manifest_path = input_root / "benchmark.json"
     manifest_path.write_text(json.dumps(manifest))
     return manifest_path, paths["osm1"], java, paths["tile1_png"]
+
+
+def test_numeric_josm_version_matches_benchmark_manifest_schema(tmp_path: Path) -> None:
+    spec = importlib.util.spec_from_file_location("validation_numeric_version_test", RUNNER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    manifest, _, java, _ = _benchmark_fixture(tmp_path)
+    real_run = subprocess.run
+    module.shutil = SimpleNamespace(which=lambda _name: str(java))
+    def fake_run(args, *pargs, **kwargs):
+        if args[0] == str(java) and args[1:] == ["-version"]:
+            return subprocess.CompletedProcess(args, 0, 'openjdk version "17.0.1"\n', "")
+        return real_run(args, *pargs, **kwargs)
+    module.subprocess = SimpleNamespace(run=fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
+    assert len(module.benchmark_manifest_identity(manifest)) == 64
 
 
 def test_manifest_identity_binds_referenced_input_bytes(tmp_path: Path) -> None:
@@ -364,8 +407,10 @@ def test_java_build_evidence_change_invalidates_resume(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("xml", [
     "<testsuite tests='0' failures='0' errors='0' skipped='0'/>",
-    "<testsuite tests='2' failures='1' errors='0' skipped='0'/>",
-    "<testsuite tests='2' failures='0' errors='0' skipped='1'/>",
+    "<testsuite tests='2' failures='0' errors='0' skipped='0'/>",
+    "<testsuite tests='2' failures='1' errors='0' skipped='0'><testcase/><testcase><failure/></testcase></testsuite>",
+    "<testsuite tests='2' failures='0' errors='0' skipped='1'><testcase/><testcase><skipped/></testcase></testsuite>",
+    "<testsuite tests='2' failures='0' errors='0' skipped='0'><testcase/></testsuite>",
 ])
 def test_junit_gate_rejects_empty_failed_or_skipped_reports(tmp_path: Path, xml: str) -> None:
     spec = importlib.util.spec_from_file_location("validation_junit_test", RUNNER)
