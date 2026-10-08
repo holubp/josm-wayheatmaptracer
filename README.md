@@ -125,9 +125,16 @@ The plugin jar is produced at:
 build/libs/wayheatmaptracer.jar
 ```
 
-For unattended local validation, run the same public checks used by CI and keep
-the JSON status, stage logs, JUnit reports, and a verified plugin jar outside
-`build/`:
+For unattended local validation, use Python 3.10+ and install the test
+dependency in the environment that runs the checks. The scripts use `pytest`
+only; they do not depend on `pytest-subtests`:
+
+```bash
+python3 -m pip install "pytest==9.1.1"
+```
+
+Then run the public validation profile and keep the JSON status, stage logs,
+JUnit reports, and a verified plugin jar outside `build/`:
 
 ```bash
 python3 scripts/run-validation.py --profile public --output /tmp/josm-validation
@@ -136,6 +143,9 @@ python3 scripts/run-validation.py --profile public --output /tmp/josm-validation
 Use `--background` to launch a plain local process, then inspect its durable
 state with `--status --output /tmp/josm-validation`. `--resume` reuses only
 successful stages whose source, inputs, and environment identity still match.
+The identity includes the installed pytest version. Java build, report, and JAR
+evidence use the same advisory build lock as the private benchmark; do not
+delete that lock file while validation is running.
 The private `rc` profile also requires explicit benchmark and strict replay
 manifest paths; its inputs and reports stay local and are never part of CI:
 
