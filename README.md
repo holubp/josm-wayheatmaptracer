@@ -119,6 +119,20 @@ Build:
 sh gradlew clean build
 ```
 
+### GitHub Actions CI
+
+GitHub Actions runs the public validation profile on Java 17 and Python 3.11,
+then runs the synthetic GUI smoke task under Xvfb after public validation
+passes. CI makes no AI service calls. Its retained artifacts are limited to
+public JUnit XML and HTML reports, the public runner's `summary.json` and
+`status.json`, the smoke task's compact summary, and the verified plugin jar
+after a public PASS. Private OSM data, heatmap tiles, captures, benchmark
+inputs, and raw execution logs stay outside CI artifacts. Controlled timing and
+private benchmark runs remain local workflows; shared CI results are not used
+as release timing evidence.
+
+### Plugin jar
+
 The plugin jar is produced at:
 
 ```text
@@ -126,11 +140,12 @@ build/libs/wayheatmaptracer.jar
 ```
 
 For unattended local validation, use Python 3.10+ and install the test
-dependency in the environment that runs the checks. The scripts use `pytest`
-only; they do not depend on `pytest-subtests`:
+dependencies in the environment that runs the checks. The scripts use
+`pytest`; the workflow-structure test also uses PyYAML. They do not depend on
+`pytest-subtests`:
 
 ```bash
-python3 -m pip install "pytest==9.1.1"
+python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2"
 ```
 
 Then run the public validation profile and keep the JSON status, stage logs,

@@ -6,19 +6,70 @@ on:
     tags: ["v*"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  public-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - name: Build
-        run: sh gradlew clean build
-      - name: Upload jar
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: wayheatmaptracer
-          path: build/libs/*.jar
+          python-version: "3.11"
+      - name: Install public validation dependencies
+        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2"
+      - name: Run public validation
+        id: public-validation
+        run: python3 scripts/run-validation.py --profile public --output "$RUNNER_TEMP/josm-public-validation"
+      - name: Upload public validation reports and status
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-validation-evidence
+          path: |
+            ${{ runner.temp }}/josm-public-validation/reports/java/junit-xml/
+            ${{ runner.temp }}/josm-public-validation/reports/java/html/
+            ${{ runner.temp }}/josm-public-validation/summary.json
+            ${{ runner.temp }}/josm-public-validation/status.json
+          if-no-files-found: ignore
+          retention-days: 5
+      - name: Upload validated plugin jar
+        uses: actions/upload-artifact@v4
+        if: steps.public-validation.outcome == 'success'
+        with:
+          name: public-validated-wayheatmaptracer
+          path: ${{ runner.temp }}/josm-public-validation/artifacts/wayheatmaptracer.jar
+          if-no-files-found: error
+          retention-days: 5
+
+  public-gui-smoke:
+    needs: public-validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Check Xvfb runner availability
+        run: command -v xvfb-run
+      - name: Run public synthetic GUI smoke test
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' sh gradlew v022PublicGuiSmoke --console=plain
+      - name: Require public GUI smoke summary after a passing run
+        if: success()
+        run: test -s build/reports/public-gui-smoke/summary.json
+      - name: Upload public GUI smoke summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-gui-smoke-summary
+          path: build/reports/public-gui-smoke/summary.json
+          if-no-files-found: ignore
+          retention-days: 5
