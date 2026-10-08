@@ -202,20 +202,34 @@ def _tile_payload_identity(value: Any, base: Path) -> list[tuple[str, str]]:
     return evidence
 
 
-def _worktree_identity(value: Any, base: Path) -> str:
+def _worktree_identity(value: Any, base: Path, *, role: str) -> str:
     if not isinstance(value, dict) or not isinstance(value.get("worktree"), str):
         raise ValidationError("benchmark worktree identity is malformed")
+    if role not in {"baseline", "candidate"}:
+        raise ValidationError("benchmark worktree role is invalid")
     revision, source_hashes = value.get("revision"), value.get("sourceHashes")
     if not isinstance(revision, str) or len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision.lower()):
         raise ValidationError("benchmark worktree revision must be a full Git SHA-1")
-    worktree_value = Path(value["worktree"])
-    if "\0" in value["worktree"] or not worktree_value.is_absolute():
+    worktree_text = value["worktree"]
+    worktree_value = Path(worktree_text)
+    if "\0" in worktree_text or not worktree_value.is_absolute():
         raise ValidationError("benchmark worktree path must be absolute")
-    if worktree_value.is_symlink():
-        raise ValidationError("benchmark worktree must not be a symlink")
-    worktree = worktree_value.resolve(strict=False)
-    if worktree == ROOT or ROOT in worktree.parents or worktree in ROOT.parents or not worktree.is_dir():
-        raise ValidationError("benchmark worktree is missing or aliases this runner repository")
+    if role == "candidate":
+        if worktree_text != str(ROOT) or worktree_value.is_symlink():
+            raise ValidationError("benchmark candidate worktree must be the canonical runner repository root")
+        worktree = ROOT
+        if not worktree.is_dir():
+            raise ValidationError("benchmark candidate worktree is missing")
+    else:
+        if worktree_value.is_symlink():
+            raise ValidationError("benchmark baseline worktree must not be a symlink")
+        worktree = worktree_value.resolve(strict=False)
+        if worktree_text != str(worktree):
+            raise ValidationError("benchmark baseline worktree path must be canonical and non-aliased")
+        if not worktree.is_dir():
+            raise ValidationError("benchmark baseline worktree is missing")
+        if worktree == ROOT or ROOT in worktree.parents or worktree in ROOT.parents:
+            raise ValidationError("benchmark baseline worktree must be external and nonoverlapping")
     if not isinstance(source_hashes, dict) or not source_hashes:
         raise ValidationError("benchmark sourceHashes must be a nonempty path-to-SHA-256 object")
     actual_head = subprocess.run(["git", "-c", f"safe.directory={worktree}", "-C", str(worktree),
@@ -303,7 +317,7 @@ def benchmark_manifest_identity(path: Path) -> str:
         worktree = manifest.get(name)
         if not isinstance(worktree, dict) or set(worktree) != {"worktree", "revision", "sourceHashes"}:
             raise ValidationError(f"benchmark {name} fields do not match the approved schema")
-        pairs.append((name, _worktree_identity(manifest.get(name), path.parent)))
+        pairs.append((name, _worktree_identity(worktree, path.parent, role=name)))
     cases = manifest.get("cases")
     if not isinstance(cases, list) or len(cases) != 2 or [item.get("id") for item in cases if isinstance(item, dict)] != ["N1", "N2"]:
         raise ValidationError("benchmark manifest must contain the exact N1 and N2 cases")

@@ -33,6 +33,7 @@ def isolate_runner_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     shutil.copy2(SOURCE_ROOT / "gradle.properties", root / "gradle.properties")
     shutil.copy2(SOURCE_ROOT / "scripts" / "run-v022-benchmark.py",
                  root / "scripts" / "run-v022-benchmark.py")
+    shutil.copy2(SOURCE_ROOT / ".gitignore", root / ".gitignore")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "-c", "user.name=fixture", "-c",
@@ -408,6 +409,14 @@ def _committed_worktree(path: Path) -> tuple[str, str]:
     return revision, hashlib.sha256(source.read_bytes()).hexdigest()
 
 
+def _runner_root_worktree() -> dict[str, object]:
+    source = ROOT / "scripts/run-validation.py"
+    revision = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True,
+                              text=True, stdout=subprocess.PIPE).stdout.strip()
+    return {"worktree": str(ROOT), "revision": revision,
+            "sourceHashes": {"scripts/run-validation.py": hashlib.sha256(source.read_bytes()).hexdigest()}}
+
+
 def _required_file(path: Path) -> dict[str, str]:
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
@@ -435,9 +444,9 @@ def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, 
         tile_descriptors[case_index] = _required_file(tsv)
         if case_index == 1:
             paths["tile1_png"] = pngs[0]
-    baseline, candidate = tmp_path / "baseline", tmp_path / "candidate"
+    baseline = tmp_path / "baseline"
     baseline_revision, baseline_source_hash = _committed_worktree(baseline)
-    candidate_revision, candidate_source_hash = _committed_worktree(candidate)
+    candidate_identity = _runner_root_worktree()
     if java is None:
         java = tmp_path / "java17"
         java.write_text("#!/bin/sh\necho 'openjdk version \"17.0.1\"'\n")
@@ -448,8 +457,7 @@ def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, 
                          "josmJar": _required_file(paths["jar"])},
         "baseline": {"worktree": str(baseline), "revision": baseline_revision,
                      "sourceHashes": {"src/Plugin.java": baseline_source_hash}},
-        "candidate": {"worktree": str(candidate), "revision": candidate_revision,
-                      "sourceHashes": {"src/Plugin.java": candidate_source_hash}},
+        "candidate": candidate_identity,
         "cases": [
             {"id": case_id, "archive": _required_file(paths[f"archive{index}"]),
              "osm": _required_file(paths[f"osm{index}"]), "tiles": tile_descriptors[index]}
@@ -461,21 +469,95 @@ def _benchmark_fixture(tmp_path: Path, java: Path | None = None) -> tuple[Path, 
     return manifest_path, paths["osm1"], java, paths["tile1_png"]
 
 
-def test_numeric_josm_version_matches_benchmark_manifest_schema(tmp_path: Path) -> None:
-    spec = importlib.util.spec_from_file_location("validation_numeric_version_test", RUNNER)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    manifest, _, java, _ = _benchmark_fixture(tmp_path)
+def _benchmark_validation_module(java: Path):
+    module = _runner_module()
     real_run = subprocess.run
-    module.shutil = SimpleNamespace(which=lambda _name: str(java))
+    real_which = shutil.which
+    module.shutil = SimpleNamespace(which=lambda name: str(java) if name == "java" else real_which(name))
+
     def fake_run(args, *pargs, **kwargs):
         if args[0] == str(java) and args[1:] == ["-version"]:
             return subprocess.CompletedProcess(args, 0, 'openjdk version "17.0.1"\n', "")
         return real_run(args, *pargs, **kwargs)
+
     module.subprocess = SimpleNamespace(run=fake_run, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT)
-    assert len(module.benchmark_manifest_identity(manifest)) == 64
+    return module
+
+
+def test_numeric_josm_version_matches_benchmark_manifest_schema(tmp_path: Path) -> None:
+    manifest, _, java, _ = _benchmark_fixture(tmp_path)
+    module = _benchmark_validation_module(java)
+    benchmark_identity = module.benchmark_manifest_identity(manifest)
+    assert len(benchmark_identity) == 64
+    identity, details, error = module.run_identity("rc", manifest, None)
+    assert error is None
+    assert details["benchmark_input_sha256"] == benchmark_identity
+    assert details["manifest_validation"] == "valid"
+    assert len(identity) == 64
+
+
+def test_parent_benchmark_candidate_rejects_external_and_noncanonical_root_paths(tmp_path: Path) -> None:
+    manifest_path, _, java, _ = _benchmark_fixture(tmp_path)
+    module = _benchmark_validation_module(java)
+    manifest = json.loads(manifest_path.read_text())
+    candidate = dict(manifest["candidate"])
+    descendant = ROOT / "candidate-descendant"
+    descendant.mkdir()
+    symlink = tmp_path / "candidate-symlink"
+    symlink.symlink_to(ROOT, target_is_directory=True)
+    external_candidate = tmp_path / "external-candidate"
+    revision, source_hash = _committed_worktree(external_candidate)
+    invalid_candidates = [
+        {"worktree": str(external_candidate), "revision": revision,
+         "sourceHashes": {"src/Plugin.java": source_hash}},
+        *({**candidate, "worktree": invalid_path} for invalid_path in (
+            str(ROOT.parent), str(descendant), str(symlink), str(ROOT) + "/.",
+            str(ROOT / "missing" / ".."),
+        )),
+    ]
+    for invalid_candidate in invalid_candidates:
+        manifest["candidate"] = invalid_candidate
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(module.ValidationError):
+            module.benchmark_manifest_identity(manifest_path)
+
+
+def test_parent_benchmark_baseline_must_be_external_and_nonoverlapping(tmp_path: Path) -> None:
+    manifest_path, _, java, _ = _benchmark_fixture(tmp_path)
+    module = _benchmark_validation_module(java)
+    manifest = json.loads(manifest_path.read_text())
+    baseline = dict(manifest["baseline"])
+    descendants = ROOT / "baseline-descendant"
+    descendants.mkdir()
+    symlink_parent = tmp_path / "baseline-parent-symlink"
+    symlink_parent.symlink_to(tmp_path, target_is_directory=True)
+    symlink_ancestor_alias = symlink_parent / Path(baseline["worktree"]).name
+    for invalid_path in (str(ROOT), str(ROOT.parent), str(descendants), str(symlink_ancestor_alias)):
+        manifest["baseline"] = {**baseline, "worktree": invalid_path}
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(module.ValidationError, match="baseline worktree"):
+            module.benchmark_manifest_identity(manifest_path)
+
+
+@pytest.mark.parametrize("mutation", ["revision", "pinned-hash", "source-bytes", "tracked-delta", "untracked-delta"])
+def test_parent_benchmark_candidate_keeps_revision_and_delta_checks(tmp_path: Path, mutation: str) -> None:
+    manifest_path, _, java, _ = _benchmark_fixture(tmp_path)
+    module = _benchmark_validation_module(java)
+    manifest = json.loads(manifest_path.read_text())
+    candidate = manifest["candidate"]
+    if mutation == "revision":
+        candidate["revision"] = "0" * 40
+    elif mutation == "pinned-hash":
+        candidate["sourceHashes"]["scripts/run-validation.py"] = "0" * 64
+    elif mutation == "source-bytes":
+        (ROOT / "scripts/run-validation.py").write_text("changed candidate source bytes\n")
+    elif mutation == "tracked-delta":
+        (ROOT / "gradle.properties").write_text((ROOT / "gradle.properties").read_text() + "# changed\n")
+    else:
+        (ROOT / "unexpected-candidate-file.txt").write_text("undeclared\n")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(module.ValidationError):
+        module.benchmark_manifest_identity(manifest_path)
 
 
 def test_manifest_identity_binds_referenced_input_bytes(tmp_path: Path) -> None:
