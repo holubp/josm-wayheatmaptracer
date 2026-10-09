@@ -421,6 +421,85 @@ public final class ModernSingleWayEditPlanAdapter {
         return draftSingleWay(computed, routeIndex).toPlan();
     }
 
+    /**
+     * Certifies the narrow fixed single-way benchmark exception against an actual native route.
+     * The caller independently verifies the original OSM and derives the factual capture width.
+     * Returns the historical topology disposition without synthesizing a historical edit plan.
+     */
+    public static ValidationReport requireFixedInheritedReviewPlan(AlignmentEditPlan plan,
+            TraceRequest request, EvidenceSnapshot evidence, ModernTracePipeline.Options options,
+            ModernTracePipeline.Route route, double capturedHalfWidthMeters) {
+        if (plan == null || request == null || evidence == null || options == null || route == null
+                || request.engine() != TrackerMode.PROBABILISTIC
+                || request.geometryMode() != AlignmentMode.PRECISE_SHAPE
+                || request.permissions().junctionPolicy() != JunctionPolicy.FIXED
+                || request.permissions().reconstructIncidentWays() || request.permissions().widerDiscovery()
+                || !options.cleanup().isDisabled() || !Double.isFinite(capturedHalfWidthMeters)
+                || Double.doubleToRawLongBits(capturedHalfWidthMeters)
+                    != Double.doubleToRawLongBits(request.permissions().ordinaryRadiusMeters())
+                || !plan.selectedWayKey().equals(request.selectedWayKey())
+                || !plan.selectedRange().equals(request.selectedRange())
+                || !plan.permissions().equals(request.permissions())
+                || !plan.metricFrame().equals(evidence.coordinateFrame())
+                || !plan.settingsHash().equals(request.settingsHash())
+                || !plan.parameterHash().equals(request.parameterHash())
+                || !plan.evidenceHash().equals(evidence.canonicalHash())
+                || !request.evidenceSnapshotId().equals(evidence.snapshotId())
+                || !request.evidenceContentHash().equals(evidence.canonicalHash())
+                || !request.networkSnapshotId().equals(plan.before().snapshotId())
+                || !request.networkContentHash().equals(plan.before().canonicalHash())
+                || !plan.routeIdentity().equals(route.hypothesis().id())
+                || plan.before().semanticWitness() == null) {
+            throw new IllegalArgumentException("Fixed inherited-contact benchmark authority is incomplete");
+        }
+        NetworkSnapshot before = plan.before();
+        DetachedWay selected = requireSupportedBoundary(request, before, options.cleanup());
+        List<PrimitiveKey> replacement = replacementNodes(route, request, evidence, before, selected);
+        Map<PrimitiveKey, DetachedPrimitive> expected = new LinkedHashMap<>(before.primitives());
+        for (PrimitiveKey removable : before.closure().removableExistingNodeKeys()) {
+            if (!replacement.contains(removable)) expected.remove(removable);
+        }
+        for (FinalRoutePointId id : route.pointIds()) {
+            MetricPoint metric = route.assignments().get(id);
+            GeographicPoint geographic = evidence.coordinateFrame().toGeographic(metric);
+            if (id instanceof GeneratedCandidatePoint generated) {
+                PrimitiveKey key = plannedKey(generated);
+                expected.put(key, new DetachedNode(key, geographic, Map.of(), false, true));
+            } else if (id instanceof ExistingWayNodeOccurrence existing
+                    && before.closure().movableExistingNodeKeys().contains(existing.nodeKey())) {
+                DetachedNode old = (DetachedNode) before.primitives().get(existing.nodeKey());
+                if (metric.equals(evidence.coordinateFrame().toMetric(old.coordinate()))) geographic = old.coordinate();
+                expected.put(existing.nodeKey(), new DetachedNode(existing.nodeKey(), geographic,
+                        old.tags(), old.deleted(), old.modified() || !old.coordinate().equals(geographic)));
+            }
+        }
+        expected.put(selected.key(), new DetachedWay(selected.key(), replacement, selected.tags(), false,
+                selected.modified() || !selected.nodeKeys().equals(replacement)));
+        for (DetachedPrimitive primitive : before.primitives().values()) {
+            if (primitive instanceof DetachedWay context && !context.key().equals(selected.key())) {
+                if (!context.equals(expected.get(context.key())) || context.nodeKeys().stream()
+                        .anyMatch(key -> !before.primitives().get(key).equals(expected.get(key)))) {
+                    throw new IllegalArgumentException("Fixed benchmark plan changes contextual geometry or flags");
+                }
+            }
+        }
+        NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + route.hypothesis().id(),
+                SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
+                before.closure(), expected, proposedWatches(before, expected));
+        ValidationReport actual = validation(route.quality(), request.permissions().junctionPolicy(),
+                finalTopologyFindings(before, expected, request.selectedWayKey(), request.selectedRange(),
+                        evidence, capturedHalfWidthMeters));
+        if (!after.equals(plan.after()) || !finalPreviewWays(before, expected).equals(plan.finalPreviewWays())
+                || !actual.equals(plan.validation()) || !actual.reviewRequired()
+                || !actual.findingCodes().contains("inherited-nontransport-contact-review-required")
+                || InheritedNonTransportContacts.prove(before, expected, request.selectedWayKey(),
+                        request.selectedRange(), evidence, capturedHalfWidthMeters).isEmpty()) {
+            throw new IllegalArgumentException("Native route does not prove the complete inherited review plan");
+        }
+        return validation(route.quality(), request.permissions().junctionPolicy(), finalTopologyFindings(
+                before, expected, request.selectedWayKey(), request.selectedRange(), evidence));
+    }
+
     /** Validated proposal before the edit plan's deliberately nonempty write invariant. */
     private record SingleWayDraft(LiveBPreviewService.Computed computed,
             NetworkSnapshot before, NetworkSnapshot after,

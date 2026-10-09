@@ -1170,7 +1170,7 @@ public final class Format15ProductionBundleFactory {
         return json.append("]}\n").toString();
     }
 
-    private static String metricGeometry(List<MetricPoint> points) {
+    static String metricGeometry(List<MetricPoint> points) {
         StringBuilder json = new StringBuilder("{\"coordinateSpace\":\"local-meters\",\"points\":[");
         for (int index = 0; index < points.size(); index++) {
             if (index > 0) json.append(',');

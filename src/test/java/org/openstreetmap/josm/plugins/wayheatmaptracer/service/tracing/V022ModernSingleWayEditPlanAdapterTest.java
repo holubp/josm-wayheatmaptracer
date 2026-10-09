@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.EastNorth;
@@ -43,6 +44,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ArchiveReader;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ProductionBundleFactory;
@@ -504,6 +506,84 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     private enum InheritedClass { BARE_ROCK, FOREST_OUTER, CLIFF }
+
+    @ParameterizedTest
+    @EnumSource(InheritedClass.class)
+    void benchmarkCertificateProvesActualFixedNativePlan(InheritedClass feature) throws Exception {
+        Fixture fixture = inheritedContactFixture(feature);
+        var computed = compute(fixture, TrackerMode.PROBABILISTIC);
+        var plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        var historical = ModernSingleWayEditPlanAdapter.requireFixedInheritedReviewPlan(plan,
+                computed.request(), computed.evidence(), computed.options(),
+                computed.pipeline().routes().get(0), computed.captured().searchRadiusMeters());
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED, historical.disposition());
+        assertTrue(historical.findingCodes().contains("final-topology:CROSSING"));
+        FrozenReplayInput candidate = new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options());
+        NetworkSnapshot original = candidate.network();
+        NetworkSnapshot historicalCore = new NetworkSnapshot(original.snapshotId(), original.role(),
+                original.datasetIdentity(), original.sourceGeneration(), original.closure(),
+                original.primitives(), original.incomingReferrerWatches());
+        FrozenReplayInput baseline = new FrozenReplayInput(candidate.request(), candidate.evidence(),
+                historicalCore, candidate.options());
+        onEdt(() -> org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorMain
+                .requireCompatiblePlans(null, plan, baseline, candidate,
+                        computed.pipeline().routes().get(0), fixture.dataSet(),
+                        computed.captured().searchRadiusMeters(), false));
+        assertThrows(IllegalStateException.class, () ->
+                org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorMain
+                        .requireCompatiblePlans(null, null, baseline, candidate,
+                                computed.pipeline().routes().get(0), fixture.dataSet(),
+                                computed.captured().searchRadiusMeters(), false));
+        AlignmentEditPlan counterpart = new AlignmentEditPlan(plan.selectedWayKey(), plan.selectedRange(),
+                historicalCore, plan.after(), plan.metricFrame(), plan.permissions(), plan.settingsHash(),
+                plan.evidenceHash(), plan.parameterHash(), plan.routeIdentity(), plan.finalPreviewWays(), historical);
+        onEdt(() -> org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorMain
+                .requireCompatiblePlans(counterpart, plan, baseline, candidate,
+                        computed.pipeline().routes().get(0), fixture.dataSet(),
+                        computed.captured().searchRadiusMeters(), false));
+        AlignmentEditPlan unrelated = new AlignmentEditPlan(counterpart.selectedWayKey(), counterpart.selectedRange(),
+                counterpart.before(), counterpart.after(), counterpart.metricFrame(), counterpart.permissions(),
+                counterpart.settingsHash(), counterpart.evidenceHash(), counterpart.parameterHash(),
+                counterpart.routeIdentity(), counterpart.finalPreviewWays(), new ValidationReport(
+                        ValidationReport.Disposition.HARD_BLOCKED, List.of("unrelated-hard-block")));
+        onEdt(() -> assertThrows(IllegalStateException.class, () ->
+                org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorMain
+                        .requireCompatiblePlans(unrelated, plan, baseline, candidate,
+                                computed.pipeline().routes().get(0), fixture.dataSet(),
+                                computed.captured().searchRadiusMeters(), false)));
+        assertThrows(IllegalArgumentException.class, () ->
+                ModernSingleWayEditPlanAdapter.requireFixedInheritedReviewPlan(plan,
+                        computed.request(), computed.evidence(), computed.options(),
+                        computed.pipeline().routes().get(0), 100.0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown", "transport", "new-contact", "vertex-touch"})
+    void benchmarkReviewMarkerCannotCertifyUnprovedContact(String failure) throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way context = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35)
+                .findFirst().orElseThrow();
+        if (failure.equals("unknown")) context.remove("natural");
+        if (failure.equals("transport")) context.put("highway", "path");
+        if (failure.equals("new-contact")) context.getNode(0).setCoor(new LatLon(longitude(1), longitude(0.17345)));
+        if (failure.equals("vertex-touch")) {
+            context.getNode(0).setCoor(new LatLon(longitude(-10), 0));
+            context.getNode(1).setCoor(new LatLon(longitude(10), 0));
+        }
+        var computed = compute(fixture, TrackerMode.PROBABILISTIC);
+        var original = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        var forged = new AlignmentEditPlan(original.selectedWayKey(), original.selectedRange(),
+                original.before(), original.after(), original.metricFrame(), original.permissions(),
+                original.settingsHash(), original.evidenceHash(), original.parameterHash(),
+                original.routeIdentity(), original.finalPreviewWays(), new ValidationReport(
+                        ValidationReport.Disposition.REVIEW_REQUIRED,
+                        List.of("inherited-nontransport-contact-review-required")));
+        assertThrows(IllegalArgumentException.class, () ->
+                ModernSingleWayEditPlanAdapter.requireFixedInheritedReviewPlan(forged,
+                        computed.request(), computed.evidence(), computed.options(),
+                        computed.pipeline().routes().get(0), computed.captured().searchRadiusMeters()));
+    }
 
     @Test
     void additiveSemanticWitnessSurvivesFrozenReplayAndReviewPlanCodec() throws Exception {

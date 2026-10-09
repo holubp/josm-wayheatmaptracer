@@ -431,7 +431,8 @@ def main(argv: list[str] | None = None) -> int:
                     comparison_log = output / case_id / "comparisons" / f"{version}-{run['iteration']:02d}.log"
                     compared = run_process([str(java), "-cp", os.pathsep.join((str(josm), str(plugins["candidate"]))),
                                             COMPARE_CLASS, reference["diagnosticsPath"],
-                                            run["diagnosticsPath"]], output, comparison_log, 120)
+                                            run["diagnosticsPath"], str(osm), case["osm"]["sha256"]],
+                                            output, comparison_log, 120)
                     report["comparisons"].append({"case": case_id, "version": version,
                                                   "iteration": run["iteration"], **compared})
                     if compared["exitCode"]:
