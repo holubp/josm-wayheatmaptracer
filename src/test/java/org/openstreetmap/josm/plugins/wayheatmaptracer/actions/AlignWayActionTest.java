@@ -104,6 +104,10 @@ class AlignWayActionTest {
         Node south = loadedNode(104, -40.0, 0.0);
         Way selected = loadedWay(110, start, junction);
         Way receiver = loadedWay(111, south, junction, north);
+        selected.put("highway", "path");
+        receiver.put("highway", "path");
+        selected.setModified(false);
+        receiver.setModified(false);
         for (Node node : List.of(start, junction, north, south)) dataSet.addPrimitive(node);
         dataSet.addPrimitive(selected);
         dataSet.addPrimitive(receiver);

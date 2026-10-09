@@ -288,6 +288,10 @@ class V022ManualJunctionEligibilityTest {
         }
         Way selected = way(10, List.of(south, junction));
         Way receiver = way(11, List.of(west, junction, east));
+        selected.put("highway", "path");
+        receiver.put("highway", "path");
+        selected.setModified(false);
+        receiver.setModified(false);
         data.addPrimitive(selected);
         data.addPrimitive(receiver);
         return new Fixture(data, selected, receiver, junction);

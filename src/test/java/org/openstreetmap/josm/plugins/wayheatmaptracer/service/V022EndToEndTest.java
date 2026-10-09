@@ -819,9 +819,9 @@ class V022EndToEndTest {
         Node north = loadedNode(707, latitude(18), longitude(10));
         Node northPort = loadedNode(708, latitude(37), longitude(10));
         Node farNorth = loadedNode(709, latitude(49), longitude(10));
-        Way selected = loadedWay(711, west, junction);
-        Way first = loadedWay(712, farSouth, southPort, south, junction);
-        Way second = loadedWay(713, junction, middle, north, northPort, farNorth);
+        Way selected = loadedHighwayWay(711, west, junction);
+        Way first = loadedHighwayWay(712, farSouth, southPort, south, junction);
+        Way second = loadedHighwayWay(713, junction, middle, north, northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south,
                 middle, north, northPort, farNorth)) {
             dataSet.addPrimitive(node);
@@ -928,11 +928,11 @@ class V022EndToEndTest {
         Node northPort = loadedNode(748, latitude(31), longitude(25));
         Node farNorth = loadedNode(749, latitude(49), longitude(25));
         Node nearReceiverArm = loadedNode(752, latitude(0.05), longitude(24));
-        Way selected = loadedWay(750, west, junction);
+        Way selected = loadedHighwayWay(750, west, junction);
         Way receiver = nearbyParallelRidge
-                ? loadedWay(751, farSouth, southPort, south, junction,
+                ? loadedHighwayWay(751, farSouth, southPort, south, junction,
                         nearReceiverArm, middle, north, northPort, farNorth)
-                : loadedWay(751, farSouth, southPort, south, junction,
+                : loadedHighwayWay(751, farSouth, southPort, south, junction,
                         middle, north, northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south,
                 middle, north, northPort, farNorth)) {
@@ -1194,8 +1194,8 @@ class V022EndToEndTest {
         Node north = loadedNode(788, latitude(8), longitude(25));
         Node northPort = loadedNode(790, latitude(31), longitude(25));
         Node farNorth = loadedNode(791, latitude(49), longitude(25));
-        Way selected = loadedWay(789, prefix, junction, predecessor, end);
-        Way receiver = loadedWay(792, farSouth, southPort, south, junction,
+        Way selected = loadedHighwayWay(789, prefix, junction, predecessor, end);
+        Way receiver = loadedHighwayWay(792, farSouth, southPort, south, junction,
                 north, northPort, farNorth);
         for (Node node : List.of(prefix, junction, predecessor, end, farSouth,
                 southPort, south, north, northPort, farNorth)) {
@@ -1229,8 +1229,8 @@ class V022EndToEndTest {
         Node rise = loadedNode(769, latitude(20), longitude(35));
         Node eastPort = loadedNode(770, latitude(28), longitude(45));
         Node farEast = loadedNode(771, latitude(30), longitude(50));
-        Way selected = loadedWay(772, west, junction);
-        Way receiver = loadedWay(773, farWest, westPort, approach, nearWest,
+        Way selected = loadedHighwayWay(772, west, junction);
+        Way receiver = loadedHighwayWay(773, farWest, westPort, approach, nearWest,
                 junction, nearEast, dip, rise, eastPort, farEast);
         for (Node node : List.of(west, junction, farWest, westPort, approach,
                 nearWest, nearEast, dip, rise, eastPort, farEast)) {
@@ -1401,9 +1401,9 @@ class V022EndToEndTest {
         Node north = loadedNode(407, latitude(18), longitude(10));
         Node northPort = loadedNode(408, latitude(31), longitude(10));
         Node farNorth = loadedNode(409, latitude(49), longitude(10));
-        Way selected = loadedWay(410, west, junction);
-        Way southReceiver = loadedWay(411, farSouth, southPort, south, junction);
-        Way northReceiver = loadedWay(412, junction, middle, north, northPort, farNorth);
+        Way selected = loadedHighwayWay(410, west, junction);
+        Way southReceiver = loadedHighwayWay(411, farSouth, southPort, south, junction);
+        Way northReceiver = loadedHighwayWay(412, junction, middle, north, northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south, middle,
                 north, northPort, farNorth)) {
             dataSet.addPrimitive(node);
@@ -1478,7 +1478,7 @@ class V022EndToEndTest {
         Node north = loadedNode(124, latitude(18), longitude(-5.4));
         Node northPort = loadedNode(125, latitude(31), longitude(-5.4));
         Node farNorth = loadedNode(126, latitude(49), longitude(-5.4));
-        Way diagonal = loadedWay(127, farSouth, southPort, south,
+        Way diagonal = loadedHighwayWay(127, farSouth, southPort, south,
                 fixture.junction(), middle, north, northPort, farNorth);
         for (Node node : List.of(farSouth, southPort, south, middle, north,
                 northPort, farNorth)) {
@@ -1511,7 +1511,7 @@ class V022EndToEndTest {
         DataSet dataSet = new DataSet();
         Node leftJunction = loadedNode(601, 0.0, longitude(-8));
         Node rightJunction = loadedNode(602, 0.0, longitude(8));
-        Way selected = loadedWay(610, leftJunction, rightJunction);
+        Way selected = loadedHighwayWay(610, leftJunction, rightJunction);
         Node leftFarSouth = loadedNode(603, latitude(-49), longitude(-10));
         Node leftSouthPort = loadedNode(604, latitude(-31), longitude(-10));
         Node leftSouth = loadedNode(605, latitude(-8), longitude(-10));
@@ -1519,7 +1519,7 @@ class V022EndToEndTest {
         Node leftNorth = loadedNode(607, latitude(18), longitude(-10));
         Node leftNorthPort = loadedNode(608, latitude(31), longitude(-10));
         Node leftFarNorth = loadedNode(609, latitude(49), longitude(-10));
-        Way leftReceiver = loadedWay(611, leftFarSouth, leftSouthPort, leftSouth,
+        Way leftReceiver = loadedHighwayWay(611, leftFarSouth, leftSouthPort, leftSouth,
                 leftJunction, leftMiddle, leftNorth, leftNorthPort, leftFarNorth);
         Node rightFarSouth = loadedNode(613, latitude(-49), longitude(10));
         Node rightSouthPort = loadedNode(614, latitude(-31), longitude(10));
@@ -1528,7 +1528,7 @@ class V022EndToEndTest {
         Node rightNorth = loadedNode(617, latitude(18), longitude(10));
         Node rightNorthPort = loadedNode(618, latitude(31), longitude(10));
         Node rightFarNorth = loadedNode(619, latitude(49), longitude(10));
-        Way rightReceiver = loadedWay(612, rightFarSouth, rightSouthPort, rightSouth,
+        Way rightReceiver = loadedHighwayWay(612, rightFarSouth, rightSouthPort, rightSouth,
                 rightJunction, rightMiddle, rightNorth, rightNorthPort, rightFarNorth);
         for (Node node : List.of(leftJunction, rightJunction, leftFarSouth, leftSouthPort,
                 leftSouth, leftMiddle, leftNorth, leftNorthPort, leftFarNorth,
@@ -1981,9 +1981,9 @@ class V022EndToEndTest {
         Node northPort = loadedNode(748, latitude(37), longitude(10));
         Node farNorth = loadedNode(749, latitude(49), longitude(10));
         Node middle = loadedNode(746, latitude(2), longitude(10));
-        Way selected = loadedWay(751, west, junction);
-        Way w1 = loadedWay(752, junction, south, southPort, farSouth);
-        Way w2 = loadedWay(753, farNorth, northPort, north, middle, junction);
+        Way selected = loadedHighwayWay(751, west, junction);
+        Way w1 = loadedHighwayWay(752, junction, south, southPort, farSouth);
+        Way w2 = loadedHighwayWay(753, farNorth, northPort, north, middle, junction);
         for (Node node : List.of(west, junction, farSouth, southPort, south, middle,
                 north, northPort, farNorth)) {
             dataSet.addPrimitive(node);
@@ -2224,7 +2224,7 @@ class V022EndToEndTest {
             nodes.add(node);
             dataSet.addPrimitive(node);
         }
-        Way selected = loadedWay(950, nodes.toArray(Node[]::new));
+        Way selected = loadedHighwayWay(950, nodes.toArray(Node[]::new));
         dataSet.addPrimitive(selected);
         List<Way> receivers = new java.util.ArrayList<>();
         for (int occurrence : List.of(13, 27)) {
@@ -2234,7 +2234,7 @@ class V022EndToEndTest {
             Node north = loadedNode(980 + occurrence, latitude(40), longitude(east));
             dataSet.addPrimitive(south);
             dataSet.addPrimitive(north);
-            Way receiver = loadedWay(1_000 + occurrence, south, nodes.get(occurrence), north);
+            Way receiver = loadedHighwayWay(1_000 + occurrence, south, nodes.get(occurrence), north);
             dataSet.addPrimitive(receiver);
             receivers.add(receiver);
         }
@@ -2278,13 +2278,13 @@ class V022EndToEndTest {
         nodes.get(4).put("note", "fixed west arm boundary");
         nodes.get(16).put("note", "fixed east arm boundary");
         nodes.get(17).put("note", "second fixed east arm boundary");
-        Way selected = loadedWay(850, nodes.toArray(Node[]::new));
+        Way selected = loadedHighwayWay(850, nodes.toArray(Node[]::new));
         dataSet.addPrimitive(selected);
         Node south = loadedNode(851, latitude(-40), longitude(0));
         Node north = loadedNode(852, latitude(40), longitude(0));
         dataSet.addPrimitive(south);
         dataSet.addPrimitive(north);
-        Way receiver = loadedWay(853, south, nodes.get(10), north);
+        Way receiver = loadedHighwayWay(853, south, nodes.get(10), north);
         dataSet.addPrimitive(receiver);
         SelectionContext selection = new SelectionContext(selected, first, last,
                 nodes.subList(first, last + 1), Set.of(nodes.get(first), nodes.get(last)));
@@ -2370,8 +2370,8 @@ class V022EndToEndTest {
         Node north = loadedNode(7, latitude(8), longitude(northEast));
         Node northPort = loadedNode(8, latitude(31), longitude(northEast));
         Node farNorth = loadedNode(9, latitude(49), longitude(northEast));
-        Way selected = loadedWay(10, west, junction);
-        Way receiver = loadedWay(11, farSouth, southPort, south, junction, middle, north,
+        Way selected = loadedHighwayWay(10, west, junction);
+        Way receiver = loadedHighwayWay(11, farSouth, southPort, south, junction, middle, north,
                 northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south, middle, north,
                 northPort, farNorth)) {
@@ -2397,8 +2397,8 @@ class V022EndToEndTest {
         Node junction = loadedNode(502, 0.0, longitude(8));
         Node south = loadedNode(503, latitude(-8), longitude(10));
         Node north = loadedNode(504, latitude(1), longitude(10));
-        Way selected = loadedWay(510, west, junction);
-        Way receiver = loadedWay(511, south, junction, north);
+        Way selected = loadedHighwayWay(510, west, junction);
+        Way receiver = loadedHighwayWay(511, south, junction, north);
         for (Node node : List.of(west, junction, south, north)) {
             dataSet.addPrimitive(node);
         }
@@ -2427,8 +2427,8 @@ class V022EndToEndTest {
         Node north = loadedNode(107, latitude(18), longitude(10));
         Node northPort = loadedNode(108, latitude(31), longitude(10));
         Node farNorth = loadedNode(109, latitude(49), longitude(10));
-        Way selected = loadedWay(110, west, junction);
-        Way receiver = loadedWay(111, farSouth, southPort, south, junction, middle, north,
+        Way selected = loadedHighwayWay(110, west, junction);
+        Way receiver = loadedHighwayWay(111, farSouth, southPort, south, junction, middle, north,
                 northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south, middle, north,
                 northPort, farNorth)) {
@@ -2452,8 +2452,8 @@ class V022EndToEndTest {
         Node north = loadedNode(207, latitude(18), longitude(10));
         Node northPort = loadedNode(208, latitude(31), longitude(10));
         Node farNorth = loadedNode(209, latitude(49), longitude(10));
-        Way selected = loadedWay(210, west, junction);
-        Way receiver = loadedWay(211, farSouth, southPort, south, junction, middle, north,
+        Way selected = loadedHighwayWay(210, west, junction);
+        Way receiver = loadedHighwayWay(211, farSouth, southPort, south, junction, middle, north,
                 northPort, farNorth);
         for (Node node : List.of(west, junction, farSouth, southPort, south, middle, north,
                 northPort, farNorth)) {
@@ -2478,8 +2478,8 @@ class V022EndToEndTest {
         Node north = loadedNode(308, latitude(18), longitude(10));
         Node northPort = loadedNode(309, latitude(31), longitude(10));
         Node farNorth = loadedNode(310, latitude(49), longitude(10));
-        Way selected = loadedWay(310, west, junction, selectedContinuation);
-        Way receiver = loadedWay(311, farSouth, southPort, south, junction, middle, north,
+        Way selected = loadedHighwayWay(310, west, junction, selectedContinuation);
+        Way receiver = loadedHighwayWay(311, farSouth, southPort, south, junction, middle, north,
                 northPort, farNorth);
         for (Node node : List.of(west, junction, selectedContinuation, farSouth, southPort,
                 south, middle, north, northPort, farNorth)) {
@@ -2504,8 +2504,8 @@ class V022EndToEndTest {
         Node north = loadedNode(608, latitude(18), longitude(10));
         Node northPort = loadedNode(609, latitude(37), longitude(10));
         Node farNorth = loadedNode(610, latitude(49), longitude(10));
-        Way selected = loadedWay(611, west, junction, east);
-        Way receiver = loadedWay(612, farSouth, southPort, south, junction, middle, north,
+        Way selected = loadedHighwayWay(611, west, junction, east);
+        Way receiver = loadedHighwayWay(612, farSouth, southPort, south, junction, middle, north,
                 northPort, farNorth);
         for (Node node : List.of(west, junction, east, farSouth, southPort,
                 south, middle, north, northPort, farNorth)) {
@@ -2752,6 +2752,13 @@ class V022EndToEndTest {
         node.setOsmId(id, 1);
         node.setModified(false);
         return node;
+    }
+
+    private static Way loadedHighwayWay(long id, Node... nodes) {
+        Way way = loadedWay(id, nodes);
+        way.put("highway", "path");
+        way.setModified(false);
+        return way;
     }
 
     private static Way loadedWay(long id, Node... nodes) {
