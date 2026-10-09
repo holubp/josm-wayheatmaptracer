@@ -557,6 +557,10 @@ class V022EndToEndTest {
         List<PrimitiveKey> reconstructedNodes = List.of(fixture.south(), fixture.middle(), fixture.north())
                 .stream().map(node -> PrimitiveKey.existing(PrimitiveKey.Type.NODE,
                         node.getUniqueId())).toList();
+        var hiddenReceiver = assertThrows(IllegalStateException.class, () ->
+                org.openstreetmap.josm.plugins.wayheatmaptracer.actions.AlignWayAction
+                        .benchmarkSelectedPlanGeometry(plan, computed, 0));
+        assertEquals("Benchmark selected receipt would hide another affected way", hiddenReceiver.getMessage());
         assertTrue(computed.captured().network().closure().movableExistingNodeKeys()
                 .containsAll(reconstructedNodes));
         var beforeJunction = computed.evidence().coordinateFrame().toMetric(

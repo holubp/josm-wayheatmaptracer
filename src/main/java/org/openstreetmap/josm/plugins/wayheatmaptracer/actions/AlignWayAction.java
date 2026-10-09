@@ -12,6 +12,8 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.Objects;
 import java.nio.charset.StandardCharsets;
 import java.util.function.BooleanSupplier;
@@ -69,6 +71,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
@@ -1691,7 +1696,9 @@ public class AlignWayAction extends JosmAction {
                         .toList();
                 AlignmentEditPlan displayedPlan = benchmarkDisplayedPlan[0];
                 List<GeographicPoint> exactPlanGeometry = displayedPlan == null ? null
-                        : displayedPlan.finalPreviewWays().get(displayedPlan.selectedWayKey());
+                        : benchmarkSelectedPlanGeometry(displayedPlan,
+                                previewChoices.get(displayedIndex).owner(),
+                                previewChoices.get(displayedIndex).localRouteIndex());
                 return benchmarkDisplayedGeometry(flattened, displayedIndex,
                         choices.getSelectedIndex(), exactPlanGeometry);
             });
@@ -1725,6 +1732,94 @@ public class AlignWayAction extends JosmAction {
             throw new IllegalStateException("Benchmark displayed final geometry is incomplete");
         }
         return geometry;
+    }
+
+    /** Observes the selected interval of an exact owner-bound single-way plan, without hiding other edits. */
+    public static List<GeographicPoint> benchmarkSelectedPlanGeometry(AlignmentEditPlan plan,
+            LiveBPreviewService.Computed owner, int routeIndex) {
+        if (plan == null || owner == null || owner.partitioned() || owner.captured() == null
+                || owner.request() == null || owner.evidence() == null || owner.pipeline() == null
+                || routeIndex < 0 || routeIndex >= owner.pipeline().routes().size()) {
+            throw new IllegalStateException("Benchmark selected plan owner is incomplete");
+        }
+        var request = owner.request();
+        var route = owner.pipeline().routes().get(routeIndex);
+        var frame = owner.evidence().coordinateFrame();
+        if (!plan.before().equals(owner.captured().network()) || !plan.metricFrame().equals(frame)
+                || !request.networkSnapshotId().equals(owner.captured().network().snapshotId())
+                || !request.networkContentHash().equals(owner.captured().network().canonicalHash())
+                || !request.evidenceSnapshotId().equals(owner.evidence().snapshotId())
+                || !request.evidenceContentHash().equals(owner.evidence().canonicalHash())
+                || !plan.selectedWayKey().equals(request.selectedWayKey())
+                || !plan.selectedRange().equals(request.selectedRange())
+                || !plan.permissions().equals(request.permissions())
+                || !plan.settingsHash().equals(request.settingsHash())
+                || !plan.parameterHash().equals(request.parameterHash())
+                || !plan.evidenceHash().equals(owner.evidence().canonicalHash())
+                || !plan.routeIdentity().equals(route.hypothesis().id())) {
+            throw new IllegalStateException("Benchmark selected plan differs from its native owner");
+        }
+        if (!plan.affectedWayKeys().equals(Set.of(plan.selectedWayKey()))) {
+            throw new IllegalStateException("Benchmark selected receipt would hide another affected way");
+        }
+        DetachedWay before = (DetachedWay) plan.before().primitives().get(plan.selectedWayKey());
+        DetachedWay after = (DetachedWay) plan.after().primitives().get(plan.selectedWayKey());
+        int first = plan.selectedRange().firstIndex();
+        int suffix = before.nodeKeys().size() - plan.selectedRange().lastIndex() - 1;
+        int end = after.nodeKeys().size() - suffix;
+        if (first < 0 || suffix < 0 || end <= first
+                || new HashSet<>(before.nodeKeys()).size() != before.nodeKeys().size()
+                || new HashSet<>(after.nodeKeys()).size() != after.nodeKeys().size()
+                || !before.nodeKeys().subList(0, first).equals(after.nodeKeys().subList(0, first))
+                || !before.nodeKeys().subList(before.nodeKeys().size() - suffix, before.nodeKeys().size())
+                    .equals(after.nodeKeys().subList(end, after.nodeKeys().size()))
+                || !before.nodeKeys().get(first).equals(after.nodeKeys().get(first))
+                || !before.nodeKeys().get(plan.selectedRange().lastIndex()).equals(after.nodeKeys().get(end - 1))) {
+            throw new IllegalStateException("Benchmark selected occurrence boundaries or order differ");
+        }
+        for (int index = 0; index < before.nodeKeys().size(); index++) {
+            if (index >= first && index <= plan.selectedRange().lastIndex()) continue;
+            PrimitiveKey key = before.nodeKeys().get(index);
+            if (!plan.before().primitives().get(key).equals(plan.after().primitives().get(key))) {
+                throw new IllegalStateException("Benchmark outside selected occurrence changed");
+            }
+        }
+        List<GeographicPoint> full = plan.finalPreviewWays().get(plan.selectedWayKey());
+        if (full == null || full.size() != after.nodeKeys().size()
+                || end - first != route.pointIds().size()
+                || route.pointIds().size() != route.hypothesis().points().size()) {
+            throw new IllegalStateException("Benchmark selected geometry differs from its native route");
+        }
+        for (int index = 0; index < route.pointIds().size(); index++) {
+            FinalRoutePointId id = route.pointIds().get(index);
+            var metric = route.assignments().get(id);
+            if (metric == null || !metric.equals(route.hypothesis().points().get(index))) {
+                throw new IllegalStateException("Benchmark selected native assignment is missing or inconsistent");
+            }
+            PrimitiveKey key;
+            GeographicPoint expected = frame.toGeographic(metric);
+            if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+                key = existing.nodeKey();
+                if (!existing.wayKey().equals(plan.selectedWayKey())
+                        || existing.originalOccurrenceIndex() < first
+                        || existing.originalOccurrenceIndex() > plan.selectedRange().lastIndex()
+                        || !before.nodeKeys().get(existing.originalOccurrenceIndex()).equals(key)) {
+                    throw new IllegalStateException("Benchmark selected native occurrence identity differs");
+                }
+                DetachedNode original = (DetachedNode) plan.before().primitives().get(key);
+                if (metric.equals(frame.toMetric(original.coordinate()))) expected = original.coordinate();
+            } else if (id instanceof FinalRoutePointId.GeneratedCandidatePoint generated) {
+                key = PrimitiveKey.planned(PrimitiveKey.Type.NODE, generated.originalPointIndex());
+            } else {
+                throw new IllegalStateException("Benchmark selected native point identity is unsupported");
+            }
+            if (!after.nodeKeys().get(first + index).equals(key)
+                    || !((DetachedNode) plan.after().primitives().get(key)).coordinate().equals(expected)
+                    || !full.get(first + index).equals(expected)) {
+                throw new IllegalStateException("Benchmark selected plan geometry or assignments differ");
+            }
+        }
+        return List.copyOf(full.subList(first, end));
     }
 
     /** Routes persisted modern engines through their detached live pipeline. */
