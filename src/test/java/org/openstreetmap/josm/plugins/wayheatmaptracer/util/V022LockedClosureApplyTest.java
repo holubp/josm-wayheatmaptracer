@@ -110,6 +110,59 @@ class V022LockedClosureApplyTest {
     }
 
     @Test
+    void witnessBearingUndoWithoutLockedValidatorRefusesWithoutMutationOrHistoryLoss() throws Exception {
+        Fixture fixture = fixture();
+        assertTrue(fixture.plan.before().semanticWitness() != null);
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet,
+                fixture.plan, fixture.plan.before().datasetIdentity(), () -> GENERATION,
+                "Apply without semantic Undo authority");
+        assertRejectedUndoPreservesState(fixture, command);
+    }
+
+    @Test
+    void witnessBearingUndoWithDefaultValidatorRefusesWithoutMutationOrHistoryLoss() throws Exception {
+        Fixture fixture = fixture();
+        LockedApplyValidator validator = new LockedApplyValidator() {
+            @Override public String datasetIdentity() { return fixture.plan.before().datasetIdentity(); }
+            @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+            @Override public void validateLocked(DataSet dataSet, AlignmentEditPlan plan,
+                    boolean firstExecution) { }
+        };
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet,
+                fixture.plan, validator, "Apply with default semantic Undo authority");
+        assertRejectedUndoPreservesState(fixture, command);
+    }
+
+    @Test
+    void historicalWitnessAbsentPlanRetainsGenerationOnlyUndoCompatibility() throws Exception {
+        Fixture fixture = fixture();
+        AlignmentEditPlan historical = copyPlan(fixture.plan,
+                copySnapshot(fixture.plan.before(), fixture.plan.before().snapshotId()),
+                fixture.plan.after(), fixture.plan.selectedRange(), fixture.plan.permissions());
+        List<String> before = state(fixture.dataSet);
+        ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(fixture.dataSet,
+                historical, historical.before().datasetIdentity(), () -> GENERATION,
+                "Apply historical plan");
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(before, state(fixture.dataSet));
+        assertEquals(List.of(command), UndoRedoHandler.getInstance().getRedoCommands());
+    }
+
+    private static void assertRejectedUndoPreservesState(Fixture fixture,
+            ApplyAlignmentEditPlanCommand command) throws Exception {
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        List<String> applied = state(fixture.dataSet);
+        List<?> undo = List.copyOf(UndoRedoHandler.getInstance().getUndoCommands());
+        List<?> redo = List.copyOf(UndoRedoHandler.getInstance().getRedoCommands());
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> UndoRedoHandler.getInstance().undo()));
+        assertEquals(applied, state(fixture.dataSet));
+        assertEquals(undo, UndoRedoHandler.getInstance().getUndoCommands());
+        assertEquals(redo, UndoRedoHandler.getInstance().getRedoCommands());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().iterator().next() == command);
+    }
+
+    @Test
     void fullClosureValidationRunsUnderWriteLockBeforeFirstMutation() throws Exception {
         Fixture fixture = fixture();
         AtomicBoolean writeLockObserved = new AtomicBoolean();

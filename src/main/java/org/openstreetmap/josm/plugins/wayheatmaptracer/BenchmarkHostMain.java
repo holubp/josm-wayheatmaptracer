@@ -167,6 +167,13 @@ public final class BenchmarkHostMain {
                 || actual.sourceGeneration() != frozen.sourceGeneration()) {
             throw new IllegalStateException("Original live network context differs");
         }
+        // Historical archives lack this additive proof; verify it against their unchanged OSM
+        // input while preserving every original core-equality assertion above.
+        onEventThread(() -> {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .requireSemanticWitnessCurrent(dataSet, actual);
+            return null;
+        });
         seedTiles(tiles, fixtureSource.tileGeneration());
         PluginInformation info = new PluginInformation(
                 Path.of(System.getProperty("wayheatmaptracer.benchmark.pluginJar")).toFile());

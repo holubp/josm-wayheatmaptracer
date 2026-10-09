@@ -207,6 +207,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
         receiver.setNodes(List.of(farSouth, southPort, south, junction,
                 north, northPort, farNorth));
         receiver.setOsmId(47, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
@@ -243,7 +244,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 route.quality(), route.cleanupStatus(), route.geometryChanged()));
         var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
         assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
-                assessment.availability(), assessment.detail());
+                assessment.availability(), assessment.detail() + assessment.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
         var plan = assessment.plan().orElseThrow();
         PrimitiveKey selectedKey = computed.request().selectedWayKey();
         PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 47);
@@ -484,6 +485,541 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertFalse(assessment.applyAvailable());
         assertTrue(assessment.plan().isPresent());
         assertEquals(before, state(fixture));
+    }
+
+    @ParameterizedTest
+    @EnumSource(InheritedClass.class)
+    void positivelyClassifiedInheritedProperContactRequiresReview(InheritedClass feature) throws Exception {
+        Fixture fixture = inheritedContactFixture(feature);
+        List<String> liveBefore = state(fixture);
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED,
+                assessment.plan().orElseThrow().validation().disposition());
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
+                .contains("inherited-nontransport-contact-review-required"));
+        assertEquals(liveBefore, state(fixture));
+    }
+
+    private enum InheritedClass { BARE_ROCK, FOREST_OUTER, CLIFF }
+
+    @Test
+    void additiveSemanticWitnessSurvivesFrozenReplayAndReviewPlanCodec() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.FOREST_OUTER), TrackerMode.CORRIDOR_AWARE);
+        var input = new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options());
+        var decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(input));
+        assertEquals(input.network().semanticWitness(), decoded.network().semanticWitness());
+        var plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        assertEquals(plan, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(plan)));
+    }
+
+    @Test
+    void changingContextOnlyForestRelationInvalidatesPreviewEvenWhenCoreIsUnchanged() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.FOREST_OUTER);
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        fixture.dataSet().getRelations().iterator().next().put("landuse", "residential");
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> new LiveBPreviewService()
+                .requireCurrent(fixture.dataSet(), computed.captured(), computed.captured().raster())));
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsafeInheritedSemanticCases")
+    void unknownTransportAndConflictingContextRemainHard(String semantic) throws Exception {
+        Fixture fixture = inheritedContactFixture(semantic.startsWith("relation:")
+                ? InheritedClass.FOREST_OUTER : InheritedClass.CLIFF);
+        Way context = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        if (semantic.equals("unknown")) context.remove("natural");
+        else if (semantic.equals("relation:route")) fixture.dataSet().getRelations().iterator().next().put("route", "hiking");
+        else if (semantic.equals("relation:unknown-parent")) {
+            Relation parent = new Relation();
+            parent.setOsmId(41, 1);
+            parent.setMembers(List.of(new RelationMember("", fixture.dataSet().getRelations().iterator().next())));
+            fixture.dataSet().addPrimitive(parent);
+        } else if (semantic.equals("relation:incomplete")) {
+            Way missing = new Way(99);
+            fixture.dataSet().addPrimitive(missing);
+            fixture.dataSet().getRelations().iterator().next().addMember(new RelationMember("inner", missing));
+        } else if (semantic.equals("relation:wrong-role")) {
+            fixture.dataSet().getRelations().iterator().next().setMembers(List.of(new RelationMember("inner", context)));
+        } else if (semantic.equals("relation:duplicate")) {
+            fixture.dataSet().getRelations().iterator().next().addMember(new RelationMember("outer", context));
+        } else context.put(semantic, "yes");
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                assessment.availability(), assessment.detail());
+    }
+
+    private static Stream<String> unsafeInheritedSemanticCases() {
+        return Stream.of("unknown", "highway", "railway", "waterway", "building", "relation:route",
+                "relation:unknown-parent", "relation:incomplete", "relation:wrong-role", "relation:duplicate");
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsafeInheritedPaths")
+    void completeWitnessSetRejectsAdditionalTouchOverlapNewCrossingAndExcessiveShift(double[][] points) throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        assertTrue(proofForPath(computed, points, 7.01).isEmpty());
+    }
+
+    private static Stream<double[][]> unsafeInheritedPaths() {
+        return Stream.of(new double[][] {{-8, 0}, {-4, 9}, {4, 9}, {8, 0}},
+                new double[][] {{-8, 0}, {4, 1}, {-4, 2}, {8, 0}},
+                new double[][] {{-8, 0}, {0.17345, 1}, {8, 0}},
+                new double[][] {{-8, 0}, {0.17345, -2}, {0.17345, 2}, {8, 0}},
+                new double[][] {{-8, 0}, {-4, 12}, {4, 12}, {8, 0}});
+    }
+
+    @Test
+    void inheritedProofNeedsFrozenWitnessAndExactContextGeometry() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        var before = computed.captured().network();
+        var after = afterSelected(before, computed.request().selectedWayKey(), new double[][] {{-8, 0}, {8, 0}});
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)),
+                InheritedNonTransportContacts.prove(before, after, computed.request().selectedWayKey(),
+                        computed.request().selectedRange(), computed.evidence(), 7.01));
+        var absent = new NetworkSnapshot(before.snapshotId(), before.role(), before.datasetIdentity(),
+                before.sourceGeneration(), before.closure(), before.primitives(), before.incomingReferrerWatches());
+        assertTrue(InheritedNonTransportContacts.prove(absent, after, computed.request().selectedWayKey(),
+                computed.request().selectedRange(), computed.evidence(), 7.01).isEmpty());
+        PrimitiveKey contextNode = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 33);
+        DetachedNode original = (DetachedNode) after.get(contextNode);
+        after.put(contextNode, new DetachedNode(contextNode, new GeographicPoint(longitude(-9), 0),
+                original.tags(), false, true));
+        assertTrue(InheritedNonTransportContacts.prove(before, after, computed.request().selectedWayKey(),
+                computed.request().selectedRange(), computed.evidence(), 7.01).isEmpty());
+    }
+
+    @Test
+    void missingForestParentWatchNeverProvesBenignContext() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.FOREST_OUTER), TrackerMode.CORRIDOR_AWARE);
+        var original = computed.captured().network();
+        var watches = new LinkedHashMap<>(original.incomingReferrerWatches());
+        watches.put(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35), Set.of());
+        var core = new NetworkSnapshot(original.snapshotId(), original.role(), original.datasetIdentity(),
+                original.sourceGeneration(), original.closure(), original.primitives(), watches);
+        var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                core.canonicalHash(), core.datasetIdentity(), core.sourceGeneration(), original.semanticWitness().relations());
+        var before = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(), core.sourceGeneration(),
+                core.closure(), core.primitives(), core.incomingReferrerWatches(), witness);
+        assertTrue(InheritedNonTransportContacts.prove(before, afterSelected(original, computed.request().selectedWayKey(),
+                new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}), computed.request().selectedWayKey(),
+                computed.request().selectedRange(), computed.evidence(), 7.01).isEmpty());
+    }
+
+    @Test
+    void exactCoincidentDifferentContextContactsHaveStableIdentityOrder() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way cliff = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        Node c = fixture.dataSet().getNodes().stream().filter(node -> node.getUniqueId() == 36).findFirst().orElseThrow();
+        Node d = fixture.dataSet().getNodes().stream().filter(node -> node.getUniqueId() == 37).findFirst().orElseThrow();
+        Way rock = new Way();
+        rock.setNodes(List.of(cliff.getNode(0), cliff.getNode(1), c, d, cliff.getNode(0)));
+        rock.setOsmId(50, 1);
+        rock.put("natural", "bare_rock");
+        rock.setModified(false);
+        fixture.dataSet().addPrimitive(rock);
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35), PrimitiveKey.existing(PrimitiveKey.Type.WAY, 50)),
+                proofForPath(computed, new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}, 7.01));
+    }
+
+    @Test
+    void arbitrarilyCloseDistinctContactOrderCannotReverse() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way cliff = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        double delta = 1e-9;
+        cliff.getNode(0).setCoor(new LatLon(longitude(-10), longitude(0.17345 - 10 * delta)));
+        cliff.getNode(1).setCoor(new LatLon(longitude(10), longitude(0.17345 + 10 * delta)));
+        Node a = loadedNode(51, longitude(-10), longitude(0.17345 + 11 * delta));
+        Node b = loadedNode(52, longitude(10), longitude(0.17345 - 9 * delta));
+        fixture.dataSet().addPrimitive(a);
+        fixture.dataSet().addPrimitive(b);
+        Way other = new Way();
+        other.setOsmId(50, 1);
+        other.setNodes(List.of(a, b));
+        other.put("natural", "cliff");
+        other.setModified(false);
+        fixture.dataSet().addPrimitive(other);
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35), PrimitiveKey.existing(PrimitiveKey.Type.WAY, 50)),
+                proofForPath(computed, new double[][] {{-8, 0}, {8, 0}}, 7.01));
+        assertTrue(proofForPath(computed, new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}, 7.01).isEmpty());
+    }
+
+    @Test
+    void inheritedContactCannotMoveToAnotherContextSegmentOccurrence() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way cliff = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        Node middle = loadedNode(51, longitude(0.5), longitude(0.17345));
+        fixture.dataSet().addPrimitive(middle);
+        cliff.setNodes(List.of(cliff.getNode(0), middle, cliff.getNode(1)));
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)),
+                proofForPath(computed, new double[][] {{-8, 0}, {8, 0}}, 7.01));
+        assertTrue(proofForPath(computed, new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}, 7.01).isEmpty());
+    }
+
+    @Test
+    void properContactCannotMaskRemoteEndpointTouchOnSameContextWay() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way cliff = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        Node remote = loadedNode(51, longitude(1), longitude(-4));
+        fixture.dataSet().addPrimitive(remote);
+        cliff.setNodes(List.of(cliff.getNode(0), cliff.getNode(1), remote));
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)),
+                proofForPath(computed, new double[][] {{-8, 0}, {8, 0}}, 7.01));
+        assertTrue(proofForPath(computed, new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}, 7.01).isEmpty());
+    }
+
+    @Test
+    void frozenPhysicalShiftBoundIsNotReplacedByAnExceptionConstant() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        double[][] path = {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}};
+        assertTrue(proofForPath(computed, path, 0.99).isEmpty());
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)), proofForPath(computed, path, 1.01));
+    }
+
+    @Test
+    void nonzeroDistortionCannotAdmitContactPhysicallyBeyondFrozenBound() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        var original = computed.captured().network();
+        var frame = org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame.certifiedEquirectangular(
+                new GeographicPoint(45.04999, 0), new GeographicPoint(45, -0.0001), new GeographicPoint(45.05, 0.0001));
+        double latitude = 45.00001;
+        double y = frame.toMetric(new GeographicPoint(latitude, 0)).yMeters();
+        var values = new LinkedHashMap<>(original.primitives());
+        Map<Long, MetricPoint> locations = Map.of(1L, new MetricPoint(0, y - 0.5), 2L, new MetricPoint(0, y + 2),
+                33L, new MetricPoint(-7.5, y), 34L, new MetricPoint(7.5, y));
+        locations.forEach((id, point) -> {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, id);
+            DetachedNode node = (DetachedNode) values.get(key);
+            values.put(key, new DetachedNode(key, frame.toGeographic(point), node.tags(), node.deleted(), node.modified()));
+        });
+        var core = new NetworkSnapshot(original.snapshotId(), original.role(), original.datasetIdentity(),
+                original.sourceGeneration(), original.closure(), values, original.incomingReferrerWatches());
+        var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                core.canonicalHash(), core.datasetIdentity(), core.sourceGeneration(), Map.of());
+        var before = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(), core.sourceGeneration(),
+                core.closure(), core.primitives(), core.incomingReferrerWatches(), witness);
+        var old = computed.evidence();
+        var t = old.transform();
+        var transform = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform(
+                t.transformId(), t.originKind(), t.axisUnit(), new MetricPoint(t.origin().xMeters(), t.origin().yMeters() + y),
+                t.xAxisEastMetersPerSourcePixel(), t.xAxisNorthMetersPerSourcePixel(), t.yAxisEastMetersPerSourcePixel(),
+                t.yAxisNorthMetersPerSourcePixel(), t.rasterPixelsPerSourcePixel(), t.accuracyCertificate());
+        var field = old.fields().values().iterator().next();
+        var footprint = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion(List.of(List.of(
+                transform.pixelCenterToMetric(-0.5, -0.5), transform.pixelCenterToMetric(field.width() - 0.5, -0.5),
+                transform.pixelCenterToMetric(field.width() - 0.5, field.height() - 0.5),
+                transform.pixelCenterToMetric(-0.5, field.height() - 0.5))));
+        var decision = org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.rectangle(-7.6, y - 0.55, 7.6, y + 2.1);
+        var evidence = new EvidenceSnapshot(old.snapshotId(), frame, transform, old.resolution(), decision,
+                footprint, old.fields(), old.resampling(), old.sourceIdentity());
+        double radians = StrictMath.toRadians(latitude);
+        // Independent WGS84 physical east scale at the actual crossing latitude.
+        double physicalEast = 6_378_137 * StrictMath.cos(radians)
+                / StrictMath.sqrt(1 - 6.6943799901413165e-3 * StrictMath.sin(radians) * StrictMath.sin(radians));
+        for (double physicalDistance : new double[] {7.010001, 7.0}) {
+            double longitudeDelta = StrictMath.toDegrees(physicalDistance / physicalEast);
+            double x = frame.toMetric(new GeographicPoint(latitude, longitudeDelta)).xMeters();
+            var after = new LinkedHashMap<>(before.primitives());
+            var first = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 1001);
+            var second = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 1002);
+            after.put(first, new DetachedNode(first, frame.toGeographic(new MetricPoint(x, y - 0.2)), Map.of(), false, true));
+            after.put(second, new DetachedNode(second, frame.toGeographic(new MetricPoint(x, y + 1)), Map.of(), false, true));
+            var selected = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay) before.primitives().get(computed.request().selectedWayKey());
+            after.put(selected.key(), new org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay(selected.key(),
+                    List.of(selected.nodeKeys().get(0), first, second, selected.nodeKeys().get(1)), selected.tags(), false, true));
+            var proved = InheritedNonTransportContacts.prove(before, after, selected.key(), computed.request().selectedRange(), evidence, 7.01);
+            if (physicalDistance > 7.01) assertTrue(proved.isEmpty(), "physical shift beyond frozen search must be hard");
+            else assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)), proved);
+        }
+    }
+
+    @Test
+    void positivelyClassifiedLongOutsideCertificateContactStillBlocks() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way cliff = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        cliff.getNode(0).setCoor(new LatLon(longitude(-1_000), longitude(0.17345)));
+        cliff.getNode(1).setCoor(new LatLon(longitude(1_000), longitude(0.17345)));
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        assertTrue(proofForPath(computed, new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}, 7.01).isEmpty());
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                new ModernSingleWayEditPlanAdapter().assess(computed, 0).availability());
+    }
+
+    @Test
+    void antimeridianInheritedContactUsesSameCertifiedBranch() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        var original = computed.captured().network();
+        var sourceFrame = computed.evidence().coordinateFrame();
+        var frame = org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame.certifiedEquirectangular(
+                acrossDateline(sourceFrame.origin()), acrossDateline(sourceFrame.distortionCertificate().southWest()),
+                acrossDateline(sourceFrame.distortionCertificate().northEast()));
+        var core = new NetworkSnapshot(original.snapshotId(), original.role(), original.datasetIdentity(),
+                original.sourceGeneration(), original.closure(), acrossDateline(original.primitives()), original.incomingReferrerWatches());
+        var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(core.canonicalHash(),
+                core.datasetIdentity(), core.sourceGeneration(), original.semanticWitness().relations());
+        var before = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(), core.sourceGeneration(),
+                core.closure(), core.primitives(), core.incomingReferrerWatches(), witness);
+        var oldEvidence = computed.evidence();
+        var evidence = new EvidenceSnapshot(oldEvidence.snapshotId(), frame, oldEvidence.transform(), oldEvidence.resolution(),
+                oldEvidence.decisionRegion(), oldEvidence.evidenceRegion(), oldEvidence.fields(), oldEvidence.resampling(), oldEvidence.sourceIdentity());
+        var after = acrossDateline(afterSelected(original, computed.request().selectedWayKey(),
+                new double[][] {{-8, 0}, {-4, 1}, {4, 1}, {8, 0}}));
+        assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35)),
+                InheritedNonTransportContacts.prove(before, after, computed.request().selectedWayKey(),
+                        computed.request().selectedRange(), evidence, 7.01));
+    }
+
+    private static GeographicPoint acrossDateline(GeographicPoint point) {
+        double shifted = point.longitudeDegrees() + 180;
+        if (shifted > 180) shifted -= 360;
+        return new GeographicPoint(point.latitudeDegrees(), shifted);
+    }
+
+    private static Map<PrimitiveKey, DetachedPrimitive> acrossDateline(Map<PrimitiveKey, DetachedPrimitive> values) {
+        var result = new LinkedHashMap<PrimitiveKey, DetachedPrimitive>();
+        values.forEach((key, primitive) -> result.put(key, primitive instanceof DetachedNode node
+                ? new DetachedNode(key, acrossDateline(node.coordinate()), node.tags(), node.deleted(), node.modified()) : primitive));
+        return result;
+    }
+
+    private static Set<PrimitiveKey> proofForPath(LiveBPreviewService.Computed computed,
+            double[][] points, double bound) {
+        return InheritedNonTransportContacts.prove(computed.captured().network(),
+                afterSelected(computed.captured().network(), computed.request().selectedWayKey(), points),
+                computed.request().selectedWayKey(), computed.request().selectedRange(), computed.evidence(), bound);
+    }
+
+    private static Map<PrimitiveKey, DetachedPrimitive> afterSelected(NetworkSnapshot before,
+            PrimitiveKey selected, double[][] points) {
+        var after = new LinkedHashMap<PrimitiveKey, DetachedPrimitive>(before.primitives());
+        var source = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay) before.primitives().get(selected);
+        List<PrimitiveKey> keys = new ArrayList<>();
+        for (int i = 0; i < points.length; i++) {
+            PrimitiveKey key = i == 0 ? source.nodeKeys().get(0) : i == points.length - 1
+                    ? source.nodeKeys().get(source.nodeKeys().size() - 1) : PrimitiveKey.planned(PrimitiveKey.Type.NODE, 1_000 + i);
+            keys.add(key);
+            after.put(key, new DetachedNode(key, new GeographicPoint(longitude(points[i][1]), longitude(points[i][0])),
+                    Map.of(), false, i != 0 && i != points.length - 1));
+        }
+        after.put(selected, new org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay(
+                selected, keys, source.tags(), false, true));
+        return after;
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"CORRIDOR_AWARE", "PROBABILISTIC"})
+    void nonHighwaySharedNodeRemainsExactWithJunctionAdjustmentAndApplyUndoRedo(TrackerMode engine) throws Exception {
+        Fixture fixture = fixture();
+        fixture.way().put("highway", "path");
+        fixture.way().setModified(false);
+        Node south = loadedNode(20, longitude(-10), longitude(-8));
+        Node north = loadedNode(21, longitude(10), longitude(-8));
+        fixture.dataSet().addPrimitive(south);
+        fixture.dataSet().addPrimitive(north);
+        Way boundary = new Way();
+        boundary.setOsmId(11, 1);
+        boundary.setNodes(List.of(south, fixture.way().getNode(0), north));
+        boundary.put("natural", "cliff");
+        boundary.setModified(false);
+        fixture.dataSet().addPrimitive(boundary);
+        List<Node> boundaryOrder = List.copyOf(boundary.getNodes());
+        List<LatLon> boundaryCoordinates = boundaryOrder.stream().map(node -> new LatLon(node.lat(), node.lon())).toList();
+        List<Boolean> flags = boundaryOrder.stream().map(Node::isModified).toList();
+        List<String> original = state(fixture);
+        var service = new LiveBPreviewService();
+        var captured = new LiveBPreviewService.Captured[1];
+        var permissions = new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.REATTACH, true);
+        onEdt(() -> captured[0] = service.capture(fixture.dataSet(), fixture.selection(),
+                raster(), config(engine), true, permissions));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail() + assessment.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
+        AlignmentEditPlan plan = assessment.plan().orElseThrow();
+        for (Node node : boundaryOrder) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertEquals(original, state(fixture));
+        onEdt(() -> {
+            service.requireCurrent(fixture.dataSet(), captured[0], captured[0].raster());
+            var receipt = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(fixture.dataSet(), captured[0].specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                    receipt, plan, () -> plan.before().sourceGeneration());
+            UndoRedoHandler.getInstance().add(new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan,
+                    validator, "Apply immutable non-highway context"));
+        });
+        assertEquals(boundaryOrder, boundary.getNodes());
+        assertEquals(boundaryCoordinates, boundaryOrder.stream().map(node -> new LatLon(node.lat(), node.lon())).toList());
+        assertEquals(flags, boundaryOrder.stream().map(Node::isModified).toList());
+        assertFalse(boundary.isModified());
+        assertFalse(boundary.isDeleted());
+        assertSame(fixture.dataSet(), boundary.getDataSet());
+        List<String> applied = state(fixture);
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(original, state(fixture));
+        onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertEquals(applied, state(fixture));
+        assertEquals(boundaryCoordinates, boundaryOrder.stream().map(node -> new LatLon(node.lat(), node.lon())).toList());
+    }
+
+    @Test
+    void fixedNonHighwayJunctionCannotWaiveFinalBacktrack() throws Exception {
+        Fixture fixture = relationJunctionFixture();
+        fixture.way().put("highway", "path");
+        fixture.way().setModified(false);
+        for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) fixture.dataSet().removePrimitive(relation);
+        Way boundary = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 11).findFirst().orElseThrow();
+        boundary.remove("highway");
+        boundary.put("natural", "cliff");
+        boundary.setModified(false);
+        List<String> original = state(fixture);
+        var service = new LiveBPreviewService();
+        var captured = new LiveBPreviewService.Captured[1];
+        var permissions = new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.REATTACH, true);
+        onEdt(() -> captured[0] = service.capture(fixture.dataSet(), fixture.selection(),
+                manualJunctionRaster(false, 100), config(TrackerMode.PROBABILISTIC), true, permissions));
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED, assessment.availability());
+        var plan = assessment.plan().orElseThrow();
+        assertTrue(plan.validation().findingCodes().contains("modern-final:ADJACENT_BACKTRACK"));
+        for (Node node : boundary.getNodes()) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertEquals(original, state(fixture));
+    }
+
+    @Test
+    void inheritedBoundaryIsReadOnlyAndChangedForestRelationRefusesApplyAtomically() throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.FOREST_OUTER);
+        Node unrelated = loadedNode(900, 1, 1);
+        fixture.dataSet().addPrimitive(unrelated);
+        var preceding = new org.openstreetmap.josm.command.ChangePropertyCommand(List.of(unrelated), "name", "unrelated history");
+        onEdt(() -> UndoRedoHandler.getInstance().add(preceding));
+        var service = new LiveBPreviewService();
+        var computed = compute(fixture, TrackerMode.CORRIDOR_AWARE);
+        var plan = new ModernSingleWayEditPlanAdapter().adapt(computed, 0);
+        var commands = new ApplyAlignmentEditPlanCommand[1];
+        onEdt(() -> {
+            service.requireCurrent(fixture.dataSet(), computed.captured(), computed.captured().raster());
+            var receipt = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(fixture.dataSet(), computed.captured().specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                    receipt, plan, () -> plan.before().sourceGeneration());
+            commands[0] = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan, validator, "Apply reviewed inherited contact");
+        });
+        Relation forest = fixture.dataSet().getRelations().iterator().next();
+        forest.put("landuse", "residential");
+        List<String> staleBefore = state(fixture);
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> commands[0].executeCommand()));
+        assertEquals(staleBefore, state(fixture));
+        forest.put("landuse", "forest");
+        forest.setModified(false);
+        List<String> original = state(fixture);
+        Way boundary = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
+        List<Node> order = List.copyOf(boundary.getNodes());
+        List<LatLon> coordinates = order.stream().map(node -> new LatLon(node.lat(), node.lon())).toList();
+        List<Boolean> flags = order.stream().map(Node::isModified).toList();
+        List<RelationMember> members = forest.getMembers();
+        onEdt(() -> UndoRedoHandler.getInstance().add(commands[0]));
+        assertEquals(order, boundary.getNodes());
+        assertEquals(coordinates, order.stream().map(node -> new LatLon(node.lat(), node.lon())).toList());
+        assertEquals(flags, order.stream().map(Node::isModified).toList());
+        assertEquals(members, forest.getMembers());
+        assertFalse(boundary.isModified());
+        assertFalse(forest.isModified());
+        List<String> applied = state(fixture);
+        List<org.openstreetmap.josm.command.Command> undoBefore = List.copyOf(UndoRedoHandler.getInstance().getUndoCommands());
+        List<org.openstreetmap.josm.command.Command> redoBefore = List.copyOf(UndoRedoHandler.getInstance().getRedoCommands());
+        assertEquals(List.of(preceding, commands[0]), undoBefore);
+        forest.put("landuse", "residential");
+        List<String> staleUndo = state(fixture);
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> UndoRedoHandler.getInstance().undo()));
+        assertEquals(staleUndo, state(fixture), "rejected Undo must not restore any primitive");
+        assertEquals(undoBefore, UndoRedoHandler.getInstance().getUndoCommands());
+        assertEquals(redoBefore, UndoRedoHandler.getInstance().getRedoCommands());
+        forest.put("landuse", "forest");
+        forest.setModified(false);
+        assertEquals(applied, state(fixture));
+        forest.setMembers(List.of(new RelationMember("inner", boundary)));
+        List<String> staleRole = state(fixture);
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> UndoRedoHandler.getInstance().undo()));
+        assertEquals(staleRole, state(fixture));
+        assertEquals(undoBefore, UndoRedoHandler.getInstance().getUndoCommands());
+        assertEquals(redoBefore, UndoRedoHandler.getInstance().getRedoCommands());
+        forest.setMembers(members);
+        forest.setModified(false);
+        Relation parent = new Relation();
+        parent.setOsmId(41, 1);
+        parent.setMembers(List.of(new RelationMember("", forest)));
+        parent.setModified(false);
+        fixture.dataSet().addPrimitive(parent);
+        List<String> staleWatch = state(fixture);
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> UndoRedoHandler.getInstance().undo()));
+        assertEquals(staleWatch, state(fixture));
+        assertEquals(undoBefore, UndoRedoHandler.getInstance().getUndoCommands());
+        assertEquals(redoBefore, UndoRedoHandler.getInstance().getRedoCommands());
+        fixture.dataSet().removePrimitive(parent);
+        assertEquals(applied, state(fixture));
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(original, state(fixture));
+        forest.put("route", "hiking");
+        List<String> staleRedo = state(fixture);
+        onEdt(() -> assertThrows(IllegalStateException.class, () -> commands[0].executeCommand()));
+        assertEquals(staleRedo, state(fixture));
+        forest.remove("route");
+        forest.setModified(false);
+        onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertEquals(applied, state(fixture));
+    }
+
+    @Test
+    void engineBInheritedProperContactsRequireReview() throws Exception {
+        for (InheritedClass feature : InheritedClass.values()) {
+            var computed = compute(inheritedContactFixture(feature), TrackerMode.PROBABILISTIC);
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                    assessment.availability(), feature + " " + assessment.detail());
+            assertTrue(assessment.plan().orElseThrow().validation().reviewRequired());
+        }
+    }
+
+    private static Fixture inheritedContactFixture(InheritedClass feature) {
+        Fixture fixture = fixture();
+        fixture.way().put("highway", "path");
+        fixture.way().setModified(false);
+        Node a = loadedNode(33, longitude(-10), longitude(0.17345));
+        Node b = loadedNode(34, longitude(10), longitude(0.17345));
+        Node c = loadedNode(36, longitude(10), longitude(15));
+        Node d = loadedNode(37, longitude(-10), longitude(15));
+        Way context = new Way();
+        context.setNodes(feature == InheritedClass.CLIFF ? List.of(a, b) : List.of(a, b, c, d, a));
+        context.setOsmId(35, 1);
+        if (feature == InheritedClass.BARE_ROCK) context.put("natural", "bare_rock");
+        if (feature == InheritedClass.CLIFF) context.put("natural", "cliff");
+        context.setModified(false);
+        for (Node node : List.of(a, b, c, d)) fixture.dataSet().addPrimitive(node);
+        fixture.dataSet().addPrimitive(context);
+        if (feature == InheritedClass.FOREST_OUTER) {
+            Relation forest = new Relation();
+            forest.setOsmId(40, 1);
+            forest.put("type", "multipolygon");
+            forest.put("landuse", "forest");
+            forest.setMembers(List.of(new RelationMember("outer", context)));
+            forest.setModified(false);
+            fixture.dataSet().addPrimitive(forest);
+        }
+        return fixture;
     }
 
     @Test
@@ -765,8 +1301,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
         List<RelationMember> relationMembers = fixture.dataSet().getRelations().iterator().next()
                 .getMembers();
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
-                fixture.dataSet(), plan, plan.before().datasetIdentity(),
-                () -> plan.before().sourceGeneration(), "Apply safe outside-junction alignment");
+                fixture.dataSet(), plan, new LiveNetworkSnapshotValidator(onEdtValue(() ->
+                        NetworkSnapshotCapture.captureBound(fixture.dataSet(), computed.captured().specification())),
+                        plan, () -> plan.before().sourceGeneration()), "Apply safe outside-junction alignment");
         onEdt(() -> UndoRedoHandler.getInstance().add(command));
         assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
         assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), fixture.way().getNodes()
@@ -1079,8 +1616,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
         Node last = fixture.way().getNode(1);
         List<Node> original = List.of(first, last);
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
-            fixture.dataSet(), plan, plan.before().datasetIdentity(),
-            () -> plan.before().sourceGeneration(), "Apply modern single-way alignment");
+            fixture.dataSet(), plan, new LiveNetworkSnapshotValidator(onEdtValue(() ->
+                    NetworkSnapshotCapture.captureBound(fixture.dataSet(), computed.captured().specification())),
+                    plan, () -> plan.before().sourceGeneration()), "Apply modern single-way alignment");
 
         var prepared = Format15ProductionBundleFactory.createLive("test",
             new FrozenReplayInput(computed.request(), computed.evidence(),
@@ -1377,6 +1915,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(south, junction, north));
         receiver.setOsmId(11, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         dataSet.addPrimitive(selected);
         dataSet.addPrimitive(receiver);
@@ -1499,7 +2038,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
             primitive.getType() + ":" + primitive.getUniqueId() + ":" + primitive.isModified()
                 + ":" + primitive.isDeleted() + ":" + primitive.getKeys()
                 + (primitive instanceof Node node ? ":" + node.lat() + ":" + node.lon()
-                    : primitive instanceof Way way ? ":" + way.getNodeIds() : ""))
+                    : primitive instanceof Way way ? ":" + way.getNodeIds()
+                    : primitive instanceof Relation relation ? ":" + relation.getMembers().stream().map(member ->
+                            member.getRole() + ":" + member.getMember().getType() + ":" + member.getMember().getUniqueId()).toList() : ""))
             .sorted().toList();
     }
 

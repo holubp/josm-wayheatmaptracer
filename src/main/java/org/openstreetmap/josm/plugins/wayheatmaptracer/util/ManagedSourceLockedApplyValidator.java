@@ -49,4 +49,12 @@ public final class ManagedSourceLockedApplyValidator implements LockedApplyValid
     @Override public void reportRejectedRedo(RuntimeException failure) {
         redoFailureReporter.accept("The captured source or network changed; recompute alignment before applying.");
     }
+
+    @Override public void validateUndoLocked(DataSet dataSet, AlignmentEditPlan plan) {
+        network.validateUndoLocked(dataSet, plan);
+    }
+
+    @Override public void reportRejectedUndo(RuntimeException failure) {
+        redoFailureReporter.accept("Alignment Undo was refused because the OSM context changed.");
+    }
 }

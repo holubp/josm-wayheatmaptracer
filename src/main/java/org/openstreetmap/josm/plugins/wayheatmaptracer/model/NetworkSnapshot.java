@@ -11,7 +11,16 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Detached
 /** Detached immutable network closure captured on JOSM's owning thread. */
 public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
     long sourceGeneration, ClosureDescriptor closure, Map<PrimitiveKey, DetachedPrimitive> primitives,
-    Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches) {
+    Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches,
+    NonTransportSemanticWitness semanticWitness) {
+    /** Historical snapshots carry no additive semantic proof. */
+    public NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
+            long sourceGeneration, ClosureDescriptor closure,
+            Map<PrimitiveKey, DetachedPrimitive> primitives,
+            Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches) {
+        this(snapshotId, role, datasetIdentity, sourceGeneration, closure, primitives,
+                incomingReferrerWatches, null);
+    }
     static final int MAX_MATERIALIZED_PRIMITIVES = 250_000;
     static final int MAX_PAYLOAD_REFERENCES = 1_000_000;
     static final int MAX_REFERRER_WATCH_IDENTITIES = 1_000_000;
@@ -90,7 +99,8 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
                 throw new IllegalArgumentException("External port is inconsistent with its captured adjacency");
             }
         }
-        DetachedValueVerifier.verify(java.util.List.of(role, closure, primitives, incomingReferrerWatches));
+        DetachedValueVerifier.verify(java.util.Arrays.asList(role, closure, primitives,
+                incomingReferrerWatches, semanticWitness));
     }
 
     private static void validateInventoryBounds(Map<PrimitiveKey, DetachedPrimitive> primitives,

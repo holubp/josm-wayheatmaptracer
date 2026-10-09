@@ -328,6 +328,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(junction, distant));
         receiver.setOsmId(302, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         LiveBPreviewService service = new LiveBPreviewService();
@@ -462,6 +463,7 @@ class V022LiveBPreviewServiceTest {
             Way receiver = new Way();
             receiver.setNodes(List.of(south, nodes.get(index), north));
             receiver.setOsmId(2400 + index, 1);
+            receiver.put("highway", "path");
             receiver.setModified(false);
             dataSet.addPrimitive(receiver);
         }
@@ -1119,6 +1121,7 @@ class V022LiveBPreviewServiceTest {
         Way shared = new Way();
         shared.setNodes(List.of(relatedBoundary, branch));
         shared.setOsmId(311, 1);
+        shared.put("highway", "path");
         shared.setModified(false);
         full.dataSet().addPrimitive(shared);
         Relation relation = new Relation();
@@ -1171,6 +1174,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(boundary, branch));
         receiver.setOsmId(326, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         full.dataSet().addPrimitive(receiver);
         SelectionContext selection = new SelectionContext(full.selection().way(), 1, 3,
@@ -1226,6 +1230,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(north, sharedInterior, south));
         receiver.setOsmId(363, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         dataSet.addPrimitive(receiver);
         List<Node> selectedNodes = wayNodes.subList(1, 30);
@@ -1508,6 +1513,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(west, junction, east, junction, north));
         receiver.setOsmId(64, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
@@ -1545,6 +1551,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(south, junction, north));
         receiver.setOsmId(73, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         int[] pixels = new int[360 * 360];
@@ -1574,6 +1581,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(junction));
         receiver.setOsmId(82, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         List<String> before = state(fixture.dataSet());
@@ -1821,6 +1829,7 @@ class V022LiveBPreviewServiceTest {
         Way receiver = new Way();
         receiver.setNodes(List.of(west, junction, east));
         receiver.setOsmId(53, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         fixture.dataSet().addPrimitive(receiver);
         Relation route = new Relation();

@@ -101,4 +101,12 @@ public final class VisibleSourceLockedApplyValidator implements LockedApplyValid
             ? "This visible source cannot verify unchanged tiles for Redo; run a new alignment."
             : "The captured source or network changed; recompute alignment before applying.");
     }
+
+    @Override public void validateUndoLocked(DataSet dataSet, AlignmentEditPlan plan) {
+        network.validateUndoLocked(dataSet, plan);
+    }
+
+    @Override public void reportRejectedUndo(RuntimeException failure) {
+        redoFailureReporter.accept("Alignment Undo was refused because the OSM context changed.");
+    }
 }

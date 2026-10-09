@@ -220,6 +220,86 @@ class V022NetworkSnapshotCaptureTest {
     }
 
     @Test
+    void contextRelationWitnessIsAdditiveFrozenAndCharged() {
+        DataSet dataSet = new DataSet();
+        Node a = loadedNode(1, 0, -0.00005);
+        Node b = loadedNode(2, 0, 0.00005);
+        Node c = loadedNode(3, -0.00005, 0);
+        Node d = loadedNode(4, 0.00005, 0);
+        add(dataSet, a, b, c, d);
+        Way selected = loadedWay(10, List.of(a, b));
+        Way context = loadedWay(20, List.of(c, d, c));
+        add(dataSet, selected, context);
+        Relation forest = new Relation();
+        forest.setOsmId(30, 1);
+        forest.put("type", "multipolygon");
+        forest.put("landuse", "forest");
+        forest.setMembers(List.of(new RelationMember("outer", context)));
+        forest.setModified(false);
+        add(dataSet, forest);
+        var spec = specification("witness", selected, new OccurrenceRange(0, 1),
+                Map.of(way(10), List.of(new OccurrenceRange(0, 1))), Set.of(way(10)),
+                Set.of(), Set.of(), Set.of(node(1), node(2)), true,
+                RecoveryPermissions.disabled(7.01));
+        var before = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, spec));
+        assertFalse(before.primitives().containsKey(relation(30)));
+        assertEquals(Set.of(node(1), node(2), node(3), node(4), way(10), way(20)),
+                before.primitives().keySet());
+        assertEquals(Set.of(relation(30)), before.incomingReferrerWatches().get(way(20)));
+        assertTrue(before.semanticWitness().relations().containsKey(relation(30)));
+        forest.put("landuse", "residential");
+        var changed = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, spec));
+        assertEquals(before.canonicalHash(), changed.canonicalHash(), "historical core input unchanged");
+        assertFalse(before.semanticWitness().equals(changed.semanticWitness()));
+        assertEquals("forest", before.semanticWitness().relations().get(relation(30)).tags().get("landuse"));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(
+                dataSet, spec, new NetworkSnapshotCapture.Limits(100, 100, 6, 100, 100, 100))));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(
+                dataSet, spec, new NetworkSnapshotCapture.Limits(100, 100, 100, 5, 100, 100))));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(
+                dataSet, spec, new NetworkSnapshotCapture.Limits(100, 100, 100, 100, 100, 1))));
+        onEdt(() -> assertThrows(IllegalStateException.class, () ->
+                NetworkSnapshotCapture.requireSemanticWitnessCurrent(dataSet, before)));
+    }
+
+    @Test
+    void duplicateSemanticMembersChargeGeometryOncePerPrimitive() {
+        DataSet dataSet = new DataSet();
+        Node a = loadedNode(1, 0, -0.00005), b = loadedNode(2, 0, 0.00005);
+        Node c = loadedNode(3, -0.00005, 0), d = loadedNode(4, 0.00005, 0);
+        add(dataSet, a, b, c, d);
+        Way selected = loadedWay(10, List.of(a, b));
+        Way context = loadedWay(20, List.of(c, d, c));
+        List<Node> distantNodes = new java.util.ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            Node node = loadedNode(1000 + i, 0.01, 0.01 + i * 0.000001);
+            dataSet.addPrimitive(node);
+            distantNodes.add(node);
+        }
+        Way distant = loadedWay(40, distantNodes);
+        add(dataSet, selected, context, distant);
+        Relation forest = new Relation();
+        forest.setOsmId(30, 1);
+        forest.put("type", "multipolygon");
+        forest.put("landuse", "forest");
+        List<RelationMember> members = new java.util.ArrayList<>();
+        members.add(new RelationMember("outer", context));
+        for (int i = 0; i < 20; i++) members.add(new RelationMember("inner", distant));
+        forest.setMembers(members);
+        forest.setModified(false);
+        add(dataSet, forest);
+        var spec = specification("duplicate-witness", selected, new OccurrenceRange(0, 1),
+                Map.of(way(10), List.of(new OccurrenceRange(0, 1))), Set.of(way(10)), Set.of(), Set.of(),
+                Set.of(node(1), node(2)), true, RecoveryPermissions.disabled(7.01));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, spec,
+                new NetworkSnapshotCapture.Limits(1000, 200, 1000, 1000, 1000, 1000))));
+        var captured = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, spec,
+                new NetworkSnapshotCapture.Limits(1000, 300, 1000, 1000, 1000, 1000)));
+        assertEquals(21, captured.semanticWitness().relations().get(relation(30)).members().size());
+        assertFalse(captured.primitives().containsKey(way(40)), "semantic scan must not widen the core");
+    }
+
+    @Test
     void repeatedSelectionTaggedRemovalAndIncompleteNecessaryMemberFailClosed() {
         DataSet repeatedData = new DataSet();
         Node a = loadedNode(1, 0, 0);

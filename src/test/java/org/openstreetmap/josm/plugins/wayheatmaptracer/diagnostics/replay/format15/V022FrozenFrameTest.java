@@ -39,6 +39,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
@@ -185,7 +186,28 @@ class V022FrozenFrameTest {
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
                 ByteBuffer.allocate(8).putInt(0).putInt(3).array()));
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
-                ByteBuffer.allocate(8).putInt(0x57545250).putInt(4).array()));
+                ByteBuffer.allocate(8).putInt(0x57545250).putInt(5).array()));
+    }
+
+    @Test
+    void additiveWitnessKeepsBothHistoricalFrameRepresentationsReadable() {
+        for (LocalMetricFrame source : List.of(frame(), LocalMetricFrame.legacyCertifiedEquirectangular(
+                ORIGIN, SOUTH_WEST, NORTH_EAST))) {
+            FrozenReplayInput base = input(source);
+            NetworkSnapshot core = base.network();
+            var witness = new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                    core.sourceGeneration(), Map.of());
+            var network = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
+                    core.sourceGeneration(), core.closure(), core.primitives(),
+                    core.incomingReferrerWatches(), witness);
+            var enriched = new FrozenReplayInput(base.request(), base.evidence(), network, base.options());
+            var restored = FrozenReplayCodec.decode(FrozenReplayCodec.encode(enriched));
+            assertEquals(enriched.canonicalHash(), restored.canonicalHash());
+            assertEquals(network, restored.network());
+            assertEquals(source, restored.evidence().coordinateFrame());
+            AlignmentEditPlan edit = plan(enriched);
+            assertEquals(edit, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(edit)));
+        }
     }
 
     @Test

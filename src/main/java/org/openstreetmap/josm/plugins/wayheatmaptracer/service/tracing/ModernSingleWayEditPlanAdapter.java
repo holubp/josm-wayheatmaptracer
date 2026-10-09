@@ -513,7 +513,8 @@ public final class ModernSingleWayEditPlanAdapter {
             before.closure(), afterValues, proposedWatches(before, afterValues));
         Map<PrimitiveKey, List<GeographicPoint>> preview = finalPreviewWays(before, afterValues);
         List<String> topologyFindings = new ArrayList<>(finalTopologyFindings(before, afterValues,
-                request.selectedWayKey(), request.selectedRange(), evidence));
+                request.selectedWayKey(), request.selectedRange(), evidence,
+                captured.searchRadiusMeters()));
         if (!sharedJunctions.isEmpty()
                 && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
             topologyFindings.addAll(unsupportedSelectedExtensions(before, afterValues, route,
@@ -583,7 +584,7 @@ public final class ModernSingleWayEditPlanAdapter {
                 before.closure(), afterValues, proposedWatches(before, afterValues));
         List<String> findings = new ArrayList<>(routeFindings);
         findings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
-                request.selectedRange(), evidence));
+                request.selectedRange(), evidence, request.permissions().ordinaryRadiusMeters()));
         ValidationReport.Disposition disposition = findings.stream().anyMatch(finding ->
                 finding.startsWith("final-topology:"))
                 ? ValidationReport.Disposition.HARD_BLOCKED
@@ -1799,6 +1800,12 @@ public final class ModernSingleWayEditPlanAdapter {
     private static List<String> finalTopologyFindings(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
             OccurrenceRange selectedRange, EvidenceSnapshot evidence) {
+        return finalTopologyFindings(before, after, selectedWay, selectedRange, evidence, Double.NaN);
+    }
+
+    private static List<String> finalTopologyFindings(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
+            OccurrenceRange selectedRange, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
         DetachedWay beforeSelected = (DetachedWay) before.primitives().get(selectedWay);
         PrimitiveKey selectedFirst = beforeSelected.nodeKeys().get(selectedRange.firstIndex());
         PrimitiveKey selectedLast = beforeSelected.nodeKeys().get(selectedRange.lastIndex());
@@ -1867,6 +1874,8 @@ public final class ModernSingleWayEditPlanAdapter {
             }
         }
         Set<String> findings = new LinkedHashSet<>();
+        Set<PrimitiveKey> inherited = InheritedNonTransportContacts.prove(before, after,
+                selectedWay, selectedRange, evidence, searchHalfWidthMeters);
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             Segment first = segments.get(firstIndex);
             for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
@@ -1901,6 +1910,14 @@ public final class ModernSingleWayEditPlanAdapter {
                     continue;
                 }
                 if (defect == TopologyDefect.VERTEX_TOUCH && decision.soleSharedContact()) {
+                    continue;
+                }
+                PrimitiveKey context = first.wayKey().equals(selectedWay) ? second.wayKey()
+                        : second.wayKey().equals(selectedWay) ? first.wayKey() : null;
+                Segment selectedSegment = first.wayKey().equals(selectedWay) ? first : second;
+                if (defect == TopologyDefect.CROSSING && context != null
+                        && selectedSegment.insideSelectedRange() && inherited.contains(context)) {
+                    findings.add("inherited-nontransport-contact-review-required");
                     continue;
                 }
                 findings.add("final-topology:" + defect.name());
@@ -2047,8 +2064,11 @@ public final class ModernSingleWayEditPlanAdapter {
         List<String> findings = new ArrayList<>(quality.findings().stream()
             .map(finding -> "modern-final:" + finding.code().name()).distinct().toList());
         findings.addAll(topologyFindings);
-        if (!topologyFindings.isEmpty()) {
+        if (topologyFindings.stream().anyMatch(finding -> !finding.equals(
+                "inherited-nontransport-contact-review-required"))) {
             disposition = ValidationReport.Disposition.HARD_BLOCKED;
+        } else if (!topologyFindings.isEmpty() && disposition != ValidationReport.Disposition.HARD_BLOCKED) {
+            disposition = ValidationReport.Disposition.REVIEW_REQUIRED;
         }
         if (junctionPolicy != JunctionPolicy.FIXED) {
             if (disposition != ValidationReport.Disposition.HARD_BLOCKED) {

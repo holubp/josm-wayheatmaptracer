@@ -610,6 +610,12 @@ public final class LiveBPreviewService {
                             ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
                             "incomplete relation member at junction");
                 }
+                // Preserve incomplete-topology refusals before withholding movement authority.
+                // Shared nodes must not reshape a read-only non-highway context way.
+                if (incidentWays.stream().anyMatch(incident -> incident != selection.way()
+                        && !incident.hasKey("highway"))) {
+                    continue;
+                }
                 if (boundary.hasKeys() || boundary.getReferrers().stream()
                         .anyMatch(referrer -> !(referrer instanceof Way))
                         || dataSet.getRelations().stream().anyMatch(relation -> relation.getMembers().stream()
@@ -1486,6 +1492,7 @@ public final class LiveBPreviewService {
             }
             NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
             if (!current.canonicalHash().equals(captured.network().canonicalHash())
+                    || !java.util.Objects.equals(current.semanticWitness(), captured.network().semanticWitness())
                     || captured.intervalPartition() != null
                             && !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                     captured.intervalPartition(), current)) {
@@ -1547,6 +1554,7 @@ public final class LiveBPreviewService {
         }
         NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
         if (!current.canonicalHash().equals(captured.network().canonicalHash())
+                || !java.util.Objects.equals(current.semanticWitness(), captured.network().semanticWitness())
                 || captured.intervalPartition() != null
                         && !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                 captured.intervalPartition(), current)) {

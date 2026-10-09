@@ -67,8 +67,19 @@ public final class LiveNetworkSnapshotValidator implements LockedApplyValidator 
         }
         NetworkSnapshot current = NetworkSnapshotCapture.capture(
             dataSet, captured.specification());
-        if (!current.canonicalHash().equals(expectedBefore.canonicalHash())) {
+        if (!current.canonicalHash().equals(expectedBefore.canonicalHash())
+                || !Objects.equals(current.semanticWitness(), expectedBefore.semanticWitness())) {
             throw new IllegalStateException("Live network closure changed before Apply");
+        }
+    }
+
+    /** Rechecks only immutable OSM semantics; the command checks its exact applied primitives. */
+    @Override public void validateUndoLocked(DataSet dataSet, AlignmentEditPlan plan) {
+        if (!SwingUtilities.isEventDispatchThread() || !captured.belongsTo(dataSet) || !expectedPlan.equals(plan)) {
+            throw new IllegalStateException("Alignment Undo plan or dataset is stale");
+        }
+        if (plan.before().semanticWitness() != null) {
+            NetworkSnapshotCapture.requireSemanticWitnessCurrentForUndo(dataSet, captured.snapshot());
         }
     }
 

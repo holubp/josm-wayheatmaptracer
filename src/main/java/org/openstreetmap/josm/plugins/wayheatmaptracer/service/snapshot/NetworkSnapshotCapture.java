@@ -31,6 +31,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
@@ -194,6 +195,42 @@ public final class NetworkSnapshotCapture {
         return new CapturedSnapshot(dataSet, specification, snapshot);
     }
 
+    /**
+     * Verifies additive evidence directly against the live OSM input without expanding its core.
+     * Used by the private original-input host as well as tests of witness admission.
+     */
+    public static void requireSemanticWitnessCurrent(DataSet dataSet, NetworkSnapshot core) {
+        requireSemanticWitnessCurrent(dataSet, core, true);
+    }
+
+    /** Rechecks original read-only relation evidence while the selected geometry is applied. */
+    public static void requireSemanticWitnessCurrentForUndo(DataSet dataSet, NetworkSnapshot core) {
+        requireSemanticWitnessCurrent(dataSet, core, false);
+    }
+
+    private static void requireSemanticWitnessCurrent(DataSet dataSet, NetworkSnapshot core, boolean compareCore) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Semantic witness validation must execute on the EDT");
+        }
+        if (core == null || core.semanticWitness() == null || !core.semanticWitness().matches(core)) {
+            throw new IllegalStateException("Semantic witness is absent or belongs to another core");
+        }
+        Lock lock = dataSet.getReadLock();
+        lock.lock();
+        try {
+            Inventory inventory = Inventory.scan(dataSet, DEFAULT_LIMITS);
+            Materializer materializer = new Materializer(dataSet, inventory, DEFAULT_LIMITS);
+            if (compareCore) core.primitives().keySet().stream().sorted().forEach(materializer::include);
+            if (compareCore && (!materializer.detach().equals(core.primitives())
+                    || !materializer.watches().equals(core.incomingReferrerWatches()))
+                    || !materializer.semanticWitness(core).equals(core.semanticWitness())) {
+                throw new IllegalStateException("Semantic witness differs from original live OSM input");
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
     static NetworkSnapshot capture(DataSet dataSet, Specification specification, Limits limits) {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Network snapshot capture must execute on the EDT");
@@ -267,8 +304,12 @@ public final class NetworkSnapshotCapture {
             specification.mayCreateNodes(), true, true, true);
         Map<PrimitiveKey, DetachedPrimitive> primitives = materializer.detach();
         Map<PrimitiveKey, Set<PrimitiveKey>> watches = materializer.watches();
-        return new NetworkSnapshot(specification.snapshotId(), SnapshotRole.CAPTURED_BEFORE,
+        NetworkSnapshot core = new NetworkSnapshot(specification.snapshotId(), SnapshotRole.CAPTURED_BEFORE,
             specification.datasetIdentity(), specification.sourceGeneration(), closure, primitives, watches);
+        NonTransportSemanticWitness witness = materializer.semanticWitness(core);
+        return new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
+                core.sourceGeneration(), core.closure(), core.primitives(),
+                core.incomingReferrerWatches(), witness);
     }
 
     private static void validateAuthority(DataSet dataSet, Specification specification,
@@ -799,6 +840,64 @@ public final class NetworkSnapshotCapture {
                 result.put(key, Set.copyOf(refs));
             }
             return Map.copyOf(result);
+        }
+
+        NonTransportSemanticWitness semanticWitness(NetworkSnapshot core) {
+            Map<PrimitiveKey, NonTransportSemanticWitness.RelationEvidence> relations = new LinkedHashMap<>();
+            Map<PrimitiveKey, Boolean> memberCompleteness = new LinkedHashMap<>();
+            ArrayDeque<PrimitiveKey> pending = new ArrayDeque<>();
+            core.primitives().values().stream().filter(DetachedWay.class::isInstance)
+                    .map(DetachedPrimitive::key).sorted().forEach(way -> inventory.referrers(way)
+                            .stream().filter(key -> key.type() == PrimitiveKey.Type.RELATION)
+                            .sorted().forEach(pending::addLast));
+            long watched = core.incomingReferrerWatches().values().stream().mapToLong(Set::size).sum();
+            while (!pending.isEmpty()) {
+                PrimitiveKey relationKey = pending.removeFirst();
+                if (relations.containsKey(relationKey)) continue;
+                Relation relation = (Relation) inventory.require(relationKey);
+                if (core.primitives().size() + relations.size() >= limits.maximumMaterializedPrimitives()) {
+                    throw new IllegalStateException("Semantic witness primitive budget exceeded");
+                }
+                chargeTags(relation.getNumKeys());
+                chargePayloadReferences(relation.getMembersCount());
+                Set<PrimitiveKey> parents = Set.copyOf(inventory.referrers(relationKey));
+                watched += parents.size();
+                if (watched > limits.maximumWatchIdentities()) {
+                    throw new IllegalStateException("Semantic witness watch budget exceeded");
+                }
+                List<NonTransportSemanticWitness.Member> members = new ArrayList<>();
+                for (RelationMember member : relation.getMembers()) {
+                    OsmPrimitive primitive = member.getMember();
+                    boolean complete = memberCompleteness.computeIfAbsent(key(primitive),
+                            ignored -> semanticMemberComplete(primitive));
+                    members.add(new NonTransportSemanticWitness.Member(key(primitive), member.getRole(), complete));
+                }
+                relations.put(relationKey, new NonTransportSemanticWitness.RelationEvidence(
+                        relationKey, relation.getKeys(), members,
+                        !relation.isIncomplete() && !relation.hasIncompleteMembers(),
+                        relation.isDeleted(), relation.isModified(), parents));
+                parents.stream().sorted().forEach(pending::addLast);
+            }
+            return new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                    core.sourceGeneration(), relations);
+        }
+
+        private boolean semanticMemberComplete(OsmPrimitive primitive) {
+            if (primitive.getDataSet() != dataSet || primitive.isDeleted() || primitive.isIncomplete()) return false;
+            if (primitive instanceof Way way) {
+                inventory.chargeExaminedReferences(way.getNodesCount());
+                if (way.getNodesCount() < 2) return false;
+                for (Node node : way.getNodes()) {
+                    if (node.getDataSet() != dataSet || node.isDeleted() || node.isIncomplete()
+                            || !node.isLatLonKnown()) return false;
+                }
+            } else if (primitive instanceof Node node) {
+                return node.isLatLonKnown();
+            } else if (primitive instanceof Relation relation) {
+                inventory.chargeExaminedReferences(relation.getMembersCount());
+                return !relation.hasIncompleteMembers();
+            }
+            return true;
         }
 
         private static DetachedPrimitive detach(OsmPrimitive primitive) {

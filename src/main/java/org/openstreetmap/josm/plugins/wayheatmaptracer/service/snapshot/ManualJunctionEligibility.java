@@ -24,7 +24,7 @@ public final class ManualJunctionEligibility {
         MULTIPLE_JUNCTIONS, SELECTED_INTERIOR, MULTIPLE_RECEIVERS, SPLIT_OR_TERMINAL_RECEIVER,
         PARTICIPATING_RELATION, AFFECTED_NODE_TAGGED, AFFECTED_NODE_RELATION,
         COUPLED_JUNCTION, INCOMPLETE_ARM, AMBIGUOUS_CROSSING, RESOURCE_LIMIT,
-        LEGACY_POLICY, MISSING_RECEIVER_EVIDENCE
+        LEGACY_POLICY, MISSING_RECEIVER_EVIDENCE, NON_HIGHWAY_CONTEXT
     }
 
     /** The exact frozen junction and protected neighborhood known to the decision. */
@@ -41,7 +41,8 @@ public final class ManualJunctionEligibility {
 
         /** Whether a selected shared junction requires a manual decision. */
         public boolean manualOnly() {
-            return reason != Reason.NO_JUNCTION && reason != Reason.SIMPLE_T;
+            return reason != Reason.NO_JUNCTION && reason != Reason.SIMPLE_T
+                    && reason != Reason.NON_HIGHWAY_CONTEXT;
         }
 
         /** Visible instruction for an unavailable automatic junction slide. */
@@ -122,6 +123,13 @@ public final class ManualJunctionEligibility {
         }
         if (new HashSet<>(receiver.nodeKeys()).size() != receiver.nodeKeys().size()) {
             return decision(Reason.REPEATED_OCCURRENCE, junction, receiverKey, Set.of(junction));
+        }
+        if (!receiver.tags().containsKey("highway")
+                && snapshot.closure().protectedExistingNodeKeys().contains(junction)
+                && !snapshot.closure().editableExistingKeys().contains(receiverKey)) {
+            // This immutable context is a fixed anchor, not an incomplete editable arm.
+            // The complete detached way remains available to final topology validation.
+            return decision(Reason.NON_HIGHWAY_CONTEXT, junction, receiverKey, Set.of(junction));
         }
         int receiverIndex = receiver.nodeKeys().indexOf(junction);
         if (receiverIndex <= 0 || receiverIndex >= receiver.nodeKeys().size() - 1) {

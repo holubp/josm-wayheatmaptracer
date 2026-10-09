@@ -118,6 +118,9 @@ public record AlignmentEditPlan(
         }
         encoder.field(settingsHash).field(evidenceHash).field(parameterHash).field(routeIdentity)
             .field(permissions.toString()).field(validation.disposition().name());
+        if (before.semanticWitness() != null) {
+            encoder.field("semantic-witness").field(before.semanticWitness().canonicalHash());
+        }
         validation.findingCodes().forEach(code -> encoder.field("finding").field(code));
         finalPreviewWays.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
             NetworkSnapshot.encodeKey(encoder.field("preview-way"), entry.getKey());

@@ -27,6 +27,16 @@ public interface LockedApplyValidator {
     /** Validates the exact plan before every Apply or Redo allocation, snapshot, or mutation. */
     void validateLocked(DataSet dataSet, AlignmentEditPlan plan, boolean requireSourceGeneration);
 
+    /** Validates read-only semantic freshness before Undo, without any imagery/source preflight. */
+    default void validateUndoLocked(DataSet dataSet, AlignmentEditPlan plan) {
+        if (plan.before().semanticWitness() != null) {
+            throw new IllegalStateException("Alignment Undo lacks semantic freshness authority");
+        }
+    }
+
     /** Reports a rejected Redo to the source owner's UI; must not change command state. */
     default void reportRejectedRedo(RuntimeException failure) { }
+
+    /** Reports a refused Undo without changing command or history state. */
+    default void reportRejectedUndo(RuntimeException failure) { }
 }

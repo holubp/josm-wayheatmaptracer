@@ -311,12 +311,27 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         boolean[] restored = {false};
         try {
             getAffectedDataSet().update(() -> {
+                validateAfterState();
+                if (lockedValidator != null) {
+                    lockedValidator.validateUndoLocked(getAffectedDataSet(), plan);
+                } else if (plan.before().semanticWitness() != null) {
+                    throw new IllegalStateException("Alignment Undo lacks semantic freshness authority");
+                }
                 restoreBeforeState();
                 applied = false;
                 restored[0] = true;
             });
         } catch (RuntimeException failure) {
-            if (!restored[0]) throw failure;
+            if (!restored[0]) {
+                if (lockedValidator != null) {
+                    try {
+                        lockedValidator.reportRejectedUndo(failure);
+                    } catch (RuntimeException reportingFailure) {
+                        failure.addSuppressed(reportingFailure);
+                    }
+                }
+                throw failure;
+            }
             queueNotificationWarning(NotificationOperation.UNDO);
         }
     }

@@ -73,6 +73,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -563,6 +564,69 @@ class V022ProductionNetworkTransactionTest {
     }
 
     @Test
+    void visibleUndoUsesOnlyNetworkSemanticsAndNeverRepeatsImagery() throws Exception {
+        VisibleSourceEpoch epoch = new VisibleSourceEpoch();
+        Fixture fixture = fixture(epoch);
+        AtomicBoolean undoBoundary = new AtomicBoolean();
+        AtomicInteger repeatCaptures = new AtomicInteger();
+        AtomicInteger ownerChecks = new AtomicInteger();
+        AtomicReference<String> refusal = new AtomicReference<>();
+        var validator = new VisibleSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                fixture.captured(), () -> {
+                    assertFalse(undoBoundary.get(), "Undo must not render imagery");
+                    repeatCaptures.incrementAndGet();
+                    return raster();
+                }, epoch, () -> {
+                    assertFalse(undoBoundary.get(), "Undo must not consult source ownership");
+                    ownerChecks.incrementAndGet();
+                }, refusal::set);
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(), validator, "Undo semantic proof");
+        var before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        int capturesBefore = repeatCaptures.get(), ownersBefore = ownerChecks.get();
+        undoBoundary.set(true);
+        Node first = fixture.dataSet().getWays().iterator().next().firstNode();
+        LatLon coordinate = first.getCoor();
+        boolean modified = first.isModified();
+        first.setCoor(new LatLon(first.lat() + 0.000001, first.lon()));
+        var stale = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        var undoHistory = List.copyOf(UndoRedoHandler.getInstance().getUndoCommands());
+        var redoHistory = List.copyOf(UndoRedoHandler.getInstance().getRedoCommands());
+        assertThrows(IllegalStateException.class, () -> V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo()));
+        stale.assertMatches(fixture.dataSet());
+        assertEquals(undoHistory, UndoRedoHandler.getInstance().getUndoCommands());
+        assertEquals(redoHistory, UndoRedoHandler.getInstance().getRedoCommands());
+        assertTrue(refusal.get().contains("Undo was refused"));
+        first.setCoor(coordinate);
+        first.setModified(modified);
+        epoch.sourceChanged();
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        before.assertMatches(fixture.dataSet());
+        assertEquals(capturesBefore, repeatCaptures.get());
+        assertEquals(ownersBefore, ownerChecks.get());
+    }
+
+    @Test
+    void managedUndoUsesOnlyNetworkSemanticsAndNeverConsultsSourceOwner() throws Exception {
+        ManagedFixture fixture = managedFixture();
+        AtomicBoolean undoBoundary = new AtomicBoolean();
+        AtomicInteger ownerChecks = new AtomicInteger();
+        var validator = new ManagedSourceLockedApplyValidator(fixture.validator(), new LiveBPreviewService(),
+                fixture.captured(), () -> {
+                    assertFalse(undoBoundary.get(), "Undo must not consult source ownership");
+                    ownerChecks.incrementAndGet();
+                }, message -> { });
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), fixture.plan(), validator, "Undo semantic proof");
+        var before = V022AtomicApplyTest.LiveState.capture(fixture.dataSet());
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        int ownersBefore = ownerChecks.get();
+        undoBoundary.set(true);
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        before.assertMatches(fixture.dataSet());
+        assertEquals(ownersBefore, ownerChecks.get());
+    }
+
+    @Test
     void visibleTilePublicationBetweenRenderAndLockedApplyRejectsWithoutMutation() throws Exception {
         VisibleSourceEpoch epoch = new VisibleSourceEpoch();
         Fixture fixture = fixture(epoch);
@@ -1030,9 +1094,19 @@ class V022ProductionNetworkTransactionTest {
     @Test
     void generationOnlyCompatibilityCommandRejectsStaleHostRedo() throws Exception {
         Fixture fixture = fixture();
-        AtomicLong currentGeneration = new AtomicLong(fixture.plan().before().sourceGeneration());
+        // This compatibility oracle represents the historical archive without semantic evidence.
+        AlignmentEditPlan source = fixture.plan();
+        NetworkSnapshot original = source.before();
+        NetworkSnapshot historical = new NetworkSnapshot(original.snapshotId(), original.role(),
+                original.datasetIdentity(), original.sourceGeneration(), original.closure(),
+                original.primitives(), original.incomingReferrerWatches());
+        AlignmentEditPlan plan = new AlignmentEditPlan(source.selectedWayKey(), source.selectedRange(),
+                historical, source.after(), source.metricFrame(), source.permissions(),
+                source.settingsHash(), source.evidenceHash(), source.parameterHash(),
+                source.routeIdentity(), source.finalPreviewWays(), source.validation());
+        AtomicLong currentGeneration = new AtomicLong(plan.before().sourceGeneration());
         ApplyAlignmentEditPlanCommand alignment = new ApplyAlignmentEditPlanCommand(
-                fixture.dataSet(), fixture.plan(), fixture.plan().before().datasetIdentity(),
+                fixture.dataSet(), plan, plan.before().datasetIdentity(),
                 currentGeneration::get, "Apply captured generation");
         assertSourceStaleRedoHistory(fixture.dataSet(), alignment,
                 currentGeneration::incrementAndGet);
@@ -1380,6 +1454,8 @@ class V022ProductionNetworkTransactionTest {
         Way selected = way(711, west, junction);
         Way receiver = way(712, farSouth, southPort, south, junction,
                 middle, north, northPort, farNorth);
+        receiver.put("highway", "path");
+        receiver.setModified(false);
         for (Node node : List.of(west, junction, farSouth, southPort,
                 south, middle, north, northPort, farNorth)) {
             dataSet.addPrimitive(node);
