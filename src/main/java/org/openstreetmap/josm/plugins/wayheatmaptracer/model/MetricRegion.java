@@ -244,12 +244,15 @@ public final class MetricRegion {
     }
 
     private static boolean onSegment(MetricPoint a, MetricPoint b, MetricPoint point) {
-        double cross = orientation(a, b, point);
-        double scale = Math.max(1.0, a.distanceTo(b));
-        return Math.abs(cross) <= 1e-9 * scale
-            && point.xMeters() >= Math.min(a.xMeters(), b.xMeters()) - 1e-9
+        // These same bounds are necessary for a hit; reject before computing the edge length.
+        if (!(point.xMeters() >= Math.min(a.xMeters(), b.xMeters()) - 1e-9
             && point.xMeters() <= Math.max(a.xMeters(), b.xMeters()) + 1e-9
             && point.yMeters() >= Math.min(a.yMeters(), b.yMeters()) - 1e-9
-            && point.yMeters() <= Math.max(a.yMeters(), b.yMeters()) + 1e-9;
+            && point.yMeters() <= Math.max(a.yMeters(), b.yMeters()) + 1e-9)) {
+            return false;
+        }
+        double cross = orientation(a, b, point);
+        double scale = Math.max(1.0, a.distanceTo(b));
+        return Math.abs(cross) <= 1e-9 * scale;
     }
 }
