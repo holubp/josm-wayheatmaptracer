@@ -41,18 +41,19 @@ The normal workflow is:
 
 1. Configure the plugin-managed heatmap source once in `More tools -> Heatmap Layer Settings`.
 2. Select one OSM way, or select one way plus two nodes to limit the operation to a segment.
-3. For long ways, optionally run `More tools -> Select Longest Junctionless Segment`. Select only the way for its globally longest non-branching section. You can also select one node alone when exactly one live way contains it, or select the way plus one node to target the section containing that node.
+3. For long ways, optionally run `More tools -> Select Longest Junctionless Segment` (`Ctrl+Shift+J`). This only changes the selection. Select only the way for its globally longest non-branching section. You can also select one node alone when exactly one live way contains it, or select the way plus one node to target the section containing that node.
 4. Run `More tools -> Align Way to Heatmap` or press `Ctrl+Shift+Y`.
 5. Inspect the modeless preview, switch ridge candidates if needed, pan/zoom the map, and toggle layers on/off while the preview stays visible. Candidates are labeled `Applicable`, `Review required`, or `Blocked`. A meaningful-signal candidate with incomplete longitudinal evidence can be explicitly confirmed after you review its exact final preview; ordinary 7-10 m half-width searches remain supported, and wider retry is explicit and run-scoped. The confirmation is session-local, is cleared when the candidate changes, and is rejected if the source changes before Apply.
 6. Apply the result only if the proposed geometry is justified by the heatmap and other evidence.
 
 For longer ways, `Select Longest Junctionless Segment` uses endpoints and shared-way nodes to divide the way into maximal candidate ranges, then removes branching or uncertain junction nodes from each candidate's ends. It chooses the longest remaining range with at least two occurrences. A junction can remain an endpoint only when exactly two complete, non-degenerate ways in the active data layer meet there at their respective endpoints. With one node selected alone, the containing way is inferred only when exactly one live way in the active data layer refers to that node and the way has complete geometry. If the node belongs to multiple live ways, select the intended way too. With a way and one node selected, the selector considers the original adjacent ranges containing the hint, trims their junction endpoints, and chooses the longer eligible result. An unsafe junction hint is excluded from the returned range; a safe end-to-end continuation can remain an endpoint. The hint is replaced by the chosen range's two safe endpoints, ready for immediate alignment. Repeated-node ambiguity is rejected and may require splitting the way or choosing a simpler section.
 
-The current implementation is designed for private development:
-- build a local plugin jar
-- install it manually into the JOSM plugin directory on the test machine
-- capture diagnostics and logs on the JOSM machine
-- move the bundle back to the Codex machine for debugging
+This `0.22.0-rc.7` test candidate targets JOSM 19555. Install the supplied
+`wayheatmaptracer.jar` into the test profile's plugin directory and restart
+JOSM. Before testing, confirm that the Plugins dialog reports version
+`0.22.0-rc.7`. `Ctrl+Shift+J` selects a junctionless segment; it does not align
+or modify geometry. Run alignment separately with `Ctrl+Shift+Y` and inspect
+the preview before applying.
 
 ## Current Capabilities
 
