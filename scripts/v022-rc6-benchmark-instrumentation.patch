@@ -1,8 +1,25 @@
 diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
-index 95747c7..4a668ab 100644
+index 95747c7..6447066 100644
 --- a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
 +++ b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/actions/AlignWayAction.java
-@@ -499,6 +499,7 @@ public class AlignWayAction extends JosmAction {
+@@ -65,6 +65,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+@@ -90,6 +92,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
++import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
+ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+@@ -499,6 +502,7 @@ public class AlignWayAction extends JosmAction {
              }
              return;
          }
@@ -10,7 +27,7 @@ index 95747c7..4a668ab 100644
          ManagedHeatmapConfig config = null;
          String diagnosticAttemptIdentity = beginDiagnosticAttempt();
          String diagnosticSourceLineage = "unavailable";
-@@ -671,6 +672,7 @@ public class AlignWayAction extends JosmAction {
+@@ -671,6 +675,7 @@ public class AlignWayAction extends JosmAction {
                          () -> recordModernUnavailable("cancelled", sourceLineage,
                                  diagnosticAttemptIdentity));
                  if (closed) {
@@ -18,7 +35,7 @@ index 95747c7..4a668ab 100644
                      overlay.hide();
                      PluginLog.endSlideSession();
                  }
-@@ -1069,6 +1071,10 @@ public class AlignWayAction extends JosmAction {
+@@ -1069,6 +1074,10 @@ public class AlignWayAction extends JosmAction {
              recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
                      diagnosticAttemptIdentity);
              dialog.setVisible(true);
@@ -29,16 +46,79 @@ index 95747c7..4a668ab 100644
          } catch (RuntimeException failure) {
              dialog.dispose();
              throw failure;
-@@ -1426,6 +1432,9 @@ public class AlignWayAction extends JosmAction {
-         try {
-             refresh.run();
+@@ -1181,6 +1190,8 @@ public class AlignWayAction extends JosmAction {
+         AlignmentEditPlan[] plan = {null};
+         PreviewReviewState[] review = {null};
+         ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
++        int[] benchmarkDisplayedIndex = {-1};
++        AlignmentEditPlan[] benchmarkDisplayedPlan = {null};
+         boolean[] applying = {false};
+         boolean[] completed = {false};
+         JButton confirm = new JButton(tr("Confirm review"));
+@@ -1209,6 +1220,8 @@ public class AlignWayAction extends JosmAction {
+         activePreviewDialog = dialog;
+         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
+         Runnable refresh = () -> {
++            benchmarkDisplayedIndex[0] = -1;
++            benchmarkDisplayedPlan[0] = null;
+             if (!livePreviewSession.isCurrentWindow(previewOwner, dialog,
+                     activePreviewDialog, dialog.isDisplayable())) {
+                 throw new IllegalStateException("The preview window no longer owns this attempt");
+@@ -1276,6 +1289,8 @@ public class AlignWayAction extends JosmAction {
+             confirm.setEnabled(review[0] != null && review[0].disposition()
+                     == org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED);
+             apply.setEnabled(review[0] != null && review[0].canApply() && !applying[0]);
++            benchmarkDisplayedIndex[0] = index;
++            benchmarkDisplayedPlan[0] = plan[0];
+         };
+         choices.addActionListener(event -> {
+             try {
+@@ -1428,2 +1443,17 @@ public class AlignWayAction extends JosmAction {
              dialog.setVisible(true);
-+            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () ->
-+                    plan[0] == null ? null
-+                            : plan[0].finalPreviewWays().get(computed.request().selectedWayKey()));
++            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () -> {
++                int displayedIndex = benchmarkDisplayedIndex[0];
++                if (displayedIndex < 0 || displayedIndex >= candidates.size()
++                        || plan[0] != benchmarkDisplayedPlan[0]) {
++                    throw new IllegalStateException("Benchmark selected preview changed after display");
++                }
++                List<BenchmarkPreviewRoute> routes = computed.pipeline().routes().stream()
++                        .map(route -> new BenchmarkPreviewRoute(route,
++                                computed.evidence().coordinateFrame())).toList();
++                AlignmentEditPlan displayedPlan = benchmarkDisplayedPlan[0];
++                List<GeographicPoint> exactPlanGeometry = displayedPlan == null ? null
++                        : displayedPlan.finalPreviewWays().get(displayedPlan.selectedWayKey());
++                return benchmarkDisplayedGeometry(routes, displayedIndex,
++                        choices.getSelectedIndex(), exactPlanGeometry);
++            });
          } catch (RuntimeException exception) {
-             dialog.dispose();
-             throw exception;
+@@ -1435,1 +1465,27 @@ public class AlignWayAction extends JosmAction {
++    /** Exact pre-projection final route for one source-owned preview choice. */
++    record BenchmarkPreviewRoute(ModernTracePipeline.Route route, LocalMetricFrame frame) {
++        BenchmarkPreviewRoute {
++            Objects.requireNonNull(route, "final route");
++            Objects.requireNonNull(frame, "route coordinate frame");
++        }
++    }
++
++    /** Supplies the geometry already displayed, without constructing or requiring an Apply plan. */
++    static List<GeographicPoint> benchmarkDisplayedGeometry(List<BenchmarkPreviewRoute> routes,
++            int displayedIndex, int selectedIndex, List<GeographicPoint> exactPlanGeometry) {
++        if (routes == null || displayedIndex < 0 || displayedIndex >= routes.size()
++                || selectedIndex != displayedIndex) {
++            throw new IllegalStateException("Benchmark selected preview changed after display");
++        }
++        BenchmarkPreviewRoute source = routes.get(displayedIndex);
++        List<GeographicPoint> geometry = exactPlanGeometry == null
++                ? source.route().hypothesis().points().stream()
++                        .map(source.frame()::toGeographic).toList()
++                : exactPlanGeometry;
++        if (geometry.size() < 2) {
++            throw new IllegalStateException("Benchmark displayed final geometry is incomplete");
++        }
++        return geometry;
++    }
++
+     /** Routes persisted modern engines through their detached live pipeline. */
 diff --git a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java b/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java
 index b281465..65c49bc 100644
 --- a/src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/Format15ProductionBundleFactory.java

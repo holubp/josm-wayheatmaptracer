@@ -34,6 +34,8 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageSupportedLocalCleanup;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
@@ -67,6 +69,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateAssessment;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCleanup;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorCoverage;
@@ -608,6 +616,48 @@ class AlignWayActionTest {
             TraceHypothesisSet.Status.NO_ROUTE, ValidationReport.Disposition.HARD_BLOCKED));
         assertEquals("resource-limited", AlignWayAction.modernPreviewStatus(
             TraceHypothesisSet.Status.RESOURCE_LIMIT, ValidationReport.Disposition.APPLICABLE));
+    }
+
+    @Test
+    void benchmarkUsesDisplayedFinalRouteFromItsOwnSourceRunWithoutAnApplyPlan() {
+        LocalMetricFrame firstFrame = benchmarkFrame(42.0, 19.0);
+        LocalMetricFrame secondFrame = benchmarkFrame(43.0, 20.0);
+        ModernTracePipeline.Route firstZero = benchmarkRoute("first-zero", 1.0, 2.0);
+        ModernTracePipeline.Route firstOne = benchmarkRoute("first-one", 3.0, 4.0);
+        ModernTracePipeline.Route secondZero = benchmarkRoute("second-zero", 5.0, 6.0);
+        ModernTracePipeline.Route secondOne = benchmarkRoute("second-one", 7.0, 8.0);
+        List<AlignWayAction.BenchmarkPreviewRoute> flattened = List.of(
+                new AlignWayAction.BenchmarkPreviewRoute(firstZero, firstFrame),
+                new AlignWayAction.BenchmarkPreviewRoute(firstOne, firstFrame),
+                new AlignWayAction.BenchmarkPreviewRoute(secondZero, secondFrame),
+                new AlignWayAction.BenchmarkPreviewRoute(secondOne, secondFrame));
+
+        List<GeographicPoint> expected = secondOne.hypothesis().points().stream()
+                .map(secondFrame::toGeographic).toList();
+        List<GeographicPoint> observed = AlignWayAction.benchmarkDisplayedGeometry(
+                flattened, 3, 3, null);
+        assertEquals(expected, observed);
+        assertFalse(observed.equals(secondOne.rawHypothesis().points().stream()
+                .map(secondFrame::toGeographic).toList()));
+        assertFalse(observed.equals(firstOne.hypothesis().points().stream()
+                .map(firstFrame::toGeographic).toList()));
+        assertFalse(observed.equals(secondZero.hypothesis().points().stream()
+                .map(secondFrame::toGeographic).toList()));
+        assertThrows(IllegalStateException.class, () -> AlignWayAction.benchmarkDisplayedGeometry(
+                flattened, 3, 2, null), "selection change must not bind a different preview");
+    }
+
+    @Test
+    void benchmarkUsesExactDisplayedPlanGeometryWhenAnApplyPlanExists() {
+        LocalMetricFrame frame = benchmarkFrame(42.0, 19.0);
+        ModernTracePipeline.Route route = benchmarkRoute("plan-route", 1.0, 2.0);
+        List<GeographicPoint> planned = List.of(new GeographicPoint(42.0001, 19.0001),
+                new GeographicPoint(42.0002, 19.0002));
+        List<AlignWayAction.BenchmarkPreviewRoute> flattened = List.of(
+                new AlignWayAction.BenchmarkPreviewRoute(route, frame));
+        assertSame(planned, AlignWayAction.benchmarkDisplayedGeometry(flattened, 0, 0, planned));
+        assertThrows(IllegalStateException.class, () -> AlignWayAction.benchmarkDisplayedGeometry(
+                flattened, 0, 0, List.of(new GeographicPoint(42.0, 19.0))));
     }
     @Test
     void manualJunctionAssessmentBlocksApplicableRoutePresentationAndAttemptStatus() {
@@ -1306,6 +1356,38 @@ class AlignWayActionTest {
 
     private static CenterlineCandidate candidate(String id) {
         return new CenterlineCandidate(id, 0.8, List.of(), List.of());
+    }
+
+    private static LocalMetricFrame benchmarkFrame(double latitude, double longitude) {
+        GeographicPoint origin = new GeographicPoint(latitude, longitude);
+        return LocalMetricFrame.certifiedEquirectangular(origin,
+                new GeographicPoint(latitude - 0.001, longitude - 0.001),
+                new GeographicPoint(latitude + 0.001, longitude + 0.001));
+    }
+
+    private static ModernTracePipeline.Route benchmarkRoute(String id, double rawNorth,
+            double finalNorth) {
+        List<MetricPoint> rawPoints = List.of(new MetricPoint(1, rawNorth),
+                new MetricPoint(5, rawNorth), new MetricPoint(9, rawNorth));
+        List<MetricPoint> finalPoints = List.of(new MetricPoint(1, finalNorth),
+                new MetricPoint(5, finalNorth), new MetricPoint(9, finalNorth));
+        List<ObservationOwnership> support = java.util.Collections.nCopies(3,
+                ObservationOwnership.DIRECT_TWO_SIDED);
+        TraceHypothesis raw = new TraceHypothesis(id, "main", rawPoints, support, 2.0, 0.8, Map.of());
+        TraceHypothesis finalized = new TraceHypothesis(id, "main", finalPoints, support,
+                2.0, 0.8, Map.of());
+        List<FinalRoutePointId> ids = List.of(
+                new FinalRoutePointId.GeneratedCandidatePoint(id, 0),
+                new FinalRoutePointId.GeneratedCandidatePoint(id, 1),
+                new FinalRoutePointId.GeneratedCandidatePoint(id, 2));
+        FinalGeometryEvaluator.Result quality = new FinalGeometryEvaluator.Result(id,
+                FinalGeometryEvaluator.Disposition.APPLICABLE, List.of(), 10.0, 10.0, 0.0, 0.1, 0.0);
+        return new ModernTracePipeline.Route(raw, finalized, ids,
+                Map.of(ids.get(0), finalPoints.get(0), ids.get(1), finalPoints.get(1),
+                        ids.get(2), finalPoints.get(2)),
+                Map.of(ids.get(0), support.get(0), ids.get(1), support.get(1),
+                        ids.get(2), support.get(2)), quality,
+                ImageSupportedLocalCleanup.Status.UNCHANGED, true);
     }
 
     private static CandidateGeometryCleanup cleanup(

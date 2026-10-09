@@ -41,7 +41,7 @@ class BenchmarkRunnerTest(unittest.TestCase):
         base = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
         approved = {
             base + "BenchmarkHostMain.java": "f145abf4818377cdc428916a5ca74701a803cf5aadeee9c3e6e555a130ac25cb",
-            base + "actions/AlignWayAction.java": "9f14bcbc59668c1201699b01fd1387952f7be5ecaf3d9bdc01ebfa0bb3166ae7",
+            base + "actions/AlignWayAction.java": "2c36b4ec8d63742c43fcab6b582d1b47430bad78b66baa4762301422d3830735",
             base + "actions/OrdinaryActionBenchmarkObserver.java": "887381014611049364712f1e4a546062367eb2fa11353e735ceb00d64fdd28a4",
             base + "diagnostics/replay/format15/Format15ProductionBundleFactory.java": "d93a58d44bf1d773ee2b30e8bf205bbdf47169b271678cd4fee9d596451a3385",
             base + "tile/ManagedTileRuntime.java": "4ae919ec3076ff1f686a9740d9deee5db011d5aa26845cda5a42b4364ffd1b20",

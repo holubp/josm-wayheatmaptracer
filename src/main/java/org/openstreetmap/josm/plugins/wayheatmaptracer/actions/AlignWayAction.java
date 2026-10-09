@@ -68,6 +68,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateGeometryCl
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateRating;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ModernAlignmentInvocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
@@ -94,6 +96,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
@@ -1338,6 +1341,8 @@ public class AlignWayAction extends JosmAction {
         PreviewReviewState[] review = {null};
         ModernSingleWayEditPlanAdapter.Assessment[] assessment = {null};
         NetworkSnapshot[] noChangeCurrent = {null};
+        int[] benchmarkDisplayedIndex = {-1};
+        AlignmentEditPlan[] benchmarkDisplayedPlan = {null};
         boolean[] applying = {false};
         boolean[] completed = {false};
         JButton confirm = new JButton(tr("Confirm review"));
@@ -1375,6 +1380,8 @@ public class AlignWayAction extends JosmAction {
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
         Runnable refresh = () -> {
+            benchmarkDisplayedIndex[0] = -1;
+            benchmarkDisplayedPlan[0] = null;
             if (!livePreviewSession.isCurrentWindow(previewOwner, dialog,
                     activePreviewDialog, dialog.isDisplayable())) {
                 throw new IllegalStateException("The preview window no longer owns this attempt");
@@ -1469,6 +1476,8 @@ public class AlignWayAction extends JosmAction {
             preciseRerun.setEnabled(needsPrecise && preciseRecovery == null);
             preciseRerun.setToolTipText(needsPrecise && preciseRecovery != null
                     ? preciseRecovery : tr("Runs one new preview in Precise Shape without changing saved settings"));
+            benchmarkDisplayedIndex[0] = index;
+            benchmarkDisplayedPlan[0] = plan[0];
             };
         choices.addActionListener(event -> {
             try {
@@ -1670,13 +1679,52 @@ public class AlignWayAction extends JosmAction {
         try {
             refresh.run();
             dialog.setVisible(true);
-            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () ->
-                    plan[0] == null ? null
-                            : plan[0].finalPreviewWays().get(computed.request().selectedWayKey()));
+            OrdinaryActionBenchmarkObserver.previewReady("single", computed, () -> {
+                int displayedIndex = benchmarkDisplayedIndex[0];
+                if (displayedIndex < 0 || displayedIndex >= previewChoices.size()
+                        || plan[0] != benchmarkDisplayedPlan[0]) {
+                    throw new IllegalStateException("Benchmark selected preview changed after display");
+                }
+                List<BenchmarkPreviewRoute> flattened = previewChoices.stream()
+                        .map(choice -> new BenchmarkPreviewRoute(choice.owner().pipeline().routes()
+                                .get(choice.localRouteIndex()), choice.owner().evidence().coordinateFrame()))
+                        .toList();
+                AlignmentEditPlan displayedPlan = benchmarkDisplayedPlan[0];
+                List<GeographicPoint> exactPlanGeometry = displayedPlan == null ? null
+                        : displayedPlan.finalPreviewWays().get(displayedPlan.selectedWayKey());
+                return benchmarkDisplayedGeometry(flattened, displayedIndex,
+                        choices.getSelectedIndex(), exactPlanGeometry);
+            });
         } catch (RuntimeException exception) {
             dialog.dispose();
             throw exception;
         }
+    }
+
+    /** Exact pre-projection final route for one flattened source-owned preview choice. */
+    record BenchmarkPreviewRoute(ModernTracePipeline.Route route, LocalMetricFrame frame) {
+        BenchmarkPreviewRoute {
+            Objects.requireNonNull(route, "final route");
+            Objects.requireNonNull(frame, "route coordinate frame");
+        }
+    }
+
+    /** Supplies the geometry already displayed, without constructing or requiring an Apply plan. */
+    static List<GeographicPoint> benchmarkDisplayedGeometry(List<BenchmarkPreviewRoute> flattened,
+            int displayedIndex, int selectedIndex, List<GeographicPoint> exactPlanGeometry) {
+        if (flattened == null || displayedIndex < 0 || displayedIndex >= flattened.size()
+                || selectedIndex != displayedIndex) {
+            throw new IllegalStateException("Benchmark selected preview changed after display");
+        }
+        BenchmarkPreviewRoute source = flattened.get(displayedIndex);
+        List<GeographicPoint> geometry = exactPlanGeometry == null
+                ? source.route().hypothesis().points().stream()
+                        .map(source.frame()::toGeographic).toList()
+                : exactPlanGeometry;
+        if (geometry.size() < 2) {
+            throw new IllegalStateException("Benchmark displayed final geometry is incomplete");
+        }
+        return geometry;
     }
 
     /** Routes persisted modern engines through their detached live pipeline. */
