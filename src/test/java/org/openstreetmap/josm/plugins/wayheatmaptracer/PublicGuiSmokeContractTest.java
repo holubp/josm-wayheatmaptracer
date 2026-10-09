@@ -5,23 +5,43 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.awt.image.BufferedImage;
 import java.io.File;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.junit.jupiter.api.Test;
+import javax.imageio.ImageIO;
+import javax.swing.JComboBox;
+import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
+
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.openstreetmap.josm.tools.PlatformManager;
+import org.openstreetmap.josm.data.coor.LatLon;
+import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projections;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
+import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
     @TempDir Path temporary;
@@ -47,13 +67,58 @@ class PublicGuiSmokeContractTest {
     }
 
     @Test
+    void publicNativeHotRasterDrivesTheRealManagedProbabilisticEngineToItsRidge() throws Exception {
+        var fixture = PublicGuiSmokeFixture.create(temporary);
+        ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
+        fixture.dataSet().setSelected(fixture.selectedWay());
+        var selection = SelectionResolver.resolve(fixture.dataSet(), false);
+        var configMethod = PublicGuiSmokeMain.class.getDeclaredMethod("config");
+        configMethod.setAccessible(true);
+        var config = new AlignmentConfig((ManagedHeatmapConfig) configMethod.invoke(null),
+                GeometryCleanupConfig.disabled());
+        var service = new LiveBPreviewService();
+        LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
+                selection, config, "public-native-hot"));
+        BufferedImage image = ImageIO.read(temporary.resolve("public-hot-z15.png").toFile());
+        boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
+        Arrays.fill(valid, true);
+        var raster = new ManagedModernPreviewSource.Raster(image, valid,
+                SupportedInputRasterTransform.webMercator(15, 16_384 * 256.0,
+                        16_383 * 256.0, 2.0), "hot", 15, "public-native-hot",
+                new ManagedTileGeneration(0L));
+        var computed = service.compute(service.attachManagedRaster(seed[0], raster),
+                CancellationProbe.NONE);
+        assertTrue(computed.pipeline().routes().size() > 1);
+        var choices = service.adaptChoices(computed, point -> ProjectionRegistry.getProjection()
+                .latlon2eastNorth(new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+        assertEquals(computed, choices.get(0).owner());
+        assertEquals(computed, choices.get(1).owner());
+        assertEquals(0, choices.get(0).localRouteIndex());
+        assertEquals(1, choices.get(1).localRouteIndex());
+        assertFalse(choices.get(0).candidate().id().equals(choices.get(1).candidate().id()));
+        var first = new ModernSingleWayEditPlanAdapter().assess(computed, 0).plan().orElseThrow();
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeOracle.verifyFinalGeometry(
+                first.finalPreviewWays().get(first.selectedWayKey())));
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 1);
+        var plan = assessment.plan().orElseThrow(() -> new AssertionError(
+                "Managed Engine B fixture produced no edit plan: " + assessment.availability()));
+        assertEquals(choices.get(1).candidate().id(), plan.routeIdentity());
+        PublicGuiSmokeOracle.verifyFinalGeometry(
+                plan.finalPreviewWays().get(plan.selectedWayKey()));
+    }
+
+    @Test
     void analyticOracleRejectsUnchangedDisplacedWay() {
         List<GeographicPoint> unchanged = List.of(
                 PublicGuiSmokeOracle.point(-40, 0),
                 PublicGuiSmokeOracle.point(0, 0),
                 PublicGuiSmokeOracle.point(40, 0));
-        assertThrows(IllegalStateException.class,
+        var failure = assertThrows(IllegalStateException.class,
                 () -> PublicGuiSmokeOracle.verifyFinalGeometry(unchanged));
+        assertTrue(failure.getMessage().contains("centralSamples=1"));
+        assertTrue(failure.getMessage().contains("maxErrorMeters=4.00"));
+        assertTrue(failure.getMessage().contains("meanObservedNorthMeters=0.00"));
     }
 
     @Test
@@ -76,6 +141,25 @@ class PublicGuiSmokeContractTest {
     @Test
     void guiHostFailsClosedWithoutRealDisplay() {
         assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireDisplay(true));
+    }
+
+    @Test
+    void visibleChoiceDiscoveryRequiresOneDisplayedTypedControl() {
+        JPanel panel = new JPanel();
+        assertThrows(IllegalStateException.class,
+                () -> PublicGuiSmokeMain.visibleChoiceCombo(panel, String.class));
+        JComboBox<Integer> unrelated = new JComboBox<>(new Integer[] {0, 1});
+        panel.add(unrelated);
+        assertThrows(IllegalStateException.class,
+                () -> PublicGuiSmokeMain.visibleChoiceCombo(panel, String.class));
+        JPanel nested = new JPanel();
+        JComboBox<String> route = new JComboBox<>(new String[] {"unchanged", "ridge"});
+        nested.add(route);
+        panel.add(nested);
+        assertEquals(route, PublicGuiSmokeMain.visibleChoiceCombo(panel, String.class));
+        panel.add(new JComboBox<>(new String[] {"ambiguous"}));
+        assertThrows(IllegalStateException.class,
+                () -> PublicGuiSmokeMain.visibleChoiceCombo(panel, String.class));
     }
 
     @Test

@@ -1,6 +1,8 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
 import java.awt.AWTEvent;
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.GraphicsEnvironment;
 import java.awt.Toolkit;
 import java.awt.Window;
@@ -21,6 +23,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.JDialog;
+import javax.swing.JComboBox;
 import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
 
@@ -47,6 +50,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.data.UndoRedoHandler;
@@ -95,6 +99,7 @@ public final class PublicGuiSmokeMain {
             List<String> original = wayState(fixture);
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
             stage = "preview";
+            String selectedId = null;
             CompletableFuture<JDialog> visiblePreview = new CompletableFuture<>();
             AWTEventListener listener = event -> {
                 if (event instanceof WindowEvent windowEvent
@@ -113,6 +118,25 @@ public final class PublicGuiSmokeMain {
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
                     throw new IllegalStateException("Production preview attempt is not ready");
                 }
+                String initialStatus = artifactText(latestArchive(report.getParent()),
+                        "attempt-status.json");
+                if (!initialStatus.contains("\"routeIndex\":0")) {
+                    throw new IllegalStateException("Initial production route diagnostics are missing");
+                }
+                // The ordinary preview presents two real Engine B alternatives for this
+                // fixture. Its default leaves the displaced center unchanged; a user can
+                // select the second, ridge-following route in the visible combo box.
+                LiveBPreviewService.PreviewChoice selected = onEventThread(() ->
+                        selectRidgeRoute(preview));
+                selectedId = requireSafeCandidateId(selected.candidate().id());
+                if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
+                    throw new IllegalStateException("Selected production preview is no longer visible");
+                }
+                var selectedAttempt = session.currentAttempt();
+                if (selectedAttempt == null || selectedAttempt.sequence() != ready.sequence()
+                        || selectedAttempt.state() != AlignmentJob.State.PREVIEW_READY) {
+                    throw new IllegalStateException("Selected preview lost its production attempt");
+                }
                 Format15Archive archive = latestArchive(report.getParent());
                 String status = artifactText(archive, "attempt-status.json");
                 if (!status.contains("\"status\":\"preview-open\"")
@@ -122,6 +146,9 @@ public final class PublicGuiSmokeMain {
                 if (!status.contains("\"sourceLineage\":\"managed-tiles\"")) {
                     throw new IllegalStateException("Production preview did not use managed source tiles");
                 }
+                if (!status.contains("\"routeIndex\":1")) {
+                    throw new IllegalStateException("Selected route was not published in diagnostics");
+                }
                 var frozen = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin")
                         .orElseThrow().bytes());
                 if (frozen.request().engine() != TrackerMode.PROBABILISTIC) {
@@ -129,6 +156,9 @@ public final class PublicGuiSmokeMain {
                 }
                 var plan = FrozenReplayCodec.decodeEditPlan(archive.artifact("frozen-edit-plan.bin")
                         .orElseThrow().bytes());
+                if (!plan.routeIdentity().equals(selectedId)) {
+                    throw new IllegalStateException("Selected route and frozen preview differ");
+                }
                 List<GeographicPoint> geometry = plan.finalPreviewWays().get(plan.selectedWayKey());
                 PublicGuiSmokeOracle.verifyFinalGeometry(geometry);
                 requireUnchanged(fixture, original, originalUndo);
@@ -175,7 +205,8 @@ public final class PublicGuiSmokeMain {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"PASS\",\"source\":\"public-analytic-hot\","
                     + "\"engine\":\"PROBABILISTIC\",\"ordinaryAction\":true,"
-                    + "\"visiblePreview\":true,\"geometryOracle\":true,"
+                    + "\"visiblePreview\":true,\"selectedRouteIndex\":1,"
+                    + "\"selectedCandidateId\":\"" + selectedId + "\",\"geometryOracle\":true,"
                     + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
                     + "\"datasetUnchanged\":true,\"undoUnchanged\":true}\n");
             System.exit(0);
@@ -340,6 +371,57 @@ public final class PublicGuiSmokeMain {
         } finally {
             Files.deleteIfExists(archive);
         }
+    }
+
+    private static LiveBPreviewService.PreviewChoice selectRidgeRoute(JDialog preview) {
+        JComboBox<LiveBPreviewService.PreviewChoice> choices = visibleChoiceCombo(
+                preview.getContentPane(), LiveBPreviewService.PreviewChoice.class);
+        if (!choices.isShowing() || choices.getItemCount() < 2 || choices.getSelectedIndex() != 0) {
+            throw new IllegalStateException("Expected visible initial Engine B route choices");
+        }
+        LiveBPreviewService.PreviewChoice first = choices.getItemAt(0);
+        LiveBPreviewService.PreviewChoice ridge = choices.getItemAt(1);
+        if (first.owner() != ridge.owner() || first.localRouteIndex() != 0
+                || ridge.localRouteIndex() != 1
+                || ridge.owner().request().engine() != TrackerMode.PROBABILISTIC
+                || first.candidate().id().equals(ridge.candidate().id())) {
+            throw new IllegalStateException("Expected two distinct routes from one Engine B run");
+        }
+        choices.setSelectedIndex(1); // Invokes the real preview listener on the EDT.
+        if (choices.getSelectedItem() != ridge || !preview.isVisible()) {
+            throw new IllegalStateException("Ridge route was not selected in the visible preview");
+        }
+        return ridge;
+    }
+
+    static <T> JComboBox<T> visibleChoiceCombo(Container root, Class<T> choiceType) {
+        List<JComboBox<T>> matches = new ArrayList<>();
+        findChoiceCombos(root, choiceType, matches);
+        if (matches.size() != 1) {
+            throw new IllegalStateException("Expected exactly one displayed route control");
+        }
+        return matches.get(0);
+    }
+
+    private static <T> void findChoiceCombos(Container root, Class<T> choiceType,
+            List<JComboBox<T>> matches) {
+        for (Component component : root.getComponents()) {
+            if (component instanceof JComboBox<?> combo && combo.getItemCount() > 0
+                    && choiceType.isInstance(combo.getItemAt(0))) {
+                @SuppressWarnings("unchecked") JComboBox<T> typed = (JComboBox<T>) combo;
+                matches.add(typed);
+            }
+            if (component instanceof Container nested) {
+                findChoiceCombos(nested, choiceType, matches);
+            }
+        }
+    }
+
+    private static String requireSafeCandidateId(String id) {
+        if (id == null || !id.matches("[A-Za-z0-9._-]{1,80}")) {
+            throw new IllegalStateException("Selected candidate identity is not safe for receipt");
+        }
+        return id;
     }
 
     private static String artifactText(Format15Archive archive, String name) {
