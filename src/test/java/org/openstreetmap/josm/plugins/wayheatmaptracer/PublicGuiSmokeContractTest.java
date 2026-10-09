@@ -4,8 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.File;
+import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeAll;
@@ -63,5 +67,43 @@ class PublicGuiSmokeContractTest {
     @Test
     void guiHostFailsClosedWithoutRealDisplay() {
         assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requireDisplay(true));
+    }
+
+    @Test
+    void freshJvmInitializesJosmBeforeParsingPublicFixture() throws Exception {
+        List<String> classPath = new ArrayList<>();
+        classPath.add(System.getProperty("java.class.path"));
+        for (ClassLoader loader = getClass().getClassLoader(); loader != null;
+                loader = loader.getParent()) {
+            if (loader instanceof URLClassLoader urls) {
+                for (var url : urls.getURLs()) {
+                    if ("file".equals(url.getProtocol())) {
+                        classPath.add(Path.of(url.toURI()).toString());
+                    }
+                }
+            }
+        }
+        Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java")
+                .toString(), "-cp", String.join(File.pathSeparator, classPath),
+                StartupProbe.class.getName(), temporary.resolve("fresh-jvm").toString())
+                .redirectErrorStream(true).start();
+        assertTrue(child.waitFor(30, TimeUnit.SECONDS), "Fresh JVM fixture probe timed out");
+        String output = new String(child.getInputStream().readAllBytes());
+        assertEquals(0, child.exitValue(), output);
+        assertTrue(output.contains("PUBLIC_FIXTURE_READY"), output);
+    }
+
+    public static final class StartupProbe {
+        private StartupProbe() { }
+
+        public static void main(String[] args) throws Exception {
+            var fixture = PublicGuiSmokeMain.startJosmThenCreateFixture(
+                    () -> Config.setPreferencesInstance(new MemoryPreferences()),
+                    Path.of(args[0]));
+            if (fixture.selectedWay().getNodesCount() != 11 || !fixture.tilesUsable()) {
+                throw new AssertionError("Public fixture was not parsed after JOSM initialization");
+            }
+            System.out.println("PUBLIC_FIXTURE_READY");
+        }
     }
 }
