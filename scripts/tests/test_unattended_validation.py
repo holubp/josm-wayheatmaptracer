@@ -75,6 +75,8 @@ def fake_tools(tmp_path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
         "  reports = pathlib.Path('build/test-results/test')\n"
         "  reports.mkdir(parents=True, exist_ok=True)\n"
         "  (reports / 'TEST-fake.xml').write_text('<testsuite tests=\"2\" failures=\"0\" errors=\"0\" skipped=\"0\"><testcase name=\"one\"/><testcase name=\"two\"/></testsuite>')\n"
+        "  (reports / 'output-events.bin').write_bytes(b'fake Gradle event stream')\n"
+        "  (reports / 'results-generic.bin').write_bytes(b'fake Gradle binary result payload')\n"
         "  custom_report = os.environ.get('FAKE_JUNIT_REPORT')\n"
         "  if custom_report: (reports / 'TEST-fake.xml').write_text(pathlib.Path(custom_report).read_text())\n"
         "  html = pathlib.Path('build/reports/tests/test')\n"
@@ -154,7 +156,12 @@ def test_failed_java_stage_is_nonzero_and_persisted(tmp_path: Path) -> None:
     assert json.loads((output / "summary.json").read_text())["result"] == "FAIL"
     assert json.loads((output / "summary.json").read_text())["private_fixture_scope"] == "not-executed"
     assert (output / "reports/java/junit-xml/TEST-fake.xml").is_file()
+    junit_output = output / "reports/java/junit-xml"
+    assert sorted(path.name for path in junit_output.iterdir()) == ["TEST-fake.xml"]
     assert (output / "reports/java/html/index.html").is_file()
+    source_reports = ROOT / "build/test-results/test"
+    assert (source_reports / "output-events.bin").is_file()
+    assert (source_reports / "results-generic.bin").is_file()
 
 
 def test_fake_success_writes_only_disposable_build_and_preserves_source_sentinels(tmp_path: Path) -> None:

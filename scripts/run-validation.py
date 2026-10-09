@@ -782,14 +782,20 @@ def check_rc_available(benchmark: Path | None, replay: Path | None,
 
 
 def preserve_reports(output: Path, *, copy_jar: bool = False) -> None:
-    """Retain public Gradle reports after failures and a verified jar after success."""
+    """Retain public XML/HTML reports and, after success, the verified plugin jar."""
     for relative, report_name in ((Path("build/test-results/test"), "junit-xml"),
                                   (Path("build/reports/tests/test"), "html")):
         source = ROOT / relative
         destination = output / "reports" / "java" / report_name
         if destination.exists():
             shutil.rmtree(destination)
-        if source.is_dir():
+        if source.is_dir() and report_name == "junit-xml":
+            destination.mkdir(parents=True, exist_ok=True)
+            for report in sorted(source.glob("TEST-*.xml")):
+                if report.is_symlink() or not report.is_file():
+                    continue
+                shutil.copy2(report, destination / report.name)
+        elif source.is_dir():
             shutil.copytree(source, destination, dirs_exist_ok=True)
     if copy_jar:
         artifact = ROOT / "build/libs/wayheatmaptracer.jar"
