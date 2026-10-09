@@ -26,6 +26,11 @@ from types import MappingProxyType
 
 HOST_CLASS = "org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkHostMain"
 COMPARE_CLASS = "org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorMain"
+HOST_JVM_EXPORTS = (
+    "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
+    "--add-exports=java.desktop/com.sun.imageio.plugins.jpeg=ALL-UNNAMED",
+    "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
+)
 PRODUCER = "AlignWayAction.production-preview-v1"
 BASELINE_REVISION = "6288aafe6dc79e948a6981ae795d27ee56a653fe"
 HEX64 = set("0123456789abcdef")
@@ -159,6 +164,19 @@ def check_host(manifest: dict, output: Path) -> tuple[Path, Path]:
     if 'version "17.' not in version_text and 'openjdk 17.' not in version_text:
         raise GateFailure("Configured host Java is not Java 17")
     return java, josm
+
+
+def host_command(java: Path, run_dir: Path, josm: Path, plugin: Path,
+                 archive: Path, osm: Path, tiles: Path, receipt: Path,
+                 nonce: str, case_version: str, action: str) -> list[str]:
+    """Build one production GUI host invocation for preview or cancellation."""
+    return [str(java), *HOST_JVM_EXPORTS, f"-Djava.io.tmpdir={run_dir}",
+            f"-Djosm.pref={run_dir / 'josm-pref'}",
+            f"-Djosm.userdata={run_dir / 'josm-userdata'}",
+            f"-Djosm.cache={run_dir / 'josm-cache'}", "-cp",
+            os.pathsep.join((str(josm), str(plugin))), HOST_CLASS,
+            str(archive), str(osm), str(tiles), str(receipt),
+            str(plugin), nonce, case_version, action]
 
 
 def checked_revision(worktree: Path, revision: str, output: Path, name: str) -> None:
@@ -392,13 +410,9 @@ def main(argv: list[str] | None = None) -> int:
                     receipt = run_dir / "publication.json"
                     host_env = os.environ.copy()
                     host_env["JAVA_TOOL_OPTIONS"] = ""
-                    command = [str(java), f"-Djava.io.tmpdir={run_dir}",
-                               f"-Djosm.pref={run_dir / 'josm-pref'}",
-                               f"-Djosm.userdata={run_dir / 'josm-userdata'}",
-                               f"-Djosm.cache={run_dir / 'josm-cache'}", "-cp",
-                               os.pathsep.join((str(josm), str(plugins[version]))), HOST_CLASS,
-                               str(archive), str(osm), str(tiles), str(receipt),
-                               str(plugins[version]), nonce, f"{case_id}:{version}", "preview"]
+                    command = host_command(
+                        java, run_dir, josm, plugins[version], archive, osm, tiles,
+                        receipt, nonce, f"{case_id}:{version}", "preview")
                     result = run_process(command, run_dir, run_dir / "host.log", timeout, host_env)
                     run_record = {"case": case_id, "version": version, "iteration": iteration,
                                   "phase": phase, **result}
@@ -436,13 +450,9 @@ def main(argv: list[str] | None = None) -> int:
                     run_dir.mkdir(parents=True, exist_ok=True)
                     nonce = secrets.token_hex(16)
                     receipt = run_dir / "cancellation.json"
-                    command = [str(java), f"-Djava.io.tmpdir={run_dir}",
-                               f"-Djosm.pref={run_dir / 'josm-pref'}",
-                               f"-Djosm.userdata={run_dir / 'josm-userdata'}",
-                               f"-Djosm.cache={run_dir / 'josm-cache'}", "-cp",
-                               os.pathsep.join((str(josm), str(plugins[version]))), HOST_CLASS,
-                               str(archive), str(osm), str(tiles), str(receipt),
-                               str(plugins[version]), nonce, f"{case_id}:{version}", "cancel"]
+                    command = host_command(
+                        java, run_dir, josm, plugins[version], archive, osm, tiles,
+                        receipt, nonce, f"{case_id}:{version}", "cancel")
                     result = run_process(command, run_dir, run_dir / "host.log", timeout)
                     record = {"case": case_id, "version": version, "iteration": iteration,
                               "phase": "cancel", **result}
