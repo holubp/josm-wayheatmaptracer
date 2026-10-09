@@ -18,6 +18,25 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_gui_host_command_scopes_josms_required_module_exports(self):
+        exports = [
+            "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
+            "--add-exports=java.desktop/com.sun.imageio.plugins.jpeg=ALL-UNNAMED",
+            "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for action in ("preview", "cancel"):
+                command = benchmark.host_command(
+                    root / "java", root / action, root / "josm.jar",
+                    root / "plugin.jar", root / "input.zip", root / "input.osm",
+                    root / "tiles.json", root / "receipt.json", "nonce", "N1:baseline", action)
+                self.assertEqual(exports, command[1:4])
+                self.assertTrue(all(command.count(option) == 1 for option in exports))
+                self.assertEqual(3, sum(option.startswith("--add-exports=") for option in command))
+                self.assertIn(benchmark.HOST_CLASS, command)
+                self.assertEqual(action, command[-1])
+
     def test_rc6_requires_exact_reviewed_instrumentation_and_no_engine_delta(self):
         base = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
         approved = {
