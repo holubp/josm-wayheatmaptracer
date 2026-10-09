@@ -18,6 +18,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.swing.JDialog;
 import javax.swing.JMenuItem;
@@ -66,7 +67,9 @@ public final class PublicGuiSmokeMain {
             System.setProperty("wayheatmaptracer.benchmark.offline", "true");
             stage = "josm-fixture";
             PublicGuiSmokeFixture fixture = startJosmThenCreateFixture(
-                    () -> MainApplication.main(new String[] {"--offline=ALL"}),
+                    () -> startJosmWithDeadline(
+                            () -> MainApplication.main(new String[] {"--offline=ALL"}),
+                            report, TimeUnit.MINUTES.toMillis(3)),
                     report.getParent().resolve("public-input"));
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
@@ -196,6 +199,83 @@ public final class PublicGuiSmokeMain {
         return PublicGuiSmokeFixture.create(directory);
     }
 
+    static void startJosmWithDeadline(Runnable startup, Path report, long timeoutMillis) {
+        if (timeoutMillis <= 0) throw new IllegalArgumentException("Startup deadline must be positive");
+        startJosmWithDeadline(startup, report, () -> Thread.sleep(timeoutMillis));
+    }
+
+    @FunctionalInterface
+    interface StartupDeadline {
+        void await() throws InterruptedException;
+    }
+
+    static void startJosmWithDeadline(Runnable startup, Path report, StartupDeadline deadline) {
+        Thread startupThread = Thread.currentThread();
+        AtomicBoolean finished = new AtomicBoolean();
+        Thread watchdog = new Thread(() -> {
+            try {
+                deadline.await();
+            } catch (InterruptedException completed) {
+                return;
+            }
+            if (!finished.compareAndSet(false, true)) return;
+            try {
+                writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
+                        + "\"status\":\"FAIL\",\"stage\":\"josm-startup\","
+                        + "\"errorType\":\"StartupTimeout\"}\n");
+            } catch (Throwable reportFailure) {
+                System.err.println("GUI_SMOKE_STARTUP_REPORT_WRITE_FAILED");
+            }
+            System.err.println("GUI_SMOKE_STARTUP_TIMEOUT");
+            try {
+                printSafeStartupFrames("startup", startupThread, 14);
+                Thread.getAllStackTraces().keySet().stream()
+                        .filter(thread -> thread.getName().startsWith("AWT-EventQueue"))
+                        .limit(2)
+                        .forEach(thread -> printSafeStartupFrames("event-dispatch", thread, 10));
+                int shown = 0;
+                for (Window window : Window.getWindows()) {
+                    if (window.isShowing() && shown++ < 8) {
+                        System.err.println("GUI_SMOKE_WINDOW class=" + safeSymbol(
+                                window.getClass().getName()) + " modal="
+                                + (window instanceof JDialog dialog && dialog.isModal()));
+                    }
+                }
+            } catch (Throwable diagnosticFailure) {
+                System.err.println("GUI_SMOKE_STARTUP_DIAGNOSTIC_FAILED");
+            } finally {
+                System.exit(1);
+            }
+        }, "public-gui-startup-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+        try {
+            startup.run();
+        } finally {
+            finished.set(true);
+            watchdog.interrupt();
+            try {
+                watchdog.join(TimeUnit.SECONDS.toMillis(1));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Startup watchdog shutdown interrupted", interrupted);
+            }
+            if (watchdog.isAlive()) {
+                throw new IllegalStateException("Startup watchdog did not stop");
+            }
+        }
+    }
+
+    private static void printSafeStartupFrames(String role, Thread thread, int maximum) {
+        StackTraceElement[] frames = thread.getStackTrace();
+        for (int index = 0; index < Math.min(maximum, frames.length); index++) {
+            StackTraceElement frame = frames[index];
+            System.err.println("GUI_SMOKE_FRAME role=" + role + " index=" + index
+                    + " class=" + safeSymbol(frame.getClassName())
+                    + " method=" + safeSymbol(frame.getMethodName()));
+        }
+    }
+
     private static ManagedHeatmapConfig config() {
         return new ManagedHeatmapConfig("public-key", "public-policy", "public-signature",
                 "public-session", "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
@@ -295,6 +375,11 @@ public final class PublicGuiSmokeMain {
 
     private static String safeToken(String token) {
         return token != null && token.matches("[A-Za-z0-9._-]{1,80}") ? token : "unknown";
+    }
+
+    private static String safeSymbol(String symbol) {
+        return symbol != null && symbol.matches("[A-Za-z0-9_.$<>-]{1,160}")
+                ? symbol : "unknown";
     }
 
     private static void writeSummary(Path report, String json) throws Exception {

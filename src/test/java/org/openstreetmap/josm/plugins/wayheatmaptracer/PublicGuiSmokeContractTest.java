@@ -1,15 +1,19 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeAll;
@@ -71,9 +75,58 @@ class PublicGuiSmokeContractTest {
 
     @Test
     void freshJvmInitializesJosmBeforeParsingPublicFixture() throws Exception {
+        Process child = startProbe(StartupProbe.class, temporary.resolve("fresh-jvm").toString());
+        assertTrue(child.waitFor(30, TimeUnit.SECONDS), "Fresh JVM fixture probe timed out");
+        String output = new String(child.getInputStream().readAllBytes());
+        assertEquals(0, child.exitValue(), output);
+        assertTrue(output.contains("PUBLIC_FIXTURE_READY"), output);
+    }
+
+    @Test
+    void stalledJosmStartupProducesBoundedSafeFailureSummary() throws Exception {
+        Path report = temporary.resolve("startup-timeout.json");
+        Process child = startProbe(StartupTimeoutProbe.class, report.toString());
+        assertTrue(child.waitFor(10, TimeUnit.SECONDS), "Startup watchdog probe timed out");
+        String output = new String(child.getInputStream().readAllBytes());
+        assertEquals(1, child.exitValue(), output);
+        assertTrue(output.contains("GUI_SMOKE_STARTUP_TIMEOUT"), output);
+        assertTrue(output.contains("GUI_SMOKE_FRAME role=startup"), output);
+        assertFalse(output.contains(temporary.toString()), output);
+        String summary = Files.readString(report);
+        assertTrue(summary.contains("\"status\":\"FAIL\""), summary);
+        assertTrue(summary.contains("\"stage\":\"josm-startup\""), summary);
+        assertTrue(summary.contains("\"errorType\":\"StartupTimeout\""), summary);
+    }
+
+    @Test
+    void returnedJosmStartupStopsWatchdogBeforeItCanPublishFailure() throws Exception {
+        Path report = temporary.resolve("no-timeout.json");
+        CountDownLatch deadlineWaiting = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        PublicGuiSmokeMain.startJosmWithDeadline(() -> {
+            try {
+                assertTrue(deadlineWaiting.await(5, TimeUnit.SECONDS));
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(failure);
+            }
+        }, report, () -> {
+            deadlineWaiting.countDown();
+            try {
+                new CountDownLatch(1).await();
+            } catch (InterruptedException completed) {
+                interrupted.set(true);
+                throw completed;
+            }
+        });
+        assertTrue(interrupted.get());
+        assertFalse(Files.exists(report));
+    }
+
+    private static Process startProbe(Class<?> probe, String argument) throws Exception {
         List<String> classPath = new ArrayList<>();
         classPath.add(System.getProperty("java.class.path"));
-        for (ClassLoader loader = getClass().getClassLoader(); loader != null;
+        for (ClassLoader loader = probe.getClassLoader(); loader != null;
                 loader = loader.getParent()) {
             if (loader instanceof URLClassLoader urls) {
                 for (var url : urls.getURLs()) {
@@ -83,14 +136,10 @@ class PublicGuiSmokeContractTest {
                 }
             }
         }
-        Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java")
+        return new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java")
                 .toString(), "-cp", String.join(File.pathSeparator, classPath),
-                StartupProbe.class.getName(), temporary.resolve("fresh-jvm").toString())
+                probe.getName(), argument)
                 .redirectErrorStream(true).start();
-        assertTrue(child.waitFor(30, TimeUnit.SECONDS), "Fresh JVM fixture probe timed out");
-        String output = new String(child.getInputStream().readAllBytes());
-        assertEquals(0, child.exitValue(), output);
-        assertTrue(output.contains("PUBLIC_FIXTURE_READY"), output);
     }
 
     public static final class StartupProbe {
@@ -104,6 +153,21 @@ class PublicGuiSmokeContractTest {
                 throw new AssertionError("Public fixture was not parsed after JOSM initialization");
             }
             System.out.println("PUBLIC_FIXTURE_READY");
+        }
+    }
+
+    public static final class StartupTimeoutProbe {
+        private StartupTimeoutProbe() { }
+
+        public static void main(String[] args) {
+            PublicGuiSmokeMain.startJosmWithDeadline(() -> {
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            }, Path.of(args[0]), () -> { });
         }
     }
 }
