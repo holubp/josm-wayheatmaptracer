@@ -18,12 +18,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.io.TempDir;
+import org.openstreetmap.josm.tools.PlatformManager;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class PublicGuiSmokeContractTest {
     @TempDir Path temporary;
+    private static final List<String> JOSM_STARTUP_EXPORTS = List.of(
+            "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
+            "--add-exports=java.desktop/com.sun.imageio.plugins.jpeg=ALL-UNNAMED",
+            "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED");
 
     @BeforeAll
     static void configureJosm() {
@@ -123,7 +128,39 @@ class PublicGuiSmokeContractTest {
         assertFalse(Files.exists(report));
     }
 
+    @Test
+    void publicGuiTaskProvidesJosmStartupModuleExports() throws Exception {
+        String build = Files.readString(Path.of("build.gradle.kts"));
+        String task = build.substring(build.indexOf("tasks.register<JavaExec>(\"v022PublicGuiSmoke\")"));
+        task = task.substring(0, task.indexOf("tasks.jar {"));
+        for (String argument : JOSM_STARTUP_EXPORTS) {
+            assertTrue(task.contains("\"" + argument + "\""), argument);
+        }
+    }
+
+    @Test
+    void josmSanityCheckAcceptsExactlyTheRequiredJava17Exports() throws Exception {
+        Process missing = startProbe(StartupSanityProbe.class, "missing");
+        assertTrue(missing.waitFor(10, TimeUnit.SECONDS));
+        String missingOutput = new String(missing.getInputStream().readAllBytes());
+        assertEquals(0, missing.exitValue(), missingOutput);
+        for (String argument : JOSM_STARTUP_EXPORTS) {
+            assertTrue(missingOutput.contains(argument), missingOutput);
+        }
+        Process configured = startProbe(StartupSanityProbe.class, "configured",
+                JOSM_STARTUP_EXPORTS);
+        assertTrue(configured.waitFor(10, TimeUnit.SECONDS));
+        String configuredOutput = new String(configured.getInputStream().readAllBytes());
+        assertEquals(0, configured.exitValue(), configuredOutput);
+        assertTrue(configuredOutput.contains("JOSM_SANITY_CLEAR"), configuredOutput);
+    }
+
     private static Process startProbe(Class<?> probe, String argument) throws Exception {
+        return startProbe(probe, argument, List.of());
+    }
+
+    private static Process startProbe(Class<?> probe, String argument, List<String> vmArguments)
+            throws Exception {
         List<String> classPath = new ArrayList<>();
         classPath.add(System.getProperty("java.class.path"));
         for (ClassLoader loader = probe.getClassLoader(); loader != null;
@@ -136,10 +173,12 @@ class PublicGuiSmokeContractTest {
                 }
             }
         }
-        return new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java")
-                .toString(), "-cp", String.join(File.pathSeparator, classPath),
-                probe.getName(), argument)
-                .redirectErrorStream(true).start();
+        List<String> command = new ArrayList<>();
+        command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+        command.addAll(vmArguments);
+        command.addAll(List.of("-cp", String.join(File.pathSeparator, classPath),
+                probe.getName(), argument));
+        return new ProcessBuilder(command).redirectErrorStream(true).start();
     }
 
     public static final class StartupProbe {
@@ -168,6 +207,22 @@ class PublicGuiSmokeContractTest {
                     throw new AssertionError(interrupted);
                 }
             }, Path.of(args[0]), () -> { });
+        }
+    }
+
+    public static final class StartupSanityProbe {
+        private StartupSanityProbe() { }
+
+        public static void main(String[] args) {
+            List<String> messages = new ArrayList<>();
+            PlatformManager.getPlatform().startupSanityChecks((title, canContinue, issues) ->
+                    messages.addAll(List.of(issues)));
+            if ("configured".equals(args[0])) {
+                if (!messages.isEmpty()) throw new AssertionError("JOSM still reports a sanity issue");
+                System.out.println("JOSM_SANITY_CLEAR");
+            } else {
+                System.out.println(String.join("\n", messages));
+            }
         }
     }
 }

@@ -112,6 +112,13 @@ tasks.register<JavaExec>("v022PublicGuiSmoke") {
     dependsOn(tasks.jar)
     classpath = sourceSets["tools"].runtimeClasspath
     mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.PublicGuiSmokeMain")
+    // JOSM 19555 checks these exports during GUI startup and opens a blocking
+    // sanity dialog when its Java process lacks them.
+    jvmArgs(
+        "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
+        "--add-exports=java.desktop/com.sun.imageio.plugins.jpeg=ALL-UNNAMED",
+        "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
+    )
     val root = layout.buildDirectory.dir("reports/public-gui-smoke")
     doFirst {
         root.get().asFile.mkdirs()
