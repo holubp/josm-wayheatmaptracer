@@ -539,11 +539,13 @@ class V022NetworkSnapshotCaptureTest {
         add(deepData, deepA, deepB);
         Way deepSelected = loadedWay(10, List.of(deepA, deepB));
         deepData.addPrimitive(deepSelected);
-        addNestedRelations(deepData, deepSelected, deepA, 20_000, 1_000);
+        addNestedRelationsOnLargeSetupStack(deepData, deepSelected, deepA, 20_000, 1_000);
         NetworkSnapshot deep = assertDoesNotThrow(() -> onEdt(() -> NetworkSnapshotCapture.capture(
             deepData, specification("deep-relations", deepSelected, new OccurrenceRange(0, 1),
                 Map.of(way(10), List.of(new OccurrenceRange(0, 1))), Set.of(way(10)), Set.of(),
                 Set.of(), Set.of(node(1), node(2)), false, RecoveryPermissions.disabled(7.01)))));
+        assertEquals(20_000L, deep.primitives().keySet().stream()
+            .filter(key -> key.type() == PrimitiveKey.Type.RELATION).count());
         assertTrue(deep.primitives().containsKey(relation(20_999)));
     }
 
@@ -600,6 +602,37 @@ class V022NetworkSnapshotCaptureTest {
             relation.setModified(false);
             dataSet.addPrimitive(relation);
             child = relation;
+        }
+    }
+
+    private static void addNestedRelationsOnLargeSetupStack(DataSet dataSet, Way selected,
+        Node leaf, int depth, long firstId) {
+        // JOSM 19555 recursively recomputes Relation BBoxes during addPrimitive.
+        // Keep the full 20k real relation chain, but give that upstream setup
+        // its own stack; capture below still runs on the ordinary EDT stack.
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+            new java.util.concurrent.atomic.AtomicReference<>();
+        Thread setup = new Thread(null, () -> {
+            try {
+                addNestedRelations(dataSet, selected, leaf, depth, firstId);
+            } catch (Throwable thrown) {
+                failure.set(thrown);
+            }
+        }, "nested-relation-fixture-setup", 64L * 1024L * 1024L);
+        setup.setDaemon(true);
+        setup.start();
+        try {
+            setup.join(java.util.concurrent.TimeUnit.MINUTES.toMillis(4));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Deep relation fixture setup interrupted", interrupted);
+        }
+        if (setup.isAlive()) {
+            setup.interrupt();
+            throw new AssertionError("Deep relation fixture setup exceeded four minutes");
+        }
+        if (failure.get() != null) {
+            throw new AssertionError("Deep relation fixture setup failed", failure.get());
         }
     }
 

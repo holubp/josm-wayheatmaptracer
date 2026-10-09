@@ -23,7 +23,8 @@ class CorridorCenterlineOptimizerTest {
         Scenario plateauScenario = scenario(index -> 0.0, true);
         CorridorCenterlineOptimizer.OptimizationResult plateau = optimizer.optimize(
             plateauScenario.track(), plateauScenario.profiles(), 1.0);
-        Scenario sineScenario = scenario(index -> 5.0 * Math.sin(index * Math.PI / 10.0), false);
+        // Exact fixture bits must be stable across JDK CPU math intrinsics.
+        Scenario sineScenario = scenario(index -> 5.0 * StrictMath.sin(index * Math.PI / 10.0), false);
         CorridorCenterlineOptimizer.OptimizationResult sine = optimizer.optimize(
             sineScenario.track(), sineScenario.profiles(), 1.0);
 
