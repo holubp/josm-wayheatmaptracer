@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 
@@ -33,6 +34,9 @@ final class PublicGuiSmokeOracle {
         requireNear(geometry.get(geometry.size() - 1), point(40, 0), 0.01,
                 "last fixed endpoint");
         int central = 0;
+        double maximumCentralError = 0.0;
+        double observedCentralNorth = 0.0;
+        double expectedCentralNorth = 0.0;
         double previousEast = Double.NEGATIVE_INFINITY;
         for (GeographicPoint sample : geometry) {
             double east = eastMeters(sample);
@@ -45,13 +49,21 @@ final class PublicGuiSmokeOracle {
             if (Math.abs(east) <= 10.0) {
                 central++;
                 double analyticNorth = 4.0 * Math.cos(Math.PI * east / 64.0);
-                if (Math.abs(north - analyticNorth) > 1.8) {
-                    throw new IllegalStateException("Public preview missed the analytic central ridge");
-                }
+                maximumCentralError = Math.max(maximumCentralError, Math.abs(north - analyticNorth));
+                observedCentralNorth += north;
+                expectedCentralNorth += analyticNorth;
             }
         }
         if (central == 0) {
             throw new IllegalStateException("Public preview has no central ridge sample");
+        }
+        if (maximumCentralError > 1.8) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Public preview missed the analytic central ridge: centralSamples=%d, "
+                            + "maxErrorMeters=%.2f, meanObservedNorthMeters=%.2f, "
+                            + "meanExpectedNorthMeters=%.2f",
+                    central, maximumCentralError, observedCentralNorth / central,
+                    expectedCentralNorth / central));
         }
     }
 
