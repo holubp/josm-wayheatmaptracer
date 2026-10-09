@@ -45,8 +45,17 @@ def isolate_runner_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(module, "RUNNER", root / "scripts" / "run-validation.py")
 
 
+def _fixture_plugin_version() -> str:
+    for line in (ROOT / "gradle.properties").read_text(encoding="utf-8").splitlines():
+        if line.startswith("version="):
+            return line.partition("=")[2].strip()
+    raise AssertionError("disposable gradle.properties has no version")
+
+
 def fake_tools(tmp_path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
-               plugin_version: str = "0.22.0-rc.6") -> Path:
+               plugin_version: str | None = None) -> Path:
+    if plugin_version is None:
+        plugin_version = _fixture_plugin_version()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     class_root = tmp_path / "plugin-class"
@@ -115,7 +124,9 @@ def invoke(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> sub
 
 
 def env_for(path: Path, *, gradle_exit: int = 0, gradle_sleep: float = 0,
-            plugin_version: str = "0.22.0-rc.6") -> dict[str, str]:
+            plugin_version: str | None = None) -> dict[str, str]:
+    if plugin_version is None:
+        plugin_version = _fixture_plugin_version()
     env = os.environ.copy()
     env["PATH"] = f"{path}:{env['PATH']}"
     env.update({"FAKE_GRADLE_EXIT": str(gradle_exit), "FAKE_GRADLE_SLEEP": str(gradle_sleep),
@@ -741,7 +752,7 @@ def test_artifact_validation_unfolds_realistic_wrapped_main_class_and_utf8_bytes
         b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmap\r\n"
         b" TracerPlugin\r\n"
         b"Plugin-Description: Align heatmap \xc3\r\n \xa9 OSM\r\n"
-        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Version: " + _fixture_plugin_version().encode("ascii") + b"\r\n"
         b"Plugin-Mainversion: 19555\r\n\r\n"
     )
     _write_manifest_test_jar(module, plugin_class, manifest)
@@ -755,7 +766,7 @@ def test_artifact_validation_uses_only_main_manifest_section(tmp_path: Path) -> 
     manifest = (
         b"Manifest-Version: 1.0\r\n"
         b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
-        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Version: " + _fixture_plugin_version().encode("ascii") + b"\r\n"
         b"Plugin-Mainversion: 19555\r\n\r\n"
         b"Name: plugin-entry.class\r\n"
         b"Plugin-Class: invalid.Override\r\n"
@@ -774,21 +785,38 @@ def test_artifact_validation_rejects_a_folded_wrong_plugin_class(tmp_path: Path)
         b"Manifest-Version: 1.0\r\n"
         b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmap\r\n"
         b" WrongPlugin\r\n"
-        b"Plugin-Version: 0.22.0-rc.6\r\n"
+        b"Plugin-Version: " + _fixture_plugin_version().encode("ascii") + b"\r\n"
         b"Plugin-Mainversion: 19555\r\n\r\n"
     )
     _write_manifest_test_jar(module, plugin_class, manifest)
-    with pytest.raises(module.ValidationError):
+    with pytest.raises(module.ValidationError, match="missing required JOSM plugin fields"):
         module.check_artifact()
+
+
+@pytest.mark.parametrize("version", ["0.22.0-rc.6", "0.22.0-rc.7"])
+def test_fake_artifact_version_tracks_disposable_plugin_metadata(tmp_path: Path, version: str) -> None:
+    properties = ROOT / "gradle.properties"
+    lines = properties.read_text(encoding="utf-8").splitlines()
+    properties.write_text("\n".join(
+        f"version={version}" if line.startswith("version=") else line for line in lines
+    ) + "\n", encoding="utf-8")
+
+    tools = fake_tools(tmp_path)
+    result = invoke(tmp_path, "--profile", "public", "--output", str(tmp_path / "reports"),
+                    env=env_for(tools))
+
+    assert result.returncode == 0, result.stderr
+    status = json.loads((tmp_path / "reports" / "status.json").read_text())
+    assert status["state"] == "passed"
 
 
 @pytest.mark.parametrize("manifest", [
     b"Manifest-Version: 1.0\r\nPlugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
     b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
-    b"Plugin-Version: 0.22.0-rc.6\r\nPlugin-Mainversion: 19555\r\n\r\n",
+    b"Plugin-Version: @PLUGIN_VERSION@\r\nPlugin-Mainversion: 19555\r\n\r\n",
     b" orphaned continuation\r\nManifest-Version: 1.0\r\n"
     b"Plugin-Class: org.openstreetmap.josm.plugins.wayheatmaptracer.WayHeatmapTracerPlugin\r\n"
-    b"Plugin-Version: 0.22.0-rc.6\r\nPlugin-Mainversion: 19555\r\n\r\n",
+    b"Plugin-Version: @PLUGIN_VERSION@\r\nPlugin-Mainversion: 19555\r\n\r\n",
 ])
 def test_artifact_validation_rejects_duplicate_or_orphan_manifest_fields(
     tmp_path: Path, manifest: bytes,
@@ -796,6 +824,7 @@ def test_artifact_validation_rejects_duplicate_or_orphan_manifest_fields(
     module = _runner_module()
     tools = fake_tools(tmp_path)
     plugin_class = tools.parent / "plugin-class/org/openstreetmap/josm/plugins/wayheatmaptracer/WayHeatmapTracerPlugin.class"
+    manifest = manifest.replace(b"@PLUGIN_VERSION@", _fixture_plugin_version().encode("ascii"))
     _write_manifest_test_jar(module, plugin_class, manifest)
     with pytest.raises(module.ValidationError):
         module.check_artifact()

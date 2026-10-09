@@ -59,6 +59,34 @@ import org.openstreetmap.josm.spi.preferences.Config;
 public final class BenchmarkHostMain {
     private BenchmarkHostMain() { }
 
+    record FixtureSource(long generation) {
+        FixtureSource {
+            if (generation < 0L) {
+                throw new IllegalArgumentException("Frozen source generation must be non-negative");
+            }
+        }
+
+        ManagedHeatmapConfig config() {
+            return fixtureConfig(generation);
+        }
+
+        void saveCacheGenerationPreference() {
+            Config.getPref().putLong("wayheatmaptracer.cacheBuster", generation);
+        }
+
+        String sourceIdentity() {
+            return "managed-selected-hot-g" + generation;
+        }
+
+        ManagedTileGeneration tileGeneration() {
+            return new ManagedTileGeneration(generation);
+        }
+    }
+
+    static FixtureSource fixtureSource(long generation) {
+        return new FixtureSource(generation);
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 8) {
             throw new IllegalArgumentException("archive osm tiles receipt plugin nonce case version mode required");
@@ -86,6 +114,7 @@ public final class BenchmarkHostMain {
         var historical = FrozenReplayCodec.decode(Format15ArchiveReader.read(archive)
                 .artifact("frozen-input.bin").orElseThrow(() -> new IllegalStateException(
                         "Original benchmark input requires a single frozen-input.bin" )).bytes());
+        FixtureSource fixtureSource = fixtureSource(historical.network().sourceGeneration());
         DetachedWay expected = (DetachedWay) historical.network().primitives().get(
                 historical.request().selectedWayKey());
         Way selected = (Way) dataSet.getPrimitiveById(expected.key().id(), OsmPrimitiveType.WAY);
@@ -114,10 +143,10 @@ public final class BenchmarkHostMain {
             selectedPrimitives.add(selected.getNode(range.lastIndex()));
         }
         dataSet.setSelected(selectedPrimitives);
-        ManagedHeatmapConfig config = fixtureConfig();
+        ManagedHeatmapConfig config = fixtureSource.config();
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
         PluginPreferences.save(config);
-        Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
+        fixtureSource.saveCacheGenerationPreference();
         PluginPreferences.saveTracingSettings(new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
                 TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
                 AlignmentSourceMode.MANAGED_TILES));
@@ -129,7 +158,7 @@ public final class BenchmarkHostMain {
         }
         AlignmentConfig slideConfig = new AlignmentConfig(config, GeometryCleanupConfig.disabled());
         var seed = onEventThread(() -> new LiveBPreviewService().captureManagedSeed(dataSet, selection,
-                slideConfig, "managed-selected-hot-g0"));
+                slideConfig, fixtureSource.sourceIdentity()));
         var actual = seed.network();
         var frozen = historical.network();
         if (!actual.closure().equals(frozen.closure())
@@ -138,7 +167,7 @@ public final class BenchmarkHostMain {
                 || actual.sourceGeneration() != frozen.sourceGeneration()) {
             throw new IllegalStateException("Original live network context differs");
         }
-        seedTiles(tiles);
+        seedTiles(tiles, fixtureSource.tileGeneration());
         PluginInformation info = new PluginInformation(
                 Path.of(System.getProperty("wayheatmaptracer.benchmark.pluginJar")).toFile());
         SwingUtilities.invokeAndWait(() -> {
@@ -194,15 +223,15 @@ public final class BenchmarkHostMain {
         return task.get();
     }
 
-    private static ManagedHeatmapConfig fixtureConfig() {
+    private static ManagedHeatmapConfig fixtureConfig(long generation) {
         return new ManagedHeatmapConfig("fixture-key", "fixture-policy", "fixture-signature",
                 "fixture-session", "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
                 TrackerMode.PROBABILISTIC, false, false, false, false, false, false,
                 false, false, false, false, 7, 4, 3, InferenceMode.RAW_HIGH_RESOLUTION,
-                15, 14, 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
+                15, 14, 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, generation);
     }
 
-    private static void seedTiles(Path index) throws Exception {
+    private static void seedTiles(Path index, ManagedTileGeneration generation) throws Exception {
         List<String> lines = Files.readAllLines(index);
         if (lines.size() != 11 || !lines.get(0).equals("zoom\tx\ty\tsha256\trelativePath")) {
             throw new IllegalStateException("Selected Hot tile inventory is incomplete");
@@ -229,7 +258,7 @@ public final class BenchmarkHostMain {
             if (!new TileDecoderClassifier().decodeAndClassify(address, "image/png", bytes).usable()) {
                 throw new IllegalStateException("Selected Hot tile is not usable PNG");
             }
-            Path destination = cache.path(new ManagedTileGeneration(0L), address);
+            Path destination = cache.path(generation, address);
             Files.createDirectories(destination.getParent());
             Files.write(destination, bytes);
             if (zoom == 14) z14++; else if (zoom == 15) z15++;

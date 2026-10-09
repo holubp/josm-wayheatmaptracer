@@ -36,7 +36,7 @@ BASELINE_REVISION = "6288aafe6dc79e948a6981ae795d27ee56a653fe"
 HEX64 = set("0123456789abcdef")
 _RC6_SOURCE = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
 REVIEWED_RC6_SOURCE_SHA256 = MappingProxyType({
-    _RC6_SOURCE + "BenchmarkHostMain.java": "a19182f30ac065c670630f174c5e4a79eee1b317e5109bb47eb12b87b43a5b5a",
+    _RC6_SOURCE + "BenchmarkHostMain.java": "f145abf4818377cdc428916a5ca74701a803cf5aadeee9c3e6e555a130ac25cb",
     _RC6_SOURCE + "actions/AlignWayAction.java": "9f14bcbc59668c1201699b01fd1387952f7be5ecaf3d9bdc01ebfa0bb3166ae7",
     _RC6_SOURCE + "actions/OrdinaryActionBenchmarkObserver.java": "887381014611049364712f1e4a546062367eb2fa11353e735ceb00d64fdd28a4",
     _RC6_SOURCE + "diagnostics/replay/format15/Format15ProductionBundleFactory.java":
