@@ -1234,6 +1234,7 @@ class V022FixedIntervalEditPlanComposerTest {
         Way selectedWay = new Way();
         selectedWay.setNodes(selectedNodes.subList(3, 7));
         selectedWay.setOsmId(610, 1);
+        selectedWay.put("highway", "path");
         selectedWay.setModified(false);
         dataSet.addPrimitive(selectedWay);
         Node south = new Node(new LatLon(degrees(-35), degrees(flatSelected ? 3.6 : 0)));
@@ -1257,6 +1258,7 @@ class V022FixedIntervalEditPlanComposerTest {
                 ? List.of(farSouth, south, selectedNodes.get(3), north, farNorth)
                 : List.of(south, selectedNodes.get(3), north));
         receiver.setOsmId(613, 1);
+        receiver.put("highway", "path");
         receiver.setModified(false);
         dataSet.addPrimitive(receiver);
         var selection = new SelectionContext(selectedWay, 0, 2,

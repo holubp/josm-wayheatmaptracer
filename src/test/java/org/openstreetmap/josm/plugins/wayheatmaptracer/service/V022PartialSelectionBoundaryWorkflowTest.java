@@ -36,6 +36,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -95,9 +97,13 @@ class V022PartialSelectionBoundaryWorkflowTest {
         PreviewReviewState review = PreviewReviewState.fromEditPlan("partial-selection", plan);
         assertTrue(review.confirm().confirmed());
 
+        NetworkSnapshotCapture.CapturedSnapshot[] receipt =
+                new NetworkSnapshotCapture.CapturedSnapshot[1];
+        SwingUtilities.invokeAndWait(() -> receipt[0] = NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), captured[0].specification()));
         ApplyAlignmentEditPlanCommand command = new ApplyAlignmentEditPlanCommand(
-                fixture.dataSet(), plan, plan.before().datasetIdentity(),
-                () -> plan.before().sourceGeneration(), "Apply reviewed partial selection");
+                fixture.dataSet(), plan, new LiveNetworkSnapshotValidator(receipt[0], plan,
+                        () -> plan.before().sourceGeneration()), "Apply reviewed partial selection");
         SwingUtilities.invokeAndWait(() -> UndoRedoHandler.getInstance().add(command));
         List<NodeState> applied = state(fixture.way());
         assertEquals(expectedGeometry, applied.stream().map(node ->
