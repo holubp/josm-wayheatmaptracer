@@ -64,12 +64,11 @@ public final class PublicGuiSmokeMain {
             if (!Files.isRegularFile(jar)) throw new IllegalStateException("Plugin jar is missing");
             // Both JOSM and plugin-direct source acquisition are forced offline.
             System.setProperty("wayheatmaptracer.benchmark.offline", "true");
-            stage = "fixture";
-            PublicGuiSmokeFixture fixture = PublicGuiSmokeFixture.create(
+            stage = "josm-fixture";
+            PublicGuiSmokeFixture fixture = startJosmThenCreateFixture(
+                    () -> MainApplication.main(new String[] {"--offline=ALL"}),
                     report.getParent().resolve("public-input"));
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
-            stage = "josm";
-            MainApplication.main(new String[] {"--offline=ALL"});
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
             PluginPreferences.save(config());
             PluginPreferences.saveTracingSettings(new TracingSettings(
@@ -177,7 +176,7 @@ public final class PublicGuiSmokeMain {
                     + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
                     + "\"datasetUnchanged\":true,\"undoUnchanged\":true}\n");
             System.exit(0);
-        } catch (Exception failure) {
+        } catch (Exception | LinkageError failure) {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"FAIL\",\"stage\":\"" + safeToken(stage)
                     + "\",\"errorType\":\"" + safeToken(failure.getClass().getSimpleName())
@@ -189,6 +188,12 @@ public final class PublicGuiSmokeMain {
 
     static void requireDisplay(boolean headless) {
         if (headless) throw new IllegalStateException("Real JOSM GUI display is unavailable");
+    }
+
+    static PublicGuiSmokeFixture startJosmThenCreateFixture(Runnable startup, Path directory)
+            throws Exception {
+        startup.run();
+        return PublicGuiSmokeFixture.create(directory);
     }
 
     private static ManagedHeatmapConfig config() {
