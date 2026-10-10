@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -922,16 +923,39 @@ public final class LastSlideDebugBundle {
         try {
             var codeSource = WayHeatmapTracerPlugin.class.getProtectionDomain().getCodeSource();
             if (codeSource != null && codeSource.getLocation() != null) {
-                Path path = Path.of(codeSource.getLocation().toURI());
-                if (Files.isRegularFile(path)) {
-                    byte[] digest = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path));
-                    return "sha256:" + HexFormat.of().formatHex(digest, 0, 8);
-                }
+                return buildIdentityFromPath(Path.of(codeSource.getLocation().toURI()));
             }
         } catch (Exception ignored) {
             // Development class directories and restricted plugin loaders have no stable jar digest.
         }
         return "development";
+    }
+
+    static String buildIdentityFromPath(Path path) {
+        try {
+            if (Files.isRegularFile(path)) {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                return buildIdentityFromStream(Files.newInputStream(path), digest);
+            }
+        } catch (Exception ignored) {
+            // Missing or restricted packaged files retain the development fallback.
+        }
+        return "development";
+    }
+
+    static String buildIdentityFromStream(InputStream stream, MessageDigest digest) {
+        try {
+            try (InputStream owned = stream) {
+                byte[] buffer = new byte[64 * 1024];
+                int count;
+                while ((count = owned.read(buffer)) != -1) {
+                    digest.update(buffer, 0, count);
+                }
+            }
+            return "sha256:" + HexFormat.of().formatHex(digest.digest(), 0, 8);
+        } catch (Exception ignored) {
+            return "development";
+        }
     }
 
     private static String addBuildIdentity(String json, String version, String build) {
