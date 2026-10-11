@@ -62,6 +62,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
@@ -78,6 +79,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPrev
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.refinement.ImageCostField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.ui.PreviewReviewState;
@@ -981,9 +983,244 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(boundaryCoordinates, boundaryOrder.stream().map(node -> new LatLon(node.lat(), node.lon())).toList());
     }
 
-    @Test
-    void fixedNonHighwayJunctionCannotWaiveFinalBacktrack() throws Exception {
+    @ParameterizedTest
+    @MethodSource("fixedPolicySources")
+    void fixedPolicyCaptureKeepsReceiverExactAndSlidesSupportedInterior(FixedPolicySource source,
+            @TempDir Path directory)
+            throws Exception {
         Fixture fixture = relationJunctionFixture();
+        for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) {
+            fixture.dataSet().removePrimitive(relation);
+        }
+        Way receiver = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 11)
+                .findFirst().orElseThrow();
+        receiver.firstNode().setCoor(new LatLon(longitude(-source.receiverArmMeters()), 0));
+        receiver.lastNode().setCoor(new LatLon(longitude(source.receiverArmMeters()), 0));
+        receiver.getNodes().forEach(node -> node.setModified(false));
+        fixture.way().firstNode().setCoor(new LatLon(longitude(2), longitude(-38)));
+        fixture.way().firstNode().setModified(false);
+        List<String> original = state(fixture);
+        var service = new LiveBPreviewService();
+        var captured = new LiveBPreviewService.Captured[1];
+        var sourceEpoch = new org.openstreetmap.josm.plugins.wayheatmaptracer.imagery.VisibleSourceEpoch();
+        var visibleRaster = manualJunctionRaster(false, 50);
+        var lockedVisibleRaster = new LiveBPreviewService.VisibleRaster(visibleRaster.width(), visibleRaster.height(),
+                visibleRaster.argb(), visibleRaster.minimumEast(), visibleRaster.minimumNorth(),
+                visibleRaster.maximumEast(), visibleRaster.maximumNorth(),
+                visibleRaster.projectionUnitsPerViewPixel(), visibleRaster.groundMetersPerViewPixel(),
+                visibleRaster.nativePitchMeters(), visibleRaster.sourceIdentity(), visibleRaster.projectionCode(),
+                sourceEpoch.captureStable());
+        var configuration = new AlignmentConfig(config(TrackerMode.PROBABILISTIC).heatmap()
+                .withAlignmentMode(source.mode()), GeometryCleanupConfig.disabled());
+        if (source.managed()) {
+            var base = configuration.heatmap();
+            configuration = new AlignmentConfig(new ManagedHeatmapConfig("key", "policy", "signature", "session",
+                    base.activity(), base.color(), base.manualLayerName(), base.layerRegex(), base.alignmentMode(),
+                    base.trackerMode(), base.verbose(), base.debug(), base.multiColorDetection(),
+                    base.aggregateAllColorSchemes(), base.showAggregateIntensityLayer(), base.candidateRatingEnabled(),
+                    base.parallelWayAwareness(), base.allowUndownloadedAlignment(), false, base.simplifyEnabled(),
+                    base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                    base.inferenceMode(), 18, 18, base.searchHalfWidthMeters(), base.sampleStepMeters(),
+                    base.intensitySamplingMode(), base.cacheBuster()), GeometryCleanupConfig.disabled());
+            AlignmentConfig managedConfig = configuration;
+            var seed = onEdtValue(() -> service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    managedConfig, "fixed-policy-managed",
+                    new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED, false)));
+            BufferedImage image = managedManualJunctionImage();
+            boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
+            java.util.Arrays.fill(valid, true);
+            double pitch = 2 * Math.PI * 6378137 / Math.scalb(256.0, 18);
+            double scale = RenderedHeatmapSampler.RASTER_SCALE * pitch;
+            double origin = Math.scalb(256.0, 18) / 2 - image.getWidth() / (2 * scale);
+            captured[0] = service.attachManagedRaster(seed, new ManagedModernPreviewSource.Raster(image, valid,
+                    SupportedInputRasterTransform.webMercator(18, origin, origin, scale), "hot", 18,
+                    "fixed-policy-managed", new org.openstreetmap.josm.plugins.wayheatmaptracer.tile
+                            .ManagedTileGeneration(0L)));
+        } else {
+            AlignmentConfig visibleConfig = configuration;
+            onEdt(() -> captured[0] = service.capture(fixture.dataSet(), fixture.selection(),
+                    lockedVisibleRaster, visibleConfig, false,
+                    new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED, false)));
+        }
+        var computed = service.compute(captured[0], CancellationProbe.NONE);
+        assertTrue(computed.partitioned(), "Fixed policy still needs bounded fixed-island composition");
+        var batch = computed.intervalBatch();
+        assertEquals("selected-visible", batch.options().sourceTier(),
+                "Display must not rename the compatible native source tier");
+        assertTrue(captured[0].specification().fixedReceiverGeometry());
+        assertFalse(batch.network().closure().editableExistingKeys().contains(
+                PrimitiveKey.existing(PrimitiveKey.Type.WAY, 11)));
+        assertFalse(batch.network().closure().movableExistingNodeKeys().contains(
+                PrimitiveKey.existing(PrimitiveKey.Type.NODE, 9)));
+        assertFalse(batch.partition().slideIntervals().isEmpty(), batch.partition().toString());
+        assertTrue(batch.partition().junctionDispositions().stream().noneMatch(
+                disposition -> disposition.automaticEligible()));
+        assertTrue(batch.partition().junctionDispositions().stream().allMatch(disposition ->
+                disposition.reason() == ManualJunctionEligibility.Reason.FIXED_POLICY));
+        var composed = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertTrue(composed.applyAvailable(), composed.intervals().toString());
+        var plan = composed.plan().orElseThrow();
+        for (Node node : receiver.getNodes()) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertEquals(plan.before().primitives().get(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 11)),
+                plan.after().primitives().get(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 11)));
+        for (PrimitiveKey key : batch.network().closure().protectedExistingNodeKeys()) {
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        assertFalse(plan.before().primitives().get(PrimitiveKey.existing(PrimitiveKey.Type.NODE, 8))
+                .equals(plan.after().primitives().get(PrimitiveKey.existing(PrimitiveKey.Type.NODE, 8))));
+        String summary = AlignWayAction.intervalPreviewSummary(new AlignWayAction.IntervalPreviewState(computed));
+        assertTrue(summary.contains("Junction adjustment is off"), summary);
+        assertFalse(summary.contains("Adjust this junction manually first"), summary);
+        assertTrue(summary.contains(source.managed() ? "Source: managed tiles" : "Source: visible rendered layer"),
+                summary);
+        String sourceHash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest((source.managed() ? captured[0].managedRaster().sourceIdentity()
+                        : captured[0].raster().sourceIdentity()).getBytes(StandardCharsets.UTF_8)));
+        Format15ProductionBundleFactory.IntervalSourceReceipt sourceReceipt = source.managed()
+                ? new Format15ProductionBundleFactory.ManagedTileSourceReceipt(
+                        captured[0].managedRaster().generation().value(), captured[0].managedRaster().zoom(), sourceHash)
+                : new Format15ProductionBundleFactory.VisibleLayerSourceReceipt(
+                        captured[0].raster().sourceReceipt().revision(), null, sourceHash);
+        var diagnostic = Format15ProductionBundleFactory.createLiveIntervals("test", batch, composed, Map.of(),
+                sourceReceipt,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+        diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
+                new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(),
+                        computed.options()), TrackerMode.PROBABILISTIC);
+        Path archivePath = directory.resolve("fixed-policy-preview.zip");
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
+                .write(diagnostic, archivePath);
+        var archive = Format15ArchiveReader.read(archivePath);
+        var replay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner
+                .replayIntervals(archive, archive.sourceIdentityHash(), archive.parameterHash());
+        assertEquals(batch.partition(), replay.partition());
+        assertEquals(plan.canonicalHash(), replay.assessment().plan().orElseThrow().canonicalHash());
+        assertEquals(batch.evidence().fields().get(batch.options().fieldName()).lineage(),
+                replay.batch().evidence().fields().get(replay.batch().options().fieldName()).lineage());
+        assertEquals(original, state(fixture));
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        var network = new LiveNetworkSnapshotValidator(onEdtValue(() -> NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), captured[0].specification())), plan, () -> plan.before().sourceGeneration());
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.LockedApplyValidator validator = source.managed()
+                ? network : new VisibleSourceLockedApplyValidator(network, service, captured[0],
+                        () -> lockedVisibleRaster, sourceEpoch, () -> { }, message -> { });
+        var command = new ApplyAlignmentEditPlanCommand(fixture.dataSet(), plan, validator,
+                "Apply supported interior with fixed junction");
+        onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), fixture.way().getNodes().stream()
+                .map(node -> new GeographicPoint(node.lat(), node.lon())).toList());
+        List<String> applied = state(fixture);
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(original, state(fixture));
+        onEdt(() -> UndoRedoHandler.getInstance().redo());
+        assertEquals(applied, state(fixture));
+    }
+
+    private record FixedPolicySource(AlignmentMode mode, boolean managed, double receiverArmMeters) { }
+
+    @Test
+    void compositeBacktrackScopePreservesFrozenReversalAndDistinguishesRealTerminal() throws Exception {
+        Fixture fixture = relationJunctionWithStraightOutsideFixture();
+        for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) fixture.dataSet().removePrimitive(relation);
+        Node five = fixture.dataSet().getNodes().stream().filter(node -> node.getUniqueId() == 5).findFirst().orElseThrow();
+        Node six = fixture.dataSet().getNodes().stream().filter(node -> node.getUniqueId() == 6).findFirst().orElseThrow();
+        five.setCoor(new LatLon(0, longitude(-6)));
+        six.setCoor(new LatLon(longitude(0.5), longitude(-10)));
+        five.setModified(false);
+        six.setModified(false);
+        List<String> original = state(fixture);
+        var service = new LiveBPreviewService();
+        var captured = onEdtValue(() -> service.capture(fixture.dataSet(), fixture.selection(),
+                manualJunctionRaster(false, 100), config(TrackerMode.PROBABILISTIC), false,
+                new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED, false)));
+        var computed = service.compute(captured, CancellationProbe.NONE);
+        assertTrue(computed.partitioned());
+        var assessment = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
+        assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
+        var plan = assessment.plan().orElseThrow();
+        PrimitiveKey fiveKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 5);
+        PrimitiveKey sixKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 6);
+        assertTrue(computed.intervalBatch().partition().fixedIslands().stream().anyMatch(island ->
+                island.occurrenceKeys().containsAll(List.of(fiveKey, sixKey))));
+        assertEquals(plan.before().primitives().get(fiveKey), plan.after().primitives().get(fiveKey));
+        assertEquals(plan.before().primitives().get(sixKey), plan.after().primitives().get(sixKey));
+        assertFalse(plan.validation().findingCodes().contains("modern-final:ADJACENT_BACKTRACK"));
+        var before = computed.intervalBatch().network();
+        var evidence = computed.evidence();
+        DetachedWay selected = (DetachedWay) before.primitives().get(plan.selectedWayKey());
+        List<PrimitiveKey> frozenTriplet = List.of(PrimitiveKey.existing(PrimitiveKey.Type.NODE, 4), fiveKey, sixKey);
+        List<MetricPoint> frozenPoints = frozenTriplet.stream().map(key -> evidence.coordinateFrame().toMetric(
+                ((DetachedNode) before.primitives().get(key)).coordinate())).toList();
+        assertTrue(FinalGeometryEvaluator.backtrackFindings(frozenPoints).stream().anyMatch(finding ->
+                finding.code() == FinalGeometryEvaluator.FindingCode.ADJACENT_BACKTRACK));
+        assertTrue(ModernSingleWayEditPlanAdapter.compositeBacktrackFindings(before, before.primitives(),
+                selected, frozenTriplet, evidence).isEmpty());
+
+        // Isolate the structural guard on detached assembled values. The fixed-to-fixed
+        // edge stays byte-exact; only the incoming planned edge changes.
+        PrimitiveKey planned = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 900);
+        Map<PrimitiveKey, org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive> after =
+                new LinkedHashMap<>(before.primitives());
+        after.put(planned, new DetachedNode(planned, new GeographicPoint(longitude(-0.3), longitude(-12)),
+                Map.of(), false, true));
+        List<PrimitiveKey> mixedTriplet = List.of(planned, fiveKey, sixKey);
+        List<PrimitiveKey> sequence = new ArrayList<>(selected.nodeKeys());
+        sequence.add(sequence.indexOf(fiveKey), planned);
+        after.put(selected.key(), new DetachedWay(selected.key(), sequence, selected.tags(), false, true));
+        assertEquals(before.primitives().get(fiveKey), after.get(fiveKey));
+        assertEquals(before.primitives().get(sixKey), after.get(sixKey));
+        assertEquals(sequence.indexOf(fiveKey) + 1, sequence.indexOf(sixKey));
+        assertEquals(List.of("modern-final:ADJACENT_BACKTRACK"),
+                ModernSingleWayEditPlanAdapter.compositeBacktrackFindings(before, after, selected,
+                        mixedTriplet, evidence), "A subrange end is not a way terminal");
+        after.put(selected.key(), new DetachedWay(selected.key(), mixedTriplet, selected.tags(), false, true));
+        assertEquals(List.of("modern-final:ADJACENT_BACKTRACK", "modern-final:TERMINAL_OVERSHOOT"),
+                ModernSingleWayEditPlanAdapter.compositeBacktrackFindings(before, after, selected,
+                        mixedTriplet, evidence));
+
+        var network = new LiveNetworkSnapshotValidator(onEdtValue(() -> NetworkSnapshotCapture.captureBound(
+                fixture.dataSet(), captured.specification())), plan, () -> plan.before().sourceGeneration());
+        onEdt(() -> UndoRedoHandler.getInstance().add(new ApplyAlignmentEditPlanCommand(fixture.dataSet(),
+                plan, network, "Apply disjoint interval while preserving original frozen reversal")));
+        assertEquals(plan.finalPreviewWays().get(plan.selectedWayKey()), fixture.way().getNodes().stream()
+                .map(node -> new GeographicPoint(node.lat(), node.lon())).toList());
+        assertEquals(new LatLon(0, longitude(-6)), five.getCoor());
+        assertEquals(new LatLon(longitude(0.5), longitude(-10)), six.getCoor());
+        onEdt(() -> UndoRedoHandler.getInstance().undo());
+        assertEquals(original, state(fixture));
+    }
+
+    private static Stream<FixedPolicySource> fixedPolicySources() {
+        return Stream.concat(Stream.of(AlignmentMode.PRECISE_SHAPE, AlignmentMode.MOVE_EXISTING_NODES)
+                .flatMap(mode -> Stream.of(new FixedPolicySource(mode, false, 50),
+                        new FixedPolicySource(mode, true, 50))),
+                Stream.of(new FixedPolicySource(AlignmentMode.PRECISE_SHAPE, false, 1000)));
+    }
+
+    private static BufferedImage managedManualJunctionImage() {
+        int width = 600;
+        BufferedImage image = new BufferedImage(width, width, BufferedImage.TYPE_INT_ARGB);
+        for (int x = 0; x < width; x++) {
+            double east = (x + 0.5 - width / 2.0) / RenderedHeatmapSampler.RASTER_SCALE;
+            double center = east <= -34 ? 2 : east >= -30 ? 0 : (-30 - east) * 0.5;
+            for (int y = 0; y < width; y++) {
+                double north = (width / 2.0 - y - 0.5) / RenderedHeatmapSampler.RASTER_SCALE;
+                int gray = (int) Math.round(255 * (0.02 + 0.80 * Math.exp(
+                        -0.5 * (north - center) * (north - center) / 1.44)));
+                image.setRGB(x, y, 0xff000000 | gray << 16 | gray << 8 | gray);
+            }
+        }
+        return image;
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    void fixedNonHighwayJunctionCannotWaiveFinalBacktrack(TrackerMode engine) throws Exception {
+        Fixture fixture = engine == TrackerMode.PROBABILISTIC
+                ? relationJunctionWithStraightOutsideFixture() : relationJunctionFixture();
         fixture.way().put("highway", "path");
         fixture.way().setModified(false);
         for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) fixture.dataSet().removePrimitive(relation);
@@ -996,11 +1233,61 @@ class V022ModernSingleWayEditPlanAdapterTest {
         var captured = new LiveBPreviewService.Captured[1];
         var permissions = new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.REATTACH, true);
         onEdt(() -> captured[0] = service.capture(fixture.dataSet(), fixture.selection(),
-                manualJunctionRaster(false, 100), config(TrackerMode.PROBABILISTIC), true, permissions));
+                manualJunctionRaster(false, 100), config(engine), true, permissions));
         var computed = service.compute(captured[0], CancellationProbe.NONE);
+        if (computed.partitioned()) {
+            var batch = computed.intervalBatch();
+            assertTrue(new FixedIntervalEditPlanComposer().compose(batch, Map.of()).applyAvailable(),
+                    "The unmodified supported baseline must be applicable");
+            var originalRun = batch.runs().get(0);
+            var unsafe = withOwnedBacktrack(originalRun.routes().get(0), computed);
+            List<ModernTracePipeline.Route> routes = new ArrayList<>(originalRun.routes());
+            routes.set(0, unsafe);
+            List<IntervalTraceBatch.IntervalRun> runs = new ArrayList<>(batch.runs());
+            runs.set(0, new IntervalTraceBatch.IntervalRun(originalRun.interval(), originalRun.request(),
+                    new ModernTracePipeline.Result(originalRun.result().inference(), routes), originalRun.usage()));
+            var unsafeBatch = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                    batch.partition(), runs, batch.options(), batch.authoritySpecification());
+            var composed = new FixedIntervalEditPlanComposer().compose(unsafeBatch, Map.of());
+            assertFalse(composed.applyAvailable());
+            assertTrue(composed.intervals().stream().anyMatch(interval ->
+                    interval.reason().equals("LOCAL_ROUTE_BLOCKED")), composed.intervals().toString());
+            // Final composition must independently catch unsafe owned geometry even
+            // when its preliminary interval quality still describes the original route.
+            var originalRoute = originalRun.routes().get(0);
+            routes.set(0, new ModernTracePipeline.Route(unsafe.rawHypothesis(), unsafe.hypothesis(),
+                    unsafe.pointIds(), unsafe.assignments(), unsafe.sourceOwnership(), originalRoute.quality(),
+                    unsafe.cleanupStatus(), true));
+            runs.set(0, new IntervalTraceBatch.IntervalRun(originalRun.interval(), originalRun.request(),
+                    new ModernTracePipeline.Result(originalRun.result().inference(), routes), originalRun.usage()));
+            var finalBoundary = new FixedIntervalEditPlanComposer().compose(new IntervalTraceBatch(
+                    batch.fullRequest(), batch.evidence(), batch.network(), batch.partition(), runs,
+                    batch.options(), batch.authoritySpecification()), Map.of());
+            assertFalse(finalBoundary.applyAvailable());
+            assertTrue(finalBoundary.plan().isPresent(), finalBoundary.intervals().toString());
+            var finalPlan = finalBoundary.plan().orElseThrow();
+            assertEquals(ValidationReport.Disposition.HARD_BLOCKED, finalPlan.validation().disposition());
+            assertTrue(finalPlan.validation().findingCodes().contains("modern-final:ADJACENT_BACKTRACK"),
+                    finalPlan.validation().findingCodes().toString());
+            for (Node node : boundary.getNodes()) {
+                PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+                assertEquals(finalPlan.before().primitives().get(key), finalPlan.after().primitives().get(key));
+            }
+            assertEquals(original, state(fixture));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            return;
+        }
+        // The generic pipeline can choose a safe route. Feed the same validation boundary
+        // an independently unsafe final preview made from its supported owned points.
+        List<ModernTracePipeline.Route> routes = new ArrayList<>(computed.pipeline().routes());
+        routes.set(0, withOwnedBacktrack(routes.get(0), computed));
+        computed = new LiveBPreviewService.Computed(computed.captured(), computed.evidence(), computed.request(),
+                new ModernTracePipeline.Result(computed.pipeline().inference(), routes), computed.options(),
+                computed.counters(), null, computed.settingsResolutionJson());
         var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
-        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_GEOMETRY_BLOCKED, assessment.availability());
+        assertFalse(assessment.applyAvailable());
         var plan = assessment.plan().orElseThrow();
+        assertEquals(ValidationReport.Disposition.HARD_BLOCKED, plan.validation().disposition());
         assertTrue(plan.validation().findingCodes().contains("modern-final:ADJACENT_BACKTRACK"));
         for (Node node : boundary.getNodes()) {
             PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
@@ -1341,8 +1628,10 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(beforeLive, state(fixture));
     }
 
-    @Test
-    void relationJunctionCanLeaveAnExactFrozenFootprintWhileSlidingOutside() throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    void relationJunctionCanLeaveAnExactFrozenFootprintWhileSlidingOutside(
+            TrackerMode engine, @TempDir Path directory) throws Exception {
         Fixture fixture = relationJunctionFixture();
         Way receiverWithContinuation = fixture.dataSet().getWays().stream()
                 .filter(way -> way.getUniqueId() == 11).findFirst().orElseThrow();
@@ -1363,28 +1652,59 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 JunctionPolicy.REATTACH, true);
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
                 fixture.dataSet(), fixture.selection(), manualJunctionRaster(false, 100),
-                config(TrackerMode.PROBABILISTIC),
+                config(engine),
                 true, permissions));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
-        ModernSingleWayEditPlanAdapter.Assessment assessment =
-                new ModernSingleWayEditPlanAdapter().assess(computed, 0);
-
-        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
-                assessment.availability(), assessment.detail());
-        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
-                captured[0].junctionDecision().reason());
-        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
-                assessment.junctionReason());
-        assertEquals(null, assessment.manualReason());
-        AlignmentEditPlan plan = assessment.plan().orElseThrow();
-        var diagnostic = Format15ProductionBundleFactory.createLive("test",
-                new FrozenReplayInput(computed.request(), computed.evidence(),
-                        computed.captured().network(), computed.options()),
-                computed.pipeline(), "preview-open", "visible-layer", 0, plan,
-                false, false, computed.counters(), assessment.junctionReason());
-        assertTrue(new String(diagnostic.artifact("attempt-status.json").bytes(),
-                StandardCharsets.UTF_8).contains(
-                        "\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
+        AlignmentEditPlan plan;
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Bundle diagnostic;
+        if (computed.partitioned()) {
+            assertTrue(captured[0].intervalPartition().junctionDispositions().stream().anyMatch(junction ->
+                    junction.reason() == ManualJunctionEligibility.Reason.PARTICIPATING_RELATION
+                            && !junction.automaticEligible()));
+            var composed = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
+            assertTrue(composed.applyAvailable(), composed.intervals().toString());
+            plan = composed.plan().orElseThrow();
+            diagnostic = Format15ProductionBundleFactory.createLiveIntervals("test",
+                    computed.intervalBatch(), composed, Map.of(),
+                    Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                    Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW,
+                    null, null);
+            // The live action explicitly attests freshly computed runtime policy after
+            // assembling the interval artifact; the generic artifact factory never infers it.
+            diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
+                    new FrozenReplayInput(computed.request(), computed.evidence(),
+                            computed.captured().network(), computed.options()), engine);
+            Path archivePath = directory.resolve("fixed-relation-preview.zip");
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                    .Format15BundleWriter.write(diagnostic, archivePath);
+            var archive = Format15ArchiveReader.read(archivePath);
+            var replay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                    .Format15ReplayRunner.replayIntervals(archive, archive.sourceIdentityHash(), archive.parameterHash());
+            assertEquals(captured[0].intervalPartition(), replay.partition());
+            assertTrue(replay.partition().junctionDispositions().stream().anyMatch(junction ->
+                    junction.reason() == ManualJunctionEligibility.Reason.PARTICIPATING_RELATION
+                            && !junction.automaticEligible()));
+            assertEquals(plan.canonicalHash(), replay.assessment().plan().orElseThrow().canonicalHash());
+        } else {
+            ModernSingleWayEditPlanAdapter.Assessment assessment =
+                    new ModernSingleWayEditPlanAdapter().assess(computed, 0);
+            assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                    assessment.availability(), assessment.detail());
+            assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                    captured[0].junctionDecision().reason());
+            assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                    assessment.junctionReason());
+            assertEquals(null, assessment.manualReason());
+            plan = assessment.plan().orElseThrow();
+            diagnostic = Format15ProductionBundleFactory.createLive("test",
+                    new FrozenReplayInput(computed.request(), computed.evidence(),
+                            computed.captured().network(), computed.options()),
+                    computed.pipeline(), "preview-open", "visible-layer", 0, plan,
+                    false, false, computed.counters(), assessment.junctionReason());
+            assertTrue(new String(diagnostic.artifact("attempt-status.json").bytes(),
+                    StandardCharsets.UTF_8).contains(
+                            "\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
+        }
         assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10)),
                 plan.affectedWayKeys());
         for (int id : new int[] {2, 3, 4, 5, 6, 9}) {
@@ -1435,8 +1755,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 .map(node -> new LatLon(node.lat(), node.lon())).toList());
     }
 
-    @Test
-    void taggedJunctionCannotInventAReceiverPortAfterFreezing() throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    void taggedJunctionCannotInventAReceiverPortAfterFreezing(TrackerMode engine) throws Exception {
         Fixture fixture = relationJunctionFixture();
         Node junction = fixture.way().getNode(7);
         junction.put("highway", "traffic_signals");
@@ -1457,7 +1778,38 @@ class V022ModernSingleWayEditPlanAdapterTest {
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
                 fixture.dataSet(), fixture.selection(), manualJunctionRaster(false, 100),
-                config(TrackerMode.PROBABILISTIC), true, permissions));
+                config(engine), true, permissions));
+        assertEquals(engine == TrackerMode.PROBABILISTIC, captured[0].intervalPartition() != null);
+        if (captured[0].intervalPartition() != null) {
+            var partition = captured[0].intervalPartition();
+            assertTrue(partition.junctionDispositions().stream().allMatch(disposition ->
+                    !disposition.automaticEligible()));
+            PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, receiver.getUniqueId());
+            assertTrue(partition.provedPorts().stream().noneMatch(port -> port.wayKey().equals(receiverKey)));
+            assertTrue(captured[0].network().closure().externalPorts().stream()
+                    .noneMatch(port -> port.wayKey().equals(receiverKey)));
+            assertFalse(captured[0].network().closure().editableExistingKeys().contains(receiverKey));
+            assertFalse(captured[0].network().closure().movableExistingNodeKeys().contains(
+                    PrimitiveKey.existing(PrimitiveKey.Type.NODE, junction.getUniqueId())));
+            assertTrue(partition.fixedIslands().stream().flatMap(island -> island.occurrenceKeys().stream())
+                    .allMatch(captured[0].network().closure().protectedExistingNodeKeys()::contains));
+            var computed = new LiveBPreviewService().compute(captured[0], CancellationProbe.NONE);
+            var composed = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
+            assertTrue(composed.applyAvailable(), composed.intervals().toString());
+            var plan = composed.plan().orElseThrow();
+            for (Node node : receiver.getNodes()) {
+                PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+                assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+            }
+            assertEquals(plan.before().primitives().get(receiverKey), plan.after().primitives().get(receiverKey));
+            for (var island : partition.fixedIslands()) for (PrimitiveKey key : island.occurrenceKeys()) {
+                assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+            }
+            assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10)), plan.affectedWayKeys());
+            assertEquals(before, state(fixture));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            return;
+        }
         assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_ARM,
                 captured[0].junctionDecision().reason());
         LiveBPreviewService.Computed computed = new LiveBPreviewService().compute(
@@ -1472,9 +1824,11 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(before, state(fixture));
     }
 
-    @Test
-    void manualJunctionWithoutSupportedOutsideConnectorHasVisibleNonApplyableReason() throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    void manualJunctionWithoutSupportedOutsideConnectorHasVisibleNonApplyableReason(TrackerMode engine) throws Exception {
         Fixture fixture = relationJunctionFixture();
+        List<String> before = state(fixture);
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.VisibleRaster broken = manualJunctionRaster(true);
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
@@ -1482,14 +1836,35 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 JunctionPolicy.REATTACH, true);
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(
                 fixture.dataSet(), fixture.selection(), broken,
-                config(TrackerMode.PROBABILISTIC), true, permissions));
+                config(engine), true, permissions));
         LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        if (computed.partitioned()) {
+            var composed = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
+            assertFalse(composed.applyAvailable());
+            assertTrue(composed.intervals().stream().anyMatch(interval ->
+                    interval.reason().startsWith("LOCAL_CONNECTOR_SUPPORT")
+                            || interval.reason().equals("LOCAL_IMAGE_SUPPORT")), composed.intervals().toString());
+            var diagnostic = Format15ProductionBundleFactory.createLiveIntervals("test",
+                    computed.intervalBatch(), composed, Map.of(),
+                    Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                    Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
+            String visible = new String(diagnostic.artifact("interval-production.json").bytes(), StandardCharsets.UTF_8);
+            assertTrue(visible.contains("LOCAL_CONNECTOR_SUPPORT") || visible.contains("LOCAL_IMAGE_SUPPORT"), visible);
+            String summary = AlignWayAction.intervalPreviewSummary(
+                    new AlignWayAction.IntervalPreviewState(computed));
+            assertTrue(summary.contains("LOCAL_CONNECTOR_SUPPORT") || summary.contains("LOCAL_IMAGE_SUPPORT"), summary);
+            assertTrue(summary.contains("Adjust this junction manually first."), summary);
+            assertEquals(before, state(fixture));
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            return;
+        }
         var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 0);
 
         assertFalse(assessment.applyAvailable());
         assertTrue(assessment.detail().contains("connector"), assessment.detail());
         assertTrue(assessment.detail().contains(
                 "Adjust this junction manually, then run alignment again."));
+        assertEquals(before, state(fixture));
         assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
     }
 
@@ -1932,6 +2307,66 @@ class V022ModernSingleWayEditPlanAdapterTest {
         return Map.copyOf(result);
     }
 
+    private static ModernTracePipeline.Route withOwnedBacktrack(ModernTracePipeline.Route route,
+            LiveBPreviewService.Computed computed) {
+        var ids = route.pointIds();
+        int swap = -1;
+        for (int i = 1; i + 2 < ids.size(); i++) {
+            if (computed.partitioned() && !(ids.get(i) instanceof FinalRoutePointId.GeneratedCandidatePoint
+                    && ids.get(i + 1) instanceof FinalRoutePointId.GeneratedCandidatePoint)) continue;
+            boolean owned = Stream.of(ids.get(i), ids.get(i + 1)).allMatch(id ->
+                    id instanceof FinalRoutePointId.GeneratedCandidatePoint
+                            || id instanceof ExistingWayNodeOccurrence existing
+                                    && computed.captured().network().closure().movableExistingNodeKeys()
+                                            .contains(existing.nodeKey()));
+            if (owned && !route.assignments().get(ids.get(i)).equals(route.assignments().get(ids.get(i + 1)))) {
+                swap = i;
+                break;
+            }
+        }
+        assertTrue(swap >= 0, "Unsafe control requires two adjacent movable final points");
+        Map<FinalRoutePointId, MetricPoint> positions = new LinkedHashMap<>(route.assignments());
+        positions.put(ids.get(swap), route.assignments().get(ids.get(swap + 1)));
+        positions.put(ids.get(swap + 1), route.assignments().get(ids.get(swap)));
+        if (computed.partitioned()) {
+            // Offset the return leg within the supported straight stripe; it does
+            // not overlap the incoming edge and leaves the first connector exact.
+            MetricPoint a = route.assignments().get(ids.get(swap));
+            MetricPoint b = route.assignments().get(ids.get(swap + 1));
+            double dx = b.xMeters() - a.xMeters();
+            double dy = b.yMeters() - a.yMeters();
+            double length = Math.hypot(dx, dy);
+            double pitch = computed.evidence().resolution().effectivePitchMeters();
+            positions.put(ids.get(swap), new MetricPoint(b.xMeters() - dy / length * pitch * 0.25,
+                    b.yMeters() + dx / length * pitch * 0.25));
+            positions.put(ids.get(swap + 1), new MetricPoint(a.xMeters() - dy / length * pitch * 0.75,
+                    a.yMeters() + dx / length * pitch * 0.75));
+        }
+        List<MetricPoint> points = ids.stream().map(positions::get).toList();
+        var hypothesis = route.hypothesis();
+        var unsafe = new TraceHypothesis(hypothesis.id(), hypothesis.branchSignature(), points,
+                hypothesis.support(), hypothesis.objective(), hypothesis.posteriorProbability(), hypothesis.diagnostics());
+        var image = new ImageCostField(computed.evidence().fields().get(computed.options().fieldName()),
+                computed.evidence().transform(), computed.evidence().decisionRegion(),
+                computed.evidence().resolution().effectivePitchMeters());
+        Map<Integer, MetricPoint> fixed = new LinkedHashMap<>();
+        for (int i = 0; i < ids.size(); i++) {
+            if (ids.get(i) instanceof ExistingWayNodeOccurrence existing
+                    && computed.captured().network().closure().protectedExistingNodeKeys().contains(existing.nodeKey())) {
+                fixed.put(i, route.assignments().get(ids.get(i)));
+            }
+        }
+        var quality = new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(
+                hypothesis.id(), points, ids, image, computed.evidence().resolution().effectivePitchMeters(),
+                fixed, List.of(), true, false, false, false));
+        assertTrue(quality.has(FinalGeometryEvaluator.FindingCode.ADJACENT_BACKTRACK), quality.toString());
+        assertEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED, quality.disposition(), quality.toString());
+        assertFalse(quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY), quality.toString());
+        assertTrue(quality.directlySupportedLengthMeters() > 0, quality.toString());
+        return new ModernTracePipeline.Route(route.rawHypothesis(), unsafe, ids, positions,
+                route.sourceOwnership(), quality, route.cleanupStatus(), true);
+    }
+
     private static LiveBPreviewService.Computed compute(Fixture fixture, TrackerMode mode)
             throws Exception {
         return compute(fixture, mode, config(mode));
@@ -2039,6 +2474,21 @@ class V022ModernSingleWayEditPlanAdapterTest {
         return new Fixture(dataSet, selected, new SelectionContext(selected, 0,
                 selectedNodes.size() - 1, selectedNodes,
                 Set.of(endpoint, selectedNodes.get(2), junction)));
+    }
+
+    private static Fixture relationJunctionWithStraightOutsideFixture() {
+        Fixture fixture = relationJunctionFixture();
+        List<Node> nodes = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            Node node = loadedNode(910 + i, longitude(2), longitude(-70 + 10 * i));
+            fixture.dataSet().addPrimitive(node);
+            nodes.add(node);
+        }
+        nodes.addAll(fixture.way().getNodes());
+        fixture.way().setNodes(nodes);
+        fixture.way().setModified(false);
+        return new Fixture(fixture.dataSet(), fixture.way(), new SelectionContext(fixture.way(), 0,
+                nodes.size() - 1, nodes, Set.of(nodes.get(0), nodes.get(5), nodes.get(nodes.size() - 1))));
     }
 
     private static LiveBPreviewService.VisibleRaster raster() {

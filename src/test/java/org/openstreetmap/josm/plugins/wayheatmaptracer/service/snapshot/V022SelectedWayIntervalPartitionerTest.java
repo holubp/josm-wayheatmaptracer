@@ -2,6 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -306,6 +307,27 @@ class V022SelectedWayIntervalPartitionerTest {
                 .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
         assertEquals(List.of(new OccurrenceRange(2, 3)),
                 result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+    }
+
+    @Test
+    void fixedPolicyReadOnlyProofIsFlagGatedAndUnknownReferrersStillFreezeWholeSelection() {
+        Fixture fixture = endpointTJunctions(new double[] {0, 50, 100, 150}, Set.of(0), List.of())
+                .withFixedPolicy();
+        assertNotEquals(ManualJunctionEligibility.Reason.FIXED_POLICY,
+                partition(fixture).junctionDispositions().get(0).reason(),
+                "The new read-only fixed-policy classification requires its explicit capture flag");
+        Fixture fixed = fixture.withFixedReceiverGeometry();
+        var result = partition(fixed);
+        assertFalse(result.slideIntervals().isEmpty());
+        assertEquals(ManualJunctionEligibility.Reason.FIXED_POLICY,
+                result.junctionDispositions().get(0).reason());
+        assertFalse(result.junctionDispositions().get(0).automaticEligible());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixed.snapshot));
+        Fixture unknown = fixed.withUnmaterializedReferrerAt(0).withFixedPolicy().withFixedReceiverGeometry();
+        var refusal = partition(unknown);
+        assertTrue(refusal.slideIntervals().isEmpty());
+        assertEquals(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE,
+                refusal.junctionDispositions().get(0).reason());
     }
 
     @Test
@@ -755,6 +777,18 @@ class V022SelectedWayIntervalPartitionerTest {
         }
         Fixture withFixedReceiverGeometry() {
             return new Fixture(snapshot, specification.withFixedReceiverGeometry(), selected, selectedNodes, port);
+        }
+        Fixture withFixedPolicy() {
+            var spec = new NetworkSnapshotCapture.Specification(specification.snapshotId(),
+                    specification.datasetIdentity(), specification.sourceGeneration(), selected,
+                    specification.selectedRange(), specification.metricFrame(), specification.collisionEnvelope(),
+                    specification.editRegion(), specification.editableWayOccurrences(),
+                    specification.editableExistingKeys(), specification.movableExistingNodeKeys(),
+                    specification.removableExistingNodeKeys(), specification.explicitlyProtectedNodeKeys(),
+                    specification.mayCreateNodes(),
+                    new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED, false),
+                    specification.readOnlyPorts(), specification.fixedReceiverGeometry());
+            return new Fixture(snapshot, spec, selected, selectedNodes, port);
         }
         Fixture withChangedReceiverWitness(java.util.function.UnaryOperator<org.openstreetmap.josm.plugins
                 .wayheatmaptracer.model.NonTransportSemanticWitness.RelationEvidence> change) {

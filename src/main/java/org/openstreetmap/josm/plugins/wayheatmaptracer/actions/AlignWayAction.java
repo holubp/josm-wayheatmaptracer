@@ -1048,8 +1048,7 @@ public class AlignWayAction extends JosmAction {
                     PluginPreferences.isDebugEnabled(), finalWays);
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             boolean sourceApply = intervalApplySourceAvailable(computed.captured());
-            quality.setText("Source: " + state.batch().options().sourceTier() + "\n"
-                    + intervalPreviewSummary(state)
+            quality.setText(intervalPreviewSummary(state)
                     + "\nApply: " + (preflight == ModernApplyPreflight.READY && sourceApply
                             && state.applyAvailable() ? "available" : "unavailable")
                     + (preflight == ModernApplyPreflight.READY ? ""
@@ -1237,13 +1236,24 @@ public class AlignWayAction extends JosmAction {
     /** Formats fixed-island guidance and typed interval outcomes for the modeless preview. */
     public static String intervalPreviewSummary(IntervalPreviewState state) {
         StringBuilder summary = new StringBuilder();
+        var field = state.batch().evidence().fields().get(state.batch().options().fieldName());
+        String source = switch (field.lineage().acquisitionKind()) {
+            case MANAGED_TILE -> tr("managed tiles");
+            case VISIBLE_RENDER -> tr("visible rendered layer");
+            case FROZEN_REPLAY -> tr("frozen replay evidence");
+            case SYNTHETIC -> tr("synthetic evidence");
+        };
+        summary.append("Source: ").append(source).append('\n');
         for (SelectedWayIntervalPartitioner.FixedIsland island
                 : state.batch().partition().fixedIslands()) {
             summary.append("Fixed junction occurrences ").append(island.range().firstIndex())
                     .append('–').append(island.range().lastIndex()).append(": ")
                     .append(FindingSummary.summarize(island.reasons().stream()
-                            .map(Enum::name).toList()))
-                    .append(". Adjust this junction manually first.\n");
+                            .map(Enum::name).toList()));
+            summary.append(island.reasons().size() == 1
+                    && island.reasons().contains(ManualJunctionEligibility.Reason.FIXED_POLICY)
+                    ? ". Junction adjustment is off; this approach stays fixed.\n"
+                    : ". Adjust this junction manually first.\n");
         }
         for (FixedIntervalEditPlanComposer.IntervalAssessment interval
                 : state.assessment().intervals()) {

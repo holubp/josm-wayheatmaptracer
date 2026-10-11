@@ -351,6 +351,16 @@ public final class FinalGeometryEvaluator {
         }
     }
 
+    /** Checks adjacent reversals on exact final geometry without resampling image evidence. */
+    public static List<Finding> backtrackFindings(List<MetricPoint> points) {
+        if (points == null || points.size() < 2 || points.stream().anyMatch(java.util.Objects::isNull)) {
+            throw new IllegalArgumentException("Final backtrack geometry is incomplete");
+        }
+        List<Finding> findings = new ArrayList<>();
+        inspectBacktracks(points, findings);
+        return List.copyOf(findings);
+    }
+
     private static void inspectBacktracks(List<MetricPoint> points, List<Finding> findings) {
         for (int index = 1; index < points.size() - 1; index++) {
             MetricPoint incoming = subtract(points.get(index), points.get(index - 1));

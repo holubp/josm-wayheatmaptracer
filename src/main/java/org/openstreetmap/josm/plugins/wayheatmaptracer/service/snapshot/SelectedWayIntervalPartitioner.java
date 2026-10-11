@@ -427,6 +427,13 @@ public final class SelectedWayIntervalPartitioner {
                 || incidentWays.stream().anyMatch(way -> hasRelationReferrer(snapshot, way))) {
             return decision(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION, node);
         }
+        if (specification.fixedReceiverGeometry()
+                && specification.permissions().junctionPolicy()
+                        == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED) {
+            // Missing automatic movement authority is intentional under fixed policy.
+            // The caller must still prove the complete read-only receiver footprint.
+            return decision(ManualJunctionEligibility.Reason.FIXED_POLICY, node);
+        }
         try {
             return ManualJunctionEligibility.evaluateOccurrence(snapshot, specification, index);
         } catch (RuntimeException incompleteAuthority) {

@@ -24,7 +24,7 @@ public final class ManualJunctionEligibility {
         MULTIPLE_JUNCTIONS, SELECTED_INTERIOR, MULTIPLE_RECEIVERS, SPLIT_OR_TERMINAL_RECEIVER,
         PARTICIPATING_RELATION, AFFECTED_NODE_TAGGED, AFFECTED_NODE_RELATION,
         COUPLED_JUNCTION, INCOMPLETE_ARM, AMBIGUOUS_CROSSING, RESOURCE_LIMIT,
-        LEGACY_POLICY, MISSING_RECEIVER_EVIDENCE, NON_HIGHWAY_CONTEXT
+        LEGACY_POLICY, MISSING_RECEIVER_EVIDENCE, NON_HIGHWAY_CONTEXT, FIXED_POLICY
     }
 
     /** The exact frozen junction and protected neighborhood known to the decision. */
@@ -42,7 +42,7 @@ public final class ManualJunctionEligibility {
         /** Whether a selected shared junction requires a manual decision. */
         public boolean manualOnly() {
             return reason != Reason.NO_JUNCTION && reason != Reason.SIMPLE_T
-                    && reason != Reason.NON_HIGHWAY_CONTEXT;
+                    && reason != Reason.NON_HIGHWAY_CONTEXT && reason != Reason.FIXED_POLICY;
         }
 
         /** Visible instruction for an unavailable automatic junction slide. */

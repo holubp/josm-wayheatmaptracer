@@ -43,9 +43,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
@@ -591,9 +594,11 @@ class V022FixedIntervalEditPlanComposerTest {
                 .anyMatch(code -> code.startsWith("final-topology:")));
     }
 
-    @Test
-    void twoIndividuallySafeIntervalRoutesAreBlockedWhenTheirFinalSegmentsCross() throws Exception {
-        IntervalTraceBatch source = uBatch();
+    private record CrossingFixture(IntervalTraceBatch source,
+            ModernTracePipeline.Route left, ModernTracePipeline.Route right) { }
+
+    private static CrossingFixture crossingFixture() throws Exception {
+        IntervalTraceBatch source = uBatch(uRaster(true));
         var selected = (DetachedWay) source.network().primitives()
                 .get(source.fullRequest().selectedWayKey());
         MetricPoint lower = source.evidence().coordinateFrame().toMetric(
@@ -606,47 +611,148 @@ class V022FixedIntervalEditPlanComposerTest {
         var right = source.runs().get(1).routes().get(0);
         assertEquals(6, left.pointIds().size());
         assertEquals(6, right.pointIds().size());
-        MetricPoint leftBend = new MetricPoint(lower.xMeters() - 5.0,
-                lower.yMeters() + 3.0);
-        MetricPoint rightBend = new MetricPoint(upper.xMeters() - 5.0,
-                upper.yMeters() - 3.0);
-        var straightLeft = withGeneratedPositions(source, left, Map.of(
-                existingPointId(left, 2), originalMetric(source, 2)));
-        var straightRight = withGeneratedPositions(source, right, Map.of(
-                existingPointId(right, 5), originalMetric(source, 5)));
-        var safeLeft = withGeneratedPositions(source, straightLeft,
-                linearGeneratedPositions(straightLeft));
-        var safeRight = withGeneratedPositions(source, straightRight,
-                linearGeneratedPositions(straightRight));
-        var alteredLeft = withGeneratedPositions(source, safeLeft, Map.of(
-                left.pointIds().get(left.pointIds().size() - 2), leftBend));
-        var alteredRight = withGeneratedPositions(source, safeRight, Map.of(
-                right.pointIds().get(1), rightBend));
+        assertEquals(List.of(1, -1, -1, 2, -1, 3), left.pointIds().stream()
+                .map(id -> id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        ? existing.originalOccurrenceIndex() : -1).toList());
+        assertEquals(List.of(4, -1, 5, -1, -1, 6), right.pointIds().stream()
+                .map(id -> id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        ? existing.originalOccurrenceIndex() : -1).toList());
+        // The two observed bumps cross, while both fixed-island joins turn only 90 degrees.
+        var alteredLeft = withGeneratedPositions(source, left, Map.of(
+                left.pointIds().get(1),
+                        new MetricPoint(lower.xMeters() - 13.5, lower.yMeters()),
+                left.pointIds().get(2),
+                        new MetricPoint(lower.xMeters() - 12.0, lower.yMeters()),
+                existingPointId(left, 2),
+                        new MetricPoint(lower.xMeters() - 6.0, lower.yMeters() + 4.0),
+                left.pointIds().get(4),
+                        new MetricPoint(lower.xMeters() - 4.0, lower.yMeters())));
+        var alteredRight = withGeneratedPositions(source, right, Map.of(
+                right.pointIds().get(1),
+                        new MetricPoint(upper.xMeters() - 4.0, upper.yMeters()),
+                existingPointId(right, 5),
+                        new MetricPoint(upper.xMeters() - 6.0, upper.yMeters() - 4.0),
+                right.pointIds().get(3),
+                        new MetricPoint(upper.xMeters() - 12.0, upper.yMeters()),
+                right.pointIds().get(4),
+                        new MetricPoint(upper.xMeters() - 13.5, upper.yMeters())));
         assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
                 alteredLeft.quality().disposition(), alteredLeft.quality().toString());
         assertNotEquals(FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
                 alteredRight.quality().disposition(), alteredRight.quality().toString());
+        return new CrossingFixture(source, alteredLeft, alteredRight);
+    }
+
+    @Test
+    void twoTopologicallySafeIntervalRoutesCreateAnUnsafeCombinedCrossing() throws Exception {
+        var fixture = crossingFixture();
+        var source = fixture.source();
+        var left = topologyProposal(source, Map.of(0, fixture.left()));
+        var right = topologyProposal(source, Map.of(1, fixture.right()));
+        var both = topologyProposal(source, Map.of(0, fixture.left(), 1, fixture.right()));
+        assertEquals(List.of(), topologyFindings(source, left));
+        assertEquals(List.of(), topologyFindings(source, right));
+        assertTrue(topologyFindings(source, both).contains("final-topology:CROSSING"),
+                topologyFindings(source, both).toString());
+    }
+
+    @Test
+    void crossingImageAmbiguityCannotAuthorizeAnUnsupportedIntervalConnector() throws Exception {
+        var fixture = crossingFixture();
+        var source = fixture.source();
+        var image = new ImageCostField(source.evidence().fields().get(source.options().fieldName()),
+                source.evidence().transform(), source.evidence().decisionRegion(),
+                source.evidence().resolution().effectivePitchMeters());
+        MetricPoint start = fixture.left().assignments().get(fixture.left().pointIds().get(2));
+        MetricPoint end = fixture.left().assignments().get(existingPointId(fixture.left(), 2));
+        MetricPoint tangent = new MetricPoint(end.xMeters() - start.xMeters(),
+                end.yMeters() - start.yMeters());
+        double length = start.distanceTo(end);
+        MetricPoint normal = new MetricPoint(-tangent.yMeters() / length, tangent.xMeters() / length);
+        int count = (int) Math.ceil(length / 0.5);
+        List<ImageCostField.RouteSample> samples = new ArrayList<>();
+        for (int index = 0; index < count; index++) {
+            MetricPoint point = lerp(start, end, (index + 0.5) / count);
+            for (double offset = -8.0; offset <= 8.0; offset += 0.5) {
+                assertTrue(image.supports(new MetricPoint(point.xMeters() + normal.xMeters() * offset,
+                        point.yMeters() + normal.yMeters() * offset)));
+            }
+            var value = image.sampleRoute(point, tangent).orElseThrow();
+            assertTrue(value.rawIntensity() > 0.75 && value.presenceResponse() > 0.9, value.toString());
+            samples.add(value);
+        }
+        assertTrue(samples.stream().anyMatch(value -> value.ownership() == ObservationOwnership.DIRECT_AMBIGUOUS));
         var composer = new FixedIntervalEditPlanComposer();
-        var safe = withRoute(withRoute(source, 0, safeLeft), 1, safeRight);
-        var leftAlone = composer.compose(withoutRoutes(withRoute(safe, 0, alteredLeft), 1),
-                Map.of());
-        var rightAlone = composer.compose(withoutRoutes(withRoute(safe, 1, alteredRight), 0),
-                Map.of());
-        assertTrue(leftAlone.applyAvailable(), leftAlone.intervals() + " "
-                + leftAlone.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
-        assertTrue(rightAlone.applyAvailable(), rightAlone.intervals() + " "
-                + rightAlone.plan().map(plan -> plan.validation().findingCodes()).orElse(List.of()));
-        var both = composer.compose(withRoute(withRoute(safe, 0, alteredLeft), 1,
-                alteredRight), Map.of());
+        var left = composer.compose(withoutRoutes(withRoute(source, 0, fixture.left()), 1), Map.of());
+        assertFalse(left.applyAvailable());
+        assertTrue(left.intervals().get(0).reason().startsWith("LOCAL_CONNECTOR_SUPPORT:"),
+                left.intervals().toString());
+        var both = composer.compose(withRoute(withRoute(source, 0, fixture.left()), 1, fixture.right()), Map.of());
         assertFalse(both.applyAvailable());
-        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
-                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
-                both.intervals().stream().map(
-                        FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList(),
-                both.intervals().toString());
-        assertTrue(both.plan().orElseThrow().validation().findingCodes().stream()
-                .anyMatch(code -> code.equals("final-topology:CROSSING")
-                        || code.equals("final-topology:COLLINEAR_OVERLAP")));
+    }
+
+    private static List<String> topologyFindings(IntervalTraceBatch source,
+            Map<PrimitiveKey, DetachedPrimitive> after) {
+        return ModernSingleWayEditPlanAdapter.finalTopologyFindings(source.network(), after,
+                source.fullRequest().selectedWayKey(), source.fullRequest().selectedRange(),
+                source.evidence(), source.fullRequest().permissions().ordinaryRadiusMeters());
+    }
+
+    private static Map<PrimitiveKey, DetachedPrimitive> topologyProposal(IntervalTraceBatch source,
+            Map<Integer, ModernTracePipeline.Route> routes) {
+        var before = source.network();
+        var original = (DetachedWay) before.primitives().get(source.fullRequest().selectedWayKey());
+        Map<PrimitiveKey, DetachedPrimitive> after = new LinkedHashMap<>(before.primitives());
+        List<PrimitiveKey> sequence = new ArrayList<>();
+        Set<PrimitiveKey> changedExisting = routes.keySet().stream()
+                .map(interval -> original.nodeKeys().get(interval == 0 ? 2 : 5))
+                .collect(java.util.stream.Collectors.toSet());
+        for (int occurrence = 0; occurrence < original.nodeKeys().size();) {
+            Integer owner = null;
+            for (int interval : routes.keySet()) {
+                if (source.partition().slideIntervals().get(interval).traceRange().firstIndex() == occurrence) {
+                    owner = interval;
+                    break;
+                }
+            }
+            if (owner == null) {
+                sequence.add(original.nodeKeys().get(occurrence++));
+                continue;
+            }
+            var route = routes.get(owner);
+            for (int point = 0; point < route.pointIds().size(); point++) {
+                var id = route.pointIds().get(point);
+                var coordinate = source.evidence().coordinateFrame().toGeographic(route.assignments().get(id));
+                PrimitiveKey key;
+                if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+                    key = existing.nodeKey();
+                    var old = (DetachedNode) before.primitives().get(key);
+                    if (changedExisting.contains(key)) {
+                        assertTrue(before.closure().movableExistingNodeKeys().contains(key));
+                        after.put(key, new DetachedNode(key, coordinate, old.tags(), old.deleted(), true));
+                    } else {
+                        assertEquals(source.evidence().coordinateFrame().toMetric(old.coordinate()),
+                                route.assignments().get(id));
+                    }
+                } else {
+                    key = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 1000L * (owner + 1) + point);
+                    assertFalse(after.containsKey(key));
+                    after.put(key, new DetachedNode(key, coordinate, Map.of(), false, true));
+                }
+                sequence.add(key);
+            }
+            occurrence = source.partition().slideIntervals().get(owner).traceRange().lastIndex() + 1;
+        }
+        after.put(original.key(), new DetachedWay(original.key(), sequence, original.tags(), false, true));
+        before.primitives().values().stream().filter(DetachedNode.class::isInstance)
+                .filter(node -> !changedExisting.contains(node.key()))
+                .forEach(node -> assertEquals(node, after.get(node.key())));
+        assertEquals(original.nodeKeys().get(0), sequence.get(0));
+        assertEquals(original.nodeKeys().get(7), sequence.get(sequence.size() - 1));
+        var selected = sequence.subList(1, sequence.size() - 1);
+        assertEquals(List.of(), ModernSingleWayEditPlanAdapter.compositeBacktrackFindings(
+                before, after, original, selected, source.evidence()));
+        return Map.copyOf(after);
     }
 
     @Test
@@ -813,6 +919,10 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static LiveBPreviewService.VisibleRaster uRaster() {
+        return uRaster(false);
+    }
+
+    private static LiveBPreviewService.VisibleRaster uRaster(boolean extendedCrossingApproaches) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
@@ -821,18 +931,35 @@ class V022FixedIntervalEditPlanComposerTest {
                 double east = (x + 0.5 - 300.0) / 6.0;
                 double north = (300.0 - y - 0.5) / 6.0;
                 double distance = Math.min(
-                        distanceToSegment(east, north, -20, 0, 0, 0),
-                        distanceToSegment(east, north, 0, 5, -20, 5));
+                        distanceToSegment(east, north, -20, 0,
+                                extendedCrossingApproaches ? -12 : 0, 0),
+                        distanceToSegment(east, north,
+                                extendedCrossingApproaches ? -12 : 0, 5, -20, 5));
                 distance = Math.min(distance,
                         distanceToSegment(east, north, 0, 0, 0, 5));
-                distance = Math.min(distance,
-                        distanceToSegment(east, north, -7, 0, -5, 3));
-                distance = Math.min(distance,
-                        distanceToSegment(east, north, -5, 3, 0, 0));
-                distance = Math.min(distance,
-                        distanceToSegment(east, north, 0, 5, -5, 2));
-                distance = Math.min(distance,
-                        distanceToSegment(east, north, -5, 2, -7, 5));
+                if (extendedCrossingApproaches) {
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -12, 0, -6, 4));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -6, 4, -4, 0));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -4, 0, 0, 0));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, 0, 5, -4, 5));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -4, 5, -6, 1));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -6, 1, -12, 5));
+                } else {
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -7, 0, -5, 3));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -5, 3, 0, 0));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, 0, 5, -5, 2));
+                    distance = Math.min(distance,
+                            distanceToSegment(east, north, -5, 2, -7, 5));
+                }
                 double intensity = 0.02 + 0.80 * Math.exp(-0.5 * distance * distance / 1.44);
                 int gray = (int) Math.round(255.0 * intensity);
                 argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;

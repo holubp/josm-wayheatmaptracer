@@ -662,10 +662,17 @@ public final class ModernSingleWayEditPlanAdapter {
                 SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
                 before.closure(), afterValues, proposedWatches(before, afterValues));
         List<String> findings = new ArrayList<>(routeFindings);
+        DetachedWay proposedSelected = (DetachedWay) afterValues.get(selected.key());
+        int selectedFirst = request.selectedRange().firstIndex();
+        List<PrimitiveKey> finalSelectedKeys = proposedSelected.nodeKeys().subList(
+                selectedFirst, selectedFirst + ids.size());
+        findings.addAll(compositeBacktrackFindings(before, afterValues, selected, finalSelectedKeys, evidence));
         findings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
                 request.selectedRange(), evidence, request.permissions().ordinaryRadiusMeters()));
         ValidationReport.Disposition disposition = findings.stream().anyMatch(finding ->
-                finding.startsWith("final-topology:"))
+                finding.startsWith("final-topology:")
+                        || finding.equals("modern-final:ADJACENT_BACKTRACK")
+                        || finding.equals("modern-final:TERMINAL_OVERSHOOT"))
                 ? ValidationReport.Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? ValidationReport.Disposition.APPLICABLE
                         : ValidationReport.Disposition.REVIEW_REQUIRED;
@@ -679,6 +686,26 @@ public final class ModernSingleWayEditPlanAdapter {
                 request.settingsHash(), evidence.canonicalHash(), request.parameterHash(),
                 identity, finalPreviewWays(before, afterValues),
                 new ValidationReport(disposition, findings));
+    }
+
+    static List<String> compositeBacktrackFindings(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay source,
+            List<PrimitiveKey> finalSelectedKeys, EvidenceSnapshot evidence) {
+        DetachedWay proposed = (DetachedWay) after.get(source.key());
+        boolean trueWayEnd = finalSelectedKeys.get(finalSelectedKeys.size() - 1)
+                .equals(proposed.nodeKeys().get(proposed.nodeKeys().size() - 1));
+        List<MetricPoint> points = finalSelectedKeys.stream().map(key -> metric(after, key, evidence)).toList();
+        List<String> findings = new ArrayList<>();
+        for (var finding : FinalGeometryEvaluator.backtrackFindings(points)) {
+            if (finding.code() == FinalGeometryEvaluator.FindingCode.TERMINAL_OVERSHOOT && !trueWayEnd) continue;
+            boolean changed = false;
+            for (int index = finding.firstVertex() + 1; index <= finding.lastVertex(); index++) {
+                changed |= !unchangedSelectedEdge(before, after, source,
+                        finalSelectedKeys.get(index - 1), finalSelectedKeys.get(index));
+            }
+            if (changed) findings.add("modern-final:" + finding.code().name());
+        }
+        return List.copyOf(findings);
     }
 
     private static void requireCompositeChangedSupport(NetworkSnapshot before,
@@ -1882,7 +1909,7 @@ public final class ModernSingleWayEditPlanAdapter {
         return finalTopologyFindings(before, after, selectedWay, selectedRange, evidence, Double.NaN);
     }
 
-    private static List<String> finalTopologyFindings(NetworkSnapshot before,
+    static List<String> finalTopologyFindings(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
             OccurrenceRange selectedRange, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
         DetachedWay beforeSelected = (DetachedWay) before.primitives().get(selectedWay);
