@@ -48,10 +48,10 @@ The normal workflow is:
 
 For longer ways, `Select Longest Junctionless Segment` uses endpoints and shared-way nodes to divide the way into maximal candidate ranges, then removes branching or uncertain junction nodes from each candidate's ends. It chooses the longest remaining range with at least two occurrences. A junction can remain an endpoint only when exactly two complete, non-degenerate ways in the active data layer meet there at their respective endpoints. With one node selected alone, the containing way is inferred only when exactly one live way in the active data layer refers to that node and the way has complete geometry. If the node belongs to multiple live ways, select the intended way too. With a way and one node selected, the selector considers the original adjacent ranges containing the hint, trims their junction endpoints, and chooses the longer eligible result. An unsafe junction hint is excluded from the returned range; a safe end-to-end continuation can remain an endpoint. The hint is replaced by the chosen range's two safe endpoints, ready for immediate alignment. Repeated-node ambiguity is rejected and may require splitting the way or choosing a simpler section.
 
-This `0.22.0-rc.7` test candidate targets JOSM 19555. Install the supplied
+This `0.22.0-rc.8` test candidate targets JOSM 19555. Install the supplied
 `wayheatmaptracer.jar` into the test profile's plugin directory and restart
 JOSM. Before testing, confirm that the Plugins dialog reports version
-`0.22.0-rc.7`. `Ctrl+Shift+J` selects a junctionless segment; it does not align
+`0.22.0-rc.8`. `Ctrl+Shift+J` selects a junctionless segment; it does not align
 or modify geometry. Run alignment separately with `Ctrl+Shift+Y` and inspect
 the preview before applying.
 
