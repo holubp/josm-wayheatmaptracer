@@ -213,7 +213,7 @@ public final class LiveBPreviewService {
                                     specification.selectedWayKey())
                             || !intervalPartition.selectedRange().equals(
                                     specification.selectedRange())
-                            || !hasInteriorManualIsland(intervalPartition)
+                            || !usesFixedIntervalBatch(intervalPartition, engine)
                             || !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                     intervalPartition, network))) {
                 throw new IllegalArgumentException("Live preview engine or interval proof is invalid");
@@ -297,7 +297,7 @@ public final class LiveBPreviewService {
                                     specification.selectedWayKey())
                             || !intervalPartition.selectedRange().equals(
                                     specification.selectedRange())
-                            || !hasInteriorManualIsland(intervalPartition)
+                            || !usesFixedIntervalBatch(intervalPartition, engine)
                             || !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                     intervalPartition, network))) {
                 throw new IllegalArgumentException("Managed preview seed is incomplete");
@@ -494,10 +494,11 @@ public final class LiveBPreviewService {
                 authority.editableWayOccurrences(), authority.editableExistingKeys(),
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
+        if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
-        if (hasInteriorManualIsland(intervalPartition)) {
+        if (usesFixedIntervalBatch(intervalPartition, engine)) {
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -506,6 +507,7 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
+            if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
                 throw new ManualJunctionCaptureException(
@@ -528,6 +530,7 @@ public final class LiveBPreviewService {
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
+            if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
                     junction);
@@ -1033,10 +1036,12 @@ public final class LiveBPreviewService {
                 frame, authority.collisionEnvelope(), authority.editRegion(),
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
+        if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+            specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
-        if (hasInteriorManualIsland(intervalPartition)) {
+        if (usesFixedIntervalBatch(intervalPartition, config.heatmap().trackerMode())) {
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -1045,6 +1050,8 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
+            if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+                specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
                 throw new ManualJunctionCaptureException(
@@ -1074,6 +1081,8 @@ public final class LiveBPreviewService {
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
+            if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+                specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
                     junction);
@@ -1250,7 +1259,7 @@ public final class LiveBPreviewService {
                             : captureManagedMappingEvidence(captured, mapping, cancellation);
             ModernTracePipeline.Options options = new ModernTracePipeline.Options(FIELD,
                     captured.cleanup(), sourceTier, preference);
-            if (hasInteriorManualIsland(partition)) {
+            if (usesFixedIntervalBatch(partition, captured.engine())) {
                 IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation,
                         evidence, options, budget);
                 return new ChoiceRun(Computed.partitioned(captured, batch,
@@ -1275,12 +1284,14 @@ public final class LiveBPreviewService {
                 request.evidenceResolution(), request.corridorInput());
     }
 
-    private static boolean hasInteriorManualIsland(SelectedWayIntervalPartitioner.Partition partition) {
+    private static boolean usesFixedIntervalBatch(SelectedWayIntervalPartitioner.Partition partition,
+            TrackerMode engine) {
         return !partition.fixedIslands().isEmpty()
-                && partition.junctionDispositions().stream().anyMatch(junction ->
+                && (engine == TrackerMode.PROBABILISTIC && !partition.slideIntervals().isEmpty()
+                || partition.junctionDispositions().stream().anyMatch(junction ->
                         !junction.automaticEligible()
                         && junction.selectedOccurrenceIndex() > partition.selectedRange().firstIndex()
-                        && junction.selectedOccurrenceIndex() < partition.selectedRange().lastIndex());
+                        && junction.selectedOccurrenceIndex() < partition.selectedRange().lastIndex()));
     }
 
     /** Captures evidence once and runs every owned interval through the production modern pipeline. */

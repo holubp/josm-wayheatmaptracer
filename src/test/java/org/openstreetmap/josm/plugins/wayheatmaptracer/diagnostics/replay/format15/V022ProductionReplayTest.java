@@ -172,13 +172,42 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void bRuntimeObjectiveIsExplicitAndOldReceiptRemainsReadableButCannotCertifyReplay(
+            @TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "runtime-objective-test", input, TrackerMode.PROBABILISTIC);
+        String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+        assertTrue(current.contains("/" + EvidenceModelParameters.orientationIntegrationVersion()));
+        String hybrid = new String(Format15NumericalPolicyReceipt.current(base.sourceIdentityHash(),
+                input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
+                TrackerMode.HYBRID).bytes(), StandardCharsets.UTF_8);
+        assertTrue(hybrid.contains("/" + EvidenceModelParameters.orientationIntegrationVersion()));
+        String oldReceipt = current.replace("/" + EvidenceModelParameters.orientationIntegrationVersion(), "");
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", oldReceipt));
+        Path path = directory.resolve("old-objective-receipt.zip");
+        Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                base.parameterHash(), artifacts), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        assertEquals(input.request().parameterHash(), archive.parameterHash());
+        assertEquals(input.request().parameterHash(), FrozenReplayCodec.decode(
+                archive.artifact("frozen-input.bin").orElseThrow().bytes()).request().parameterHash());
+        var failure = assertThrows(ReplayMismatchException.class, () ->
+                Format15ReplayRunner.replay(archive, ReplayLevel.SCALAR_INFERENCE,
+                    archive.sourceIdentityHash(), archive.parameterHash()));
+        assertEquals("numerical-policy-invalid", failure.getMessage());
+    }
+
+    @Test
     void knownAlternateComputedEngineCannotRebindSavedBOutput(@TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedFinalOutput(
                 "current-test", input, TrackerMode.PROBABILISTIC);
         String receipt = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
                 .replace("\"computedEngine\":\"PROBABILISTIC\"", "\"computedEngine\":\"CORRIDOR_AWARE\"")
-                .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1\"",
+                .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1/"
+                        + EvidenceModelParameters.orientationIntegrationVersion() + "\"",
                         "\"inferencePolicy\":\"engine-specific\"");
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", receipt));

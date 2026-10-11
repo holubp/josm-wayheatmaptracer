@@ -505,7 +505,37 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertEquals(liveBefore, state(fixture));
     }
 
-    private enum InheritedClass { BARE_ROCK, FOREST_OUTER, CLIFF }
+    private enum InheritedClass { BARE_ROCK, FOREST_OUTER, CLIFF, RIDGE }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"highway", "railway", "waterway", "area", "closed", "relation"})
+    void ridgeExceptionRejectsConflictingSemanticsAndParents(String conflict) throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.RIDGE);
+        Way ridge = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35)
+                .findFirst().orElseThrow();
+        if (conflict.equals("closed")) ridge.setNodes(List.of(ridge.getNode(0), ridge.getNode(1),
+                fixture.dataSet().getNodes().stream().filter(node -> node.getUniqueId() == 36)
+                        .findFirst().orElseThrow(), ridge.getNode(0)));
+        else if (conflict.equals("relation")) {
+            Relation relation = new Relation();
+            relation.setOsmId(40, 1);
+            relation.put("type", "route");
+            relation.put("route", "hiking");
+            relation.setMembers(List.of(new RelationMember("", ridge)));
+            fixture.dataSet().addPrimitive(relation);
+        } else ridge.put(conflict, "yes");
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(
+                compute(fixture, TrackerMode.PROBABILISTIC), 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+                assessment.availability(), assessment.detail());
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsafeInheritedPaths")
+    void ridgeExceptionKeepsCompleteContactAndDisplacementProofs(double[][] points) throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.RIDGE), TrackerMode.PROBABILISTIC);
+        assertTrue(proofForPath(computed, points, 7.01).isEmpty());
+    }
 
     @ParameterizedTest
     @EnumSource(InheritedClass.class)
@@ -1083,10 +1113,12 @@ class V022ModernSingleWayEditPlanAdapterTest {
         Node c = loadedNode(36, longitude(10), longitude(15));
         Node d = loadedNode(37, longitude(-10), longitude(15));
         Way context = new Way();
-        context.setNodes(feature == InheritedClass.CLIFF ? List.of(a, b) : List.of(a, b, c, d, a));
+        context.setNodes(feature == InheritedClass.CLIFF || feature == InheritedClass.RIDGE
+                ? List.of(a, b) : List.of(a, b, c, d, a));
         context.setOsmId(35, 1);
         if (feature == InheritedClass.BARE_ROCK) context.put("natural", "bare_rock");
         if (feature == InheritedClass.CLIFF) context.put("natural", "cliff");
+        if (feature == InheritedClass.RIDGE) context.put("natural", "ridge");
         context.setModified(false);
         for (Node node : List.of(a, b, c, d)) fixture.dataSet().addPrimitive(node);
         fixture.dataSet().addPrimitive(context);

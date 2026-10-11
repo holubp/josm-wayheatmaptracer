@@ -369,7 +369,101 @@ class V022WeakSignalReliabilityTest {
         assertEquals(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
                 weak.orientationSupport(0).status());
         assertEquals(0.1, weak.orientationReliability(0), 0.0);
-        assertEquals(1.0, result.mapPath().orElseThrow().energy(), 1e-12);
+        assertEquals(5.5, result.mapPath().orElseThrow().energy(), 1e-12,
+                "both independently attenuated endpoint observations contribute over half the span");
+    }
+
+    @Test
+    void adjacentOrientationEnergyIsDirectionIndependentWithWeakDestination() {
+        var vertical = new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+                List.of(new ImageOrientationSupport.AngularMode(Math.PI / 2, Math.PI / 2,
+                        Math.PI / 2, 1.0)), 1.0);
+        InferenceProfile first = continuityProfile(0, 0, List.of(0.0), new double[]{0.0}, vertical, 0.8);
+        InferenceProfile last = continuityProfile(10, 10, List.of(0.0), new double[]{0.0}, vertical, 0.1);
+        InferenceProfile reversedFirst = continuityProfile(0, 10, List.of(0.0), new double[]{0.0}, vertical, 0.1);
+        InferenceProfile reversedLast = continuityProfile(10, 0, List.of(0.0), new double[]{0.0}, vertical, 0.8);
+        var solver = new ProbabilisticInference();
+        var parameters = continuityParameters();
+        double forward = solver.solve(List.of(first, last), parameters, TraceBudgets.defaults())
+                .mapPath().orElseThrow().energy();
+        double backward = solver.solve(List.of(reversedFirst, reversedLast), parameters,
+                TraceBudgets.defaults()).mapPath().orElseThrow().energy();
+        assertEquals(forward, backward, 1e-12);
+        assertEquals(2.25, forward, 1e-12,
+                "physical trapezoidal integration keeps both endpoint reliability contributions");
+    }
+
+    @Test
+    void weakDestinationCannotDiscardDirectDepartureEvidenceAndJumpParallelStrands() {
+        InferenceProfile first = continuityProfile(0, 0, List.of(-3.0), new double[]{0.0},
+                measuredHorizontal(), 0.7);
+        InferenceProfile last = continuityProfile(10, 10, List.of(-3.0, 3.0),
+                new double[]{0.08, 0.0}, measuredHorizontal(), 0.05);
+        var result = new ProbabilisticInference().solve(List.of(first, last), continuityParameters(),
+                TraceBudgets.defaults());
+        assertEquals(List.of(-3.0, -3.0), result.mapPath().orElseThrow().points().stream()
+                .map(MetricPoint::yMeters).toList());
+        assertTrue(result.distinctPaths().stream().allMatch(path -> path.points().stream()
+                .allMatch(point -> Math.abs(point.yMeters()) == 3.0)), "the admitted strands retain their identities");
+    }
+
+    @Test
+    void reversingWeakParallelEvidenceRetainsTheSameCoherentPathAndEnergy() {
+        double[] reliability = {0.7, 0.05, 0.2, 0.4};
+        java.util.ArrayList<InferenceProfile> forward = new java.util.ArrayList<>();
+        java.util.ArrayList<InferenceProfile> backward = new java.util.ArrayList<>();
+        for (int index = 0; index < 4; index++) {
+            List<Double> offsets = index == 0 || index == 3 ? List.of(-3.0) : List.of(-3.0, 3.0);
+            double[] costs = offsets.size() == 1 ? new double[]{0.0} : new double[]{0.005, 0.0};
+            forward.add(continuityProfile(index * 10, index * 10, offsets, costs,
+                    measuredHorizontal(), reliability[index]));
+            backward.add(continuityProfile(index * 10, (3 - index) * 10, offsets, costs,
+                    measuredHorizontal(), reliability[3 - index]));
+        }
+        var solver = new ProbabilisticInference();
+        var first = solver.solve(forward, continuityParameters(), TraceBudgets.defaults()).mapPath().orElseThrow();
+        var second = solver.solve(backward, continuityParameters(), TraceBudgets.defaults()).mapPath().orElseThrow();
+        assertEquals(List.of(-3.0, -3.0, -3.0, -3.0), first.points().stream().map(MetricPoint::yMeters).toList());
+        var reversed = new java.util.ArrayList<>(second.points());
+        java.util.Collections.reverse(reversed);
+        assertEquals(first.points(), reversed);
+        assertEquals(first.energy(), second.energy(), 1e-12);
+    }
+
+    @Test
+    void measuredWeakOrStrongBendStillAllowsTheSupportedDepartureAndArrival() {
+        double angle = Math.atan2(6.0, 10.0);
+        var inclined = new ImageOrientationSupport(ImageOrientationSupport.Status.MEASURED_TWO_SIDED,
+                List.of(new ImageOrientationSupport.AngularMode(angle, angle, angle, 1.0)), 1.0);
+        for (double reliability : List.of(0.05, 1.0)) {
+            var first = continuityProfile(0, 0, List.of(-3.0), new double[]{0.0}, inclined, reliability);
+            var last = continuityProfile(10, 10, List.of(-3.0, 3.0), new double[]{0.08, 0.0}, inclined, reliability);
+            var result = new ProbabilisticInference().solve(List.of(first, last), continuityParameters(),
+                    TraceBudgets.defaults());
+            assertEquals(List.of(-3.0, 3.0), result.mapPath().orElseThrow().points().stream()
+                    .map(MetricPoint::yMeters).toList());
+            assertEquals(0.0, result.mapPath().orElseThrow().energy(), 1e-12);
+        }
+    }
+
+    private static InferenceProfile continuityProfile(double chainage, double east,
+            List<Double> offsets, double[] costs, ImageOrientationSupport orientation, double reliability) {
+        List<LateralStateCell> cells = offsets.stream().map(offset -> new LateralStateCell(offset,
+                1.0, false, true, "strand" + offset)).toList();
+        Map<String, ImageOrientationSupport> orientations = new java.util.LinkedHashMap<>();
+        Map<String, Double> reliabilities = new java.util.LinkedHashMap<>();
+        for (var cell : cells) {
+            orientations.put(cell.branchLabel(), orientation);
+            reliabilities.put(cell.branchLabel(), reliability);
+        }
+        return new InferenceProfile(chainage, new MetricPoint(east, 0), new MetricPoint(0, 1),
+                cells, costs, orientations, reliabilities, ObservationOwnership.DIRECT_TWO_SIDED,
+                false, new double[cells.size()][0]);
+    }
+
+    private static EvidenceModelParameters continuityParameters() {
+        return new EvidenceModelParameters("adjacent-orientation-regression", 1, 0, 0, 0.5, 0,
+                Math.toRadians(30), 1, 1e-9);
     }
 
     private static ScalarEvidenceField fieldWithUnsupportedCell(int unsupportedX,

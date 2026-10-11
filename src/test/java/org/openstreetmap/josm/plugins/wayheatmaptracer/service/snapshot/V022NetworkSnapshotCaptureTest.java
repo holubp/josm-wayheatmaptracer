@@ -220,6 +220,41 @@ class V022NetworkSnapshotCaptureTest {
     }
 
     @Test
+    void fixedReceiverGeometryIsExplicitBoundedReadOnlyAndOneHop() {
+        DataSet dataSet = new DataSet();
+        Node a = loadedNode(1, 0, 0), b = loadedNode(2, 0, 0.00005);
+        Node c = loadedNode(3, 0.005, 0), d = loadedNode(4, 0.005, 0.005);
+        Node e = loadedNode(5, 0.006, 0.005);
+        add(dataSet, a, b, c, d, e);
+        Way selected = loadedWay(10, List.of(a, b));
+        Way receiver = loadedWay(20, List.of(a, c));
+        Way distantReferrer = loadedWay(30, List.of(c, d));
+        Way secondHop = loadedWay(40, List.of(d, e));
+        add(dataSet, selected, receiver, distantReferrer, secondHop);
+        var original = specification("fixed-receiver", selected, new OccurrenceRange(0, 1),
+                Map.of(way(10), List.of(new OccurrenceRange(0, 1))), Set.of(way(10)),
+                Set.of(), Set.of(), Set.of(node(1), node(2)), false, RecoveryPermissions.disabled(7.01));
+        var defaultCapture = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, original));
+        assertFalse(original.fixedReceiverGeometry());
+        assertFalse(defaultCapture.primitives().containsKey(way(30)));
+        var fixed = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, original.withFixedReceiverGeometry()));
+        assertTrue(fixed.primitives().containsKey(way(30)));
+        assertFalse(fixed.primitives().containsKey(way(40)), "read-only authority must not recursively expand");
+        assertEquals(defaultCapture.closure().editableExistingKeys(), fixed.closure().editableExistingKeys());
+        assertTrue(fixed.closure().protectedExistingNodeKeys().containsAll(Set.of(node(3), node(4))));
+        assertEquals(Set.of(way(20), way(30)), fixed.incomingReferrerWatches().get(node(3)));
+        var small = new NetworkSnapshotCapture.Limits(100, 100, 5, 100, 100, 100);
+        assertDoesNotThrow(() -> onEdt(() -> NetworkSnapshotCapture.capture(dataSet, original, small)));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(
+                dataSet, original.withFixedReceiverGeometry(), small)));
+        Node incomplete = new Node(99);
+        dataSet.addPrimitive(incomplete);
+        distantReferrer.setNodes(List.of(c, incomplete));
+        assertThrows(IllegalStateException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(
+                dataSet, original.withFixedReceiverGeometry())));
+    }
+
+    @Test
     void contextRelationWitnessIsAdditiveFrozenAndCharged() {
         DataSet dataSet = new DataSet();
         Node a = loadedNode(1, 0, -0.00005);

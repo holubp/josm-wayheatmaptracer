@@ -58,7 +58,20 @@ public final class NetworkSnapshotCapture {
         Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableExistingNodeKeys,
         Set<PrimitiveKey> removableExistingNodeKeys, Set<PrimitiveKey> explicitlyProtectedNodeKeys,
         boolean mayCreateNodes, RecoveryPermissions permissions,
-        List<ExternalPort> readOnlyPorts) {
+        List<ExternalPort> readOnlyPorts, boolean fixedReceiverGeometry) {
+        /** Preserves historical authority without extending its read-only boundary closure. */
+        public Specification(String snapshotId, String datasetIdentity, long sourceGeneration,
+                PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+                LocalMetricFrame metricFrame, MetricRegion collisionEnvelope, MetricRegion editRegion,
+                Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
+                Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableExistingNodeKeys,
+                Set<PrimitiveKey> removableExistingNodeKeys, Set<PrimitiveKey> explicitlyProtectedNodeKeys,
+                boolean mayCreateNodes, RecoveryPermissions permissions, List<ExternalPort> readOnlyPorts) {
+            this(snapshotId, datasetIdentity, sourceGeneration, selectedWayKey, selectedRange,
+                    metricFrame, collisionEnvelope, editRegion, editableWayOccurrences,
+                    editableExistingKeys, movableExistingNodeKeys, removableExistingNodeKeys,
+                    explicitlyProtectedNodeKeys, mayCreateNodes, permissions, readOnlyPorts, false);
+        }
         /** Preserves callers that do not carry fixed-island read-only port proofs. */
         public Specification(String snapshotId, String datasetIdentity, long sourceGeneration,
                 PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
@@ -131,7 +144,16 @@ public final class NetworkSnapshotCapture {
                     selectedWayKey, selectedRange, metricFrame, collisionEnvelope, editRegion,
                     editableWayOccurrences, editableExistingKeys, movableExistingNodeKeys,
                     removableExistingNodeKeys, explicitlyProtectedNodeKeys, mayCreateNodes,
-                    permissions, List.copyOf(provedPorts));
+                    permissions, List.copyOf(provedPorts), fixedReceiverGeometry);
+        }
+
+        /** Requests bounded read-only geometry for fixed B interval authority, never edit authority. */
+        public Specification withFixedReceiverGeometry() {
+            return new Specification(snapshotId, datasetIdentity, sourceGeneration,
+                    selectedWayKey, selectedRange, metricFrame, collisionEnvelope, editRegion,
+                    editableWayOccurrences, editableExistingKeys, movableExistingNodeKeys,
+                    removableExistingNodeKeys, explicitlyProtectedNodeKeys, mayCreateNodes,
+                    permissions, readOnlyPorts, true);
         }
     }
 
@@ -259,6 +281,32 @@ public final class NetworkSnapshotCapture {
         specification.editableExistingKeys().stream().sorted().forEach(materializer::include);
         specification.readOnlyPorts().stream().map(ExternalPort::wayKey).distinct()
                 .sorted().forEach(materializer::include);
+        if (specification.fixedReceiverGeometry()) {
+            Way selected = (Way) inventory.require(specification.selectedWayKey());
+            Set<PrimitiveKey> receivers = new LinkedHashSet<>();
+            for (int index : new int[] {specification.selectedRange().firstIndex(),
+                    specification.selectedRange().lastIndex()}) {
+                inventory.referrers(key(selected.getNode(index))).stream()
+                        .filter(ref -> ref.type() == PrimitiveKey.Type.WAY
+                                && !ref.equals(specification.selectedWayKey()))
+                        .sorted().forEach(receivers::add);
+            }
+            for (PrimitiveKey receiver : receivers) {
+                materializer.include(receiver);
+                if (specification.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
+                    // Retain the relation core already required by movable-junction authority
+                    // when a later fixed recapture removes the receiver's edit permission.
+                    inventory.referrers(receiver).stream().filter(ref -> ref.type() == PrimitiveKey.Type.RELATION)
+                            .sorted().forEach(materializer::include);
+                }
+                Way way = (Way) inventory.require(receiver);
+                for (Node node : way.getNodes()) {
+                    // One factual geometric hop only. Its new nodes do not expand this query.
+                    inventory.referrers(key(node)).stream().filter(ref -> ref.type() == PrimitiveKey.Type.WAY)
+                            .sorted().forEach(materializer::include);
+                }
+            }
+        }
 
         Set<PrimitiveKey> decisionNodes = decisionRelevantNodes(specification, inventory);
         Set<PrimitiveKey> affectedWays = new LinkedHashSet<>(

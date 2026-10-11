@@ -844,18 +844,23 @@ public final class ProbabilisticInference {
         }
         InferenceProfile start = profiles.get(startProfile);
         InferenceProfile end = profiles.get(startProfile + 1);
-        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport support =
-            end.orientationSupport(endState);
-        if (support.modes().isEmpty() || support.certainty() == 0.0) {
-            return 0.0;
-        }
         MetricPoint first = start.point(startState);
         MetricPoint second = end.point(endState);
         double heading = StrictMath.atan2(second.yMeters() - first.yMeters(), second.xMeters() - first.xMeters());
         double span = end.chainageMeters() - start.chainageMeters();
-        return parameters.orientationWeight() * span * support.certainty()
-            * end.orientationReliability(endState)
-            * support.mismatchSquared(heading);
+        // Integrate direct branch-owned evidence at both ends of the physical segment.
+        // A weak arrival must not discard a reliable departure, and reversing the trace
+        // must preserve this objective. Missing endpoint evidence contributes exactly zero.
+        return parameters.orientationWeight() * span * 0.5
+            * (orientationMismatch(start, startState, heading)
+                + orientationMismatch(end, endState, heading));
+    }
+
+    private static double orientationMismatch(InferenceProfile profile, int state, double heading) {
+        var support = profile.orientationSupport(state);
+        if (support.modes().isEmpty() || support.certainty() == 0.0) return 0.0;
+        return support.certainty() * profile.orientationReliability(state)
+                * support.mismatchSquared(heading);
     }
 
     private static double tripleEnergy(List<InferenceProfile> profiles, int profileIndex,

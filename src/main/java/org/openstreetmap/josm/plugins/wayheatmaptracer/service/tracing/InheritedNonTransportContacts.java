@@ -199,13 +199,15 @@ final class InheritedNonTransportContacts {
                 && !"no".equals(way.tags().get("area"));
         boolean cliff = !closed && "cliff".equals(way.tags().get("natural"))
                 && onlyTags(way.tags(), Set.of("natural"));
+        boolean ridge = !closed && "ridge".equals(way.tags().get("natural"))
+                && onlyTags(way.tags(), Set.of("natural"));
         boolean forest = closed && onlyTags(way.tags(), Set.of());
-        if (!rock && !cliff && !forest) return false;
+        if (!rock && !cliff && !ridge && !forest) return false;
         Set<PrimitiveKey> watches = before.incomingReferrerWatches().get(way.key());
         if (watches == null) return false;
         Set<PrimitiveKey> parents = watches.stream().filter(key -> key.type() == PrimitiveKey.Type.RELATION)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        if (parents.isEmpty()) return rock || cliff;
+        if (parents.isEmpty()) return rock || cliff || ridge;
         // Only an exact complete forest outer provides positive parent semantics. Other parent
         // types (including route/restriction and unknown ancestry) remain hard-blocking.
         if (!forest || parents.size() != 1) return false;

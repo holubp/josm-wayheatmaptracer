@@ -14,6 +14,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedRelation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExternalPort;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
@@ -111,7 +112,19 @@ public final class SelectedWayIntervalPartitioner {
             List<JunctionDisposition> junctionDispositions, Set<ExternalPort> provedPorts,
             Map<PrimitiveKey, DetachedPrimitive> parityPrimitives,
             Map<PrimitiveKey, Set<PrimitiveKey>> parityIncomingReferrers,
-            String datasetIdentity, long sourceGeneration) {
+            String datasetIdentity, long sourceGeneration,
+            Map<PrimitiveKey, NonTransportSemanticWitness.RelationEvidence> parityReceiverRelations) {
+        /** Historical partitions have no additive fixed-receiver relation authority. */
+        public Partition(PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+                List<FixedIsland> fixedIslands, List<SlideInterval> slideIntervals,
+                List<JunctionDisposition> junctionDispositions, Set<ExternalPort> provedPorts,
+                Map<PrimitiveKey, DetachedPrimitive> parityPrimitives,
+                Map<PrimitiveKey, Set<PrimitiveKey>> parityIncomingReferrers,
+                String datasetIdentity, long sourceGeneration) {
+            this(selectedWayKey, selectedRange, fixedIslands, slideIntervals, junctionDispositions,
+                    provedPorts, parityPrimitives, parityIncomingReferrers, datasetIdentity,
+                    sourceGeneration, Map.of());
+        }
         public Partition {
             fixedIslands = List.copyOf(fixedIslands);
             slideIntervals = List.copyOf(slideIntervals);
@@ -121,6 +134,7 @@ public final class SelectedWayIntervalPartitioner {
             Map<PrimitiveKey, Set<PrimitiveKey>> watches = new LinkedHashMap<>();
             parityIncomingReferrers.forEach((key, refs) -> watches.put(key, Set.copyOf(refs)));
             parityIncomingReferrers = Map.copyOf(watches);
+            parityReceiverRelations = Map.copyOf(parityReceiverRelations);
             if (selectedWayKey == null || selectedRange == null || datasetIdentity == null
                     || datasetIdentity.isBlank() || sourceGeneration < 0
                     || !parityPrimitives.containsKey(selectedWayKey)) {
@@ -227,7 +241,8 @@ public final class SelectedWayIntervalPartitioner {
             }
             decisions.put(selectedIndex, decision);
             ManualFootprint footprint = proveFootprint(authoritySnapshot,
-                    authoritySpecification, selected, selectedIndex, proof);
+                    authoritySpecification, selected, selectedIndex, proof,
+                    decision.reason() != ManualJunctionEligibility.Reason.SIMPLE_T);
             if (footprint == null) {
                 ManualJunctionEligibility.Reason refusal = proof.resourceExceeded
                         ? ManualJunctionEligibility.Reason.RESOURCE_LIMIT
@@ -326,7 +341,7 @@ public final class SelectedWayIntervalPartitioner {
             ManualFootprint footprint = provedManualFootprints.get(selectedIndex);
             if (footprint == null) {
                 footprint = proveFootprint(authoritySnapshot,
-                        authoritySpecification, selected, selectedIndex, proof);
+                        authoritySpecification, selected, selectedIndex, proof, true);
             }
             if (footprint == null) {
                 ManualJunctionEligibility.Reason refusal = proof.resourceExceeded
@@ -351,7 +366,7 @@ public final class SelectedWayIntervalPartitioner {
                 selected, fixed, dispositions);
         return new Partition(selected.key(), selection, fixed, slides, dispositions,
                 proof.ports, proof.primitives, proof.referrers, authoritySnapshot.datasetIdentity(),
-                authoritySnapshot.sourceGeneration());
+                authoritySnapshot.sourceGeneration(), proof.receiverRelations);
     }
 
     /** Verifies the authority proof on the read-only recapture without recomputing arm boundaries. */
@@ -375,6 +390,13 @@ public final class SelectedWayIntervalPartitioner {
                 return false;
             }
         }
+        if (!partition.parityReceiverRelations().isEmpty()) {
+            NonTransportSemanticWitness witness = frozenSnapshot.semanticWitness();
+            if (witness == null || !witness.matches(frozenSnapshot)) return false;
+            for (var entry : partition.parityReceiverRelations().entrySet()) {
+                if (!entry.getValue().equals(witness.relations().get(entry.getKey()))) return false;
+            }
+        }
         return frozenSnapshot.closure().externalPorts().containsAll(partition.provedPorts());
     }
 
@@ -396,7 +418,9 @@ public final class SelectedWayIntervalPartitioner {
         }
         Set<PrimitiveKey> incidentWays = wayReferrers(snapshot, node);
         if (!incomingComplete(snapshot, selected.key())
-                || incidentWays.stream().anyMatch(way -> !incomingComplete(snapshot, way))) {
+                || incidentWays.stream().anyMatch(way -> !incomingComplete(snapshot, way)
+                        && (way.equals(selected.key()) || !specification.fixedReceiverGeometry()
+                                || !fixedReceiverIncomingComplete(snapshot, way)))) {
             return decision(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE, node);
         }
         if (hasRelationReferrer(snapshot, selected.key())
@@ -441,7 +465,7 @@ public final class SelectedWayIntervalPartitioner {
 
     private static ManualFootprint proveFootprint(NetworkSnapshot snapshot,
             NetworkSnapshotCapture.Specification specification, DetachedWay selected,
-            int selectedIndex, Proof proof) {
+            int selectedIndex, Proof proof, boolean fixedReceiverOnly) {
         PrimitiveKey junction = selected.nodeKeys().get(selectedIndex);
         if (!incomingComplete(snapshot, junction)) return null;
         Set<PrimitiveKey> incident = snapshot.incomingReferrerWatches().get(junction).stream()
@@ -463,7 +487,10 @@ public final class SelectedWayIntervalPartitioner {
         }
         for (PrimitiveKey wayKey : incident) {
             if (!(snapshot.primitives().get(wayKey) instanceof DetachedWay way)) return null;
-            if (!incomingComplete(snapshot, wayKey)) return null;
+            boolean readOnlyReceiver = fixedReceiverOnly && specification.fixedReceiverGeometry()
+                    && !wayKey.equals(selected.key());
+            if (readOnlyReceiver ? !fixedReceiverIncomingComplete(snapshot, wayKey)
+                    : !incomingComplete(snapshot, wayKey)) return null;
             List<Integer> matches = new ArrayList<>();
             for (int occurrence = 0; occurrence < way.nodeKeys().size(); occurrence++) {
                 if (!proof.charge(1)) return null;
@@ -473,9 +500,30 @@ public final class SelectedWayIntervalPartitioner {
             int at = matches.get(0);
             proof.add(wayKey);
             localProofKeys.add(wayKey);
-            addPorts(snapshot, wayKey, proof);
+            if (readOnlyReceiver) {
+                // A fixed receiver is collision authority only. Its complete original geographic
+                // chords are retained; projected arms certify automatic reconstruction instead.
+                if (way.deleted() || way.nodeKeys().size() < 2
+                        || new LinkedHashSet<>(way.nodeKeys()).size() != way.nodeKeys().size()) return null;
+                for (PrimitiveKey key : way.nodeKeys()) {
+                    if (!proof.charge(1) || !(snapshot.primitives().get(key) instanceof DetachedNode node)
+                            || node.deleted() || !incomingComplete(snapshot, key)) return null;
+                    proof.add(key);
+                    localProofKeys.add(key);
+                }
+                for (PrimitiveKey parent : snapshot.incomingReferrerWatches().get(wayKey)) {
+                    if (!snapshot.primitives().containsKey(parent)) {
+                        proof.receiverRelations.put(parent, snapshot.semanticWitness().relations().get(parent));
+                    }
+                }
+                snapshot.closure().externalPorts().stream().filter(port -> port.wayKey().equals(wayKey))
+                        .forEach(proof::addFixedReceiverPort);
+            } else {
+                addPorts(snapshot, wayKey, proof);
+            }
             snapshot.closure().externalPorts().stream().filter(port -> port.wayKey().equals(wayKey))
                     .forEach(localPorts::add);
+            if (readOnlyReceiver) continue;
             int[] directions = wayKey.equals(selected.key())
                     ? at == 0
                             ? new int[] {1}
@@ -603,6 +651,23 @@ public final class SelectedWayIntervalPartitioner {
     private static boolean incomingComplete(NetworkSnapshot snapshot, PrimitiveKey target) {
         Set<PrimitiveKey> referrers = snapshot.incomingReferrerWatches().get(target);
         return referrers != null && referrers.stream().allMatch(snapshot.primitives()::containsKey);
+    }
+
+    /** Complete watched relations may prove only an unchanged, read-only receiver. */
+    private static boolean fixedReceiverIncomingComplete(NetworkSnapshot snapshot, PrimitiveKey receiver) {
+        Set<PrimitiveKey> referrers = snapshot.incomingReferrerWatches().get(receiver);
+        if (referrers == null || !(snapshot.primitives().get(receiver) instanceof DetachedWay)) return false;
+        for (PrimitiveKey referrer : referrers) {
+            if (snapshot.primitives().containsKey(referrer)) continue;
+            NonTransportSemanticWitness witness = snapshot.semanticWitness();
+            if (referrer.type() != PrimitiveKey.Type.RELATION || witness == null
+                    || !witness.matches(snapshot)) return false;
+            var relation = witness.relations().get(referrer);
+            if (relation == null || !relation.complete() || relation.deleted()
+                    || relation.members().stream().anyMatch(member -> !member.complete())
+                    || relation.members().stream().noneMatch(member -> member.key().equals(receiver))) return false;
+        }
+        return true;
     }
 
     private static Set<PrimitiveKey> wayReferrers(NetworkSnapshot snapshot, PrimitiveKey node) {
@@ -788,6 +853,8 @@ public final class SelectedWayIntervalPartitioner {
         private final Map<PrimitiveKey, DetachedPrimitive> primitives = new LinkedHashMap<>();
         private final Map<PrimitiveKey, Set<PrimitiveKey>> referrers = new LinkedHashMap<>();
         private final Set<ExternalPort> ports = new LinkedHashSet<>();
+        private final Map<PrimitiveKey, NonTransportSemanticWitness.RelationEvidence> receiverRelations
+                = new LinkedHashMap<>();
         private long work;
         private boolean resourceExceeded;
         private boolean authorityIncomplete;
@@ -827,6 +894,16 @@ public final class SelectedWayIntervalPartitioner {
                     || !incomingComplete(snapshot, port.outsideNeighborKey())) {
                 authorityIncomplete = true;
             }
+        }
+
+        void addFixedReceiverPort(ExternalPort port) {
+            ports.add(port);
+            add(port.wayKey());
+            add(port.boundaryNodeKey());
+            add(port.outsideNeighborKey());
+            if (!fixedReceiverIncomingComplete(snapshot, port.wayKey())
+                    || !incomingComplete(snapshot, port.boundaryNodeKey())
+                    || !incomingComplete(snapshot, port.outsideNeighborKey())) authorityIncomplete = true;
         }
 
         boolean charge(long amount) {

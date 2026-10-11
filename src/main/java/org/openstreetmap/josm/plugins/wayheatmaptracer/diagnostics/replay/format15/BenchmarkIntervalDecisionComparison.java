@@ -77,6 +77,7 @@ public final class BenchmarkIntervalDecisionComparison {
                 || !a.provedPorts().equals(b.provedPorts())
                 || !a.parityPrimitives().equals(b.parityPrimitives())
                 || !a.parityIncomingReferrers().equals(b.parityIncomingReferrers())
+                || !a.parityReceiverRelations().equals(b.parityReceiverRelations())
                 || a.sourceGeneration() != b.sourceGeneration()) {
             throw new IllegalStateException("Substantive interval partition differs");
         }
@@ -98,6 +99,7 @@ public final class BenchmarkIntervalDecisionComparison {
                 || !a.explicitlyProtectedNodeKeys().equals(b.explicitlyProtectedNodeKeys())
                 || a.mayCreateNodes() != b.mayCreateNodes()
                 || !a.permissions().equals(b.permissions())
+                || a.fixedReceiverGeometry() != b.fixedReceiverGeometry()
                 || !a.readOnlyPorts().equals(b.readOnlyPorts())) {
             throw new IllegalStateException("Interval authority differs");
         }

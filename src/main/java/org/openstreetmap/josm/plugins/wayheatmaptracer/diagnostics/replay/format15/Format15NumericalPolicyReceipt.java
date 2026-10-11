@@ -6,8 +6,9 @@ import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
-/** Bounded caller-declared arithmetic policy; never inferred from historic output values. */
+/** Bounded caller-declared runtime arithmetic/objective policy, separate from captured parameter identity. */
 final class Format15NumericalPolicyReceipt {
     static final String ARTIFACT = "numerical-policy.json";
     private static final int MAX_BYTES = 4096;
@@ -65,7 +66,8 @@ final class Format15NumericalPolicyReceipt {
 
     private static String inferencePolicy(TrackerMode engine) {
         return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
-            ? ModernNumericalPolicy.B_INFERENCE : "engine-specific";
+            ? ModernNumericalPolicy.B_INFERENCE + "/" + EvidenceModelParameters.orientationIntegrationVersion()
+            : "engine-specific";
     }
 
     private static boolean modern(TrackerMode engine) {

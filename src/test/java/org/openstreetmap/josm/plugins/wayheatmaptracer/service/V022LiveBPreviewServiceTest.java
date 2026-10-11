@@ -605,6 +605,154 @@ class V022LiveBPreviewServiceTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void endpointOnlyManualIslandsKeepSafeInteriorInProductionBatch(boolean bothEndpoints) throws Exception {
+        endpointIslandsProductionRoundTrip(bothEndpoints, false, AlignmentMode.PRECISE_SHAPE);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = AlignmentMode.class,
+            names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void completeWatchedReceiverRelationsKeepExactEndpointIslandsThroughApplyAndExport(AlignmentMode mode)
+            throws Exception {
+        endpointIslandsProductionRoundTrip(true, true, mode);
+    }
+
+    private void endpointIslandsProductionRoundTrip(boolean bothEndpoints, boolean receiverRelations, AlignmentMode mode)
+            throws Exception {
+        DataSet dataSet = new DataSet();
+        java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
+        for (int index = 0; index <= 30; index++) {
+            Node node = loadedNode(3000 + index, latitude(mode == AlignmentMode.MOVE_EXISTING_NODES ? 1.0 : 0.0),
+                    longitude((index - 15) * 10.0));
+            nodes.add(node);
+            dataSet.addPrimitive(node);
+        }
+        Way selected = new Way();
+        selected.setNodes(nodes);
+        selected.setOsmId(3100, 1);
+        selected.put("highway", "path");
+        selected.setModified(false);
+        dataSet.addPrimitive(selected);
+        for (int index : bothEndpoints ? List.of(0, 30) : List.of(0)) {
+            if (!receiverRelations) nodes.get(index).put("note", "fixed manual endpoint");
+            double arm = receiverRelations ? 120.0 : 40.0;
+            Node north = loadedNode(3200 + index, latitude(arm), longitude((index - 15) * 10.0));
+            Node south = loadedNode(3300 + index, latitude(-arm), longitude((index - 15) * 10.0));
+            dataSet.addPrimitive(north);
+            dataSet.addPrimitive(south);
+            Way receiver = new Way();
+            receiver.setNodes(List.of(south, nodes.get(index), north));
+            receiver.setOsmId(3400 + index, 1);
+            receiver.put("highway", "path");
+            receiver.setModified(false);
+            dataSet.addPrimitive(receiver);
+            if (receiverRelations) {
+                Relation relation = new Relation();
+                relation.setOsmId(3500 + index, 1);
+                relation.put("type", "route");
+                relation.put("route", "hiking");
+                relation.addMember(new RelationMember("", receiver));
+                relation.setModified(false);
+                dataSet.addPrimitive(relation);
+            }
+        }
+        SelectionContext selection = new SelectionContext(selected, 0, 30, nodes,
+                Set.of(nodes.get(0), nodes.get(30)));
+        RecoveryPermissions permissions = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.REATTACH, true);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        AlignmentConfig configured = new AlignmentConfig(config(TrackerMode.PROBABILISTIC).heatmap()
+                .withAlignmentMode(mode), GeometryCleanupConfig.disabled());
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
+                wideFlatRaster(), configured, true, permissions));
+        assertTrue(captured[0].specification().fixedReceiverGeometry());
+        if (!receiverRelations) {
+            for (TrackerMode other : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.HYBRID)) {
+                var control = new LiveBPreviewService.Captured[1];
+                SwingUtilities.invokeAndWait(() -> control[0] = service.capture(dataSet, selection,
+                        wideFlatRaster(), config(other), true, permissions));
+                assertFalse(control[0].specification().fixedReceiverGeometry());
+                assertNull(control[0].intervalPartition(), "endpoint interval routing is an explicit B-only change");
+            }
+        }
+
+        var partition = captured[0].intervalPartition();
+        assertNotNull(partition, "manual endpoint footprint must be frozen before inference");
+        assertEquals(bothEndpoints ? 2 : 1, partition.fixedIslands().size());
+        assertEquals(1, partition.slideIntervals().size());
+        assertTrue(partition.fixedIslands().get(0).range().lastIndex() >= 3,
+                "a crossing 15.6 metres from the junction is inside the exact fixed approach");
+        LiveBPreviewService.Computed computed = service.compute(captured[0], CancellationProbe.NONE);
+        assertTrue(computed.partitioned());
+        var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), java.util.Map.of());
+        assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
+        var plan = assessment.plan().orElseThrow();
+        for (var island : partition.fixedIslands()) {
+            for (var key : island.occurrenceKeys()) {
+                assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+            }
+        }
+        for (Way context : dataSet.getWays()) {
+            if (context == selected) continue;
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.WAY, context.getUniqueId());
+            assertEquals(plan.before().primitives().get(key), plan.after().primitives().get(key));
+        }
+        List<Node> beforeNodes = List.copyOf(selected.getNodes());
+        List<LatLon> beforeCoordinates = beforeNodes.stream().map(Node::getCoor).toList();
+        var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand[1];
+        SwingUtilities.invokeAndWait(() -> {
+            service.requireCurrent(dataSet, captured[0]);
+            var receipt = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                    .captureBound(dataSet, captured[0].specification());
+            var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                    .LiveNetworkSnapshotValidator(receipt, plan, () -> plan.before().sourceGeneration());
+            command[0] = new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
+                    dataSet, plan, validator, "Apply safe interior with exact endpoint islands");
+            assertTrue(command[0].executeCommand());
+        });
+        List<Node> appliedNodes = List.copyOf(selected.getNodes());
+        List<LatLon> appliedCoordinates = appliedNodes.stream().map(Node::getCoor).toList();
+        for (var island : partition.fixedIslands()) for (var key : island.occurrenceKeys()) {
+            Node original = beforeNodes.stream().filter(node -> node.getUniqueId() == key.id()).findFirst().orElseThrow();
+            assertTrue(appliedNodes.contains(original));
+            assertEquals(beforeCoordinates.get(beforeNodes.indexOf(original)), original.getCoor());
+        }
+        SwingUtilities.invokeAndWait(() -> {
+            command[0].undoCommand();
+            assertEquals(beforeNodes, selected.getNodes());
+            assertEquals(beforeCoordinates, selected.getNodes().stream().map(Node::getCoor).toList());
+            assertTrue(command[0].executeCommand());
+            assertEquals(appliedNodes, selected.getNodes());
+            assertEquals(appliedCoordinates, selected.getNodes().stream().map(Node::getCoor).toList());
+        });
+        var bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                .Format15ProductionBundleFactory.createLiveIntervals("test-rc8", computed.intervalBatch(),
+                        assessment, java.util.Map.of(), org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics
+                                .replay.format15.Format15ProductionBundleFactory.VisibleLayerSourceReceipt.unavailable(),
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                                .Format15ProductionBundleFactory.IntervalArtifactStatus.APPLIED,
+                        plan.canonicalHash(), plan.canonicalHash());
+        Path archive = java.nio.file.Files.createTempFile("rc8-endpoint-islands-", ".zip");
+        try {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
+                    .write(bundle, archive);
+            var decoded = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                    .Format15ArchiveReader.read(archive);
+            String index = new String(decoded.artifact("interval-production.json").orElseThrow().bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(index.contains(plan.canonicalHash()));
+            assertTrue(index.contains("APPLIED"));
+            assertFalse(decoded.capability().supports(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics
+                    .replay.ReplayLevel.FULL_EDIT_PLAN), "interval artifacts must retain truthful replay capability");
+        } finally {
+            java.nio.file.Files.deleteIfExists(archive);
+        }
+    }
+
     private static LiveBPreviewService.VisibleRaster wideFlatRaster() {
         int width = 1200;
         int height = 1200;
@@ -803,6 +951,8 @@ class V022LiveBPreviewServiceTest {
                     identity.contains("java17-fdlibm53-v1"), engine.name());
             assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
                     identity.contains("terminal-path-count-cumulative-work-v1"), engine.name());
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+                    identity.contains("adjacent-orientation-trapezoid-v1"), engine.name());
         }
         assertEquals("legacy-v02", LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_V02));
     }

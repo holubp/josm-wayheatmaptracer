@@ -68,7 +68,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
 public final class FrozenReplayCodec {
     public static final int VERSION = 4;
     private static final int AUTHORITY_MAGIC = 0x57544155;
-    private static final int AUTHORITY_VERSION = 1;
+    private static final int AUTHORITY_VERSION = 2;
     private static final int MAX_BYTES = 64 * 1024 * 1024;
     private static final int MAX_TEXT = 1_000_000;
     private static final int MAX_ENTRIES = 250_000;
@@ -199,13 +199,16 @@ public final class FrozenReplayCodec {
 
     /** Original partition authority; complete numerical frames have their own explicit header. */
     static byte[] encodeAuthority(NetworkSnapshotCapture.Specification s) {
+        if (s.fixedReceiverGeometry() && !s.metricFrame().hasCompleteNumericalIdentity()) {
+            throw new IllegalArgumentException("Fixed receiver authority requires a complete metric frame");
+        }
         try {
             BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
                     Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 if (s.metricFrame().hasCompleteNumericalIdentity()) {
                     out.writeInt(AUTHORITY_MAGIC);
-                    out.writeInt(AUTHORITY_VERSION);
+                    out.writeInt(s.fixedReceiverGeometry() ? AUTHORITY_VERSION : 1);
                 }
                 str(out, s.snapshotId());
                 str(out, s.datasetIdentity());
@@ -234,6 +237,7 @@ public final class FrozenReplayCodec {
                 out.writeBoolean(s.permissions().reconstructIncidentWays());
                 count(out, s.readOnlyPorts().size());
                 for (ExternalPort port : s.readOnlyPorts()) port(out, port);
+                if (s.fixedReceiverGeometry()) out.writeBoolean(true);
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -249,8 +253,10 @@ public final class FrozenReplayCodec {
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
             in.mark(8);
             boolean completeFrame = in.readInt() == AUTHORITY_MAGIC;
+            int authorityVersion = 0;
             if (completeFrame) {
-                if (in.readInt() != AUTHORITY_VERSION) {
+                authorityVersion = in.readInt();
+                if (authorityVersion != 1 && authorityVersion != AUTHORITY_VERSION) {
                     throw new IllegalArgumentException("Unsupported partition authority codec version");
                 }
             } else {
@@ -281,10 +287,11 @@ public final class FrozenReplayCodec {
             n = count(in);
             List<ExternalPort> ports = new ArrayList<>(n);
             for (int index = 0; index < n; index++) ports.add(port(in));
+            boolean fixedReceiverGeometry = authorityVersion >= 2 && in.readBoolean();
             if (in.read() != -1) throw new IllegalArgumentException("Partition authority has trailing bytes");
             return new NetworkSnapshotCapture.Specification(id, dataset, generation, selected,
                     selection, metric, collision, edit, occurrences, editable, movable,
-                    removable, protectedKeys, create, permissions, ports);
+                    removable, protectedKeys, create, permissions, ports, fixedReceiverGeometry);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Malformed partition authority", failure);
         } finally {
@@ -333,6 +340,21 @@ public final class FrozenReplayCodec {
                     if (disposition.provedFootprint() != null) range(out, disposition.provedFootprint());
                 }
                 ports(out, p.provedPorts());
+                if (!p.parityReceiverRelations().isEmpty()) {
+                    str(out, "fixed-receiver-relations-v1");
+                    count(out, p.parityReceiverRelations().size());
+                    for (PrimitiveKey parent : orderedKeys(p.parityReceiverRelations().keySet())) {
+                        var relation = p.parityReceiverRelations().get(parent);
+                        key(out, parent);
+                        tags(out, relation.tags());
+                        count(out, relation.members().size());
+                        for (var member : relation.members()) {
+                            key(out, member.key()); str(out, member.role()); out.writeBoolean(member.complete());
+                        }
+                        out.writeBoolean(relation.complete()); out.writeBoolean(relation.deleted());
+                        out.writeBoolean(relation.modified()); keys(out, relation.parentWatches());
+                    }
+                }
             }
             return Format15Safety.sha256(bytes.toByteArray());
         } catch (IOException failure) {

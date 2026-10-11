@@ -291,6 +291,10 @@ class V022FrozenFrameTest {
         FrozenReplayInput base = input(source);
         NetworkSnapshotCapture.Specification scope = scope(base);
         assertEquals(scope, FrozenReplayCodec.decodeAuthority(FrozenReplayCodec.encodeAuthority(scope)));
+        org.junit.jupiter.api.Assertions.assertFalse(FrozenReplayCodec.decodeAuthority(
+                FrozenReplayCodec.encodeAuthority(scope)).fixedReceiverGeometry());
+        var fixedReceiver = scope.withFixedReceiverGeometry();
+        assertEquals(fixedReceiver, FrozenReplayCodec.decodeAuthority(FrozenReplayCodec.encodeAuthority(fixedReceiver)));
         AlignmentEditPlan plan = plan(base);
         assertEquals(plan, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(plan)));
     }

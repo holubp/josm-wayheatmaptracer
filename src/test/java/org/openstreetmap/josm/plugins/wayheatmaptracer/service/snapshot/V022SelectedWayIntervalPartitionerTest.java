@@ -124,6 +124,58 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
+    void watchedReceiverRelationCanOnlyFreezeItsCompleteReadOnlyApproach() {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false)
+                .withReceiverArmLengthAt(0, 120.0).withUnmaterializedReceiverRelation(0)
+                .withReceiverRelationWitness(0, true);
+        var result = partition(fixture);
+        assertEquals(List.of(new OccurrenceRange(0, 2)), result.fixedIslands().stream()
+                .map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(new OccurrenceRange(2, 12)), result.slideIntervals().stream()
+                .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
+        assertEquals(ManualJunctionEligibility.Reason.PARTICIPATING_RELATION,
+                result.junctionDispositions().get(0).reason());
+        assertFalse(result.junctionDispositions().get(0).automaticEligible());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixture.snapshot));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withReceiverRelationWitness(0, false).snapshot), "incomplete witness cannot retain authority");
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), Map.of("name", "changed"),
+                                row.members(), row.complete(), row.deleted(), row.modified(), row.parentWatches())).snapshot));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(), List.of(),
+                                row.complete(), row.deleted(), true, row.parentWatches())).snapshot));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withParticipatingRelation().snapshot), "changed receiver membership must invalidate the proof");
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withUnmaterializedReferrerAt(0).snapshot), "unknown geometric referrers stay unsafe");
+    }
+
+    @Test
+    void unavailableOrIncompleteReceiverWitnessFreezesTheWholeSelection() {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false).withUnmaterializedReceiverRelation(0);
+        assertTrue(partition(fixture).slideIntervals().isEmpty());
+        assertTrue(partition(fixture.withReceiverRelationWitness(0, false)).slideIntervals().isEmpty());
+        Fixture deleted = fixture.withReceiverRelationWitness(0, true).withChangedReceiverWitness(row ->
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                        .RelationEvidence(row.key(), row.tags(), row.members(), true, true,
+                                row.modified(), row.parentWatches()));
+        assertTrue(partition(deleted).slideIntervals().isEmpty());
+    }
+
+    @Test
+    void unknownSelectedAncestryCannotUseTheReadOnlyReceiverRelationProof() {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false)
+                .withUnmaterializedReceiverRelation(0).withReceiverRelationWitness(0, true);
+        Map<PrimitiveKey, Set<PrimitiveKey>> watches = Map.of(fixture.selected,
+                Set.of(PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9191)));
+        fixture = fixture.rebuild(fixture.snapshot.primitives(), watches);
+        assertTrue(partition(fixture).slideIntervals().isEmpty());
+    }
+
+    @Test
     void unprovedReferrerFreezesUncertainSelectionAndHasTypedReason() {
         Fixture fixture = pathWithJunctions(12, 5, -1, true).withUnmaterializedReferrerAt(5);
 
@@ -231,9 +283,14 @@ class V022SelectedWayIntervalPartitionerTest {
     }
 
     @Test
-    void laterUnprovedEndpointFreezesEarlierEligibleTWithoutDuplicateDispositions() {
+    void manualReadOnlyReceiverArmKeepsEarlierEligibleTAndBoundedSafeInterior() {
         Fixture fixture = endpointTJunctions(new double[] {0, 40, 80, 120}, Set.of(0, 3),
                 List.of(port(1, 2, ExternalPort.Side.AFTER))).withReceiverArmLengthAt(3, 100);
+        var unchangedPolicy = partition(fixture);
+        assertTrue(unchangedPolicy.slideIntervals().isEmpty());
+        assertTrue(unchangedPolicy.junctionDispositions().stream().noneMatch(
+                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
+        fixture = fixture.withFixedReceiverGeometry();
         assertEquals(ManualJunctionEligibility.Reason.SIMPLE_T,
                 ManualJunctionEligibility.evaluateOccurrence(fixture.snapshot, fixture.specification, 0).reason());
 
@@ -243,10 +300,11 @@ class V022SelectedWayIntervalPartitionerTest {
         assertEquals(Set.of(0, 3), result.junctionDispositions().stream()
                 .map(SelectedWayIntervalPartitioner.JunctionDisposition::selectedOccurrenceIndex)
                 .collect(java.util.stream.Collectors.toSet()));
-        assertTrue(result.junctionDispositions().stream().noneMatch(
-                SelectedWayIntervalPartitioner.JunctionDisposition::automaticEligible));
-        assertTrue(result.slideIntervals().isEmpty());
-        assertEquals(List.of(new OccurrenceRange(0, 3)),
+        assertTrue(result.junctionDispositions().get(0).automaticEligible());
+        assertFalse(result.junctionDispositions().get(1).automaticEligible());
+        assertEquals(List.of(new OccurrenceRange(0, 2)), result.slideIntervals().stream()
+                .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
+        assertEquals(List.of(new OccurrenceRange(2, 3)),
                 result.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
     }
 
@@ -668,6 +726,46 @@ class V022SelectedWayIntervalPartitionerTest {
             Set<PrimitiveKey> refs = new LinkedHashSet<>(snapshot.incomingReferrerWatches().get(node));
             refs.add(ghostWay);
             return rebuild(snapshot.primitives(), Map.of(node, refs));
+        }
+        Fixture withUnmaterializedReceiverRelation(int index) {
+            PrimitiveKey receiver = snapshot.incomingReferrerWatches().get(selectedNodes.get(index))
+                    .stream().filter(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selected))
+                    .findFirst().orElseThrow();
+            Set<PrimitiveKey> refs = new LinkedHashSet<>(snapshot.incomingReferrerWatches().get(receiver));
+            refs.add(PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9191));
+            return rebuild(snapshot.primitives(), Map.of(receiver, refs));
+        }
+        Fixture withReceiverRelationWitness(int index, boolean complete) {
+            PrimitiveKey receiver = snapshot.incomingReferrerWatches().get(selectedNodes.get(index))
+                    .stream().filter(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selected))
+                    .findFirst().orElseThrow();
+            PrimitiveKey relation = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9191);
+            var row = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                    .RelationEvidence(relation, Map.of("type", "route", "route", "hiking"),
+                            List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                                    .NonTransportSemanticWitness.Member(receiver, "", true)),
+                            complete, false, false, Set.of());
+            var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                    snapshot.canonicalHash(), snapshot.datasetIdentity(), snapshot.sourceGeneration(),
+                    Map.of(relation, row));
+            var witnessed = new NetworkSnapshot(snapshot.snapshotId(), snapshot.role(), snapshot.datasetIdentity(),
+                    snapshot.sourceGeneration(), snapshot.closure(), snapshot.primitives(),
+                    snapshot.incomingReferrerWatches(), witness);
+            return new Fixture(witnessed, specification.withFixedReceiverGeometry(), selected, selectedNodes, port);
+        }
+        Fixture withFixedReceiverGeometry() {
+            return new Fixture(snapshot, specification.withFixedReceiverGeometry(), selected, selectedNodes, port);
+        }
+        Fixture withChangedReceiverWitness(java.util.function.UnaryOperator<org.openstreetmap.josm.plugins
+                .wayheatmaptracer.model.NonTransportSemanticWitness.RelationEvidence> change) {
+            var rows = new LinkedHashMap<>(snapshot.semanticWitness().relations());
+            rows.replaceAll((key, value) -> change.apply(value));
+            var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                    snapshot.canonicalHash(), snapshot.datasetIdentity(), snapshot.sourceGeneration(), rows);
+            var changed = new NetworkSnapshot(snapshot.snapshotId(), snapshot.role(), snapshot.datasetIdentity(),
+                    snapshot.sourceGeneration(), snapshot.closure(), snapshot.primitives(),
+                    snapshot.incomingReferrerWatches(), witness);
+            return new Fixture(changed, specification, selected, selectedNodes, port);
         }
         Fixture withRepeatedSelectedOccurrence() {
             Map<PrimitiveKey, DetachedPrimitive> values = new LinkedHashMap<>(snapshot.primitives());
