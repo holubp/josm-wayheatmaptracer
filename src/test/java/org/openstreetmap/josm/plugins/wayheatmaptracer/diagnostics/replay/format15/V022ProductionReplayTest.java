@@ -172,6 +172,47 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void bRuntimeReliabilityPolicyIsBoundIndependentlyOfCapturedParameters() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        String runtime = "/" + EvidenceModelParameters.reliabilityPolicyVersion();
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
+                    engine).bytes(), StandardCharsets.UTF_8);
+            assertTrue(receipt.contains(runtime), "executing reliability proof must be explicit in runtime receipt");
+        }
+        for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
+            String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(), input.request().parameterHash(), engine,
+                    engine).bytes(), StandardCharsets.UTF_8);
+            assertFalse(receipt.contains(runtime));
+        }
+    }
+
+    @Test
+    void oldReliabilityReceiptRemainsReadableButCannotCertifyNewRuntime(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "runtime-reliability-test", input, TrackerMode.PROBABILISTIC);
+        String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+        String old = current.replace("/" + EvidenceModelParameters.reliabilityPolicyVersion(), "");
+        assertNotEquals(current, old);
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+        Path path = directory.resolve("old-reliability-receipt.zip");
+        Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                base.parameterHash(), artifacts), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        FrozenReplayInput read = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes());
+        assertEquals(input.canonicalHash(), read.canonicalHash());
+        assertEquals(input.request().parameterHash(), archive.parameterHash());
+        var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(
+                archive, ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(), archive.parameterHash()));
+        assertEquals("numerical-policy-invalid", failure.getMessage());
+    }
+
+    @Test
     void bRuntimeObjectiveIsExplicitAndOldReceiptRemainsReadableButCannotCertifyReplay(
             @TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
@@ -207,7 +248,8 @@ class V022ProductionReplayTest {
         String receipt = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
                 .replace("\"computedEngine\":\"PROBABILISTIC\"", "\"computedEngine\":\"CORRIDOR_AWARE\"")
                 .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1/"
-                        + EvidenceModelParameters.orientationIntegrationVersion() + "\"",
+                        + EvidenceModelParameters.orientationIntegrationVersion() + "/"
+                        + EvidenceModelParameters.reliabilityPolicyVersion() + "\"",
                         "\"inferencePolicy\":\"engine-specific\"");
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", receipt));

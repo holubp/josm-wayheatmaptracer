@@ -50,6 +50,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWork
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
@@ -971,7 +972,7 @@ class V022LiveBPreviewServiceTest {
                     config(TrackerMode.HYBRID));
         });
 
-        assertTrue(direct.contains("direct-longitudinal-2"));
+        assertTrue(direct.contains(EvidenceModelParameters.reliabilityPolicyVersion()));
         assertTrue(direct.contains("DIRECT_LONGITUDINAL_V2"));
         assertTrue(hybrid.contains("BASELINE"));
         assertNotEquals(direct, hybrid);

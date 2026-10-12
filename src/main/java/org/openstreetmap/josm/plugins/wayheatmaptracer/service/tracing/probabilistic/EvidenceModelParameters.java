@@ -40,7 +40,7 @@ public record EvidenceModelParameters(
 
     /** Returns the version of the direct longitudinal weak-signal policy. */
     public static String reliabilityPolicyVersion() {
-        return "direct-longitudinal-2";
+        return "direct-longitudinal-3";
     }
 
     /** Branch-owned orientation is physically integrated across both adjacent endpoints. */

@@ -67,6 +67,7 @@ final class Format15NumericalPolicyReceipt {
     private static String inferencePolicy(TrackerMode engine) {
         return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
             ? ModernNumericalPolicy.B_INFERENCE + "/" + EvidenceModelParameters.orientationIntegrationVersion()
+                + "/" + EvidenceModelParameters.reliabilityPolicyVersion()
             : "engine-specific";
     }
 

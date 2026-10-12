@@ -165,11 +165,30 @@ public final class ProbabilisticProfileFactory {
             AttemptMemoryLedger.Owner intervalOwner = owner == null ? null
                     : owner.child("reliability-raster-intervals");
             try {
-                List<ProbabilisticProfile> reliable = LongitudinalModeReliability.apply(result,
-                        new RasterIntervalEvidence(evidence, field, intervalOwner), cancellation,
-                        owner).profiles();
-                if (rawOwner != null) rawOwner.close();
-                return reliable;
+                RasterIntervalEvidence interval = intervalOwner == null
+                        ? new RasterIntervalEvidence(evidence, field, parameters.localization(), null)
+                        : ProbabilisticInference.allocated(intervalOwner, AttemptMemoryLedger.objectBytes(64),
+                                "sampled profiles", () -> new RasterIntervalEvidence(
+                                        evidence, field, parameters.localization(), intervalOwner));
+                try {
+                    List<ProbabilisticProfile> reliable = LongitudinalModeReliability.apply(result,
+                            interval, cancellation, owner).profiles();
+                    if (rawOwner != null) rawOwner.close();
+                    return reliable;
+                } finally {
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                            "reliability.bridgeQueries", interval.queries);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                            "reliability.intervalSamplingUnits", interval.samplingUnits);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                            "reliability.bridgeScalarQueries", interval.scalarQueries);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                            "reliability.bridgeFeatureUnits", interval.featureUnits);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                            "reliability.intervalSamplingLimit", RasterIntervalEvidence.MAXIMUM_SAMPLING_UNITS);
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                            "reliability.bridgeFeatureLimit", RasterIntervalEvidence.MAXIMUM_FEATURE_UNITS);
+                }
             } finally {
                 if (intervalOwner != null) intervalOwner.close();
             }
@@ -813,26 +832,37 @@ public final class ProbabilisticProfileFactory {
     }
 
     /**
-     * Proves that adjacent localized centers are joined by directly measured scalar evidence.
+     * Proves that adjacent localized centers retain directly measured lateral ownership between profiles.
      *
      * <p>Validity and the exact decision-region union are hard ownership boundaries. Inside those
-     * boundaries the minimum prominence ratio remains continuous, so a faint but concentrated
-     * corridor can retain full coherence while a blank interval receives none.</p>
+     * boundaries scalar presence remains a separate upper bound. Local branch contrast is measured
+     * relative to the weaker endpoint, so uniformly faint concentration is not attenuated twice.
+     * Confidence deterioration is measured relative to both endpoints in the same candidate-normal
+     * frame; original profile confidence remains independently represented in mode reliability.
+     * A bridge losing its shoulders or agreed center approaches zero continuation continuously.</p>
      */
-    private static final class RasterIntervalEvidence
+    static final class RasterIntervalEvidence
             implements LongitudinalModeReliability.DirectIntervalEvidence {
-        private static final long MAXIMUM_SAMPLES = 2_000_000L;
+        // Preserve the pre-existing scalar/crossed-cell admission cap. Feature work is separate.
+        private static final long MAXIMUM_SAMPLING_UNITS = 2_000_000L;
+        private static final long MAXIMUM_FEATURE_UNITS = 8_000_000L;
         private static final double EPSILON = 1e-12;
 
         private final EvidenceSnapshot evidence;
         private final ScalarEvidenceField field;
+        private final EvidenceModelParameters.Localization localization;
         private final AttemptMemoryLedger.Owner owner;
-        private long samples;
+        private long samplingUnits;
+        private long scalarQueries;
+        private long featureUnits;
+        private long queries;
 
         RasterIntervalEvidence(EvidenceSnapshot evidence, ScalarEvidenceField field,
+                EvidenceModelParameters.Localization localization,
                 AttemptMemoryLedger.Owner owner) {
             this.evidence = evidence;
             this.field = field;
+            this.localization = localization;
             this.owner = owner;
         }
 
@@ -852,23 +882,38 @@ public final class ProbabilisticProfileFactory {
             double leftProminence = directProminence(leftProfile, leftMode);
             double rightProminence = directProminence(rightProfile, rightMode);
             double referenceProminence = Math.min(leftProminence, rightProminence);
-            if (!(referenceProminence > EPSILON)) {
+            double referenceAmplitude = Math.min(leftMode.scalarAmplitudeReliability(),
+                    rightMode.scalarAmplitudeReliability());
+            if (!(referenceProminence > EPSILON) || !(referenceAmplitude > 0.0)) {
                 return 0.0;
             }
             if (!supportsEveryCrossedInterpolationCell(field, evidence.transform(), left, right,
-                    cancellation, this::charge, owner)) {
+                    cancellation, this::chargeSampling, owner)) {
                 return 0.0;
             }
             double samplingStep = 0.5 * evidence.resolution().outputRasterPitchMeters();
             long intervals = Math.max(1L, (long) Math.ceil(distance / samplingStep));
-            charge(intervals + 1L);
+            chargeSampling(intervals + 1L);
             double minimumRatio = 1.0;
+            MetricPoint tangent = new MetricPoint(right.xMeters() - left.xMeters(),
+                    right.yMeters() - left.yMeters());
+            // Only three scalar summaries survive a closed query: two endpoints and one current row.
+            try (AttemptMemoryLedger.Reservation summaries = owner == null ? null
+                    : owner.reserve(3L * AttemptMemoryLedger.objectBytes(16))) {
+            BridgeMeasurement leftMeasurement = localizedSupport(left, tangent,
+                    leftProfile.sourcePitchMeters(), cancellation);
+            if (leftMeasurement == null) return 0.0;
+            BridgeMeasurement rightMeasurement = localizedSupport(right, tangent,
+                    rightProfile.sourcePitchMeters(), cancellation);
+            if (rightMeasurement == null) return 0.0;
+            double referenceConfidence = Math.min(leftMeasurement.confidence(), rightMeasurement.confidence());
             for (long index = 0L; index <= intervals; index++) {
                 cancellation.checkpoint();
                 double fraction = (double) index / intervals;
                 MetricPoint point = new MetricPoint(
                         left.xMeters() + fraction * (right.xMeters() - left.xMeters()),
                         left.yMeters() + fraction * (right.yMeters() - left.yMeters()));
+                scalarQueries++;
                 OptionalDouble sampled = StrictScalarSampler.sample(
                         field, evidence.transform(), evidence.evidenceRegion(), point);
                 if (sampled.isEmpty()) {
@@ -881,15 +926,126 @@ public final class ProbabilisticProfileFactory {
                     return 0.0;
                 }
                 minimumRatio = Math.min(minimumRatio, ratio);
+                double sourcePitch = leftProfile.sourcePitchMeters() + fraction
+                        * (rightProfile.sourcePitchMeters() - leftProfile.sourcePitchMeters());
+                BridgeMeasurement measurement = index == 0L ? leftMeasurement
+                        : index == intervals ? rightMeasurement
+                        : localizedSupport(point, tangent, sourcePitch, cancellation);
+                if (measurement == null) return 0.0;
+                double localized = Math.min(1.0, measurement.confidence() / referenceConfidence)
+                        * Math.min(1.0, measurement.amplitudeReliability() / referenceAmplitude);
+                if (!(localized > 0.0)) return 0.0;
+                minimumRatio = Math.min(minimumRatio, localized);
             }
             return Math.min(1.0, minimumRatio);
+            }
         }
 
-        private void charge(long requested) {
-            if (requested < 0L || requested > MAXIMUM_SAMPLES - samples) {
+        private BridgeMeasurement localizedSupport(MetricPoint point, MetricPoint tangent, double sourcePitch,
+                CancellationProbe cancellation) {
+            double halfWidth = Math.max(localization.routeProfileHalfWidthMeters(), 4.0 * sourcePitch);
+            double requested = StrictMath.ceil(2.0 * halfWidth / (0.5 * sourcePitch));
+            if (!Double.isFinite(requested) || requested > MAXIMUM_SAMPLING_UNITS - 1L) {
                 throw new LongitudinalModeReliability.ResourceLimitException();
             }
-            samples += requested;
+            long intervals = Math.max(4L, (long) requested);
+            if ((intervals & 1L) != 0L) intervals++;
+            long sampleCount = Math.addExact(intervals, 1L);
+            chargeSampling(sampleCount); // Complete lateral admission precedes list or sample allocation.
+            queries++;
+            cancellation.checkpoint();
+            AttemptMemoryLedger.Owner queryOwner = owner == null ? null
+                    : owner.child("bridge-local-profile");
+            try (AttemptMemoryLedger.Reservation queryScratch = queryOwner == null ? null
+                    : queryOwner.reserve(3L * AttemptMemoryLedger.objectBytes(24))) {
+                int count = Math.toIntExact(sampleCount);
+                long bytes = Math.addExact(ProbabilisticInference.listBytes(sampleCount),
+                        Math.multiplyExact(sampleCount, AttemptMemoryLedger.objectBytes(24)));
+                List<LocalScalarProfileExtractor.Sample> samples = queryOwner == null
+                        ? new ArrayList<>(count)
+                        : ProbabilisticInference.allocated(queryOwner, bytes, "sampled profiles",
+                                () -> new ArrayList<>(count));
+                double tangentLength = StrictMath.hypot(tangent.xMeters(), tangent.yMeters());
+                double normalX = -tangent.yMeters() / tangentLength;
+                double normalY = tangent.xMeters() / tangentLength;
+                for (long index = 0L; index <= intervals; index++) {
+                        cancellation.checkpoint();
+                        double offset = -halfWidth + 2.0 * halfWidth * index / intervals;
+                        MetricPoint location = new MetricPoint(point.xMeters() + normalX * offset,
+                                point.yMeters() + normalY * offset);
+                        // Halo values cannot supply either a center or a below-threshold bracket.
+                        scalarQueries++;
+                        OptionalDouble value = StrictScalarSampler.sample(field, evidence.transform(),
+                                evidence.decisionRegion(), location);
+                        samples.add(new LocalScalarProfileExtractor.Sample(offset,
+                                value.orElse(Double.NaN), value.isPresent()));
+                }
+                LocalScalarProfileExtractor.Result features = new LocalScalarProfileExtractor().extract(
+                        samples, sourcePitch, localization, queryOwner, cancellation, this::chargeFeatures);
+                LocalScalarProfileExtractor.Mode selected = ownedBridgeMode(features, cancellation, this::chargeFeatures);
+                return selected == null ? null : new BridgeMeasurement(selected.localizationConfidence(),
+                        selected.scalarAmplitudeReliability());
+            } finally {
+                if (queryOwner != null) queryOwner.close();
+            }
+        }
+
+        /** Pure ownership seam; no adjacent/parallel component may replace a missing measured center. */
+        static double measuredBridgeFactor(LocalScalarProfileExtractor.Result features,
+                double referenceAmplitude, CancellationProbe cancellation, LongConsumer charge) {
+            return measuredBridgeFactor(features, referenceAmplitude, 1.0, cancellation, charge);
+        }
+
+        static double measuredBridgeFactor(LocalScalarProfileExtractor.Result features,
+                double referenceAmplitude, double referenceConfidence,
+                CancellationProbe cancellation, LongConsumer charge) {
+            LocalScalarProfileExtractor.Mode selected = ownedBridgeMode(features, cancellation, charge);
+            if (selected == null) return 0.0;
+            return Math.min(1.0, selected.localizationConfidence() / referenceConfidence)
+                    * Math.min(1.0, selected.scalarAmplitudeReliability() / referenceAmplitude);
+        }
+
+        private static LocalScalarProfileExtractor.Mode ownedBridgeMode(LocalScalarProfileExtractor.Result features,
+                CancellationProbe cancellation, LongConsumer charge) {
+                LocalScalarProfileExtractor.Mode selected = null;
+                double nearest = Double.POSITIVE_INFINITY;
+                boolean tied = false;
+                for (LocalScalarProfileExtractor.Mode mode : features.modes()) {
+                    cancellation.checkpoint();
+                    charge.accept(1L);
+                    double distance = mode.distanceToCenterSet(0.0);
+                    if (distance < nearest) {
+                        selected = mode;
+                        nearest = distance;
+                        tied = false;
+                    } else if (distance == nearest) {
+                        tied = true;
+                    }
+                }
+                if (selected == null || tied || !(selected.localizationConfidence() > 0.0)
+                        || nearest > selected.localizationSigmaMeters() + EPSILON) return null;
+                for (LocalScalarProfileExtractor.CensoredMode mode : features.censoredModes()) {
+                    cancellation.checkpoint();
+                    charge.accept(1L);
+                    if (Math.abs(mode.boundaryOffsetMeters()) <= nearest) return null;
+                }
+                return selected;
+        }
+
+        private record BridgeMeasurement(double confidence, double amplitudeReliability) { }
+
+        private void chargeSampling(long requested) {
+            if (requested < 0L || requested > MAXIMUM_SAMPLING_UNITS - samplingUnits) {
+                throw new LongitudinalModeReliability.ResourceLimitException();
+            }
+            samplingUnits += requested;
+        }
+
+        private void chargeFeatures(long requested) {
+            if (requested < 0L || requested > MAXIMUM_FEATURE_UNITS - featureUnits) {
+                throw new LongitudinalModeReliability.ResourceLimitException();
+            }
+            featureUnits += requested;
         }
 
         private static MetricPoint modeCenter(ProbabilisticProfile profile,

@@ -3,9 +3,11 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 /**
@@ -113,31 +115,54 @@ public final class LocalScalarProfileExtractor {
     public Result extract(List<Sample> samples, double sourcePitchMeters,
             EvidenceModelParameters.Localization parameters,
             AttemptMemoryLedger.Owner owner) {
-        if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null) {
+        return extract(samples, sourcePitchMeters, parameters, owner, CancellationProbe.NONE, ignored -> { });
+    }
+
+    /**
+     * Extracts with cooperative cancellation and caller-owned bounded work accounting.
+     *
+     * <p>Sample, filter and shoulder scans retain the original arithmetic and tie order. Primitive
+     * sorting is charged by a declared size-based proxy and checked before and after; a caller's
+     * work limit also bounds its input size. These units are not measured comparison counts and
+     * cancellation does not interrupt the opaque primitive sort itself.</p>
+     */
+    public Result extract(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge) {
+        if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
+                || cancellation == null || charge == null) {
             throw new IllegalArgumentException("Scalar profile extraction inputs are incomplete");
         }
+        cancellation.checkpoint();
         AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("profile-extractor-scratch");
         try {
-        double noiseFloor = robustNoiseFloor(samples, scratch);
+        WorkProbe work = allocated(scratch, AttemptMemoryLedger.objectBytes(16),
+                () -> new WorkProbe(cancellation, charge));
+        work.checkpoint();
+        double noiseFloor = robustNoiseFloor(samples, scratch, work);
         double[] raw = allocated(scratch,
                 AttemptMemoryLedger.arrayBytes(samples.size(), Double.BYTES),
                 () -> new double[samples.size()]);
         for (int index = 0; index < samples.size(); index++) {
+            work.checkpoint();
             Sample sample = samples.get(index);
             raw[index] = sample.valid() ? sample.intensity() : Double.NaN;
         }
+        work.bulk(raw.length);
         double maximum = Arrays.stream(raw).filter(Double::isFinite).max().orElse(noiseFloor);
+        work.checkpoint();
         if (!(maximum > noiseFloor)) {
             return allocated(owner, AttemptMemoryLedger.objectBytes(32),
                     () -> new Result(noiseFloor, maximum, List.of(), List.of()));
         }
-        double[] b3 = convolve(raw, B3, scratch);
-        double[] b5 = convolve(raw, B5, scratch);
+        double[] b3 = convolve(raw, B3, scratch, work);
+        double[] b5 = convolve(raw, B5, scratch, work);
         List<Mode> modes = allocated(scratch, listBytes(samples.size()),
                 () -> new ArrayList<>(samples.size()));
         List<CensoredMode> censored = allocated(scratch, listBytes(samples.size()),
                 () -> new ArrayList<>(samples.size()));
-        for (LocalPeak peak : localPeaks(raw, scratch)) {
+        for (LocalPeak peak : localPeaks(raw, scratch, work)) {
+            work.checkpoint();
             AttemptMemoryLedger.Owner peakScratch = scratch == null ? null
                     : scratch.child("peak-helper");
             try {
@@ -145,15 +170,15 @@ public final class LocalScalarProfileExtractor {
                     Math.max(peak.leftMinimum(), peak.rightMinimum()));
             double prominence = peak.value() - localBackground;
             double localResponseRange = Math.max(0.0, peak.value() - noiseFloor);
-            double uncertainty = localModeUncertainty(raw, b3, b5, peak, peakScratch);
+            double uncertainty = localModeUncertainty(raw, b3, b5, peak, peakScratch, work);
             double requiredProminence = Math.max(
                     parameters.localModeProminenceFraction() * localResponseRange, uncertainty);
             if (!(prominence > 0.0) || prominence + 1e-12 < requiredProminence) {
                 continue;
             }
             double threshold = localBackground + parameters.localModeShoulderFraction() * prominence;
-            IndexInterval interval = containingInterval(raw, peak.first(), peak.last(), threshold);
-            int peakIndex = peak(raw, interval);
+            IndexInterval interval = containingInterval(raw, peak.first(), peak.last(), threshold, work);
+            int peakIndex = peak(raw, interval, work);
             boolean leftCensored = interval.first() == 0
                     || interval.first() > 0 && !Double.isFinite(raw[interval.first() - 1]);
             boolean rightCensored = interval.last() == raw.length - 1
@@ -176,27 +201,31 @@ public final class LocalScalarProfileExtractor {
                     listBytes(3) + 3L * AttemptMemoryLedger.objectBytes(8),
                     () -> new ArrayList<>(3));
             addNestedCenter(centers, raw, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), true);
+                    parameters.localModeCoreFraction(), true, work);
             addNestedCenter(centers, b3, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false);
+                    parameters.localModeCoreFraction(), false, work);
             addNestedCenter(centers, b5, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false);
+                    parameters.localModeCoreFraction(), false, work);
             if (centers.size() < 2) {
                 continue;
             }
-            double center = median(centers, peakScratch);
+            double center = median(centers, peakScratch, work);
             List<Double> deviations = allocated(peakScratch,
                     listBytes(centers.size()) + Math.multiplyExact(centers.size(),
                         AttemptMemoryLedger.objectBytes(8)),
                     () -> new ArrayList<>(centers.size()));
-            for (double value : centers) deviations.add(Math.abs(value - center));
-            double deviation = 1.4826 * median(deviations, peakScratch);
+            for (double value : centers) {
+                work.checkpoint();
+                deviations.add(Math.abs(value - center));
+            }
+            double deviation = 1.4826 * median(deviations, peakScratch, work);
             double sigma = Math.max(sourcePitchMeters * 0.5, deviation);
             double halfCenter = Math.min(sourcePitchMeters * 0.5,
                     Math.max(sourcePitchMeters * 0.25, deviation));
             double amplitudeReliability = prominence / (prominence
                     + parameters.scalarAmplitudeHalfResponse());
             double peakOffset = samples.get(peakIndex).offsetMeters();
+            work.bulk(2L * centers.size());
             double confidence = agreementConfidence(centers, sourcePitchMeters);
             List<Double> peakOffsets = allocated(owner,
                     listBytes(1) + AttemptMemoryLedger.objectBytes(8),
@@ -221,13 +250,15 @@ public final class LocalScalarProfileExtractor {
         }
     }
 
-    private static List<LocalPeak> localPeaks(double[] values, AttemptMemoryLedger.Owner owner) {
+    private static List<LocalPeak> localPeaks(double[] values, AttemptMemoryLedger.Owner owner,
+            WorkProbe work) {
         List<LocalPeak> result = allocated(owner,
                 listBytes(values.length) + Math.multiplyExact(values.length,
                     AttemptMemoryLedger.objectBytes(40)),
                 () -> new ArrayList<>(values.length));
         int index = 0;
         while (index < values.length) {
+            work.checkpoint();
             if (!Double.isFinite(values[index])) {
                 index++;
                 continue;
@@ -236,6 +267,7 @@ public final class LocalScalarProfileExtractor {
             int last = index;
             while (last + 1 < values.length && Double.isFinite(values[last + 1])
                     && Math.abs(values[last + 1] - values[first]) <= 1e-12) {
+                work.checkpoint();
                 last++;
             }
             double left = first > 0 && Double.isFinite(values[first - 1])
@@ -243,9 +275,9 @@ public final class LocalScalarProfileExtractor {
             double right = last + 1 < values.length && Double.isFinite(values[last + 1])
                     ? values[last + 1] : Double.NEGATIVE_INFINITY;
             if (values[first] > left + 1e-12 && values[first] > right + 1e-12) {
-                double leftMinimum = first == 0 ? 0.0 : localMinimum(values, first, -1, values[first]);
+                double leftMinimum = first == 0 ? 0.0 : localMinimum(values, first, -1, values[first], work);
                 double rightMinimum = last == values.length - 1 ? 0.0
-                        : localMinimum(values, last, 1, values[first]);
+                        : localMinimum(values, last, 1, values[first], work);
                 result.add(new LocalPeak(first, last, values[first], leftMinimum, rightMinimum));
             }
             index = last + 1;
@@ -253,10 +285,12 @@ public final class LocalScalarProfileExtractor {
         return result;
     }
 
-    private static double localMinimum(double[] values, int start, int direction, double peakValue) {
+    private static double localMinimum(double[] values, int start, int direction, double peakValue,
+            WorkProbe work) {
         double minimum = peakValue;
         boolean measuredShoulder = false;
         for (int index = start + direction; index >= 0 && index < values.length; index += direction) {
+            work.checkpoint();
             if (!Double.isFinite(values[index])) {
                 return measuredShoulder ? minimum : 0.0;
             }
@@ -270,22 +304,25 @@ public final class LocalScalarProfileExtractor {
     }
 
     private static IndexInterval containingInterval(double[] values, int firstPeak, int lastPeak,
-            double threshold) {
+            double threshold, WorkProbe work) {
         int first = firstPeak;
         int last = lastPeak;
         while (first > 0 && Double.isFinite(values[first - 1]) && values[first - 1] >= threshold) {
+            work.checkpoint();
             first--;
         }
         while (last + 1 < values.length && Double.isFinite(values[last + 1])
                 && values[last + 1] >= threshold) {
+            work.checkpoint();
             last++;
         }
         return new IndexInterval(first, last);
     }
 
     private static void addNestedCenter(List<Double> centers, double[] values, List<Sample> samples,
-            IndexInterval search, double localBackground, double coreFraction, boolean requiredFine) {
-        int peakIndex = peak(values, search);
+            IndexInterval search, double localBackground, double coreFraction, boolean requiredFine,
+            WorkProbe work) {
+        int peakIndex = peak(values, search, work);
         if (!Double.isFinite(values[peakIndex])) {
             return;
         }
@@ -295,10 +332,12 @@ public final class LocalScalarProfileExtractor {
         int right = peakIndex;
         while (left > search.first() && Double.isFinite(values[left - 1])
                 && values[left - 1] >= threshold) {
+            work.checkpoint();
             left--;
         }
         while (right < search.last() && Double.isFinite(values[right + 1])
                 && values[right + 1] >= threshold) {
+            work.checkpoint();
             right++;
         }
         boolean twoSided = left > 0 && right + 1 < values.length
@@ -309,7 +348,7 @@ public final class LocalScalarProfileExtractor {
     }
 
     private static double localModeUncertainty(double[] raw, double[] b3, double[] b5,
-            LocalPeak peak, AttemptMemoryLedger.Owner owner) {
+            LocalPeak peak, AttemptMemoryLedger.Owner owner, WorkProbe work) {
         AttemptMemoryLedger.Owner helper = owner == null ? null : owner.child("local-uncertainty");
         try {
         int first = Math.max(0, peak.first() - 6);
@@ -320,12 +359,13 @@ public final class LocalScalarProfileExtractor {
                     AttemptMemoryLedger.objectBytes(8)),
                 () -> new ArrayList<>(maximumVariation));
         for (int index = first + 1; index <= last; index++) {
+            work.checkpoint();
             if (Double.isFinite(raw[index - 1]) && Double.isFinite(raw[index])) {
                 variation.add(Math.abs(raw[index] - raw[index - 1]));
             }
         }
-        double localNoise = variation.isEmpty() ? 0.0 : median(variation, helper);
-        int peakIndex = peak(raw, new IndexInterval(peak.first(), peak.last()));
+        double localNoise = variation.isEmpty() ? 0.0 : median(variation, helper, work);
+        int peakIndex = peak(raw, new IndexInterval(peak.first(), peak.last()), work);
         double filterUncertainty = 0.0;
         if (Double.isFinite(b3[peakIndex])) {
             filterUncertainty = Math.max(filterUncertainty, Math.abs(raw[peakIndex] - b3[peakIndex]));
@@ -340,7 +380,7 @@ public final class LocalScalarProfileExtractor {
     }
 
     private static double[] convolve(double[] values, double[] kernel,
-            AttemptMemoryLedger.Owner owner) {
+            AttemptMemoryLedger.Owner owner, WorkProbe work) {
         double[] result = allocated(owner,
                 AttemptMemoryLedger.arrayBytes(values.length, Double.BYTES),
                 () -> new double[values.length]);
@@ -348,9 +388,11 @@ public final class LocalScalarProfileExtractor {
         int radius = kernel.length / 2;
         double denominator = Arrays.stream(kernel).sum();
         for (int index = radius; index < values.length - radius; index++) {
+            work.checkpoint();
             double sum = 0.0;
             boolean valid = true;
             for (int tap = -radius; tap <= radius; tap++) {
+                work.checkpoint();
                 if (!Double.isFinite(values[index + tap])) {
                     valid = false;
                     break;
@@ -364,9 +406,10 @@ public final class LocalScalarProfileExtractor {
         return result;
     }
 
-    private static int peak(double[] values, IndexInterval interval) {
+    private static int peak(double[] values, IndexInterval interval, WorkProbe work) {
         int selected = interval.first();
         for (int index = interval.first() + 1; index <= interval.last(); index++) {
+            work.checkpoint();
             if (values[index] > values[selected]) {
                 selected = index;
             }
@@ -381,32 +424,41 @@ public final class LocalScalarProfileExtractor {
     }
 
     private static double robustNoiseFloor(List<Sample> samples,
-            AttemptMemoryLedger.Owner owner) {
+            AttemptMemoryLedger.Owner owner, WorkProbe work) {
         AttemptMemoryLedger.Owner helper = owner == null ? null : owner.child("noise-floor");
         try {
         int validCount = 0;
-        for (Sample sample : samples) if (sample.valid()) validCount++;
+        for (Sample sample : samples) {
+            work.checkpoint();
+            if (sample.valid()) validCount++;
+        }
         int retainedValidCount = validCount;
         double[] valid = allocated(helper,
                 AttemptMemoryLedger.arrayBytes(validCount, Double.BYTES),
                 () -> new double[retainedValidCount]);
         int index = 0;
-        for (Sample sample : samples) if (sample.valid()) valid[index++] = sample.intensity();
-        Arrays.sort(valid);
+        for (Sample sample : samples) {
+            work.checkpoint();
+            if (sample.valid()) valid[index++] = sample.intensity();
+        }
+        work.sort(valid);
         return valid.length == 0 ? 0.0 : valid[(int) Math.floor(0.2 * (valid.length - 1))];
         } finally {
             if (helper != null) helper.close();
         }
     }
 
-    private static double median(List<Double> values, AttemptMemoryLedger.Owner owner) {
+    private static double median(List<Double> values, AttemptMemoryLedger.Owner owner, WorkProbe work) {
         AttemptMemoryLedger.Owner helper = owner == null ? null : owner.child("median");
         try {
         double[] sorted = allocated(helper,
                 AttemptMemoryLedger.arrayBytes(values.size(), Double.BYTES),
                 () -> new double[values.size()]);
-        for (int index = 0; index < values.size(); index++) sorted[index] = values.get(index);
-        Arrays.sort(sorted);
+        for (int index = 0; index < values.size(); index++) {
+            work.checkpoint();
+            sorted[index] = values.get(index);
+        }
+        work.sort(sorted);
         int middle = sorted.length / 2;
         return sorted.length % 2 == 0 ? 0.5 * (sorted[middle - 1] + sorted[middle]) : sorted[middle];
         } finally {
@@ -426,6 +478,26 @@ public final class LocalScalarProfileExtractor {
 
     private static boolean positive(double value) {
         return Double.isFinite(value) && value > 0.0;
+    }
+
+    private record WorkProbe(CancellationProbe cancellation, LongConsumer charge) {
+        void checkpoint() {
+            cancellation.checkpoint();
+            charge.accept(1L);
+        }
+
+        void bulk(long units) {
+            cancellation.checkpoint();
+            charge.accept(units);
+        }
+
+        void sort(double[] values) {
+            // Declared admission proxy, not an exact or worst-case Java comparison count.
+            long levels = Math.max(1L, 64L - Long.numberOfLeadingZeros(values.length));
+            bulk(Math.multiplyExact(values.length, levels));
+            Arrays.sort(values);
+            checkpoint();
+        }
     }
 
     private static long listBytes(long size) {
