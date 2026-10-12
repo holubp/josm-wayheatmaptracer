@@ -20,6 +20,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
@@ -193,6 +194,12 @@ public final class Format15ProductionBundleFactory {
      */
     public static Format15Bundle withCurrentNumericalPolicy(Format15Bundle bundle,
             FrozenReplayInput input, TrackerMode computedEngine) {
+        return withCurrentNumericalPolicy(bundle, input, computedEngine, null);
+    }
+
+    /** Attests only immutable receipts from the actual executed production runs. */
+    public static Format15Bundle withCurrentNumericalPolicy(Format15Bundle bundle,
+            FrozenReplayInput input, TrackerMode computedEngine, List<TraceHypothesisSet> executedRuns) {
         if (bundle == null || input == null
                 || !bundle.parameterHash().equals(input.request().parameterHash())) {
             throw new IllegalArgumentException("numerical-policy-binding-invalid");
@@ -211,9 +218,22 @@ public final class Format15ProductionBundleFactory {
             else if (digest != null) throw new IllegalArgumentException("numerical-policy-binding-invalid");
         }
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
-        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT,
-            Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(), inputHash,
-                input.request().parameterHash(), input.request().engine(), computedEngine));
+        if (executedRuns != null) {
+            artifacts.put(Format15ExecutionWorkCodec.ARTIFACT, Format15ExecutionWorkCodec.artifact(
+                    executedRuns.stream().map(TraceHypothesisSet::workAccounting).toList()));
+        }
+        var receipt = executedRuns == null
+                ? Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(), inputHash,
+                    input.request().parameterHash(), input.request().engine(), computedEngine)
+                : Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(), inputHash,
+                    input.request().parameterHash(), input.request().engine(), computedEngine,
+                    executedRuns.stream().map(run -> {
+                        if (run.engine() != computedEngine) {
+                            throw new IllegalArgumentException("numerical-policy-engine-mismatch");
+                        }
+                        return run.workAccounting();
+                    }).toList());
+        artifacts.put(Format15NumericalPolicyReceipt.ARTIFACT, receipt);
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
     }
 
@@ -1060,7 +1080,10 @@ public final class Format15ProductionBundleFactory {
             .append(",\"hypotheses\":").append(actual.inference().hypotheses().size())
             .append(",\"inferenceStatus\":").append(quote(actual.inference().status().name()))
             .append(",\"alternativesTruncated\":").append(actual.inference().alternativesTruncated())
+            .append(",\"executionWork\":").append(Format15ExecutionWorkCodec.json(actual.inference().workAccounting()))
             .append(",\"logicalWorkAvailability\":\"AVAILABLE\"")
+            .append(",\"executionWorkAvailability\":\"")
+            .append(actual.inference().workAccounting().isPresent() ? "AVAILABLE" : "UNAVAILABLE").append('"')
             .append(",\"workerCountersAvailable\":")
             .append(!counters.isEmpty())
             .append(",\"physicalCounters\":{\"inference.extensionDescriptors\":")
@@ -1212,7 +1235,7 @@ public final class Format15ProductionBundleFactory {
         artifacts.put(ScalarReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             ScalarReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
         return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine);
+            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference()));
     }
 
     /** Creates a frozen bundle that records one actual final-geometry production result. */
@@ -1229,7 +1252,7 @@ public final class Format15ProductionBundleFactory {
             FinalReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
         addFinalOutputComponents(artifacts, expectation, actual);
         return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine);
+            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference()));
     }
 
     private static void addFinalOutputComponents(Map<String, Format15Artifact> artifacts,

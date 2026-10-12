@@ -951,7 +951,7 @@ class V022LiveBPreviewServiceTest {
             assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
                     identity.contains("java17-fdlibm53-v1"), engine.name());
             assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
-                    identity.contains("terminal-path-count-cumulative-work-v1"), engine.name());
+                    identity.contains("terminal-path-count-scored-work-v2"), engine.name());
             assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
                     identity.contains("adjacent-orientation-trapezoid-v1"), engine.name());
         }

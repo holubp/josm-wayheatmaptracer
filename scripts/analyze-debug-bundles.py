@@ -57,6 +57,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
     optimizer = optimizer_summaries(optimizer_rows)
     tubes = tube_summaries(read_zip_csv(bundle, "corridor-tube.csv"))
     performance = performance_summaries(read_zip_csv(bundle, "detector-performance.csv"))
+    execution_work = execution_work_summary(json_object(read_zip_text(bundle, "execution-work.json")))
     grouping = track_grouping(read_zip_csv(bundle, "corridor-tracks.csv"))
     sparse_bundles = sparse_bundle_summaries(
         read_zip_csv(bundle, "corridor-bundles.csv"),
@@ -206,6 +207,7 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             "transition_evaluations": performance_summary.get("transition_evaluations"),
             "profile_cost_evaluations": performance_summary.get("profile_cost_evaluations"),
             "transition_to_profile_cost_ratio": performance_summary.get("transition_to_profile_cost_ratio"),
+            **execution_work,
             **boundary_summary,
             "canonical_bridge_count": bridge_summary.get("canonical", 0),
             "backward_marker_bridge_count": bridge_summary.get("backward_marker", 0),
@@ -216,6 +218,61 @@ def bundle_rows(bundle: BundleSource) -> list[dict[str, object]]:
             **cleanup_shape.get(candidate_id, unavailable_cleanup_shape()),
         })
     return rows
+
+
+def execution_work_summary(document: dict[str, object]) -> dict[str, object]:
+    """Report scored work separately from logical extensions; missing evidence is unavailable."""
+    unavailable = {
+        "execution_work_availability": "unavailable",
+        "execution_policies": "",
+        "b_computed_transition_scores": None,
+        "b_logical_kbest_extensions": None,
+        "b_refused_score_attempts": None,
+        "other_engine_transitions": None,
+    }
+    runs = document.get("runs")
+    if document.get("schema") != 1 or not isinstance(runs, list) or not 1 <= len(runs) <= 128:
+        return unavailable
+    computed = logical = refused = other = 0
+    policies: set[str] = set()
+    for run in runs:
+        if not isinstance(run, dict) or set(run) != {"bStages", "otherEngineTransitions"}:
+            return unavailable
+        stages = run.get("bStages")
+        if not isinstance(stages, list) or not 1 <= len(stages) <= 2:
+            return unavailable
+        value = run["otherEngineTransitions"]
+        if type(value) is not int or not 0 <= value <= 2**63 - 1:
+            return unavailable
+        other += value
+        for stage in stages:
+            keys = {"executionPolicy", "forwardBackwardScores", "kBestScores",
+                    "logicalKBestExtensions", "refusedScoreAttempts"}
+            if not isinstance(stage, dict) or set(stage) != keys:
+                return unavailable
+            if stage["executionPolicy"] not in {
+                "terminal-path-count-cumulative-work-v1", "terminal-path-count-scored-work-v2"
+            }:
+                return unavailable
+            if any(type(stage[key]) is not int or not 0 <= stage[key] <= 2**63 - 1
+                   for key in keys - {"executionPolicy"}):
+                return unavailable
+            if stage["logicalKBestExtensions"] < stage["kBestScores"] or stage["refusedScoreAttempts"] > 1:
+                return unavailable
+            policies.add(stage["executionPolicy"])
+            computed += stage["forwardBackwardScores"] + stage["kBestScores"]
+            logical += stage["logicalKBestExtensions"]
+            refused += stage["refusedScoreAttempts"]
+    if max(computed, logical, refused, other, computed + other) > 2**63 - 1:
+        return unavailable
+    return {
+        "execution_work_availability": "available",
+        "execution_policies": ",".join(sorted(policies)),
+        "b_computed_transition_scores": computed,
+        "b_logical_kbest_extensions": logical,
+        "b_refused_score_attempts": refused,
+        "other_engine_transitions": other,
+    }
 
 def unavailable_boundary_summary() -> dict[str, object]:
     """Return unavailable rather than zero-valued format-13 boundary fields."""

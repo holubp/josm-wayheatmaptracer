@@ -191,6 +191,7 @@ public final class Format15ReplayRunner {
                 throw new ReplayMismatchException("strict-interval-production-execution-failed");
             }
             TraceWorkUsage usage = production.usage();
+            Format15NumericalPolicyReceipt.validateExecuted(production.result().inference());
             if (usage.pairVisits() > remainingPairs || usage.transitions() > remainingTransitions
                     || retainedRoutes + production.result().routes().size()
                             > IntervalTraceBatch.MAX_RETAINED_ROUTES) {
@@ -227,6 +228,8 @@ public final class Format15ReplayRunner {
         }
         IntervalTraceBatch batch = new IntervalTraceBatch(shared.request(), shared.evidence(),
                 shared.network(), partition, actualRuns, shared.options(), payload.authority());
+        Format15NumericalPolicyReceipt.validateRecordedWork(archive,
+                actualRuns.stream().map(run -> run.result().inference()).toList());
         FixedIntervalEditPlanComposer.Assessment assessment;
         try {
             assessment = new FixedIntervalEditPlanComposer().compose(batch, choices);
@@ -437,14 +440,18 @@ public final class Format15ReplayRunner {
     public static Result replay(Format15Archive archive, ReplayLevel level,
             String expectedInputHash, String expectedParameterHash) {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
-        return replay(input, level, input.request().engine());
+        Result actual = replay(input, level, input.request().engine());
+        Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        return actual;
     }
 
     /** Loads a verified archive and runs one requested engine over the exact frozen values. */
     public static Result replay(Format15Archive archive, ReplayLevel level, String expectedInputHash,
             String expectedParameterHash, TrackerMode engine) {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
-        return replay(input, level, engine);
+        Result actual = replay(input, level, engine);
+        Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        return actual;
     }
 
     /**
@@ -466,9 +473,15 @@ public final class Format15ReplayRunner {
         TrackerMode capturedEngine = input.request().engine();
         String inputHash = input.canonicalHash();
         FrozenReplayInput requested = withEngine(input, engine);
-        return level == ReplayLevel.SCALAR_INFERENCE
+        Result result = level == ReplayLevel.SCALAR_INFERENCE
             ? scalar(requested, capturedEngine, inputHash)
             : finalGeometry(requested, capturedEngine, inputHash);
+        if (result.inference().status() == TraceHypothesisSet.Status.COMPLETE
+                || result.inference().status() == TraceHypothesisSet.Status.AMBIGUOUS
+                || result.inference().workAccounting().isPresent()) {
+            Format15NumericalPolicyReceipt.validateExecuted(result.inference());
+        }
+        return result;
     }
 
     private static FrozenReplayInput load(Format15Archive archive, ReplayLevel level,

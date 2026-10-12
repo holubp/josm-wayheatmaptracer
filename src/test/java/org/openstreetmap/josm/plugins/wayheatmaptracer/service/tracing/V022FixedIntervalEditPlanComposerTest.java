@@ -1512,7 +1512,8 @@ class V022FixedIntervalEditPlanComposerTest {
                 Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null),
                 new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput(
                         batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
-                batch.fullRequest().engine());
+                batch.fullRequest().engine(),
+                batch.runs().stream().map(run -> run.result().inference()).toList());
         assertTrue(replayBundle.artifactNames().contains("private/frozen-interval-input.bin"),
                 "a real two-interval production batch must include strict replay input");
         Path replayPath = Files.createTempFile("strict-interval-", ".zip");

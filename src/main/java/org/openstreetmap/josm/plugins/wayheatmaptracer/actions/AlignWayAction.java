@@ -2450,7 +2450,8 @@ public class AlignWayAction extends JosmAction {
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(bundle,
                 new FrozenReplayInput(batch.fullRequest(), batch.evidence(), batch.network(), batch.options()),
-                batch.fullRequest().engine()), selected), computed, selected);
+                batch.fullRequest().engine(), batch.runs().stream()
+                        .map(run -> run.result().inference()).toList()), selected), computed, selected);
     }
 
     private static void recordIntervalDiagnostics(LiveBPreviewService.Computed computed,
@@ -2636,7 +2637,8 @@ public class AlignWayAction extends JosmAction {
         }
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(
-                        bundle, input, input.request().engine()), computed), root, computed);
+                        bundle, input, input.request().engine(),
+                        java.util.List.of(computed.pipeline().inference())), computed), root, computed);
     }
 
     /** Builds the complete applied receipt before the real command can mutate the dataset. */

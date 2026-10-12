@@ -229,6 +229,11 @@ class V022HybridRecoveryTest {
         assertEquals(4.0, guided.diagnostics().get("structuralGuideCap"));
         assertEquals(1.0, guided.diagnostics().get("structuralGuideSameImage"));
         assertEquals(1.0, guided.diagnostics().get("independentImageObservationCount"));
+        var receipt = result.workAccounting().orElseThrow();
+        assertEquals(2, receipt.bStages().size(), "Both real B variants must retain their own receipts");
+        assertTrue(receipt.hasPolicy("terminal-path-count-scored-work-v2"));
+        assertEquals(standaloneA.evaluatedTransitions(), receipt.otherEngineTransitions());
+        assertEquals(result.evaluatedTransitions(), receipt.computedTransitions());
         assertTrue(result.evaluatedStates() > 0);
         assertTrue(result.evaluatedTransitions() > 0);
     }

@@ -194,8 +194,23 @@ public final class HybridTraceEngine implements BudgetReportingTraceEngine {
             : guided != null ? "unguided B, independent A, and capped guided B; common final ranking required"
             : corridor != null ? "unguided B and independent A; common final ranking required"
             : "unguided B completed; no remaining budget for A";
+        var receipt = combinedWorkReceipt(corridor, probabilistic, guided);
         return new TraceHypothesisSet(TrackerMode.HYBRID, routes, status, truncated,
-            states, transitions, explanation);
+            states, transitions, explanation, receipt);
+    }
+
+    private static java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>
+            combinedWorkReceipt(TraceHypothesisSet corridor, TraceHypothesisSet probabilistic,
+                    TraceHypothesisSet guided) {
+        if (probabilistic.workAccounting().isEmpty()
+                || guided != null && guided.workAccounting().isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        var stages = new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting>();
+        stages.addAll(probabilistic.workAccounting().orElseThrow().bStages());
+        if (guided != null) stages.addAll(guided.workAccounting().orElseThrow().bStages());
+        return java.util.Optional.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt(
+                stages, corridor == null ? 0L : corridor.evaluatedTransitions()));
     }
 
     private static boolean append(List<TraceHypothesis> target, String family,

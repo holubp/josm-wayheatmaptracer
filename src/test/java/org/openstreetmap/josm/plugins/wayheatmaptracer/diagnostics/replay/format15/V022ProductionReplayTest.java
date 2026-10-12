@@ -93,6 +93,134 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Production-path replay regressions: frozen values must reach real modern engines. */
 class V022ProductionReplayTest {
     @Test
+    void missingActualReceiptCannotBeReplacedByCurrentSettingsLabel(@TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        var actual = Format15ReplayRunner.replay(input, ReplayLevel.SCALAR_INFERENCE, TrackerMode.PROBABILISTIC);
+        var source = actual.inference();
+        var unattested = new TraceHypothesisSet(source.engine(), source.hypotheses(), source.status(),
+                source.alternativesTruncated(), source.evaluatedStates(), source.evaluatedTransitions(), source.explanation());
+        var bundle = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create("missing-receipt", input), input,
+                TrackerMode.PROBABILISTIC, List.of(unattested));
+        assertTrue(new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
+                .contains("execution-unattested"));
+        Path path = directory.resolve("missing-receipt.zip");
+        Format15BundleWriter.write(bundle, path);
+        var archive = Format15ArchiveReader.read(path);
+        assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
+                ReplayLevel.SCALAR_INFERENCE, input.canonicalHash(), input.request().parameterHash()));
+    }
+
+    @Test
+    void reboundLogicalWorkFailsDespiteRecomputedArchiveChecksums(@TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        var bundle = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "rebound-work", input, TrackerMode.PROBABILISTIC);
+        var original = bundle.artifact("execution-work.json");
+        var stage = Format15ExecutionWorkCodec.read(original).get(0).orElseThrow().bStages().get(0);
+        String changed = new String(original.bytes(), StandardCharsets.UTF_8)
+                .replace("\"logicalKBestExtensions\":" + stage.logicalKBestExtensions(),
+                        "\"logicalKBestExtensions\":" + (stage.logicalKBestExtensions() + 1L));
+        var rebound = Format15Artifact.text("execution-work.json", changed);
+        assertNotEquals(original.sha256(), rebound.sha256());
+        var artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put("execution-work.json", rebound);
+        String policy = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
+                .replace(original.sha256(), rebound.sha256());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", policy));
+        Path path = directory.resolve("rebound-work.zip");
+        Format15BundleWriter.write(new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(),
+                bundle.parameterHash(), artifacts), path);
+        var archive = Format15ArchiveReader.read(path);
+        var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(archive,
+                ReplayLevel.SCALAR_INFERENCE, input.canonicalHash(), input.request().parameterHash()));
+        assertEquals("numerical-policy-runtime-work-mismatch", failure.getMessage());
+    }
+
+    @Test
+    void cancellationDoesNotFabricateAnExecutedSolverReceipt() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        var actual = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine("native")
+                .trace(input.request(), input.evidence(), input.network(), () -> {
+                    throw new java.util.concurrent.CancellationException("controlled cancellation");
+                });
+        assertEquals(TraceHypothesisSet.Status.CANCELLED, actual.status());
+        assertTrue(actual.hypotheses().isEmpty());
+        assertTrue(actual.workAccounting().isEmpty());
+    }
+
+    @Test
+    void scoredWorkRefusalKeepsReceiptButPublishesNoPartialGeometry() {
+        FrozenReplayInput original = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        TraceRequest source = original.request();
+        var request = new TraceRequest(source.selectedWayKey(), source.selectedRange(), source.engine(),
+                source.geometryMode(), source.permissions(), new TraceBudgets(96, 8_000_000L, 1L, 32, 8),
+                source.evidenceSnapshotId(), source.evidenceContentHash(), source.networkSnapshotId(),
+                source.networkContentHash(), source.settingsHash(), source.parameterHash(), source.samplerId(),
+                source.configuredSampleStepMeters(), source.profileChainage(), source.evidenceResolution(), source.corridorInput());
+        var actual = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticTraceEngine("native")
+                .trace(request, original.evidence(), original.network(), CancellationProbe.NONE);
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, actual.status());
+        assertTrue(actual.hypotheses().isEmpty());
+        var work = actual.workAccounting().orElseThrow();
+        assertEquals(1L, work.computedTransitions());
+        assertEquals(1L, work.bStages().get(0).refusedScoreAttempts());
+        assertTrue(work.hasPolicy("terminal-path-count-scored-work-v2"));
+    }
+
+    @Test
+    void callerDeclarationAloneCannotAttestScoredWorkPolicy(@TempDir Path directory) throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle declared = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
+                Format15ProductionBundleFactory.create("caller-only", input), input,
+                TrackerMode.PROBABILISTIC);
+        Path path = directory.resolve("caller-only.zip");
+        Format15BundleWriter.write(declared, path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        ReplayMismatchException failure = assertThrows(ReplayMismatchException.class,
+                () -> Format15ReplayRunner.replay(archive, ReplayLevel.SCALAR_INFERENCE,
+                        input.canonicalHash(), input.request().parameterHash()));
+        assertTrue(failure.getMessage().contains("numerical-policy"));
+    }
+
+    @Test
+    void productionBReportsActualScoredWorkExecutionPolicy() throws Exception {
+        var actual = Format15ReplayRunner.replay(fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE),
+                ReplayLevel.SCALAR_INFERENCE, TrackerMode.PROBABILISTIC);
+        var receipt = executionWorkReceipt(actual.inference());
+        assertTrue(receipt.isPresent(), "Production B must retain its actual solver receipt");
+        var stages = (List<?>) receipt.orElseThrow().getClass().getMethod("bStages")
+                .invoke(receipt.orElseThrow());
+        assertEquals(1, stages.size());
+        assertEquals("terminal-path-count-scored-work-v2", stages.get(0).getClass()
+                .getMethod("executionPolicy").invoke(stages.get(0)));
+    }
+
+    @Test
+    void productionHybridRetainsEveryExecutedBStagePolicy() throws Exception {
+        var actual = Format15ReplayRunner.replay(fixture(TrackerMode.HYBRID, Scene.RIDGE),
+                ReplayLevel.SCALAR_INFERENCE, TrackerMode.HYBRID);
+        var receipt = executionWorkReceipt(actual.inference());
+        assertTrue(receipt.isPresent(), "Hybrid must retain actual B-stage work receipts");
+        var stages = (List<?>) receipt.orElseThrow().getClass().getMethod("bStages")
+                .invoke(receipt.orElseThrow());
+        assertFalse(stages.isEmpty());
+        for (Object stage : stages) {
+            assertEquals("terminal-path-count-scored-work-v2", stage.getClass()
+                    .getMethod("executionPolicy").invoke(stage));
+        }
+    }
+
+    private static java.util.Optional<?> executionWorkReceipt(TraceHypothesisSet result)
+            throws Exception {
+        try {
+            return (java.util.Optional<?>) result.getClass().getMethod("workAccounting").invoke(result);
+        } catch (NoSuchMethodException missingCarrier) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    @Test
     void oldNumericalPolicyArchiveRemainsReadableButStrictExecutionFails(
             @TempDir Path directory) throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
@@ -125,7 +253,8 @@ class V022ProductionReplayTest {
         assertTrue(receipt.contains(input.canonicalHash()));
         assertTrue(receipt.contains(input.request().parameterHash()));
         Format15Bundle declaredAgain = Format15ProductionBundleFactory.withCurrentNumericalPolicy(
-                bundle, input, input.request().engine());
+                bundle, input, input.request().engine(), List.of(Format15ReplayRunner.replay(input,
+                        ReplayLevel.FINAL_GEOMETRY, input.request().engine()).inference()));
         assertSame(bundle.artifact("frozen-input.bin"), declaredAgain.artifact("frozen-input.bin"));
         assertEquals(bundle.artifact("numerical-policy.json").sha256(),
                 declaredAgain.artifact("numerical-policy.json").sha256());
@@ -348,13 +477,9 @@ class V022ProductionReplayTest {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         Format15Bundle bundle = Format15ProductionBundleFactory.createWithExpectedFinalOutput(
                 "current-test", input, TrackerMode.PROBABILISTIC);
-        String receipt = new String(bundle.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8)
-                .replace("\"computedEngine\":\"PROBABILISTIC\"", "\"computedEngine\":\"CORRIDOR_AWARE\"")
-                .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1/"
-                        + EvidenceModelParameters.orientationIntegrationVersion() + "/"
-                        + EvidenceModelParameters.reliabilityPolicyVersion() + "/"
-                        + EvidenceModelParameters.profileSamplingPolicyVersion() + "\"",
-                        "\"inferencePolicy\":\"engine-specific\"");
+        String receipt = new String(Format15NumericalPolicyReceipt.current(bundle.sourceIdentityHash(),
+                input.canonicalHash(), input.request().parameterHash(), input.request().engine(),
+                TrackerMode.CORRIDOR_AWARE).bytes(), StandardCharsets.UTF_8);
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", receipt));
         Path path = directory.resolve("known-alternate-engine.zip");
@@ -1847,7 +1972,9 @@ class V022ProductionReplayTest {
     /** Synthetic current inputs/results explicitly declare their production numerical target. */
     private static Format15Bundle currentBundle(String build, FrozenReplayInput input) {
         return Format15ProductionBundleFactory.withCurrentNumericalPolicy(
-                Format15ProductionBundleFactory.create(build, input), input, input.request().engine());
+                Format15ProductionBundleFactory.create(build, input), input, input.request().engine(),
+                List.of(Format15ReplayRunner.replay(input, ReplayLevel.SCALAR_INFERENCE,
+                        input.request().engine()).inference()));
     }
 
     private static Format15Bundle currentLiveBundle(String build, FrozenReplayInput input,
@@ -1856,7 +1983,8 @@ class V022ProductionReplayTest {
             boolean reviewed, boolean applied) {
         return Format15ProductionBundleFactory.withCurrentNumericalPolicy(
                 Format15ProductionBundleFactory.createLive(build, input, actual, status,
-                    lineage, routeIndex, plan, reviewed, applied), input, actual.inference().engine());
+                    lineage, routeIndex, plan, reviewed, applied), input, actual.inference().engine(),
+                List.of(actual.inference()));
     }
 
     private static CliRun runCli(Path directory, FrozenReplayInput input,

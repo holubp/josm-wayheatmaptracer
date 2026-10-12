@@ -1089,7 +1089,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
         diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
                 new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(),
-                        computed.options()), TrackerMode.PROBABILISTIC);
+                        computed.options()), TrackerMode.PROBABILISTIC,
+                batch.runs().stream().map(run -> run.result().inference()).toList());
         Path archivePath = directory.resolve("fixed-policy-preview.zip");
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
                 .write(diagnostic, archivePath);
@@ -1673,7 +1674,8 @@ class V022ModernSingleWayEditPlanAdapterTest {
             // assembling the interval artifact; the generic artifact factory never infers it.
             diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
                     new FrozenReplayInput(computed.request(), computed.evidence(),
-                            computed.captured().network(), computed.options()), engine);
+                            computed.captured().network(), computed.options()), engine,
+                    computed.intervalBatch().runs().stream().map(run -> run.result().inference()).toList());
             Path archivePath = directory.resolve("fixed-relation-preview.zip");
             org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                     .Format15BundleWriter.write(diagnostic, archivePath);

@@ -302,7 +302,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
         long inferenceStarted = System.nanoTime();
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
-            parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner);
+            parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner,
+            ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
         work.pairVisits = inference.evaluatedPairVisits();
         work.transitions = inference.evaluatedTransitions();
         work.rawAlternatives = inference.rawPaths().size();
@@ -324,7 +325,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         TraceHypothesisSet result = accountedSet(candidateOwner, workingOwner, hypotheses,
                 status, inference.alternativeSearchTruncated(), stateCount,
                 inference.evaluatedTransitions(), guide == null ? inference.explanation()
-                    : inference.explanation() + "; capped same-image structural guide applied");
+                    : inference.explanation() + "; capped same-image structural guide applied",
+                inference.workAccounting());
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.profileMs", millis(profileSamplingNanos));
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -441,16 +443,25 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     private static TraceHypothesisSet accountedSet(AttemptMemoryLedger.Owner resultOwner,
             AttemptMemoryLedger.Owner workingOwner, List<TraceHypothesis> hypotheses,
             TraceHypothesisSet.Status status, boolean alternativesTruncated, long stateCount,
-            long transitions, String explanation) {
+            long transitions, String explanation,
+            java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting> accounting) {
         AttemptMemoryLedger.Reservation output = reserve(resultOwner,
-                AttemptMemoryLedger.objectBytes(64), "engine result materialization");
+                AttemptMemoryLedger.objectBytes(72)
+                    + (accounting.isPresent() ? executionReceiptBytes() : 0L), "engine result materialization");
         AttemptMemoryLedger.Owner validationOwner = workingOwner.child("result-validation");
         AttemptMemoryLedger.Reservation validation = reserve(validationOwner,
                 mapBytes(hypotheses.size()) * 2L, "engine result materialization");
         try {
+            var receipt = accounting.map(stage -> {
+                var copy = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting(
+                        stage.executionPolicy(), stage.forwardBackwardScores(), stage.kBestScores(),
+                        stage.logicalKBestExtensions(), stage.refusedScoreAttempts());
+                return new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt(
+                        List.of(copy), 0L);
+            });
             TraceHypothesisSet result = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
                     hypotheses, status, alternativesTruncated, stateCount, transitions,
-                    explanation);
+                    explanation, receipt);
             output.adopt(result);
             return result;
         } catch (RuntimeException | Error exception) {
@@ -469,6 +480,15 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         } catch (AttemptMemoryLedger.ResourceLimitException exception) {
             throw new ProbabilisticInference.MemoryLimit(stage, exception);
         }
+    }
+
+    /** Conservative inventory for copied stage, receipt, list storage and Optional. */
+    private static long executionReceiptBytes() {
+        return AttemptMemoryLedger.objectBytes(40)
+                + AttemptMemoryLedger.objectBytes(24)
+                + AttemptMemoryLedger.objectBytes(24)
+                + AttemptMemoryLedger.referenceArrayBytes(1)
+                + AttemptMemoryLedger.objectBytes(8);
     }
 
     private static long mapBytes(long entries) {
@@ -665,7 +685,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             TraceHypothesisSet.Status status, String explanation, EngineWork work,
             AttemptMemoryLedger.Owner owner) {
         TraceHypothesisSet result = ProbabilisticInference.allocated(owner,
-                AttemptMemoryLedger.objectBytes(64),
+                AttemptMemoryLedger.objectBytes(72),
                 "engine failure result", () -> new TraceHypothesisSet(request.engine(), List.of(),
                     status, false, work.stateCount, work.transitions, explanation));
         return ProbabilisticInference.allocated(owner,
@@ -687,7 +707,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     private static TraceHypothesisSet emptySet(TraceRequest request,
             TraceHypothesisSet.Status status, String explanation, long states, long transitions,
             AttemptMemoryLedger.Owner owner) {
-        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(64),
+        return ProbabilisticInference.allocated(owner, AttemptMemoryLedger.objectBytes(72),
                 "engine result materialization",
                 () -> new TraceHypothesisSet(request.engine(), List.of(), status,
                     false, states, transitions, explanation));

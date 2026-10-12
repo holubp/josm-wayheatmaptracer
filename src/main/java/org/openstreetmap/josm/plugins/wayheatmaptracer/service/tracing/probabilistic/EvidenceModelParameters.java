@@ -56,7 +56,7 @@ public record EvidenceModelParameters(
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
         return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
-            + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.VERSION
+            + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.CURRENT_VERSION
             + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion(),
             1.0, 1.0, 2.0,
             0.5, 0.5, DEFAULT_TURN_SCALE_RADIANS, 1.0, 2.0, Localization.defaults());
@@ -65,7 +65,7 @@ public record EvidenceModelParameters(
     /** Returns a deterministic data-only parameter set used by exact solver tests. */
     public static EvidenceModelParameters withoutShapeTerms() {
         return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
-            + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.VERSION
+            + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.CURRENT_VERSION
             + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion() + "-data-only", 1.0,
             1.0, 0.0, 0.0, 0.0, DEFAULT_TURN_SCALE_RADIANS, 1.0, 1e-9,
             Localization.defaults());

@@ -22,6 +22,26 @@ UNDULATION_ANALYZER = REPOSITORY / "scripts" / "analyze-slide-undulations.py"
 class DebugAnalyzerCompatibilityTest(unittest.TestCase):
     """Checks schema compatibility using generated bundles with no field data."""
 
+    def test_scored_execution_work_is_separate_from_logical_extensions(self) -> None:
+        data = io.BytesIO(debug_bundle(15, "0.22.0-rc.next", "preview-open"))
+        with zipfile.ZipFile(data, "a") as archive:
+            archive.writestr("execution-work.json", json.dumps({"schema": 1, "runs": [{
+                "otherEngineTransitions": 5,
+                "bStages": [{"executionPolicy": "terminal-path-count-scored-work-v2",
+                    "forwardBackwardScores": 2080, "kBestScores": 1071,
+                    "logicalKBestExtensions": 1536, "refusedScoreAttempts": 0}],
+            }]}))
+        rows, _ = run_analyzers(data.getvalue())
+        self.assertEqual("available", rows[0]["execution_work_availability"])
+        self.assertEqual("3151", rows[0]["b_computed_transition_scores"])
+        self.assertEqual("1536", rows[0]["b_logical_kbest_extensions"])
+        self.assertEqual("5", rows[0]["other_engine_transitions"])
+
+    def test_historical_execution_work_is_unavailable_not_zero(self) -> None:
+        rows, _ = run_analyzers(debug_bundle(14, "0.22.0-old", "preview-open"))
+        self.assertEqual("unavailable", rows[0]["execution_work_availability"])
+        self.assertEqual("", rows[0]["b_computed_transition_scores"])
+
     def test_nested_format_four_is_marked_untrusted(self) -> None:
         """Format-4 applied geometry and metre fields remain readable but untrusted."""
         inner = debug_bundle(4, "", "applied")
