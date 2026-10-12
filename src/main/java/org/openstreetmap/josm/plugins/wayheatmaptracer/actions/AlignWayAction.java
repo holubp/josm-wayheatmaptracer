@@ -1250,8 +1250,7 @@ public class AlignWayAction extends JosmAction {
                     .append('–').append(island.range().lastIndex()).append(": ")
                     .append(FindingSummary.summarize(island.reasons().stream()
                             .map(Enum::name).toList()));
-            summary.append(island.reasons().size() == 1
-                    && island.reasons().contains(ManualJunctionEligibility.Reason.FIXED_POLICY)
+            summary.append(state.batch().fullRequest().permissions().junctionPolicy() == JunctionPolicy.FIXED
                     ? ". Junction adjustment is off; this approach stays fixed.\n"
                     : ". Adjust this junction manually first.\n");
         }

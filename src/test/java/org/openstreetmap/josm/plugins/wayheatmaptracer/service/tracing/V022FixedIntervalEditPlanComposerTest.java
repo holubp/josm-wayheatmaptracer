@@ -74,12 +74,67 @@ class V022FixedIntervalEditPlanComposerTest {
     private record IndexedCoordinate(int index, GeographicPoint coordinate) { }
 
     @Test
+    void unsupportedTerminalKinkCannotAuthorizeEndpointLocalizationGrace() throws Exception {
+        IntervalTraceBatch original = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, false);
+        var assessment = new FixedIntervalEditPlanComposer().compose(original, Map.of());
+        assertTrue(assessment.applyAvailable());
+        var after = assessment.plan().orElseThrow().after().primitives();
+        var first = original.runs().get(0);
+        PrimitiveKey endpoint = first.interval().startBoundary().nodeKey();
+        assertEquals(SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT,
+                first.interval().startBoundary().kind());
+        var selected = (DetachedWay) original.network().primitives()
+                .get(original.fullRequest().selectedWayKey());
+        var forgedInterior = new SelectedWayIntervalPartitioner.BoundaryConstraint(
+                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT,
+                first.interval().endBoundary().occurrenceIndex(),
+                first.interval().endBoundary().nodeKey(), false, false,
+                ManualJunctionEligibility.Reason.NO_JUNCTION);
+        assertFalse(ModernSingleWayEditPlanAdapter.isOuterSelectedEndpoint(
+                forgedInterior, original.fullRequest(), selected));
+        var wrongKey = new SelectedWayIntervalPartitioner.BoundaryConstraint(
+                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT,
+                first.interval().startBoundary().occurrenceIndex(),
+                first.interval().endBoundary().nodeKey(), false, false,
+                ManualJunctionEligibility.Reason.NO_JUNCTION);
+        assertFalse(ModernSingleWayEditPlanAdapter.isOuterSelectedEndpoint(
+                wrongKey, original.fullRequest(), selected));
+        assertTrue(ModernSingleWayEditPlanAdapter.terminalUncertaintyEndpoints(original, after, Map.of())
+                .contains(endpoint));
+        var route = first.routes().get(0);
+        var quality = route.quality();
+        var findings = new ArrayList<>(quality.findings());
+        findings.add(new FinalGeometryEvaluator.Finding(
+                FinalGeometryEvaluator.FindingCode.UNSUPPORTED_TERMINAL_KINK,
+                FinalGeometryEvaluator.Severity.REVIEW, 0, 2, 3.0));
+        var unsafeQuality = new FinalGeometryEvaluator.Result(quality.id(),
+                FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, findings,
+                quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(), quality.bendPreservingRoughness());
+        var routes = new ArrayList<>(first.routes());
+        routes.set(0, new ModernTracePipeline.Route(route.rawHypothesis(), route.hypothesis(),
+                route.pointIds(), route.assignments(), route.sourceOwnership(), unsafeQuality,
+                route.cleanupStatus(), route.geometryChanged()));
+        var runs = new ArrayList<>(original.runs());
+        runs.set(0, new IntervalTraceBatch.IntervalRun(first.interval(), first.request(),
+                new ModernTracePipeline.Result(first.result().inference(), routes), first.usage()));
+        var unsafe = new IntervalTraceBatch(original.fullRequest(), original.evidence(), original.network(),
+                original.partition(), runs, original.options(), original.authoritySpecification());
+        assertFalse(ModernSingleWayEditPlanAdapter.terminalUncertaintyEndpoints(unsafe, after, Map.of())
+                .contains(endpoint));
+        assertFalse(ModernSingleWayEditPlanAdapter.terminalUncertaintyEndpoints(original, after, Map.of())
+                .contains(first.interval().endBoundary().nodeKey()), "fixed-island seam is never eligible");
+    }
+
+    @Test
     void liveRouteChoiceRecomposesFrozenProductionBatchAndClearsReview() throws Exception {
         IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, true);
         assertTrue(batch.runs().get(0).routes().size() > 1);
         AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(batch);
         assertTrue(state.assessment().applyAvailable());
-        assertTrue(AlignWayAction.intervalPreviewSummary(state)
+        assertEquals(JunctionPolicy.FIXED, batch.fullRequest().permissions().junctionPolicy());
+        assertTrue(AlignWayAction.intervalPreviewSummary(state).contains("Junction adjustment is off"));
+        assertFalse(AlignWayAction.intervalPreviewSummary(state)
                 .contains("Adjust this junction manually first."));
         String firstHash = state.assessment().plan().orElseThrow().canonicalHash();
         state.confirmReview();

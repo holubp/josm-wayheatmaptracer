@@ -988,9 +988,32 @@ class V022ModernSingleWayEditPlanAdapterTest {
     void fixedPolicyCaptureKeepsReceiverExactAndSlidesSupportedInterior(FixedPolicySource source,
             @TempDir Path directory)
             throws Exception {
+        fixedPolicyRoundTrip(source, directory, TrackerMode.PROBABILISTIC, false);
+    }
+
+    @ParameterizedTest
+    @MethodSource("fixedPolicySources")
+    void hybridFixedPolicyKeepsRelatedReceiversExactAcrossBothCaptureSources(FixedPolicySource source,
+            @TempDir Path directory) throws Exception {
+        if (source.managed()) {
+            assertFalse(TrackerMode.HYBRID.capabilities().supportsManagedSource());
+            var refusal = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> fixedPolicyRoundTrip(source, directory, TrackerMode.HYBRID, true));
+            assertTrue(refusal.getCause().getCause() instanceof IllegalArgumentException);
+            assertTrue(refusal.getCause().getCause().getMessage()
+                    .contains("Modern managed tracing cannot use this engine"));
+            return;
+        }
+        fixedPolicyRoundTrip(source, directory, TrackerMode.HYBRID, true);
+    }
+
+    private void fixedPolicyRoundTrip(FixedPolicySource source, Path directory,
+            TrackerMode engine, boolean keepReceiverRelations) throws Exception {
         Fixture fixture = relationJunctionFixture();
-        for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) {
-            fixture.dataSet().removePrimitive(relation);
+        if (!keepReceiverRelations) {
+            for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) {
+                fixture.dataSet().removePrimitive(relation);
+            }
         }
         Way receiver = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 11)
                 .findFirst().orElseThrow();
@@ -1010,7 +1033,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 visibleRaster.projectionUnitsPerViewPixel(), visibleRaster.groundMetersPerViewPixel(),
                 visibleRaster.nativePitchMeters(), visibleRaster.sourceIdentity(), visibleRaster.projectionCode(),
                 sourceEpoch.captureStable());
-        var configuration = new AlignmentConfig(config(TrackerMode.PROBABILISTIC).heatmap()
+        var configuration = new AlignmentConfig(config(engine).heatmap()
                 .withAlignmentMode(source.mode()), GeometryCleanupConfig.disabled());
         if (source.managed()) {
             var base = configuration.heatmap();
@@ -1056,7 +1079,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertTrue(batch.partition().junctionDispositions().stream().noneMatch(
                 disposition -> disposition.automaticEligible()));
         assertTrue(batch.partition().junctionDispositions().stream().allMatch(disposition ->
-                disposition.reason() == ManualJunctionEligibility.Reason.FIXED_POLICY));
+                disposition.reason() == (keepReceiverRelations
+                        ? ManualJunctionEligibility.Reason.PARTICIPATING_RELATION
+                        : ManualJunctionEligibility.Reason.FIXED_POLICY)));
         var composed = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
         assertTrue(composed.applyAvailable(), composed.intervals().toString());
         var plan = composed.plan().orElseThrow();
@@ -1089,7 +1114,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
                 Format15ProductionBundleFactory.IntervalArtifactStatus.PREVIEW, null, null);
         diagnostic = Format15ProductionBundleFactory.withCurrentNumericalPolicy(diagnostic,
                 new FrozenReplayInput(computed.request(), computed.evidence(), captured[0].network(),
-                        computed.options()), TrackerMode.PROBABILISTIC,
+                        computed.options()), engine,
                 batch.runs().stream().map(run -> run.result().inference()).toList());
         Path archivePath = directory.resolve("fixed-policy-preview.zip");
         org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
@@ -1664,6 +1689,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
                             && !junction.automaticEligible()));
             var composed = new FixedIntervalEditPlanComposer().compose(computed.intervalBatch(), Map.of());
             assertTrue(composed.applyAvailable(), composed.intervals().toString());
+            assertEquals(JunctionPolicy.REATTACH, computed.request().permissions().junctionPolicy());
+            assertTrue(AlignWayAction.intervalPreviewSummary(new AlignWayAction.IntervalPreviewState(computed))
+                    .contains("Adjust this junction manually first."));
             plan = composed.plan().orElseThrow();
             diagnostic = Format15ProductionBundleFactory.createLiveIntervals("test",
                     computed.intervalBatch(), composed, Map.of(),

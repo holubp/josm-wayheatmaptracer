@@ -302,7 +302,7 @@ class V022ProductionReplayTest {
 
     @Test
     void profileSamplingPolicyIsBoundByNewCaptureDefaultsAndRuntimeReceipt() {
-        String policy = "/profile-window-contiguous-v1";
+        String policy = "/profile-window-centered-v2";
         assertTrue(EvidenceModelParameters.defaults().version().contains(policy));
         assertTrue(EvidenceModelParameters.withoutShapeTerms().version().contains(policy));
     }
@@ -371,13 +371,13 @@ class V022ProductionReplayTest {
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                     input.canonicalHash(), input.request().parameterHash(), engine, engine).bytes(),
                     StandardCharsets.UTF_8);
-            assertTrue(receipt.contains("/profile-window-contiguous-v1"));
+            assertTrue(receipt.contains("/profile-window-centered-v2"));
         }
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                     input.canonicalHash(), input.request().parameterHash(), engine, engine).bytes(),
                     StandardCharsets.UTF_8);
-            assertFalse(receipt.contains("/profile-window-contiguous-v1"));
+            assertFalse(receipt.contains("/profile-window-centered-v2"));
         }
     }
 
@@ -388,7 +388,7 @@ class V022ProductionReplayTest {
         Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                 "runtime-sampling-test", input, TrackerMode.PROBABILISTIC);
         String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
-        String old = current.replace("/profile-window-contiguous-v1", "");
+        String old = current.replace("/profile-window-centered-v2", "");
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
         Path path = directory.resolve("old-sampling-receipt.zip");

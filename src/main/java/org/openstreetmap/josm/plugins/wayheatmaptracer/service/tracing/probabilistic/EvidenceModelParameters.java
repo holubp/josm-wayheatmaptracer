@@ -50,7 +50,7 @@ public record EvidenceModelParameters(
 
     /** Configured profile bounds require exact endpoint and contiguous region authority. */
     public static String profileSamplingPolicyVersion() {
-        return "profile-window-contiguous-v1";
+        return "profile-window-centered-v2";
     }
 
     /** Returns the normative initial v0.22 parameter set. */

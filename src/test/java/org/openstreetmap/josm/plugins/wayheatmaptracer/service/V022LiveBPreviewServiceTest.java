@@ -675,8 +675,18 @@ class V022LiveBPreviewServiceTest {
                 var control = new LiveBPreviewService.Captured[1];
                 SwingUtilities.invokeAndWait(() -> control[0] = service.capture(dataSet, selection,
                         wideFlatRaster(), config(other), true, permissions));
-                assertFalse(control[0].specification().fixedReceiverGeometry());
-                assertNull(control[0].intervalPartition(), "endpoint interval routing is an explicit B-only change");
+                if (other == TrackerMode.HYBRID) {
+                    assertTrue(control[0].specification().fixedReceiverGeometry());
+                    assertNotNull(control[0].intervalPartition(),
+                            "Hybrid must freeze a manual endpoint before interval inference");
+                    assertEquals(captured[0].intervalPartition().fixedIslands().stream()
+                                    .map(island -> island.range()).toList(),
+                            control[0].intervalPartition().fixedIslands().stream()
+                                    .map(island -> island.range()).toList());
+                } else {
+                    assertFalse(control[0].specification().fixedReceiverGeometry());
+                    assertNull(control[0].intervalPartition(), "A endpoint routing is unchanged");
+                }
             }
         }
 

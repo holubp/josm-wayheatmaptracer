@@ -494,11 +494,16 @@ public final class LiveBPreviewService {
                 authority.editableWayOccurrences(), authority.editableExistingKeys(),
                 authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                 true, permissions);
-        if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
+        if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, engine)) {
+            if (engine == TrackerMode.HYBRID && !specification.fixedReceiverGeometry()) {
+                specification = specification.withFixedReceiverGeometry();
+                network = NetworkSnapshotCapture.capture(dataSet, specification);
+                intervalPartition = SelectedWayIntervalPartitioner.partition(network, specification);
+            }
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -507,7 +512,9 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
-            if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
+            if (engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID) {
+                specification = specification.withFixedReceiverGeometry();
+            }
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
                 throw new ManualJunctionCaptureException(
@@ -530,7 +537,7 @@ public final class LiveBPreviewService {
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
-            if (engine == TrackerMode.PROBABILISTIC) specification = specification.withFixedReceiverGeometry();
+            if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
                     junction);
@@ -1036,12 +1043,18 @@ public final class LiveBPreviewService {
                 frame, authority.collisionEnvelope(), authority.editRegion(),
                 authority.editableWayOccurrences(), authority.editableExistingKeys(), authority.movableNodes(),
                 authority.removableNodes(), authority.protectedNodes(), true, permissions);
-        if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+        if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
             specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, config.heatmap().trackerMode())) {
+            if (config.heatmap().trackerMode() == TrackerMode.HYBRID
+                    && !specification.fixedReceiverGeometry()) {
+                specification = specification.withFixedReceiverGeometry();
+                network = NetworkSnapshotCapture.capture(dataSet, specification);
+                intervalPartition = SelectedWayIntervalPartitioner.partition(network, specification);
+            }
             authority = freezeFixedIslands(authority, network, intervalPartition, way);
             specification = new NetworkSnapshotCapture.Specification(snapshotId,
                     specification.datasetIdentity(), specification.sourceGeneration(), way, range,
@@ -1050,7 +1063,8 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
-            if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+            if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC
+                    || config.heatmap().trackerMode() == TrackerMode.HYBRID)
                 specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
@@ -1081,7 +1095,7 @@ public final class LiveBPreviewService {
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions);
-            if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC)
+            if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
                 specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
@@ -1287,11 +1301,19 @@ public final class LiveBPreviewService {
     private static boolean usesFixedIntervalBatch(SelectedWayIntervalPartitioner.Partition partition,
             TrackerMode engine) {
         return !partition.fixedIslands().isEmpty()
-                && (engine == TrackerMode.PROBABILISTIC && !partition.slideIntervals().isEmpty()
+                && ((engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID)
+                        && !partition.slideIntervals().isEmpty()
                 || partition.junctionDispositions().stream().anyMatch(junction ->
                         !junction.automaticEligible()
                         && junction.selectedOccurrenceIndex() > partition.selectedRange().firstIndex()
                         && junction.selectedOccurrenceIndex() < partition.selectedRange().lastIndex()));
+    }
+
+    /** Receiver geometry is read-only when Hybrid junction movement was explicitly disabled. */
+    private static boolean usesFixedReceiverPolicy(TrackerMode engine, RecoveryPermissions permissions) {
+        return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
+                && permissions.junctionPolicy() == org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .JunctionPolicy.FIXED;
     }
 
     /** Captures evidence once and runs every owned interval through the production modern pipeline. */

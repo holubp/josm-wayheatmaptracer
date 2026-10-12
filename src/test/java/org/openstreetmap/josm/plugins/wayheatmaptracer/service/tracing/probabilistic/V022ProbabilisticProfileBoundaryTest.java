@@ -25,6 +25,27 @@ class V022ProbabilisticProfileBoundaryTest {
     private static final List<MetricPoint> SOURCE = List.of(new MetricPoint(0, 0), new MetricPoint(64, 0));
 
     @ParameterizedTest
+    @CsvSource({"7.01,1", "10,1.3", "14,1.56"})
+    void symmetricFullWindowRetainsCenterWithoutExceedingSamplePitch(double width, double nativePitch) {
+        var evidence = scene(width, nativePitch, 0.8, false,
+                MetricRegion.rectangle(-10, -width, 74, width));
+        for (boolean directB : List.of(false, true)) {
+            var profile = profiles(evidence, width, SOURCE, directB).get(2);
+            var samples = profile.samples();
+            assertEquals(-width, samples.get(0).offsetMeters(), 0.0);
+            assertEquals(width, samples.get(samples.size() - 1).offsetMeters(), 0.0);
+            assertTrue(samples.stream().anyMatch(sample -> sample.offsetMeters() == 0.0),
+                    "a residual boundary interval must not replace the center with a half-cell offset");
+            for (int i = 1; i < samples.size(); i++) {
+                double gap = samples.get(i).offsetMeters() - samples.get(i - 1).offsetMeters();
+                assertTrue(gap > 0.0 && gap <= 0.5 * nativePitch + 1e-12);
+                assertEquals(-samples.get(i).offsetMeters(),
+                        samples.get(samples.size() - 1 - i).offsetMeters(), 1e-12);
+            }
+        }
+    }
+
+    @ParameterizedTest
     @CsvSource({"7.01,1.7546997679008605", "10,2.25", "14,1.56", "7,2"})
     void completeConfiguredWindowIncludesItsExactEndpoints(double width, double nativePitch) {
         var evidence = scene(width, nativePitch, 0.08, false, MetricRegion.rectangle(-10, -width, 74, width));

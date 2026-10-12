@@ -541,6 +541,13 @@ public final class ProbabilisticProfileFactory {
         ScalarEvidenceField field, AttemptMemoryLedger.Owner owner,
         AttemptMemoryLedger.Owner retainedOwner) {
         int intervals = Math.max(1, (int) Math.ceil((maximum - minimum) / pitch));
+        // A symmetric authorized window must keep the source center as a sample.
+        // Completing a residual edge must not flip grid parity and shift a
+        // centered ridge by half a cell. Keep the grid uniform and its gap
+        // no larger than the requested pitch; asymmetric windows are unchanged.
+        if (minimum == -maximum && (intervals & 1) != 0) {
+            intervals = Math.addExact(intervals, 1);
+        }
         int count = intervals + 1;
         AttemptMemoryLedger.Owner builder = owner == null ? null : owner.child("scalar-samples");
         long bytes = ProbabilisticInference.listBytes(count);

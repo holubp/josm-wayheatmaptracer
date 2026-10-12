@@ -130,7 +130,7 @@ public final class FixedIntervalEditPlanComposer {
             }
             try {
                 AlignmentEditPlan plan = adapter.adaptComposite(batch, candidate.ids(),
-                        candidate.assignments(), candidate.identity(), candidate.findings());
+                        candidate.assignments(), candidate.identity(), candidate.findings(), routeChoices);
                 Set<Integer> blocked = plan.validation().applicable() ? Set.of()
                         : candidate.changedIntervals();
                 return assessment(batch, selected, routeChoices, frozen, reasons, blocked,

@@ -608,7 +608,7 @@ public final class ModernSingleWayEditPlanAdapter {
     /** Builds one exact plan from ordered, candidate-owned interval geometry. */
     AlignmentEditPlan adaptComposite(IntervalTraceBatch batch, List<FinalRoutePointId> ids,
             Map<FinalRoutePointId, MetricPoint> assignments, String identity,
-            List<String> routeFindings) {
+            List<String> routeFindings, Map<Integer, Integer> routeChoices) {
         TraceRequest request = batch.fullRequest();
         EvidenceSnapshot evidence = batch.evidence();
         NetworkSnapshot before = batch.network();
@@ -657,7 +657,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     request, evidence, sharedJunctions);
         }
         requireCompositeChangedSupport(before, afterValues, selected, evidence,
-                batch.options().fieldName());
+                batch.options().fieldName(), terminalUncertaintyEndpoints(batch, afterValues, routeChoices));
         NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + identity,
                 SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
                 before.closure(), afterValues, proposedWatches(before, afterValues));
@@ -710,7 +710,7 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private static void requireCompositeChangedSupport(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay source,
-            EvidenceSnapshot evidence, String fieldName) {
+            EvidenceSnapshot evidence, String fieldName, Set<PrimitiveKey> terminalEndpoints) {
         var field = evidence.fields().get(fieldName);
         if (field == null) throw new IllegalArgumentException("Composite image field is unavailable");
         double pitch = evidence.resolution().effectivePitchMeters();
@@ -720,12 +720,72 @@ public final class ModernSingleWayEditPlanAdapter {
         for (int i = 1; i < proposed.nodeKeys().size(); i++) {
             PrimitiveKey left = proposed.nodeKeys().get(i - 1);
             PrimitiveKey right = proposed.nodeKeys().get(i);
+            boolean fromEndpoint = terminalEndpoints.contains(left);
+            boolean toEndpoint = terminalEndpoints.contains(right);
+            double uncertainty = fromEndpoint || toEndpoint
+                    ? constantNativeTerminalUncertainty(evidence.resolution()) : 0.0;
+            boolean reverse = uncertainty > 0.0 && toEndpoint && !fromEndpoint;
             if (!unchangedSelectedEdge(before, after, source, left, right)
                     && unsupportedBoundaryConnector(image, List.of(),
-                            metric(after, left, evidence), metric(after, right, evidence), pitch)) {
+                            metric(after, reverse ? right : left, evidence),
+                            metric(after, reverse ? left : right, evidence),
+                            pitch, uncertainty)) {
                 throw new CompositeLocalSupportException(left, right);
             }
         }
+    }
+
+    /** Grants localization uncertainty only to an unchanged ordinary selected endpoint. */
+    static Set<PrimitiveKey> terminalUncertaintyEndpoints(IntervalTraceBatch batch,
+            Map<PrimitiveKey, DetachedPrimitive> after, Map<Integer, Integer> choices) {
+        Set<PrimitiveKey> eligible = new LinkedHashSet<>();
+        DetachedWay selected = (DetachedWay) batch.network().primitives()
+                .get(batch.fullRequest().selectedWayKey());
+        for (int i = 0; i < batch.runs().size(); i++) {
+            var run = batch.runs().get(i);
+            if (run.routes().isEmpty()) continue;
+            int routeIndex = choices.getOrDefault(i, 0);
+            if (routeIndex < 0 || routeIndex >= run.routes().size()) {
+                throw new IllegalArgumentException("Endpoint route choice exceeds captured alternatives");
+            }
+            var quality = run.routes().get(routeIndex).quality();
+            if (quality.disposition() == FinalGeometryEvaluator.Disposition.HARD_BLOCKED
+                    || quality.has(FinalGeometryEvaluator.FindingCode.UNSUPPORTED_TERMINAL_KINK)) continue;
+            for (var boundary : List.of(run.interval().startBoundary(), run.interval().endBoundary())) {
+                PrimitiveKey key = boundary.nodeKey();
+                if (isOuterSelectedEndpoint(boundary, batch.fullRequest(), selected)
+                        && batch.network().primitives().get(key) instanceof DetachedNode original
+                        && after.get(key) instanceof DetachedNode proposed
+                        && original.coordinate().equals(proposed.coordinate())) {
+                    eligible.add(key);
+                }
+            }
+        }
+        return Set.copyOf(eligible);
+    }
+
+    /** An interval label cannot grant authority over an interior or mismatched occurrence. */
+    static boolean isOuterSelectedEndpoint(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                    .SelectedWayIntervalPartitioner.BoundaryConstraint boundary,
+            TraceRequest request, DetachedWay selected) {
+        int index = boundary.occurrenceIndex();
+        return boundary.kind() == org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                        .SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT
+                && (index == request.selectedRange().firstIndex()
+                        || index == request.selectedRange().lastIndex())
+                && index < selected.nodeKeys().size()
+                && selected.nodeKeys().get(index).equals(boundary.nodeKey());
+    }
+
+    /** Spatially varying or unobserved native resolution supplies no endpoint margin. */
+    static double constantNativeTerminalUncertainty(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution resolution) {
+        double nativePitch = resolution.nativePitchMeters().orElse(0.0);
+        return nativePitch > 0.0 && resolution.spatialPitchSamples().stream().allMatch(sample ->
+                sample.nativePitchMeters().isPresent()
+                        && sample.nativePitchMeters().getAsDouble() == nativePitch)
+                ? nativePitch : 0.0;
     }
 
     static final class CompositeLocalSupportException extends IllegalArgumentException {
@@ -1699,32 +1759,34 @@ public final class ModernSingleWayEditPlanAdapter {
     private static boolean unsupportedBoundaryConnector(ImageCostField image,
             List<MetricSegment> receiverArms, MetricPoint start, MetricPoint end,
             double pitch) {
+        return unsupportedBoundaryConnector(image, receiverArms, start, end, pitch, 0.0);
+    }
+
+    private static boolean unsupportedBoundaryConnector(ImageCostField image,
+            List<MetricSegment> receiverArms, MetricPoint start, MetricPoint end,
+            double pitch, double terminalUncertaintyMeters) {
         double length = start.distanceTo(end);
         if (!(length > 1.0e-9)) {
             return true;
         }
-        double allowance = Math.max(2.0, pitch);
         int count = Math.max(1, (int) Math.ceil(length / Math.min(1.0, pitch * 0.5)));
         MetricPoint tangent = new MetricPoint(end.xMeters() - start.xMeters(),
                 end.yMeters() - start.yMeters());
-        double unsupported = 0.0;
-        boolean directlyObserved = false;
+        EndpointConnectorSupport support = new EndpointConnectorSupport(length / count, pitch,
+                terminalUncertaintyMeters);
         for (int sample = 0; sample < count; sample++) {
             double t = (sample + 0.5) / count;
             MetricPoint point = new MetricPoint(start.xMeters() + t * tangent.xMeters(),
                     start.yMeters() + t * tangent.yMeters());
-            boolean direct = image.sampleRoute(point, tangent)
-                    .map(value -> value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED)
-                    .orElse(false)
-                    && receiverArms.stream()
-                        .noneMatch(segment -> distanceToSegment(point, segment) <= pitch);
-            directlyObserved |= direct;
-            unsupported = direct ? 0.0 : unsupported + length / count;
-            if (unsupported > allowance) {
+            ObservationOwnership ownership = image.sampleRoute(point, tangent)
+                    .map(value -> value.ownership()).orElse(null);
+            boolean clear = receiverArms.stream()
+                    .noneMatch(segment -> distanceToSegment(point, segment) <= pitch);
+            if (!support.accept(ownership, clear)) {
                 return true;
             }
         }
-        return !directlyObserved;
+        return !support.directlyObserved();
     }
 
     private static List<MetricSegment> capturedReceiverArms(NetworkSnapshot before,
