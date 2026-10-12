@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabil
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting;
 
 /** Exact finite-graph inference result with explicit completeness and numerical diagnostics. */
 public final class ProbabilisticInferenceResult {
@@ -26,6 +27,7 @@ public final class ProbabilisticInferenceResult {
     private final long evaluatedTransitions;
     private final GapSummary gapSummary;
     private final String explanation;
+    private final Optional<InferenceWorkAccounting> workAccounting;
 
     /** Creates a deeply immutable result. */
     public ProbabilisticInferenceResult(Status status, Optional<ProbabilisticPath> mapPath,
@@ -47,11 +49,33 @@ public final class ProbabilisticInferenceResult {
         List<double[]> backwardPositionMarginals, List<CredibleLateralSet> credibleSets,
         boolean posteriorUsable, boolean alternativeSearchTruncated, Optional<Completion> completion,
         long evaluatedPairVisits, long evaluatedTransitions, GapSummary gapSummary, String explanation) {
+        this(status, mapPath, rawPaths, distinctPaths, logPartition, positionMarginals,
+            componentMarginals, forwardPositionMarginals, backwardPositionMarginals, credibleSets,
+            posteriorUsable, alternativeSearchTruncated, completion, evaluatedPairVisits,
+            evaluatedTransitions, gapSummary, explanation, Optional.empty());
+    }
+
+    /** Adds an actual execution witness; compatibility constructors remain unattested. */
+    public ProbabilisticInferenceResult(Status status, Optional<ProbabilisticPath> mapPath,
+        List<ProbabilisticPath> rawPaths, List<ProbabilisticPath> distinctPaths, double logPartition,
+        List<double[]> positionMarginals, List<double[]> componentMarginals, List<double[]> forwardPositionMarginals,
+        List<double[]> backwardPositionMarginals, List<CredibleLateralSet> credibleSets,
+        boolean posteriorUsable, boolean alternativeSearchTruncated, Optional<Completion> completion,
+        long evaluatedPairVisits, long evaluatedTransitions, GapSummary gapSummary, String explanation,
+        Optional<InferenceWorkAccounting> workAccounting) {
         if (status == null || mapPath == null || rawPaths == null || distinctPaths == null
             || positionMarginals == null || componentMarginals == null || forwardPositionMarginals == null
             || backwardPositionMarginals == null || credibleSets == null || completion == null || evaluatedPairVisits < 0
-            || evaluatedTransitions < 0 || gapSummary == null || explanation == null) {
+            || evaluatedTransitions < 0 || gapSummary == null || explanation == null || workAccounting == null) {
             throw new IllegalArgumentException("Inference result is incomplete");
+        }
+        if (workAccounting.isPresent()) {
+            var work = workAccounting.orElseThrow();
+            long expected = work.executionPolicy().equals(ProbabilisticExecutionPolicy.VERSION)
+                    ? work.attemptedScores() : work.computedScores();
+            if (evaluatedTransitions != expected) {
+                throw new IllegalArgumentException("Inference transitions contradict execution work");
+            }
         }
         if (completion.isPresent()) {
             Completion proof = completion.orElseThrow();
@@ -83,6 +107,7 @@ public final class ProbabilisticInferenceResult {
         this.evaluatedTransitions = evaluatedTransitions;
         this.gapSummary = gapSummary;
         this.explanation = explanation;
+        this.workAccounting = workAccounting;
     }
 
     /** Returns solver status. */
@@ -113,12 +138,14 @@ public final class ProbabilisticInferenceResult {
     public Optional<Completion> completion() { return completion; }
     /** Returns pair-state visit count. */
     public long evaluatedPairVisits() { return evaluatedPairVisits; }
-    /** Returns admitted graph transition count. */
+    /** V1 attempted transitions, or V2 computed scores; see the optional execution witness. */
     public long evaluatedTransitions() { return evaluatedTransitions; }
     /** Returns physical support/gap summary. */
     public GapSummary gapSummary() { return gapSummary; }
     /** Returns a bounded diagnostic explanation. */
     public String explanation() { return explanation; }
+    /** Present only when a solver policy actually entered execution. */
+    public Optional<InferenceWorkAccounting> workAccounting() { return workAccounting; }
 
     /** Saturated terminal count and independent raw-cap/diversity facts. */
     public record Completion(int effectiveRawLimit, int effectiveDistinctLimit,

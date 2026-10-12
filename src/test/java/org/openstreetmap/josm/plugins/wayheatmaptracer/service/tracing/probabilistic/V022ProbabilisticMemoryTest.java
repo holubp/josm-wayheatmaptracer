@@ -32,12 +32,13 @@ class V022ProbabilisticMemoryTest {
 
         assertEquals(ProbabilisticInferenceFingerprint.capture(baseline),
                 ProbabilisticInferenceFingerprint.capture(accounted));
-        assertEquals(14_032L, owner.currentBytes());
+        // Record + Optional: 80 bytes; the result's new field adds eight bytes.
+        assertEquals(14_032L + 88L, owner.currentBytes());
         long descriptorScratch = AttemptMemoryLedger.arrayBytes(3L * 32L, Double.BYTES)
                 + AttemptMemoryLedger.arrayBytes(3L * 32L, Integer.BYTES)
                 + 3L * AttemptMemoryLedger.arrayBytes(3L, Integer.BYTES);
-        assertEquals(53_808L + descriptorScratch, owner.peakBytes(),
-                "all descriptor energies, stream order and heap arrays must be admitted");
+        assertEquals(53_808L + descriptorScratch + 96L, owner.peakBytes(),
+                "the descriptor-stage peak includes the counter, before the later result witness exists");
         assertEquals(36L, accounted.evaluatedPairVisits());
         assertEquals(513L, accounted.evaluatedTransitions());
         assertTrue(owner.currentBytes() > 0L, "the returned result must remain owned");
@@ -85,8 +86,8 @@ class V022ProbabilisticMemoryTest {
 
     @Test
     void kBestAncestryAllocationRefusalIsTypedAndKeepsActualWork() {
-        // The concrete next allocation is one 64-byte reference-counted PathRecord at 2,440 live.
-        ProbabilisticInferenceResult result = solveWithLimit(profiles(5, 3), 2_496);
+        // The 96-byte work counter precedes the same 64-byte PathRecord at 2,536 live.
+        ProbabilisticInferenceResult result = solveWithLimit(profiles(5, 3), 2_496 + 96);
 
         assertLimitedAt(result, "k-best ancestry");
         assertTrue(result.evaluatedPairVisits() > 0L);
@@ -105,7 +106,8 @@ class V022ProbabilisticMemoryTest {
     @Test
     void impossibleFailureDiagnosticCarriesMidInferenceWorkAfterCleanup() {
         List<InferenceProfile> profiles = profiles(1, 3);
-        AttemptMemoryLedger ledger = new AttemptMemoryLedger(160);
+        // Fund the 96-byte counter as well as the historical 160-byte refusal fixture.
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(160 + 96);
         AttemptMemoryLedger.Owner owner = ledger.rootOwner();
 
         var abort = assertThrows(
@@ -117,12 +119,12 @@ class V022ProbabilisticMemoryTest {
         assertEquals(3L, abort.pairVisits());
         assertEquals(0L, abort.transitions());
         assertEquals(0L, abort.currentBytes());
-        assertEquals(128L, abort.peakBytes());
-        assertEquals(160L, abort.limitBytes());
+        assertEquals(128L + 96L, abort.peakBytes());
+        assertEquals(160L + 96L, abort.limitBytes());
         assertEquals(0L, ledger.currentBytes());
         owner.close();
 
-        AttemptMemoryLedger precharged = new AttemptMemoryLedger(1_000);
+        AttemptMemoryLedger precharged = new AttemptMemoryLedger(1_000 + 96);
         AttemptMemoryLedger.Owner prechargedOwner = precharged.rootOwner();
         prechargedOwner.reserve(840).adopt(new Object());
         var nested = assertThrows(
@@ -132,16 +134,17 @@ class V022ProbabilisticMemoryTest {
         assertEquals("forward/backward", nested.stage());
         assertEquals(3L, nested.pairVisits());
         assertEquals(840L, nested.currentBytes());
-        assertEquals(968L, nested.peakBytes());
+        assertEquals(968L + 96L, nested.peakBytes());
         assertEquals(840L, precharged.currentBytes());
         prechargedOwner.close();
         assertEquals(0L, precharged.currentBytes());
     }
 
     @Test
-    void nativeInferenceFailureGraphHasAnExactTwoHundredByteBoundary() {
+    void nativeInferenceFailureGraphAndAccountingHaveAnExactAtomicBoundary() {
         List<InferenceProfile> profiles = profiles(1, 3);
-        AttemptMemoryLedger refused = new AttemptMemoryLedger(199);
+        // Historical graph 200 + new result field 8 + immutable witness 80 = 288.
+        AttemptMemoryLedger refused = new AttemptMemoryLedger(287);
         AttemptMemoryLedger.Owner refusedOwner = refused.rootOwner();
         var abort = assertThrows(
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException.class,
@@ -150,16 +153,17 @@ class V022ProbabilisticMemoryTest {
         assertEquals("k-best ancestry", abort.stage());
         assertEquals(3L, abort.pairVisits());
         assertEquals(0L, abort.currentBytes());
-        assertEquals(168L, abort.peakBytes());
+        assertEquals(168L + 96L, abort.peakBytes());
         refusedOwner.close();
 
-        AttemptMemoryLedger admitted = new AttemptMemoryLedger(200);
+        AttemptMemoryLedger admitted = new AttemptMemoryLedger(288);
         AttemptMemoryLedger.Owner admittedOwner = admitted.rootOwner();
         ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
                 PARAMETERS, TraceBudgets.defaults(), null, CancellationProbe.NONE, admittedOwner);
         assertLimitedAt(result, "k-best ancestry");
-        assertEquals(200L, admitted.currentBytes());
-        assertEquals(200L, admitted.peakBytes());
+        assertTrue(result.workAccounting().isPresent());
+        assertEquals(288L, admitted.currentBytes());
+        assertEquals(288L, admitted.peakBytes());
         admittedOwner.close();
         assertEquals(0L, admitted.currentBytes());
     }
@@ -307,7 +311,8 @@ class V022ProbabilisticMemoryTest {
         ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
                 PARAMETERS, TraceBudgets.defaults(), null, CancellationProbe.NONE, owner);
         assertTrue(owner.peakBytes() <= limitBytes);
-        assertTrue(owner.currentBytes() > 0L, "typed failure diagnostics remain owned");
+        assertEquals(288L, owner.currentBytes(),
+                "only the atomic failure graph and witness survive, including final-result admission refusal");
         owner.close();
         assertEquals(0L, ledger.currentBytes());
         return result;

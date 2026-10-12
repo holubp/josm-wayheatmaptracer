@@ -18,6 +18,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
@@ -58,16 +59,25 @@ public final class ProbabilisticInference {
     public ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner) {
+        return solve(profiles, parameters, budgets, decisionRegion, cancellation, resultOwner,
+                ProbabilisticExecutionPolicy.Mode.EAGER_V1);
+    }
+
+    /** Explicit execution policy; selecting V2 never changes the graph, objective or raw K. */
+    public ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode) {
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
-        if (resultOwner == null) {
+        if (resultOwner == null || mode == null) {
             throw new IllegalArgumentException("Attempt memory owner is required");
         }
         cancellation.checkpoint();
         validate(profiles, parameters, budgets);
         long stateCount = profiles.stream().mapToLong(profile -> profile.cells().size()).sum();
-        WorkCounter workCounter = new WorkCounter();
+        WorkCounter workCounter = null;
         if (parameters.orientationWeight() > 0.0
             && profiles.stream().anyMatch(InferenceProfile::orientationResourceLimited)) {
             return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, 0, 0,
@@ -79,6 +89,8 @@ public final class ProbabilisticInference {
         }
         AttemptMemoryLedger.Owner workOwner = resultOwner.child("b-exact-inference");
         try (workOwner) {
+            workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(80),
+                    "execution accounting", () -> new WorkCounter(mode, budgets.maximumTransitions()));
             long inferenceStarted = System.nanoTime();
             AttemptMemoryLedger.Owner admissionOwner = workOwner.child("transition-admission-memo");
             TransitionAdmissionMemo admissions = new TransitionAdmissionMemo(
@@ -89,28 +101,27 @@ public final class ProbabilisticInference {
             long forwardBackwardNanos = System.nanoTime() - inferenceStarted;
             if (messages.resourceLimited()) {
                 return failureOwnedAfterClose(workOwner, ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
-                    messages.pairVisits(), messages.transitions(), messages.explanation(), profiles, resultOwner);
+                    messages.pairVisits(), messages.transitions(), messages.explanation(), profiles, resultOwner, workCounter);
             }
             if (messages.noRoute()) {
                 return failureOwnedAfterClose(workOwner, ProbabilisticInferenceResult.Status.NO_ROUTE,
                     messages.pairVisits(), messages.transitions(), "no route inside decision region",
-                    profiles, resultOwner);
+                    profiles, resultOwner, workCounter);
             }
             if (!Double.isFinite(messages.logPartition())) {
                 return failureOwnedAfterClose(workOwner, ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,
                     messages.pairVisits(), messages.transitions(), "non-finite partition function",
-                    profiles, resultOwner);
+                    profiles, resultOwner, workCounter);
             }
             long kBestStarted = System.nanoTime();
-            long remainingTransitions = budgets.maximumTransitions() - messages.transitions();
             AttemptMemoryLedger.Owner kBestOwner = workOwner.child("k-best");
             KBestResult kBest = enumerateKBest(profiles, parameters, budgets,
-                remainingTransitions, decisionRegion, cancellation, admissions, kBestOwner, workCounter);
+                decisionRegion, cancellation, admissions, kBestOwner, workCounter);
             long kBestNanos = System.nanoTime() - kBestStarted;
             long allTransitions = messages.transitions() + kBest.transitions();
             if (kBest.resourceLimited()) {
                 return failureOwnedAfterClose(workOwner, ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
-                    messages.pairVisits(), allTransitions, kBest.explanation(), profiles, resultOwner);
+                    messages.pairVisits(), allTransitions, kBest.explanation(), profiles, resultOwner, workCounter);
             }
             kBest.releaseFrontier();
             long alternativesStarted = System.nanoTime();
@@ -154,6 +165,7 @@ public final class ProbabilisticInference {
                     posteriorOwner, retainedOwner);
             long resultBytes = retainedResultBytes(rawPaths, distinct, marginals,
                     componentMarginals, credibleSets);
+            Optional<InferenceWorkAccounting> accounting = accounting(workCounter, retainedOwner);
             ProbabilisticInferenceResult result = allocated(retainedOwner, resultBytes,
                     "result materialization", () -> new ProbabilisticInferenceResult(status,
                 rawPaths.isEmpty() ? Optional.empty() : Optional.of(rawPaths.get(0)), rawPaths, distinct,
@@ -164,7 +176,7 @@ public final class ProbabilisticInference {
                         ? "ALTERNATIVE_SEARCH_TRUNCATED; ALTERNATIVE_AMBIGUITY_UNRESOLVED"
                     : alternativeTruncated ? "ALTERNATIVE_SEARCH_TRUNCATED"
                     : unresolvedCloseRival ? "ALTERNATIVE_AMBIGUITY_UNRESOLVED"
-                    : "complete retained graph"));
+                    : "complete retained graph", accounting));
             selectionOwner.close();
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.forwardBackwardMs", nanosToMillis(forwardBackwardNanos));
@@ -199,19 +211,20 @@ public final class ProbabilisticInference {
         } catch (MemoryLimit exception) {
             workOwner.close();
             return failureOwned(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
-                    workCounter.pairVisits, workCounter.transitions,
+                    workCounter == null ? 0 : workCounter.pairVisits, workCounter == null ? 0 : workCounter.transitions,
                     exception.getMessage(), exception.stage(), exception.limitCause(),
-                    profiles, resultOwner);
+                    profiles, resultOwner, workCounter);
         } catch (ArithmeticException exception) {
             workOwner.close();
             return failureOwned(ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,
-                    workCounter.pairVisits, workCounter.transitions, "numeric failure", profiles,
-                    resultOwner);
+                    workCounter == null ? 0 : workCounter.pairVisits,
+                    workCounter == null ? 0 : workCounter.transitions, "numeric failure", profiles,
+                    resultOwner, workCounter);
         } finally {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "inference.extensionDescriptors", workCounter.extensionDescriptors);
+                "inference.extensionDescriptors", workCounter == null ? 0 : workCounter.extensionDescriptors);
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "inference.ancestryRecordsAllocated", workCounter.ancestryRecordsAllocated);
+                "inference.ancestryRecordsAllocated", workCounter == null ? 0 : workCounter.ancestryRecordsAllocated);
         }
     }
 
@@ -285,12 +298,12 @@ public final class ProbabilisticInference {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
                         }
-                        transitions++;
-                        workCounter.transitions++;
+                        boolean scored = workCounter.score(true);
+                        if (scored || workCounter.mode == ProbabilisticExecutionPolicy.Mode.EAGER_V1) transitions++;
                         if ((transitions & 1023L) == 0L) {
                             cancellation.checkpoint();
                         }
-                        if (transitions > budgets.maximumTransitions()) {
+                        if (!scored) {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded");
                         }
@@ -331,12 +344,12 @@ public final class ProbabilisticInference {
                         if (!transitionAllowed(profiles, currentProfile, currentState, next, decisionRegion, admissions)) {
                             continue;
                         }
-                        transitions++;
-                        workCounter.transitions++;
+                        boolean scored = workCounter.score(true);
+                        if (scored || workCounter.mode == ProbabilisticExecutionPolicy.Mode.EAGER_V1) transitions++;
                         if ((transitions & 1023L) == 0L) {
                             cancellation.checkpoint();
                         }
-                        if (transitions > budgets.maximumTransitions()) {
+                        if (!scored) {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded during backward inference");
                         }
@@ -364,7 +377,7 @@ public final class ProbabilisticInference {
     }
 
     private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
-        EvidenceModelParameters parameters, TraceBudgets budgets, long remainingTransitions,
+        EvidenceModelParameters parameters, TraceBudgets budgets,
         MetricRegion decisionRegion,
         CancellationProbe cancellation, TransitionAdmissionMemo admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
@@ -425,23 +438,66 @@ public final class ProbabilisticInference {
             int beforeStates = current.length;
             int streamCapacity = Math.multiplyExact(beforeStates, cap);
             AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
-            double[] extensionEnergy = allocated(scratchOwner,
+            boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+            DescriptorHeap descriptors = exact ? allocated(scratchOwner, AttemptMemoryLedger.objectBytes(48),
+                    "k-best descriptors", () -> new DescriptorHeap(cap, cancellation, scratchOwner)) : null;
+            double[] extensionEnergy = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(streamCapacity, Double.BYTES), "k-best descriptors",
                 () -> new double[streamCapacity]);
-            int[] streamOrder = allocated(scratchOwner,
+            int[] streamOrder = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(streamCapacity, Integer.BYTES), "k-best descriptors",
                 () -> new int[streamCapacity]);
-            int[] streamLengths = allocated(scratchOwner,
+            int[] streamLengths = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
                 () -> new int[beforeStates]);
-            int[] heapBefore = allocated(scratchOwner,
+            int[] heapBefore = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
                 () -> new int[beforeStates]);
-            int[] heapPosition = allocated(scratchOwner,
+            int[] heapPosition = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
                 () -> new int[beforeStates]);
             for (int prior = 0; prior < previousStates; prior++) {
                 for (int state = 0; state < nextStates; state++) {
+                    if (exact) {
+                        descriptors.reset(state);
+                        for (int before = 0; before < current.length; before++) {
+                            if (!transitionAllowed(profiles, profileIndex - 1, prior, state,
+                                    decisionRegion, admissions)) continue;
+                            nextCounts[prior][state] = Math.min(cap + 1,
+                                    nextCounts[prior][state] + counts[before][prior]);
+                            List<PathRecord> prefixes = current[before][prior];
+                            if (prefixes == null || prefixes.isEmpty()) continue;
+                            workCounter.recordLogicalKBestExtensions(prefixes.size());
+                            double increment = profileEnergy(profiles, profileIndex, state, parameters)
+                                    + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
+                                    + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
+                            for (int index = 0; index < prefixes.size(); index++) {
+                                cancellation.checkpoint();
+                                if (!workCounter.score(false)) {
+                                    return new KBestResult(List.of(), 0, true, transitions,
+                                            "transition budget exceeded during k-best");
+                                }
+                                transitions++;
+                                PathRecord prefix = prefixes.get(index);
+                                double energy = prefix.energy() + increment;
+                                workCounter.extensionDescriptors++;
+                                if (descriptors.strictlyDominated(energy, increment)) break;
+                                descriptors.offer(before, index, energy, prefix.lexicalRank);
+                            }
+                        }
+                        descriptors.sortWinners();
+                        List<PathRecord> selected = allocated(nextOwner, listBytes(cap),
+                                "k-best frontier", () -> new ArrayList<>(cap));
+                        double measure = logMeasure(profiles.get(profileIndex).cells().get(state));
+                        for (int index = 0; index < descriptors.size; index++) {
+                            cancellation.checkpoint();
+                            PathRecord prefix = current[descriptors.before[index]][prior]
+                                    .get(descriptors.prefix[index]);
+                            selected.add(arena.extendRounded(prefix, state, descriptors.energy[index], measure));
+                        }
+                        next[prior][state] = selected;
+                        continue;
+                    }
                     Arrays.fill(streamLengths, 0);
                     int heapSize = 0;
                     int candidateCount = 0;
@@ -455,17 +511,18 @@ public final class ProbabilisticInference {
                         if (prefixes == null || prefixes.isEmpty()) {
                             continue;
                         }
+                        workCounter.recordLogicalKBestExtensions(prefixes.size());
                         double increment = profileEnergy(profiles, profileIndex, state, parameters)
                             + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
                             + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
                         int base = before * cap;
                         for (int index = 0; index < prefixes.size(); index++) {
-                            transitions++;
-                            workCounter.transitions++;
+                            boolean scored = workCounter.score(false);
+                            if (scored || workCounter.mode == ProbabilisticExecutionPolicy.Mode.EAGER_V1) transitions++;
                             if ((transitions & 1023L) == 0L) {
                                 cancellation.checkpoint();
                             }
-                            if (transitions > remainingTransitions) {
+                            if (!scored) {
                                 return new KBestResult(List.of(), 0, true, transitions,
                                     "transition budget exceeded during k-best");
                             }
@@ -925,33 +982,45 @@ public final class ProbabilisticInference {
     private static ProbabilisticInferenceResult failureOwnedAfterClose(
             AttemptMemoryLedger.Owner workOwner, ProbabilisticInferenceResult.Status status,
             long pairVisits, long transitions, String explanation, List<InferenceProfile> profiles,
-            AttemptMemoryLedger.Owner resultOwner) {
+            AttemptMemoryLedger.Owner resultOwner, WorkCounter workCounter) {
         workOwner.close();
-        return failureOwned(status, pairVisits, transitions, explanation, profiles, resultOwner);
+        return failureOwned(status, pairVisits, transitions, explanation, profiles, resultOwner, workCounter);
     }
 
     private static ProbabilisticInferenceResult failureOwned(
             ProbabilisticInferenceResult.Status status, long pairVisits, long transitions,
             String explanation, List<InferenceProfile> profiles,
             AttemptMemoryLedger.Owner resultOwner) {
+        return failureOwned(status, pairVisits, transitions, explanation, profiles, resultOwner, null);
+    }
+
+    private static ProbabilisticInferenceResult failureOwned(
+            ProbabilisticInferenceResult.Status status, long pairVisits, long transitions,
+            String explanation, List<InferenceProfile> profiles,
+            AttemptMemoryLedger.Owner resultOwner, WorkCounter workCounter) {
         return failureOwned(status, pairVisits, transitions, explanation, explanation, null,
-                profiles, resultOwner);
+                profiles, resultOwner, workCounter);
     }
 
     private static ProbabilisticInferenceResult failureOwned(
             ProbabilisticInferenceResult.Status status, long pairVisits, long transitions,
             String explanation, String abortStage,
             AttemptMemoryLedger.ResourceLimitException originalLimit,
-            List<InferenceProfile> profiles, AttemptMemoryLedger.Owner resultOwner) {
+            List<InferenceProfile> profiles, AttemptMemoryLedger.Owner resultOwner, WorkCounter workCounter) {
         try {
+            // Reserve the complete failure graph atomically: a diagnostic refusal must
+            // leave neither its accounting witness nor any other result fragment owned.
+            long accountingBytes = workCounter == null ? 0L
+                    : AttemptMemoryLedger.objectBytes(40) + AttemptMemoryLedger.objectBytes(8);
             return allocated(resultOwner,
-                    AttemptMemoryLedger.objectBytes(120) + AttemptMemoryLedger.objectBytes(48),
+                    AttemptMemoryLedger.objectBytes(128) + AttemptMemoryLedger.objectBytes(48) + accountingBytes,
                     "failure result materialization",
                     () -> {
                         GapSummary gaps = gapSummary(profiles);
+                        Optional<InferenceWorkAccounting> accounting = accountingValue(workCounter);
                         return new ProbabilisticInferenceResult(status, Optional.empty(), List.of(),
                             List.of(), Double.NaN, List.of(), List.of(), List.of(), List.of(),
-                            List.of(), false, false, pairVisits, transitions, gaps, explanation);
+                            List.of(), false, false, Optional.empty(), pairVisits, transitions, gaps, explanation, accounting);
                     });
         } catch (MemoryLimit diagnosticFailure) {
             AttemptMemoryLedger.ResourceLimitException refusal = diagnosticFailure.limitCause();
@@ -960,6 +1029,18 @@ public final class ProbabilisticInference {
             throw new TraceMemoryLimitException(abortStage, pairVisits, transitions,
                     resultOwner.currentBytes(), resultOwner.peakBytes(), refusal.limitBytes(), cause);
         }
+    }
+
+    private static Optional<InferenceWorkAccounting> accounting(WorkCounter work,
+            AttemptMemoryLedger.Owner owner) {
+        if (work == null) return Optional.empty();
+        return allocated(owner, AttemptMemoryLedger.objectBytes(40) + AttemptMemoryLedger.objectBytes(8),
+                "execution accounting", () -> accountingValue(work));
+    }
+
+    private static Optional<InferenceWorkAccounting> accountingValue(WorkCounter work) {
+        return work == null ? Optional.empty() : Optional.of(new InferenceWorkAccounting(work.mode.version(),
+                work.forwardBackwardScores, work.kBestScores, work.logicalKBestExtensions, work.refusedScoreAttempts));
     }
 
     private static void validate(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
@@ -1334,11 +1415,127 @@ public final class ProbabilisticInference {
         private static final class TableCharge { }
     }
 
+    /** At most K rounded descriptors; stream-tail cutoff is strict finite-energy dominance only. */
+    private static final class DescriptorHeap {
+        private final int[] before;
+        private final int[] prefix;
+        private final double[] energy;
+        private final long[] rank;
+        private final CancellationProbe cancellation;
+        private int size;
+        private int state;
+
+        DescriptorHeap(int cap, CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+            this.cancellation = cancellation;
+            cancellation.checkpoint();
+            before = allocated(owner, AttemptMemoryLedger.arrayBytes(cap, Integer.BYTES),
+                    "k-best descriptors", () -> new int[cap]);
+            prefix = allocated(owner, AttemptMemoryLedger.arrayBytes(cap, Integer.BYTES),
+                    "k-best descriptors", () -> new int[cap]);
+            energy = allocated(owner, AttemptMemoryLedger.arrayBytes(cap, Double.BYTES),
+                    "k-best descriptors", () -> new double[cap]);
+            rank = allocated(owner, AttemptMemoryLedger.arrayBytes(cap, Long.BYTES),
+                    "k-best descriptors", () -> new long[cap]);
+        }
+
+        void reset(int state) { size = 0; this.state = state; }
+
+        boolean strictlyDominated(double candidate, double increment) {
+            cancellation.checkpoint();
+            return size == energy.length && Double.isFinite(increment) && Double.isFinite(candidate)
+                    && Double.isFinite(energy[0]) && candidate > energy[0];
+        }
+
+        void offer(int beforeIndex, int prefixIndex, double roundedEnergy, long lexicalRank) {
+            cancellation.checkpoint();
+            if (size < energy.length) {
+                int at = size++;
+                set(at, beforeIndex, prefixIndex, roundedEnergy, lexicalRank);
+                while (at > 0) {
+                    cancellation.checkpoint();
+                    int parent = (at - 1) >>> 1;
+                    if (compare(at, parent) <= 0) break;
+                    swapDescriptor(at, parent); at = parent;
+                }
+            } else if (compareExtension(roundedEnergy, lexicalRank, state, energy[0], rank[0], state) < 0) {
+                replaceWorst(beforeIndex, prefixIndex, roundedEnergy, lexicalRank);
+            }
+        }
+
+        private void replaceWorst(int beforeIndex, int prefixIndex, double roundedEnergy, long lexicalRank) {
+            cancellation.checkpoint();
+            set(0, beforeIndex, prefixIndex, roundedEnergy, lexicalRank);
+            int at = 0;
+            while (true) {
+                cancellation.checkpoint();
+                int left = 2 * at + 1;
+                if (left >= size) break;
+                int right = left + 1;
+                int worst = right < size && compare(right, left) > 0 ? right : left;
+                if (compare(at, worst) >= 0) break;
+                swapDescriptor(at, worst); at = worst;
+            }
+        }
+
+        void sortWinners() {
+            cancellation.checkpoint();
+            for (int index = 1; index < size; index++) {
+                int at = index;
+                while (at > 0) {
+                    cancellation.checkpoint();
+                    if (compare(at, at - 1) >= 0) break;
+                    swapDescriptor(at, at - 1); at--;
+                }
+            }
+        }
+
+        private int compare(int first, int second) {
+            return compareExtension(energy[first], rank[first], state, energy[second], rank[second], state);
+        }
+
+        private void set(int index, int beforeIndex, int prefixIndex, double roundedEnergy, long lexicalRank) {
+            before[index] = beforeIndex; prefix[index] = prefixIndex;
+            energy[index] = roundedEnergy; rank[index] = lexicalRank;
+        }
+
+        private void swapDescriptor(int first, int second) {
+            swap(before, first, second); swap(prefix, first, second);
+            double oldEnergy = energy[first]; energy[first] = energy[second]; energy[second] = oldEnergy;
+            long oldRank = rank[first]; rank[first] = rank[second]; rank[second] = oldRank;
+        }
+    }
+
     private static final class WorkCounter {
+        private final ProbabilisticExecutionPolicy.Mode mode;
+        private final long maximumTransitions;
         private long pairVisits;
         private long transitions;
         private long extensionDescriptors;
         private long ancestryRecordsAllocated;
+        private long forwardBackwardScores;
+        private long kBestScores;
+        private long logicalKBestExtensions;
+        private long refusedScoreAttempts;
+
+        private WorkCounter(ProbabilisticExecutionPolicy.Mode mode, long maximumTransitions) {
+            this.mode = mode; this.maximumTransitions = maximumTransitions;
+        }
+
+        boolean score(boolean forwardBackward) {
+            if (mode == ProbabilisticExecutionPolicy.Mode.EAGER_V1) transitions = Math.addExact(transitions, 1L);
+            if (Math.addExact(forwardBackwardScores, kBestScores) == maximumTransitions) {
+                refusedScoreAttempts = Math.addExact(refusedScoreAttempts, 1L);
+                return false;
+            }
+            if (forwardBackward) forwardBackwardScores = Math.addExact(forwardBackwardScores, 1L);
+            else kBestScores = Math.addExact(kBestScores, 1L);
+            if (mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2) transitions = Math.addExact(transitions, 1L);
+            return true;
+        }
+
+        void recordLogicalKBestExtensions(long count) {
+            logicalKBestExtensions = Math.addExact(logicalKBestExtensions, count);
+        }
     }
 
     static final class MemoryLimit extends RuntimeException {
@@ -1405,7 +1602,7 @@ public final class ProbabilisticInference {
     private static long retainedResultBytes(List<ProbabilisticPath> rawPaths,
             List<ProbabilisticPath> distinctPaths, List<double[]> marginals,
             List<double[]> componentMarginals, List<CredibleLateralSet> credibleSets) {
-        long bytes = AttemptMemoryLedger.objectBytes(120);
+        long bytes = AttemptMemoryLedger.objectBytes(128);
         bytes = Math.addExact(bytes, listBytes(rawPaths.size()));
         bytes = Math.addExact(bytes, listBytes(distinctPaths.size()));
         bytes = Math.addExact(bytes, listBytes(credibleSets.size()));
