@@ -95,6 +95,10 @@ public final class ProbabilisticProfileFactory {
                 : ProbabilisticInference.allocated(rawListOwner,
                     ProbabilisticInference.listBytes(curve.points().size()), "sampled profiles",
                     () -> new ArrayList<>(curve.points().size()));
+        BoundaryWork boundaryWork = samplingOwner == null ? new BoundaryWork(cancellation)
+                : ProbabilisticInference.allocated(samplingOwner, AttemptMemoryLedger.objectBytes(24),
+                    "sampled profiles", () -> new BoundaryWork(cancellation));
+        try {
         for (int index = 0; index < curve.points().size(); index++) {
             cancellation.checkpoint();
             AttemptMemoryLedger.Owner profileTemporary = samplingOwner == null ? null
@@ -115,12 +119,11 @@ public final class ProbabilisticProfileFactory {
                         AttemptMemoryLedger.objectBytes(16), "sampled profiles",
                         () -> new MetricPoint(-tangent.yMeters(), tangent.xMeters()));
             double minimum = authorizedBoundary(anchor, normal, -1.0, searchHalfWidthMeters,
-                samplePitch, evidence);
+                samplePitch, evidence, boundaryWork, profileTemporary);
             double maximum = authorizedBoundary(anchor, normal, 1.0, searchHalfWidthMeters,
-                samplePitch, evidence);
+                samplePitch, evidence, boundaryWork, profileTemporary);
             if (maximum - minimum < 1e-9) {
-                minimum = -Math.min(samplePitch, searchHalfWidthMeters);
-                maximum = Math.min(samplePitch, searchHalfWidthMeters);
+                throw new ProfileWindowUnavailableException(index);
             }
             List<ProbabilisticProfile.Sample> samples = sampleProfile(anchor, normal, minimum,
                 maximum, samplePitch, evidence, field, profileTemporary, rawOwner);
@@ -159,6 +162,12 @@ public final class ProbabilisticProfileFactory {
             result.add(rawOwner == null ? allocation.get()
                     : ownedProfile(rawOwner, samples.size(), allocation));
             if (profileTemporary != null) profileTemporary.close();
+        }
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.add(
+                    "profile.boundaryGeometryUnits", boundaryWork.units);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "profile.boundaryGeometryLimit", BoundaryWork.MAXIMUM_UNITS);
         }
         if (samplingOwner != null) samplingOwner.close();
         if (directLongitudinalReliability) {
@@ -628,13 +637,20 @@ public final class ProbabilisticProfileFactory {
         }
     }
 
-    private static double authorizedBoundary(MetricPoint anchor, MetricPoint normal, double direction,
-        double maximum, double step, EvidenceSnapshot evidence) {
+    static double authorizedBoundary(MetricPoint anchor, MetricPoint normal, double direction,
+        double maximum, double step, EvidenceSnapshot evidence, BoundaryWork work,
+        AttemptMemoryLedger.Owner owner) {
+        double requested = StrictMath.ceil(maximum / step);
+        if (!Double.isFinite(requested) || requested > BoundaryWork.MAXIMUM_UNITS) {
+            throw new ProfileBoundaryResourceLimitException();
+        }
+        work.admit((long) requested);
         double last = 0.0;
-        for (double distance = Math.min(step, maximum); distance <= maximum + 1e-9;
-             distance += step) {
-            double bounded = Math.min(distance, maximum);
-            if (!evidence.routePositionAuthorized(offset(anchor, normal, direction * bounded))) {
+        for (long visit = 1; visit <= (long) requested; visit++) {
+            work.cancellation.checkpoint();
+            double bounded = visit == (long) requested ? maximum : Math.min(visit * step, maximum);
+            if (!authorizedNormalSegment(anchor, normal, direction * last,
+                    direction * bounded, evidence, work, owner)) {
                 break;
             }
             last = bounded;
@@ -643,6 +659,65 @@ public final class ProbabilisticProfileFactory {
             }
         }
         return direction * last;
+    }
+
+    private static boolean authorizedNormalSegment(MetricPoint anchor, MetricPoint normal,
+            double from, double to, EvidenceSnapshot evidence, BoundaryWork work,
+            AttemptMemoryLedger.Owner owner) {
+        work.cancellation.checkpoint();
+        work.admit(1L);
+        AttemptMemoryLedger.Owner query = owner == null ? null : owner.child("normal-authority");
+        try {
+            if (query != null) query.reserve(2L * AttemptMemoryLedger.objectBytes(16));
+            MetricPoint start = offset(anchor, normal, from);
+            MetricPoint end = offset(anchor, normal, to);
+            return evidence.decisionRegion().containsSegment(start, end, work.cancellation,
+                    work::admit, query)
+                && evidence.evidenceRegion().containsSegment(start, end, work.cancellation,
+                    work::admit, query);
+        } finally {
+            if (query != null) query.close();
+        }
+    }
+
+    /** A zero-width authorized prefix cannot supply a profile or movement evidence. */
+    public static final class ProfileWindowUnavailableException extends IllegalArgumentException {
+        private ProfileWindowUnavailableException(int index) {
+            super("authorized profile window unavailable at profile " + index);
+        }
+    }
+
+    /** Separate geometric authority work exhaustion, never a scalar or association refusal. */
+    public static final class ProfileBoundaryResourceLimitException extends RuntimeException {
+        private ProfileBoundaryResourceLimitException() {
+            super("profile boundary geometry work limit");
+        }
+    }
+
+    /** Geometry loop visits and an opaque-sort proxy, separate from scalar/feature budgets. */
+    static final class BoundaryWork {
+        static final long MAXIMUM_UNITS = 64_000_000L;
+        private final CancellationProbe cancellation;
+        private final long maximumUnits;
+        private long units;
+
+        BoundaryWork(CancellationProbe cancellation) { this(cancellation, MAXIMUM_UNITS); }
+
+        BoundaryWork(CancellationProbe cancellation, long maximumUnits) {
+            if (cancellation == null || maximumUnits <= 0L || maximumUnits > MAXIMUM_UNITS) {
+                throw new IllegalArgumentException("Boundary work controls are invalid");
+            }
+            this.cancellation = cancellation;
+            this.maximumUnits = maximumUnits;
+        }
+
+        void admit(long requested) {
+            cancellation.checkpoint();
+            if (requested < 0L || requested > maximumUnits - units) {
+                throw new ProfileBoundaryResourceLimitException();
+            }
+            units += requested;
+        }
     }
 
     private static ResampledCurve resample(List<MetricPoint> points, double step,

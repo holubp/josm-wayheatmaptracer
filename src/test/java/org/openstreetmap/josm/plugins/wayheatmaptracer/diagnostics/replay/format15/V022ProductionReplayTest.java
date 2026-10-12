@@ -172,6 +172,109 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void profileSamplingPolicyIsBoundByNewCaptureDefaultsAndRuntimeReceipt() {
+        String policy = "/profile-window-contiguous-v1";
+        assertTrue(EvidenceModelParameters.defaults().version().contains(policy));
+        assertTrue(EvidenceModelParameters.withoutShapeTerms().version().contains(policy));
+    }
+
+    @Test
+    void collapsedAuthorizedProfileWindowReturnsTypedNoRouteAndReleasesEngineScratch() {
+        FrozenReplayInput base = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        var original = base.evidence();
+        var decision = new MetricRegion(List.of(
+                MetricRegion.rectangle(1, 49.8, 159, 50.2).polygons().get(0),
+                MetricRegion.rectangle(1, 51.1, 159, 99).polygons().get(0),
+                MetricRegion.rectangle(1, 1, 159, 48.9).polygons().get(0)));
+        var evidence = new EvidenceSnapshot(original.snapshotId(), original.coordinateFrame(),
+                original.transform(), original.resolution(), decision, original.evidenceRegion(),
+                original.fields(), original.resampling(), original.sourceIdentity());
+        var input = withEvidence(base, evidence);
+        for (var policy : org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine.ReliabilityPolicy.values()) {
+            var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+            var owner = ledger.rootOwner();
+            var engine = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine("native", EvidenceModelParameters.defaults(), policy);
+            var result = engine.traceWithUsage(input.request(), evidence, input.network(),
+                    CancellationProbe.NONE, owner);
+            assertEquals(TraceHypothesisSet.Status.NO_ROUTE, result.value().result().status());
+            assertTrue(result.value().result().hypotheses().isEmpty());
+            assertTrue(result.value().result().explanation().contains("authorized profile window unavailable"));
+            result.owner().close();
+            assertEquals(0L, ledger.currentBytes());
+            assertThrows(IllegalArgumentException.class, () -> engine.traceWithUsage(base.request(),
+                    evidence, base.network(), CancellationProbe.NONE, owner),
+                    "an unrelated evidence identity mismatch must retain its original failure");
+            assertEquals(0L, ledger.currentBytes());
+            owner.close();
+        }
+    }
+
+    @Test
+    void geometricTraversalRefusalReportsItsOwnReasonAndReleasesEngineOwners() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        var source = input.request();
+        // A deliberately unaffordable positive request tests preflight before any normal query.
+        var request = new TraceRequest(source.selectedWayKey(), source.selectedRange(), source.engine(),
+                source.geometryMode(), RecoveryPermissions.disabled(64_000_001.0), source.budgets(),
+                source.evidenceSnapshotId(), source.evidenceContentHash(), source.networkSnapshotId(),
+                source.networkContentHash(), source.settingsHash(), source.parameterHash(), source.samplerId(),
+                source.configuredSampleStepMeters(), source.profileChainage(), source.evidenceResolution(), source.corridorInput());
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var engine = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine("native");
+        var result = engine.traceWithUsage(request, input.evidence(), input.network(), CancellationProbe.NONE, owner);
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, result.value().result().status());
+        assertEquals("profile boundary geometry work limit", result.value().result().explanation());
+        assertTrue(result.value().result().hypotheses().isEmpty());
+        assertEquals(0L, result.value().result().evaluatedTransitions());
+        result.owner().close();
+        assertEquals(0L, ledger.currentBytes());
+        owner.close();
+    }
+
+    @Test
+    void executingProfileSamplingPolicyIsExplicitForBAndHybridOnly() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(), input.request().parameterHash(), engine, engine).bytes(),
+                    StandardCharsets.UTF_8);
+            assertTrue(receipt.contains("/profile-window-contiguous-v1"));
+        }
+        for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
+            String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(), input.request().parameterHash(), engine, engine).bytes(),
+                    StandardCharsets.UTF_8);
+            assertFalse(receipt.contains("/profile-window-contiguous-v1"));
+        }
+    }
+
+    @Test
+    void oldSamplingReceiptReadsOriginalInputButCannotCertifyCurrentFactory(@TempDir Path directory)
+            throws Exception {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "runtime-sampling-test", input, TrackerMode.PROBABILISTIC);
+        String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+        String old = current.replace("/profile-window-contiguous-v1", "");
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+        Path path = directory.resolve("old-sampling-receipt.zip");
+        Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                base.parameterHash(), artifacts), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+        assertEquals(input.request().parameterHash(), archive.parameterHash());
+        var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(
+                archive, ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(), archive.parameterHash()));
+        assertEquals("numerical-policy-invalid", failure.getMessage());
+    }
+
+    @Test
     void bRuntimeReliabilityPolicyIsBoundIndependentlyOfCapturedParameters() {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         String runtime = "/" + EvidenceModelParameters.reliabilityPolicyVersion();
@@ -249,7 +352,8 @@ class V022ProductionReplayTest {
                 .replace("\"computedEngine\":\"PROBABILISTIC\"", "\"computedEngine\":\"CORRIDOR_AWARE\"")
                 .replace("\"inferencePolicy\":\"java17-fdlibm53-v1/ordered-compensated-java17-v1/"
                         + EvidenceModelParameters.orientationIntegrationVersion() + "/"
-                        + EvidenceModelParameters.reliabilityPolicyVersion() + "\"",
+                        + EvidenceModelParameters.reliabilityPolicyVersion() + "/"
+                        + EvidenceModelParameters.profileSamplingPolicyVersion() + "\"",
                         "\"inferencePolicy\":\"engine-specific\"");
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(bundle.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", receipt));

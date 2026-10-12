@@ -140,6 +140,19 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 exception.addSuppressed(diagnosticFailure);
                 throw exception;
             }
+        } catch (ProbabilisticProfileFactory.ProfileWindowUnavailableException exception) {
+            closeIfOpen(workingOwner, null);
+            closeIfOpen(candidateOwner, null);
+            try {
+                return nativeFailure(request, TraceHypothesisSet.Status.NO_ROUTE,
+                        exception.getMessage(), work, engineOwner);
+            } catch (RuntimeException | Error failure) {
+                closeIfOpen(engineOwner, failure);
+                throw failure;
+            }
+        } catch (ProbabilisticProfileFactory.ProfileBoundaryResourceLimitException exception) {
+            return resourceFailure(request, exception.getMessage(), "profile boundary authority",
+                    null, work, engineOwner, candidateOwner, workingOwner);
         } catch (LongitudinalModeReliability.ResourceLimitException exception) {
             return resourceFailure(request, exception.getMessage(), "sampled profiles",
                     null, work, engineOwner, candidateOwner, workingOwner);

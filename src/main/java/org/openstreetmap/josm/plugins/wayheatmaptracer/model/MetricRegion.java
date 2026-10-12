@@ -7,6 +7,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.LongConsumer;
+
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Immutable union of non-self-intersecting closed metric polygons without holes. */
 public final class MetricRegion {
@@ -52,27 +56,78 @@ public final class MetricRegion {
 
     /** Proves a whole segment lies inside the polygon union without discrete-step gaps. */
     public boolean containsSegment(MetricPoint start, MetricPoint end) {
-        if (!contains(start) || !contains(end)) {
+        return containsSegment(start, end, CancellationProbe.NONE, ignored -> { }, null);
+    }
+
+    /**
+     * Proves segment authority with owned scratch and cooperatively bounded geometry work.
+     * The size-based sorting charge is an nlogn proxy, not a measured comparison count.
+     */
+    public boolean containsSegment(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        if (cancellation == null || admission == null) {
+            throw new IllegalArgumentException("Segment authority work controls are required");
+        }
+        cancellation.checkpoint();
+        long edges = 0L;
+        for (List<MetricPoint> polygon : polygons) {
+            cancellation.checkpoint();
+            admission.accept(1L);
+            edges = Math.addExact(edges, polygon.size());
+        }
+        long eventBound = Math.addExact(2L, Math.multiplyExact(2L, edges));
+        if (eventBound > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Segment authority inventory is too large");
+        }
+        AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("segment-authority");
+        try {
+        // Boxed events, retained references, opaque sort scratch, and transient midpoint points.
+        long bytes = Math.addExact(AttemptMemoryLedger.arrayBytes(eventBound, 2L * Long.BYTES),
+                Math.addExact(AttemptMemoryLedger.objectBytes(24),
+                    Math.multiplyExact(eventBound, 2L * AttemptMemoryLedger.objectBytes(16))));
+        if (scratch != null) scratch.reserve(bytes);
+        if (!contains(start, cancellation, admission) || !contains(end, cancellation, admission)) {
             return false;
         }
-        List<Double> events = new ArrayList<>();
+        admission.accept(eventBound);
+        List<Double> events = new ArrayList<>((int) eventBound);
         events.add(0.0);
         events.add(1.0);
         for (List<MetricPoint> polygon : polygons) {
             for (int index = 0; index < polygon.size(); index++) {
+                cancellation.checkpoint();
+                admission.accept(1L);
                 addIntersectionParameters(start, end, polygon.get(index),
-                    polygon.get((index + 1) % polygon.size()), events);
+                    polygon.get((index + 1) % polygon.size()), events, cancellation, admission);
             }
         }
+        cancellation.checkpoint();
+        admission.accept(Math.multiplyExact((long) events.size(),
+                64L - Long.numberOfLeadingZeros(events.size())));
         Collections.sort(events);
+        cancellation.checkpoint();
         for (int index = 1; index < events.size(); index++) {
+            cancellation.checkpoint();
+            admission.accept(1L);
             double left = events.get(index - 1);
             double right = events.get(index);
-            if (right - left > EPSILON && !contains(interpolate(start, end, (left + right) / 2.0))) {
+            if (right - left > EPSILON && !contains(interpolate(start, end, (left + right) / 2.0),
+                    cancellation, admission)) {
                 return false;
             }
         }
         return true;
+        } finally {
+            if (scratch != null) scratch.close();
+        }
+    }
+
+    private boolean contains(MetricPoint point, CancellationProbe cancellation, LongConsumer admission) {
+        if (point == null) return false;
+        for (List<MetricPoint> polygon : polygons) {
+            if (contains(polygon, point, cancellation, admission)) return true;
+        }
+        return false;
     }
 
     /** Returns whether a segment touches or crosses any polygon in the union. */
@@ -186,7 +241,7 @@ public final class MetricRegion {
     }
 
     private static void addIntersectionParameters(MetricPoint p, MetricPoint q, MetricPoint a,
-        MetricPoint b, List<Double> events) {
+        MetricPoint b, List<Double> events, CancellationProbe cancellation, LongConsumer admission) {
         double rx = q.xMeters() - p.xMeters();
         double ry = q.yMeters() - p.yMeters();
         double sx = b.xMeters() - a.xMeters();
@@ -198,9 +253,9 @@ public final class MetricRegion {
             if (Math.abs(cross(apx, apy, rx, ry)) <= EPSILON) {
                 double lengthSquared = rx * rx + ry * ry;
                 if (lengthSquared > EPSILON) {
-                    addEvent(events, (apx * rx + apy * ry) / lengthSquared);
+                    addEvent(events, (apx * rx + apy * ry) / lengthSquared, cancellation, admission);
                     addEvent(events, ((b.xMeters() - p.xMeters()) * rx
-                        + (b.yMeters() - p.yMeters()) * ry) / lengthSquared);
+                        + (b.yMeters() - p.yMeters()) * ry) / lengthSquared, cancellation, admission);
                 }
             }
             return;
@@ -208,16 +263,20 @@ public final class MetricRegion {
         double t = cross(apx, apy, sx, sy) / denominator;
         double u = cross(apx, apy, rx, ry) / denominator;
         if (t >= -EPSILON && t <= 1.0 + EPSILON && u >= -EPSILON && u <= 1.0 + EPSILON) {
-            addEvent(events, t);
+            addEvent(events, t, cancellation, admission);
         }
     }
 
-    private static void addEvent(List<Double> events, double value) {
+    private static void addEvent(List<Double> events, double value,
+            CancellationProbe cancellation, LongConsumer admission) {
         if (value >= -EPSILON && value <= 1.0 + EPSILON) {
             double bounded = Math.max(0.0, Math.min(1.0, value));
-            if (events.stream().noneMatch(existing -> Math.abs(existing - bounded) <= EPSILON)) {
-                events.add(bounded);
+            for (double existing : events) {
+                cancellation.checkpoint();
+                admission.accept(1L);
+                if (Math.abs(existing - bounded) <= EPSILON) return;
             }
+            events.add(bounded);
         }
     }
 
@@ -226,8 +285,15 @@ public final class MetricRegion {
     }
 
     private static boolean contains(List<MetricPoint> polygon, MetricPoint point) {
+        return contains(polygon, point, CancellationProbe.NONE, ignored -> { });
+    }
+
+    private static boolean contains(List<MetricPoint> polygon, MetricPoint point,
+            CancellationProbe cancellation, LongConsumer admission) {
         boolean inside = false;
         for (int current = 0, previous = polygon.size() - 1; current < polygon.size(); previous = current++) {
+            cancellation.checkpoint();
+            admission.accept(1L);
             MetricPoint a = polygon.get(previous);
             MetricPoint b = polygon.get(current);
             if (onSegment(a, b, point)) {
