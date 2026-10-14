@@ -64,3 +64,18 @@ Java tests (zero failures/errors/skips) and 34 passing script tests. RED proves
 the previous fatal-host hang and missing runner reference interface. Evidence
 is under ignored `build/rc10-benchmark-contract/reference-*`. Fresh paired
 performance/cancellation and public CI remain required for this repaired tree.
+
+## Ordinary user fixes
+
+Independent Sol/high review of nine scoped files against `849584a`: no blockers.
+Modern producer normalization bounds are independently verified (bluered1.32,
+bluered-cool/dual1.30); legacy raw scores and strict scalar rejection are
+unchanged. A valid RGB pixel reproduces the reported guard failure, but the
+exact original RC7 pixel array is unavailable. Current immutable failed-attempt
+and owner guards prevent stale failure export; fixed codes and hashed identities
+remain redacted and no Apply capability is fabricated. Only worker-failure
+notices become modeless; critical source warnings retain their behavior.
+Cookie opening focus, Ctrl+V, Enter and Escape were checked with real Swing
+events and synthetic credentials. All nine frozen source hashes match.
+Retained Java XML85focused/81neighbors/6final has zero failures/errors/skips.
+Full final-tree CI and required benchmark/plan/publication gates remain open.

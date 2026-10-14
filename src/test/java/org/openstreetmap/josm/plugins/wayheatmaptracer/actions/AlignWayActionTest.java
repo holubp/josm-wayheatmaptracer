@@ -304,6 +304,54 @@ class AlignWayActionTest {
     }
 
     @Test
+    void failedWorkerRetainsSafeReasonAndSnapshotForExportWithoutPublishingAStaleAttempt(@TempDir Path directory)
+            throws Exception {
+        var method = AlignWayAction.class.getDeclaredMethod("publishFailedWorkerIfCurrent",
+                PreviewSessionController.class, PreviewSessionController.Owner.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.Attempt.class,
+                String.class, String.class, java.util.function.Consumer.class);
+        method.setAccessible(true);
+        try (PreviewSessionController<LiveBPreviewService.Computed> session = new PreviewSessionController<>(Runnable::run)) {
+            var owner = session.open(() -> { });
+            var snapshot = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.AttemptSnapshot(
+                    "captured-attempt", "managed-source", "settings", "content");
+            session.start(owner, () -> snapshot, (frozen, cancellation) -> {
+                throw new IllegalArgumentException("Valid scalar source must be normalized");
+            }, attempt -> { throw new AssertionError("failed worker must never publish preview"); });
+            for (int i = 0; i < 100 && !session.currentAttempt().state().terminal(); i++) Thread.sleep(10);
+            var failed = session.currentAttempt();
+            assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.State.FAILED, failed.state());
+            AtomicInteger notices = new AtomicInteger();
+            assertTrue((boolean) method.invoke(null, session, owner, failed, "managed-tiles", "failed-attempt",
+                    (java.util.function.Consumer<String>) message -> {
+                        assertTrue(message.contains("SCALAR_SOURCE_NOT_NORMALIZED")); notices.incrementAndGet();
+                    }));
+            Path exported = directory.resolve("worker-failure.zip"); DiagnosticsRegistry.writeLatest(exported.toFile());
+            var archive = Format15ArchiveReader.read(exported);
+            String failure = new String(archive.artifact("worker-failure.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
+            assertTrue(failure.contains("SCALAR_SOURCE_NOT_NORMALIZED"));
+            assertTrue(failure.contains("\"applyAvailable\":false"));
+            assertFalse(failure.contains("managed-source")); assertFalse(failure.contains("captured-attempt"));
+            var next = session.open(() -> { });
+            AlignWayAction.recordModernUnavailable("started", "visible-layer", "newer-attempt");
+            assertFalse((boolean) method.invoke(null, session, owner, failed, "managed-tiles", "old-attempt",
+                    (java.util.function.Consumer<String>) message -> notices.incrementAndGet()));
+            assertTrue(session.isCurrent(next)); assertEquals(1, notices.get());
+            DiagnosticsRegistry.writeLatest(exported.toFile());
+            assertFalse(Format15ArchiveReader.read(exported).artifact("worker-failure.json").isPresent());
+        }
+    }
+
+    @Test
+    void workerFailureCodesNeverEchoArbitraryExceptionsOrSignedSourceText() {
+        assertEquals("ALIGNMENT_WORKER_FAILURE", AlignWayAction.workerFailureCode(
+                "IllegalArgumentException: https://example.invalid?Cookie=synthetic-secret&Signature=synthetic-secret"));
+        assertEquals("RESOURCE_LIMIT", AlignWayAction.workerFailureCode("ResourceLimitException: budget"));
+        assertEquals("SCALAR_SOURCE_NOT_NORMALIZED", AlignWayAction.workerFailureCode(
+                "IllegalArgumentException: Valid scalar source must be normalized"));
+    }
+
+    @Test
     void staleWindowClosingCannotPublishCancellationOverNewerAttempt(@TempDir Path directory)
             throws Exception {
         PreviewSessionController<LiveBPreviewService.Computed> session =

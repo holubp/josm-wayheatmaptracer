@@ -453,6 +453,37 @@ class ManagedModernPreviewSourceTest {
     }
 
     @Test
+    void namedBlueredScalarProducerMustNormalizeItsDocumentedRedBoost() {
+        BufferedImage image = new BufferedImage(2, 2, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) image.setRGB(x, y, 0xffff2200);
+        var raster = new ManagedModernPreviewSource.Raster(image, new boolean[] {true, true, true, true},
+                SupportedInputRasterTransform.webMercator(1, 0.0, 0.0, 2.0),
+                "hot", 1, "red-boost-reproducer", new ManagedTileGeneration(3));
+        double raw = RenderedHeatmapSampler.colorIntensity(255, 34, 0, "bluered");
+        assertTrue(raw > 1.3, "valid byte channels expose a material calibrated red boost, not rounding noise");
+        for (double value : raster.scalarValues("bluered", IntensitySamplingMode.COLOR_MAPPING, () -> false)) {
+            assertTrue(Double.isFinite(value) && value >= 0.0 && value <= 1.0,
+                    "modern scalar producer must meet the strict normalized-source contract; got " + value);
+        }
+    }
+
+    @Test
+    void modernPaletteNormalizationRetainsBoundedResponsesAndRejectsInvalidChannels() {
+        for (String mapping : List.of("hot", "hot-strict", "bluered", "bluered-cool", "dual", "blue", "gray", "purple")) {
+            double raw = RenderedHeatmapSampler.colorIntensity(72, 84, 105, mapping);
+            assertTrue(raw >= 0.0 && raw < 1.0);
+            assertEquals(raw, RenderedHeatmapSampler.normalizedColorIntensity(72, 84, 105, mapping));
+            for (int r : new int[] {0, 34, 128, 255}) for (int g : new int[] {0, 34, 128, 255})
+                for (int b : new int[] {0, 34, 128, 255}) {
+                    double normalized = RenderedHeatmapSampler.normalizedColorIntensity(r, g, b, mapping);
+                    assertTrue(Double.isFinite(normalized) && normalized >= 0.0 && normalized <= 1.0);
+                }
+        }
+        assertThrows(IllegalArgumentException.class, () -> RenderedHeatmapSampler.normalizedColorIntensity(256, 0, 0, "hot"));
+        assertThrows(IllegalArgumentException.class, () -> RenderedHeatmapSampler.normalizedColorIntensity(0, -1, 0, "bluered"));
+    }
+
+    @Test
     void callerConstructedSourceSetCannotClaimAggregateAndRejectsMismatchedGrid() {
         ManagedHeatmapConfig config = config(false, true, IntensitySamplingMode.COLOR_MAPPING);
         AlignmentTileSourcePlan plan = AlignmentTileSourcePlan.from(config);

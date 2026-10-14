@@ -1736,7 +1736,7 @@ public final class LiveBPreviewService {
         if (alpha == 0) {
             return 0.0;
         }
-        return RenderedHeatmapSampler.colorIntensity((argb >>> 16) & 0xff,
+        return RenderedHeatmapSampler.normalizedColorIntensity((argb >>> 16) & 0xff,
                 (argb >>> 8) & 0xff, argb & 0xff, palette);
     }
 

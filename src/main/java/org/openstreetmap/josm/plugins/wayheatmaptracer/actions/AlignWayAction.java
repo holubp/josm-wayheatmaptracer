@@ -736,23 +736,13 @@ public class AlignWayAction extends JosmAction {
                 ((javax.swing.Timer) event.getSource()).stop();
             } else if (current.state() == AlignmentJob.State.FAILED) {
                 ((javax.swing.Timer) event.getSource()).stop();
-                boolean closed = livePreviewSession.close(previewOwner);
                 progress.dispose();
-                if (closed) {
-                    String failureReason = current.failureReason() == null ? ""
-                            : current.failureReason().toLowerCase(java.util.Locale.ROOT);
-                    ManualJunctionEligibility.Reason captureJunction =
-                            manualCaptureReason(current.failureReason());
-                    recordModernUnavailable(captureJunction != null ? "blocked"
-                                    : failureReason.contains("budget")
-                                            || failureReason.contains("resource")
-                                        ? "resource-limited" : "failed",
-                            sourceLineage, diagnosticAttemptIdentity, captureJunction);
+                publishFailedWorkerIfCurrent(livePreviewSession, previewOwner, current,
+                        sourceLineage, diagnosticAttemptIdentity, message -> {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("{0} alignment preview failed safely: {1}", engineLabel,
-                            current.failureReason()));
-                }
+                    showWorkerFailure(message);
+                });
             } else if (current.state() == AlignmentJob.State.CANCELLED) {
                 ((javax.swing.Timer) event.getSource()).stop();
                 closeAndPublishIfCurrent(livePreviewSession, previewOwner, () ->
@@ -2389,6 +2379,48 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    /** Publishes only the current terminal worker's safe, exportable failure; never a preview or Apply plan. */
+    static boolean publishFailedWorkerIfCurrent(PreviewSessionController<LiveBPreviewService.Computed> session,
+            PreviewSessionController.Owner owner, AlignmentJob.Attempt<LiveBPreviewService.Computed> failed,
+            String sourceLineage, String attemptIdentity, Consumer<String> showFailure) {
+        synchronized (session) {
+            if (failed == null || failed.state() != AlignmentJob.State.FAILED
+                    || session.currentAttempt() != failed || !session.isCurrent(owner)) return false;
+            String code = workerFailureCode(failed.failureReason());
+            var manual = manualCaptureReason(failed.failureReason());
+            String status = manual != null ? "blocked" : code.equals("RESOURCE_LIMIT") ? "resource-limited" : "failed";
+            return closeAndPublishIfCurrent(session, owner, () -> {
+                Format15Bundle base = Format15ProductionBundleFactory.createUnavailableLive(
+                        LastSlideDebugBundle.buildIdentity(), status, sourceLineage, attemptIdentity, manual);
+                Map<String, org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact>
+                        artifacts = new LinkedHashMap<>(base.artifacts());
+                var snapshot = failed.snapshot();
+                artifacts.put("worker-failure.json", org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .Format15Artifact.text("worker-failure.json", "{\"failureCode\":\"" + code
+                        + "\",\"applyAvailable\":false,\"snapshotIdentityHash\":\"" + safeLayerNameIdentity(snapshot.attemptId())
+                        + "\",\"sourceIdentityHash\":\"" + safeLayerNameIdentity(snapshot.sourceIdentity())
+                        + "\",\"settingsIdentityHash\":\"" + safeLayerNameIdentity(snapshot.settingsHash())
+                        + "\",\"networkIdentityHash\":\"" + safeLayerNameIdentity(snapshot.contentHash()) + "\"}\n"));
+                DiagnosticsRegistry.setLastModernBundle(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                        base.parameterHash(), artifacts));
+                showFailure.accept(tr("Alignment preview failed safely ({0}). No changes were applied. "
+                        + "Use Export Last Alignment Diagnostics for details.", code));
+            });
+        }
+    }
+
+    static String workerFailureCode(String reason) {
+        if (manualCaptureReason(reason) != null) return "MANUAL_JUNCTION_BLOCKED";
+        if ("IllegalArgumentException: Valid scalar source must be normalized".equals(reason)
+                || "IllegalArgumentException: Valid scalar evidence must be finite and normalized".equals(reason)) {
+            return "SCALAR_SOURCE_NOT_NORMALIZED";
+        }
+        if (reason != null && (reason.startsWith("ResourceLimitException:") || reason.equals("ResourceLimitException"))) {
+            return "RESOURCE_LIMIT";
+        }
+        return "ALIGNMENT_WORKER_FAILURE";
+    }
+
     static void recordModernDiagnostics(LiveBPreviewService.Computed computed,
             String status, int routeIndex, AlignmentEditPlan plan, boolean reviewed,
             boolean applied, String attemptIdentity) {
@@ -3733,6 +3765,24 @@ public class AlignWayAction extends JosmAction {
             tr("WayHeatmapTracer"),
             JOptionPane.ERROR_MESSAGE
         );
+    }
+
+    private void showWorkerFailure(String message) {
+        JDialog dialog = createWorkerFailureDialog(MainApplication.getMainFrame(), message);
+        dialog.setVisible(true);
+    }
+
+    static JDialog createWorkerFailureDialog(java.awt.Window owner, String message) {
+        JDialog dialog = new JDialog(owner, tr("Alignment preview failed"), java.awt.Dialog.ModalityType.MODELESS);
+        JTextArea text = new JTextArea(previewFailureText(message), 7, 76);
+        text.setEditable(false); text.setLineWrap(true); text.setWrapStyleWord(true);
+        JButton close = new JButton(tr("Close")); close.addActionListener(event -> dialog.dispose());
+        JPanel content = new JPanel(new java.awt.BorderLayout());
+        content.add(new JScrollPane(text), java.awt.BorderLayout.CENTER);
+        content.add(close, java.awt.BorderLayout.SOUTH);
+        dialog.setContentPane(content); dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+        dialog.pack(); dialog.setLocationRelativeTo(owner);
+        return dialog;
     }
 
     static String aggregateSourceWarning(ManagedModernPreviewSource.AggregateFailure failure) {

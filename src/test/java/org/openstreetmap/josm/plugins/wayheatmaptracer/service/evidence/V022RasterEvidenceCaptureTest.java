@@ -106,6 +106,26 @@ class V022RasterEvidenceCaptureTest {
                         aggregate.acquisitionKind(), "aggregate", aggregate, CancellationProbe.NONE));
     }
 
+    @Test
+    void scalarSourceRejectsRoundingOvershootMaterialOverflowAndNonfiniteValues() {
+        LocalMetricFrame frame = frame(); BufferedImage image = image(40, 30);
+        MetricRasterGrid grid = new MetricRasterGrid(frame, new MetricPoint(0.25, 0.25),
+                1, 0, 0, 1, 1, 38, 30);
+        for (double bad : new double[] {Math.nextUp(1.0), 1.32,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler
+                        .colorIntensity(255, 34, 0, "bluered"), -0.01, Double.NaN,
+                Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            double[] scalar = new double[40 * 30]; java.util.Arrays.fill(scalar, 0.5); scalar[0] = bad;
+            var failure = assertThrows(IllegalArgumentException.class, () -> new RasterEvidenceCapture()
+                    .captureWithMetricScalarSource("invalid-scalar", image, valid(image), scalar,
+                            List.of(metric(frame, 10, 15), metric(frame, 28, 15)),
+                            List.of(new MetricPoint(10, 15), new MetricPoint(28, 15)), inverse(frame), grid,
+                            EvidenceResolution.nativeSource(1.0, 1.0), 3.0, "safe-source",
+                            lineage().acquisitionKind(), "scalar", lineage(), CancellationProbe.NONE));
+            assertEquals("Valid scalar source must be normalized", failure.getMessage());
+        }
+    }
+
     private static BufferedImage image(int width, int height) {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         for (int y = 0; y < height; y++) {

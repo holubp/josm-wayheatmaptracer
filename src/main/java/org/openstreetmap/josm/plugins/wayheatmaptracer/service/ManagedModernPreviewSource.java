@@ -230,7 +230,7 @@ public final class ManagedModernPreviewSource {
                     int green = argb >>> 8 & 0xff;
                     int blue = argb & 0xff;
                     values[index] = effective.usesColorMapping()
-                            ? RenderedHeatmapSampler.colorIntensity(red, green, blue, mapping)
+                            ? RenderedHeatmapSampler.normalizedColorIntensity(red, green, blue, mapping)
                             : RenderedHeatmapSampler.directIntensity(red, green, blue, alpha, effective);
                 }
             }

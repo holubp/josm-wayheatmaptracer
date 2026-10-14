@@ -1821,7 +1821,7 @@ public final class RenderedHeatmapSampler {
      * @param green green channel in {@code [0,255]}
      * @param blue blue channel in {@code [0,255]}
      * @param colorMode detector palette name
-     * @return normalized semantic heat intensity
+     * @return semantic palette score; legacy calibrated red boosts may exceed one
      */
     public static double colorIntensity(int red, int green, int blue, String colorMode) {
         double luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0;
@@ -1835,6 +1835,28 @@ public final class RenderedHeatmapSampler {
             return combinedIntensity(red, green, blue, hue, saturation, luminance, value, mode);
         }
         return singleColorIntensity(red, green, blue, hue, saturation, luminance, value, mode);
+    }
+
+    /**
+     * Converts a valid source pixel into the normalized modern evidence domain. Legacy palette
+     * scores retain their calibrated red boosts; modern evidence saturates those known responses
+     * only after checking their analytical bounds. Arbitrary scalar sources remain strictly checked.
+     */
+    static double normalizedColorIntensity(int red, int green, int blue, String colorMode) {
+        if (red < 0 || red > 255 || green < 0 || green > 255 || blue < 0 || blue > 255) {
+            throw new IllegalArgumentException("Palette channels must be valid source bytes");
+        }
+        String mode = colorMode == null ? "hot" : colorMode.trim().toLowerCase(java.util.Locale.ROOT);
+        double maximum = switch (mode) {
+            case "bluered" -> 1.32;
+            case "bluered-cool", "dual" -> 1.30;
+            default -> 1.0;
+        };
+        double value = colorIntensity(red, green, blue, mode);
+        if (!Double.isFinite(value) || value < 0.0 || value > maximum + 4 * Math.ulp(maximum)) {
+            throw new IllegalArgumentException("Palette response exceeds its declared source bounds");
+        }
+        return Math.min(1.0, value);
     }
 
     private static double singleColorIntensity(

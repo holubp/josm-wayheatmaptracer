@@ -14,6 +14,10 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.JDialog;
+import javax.swing.AbstractAction;
+import javax.swing.KeyStroke;
+import javax.swing.SwingUtilities;
 
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
@@ -313,14 +317,16 @@ public final class HeatmapSettingsDialog {
         JTextArea pasted = new JTextArea(6, 54);
         pasted.setLineWrap(true);
         pasted.setWrapStyleWord(true);
-        int answer = JOptionPane.showConfirmDialog(
-            parent,
-            new JScrollPane(pasted),
-            tr("Paste Strava Cookie Header"),
-            JOptionPane.OK_CANCEL_OPTION,
-            JOptionPane.PLAIN_MESSAGE
-        );
-        if (answer != JOptionPane.OK_OPTION) {
+        JOptionPane pane = cookiePastePane(pasted);
+        JDialog dialog = pane.createDialog(parent, tr("Paste Strava Cookie Header"));
+        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowOpened(java.awt.event.WindowEvent event) {
+                SwingUtilities.invokeLater(pasted::requestFocusInWindow);
+            }
+        });
+        dialog.setVisible(true);
+        dialog.dispose();
+        if (!Integer.valueOf(JOptionPane.OK_OPTION).equals(pane.getValue())) {
             return;
         }
 
@@ -333,6 +339,18 @@ public final class HeatmapSettingsDialog {
         } catch (IllegalArgumentException ex) {
             JOptionPane.showMessageDialog(parent, ex.getMessage(), tr("WayHeatmapTracer"), JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    static JOptionPane cookiePastePane(JTextArea pasted) {
+        JOptionPane pane = new JOptionPane(new JScrollPane(pasted), JOptionPane.PLAIN_MESSAGE,
+                JOptionPane.OK_CANCEL_OPTION);
+        pasted.getInputMap().put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0), "accept-cookie");
+        pasted.getActionMap().put("accept-cookie", new AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                pane.setValue(JOptionPane.OK_OPTION);
+            }
+        });
+        return pane;
     }
 
     private int parseInt(String value, int fallback) {
