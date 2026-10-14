@@ -79,3 +79,18 @@ Cookie opening focus, Ctrl+V, Enter and Escape were checked with real Swing
 events and synthetic credentials. All nine frozen source hashes match.
 Retained Java XML85focused/81neighbors/6final has zero failures/errors/skips.
 Full final-tree CI and required benchmark/plan/publication gates remain open.
+
+## Truthful planless interval observation
+
+Independent Sol/high affected review against `16f8e87`: no blockers in five
+frozen files. Observer records the exact displayed immutable composition and
+factual plan availability without disrupting a read-only preview. Clock stop
+preceding supplier/export is preserved. Native interval replay omits only an
+invented default choice for an empty route list after exact no-choice, route,
+fingerprint and component checks; explicit and forged choices remain rejected.
+Production runner applicability and native current required-plan gates are
+unchanged. Planless observation is not a benchmark pass.
+Reviewer verified five hashes, saved231Java/0/0/0 across seven suites,35scripts
+and real Swing observation-seam evidence. Controller fullscripts pytest187
+plus5subtests PASS148.61s. The original actual N1 plan-absence cause remains
+undiagnosed; one diagnostic candidate run is next. No release is certified.

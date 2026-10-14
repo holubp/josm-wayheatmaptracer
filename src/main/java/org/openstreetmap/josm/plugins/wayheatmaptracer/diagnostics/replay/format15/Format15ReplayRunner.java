@@ -222,7 +222,12 @@ public final class Format15ReplayRunner {
             }
             verifyIndexRun(indexRuns.get(position), position, interval, expected,
                     replayed.inference().alternativesTruncated());
-            choices.put(position, expected.chosenRouteIndex());
+            // The wire format uses zero as the default marker for an empty route list.
+            // verifyIndexRun has already proved that the stored index records no choice (-1).
+            // Do not turn that absence into an explicit choice rejected by the composer.
+            if (!expected.routeIdentities().isEmpty()) {
+                choices.put(position, expected.chosenRouteIndex());
+            }
             actualRuns.add(new IntervalTraceBatch.IntervalRun(interval, request,
                     replayed, usage));
         }

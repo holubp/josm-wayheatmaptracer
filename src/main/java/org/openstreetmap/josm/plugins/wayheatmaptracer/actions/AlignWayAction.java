@@ -1207,10 +1207,7 @@ public class AlignWayAction extends JosmAction {
             recordIntervalDiagnostics(computed, state, IntervalArtifactStatus.PREVIEW,
                     diagnosticAttemptIdentity);
             dialog.setVisible(true);
-            OrdinaryActionBenchmarkObserver.previewReady("interval", computed, () ->
-                    state.assessment().plan().orElseThrow(() -> new IllegalStateException(
-                            "Benchmark interval has no final edit plan"))
-                            .finalPreviewWays().get(computed.request().selectedWayKey()));
+            OrdinaryActionBenchmarkObserver.previewReadyInterval(computed, state::assessment);
         } catch (RuntimeException failure) {
             dialog.dispose();
             throw failure;

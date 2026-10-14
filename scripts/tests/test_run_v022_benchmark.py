@@ -248,6 +248,32 @@ class BenchmarkRunnerTest(unittest.TestCase):
                 with self.assertRaisesRegex(benchmark.GateFailure, "not preview-ready"):
                     benchmark.receipt_file(publication, expected, {15})
 
+    def test_truthful_planless_interval_receipt_remains_a_gate_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            diagnostics = root / "publication.json.format15.zip"
+            with zipfile.ZipFile(diagnostics, "w") as archive:
+                archive.writestr("private/frozen-interval-input.bin", b"native-planless-input")
+                archive.writestr("interval-production.json", json.dumps({
+                    "artifactKind": "INTERVAL_PRODUCTION", "status": "PREVIEW",
+                    "planIdentity": None, "applyAvailable": False,
+                    "intervals": [{"disposition": "FROZEN_LOCAL_FAILURE", "reason": "NO_PRODUCTION_ROUTE"}]}))
+            tiles = root / "publication.json.tiles.json"
+            tiles.write_text(json.dumps({"stats": {"transportExecutions": 0, "diskHits": 6},
+                "recentResults": [{"status": "SUCCESS_DISK_CACHE", "color": "hot", "activity": "all", "zoom": 15}]}))
+            receipt = root / "publication.json"
+            payload = {"producer": benchmark.PRODUCER, "nonce": "native-planless", "caseId": "N1",
+                "version": "candidate", "kind": "interval", "totalNanos": 123,
+                "planAvailable": False, "applyAvailable": False,
+                "finalGeometrySha256": "a" * 64, "selectedRasterSha256": "b" * 64,
+                "diagnosticsFile": diagnostics.name, "diagnosticsSha256": benchmark.sha256(diagnostics),
+                "tileDiagnosticsFile": tiles.name, "tileDiagnosticsSha256": benchmark.sha256(tiles)}
+            for claimed_apply in (False, True):
+                payload["applyAvailable"] = claimed_apply
+                receipt.write_text(json.dumps(payload))
+                with self.assertRaisesRegex(benchmark.GateFailure, "Interval production status is not preview-ready"):
+                    benchmark.receipt_file(receipt, {"nonce": "native-planless", "caseId": "N1", "version": "candidate"}, {15})
+
     def test_cancellation_refuses_publication_claim(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -16,6 +16,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.DiagnosticsRe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileRuntime;
 
 /**
@@ -77,7 +78,24 @@ public final class OrdinaryActionBenchmarkObserver {
         String destination = System.getProperty(OUTPUT_PROPERTY);
         if (destination == null) return;
         long stoppedNanos = System.nanoTime();
-        List<GeographicPoint> finalGeometry = geometrySupplier.get();
+        writePreview(kind, computed, geometrySupplier.get(), destination, stoppedNanos, "");
+    }
+
+    /** Observes the exact displayed composition, including a truthful read-only preview without a plan. */
+    static void previewReadyInterval(LiveBPreviewService.Computed computed,
+            Supplier<FixedIntervalEditPlanComposer.Assessment> assessmentSupplier) {
+        String destination = System.getProperty(OUTPUT_PROPERTY);
+        if (destination == null) return;
+        long stoppedNanos = System.nanoTime();
+        var assessment = assessmentSupplier.get();
+        writePreview("interval", computed, assessment.selectedWayPreview(), destination, stoppedNanos,
+                ",\"planAvailable\":" + assessment.plan().isPresent()
+                        + ",\"applyAvailable\":" + assessment.applyAvailable());
+    }
+
+    private static void writePreview(String kind, LiveBPreviewService.Computed computed,
+            List<GeographicPoint> finalGeometry, String destination, long stoppedNanos,
+            String intervalAvailability) {
         if (startedNanos <= 0 || stoppedNanos <= startedNanos || finalGeometry == null
                 || finalGeometry.size() < 2) {
             throw new IllegalStateException("Benchmark preview lacked action start or final geometry");
@@ -94,7 +112,7 @@ public final class OrdinaryActionBenchmarkObserver {
                     + "\"nonce\":\"" + requiredToken("wayheatmaptracer.benchmark.nonce")
                     + "\",\"caseId\":\"" + requiredToken("wayheatmaptracer.benchmark.case")
                     + "\",\"version\":\"" + requiredToken("wayheatmaptracer.benchmark.version")
-                    + "\",\"kind\":\"" + kind + "\",\"totalNanos\":"
+                    + "\",\"kind\":\"" + kind + "\"" + intervalAvailability + ",\"totalNanos\":"
                     + (stoppedNanos - startedNanos) + ",\"finalGeometrySha256\":\""
                     + geometryHash(finalGeometry) + "\",\"selectedRasterSha256\":\""
                     + rasterHash(computed) + "\",\"diagnosticsSha256\":\""
