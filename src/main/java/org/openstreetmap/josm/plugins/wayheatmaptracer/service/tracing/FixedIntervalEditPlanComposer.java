@@ -111,7 +111,10 @@ public final class FixedIntervalEditPlanComposer {
             }
             var route = run.routes().get(routeChoices.getOrDefault(i, 0));
             boolean missingSupport = route.quality().has(
-                    FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY);
+                    FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY)
+                    && !(route.quality().disposition() == FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED
+                            && Double.isFinite(route.quality().directlySupportedLengthMeters())
+                            && route.quality().directlySupportedLengthMeters() > 0.0);
             if (!routeChangesOriginal(batch, selected, run, route)) {
                 frozen.add(i);
                 reasons.put(i, "NO_GEOMETRY_CHANGE");

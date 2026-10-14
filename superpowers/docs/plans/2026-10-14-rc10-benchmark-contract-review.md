@@ -94,3 +94,18 @@ Reviewer verified five hashes, saved231Java/0/0/0 across seven suites,35scripts
 and real Swing observation-seam evidence. Controller fullscripts pytest187
 plus5subtests PASS148.61s. The original actual N1 plan-absence cause remains
 undiagnosed; one diagnostic candidate run is next. No release is certified.
+
+## Supported partial-review composition
+
+Independent Sol/high affected review against `64ed967`: no blockers in the two
+frozen composer/test files. Only REVIEW_REQUIRED routes with finite positive
+direct support may pass the unavailable-image guard to unchanged composite
+validators. All findings and unavailable cost remain intact, exact confirmation
+is required, and frozen-island primitives remain unchanged. No-signal and hard
+cases remain frozen; connector, source, topology and transaction checks remain.
+Reviewer verified both source hashes and retained 272 Java tests with zero
+failures, errors or skips. The real N1 diagnostic still has no applicable plan:
+its initial ambiguous prefix is 3.899 m, beyond the existing 2 m support bound.
+Generated-point near-collinearity is not proof of unchanged geometry. Complete
+original/proposed edge and occurrence classification precedes any further fix.
+This batch is not performance, benchmark, CI or release certification.

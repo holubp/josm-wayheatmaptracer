@@ -437,6 +437,39 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
+    void supportedReviewRouteWithUnavailableImageCostRetainsExactReviewPlan() throws Exception {
+        IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE,
+                false, false, true);
+        var quality = batch.runs().get(0).routes().get(0).quality();
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, quality.disposition());
+        assertTrue(quality.has(FinalGeometryEvaluator.FindingCode.UNAVAILABLE_IMAGE_QUALITY), quality.toString());
+        assertTrue(quality.directlySupportedLengthMeters() > 0.0);
+        assertEquals(Double.POSITIVE_INFINITY, quality.meanImageCenterCost());
+
+        AlignWayAction.IntervalPreviewState state = new AlignWayAction.IntervalPreviewState(batch);
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                state.assessment().intervals().get(0).disposition(),
+                "Supported review evidence must reach the ordinary composite validators");
+        var plan = state.assessment().plan().orElseThrow();
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, plan.validation().disposition());
+        for (var finding : quality.findings()) {
+            assertTrue(plan.validation().findingCodes().contains("interval-0:" + finding.code().name()));
+        }
+        assertFalse(state.applyAvailable(), "Review is session-local and initially unconfirmed");
+        assertThrows(IllegalStateException.class, state::currentPlanForApply);
+        state.confirmReview();
+        assertTrue(state.applyAvailable());
+        assertEquals(plan.canonicalHash(), state.currentPlanForApply().canonicalHash());
+        for (var island : batch.partition().fixedIslands()) {
+            for (var key : island.occurrenceKeys()) {
+                assertEquals(batch.network().primitives().get(key), plan.after().primitives().get(key));
+            }
+        }
+        assertEquals(Double.POSITIVE_INFINITY, batch.runs().get(0).routes().get(0)
+                .quality().meanImageCenterCost(), "Unavailable cost must remain unavailable after composition");
+    }
+
+    @Test
     void unsupportedFirstIntervalFreezesLocallyWhileSecondRetainsOnePlan() throws Exception {
         IntervalTraceBatch batch = batch(288.0, 296.0);
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
@@ -1886,6 +1919,11 @@ class V022FixedIntervalEditPlanComposerTest {
 
     private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
             TrackerMode engine, boolean dualLeft, boolean crossingContext) throws Exception {
+        return batch(leftCenter, rightCenter, engine, dualLeft, crossingContext, false);
+    }
+
+    private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
+            TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap) throws Exception {
         DataSet dataSet = new DataSet();
         double[] east = {-19, -14, -8, 0, 8, 14, 19};
         double[] north = {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
@@ -1922,7 +1960,7 @@ class V022FixedIntervalEditPlanComposerTest {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
-                raster(leftCenter, rightCenter, dualLeft), config(engine)));
+                raster(leftCenter, rightCenter, dualLeft, shortInternalGap), config(engine)));
         var selected = (DetachedWay) captured[0].network().primitives()
                 .get(captured[0].specification().selectedWayKey());
         var keys = selected.nodeKeys();
@@ -1962,6 +2000,11 @@ class V022FixedIntervalEditPlanComposerTest {
 
     private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
             boolean dualLeft) {
+        return raster(leftCenter, rightCenter, dualLeft, false);
+    }
+
+    private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
+            boolean dualLeft, boolean shortInternalGap) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
@@ -1975,6 +2018,7 @@ class V022FixedIntervalEditPlanComposerTest {
                     intensity = Math.max(intensity,
                             0.02 + 0.78 * Math.exp(-0.5 * other * other / 1.44));
                 }
+                if (shortInternalGap && x >= 239 && x <= 249) intensity = 0.0;
                 int gray = (int) Math.round(255.0 * intensity);
                 argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }
