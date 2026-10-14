@@ -43,6 +43,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.GeneratedCandidatePoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
@@ -434,6 +435,229 @@ class V022FixedIntervalEditPlanComposerTest {
                 plan.selectedWayKey(), plan.selectedRange(), plan.before(), after,
                 plan.metricFrame(), plan.permissions(), plan.settingsHash(), plan.evidenceHash(),
                 plan.parameterHash(), plan.routeIdentity(), preview, plan.validation());
+    }
+
+    @Test
+    void coincidentOriginalOccurrencesOwnOnlyTheirIncidentSourcePieces() throws Exception {
+        var fixture = coincidentSourceProofFixture();
+        var batch = fixture.batch();
+        var selected = (DetachedWay) batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        var b = new FinalRoutePointId.ExistingWayNodeOccurrence(selected.key(), selected.nodeKeys().get(2), 2);
+        var c = new FinalRoutePointId.ExistingWayNodeOccurrence(selected.key(), selected.nodeKeys().get(3), 3);
+        assertNotEquals(b.nodeKey(), c.nodeKey());
+        assertEquals(originalMetric(batch, 2), originalMetric(batch, 3), "Distinct B/C occurrences share a coordinate");
+        var assignments = Map.<FinalRoutePointId, MetricPoint>of(b, originalMetric(batch, 2),
+                c, originalMetric(batch, 3), fixture.generated(), fixture.point());
+        var forbidden = OriginalSourceSubdivisionVerifier.verify(batch, List.of(b, fixture.generated()), assignments,
+                List.of(b.nodeKey(), fixture.generatedKey()), fixture.after(), Map.of());
+        assertTrue(forbidden.isEmpty(), "B to generated on C-D crosses distinct original occurrence C");
+        var permitted = OriginalSourceSubdivisionVerifier.verify(batch, List.of(c, fixture.generated()), assignments,
+                List.of(c.nodeKey(), fixture.generatedKey()), fixture.after(), Map.of());
+        assertEquals(Set.of(new OriginalSourceSubdivisionVerifier.Edge(c.nodeKey(), fixture.generatedKey())), permitted,
+                "Actual native source subdivision of C-D remains provable");
+    }
+
+    @Test
+    void generatedAnchorAtCoincidentOriginalOccurrencesFailsClosed() throws Exception {
+        var fixture = coincidentSourceProofFixture();
+        var batch = fixture.batch();
+        var route = batch.runs().get(1).routes().get(0);
+        var existingC = existingPointId(route, 3);
+        var originalC = route.assignments().get(existingC);
+        assertEquals(route.rawHypothesis().points().get(0), originalC);
+        // Typed identity forgery keeps the actual native final geometry/quality unchanged.
+        var rawStart = new GeneratedCandidatePoint(route.rawHypothesis().id(), 0);
+        var pointIds = new ArrayList<>(route.pointIds());
+        pointIds.set(pointIds.indexOf(existingC), rawStart);
+        var finalAssignments = new LinkedHashMap<>(route.assignments());
+        finalAssignments.remove(existingC); finalAssignments.put(rawStart, originalC);
+        var ownership = new LinkedHashMap<>(route.sourceOwnership());
+        ownership.put(rawStart, ownership.remove(existingC));
+        var forged = new ModernTracePipeline.Route(route.rawHypothesis(), route.hypothesis(), pointIds,
+                finalAssignments, ownership, route.quality(), route.cleanupStatus(), route.geometryChanged());
+        var generatedC = new GeneratedCandidatePoint("interval-1:" + route.hypothesis().id(), 1_000_000);
+        var generatedCKey = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 900_000);
+        var after = new LinkedHashMap<>(fixture.after());
+        after.put(generatedCKey, new DetachedNode(generatedCKey, batch.evidence().coordinateFrame().toGeographic(originalC),
+                Map.of(), false, true));
+        var assignments = Map.<FinalRoutePointId, MetricPoint>of(generatedC, originalC,
+                fixture.generated(), fixture.point());
+        assertTrue(OriginalSourceSubdivisionVerifier.verify(withRoute(batch, 1, forged),
+                List.of(generatedC, fixture.generated()), assignments,
+                List.of(generatedCKey, fixture.generatedKey()), after, Map.of()).isEmpty(),
+                "Generated anchor cannot choose between repeated-chainage original occurrences");
+    }
+
+    private record CoincidentSourceProofFixture(IntervalTraceBatch batch, GeneratedCandidatePoint generated,
+            PrimitiveKey generatedKey, MetricPoint point, Map<PrimitiveKey, DetachedPrimitive> after) { }
+
+    private static CoincidentSourceProofFixture coincidentSourceProofFixture() throws Exception {
+        var batch = batch(300.0, 300.0, TrackerMode.PROBABILISTIC, false, false, false, true, false, true);
+        var route = batch.runs().get(1).routes().get(0);
+        var generated = route.pointIds().stream().filter(GeneratedCandidatePoint.class::isInstance)
+                .map(GeneratedCandidatePoint.class::cast).filter(id -> id.originalPointIndex() == 1).findFirst().orElseThrow();
+        var point = route.assignments().get(generated);
+        assertEquals(route.rawHypothesis().points().get(1), point);
+        var anchors = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticProfileFactory().sourceSamplingGeometry(List.of(originalMetric(batch, 3),
+                        originalMetric(batch, 4), originalMetric(batch, 5)), batch.fullRequest().configuredSampleStepMeters());
+        assertEquals(anchors.points().get(1), point, "Actual production raw/final/native source anchor");
+        var composite = new GeneratedCandidatePoint("interval-1:" + route.hypothesis().id(), 1_000_001);
+        var key = PrimitiveKey.planned(PrimitiveKey.Type.NODE, 900_001);
+        var after = new LinkedHashMap<>(batch.network().primitives());
+        after.put(key, new DetachedNode(key, batch.evidence().coordinateFrame().toGeographic(point), Map.of(), false, true));
+        return new CoincidentSourceProofFixture(batch, composite, key, point, Map.copyOf(after));
+    }
+
+    @Test
+    void sourceSubdivisionProofDoesNotProjectRemoteUnselectedWayEndpoints() throws Exception {
+        var batch = batch(300.0, 300.0, TrackerMode.PROBABILISTIC, false, false, false, true, true);
+        var selected = (DetachedWay) batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        var remote = (DetachedNode) batch.network().primitives().get(selected.nodeKeys().get(0));
+        assertThrows(IllegalArgumentException.class, () -> batch.evidence().coordinateFrame().toMetric(remote.coordinate()),
+                "Fixture must have a factual unselected endpoint outside the selected frame");
+        var result = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertTrue(result.plan().isPresent(), () -> "Unselected remote geometry is not sampling input for this proof: "
+                + result.intervals().stream().map(FixedIntervalEditPlanComposer.IntervalAssessment::reason).toList());
+        assertEquals(remote.coordinate(), ((DetachedNode) result.plan().orElseThrow().after().primitives()
+                .get(remote.key())).coordinate());
+    }
+
+    @Test
+    void productionZeroOffsetBoundarySubdivisionPreservesOriginalCurveWithoutNewSupport() throws Exception {
+        IntervalTraceBatch batch = batch(300.0, 300.0, TrackerMode.PROBABILISTIC,
+                false, false, false, true);
+        var route = batch.runs().get(0).routes().get(0);
+        var selected = (DetachedWay) batch.network().primitives().get(batch.fullRequest().selectedWayKey());
+        var first = batch.evidence().coordinateFrame().toMetric(((DetachedNode) batch.network()
+                .primitives().get(selected.nodeKeys().get(1))).coordinate());
+        var second = batch.evidence().coordinateFrame().toMetric(((DetachedNode) batch.network()
+                .primitives().get(selected.nodeKeys().get(2))).coordinate());
+        var third = batch.evidence().coordinateFrame().toMetric(((DetachedNode) batch.network()
+                .primitives().get(selected.nodeKeys().get(3))).coordinate());
+        var generated = route.pointIds().stream().filter(GeneratedCandidatePoint.class::isInstance)
+                .map(GeneratedCandidatePoint.class::cast).toList();
+        var nativeAnchors = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticProfileFactory().sourceSamplingGeometry(List.of(first, second, third),
+                        batch.runs().get(0).request().configuredSampleStepMeters());
+        assertFalse(generated.isEmpty(), "Public production fixture must actually create a subdivision");
+        assertEquals(first, route.assignments().get(route.pointIds().get(0)), "Existing endpoint stays exact");
+        for (var id : generated) {
+            double target = batch.runs().get(0).request().profileChainage().cumulativeGroundMeters()
+                    .get(id.originalPointIndex());
+            boolean firstPiece = target <= first.distanceTo(second);
+            var start = firstPiece ? first : second;
+            var end = firstPiece ? second : third;
+            double fraction = (target - (firstPiece ? 0.0 : first.distanceTo(second))) / start.distanceTo(end);
+            var expected = new MetricPoint(start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
+                    start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
+            assertEquals(expected, route.assignments().get(id), "Actual production zero-offset source point");
+            assertEquals(nativeAnchors.points().get(id.originalPointIndex()), route.assignments().get(id));
+            assertEquals(route.rawHypothesis().points().get(id.originalPointIndex()), route.assignments().get(id));
+        }
+        assertTrue(route.quality().directlySupportedLengthMeters() > 0.0);
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, route.quality().disposition());
+        var result = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED, result.intervals().get(0).disposition(),
+                "Original straight-piece subdivision needs no new positional authorization");
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, result.plan().orElseThrow().validation().disposition());
+
+        // Exercise the proof with native production assignments and the actual stored plan.
+        var plan = result.plan().orElseThrow();
+        var ids = route.pointIds().stream().map(id -> id instanceof GeneratedCandidatePoint point
+                ? (FinalRoutePointId) new GeneratedCandidatePoint("interval-0:" + route.hypothesis().id(),
+                        point.originalPointIndex()) : id).toList();
+        Map<FinalRoutePointId, MetricPoint> assignments = new LinkedHashMap<>();
+        for (int index = 0; index < ids.size(); index++) {
+            assignments.put(ids.get(index), route.assignments().get(route.pointIds().get(index)));
+        }
+        var keys = ((DetachedWay) plan.after().primitives().get(selected.key())).nodeKeys()
+                .subList(batch.fullRequest().selectedRange().firstIndex(),
+                        batch.fullRequest().selectedRange().firstIndex() + ids.size());
+        var proven = OriginalSourceSubdivisionVerifier.verify(batch, ids, assignments, keys,
+                plan.after().primitives(), Map.of());
+        int generatedIndex = 1;
+        while (!(ids.get(generatedIndex) instanceof GeneratedCandidatePoint)
+                || !proven.contains(new OriginalSourceSubdivisionVerifier.Edge(
+                        keys.get(generatedIndex - 1), keys.get(generatedIndex)))) generatedIndex++;
+        var edge = new OriginalSourceSubdivisionVerifier.Edge(keys.get(generatedIndex - 1), keys.get(generatedIndex));
+        var pointId = ids.get(generatedIndex);
+        var originalPoint = assignments.get(pointId);
+        var oneUlp = new MetricPoint(Math.nextUp(originalPoint.xMeters()), originalPoint.yMeters());
+        Map<FinalRoutePointId, MetricPoint> moved = new LinkedHashMap<>(assignments);
+        moved.put(pointId, oneUlp);
+        assertFalse(OriginalSourceSubdivisionVerifier.verify(batch, ids, moved, keys,
+                plan.after().primitives(), Map.of()).contains(edge), "One ULP is real movement");
+        var raw = route.rawHypothesis();
+        List<MetricPoint> wrongRawPoints = new ArrayList<>(raw.points());
+        wrongRawPoints.set(((GeneratedCandidatePoint) pointId).originalPointIndex(), oneUlp);
+        var wrongRaw = new TraceHypothesis(raw.id(), raw.branchSignature(), wrongRawPoints, raw.support(),
+                raw.objective(), raw.posteriorProbability(), raw.diagnostics());
+        var forgedNative = new ModernTracePipeline.Route(wrongRaw, route.hypothesis(), route.pointIds(),
+                route.assignments(), route.sourceOwnership(), route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertFalse(OriginalSourceSubdivisionVerifier.verify(withRoute(batch, 0, forgedNative), ids, assignments,
+                keys, plan.after().primitives(), Map.of()).contains(edge), "Native raw geometry must also be exact");
+        var nativeRequest = batch.runs().get(0).request();
+        var changedRequest = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest(
+                nativeRequest.selectedWayKey(), nativeRequest.selectedRange(), nativeRequest.engine(),
+                nativeRequest.geometryMode(), nativeRequest.permissions(), nativeRequest.budgets(),
+                nativeRequest.evidenceSnapshotId(), nativeRequest.evidenceContentHash(), nativeRequest.networkSnapshotId(),
+                nativeRequest.networkContentHash(), "changed-settings", nativeRequest.parameterHash(), nativeRequest.samplerId(),
+                nativeRequest.configuredSampleStepMeters(), nativeRequest.profileChainage(), nativeRequest.evidenceResolution(),
+                nativeRequest.corridorInput());
+        var changedRuns = new ArrayList<>(batch.runs());
+        changedRuns.set(0, new IntervalTraceBatch.IntervalRun(batch.runs().get(0).interval(), changedRequest,
+                batch.runs().get(0).result(), batch.runs().get(0).usage()));
+        var changedNative = new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(),
+                batch.partition(), changedRuns, batch.options(), batch.authoritySpecification());
+        assertFalse(OriginalSourceSubdivisionVerifier.verify(changedNative, ids, assignments, keys,
+                plan.after().primitives(), Map.of()).contains(edge), "Native request must reconstruct from frozen source");
+        var evidence = batch.evidence();
+        var oldFrame = evidence.coordinateFrame();
+        var certificate = oldFrame.distortionCertificate();
+        var staleFrame = org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame
+                .legacyCertifiedEquirectangular(oldFrame.origin(), certificate.southWest(), certificate.northEast());
+        var staleEvidence = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot(
+                evidence.snapshotId(), staleFrame, evidence.transform(), evidence.resolution(), evidence.decisionRegion(),
+                evidence.evidenceRegion(), evidence.fields(), evidence.resampling(), evidence.sourceIdentity());
+        assertThrows(IllegalArgumentException.class, () -> new IntervalTraceBatch(batch.fullRequest(), staleEvidence,
+                batch.network(), batch.partition(), batch.runs(), batch.options(), batch.authoritySpecification()),
+                "Stale source frame cannot enter native proof with an old evidence binding");
+        List<FinalRoutePointId> forged = new ArrayList<>(ids);
+        var generatedId = (GeneratedCandidatePoint) pointId;
+        forged.set(generatedIndex, new GeneratedCandidatePoint(generatedId.candidateId(),
+                route.rawHypothesis().points().size() + 1));
+        assertFalse(OriginalSourceSubdivisionVerifier.verify(batch, forged, assignments, keys,
+                plan.after().primitives(), Map.of()).contains(edge), "Raw index must be native and bound");
+        var reversedIds = List.of(ids.get(generatedIndex), ids.get(generatedIndex - 1));
+        var reversedKeys = List.of(keys.get(generatedIndex), keys.get(generatedIndex - 1));
+        assertTrue(OriginalSourceSubdivisionVerifier.verify(batch, reversedIds, assignments, reversedKeys,
+                plan.after().primitives(), Map.of()).isEmpty(), "Source chainage must be increasing");
+        assertTrue(OriginalSourceSubdivisionVerifier.verify(batch, List.of(pointId, pointId), assignments,
+                List.of(keys.get(generatedIndex), keys.get(generatedIndex)), plan.after().primitives(), Map.of())
+                .isEmpty(), "Duplicate anchors cannot authorize edges");
+        Map<PrimitiveKey, DetachedPrimitive> changedAfter = new LinkedHashMap<>(plan.after().primitives());
+        var generatedNode = (DetachedNode) changedAfter.get(keys.get(generatedIndex));
+        var geographic = generatedNode.coordinate();
+        changedAfter.put(generatedNode.key(), new DetachedNode(generatedNode.key(),
+                new GeographicPoint(Math.nextUp(geographic.latitudeDegrees()), geographic.longitudeDegrees()),
+                generatedNode.tags(), generatedNode.deleted(), generatedNode.modified()));
+        assertFalse(OriginalSourceSubdivisionVerifier.verify(batch, ids, assignments, keys, changedAfter, Map.of())
+                .contains(edge), "Generated geographic coordinates must be canonical frame conversion");
+        var firstId = ids.get(0);
+        var firstKey = keys.get(0);
+        var endpoint = (DetachedNode) plan.after().primitives().get(firstKey);
+        changedAfter = new LinkedHashMap<>(plan.after().primitives());
+        changedAfter.put(firstKey, new DetachedNode(firstKey,
+                new GeographicPoint(Math.nextUp(endpoint.coordinate().latitudeDegrees()),
+                        endpoint.coordinate().longitudeDegrees()), endpoint.tags(), endpoint.deleted(), endpoint.modified()));
+        assertTrue(OriginalSourceSubdivisionVerifier.verify(batch, List.of(firstId, ids.get(1)), assignments,
+                keys.subList(0, 2), changedAfter, Map.of()).isEmpty(), "Existing endpoint keeps original geographic bits");
+        var lastId = new FinalRoutePointId.ExistingWayNodeOccurrence(selected.key(), selected.nodeKeys().get(3), 3);
+        Map<FinalRoutePointId, MetricPoint> shortcut = Map.of(firstId, first, lastId, third);
+        assertTrue(OriginalSourceSubdivisionVerifier.verify(batch, List.of(firstId, lastId), shortcut,
+                List.of(firstKey, selected.nodeKeys().get(3)), plan.after().primitives(), Map.of()).isEmpty(),
+                "Even straight source vertices cannot be crossed by this proof");
     }
 
     @Test
@@ -1924,12 +2148,35 @@ class V022FixedIntervalEditPlanComposerTest {
 
     private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
             TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap) throws Exception {
+        return batch(leftCenter, rightCenter, engine, dualLeft, crossingContext, shortInternalGap, false);
+    }
+
+    private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
+            TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap,
+            boolean sourcePreservingBoundary) throws Exception {
+        return batch(leftCenter, rightCenter, engine, dualLeft, crossingContext, shortInternalGap,
+                sourcePreservingBoundary, false);
+    }
+
+    private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
+            TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap,
+            boolean sourcePreservingBoundary, boolean remoteUnselectedEndpoints) throws Exception {
+        return batch(leftCenter, rightCenter, engine, dualLeft, crossingContext, shortInternalGap,
+                sourcePreservingBoundary, remoteUnselectedEndpoints, false);
+    }
+
+    private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
+            TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap,
+            boolean sourcePreservingBoundary, boolean remoteUnselectedEndpoints, boolean coincidentOriginalOccurrences) throws Exception {
         DataSet dataSet = new DataSet();
-        double[] east = {-19, -14, -8, 0, 8, 14, 19};
+        double[] east = sourcePreservingBoundary ? new double[] {-40, -32, -16, 0, 16, 32, 40}
+                : new double[] {-19, -14, -8, 0, 8, 14, 19};
+        if (remoteUnselectedEndpoints) { east[0] = -200_000.0; east[east.length - 1] = 200_000.0; }
+        if (coincidentOriginalOccurrences) east[2] = east[3];
         double[] north = {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
         java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
         for (int i = 0; i < east.length; i++) {
-            Node node = new Node(new LatLon(degrees(north[i]), degrees(east[i])));
+            Node node = new Node(new LatLon(degrees(sourcePreservingBoundary ? 0.0 : north[i]), degrees(east[i])));
             node.setOsmId(100 + i, 1);
             node.setModified(false);
             nodes.add(node);
@@ -1960,7 +2207,7 @@ class V022FixedIntervalEditPlanComposerTest {
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
-                raster(leftCenter, rightCenter, dualLeft, shortInternalGap), config(engine)));
+                raster(leftCenter, rightCenter, dualLeft, shortInternalGap, sourcePreservingBoundary), config(engine)));
         var selected = (DetachedWay) captured[0].network().primitives()
                 .get(captured[0].specification().selectedWayKey());
         var keys = selected.nodeKeys();
@@ -2005,6 +2252,11 @@ class V022FixedIntervalEditPlanComposerTest {
 
     private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
             boolean dualLeft, boolean shortInternalGap) {
+        return raster(leftCenter, rightCenter, dualLeft, shortInternalGap, false);
+    }
+
+    private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
+            boolean dualLeft, boolean shortInternalGap, boolean sourcePreservingBoundary) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
@@ -2019,6 +2271,7 @@ class V022FixedIntervalEditPlanComposerTest {
                             0.02 + 0.78 * Math.exp(-0.5 * other * other / 1.44));
                 }
                 if (shortInternalGap && x >= 239 && x <= 249) intensity = 0.0;
+                if (sourcePreservingBoundary && x >= 107 && x <= 167) intensity = 0.0;
                 int gray = (int) Math.round(255.0 * intensity);
                 argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
             }

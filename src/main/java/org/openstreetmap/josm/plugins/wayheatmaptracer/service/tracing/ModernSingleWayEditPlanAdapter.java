@@ -672,16 +672,19 @@ public final class ModernSingleWayEditPlanAdapter {
             afterValues = applyReattachment(afterValues, before, ids, assignments,
                     request, evidence, sharedJunctions);
         }
-        requireCompositeChangedSupport(before, afterValues, selected, evidence,
-                batch.options().fieldName(), terminalUncertaintyEndpoints(batch, afterValues, routeChoices));
-        NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + identity,
-                SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
-                before.closure(), afterValues, proposedWatches(before, afterValues));
-        List<String> findings = new ArrayList<>(routeFindings);
         DetachedWay proposedSelected = (DetachedWay) afterValues.get(selected.key());
         int selectedFirst = request.selectedRange().firstIndex();
         List<PrimitiveKey> finalSelectedKeys = proposedSelected.nodeKeys().subList(
                 selectedFirst, selectedFirst + ids.size());
+        var originalSubdivisions = OriginalSourceSubdivisionVerifier.verify(batch, ids, assignments,
+                finalSelectedKeys, afterValues, routeChoices);
+        requireCompositeChangedSupport(before, afterValues, selected, evidence,
+                batch.options().fieldName(), terminalUncertaintyEndpoints(batch, afterValues, routeChoices),
+                originalSubdivisions);
+        NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + identity,
+                SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
+                before.closure(), afterValues, proposedWatches(before, afterValues));
+        List<String> findings = new ArrayList<>(routeFindings);
         findings.addAll(compositeBacktrackFindings(before, afterValues, selected, finalSelectedKeys, evidence));
         findings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
                 request.selectedRange(), evidence, request.permissions().ordinaryRadiusMeters()));
@@ -726,7 +729,8 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private static void requireCompositeChangedSupport(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay source,
-            EvidenceSnapshot evidence, String fieldName, Set<PrimitiveKey> terminalEndpoints) {
+            EvidenceSnapshot evidence, String fieldName, Set<PrimitiveKey> terminalEndpoints,
+            Set<OriginalSourceSubdivisionVerifier.Edge> originalSubdivisions) {
         var field = evidence.fields().get(fieldName);
         if (field == null) throw new IllegalArgumentException("Composite image field is unavailable");
         double pitch = evidence.resolution().effectivePitchMeters();
@@ -742,6 +746,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     ? constantNativeTerminalUncertainty(evidence.resolution()) : 0.0;
             boolean reverse = uncertainty > 0.0 && toEndpoint && !fromEndpoint;
             if (!unchangedSelectedEdge(before, after, source, left, right)
+                    && !originalSubdivisions.contains(new OriginalSourceSubdivisionVerifier.Edge(left, right))
                     && unsupportedBoundaryConnector(image, List.of(),
                             metric(after, reverse ? right : left, evidence),
                             metric(after, reverse ? left : right, evidence),

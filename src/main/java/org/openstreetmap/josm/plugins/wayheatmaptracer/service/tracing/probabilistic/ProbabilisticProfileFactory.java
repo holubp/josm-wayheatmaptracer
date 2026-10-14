@@ -20,6 +20,24 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Samples full scalar cross-sections and extracts deterministic finite observation hypotheses. */
 public final class ProbabilisticProfileFactory {
+    /** Exact source-only geometry from the same resampling arithmetic used by native B. */
+    public record SourceSamplingGeometry(List<MetricPoint> points, List<Double> chainageMeters) {
+        public SourceSamplingGeometry {
+            points = List.copyOf(points);
+            chainageMeters = List.copyOf(chainageMeters);
+        }
+    }
+
+    /** Reconstructs native sampling anchors without reading or interpreting image evidence. */
+    public SourceSamplingGeometry sourceSamplingGeometry(List<MetricPoint> sourcePolyline,
+            double configuredStepMeters) {
+        if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)) {
+            throw new IllegalArgumentException("Source sampling inputs are incomplete");
+        }
+        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters, null);
+        return new SourceSamplingGeometry(curve.points(), curve.chainageMeters());
+    }
+
     /**
      * Computes the exact profile chainage used by deterministic resampling.
      *

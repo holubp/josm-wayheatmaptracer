@@ -109,3 +109,26 @@ its initial ambiguous prefix is 3.899 m, beyond the existing 2 m support bound.
 Generated-point near-collinearity is not proof of unchanged geometry. Complete
 original/proposed edge and occurrence classification precedes any further fix.
 This batch is not performance, benchmark, CI or release certification.
+
+## Exact source-preserving subdivisions
+
+Independent Sol/high review clears the four-file source-subdivision repair,
+including its two review corrections. Generated native B points must exactly
+match the original source sampler, retained raw/final assignments and canonical
+geographic conversion. Complete edges progress within one original source piece;
+existing points retain original coordinates and occurrence-specific membership.
+Ambiguous generated anchors at coincident original occurrences fail closed.
+Only selected-range nodes are projected; remote unselected nodes stay unchanged.
+No image support, movement authority or evidence metric is fabricated.
+
+Actual production subdivision RED and remote-endpoint RED are retained. Both
+coincident-occurrence RED assertions are retained. Reviewer verified frozen
+hashes, four focused passes and 354 affected Java tests across 15 suites with
+zero failures, errors or skips. Two initial test setup failures are not counted
+as behavioral RED. Source evidence is under ignored source-subdivision and
+occurrence-alias artifacts in build/rc10-benchmark-contract.
+
+Actual saved N1 component-only inspection now reaches native retained edge 586,
+823 m inside the trace, in a 2.026 m inferred span bracketed by direct support.
+Its common final quality remains REVIEW_REQUIRED. Interior-review admission is
+separate unfinished work; no plan, benchmark, CI or release completion follows.
