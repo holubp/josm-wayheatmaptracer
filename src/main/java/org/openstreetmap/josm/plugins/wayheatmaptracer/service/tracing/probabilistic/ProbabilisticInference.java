@@ -7,7 +7,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.IdentityHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
@@ -1179,6 +1179,8 @@ public final class ProbabilisticInference {
     }
 
     static final class PathRecord {
+        private final long arenaId;
+        private AttemptMemoryLedger.MemoryLease memoryLease;
         private final PathRecord parent;
         private final int state;
         private final int length;
@@ -1187,7 +1189,8 @@ public final class ProbabilisticInference {
         private final double logMeasure;
         private int externalReferences = 1;
         private int children;
-        private PathRecord(PathRecord parent, int state, int length, double energy, double logMeasure) {
+        private PathRecord(long arenaId, PathRecord parent, int state, int length, double energy, double logMeasure) {
+            this.arenaId = arenaId;
             this.parent = parent; this.state = state; this.length = length; this.energy = energy; this.logMeasure = logMeasure;
         }
         int[] states() { int[] result = new int[length]; for (PathRecord value = this; value != null; value = value.parent) result[value.length - 1] = value.state; return result; }
@@ -1232,13 +1235,14 @@ public final class ProbabilisticInference {
     }
 
     static final class PathArena implements AutoCloseable {
-        private static final long PATH_RECORD_BYTES = AttemptMemoryLedger.objectBytes(48);
+        private static final AtomicLong NEXT_ARENA_ID = new AtomicLong();
+        private static final long ARENA_BYTES = AttemptMemoryLedger.objectBytes(40);
+        private static final long PATH_RECORD_BYTES = AttemptMemoryLedger.objectBytes(64);
+        private final long arenaId;
         private final AttemptMemoryLedger.Owner owner;
         private final WorkCounter counter;
-        private final IdentityHashMap<PathRecord, AttemptMemoryLedger.MemoryLease> leases;
-        private AttemptMemoryLedger.MemoryLease tableLease;
-        private int tableLength = 64;
         private long releasedRecordCount;
+        private boolean closed;
 
         PathArena(AttemptMemoryLedger.Owner owner) {
             this(owner, null);
@@ -1247,24 +1251,11 @@ public final class ProbabilisticInference {
         PathArena(AttemptMemoryLedger.Owner owner, WorkCounter counter) {
             this.owner = owner;
             this.counter = counter;
-            AttemptMemoryLedger.Reservation mapReservation = null;
-            AttemptMemoryLedger.Reservation tableReservation = null;
-            try {
-                mapReservation = owner.reserve(AttemptMemoryLedger.objectBytes(32));
-                tableReservation = owner.reserve(
-                        AttemptMemoryLedger.referenceArrayBytes(tableLength));
+            this.arenaId = NEXT_ARENA_ID.updateAndGet(Math::incrementExact);
+            try (var reservation = owner.reserve(ARENA_BYTES)) {
+                reservation.adopt(this);
             } catch (AttemptMemoryLedger.ResourceLimitException exception) {
-                if (mapReservation != null) mapReservation.close();
                 throw new MemoryLimit("k-best ancestry", exception);
-            }
-            try {
-                leases = new IdentityHashMap<>();
-                mapReservation.adopt(leases);
-                tableLease = tableReservation.adopt(new TableCharge());
-            } catch (RuntimeException | Error exception) {
-                mapReservation.close();
-                tableReservation.close();
-                throw exception;
             }
         }
 
@@ -1294,42 +1285,39 @@ public final class ProbabilisticInference {
 
         private PathRecord create(PathRecord parent, int state, int length, double energy,
                 double logMeasure) {
-            TableGrowth growth = reserveTableGrowth();
+            if (closed) throw new IllegalStateException("path arena is closed");
+            if (parent != null) {
+                requireOwned(parent);
+                if (parent.memoryLease == null) throw new IllegalStateException("parent path record is no longer retained");
+            }
+            int nextChildren = parent == null ? 0 : Math.addExact(parent.children, 1);
             AttemptMemoryLedger.Reservation reservation;
             try {
                 reservation = owner.reserve(PATH_RECORD_BYTES);
             } catch (AttemptMemoryLedger.ResourceLimitException exception) {
-                if (growth != null) growth.close();
                 throw new MemoryLimit("k-best ancestry", exception);
             }
+            AttemptMemoryLedger.MemoryLease adopted = null;
             try {
-                PathRecord record = new PathRecord(parent, state, length, energy, logMeasure);
-                leases.put(record, reservation.adopt(record));
+                PathRecord record = new PathRecord(arenaId, parent, state, length, energy, logMeasure);
+                adopted = reservation.adopt(record);
+                record.memoryLease = adopted;
                 if (counter != null) counter.ancestryRecordsAllocated++;
-                if (parent != null) parent.children = Math.addExact(parent.children, 1);
-                if (growth != null) growth.commit();
+                if (parent != null) parent.children = nextChildren;
                 return record;
             } catch (RuntimeException | Error exception) {
-                reservation.close();
-                if (growth != null) growth.close();
+                if (adopted != null) adopted.close();
+                else reservation.close();
                 throw exception;
             }
         }
 
-        private TableGrowth reserveTableGrowth() {
-            if (leases.size() + 1 < tableLength / 3) return null;
-            int nextLength = Math.multiplyExact(tableLength, 2);
-            AttemptMemoryLedger.Reservation reservation;
-            try {
-                reservation = owner.reserve(AttemptMemoryLedger.referenceArrayBytes(nextLength));
-            } catch (AttemptMemoryLedger.ResourceLimitException exception) {
-                throw new MemoryLimit("k-best ancestry", exception);
-            }
-            return new TableGrowth(nextLength,
-                    reservation.adopt(new TableCharge()), tableLease);
+        private void requireOwned(PathRecord record) {
+            if (record.arenaId != arenaId) throw new IllegalArgumentException("path record belongs to another arena");
         }
 
         void release(PathRecord record) {
+            requireOwned(record);
             if (record.externalReferences <= 0) {
                 throw new IllegalStateException("path record has no frontier ownership");
             }
@@ -1364,10 +1352,13 @@ public final class ProbabilisticInference {
         }
 
         private void releaseIfUnreferenced(PathRecord record) {
+            if (closed) return;
             PathRecord current = record;
             while (current != null && current.externalReferences == 0 && current.children == 0) {
-                AttemptMemoryLedger.MemoryLease lease = leases.remove(current);
+                requireOwned(current);
+                AttemptMemoryLedger.MemoryLease lease = current.memoryLease;
                 if (lease == null) return;
+                current.memoryLease = null;
                 lease.close();
                 releasedRecordCount++;
                 PathRecord parent = current.parent;
@@ -1383,36 +1374,8 @@ public final class ProbabilisticInference {
         @Override
         public void close() {
             owner.close();
-            leases.clear();
+            closed = true;
         }
-
-        private final class TableGrowth implements AutoCloseable {
-            private final int nextLength;
-            private final AttemptMemoryLedger.MemoryLease next;
-            private final AttemptMemoryLedger.MemoryLease previous;
-            private boolean committed;
-
-            private TableGrowth(int nextLength, AttemptMemoryLedger.MemoryLease next,
-                    AttemptMemoryLedger.MemoryLease previous) {
-                this.nextLength = nextLength;
-                this.next = next;
-                this.previous = previous;
-            }
-
-            private void commit() {
-                tableLength = nextLength;
-                tableLease = next;
-                committed = true;
-                previous.close();
-            }
-
-            @Override
-            public void close() {
-                if (!committed) next.close();
-            }
-        }
-
-        private static final class TableCharge { }
     }
 
     /** At most K rounded descriptors; stream-tail cutoff is strict finite-energy dominance only. */

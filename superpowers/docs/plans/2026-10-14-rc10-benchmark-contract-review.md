@@ -158,3 +158,43 @@ Actual saved N1 component-only inspection now reaches native retained edge 586,
 823 m inside the trace, in a 2.026 m inferred span bracketed by direct support.
 Its common final quality remains REVIEW_REQUIRED. Interior-review admission is
 separate unfinished work; no plan, benchmark, CI or release completion follows.
+# P1 exact ancestry bookkeeping review — 2026-10-14
+
+Independent Sol/high reviewed the complete two-file PathRecord/PathArena and
+memory-test delta against base404de67. Frozen hashes:
+`ProbabilisticInference.java` f29f9315cdd598a5887bfdeb3870785caf983460645d6403aef5886d554e230a;
+`V022ProbabilisticMemoryTest.java` 4225c68d541af20490bb421b87b932f2ba0f16079f3fb6fd03abab7349dc3280.
+
+Clearance granted with no remaining blockers. Search/scoring/state/tie/transition
+logic and generic ledger API are unchanged. Direct record leases and unique
+primitive arena identity preserve ownership, cascade and terminal semantics;
+record80/arena56 charges replace the eliminated index/table allocations.
+Foreign arenas, co-owners, child overflow and released-parent extension have
+retained deterministic regression evidence. The revised39296-byte peak follows
+independently checked stage lifetimes, with369 allocation/351 descriptor oracles.
+
+Final worker-owned36603 command ran eight focused suites:100 tests, zero
+failures/errors/skips,49s. Reviewer independently checked saved XML, both
+factory-cancellation parameters, exhaustive output/tie cases and frozen hashes.
+Evidence: `build/rc10-benchmark-contract/path-arena-p1-evidence.md`,
+`path-arena-p1-final-neighbors-green-xml`, `path-arena-p1-source-sha256.txt`.
+This is correctness clearance only; speed, whole-tree CI/GUI and release gates
+remain required. P2 exact clipping reuse is a separately bounded follow-up.
+
+## P2a exact clipping invariant review
+
+Independent Sol/high grants clearance with no remaining blockers. The complete
+pre-change predicate reference is byte-exact after class-name inverse rename
+against404de67 SHA b4b8ece67d4712389565ad19dffc9efd841c6b63e91744ab1d2b992a525d45be.
+All frozen source hashes match and P1 hashes are unchanged. The production delta
+shares existing immutable chord length/north bounds under exact east translation
+and caches two fixed decimal coefficients. No new per-chord fields, invocation
+cache, dynamic allowance change, pair skipping or approximate predicate.
+
+Intended RED45860:3/1, sole immutable-length identity failure. Focused GREEN78386:
+16/0/0/0; complete flags/ordered endpoint witnesses, ownership, reversal, zero,
+highscale/1ULP, distortion, antimeridian and clipping/refusal parity. Final neighbor
+15235:205/0/0/0 across seven suites,14m9s. Reviewer independently verified saved
+XML, exact case multiset and hashes in p2a-neighbor-terminal-proof.json.
+Evidence under build/rc10-benchmark-contract/p2a-*. Speed remains unmeasured;
+public CI/GUI, fresh paired benchmarks and publication gates remain mandatory.

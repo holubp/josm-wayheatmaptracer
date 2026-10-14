@@ -19,6 +19,129 @@ class V022ProbabilisticMemoryTest {
             EvidenceModelParameters.withoutShapeTerms();
 
     @Test
+    void directAncestryLeaseFitsExactTwoRecordCapWithoutAnIdentityTable() {
+        // Arena: two references, two longs and closed flag (40-byte payload).
+        // Record: historical48-byte payload plus nonreferencing arena id and lease reference.
+        long arenaBytes = AttemptMemoryLedger.objectBytes(40);
+        long recordBytes = AttemptMemoryLedger.objectBytes(64);
+        long limit = arenaBytes + 2 * recordBytes;
+        var ledger = new AttemptMemoryLedger(limit);
+        var root = ledger.rootOwner();
+        var arena = new ProbabilisticInference.PathArena(root.child("direct-ancestry"));
+        assertEquals(arenaBytes, ledger.currentBytes(), "No eliminated identity table may remain charged");
+        var parent = arena.start(1, -0.0, 0.25);
+        var child = arena.extend(parent, 2, 0.5, 0.125);
+        assertEquals(limit, ledger.currentBytes());
+        var refusal = assertThrows(RuntimeException.class, () -> arena.extend(parent, 3, 1.0, 0.0));
+        assertTrue(refusal.getCause() instanceof AttemptMemoryLedger.ResourceLimitException);
+        assertEquals(limit, ledger.currentBytes(), "Refused creation leaves no reservation or extra descendant");
+        assertEquals(limit, ledger.peakBytes());
+        assertEquals(0.5, child.energy()); assertEquals(0.375, child.logMeasure());
+        assertTrue(java.util.Arrays.equals(new int[] {1, 2}, child.states()));
+        arena.release(parent);
+        assertEquals(limit, ledger.currentBytes(), "Child keeps its unowned parent alive");
+        arena.release(child);
+        assertEquals(2, arena.releasedRecordCount());
+        assertEquals(arenaBytes, ledger.currentBytes());
+        assertThrows(IllegalStateException.class, () -> arena.release(child));
+        arena.close(); arena.close(); root.close();
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void foreignArenaCannotConsumeFrontierOrReleaseAnotherArenasLease() {
+        for (boolean sharedOwner : List.of(false, true)) {
+            var ledger = new AttemptMemoryLedger(4096);
+            var root = ledger.rootOwner(); var firstOwner = root.child("first");
+            var first = new ProbabilisticInference.PathArena(firstOwner);
+            var second = new ProbabilisticInference.PathArena(sharedOwner ? firstOwner : root.child("second"));
+            var record = first.start(1, 0.0, 0.0); long retained = ledger.currentBytes();
+            assertThrows(IllegalArgumentException.class, () -> second.release(record),
+                    "Ownership is arena identity even when an owner is shared");
+            assertThrows(IllegalArgumentException.class, () -> second.extend(record, 2, 0.0, 0.0));
+            assertThrows(IllegalArgumentException.class, () -> second.extendRounded(record, 2, 0.0, 0.0));
+            assertEquals(retained, ledger.currentBytes());
+            assertEquals(0, second.releasedRecordCount());
+            first.release(record); assertEquals(1, first.releasedRecordCount());
+            first.close(); second.close(); root.close(); assertEquals(0, ledger.currentBytes());
+        }
+    }
+
+    @Test
+    void closedArenaKeepsEmptyIndexReleaseSemanticsWithoutTouchingDeadLeases() {
+        var ledger = new AttemptMemoryLedger(4096); var root = ledger.rootOwner();
+        var arena = new ProbabilisticInference.PathArena(root.child("closed-ancestry"));
+        var parent = arena.start(1, 0.0, 0.0); var child = arena.extend(parent, 2, 0.0, 0.0);
+        arena.release(parent); assertEquals(0, arena.releasedRecordCount());
+        arena.close(); assertEquals(0, ledger.currentBytes());
+        arena.release(child);
+        assertEquals(0, arena.releasedRecordCount(), "Closed lifetime does not close leases or cascade again");
+        assertTrue(java.util.Arrays.equals(new int[] {1, 2}, child.states()));
+        assertThrows(IllegalStateException.class, () -> arena.release(child));
+        arena.close(); root.close(); assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void coownedRecordRemainsChargedAfterArenaCloseAndPostcloseRelease() {
+        var ledger = new AttemptMemoryLedger(4096); var root = ledger.rootOwner();
+        var arena = new ProbabilisticInference.PathArena(root.child("ancestry"));
+        var coowner = root.child("retained-record");
+        var record = arena.start(1, 0.0, 0.0); coowner.retain(record);
+        arena.close();
+        assertEquals(AttemptMemoryLedger.objectBytes(64), ledger.currentBytes(),
+                "Only the actual coowned record remains; no arena/counter backreference");
+        arena.release(record); assertEquals(0, arena.releasedRecordCount());
+        assertEquals(AttemptMemoryLedger.objectBytes(64), ledger.currentBytes());
+        coowner.close(); root.close(); assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void childOverflowRefusesBeforeAdoptingAnyNewRecordLease() throws Exception {
+        var ledger = new AttemptMemoryLedger(4096); var root = ledger.rootOwner();
+        var arena = new ProbabilisticInference.PathArena(root.child("overflow"));
+        var record = arena.start(1, 0.0, 0.0); long before = ledger.currentBytes();
+        var children = ProbabilisticInference.PathRecord.class.getDeclaredField("children");
+        children.setAccessible(true); children.setInt(record, Integer.MAX_VALUE);
+        assertThrows(ArithmeticException.class, () -> arena.extend(record, 2, 0.0, 0.0));
+        assertEquals(before, ledger.currentBytes(), "Overflow occurs before any record allocation/adoption");
+        assertEquals(before, ledger.peakBytes());
+        children.setInt(record, 0); arena.release(record); arena.close(); root.close();
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void externallyClosedOwnerDoesNotSilentlyTreatInactiveLeaseAsLive() {
+        var ledger = new AttemptMemoryLedger(4096); var root = ledger.rootOwner(); var owner = root.child("external-close");
+        var arena = new ProbabilisticInference.PathArena(owner); var record = arena.start(1, 0.0, 0.0);
+        owner.close(); assertEquals(0, ledger.currentBytes());
+        assertThrows(IllegalStateException.class, () -> arena.release(record));
+        assertEquals(0, arena.releasedRecordCount());
+        arena.close(); root.close(); assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
+    void releasedParentCannotBeExtendedButRetainedAncestryCan() {
+        var ledger = new AttemptMemoryLedger(4096); var root = ledger.rootOwner();
+        var arena = new ProbabilisticInference.PathArena(root.child("live-parent"));
+        try {
+            var dead = arena.start(0, 0.0, 0.0); arena.release(dead); long before = ledger.currentBytes();
+            assertThrows(IllegalStateException.class, () -> arena.extend(dead, 2, 0.0, 0.0));
+            assertThrows(IllegalStateException.class, () -> arena.extendRounded(dead, 2, 0.0, 0.0));
+            assertEquals(before, ledger.currentBytes(), "Dead parent is rejected before reservation/adoption");
+            var parent = arena.start(1, 0.0, 0.0); var child = arena.extend(parent, 2, 0.0, 0.0);
+            arena.release(parent); // No frontier reference, but one live descendant still owns it.
+            var sibling = arena.extendRounded(parent, 3, 1.0, 0.125);
+            assertTrue(java.util.Arrays.equals(new int[] {1, 3}, sibling.states()));
+            arena.release(child); arena.release(sibling);
+            assertEquals(4, arena.releasedRecordCount());
+            assertEquals(before, ledger.currentBytes());
+        } finally {
+            arena.close(); root.close();
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test
     void ownerAwareSolvePreservesEveryExactOutputBelowTheCap() {
         List<InferenceProfile> profiles = profiles(5, 3);
         ProbabilisticInference inference = new ProbabilisticInference();
@@ -27,8 +150,17 @@ class V022ProbabilisticMemoryTest {
         AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
         AttemptMemoryLedger.Owner owner = ledger.rootOwner();
 
-        ProbabilisticInferenceResult accounted = inference.solve(profiles, PARAMETERS,
-                TraceBudgets.defaults(), null, CancellationProbe.NONE, owner);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+        ProbabilisticInferenceResult accounted;
+        try {
+            accounted = inference.solve(profiles, PARAMETERS,
+                    TraceBudgets.defaults(), null, CancellationProbe.NONE, owner);
+            var counts = org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot();
+            assertEquals(2 * 9 + 27 + 81 + 243, counts.get("inference.ancestryRecordsAllocated").intValue());
+            assertEquals(27 + 81 + 243, counts.get("inference.extensionDescriptors").intValue());
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();
+        }
 
         assertEquals(ProbabilisticInferenceFingerprint.capture(baseline),
                 ProbabilisticInferenceFingerprint.capture(accounted));
@@ -37,8 +169,24 @@ class V022ProbabilisticMemoryTest {
         long descriptorScratch = AttemptMemoryLedger.arrayBytes(3L * 32L, Double.BYTES)
                 + AttemptMemoryLedger.arrayBytes(3L * 32L, Integer.BYTES)
                 + 3L * AttemptMemoryLedger.arrayBytes(3L, Integer.BYTES);
-        assertEquals(53_808L + descriptorScratch + 96L, owner.peakBytes(),
-                "the descriptor-stage peak includes the counter, before the later result witness exists");
+        // All243 ternary paths survive per-pairK32. Each of nine initial pairs
+        // has its own first-node prefix:9+9+27+81+243 live ancestry records.
+        long ancestry = (2 * 9L + 27 + 81 + 243) * AttemptMemoryLedger.objectBytes(64);
+        long arena = AttemptMemoryLedger.objectBytes(40);
+        long accounting = AttemptMemoryLedger.objectBytes(80);
+        long memoObjects = 2 * AttemptMemoryLedger.objectBytes(48);
+        long matrix = AttemptMemoryLedger.referenceArrayBytes(3)
+                + 3 * AttemptMemoryLedger.arrayBytes(3, Double.BYTES);
+        long list4 = AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(4);
+        long messages = 8 * matrix + 2 * list4;
+        long countGrid = AttemptMemoryLedger.referenceArrayBytes(3)
+                + 3 * AttemptMemoryLedger.arrayBytes(3, Integer.BYTES);
+        long list32 = AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(32);
+        long frontiers = 2 * (matrix + countGrid + 9 * list32);
+        long lexicalScratch = AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(243);
+        assertTrue(lexicalScratch > descriptorScratch, "Descriptors close before larger lexical ordering scratch");
+        assertEquals(ancestry + arena + accounting + memoObjects + messages + frontiers + lexicalScratch,
+                owner.peakBytes(), "Exact lexical-order peak with both frontiers and the complete retained ancestry");
         assertEquals(36L, accounted.evaluatedPairVisits());
         assertEquals(513L, accounted.evaluatedTransitions());
         assertTrue(owner.currentBytes() > 0L, "the returned result must remain owned");
@@ -194,7 +342,7 @@ class V022ProbabilisticMemoryTest {
         ProbabilisticInference.PathRecord evictedParent = arena.start(1, 1.0, 0.0);
         ProbabilisticInference.PathRecord survivingChild = arena.extend(
                 survivingParent, 0, 0.0, 0.0);
-        long pathBytes = AttemptMemoryLedger.objectBytes(48);
+        long pathBytes = AttemptMemoryLedger.objectBytes(64);
         assertEquals(arenaBytes + 3L * pathBytes, ancestryLedger.currentBytes());
 
         arena.releaseFrontier(List.of(survivingParent, evictedParent));
@@ -210,18 +358,17 @@ class V022ProbabilisticMemoryTest {
         assertEquals(256L, chainReleaseOperations(256),
                 "doubling a one-state route doubles ancestry-release work");
 
-        AttemptMemoryLedger resizeLedger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger resizeLedger = new AttemptMemoryLedger(
+                AttemptMemoryLedger.objectBytes(40) + 21 * pathBytes);
         AttemptMemoryLedger.Owner resizeRoot = resizeLedger.rootOwner();
         ProbabilisticInference.PathArena resizeArena = new ProbabilisticInference.PathArena(
-                resizeRoot.child("identity-table-resize"));
+                resizeRoot.child("direct-ancestry-margin"));
         for (int index = 0; index < 20; index++) resizeArena.start(index, index, 0.0);
         long beforeResize = resizeLedger.currentBytes();
         resizeArena.start(20, 20.0, 0.0);
-        long grownTable = AttemptMemoryLedger.referenceArrayBytes(128);
-        assertEquals(beforeResize + pathBytes + grownTable
-                - AttemptMemoryLedger.referenceArrayBytes(64), resizeLedger.currentBytes());
-        assertEquals(beforeResize + pathBytes + grownTable, resizeLedger.peakBytes(),
-                "the old 64-reference table coexists with its replacement at entry 21");
+        assertEquals(beforeResize + pathBytes, resizeLedger.currentBytes());
+        assertEquals(beforeResize + pathBytes, resizeLedger.peakBytes(),
+                "Entry21 charges only its actual record; eliminated index capacity is not allocated");
         resizeArena.close();
         resizeRoot.close();
         assertEquals(0L, resizeLedger.currentBytes());

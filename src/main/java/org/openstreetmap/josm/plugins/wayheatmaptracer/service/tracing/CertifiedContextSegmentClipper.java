@@ -30,11 +30,17 @@ final class CertifiedContextSegmentClipper {
         private final BigDecimal maxNorth;
 
         ExactChord(ExactPoint start, ExactPoint end) {
+            this(start, end, distanceSquared(start, end),
+                    min(start.north(), end.north()), max(start.north(), end.north()));
+        }
+
+        private ExactChord(ExactPoint start, ExactPoint end, BigDecimal lengthSquared,
+                BigDecimal minNorth, BigDecimal maxNorth) {
             this.start = start;
             this.end = end;
-            this.lengthSquared = distanceSquared(start, end);
-            this.minNorth = min(start.north(), end.north());
-            this.maxNorth = max(start.north(), end.north());
+            this.lengthSquared = lengthSquared;
+            this.minNorth = minNorth;
+            this.maxNorth = maxNorth;
         }
 
         ExactPoint start() { return start; }
@@ -44,7 +50,9 @@ final class CertifiedContextSegmentClipper {
         BigDecimal lengthSquared() { return lengthSquared; }
 
         ExactChord shifted(BigDecimal eastShift) {
-            return new ExactChord(start.shifted(eastShift), end.shifted(eastShift));
+            // Unlimited-precision east translation leaves length and north bounds exact.
+            return new ExactChord(start.shifted(eastShift), end.shifted(eastShift),
+                    lengthSquared, minNorth, maxNorth);
         }
     }
 
@@ -113,6 +121,10 @@ final class CertifiedContextSegmentClipper {
     private static final BigDecimal PROJECTION_ERROR_METERS = new BigDecimal("0.00000005");
     private static final BigDecimal COORDINATE_ENVELOPE = COORDINATE_EPSILON.add(
             PROJECTION_ERROR_METERS.multiply(BigDecimal.valueOf(2)));
+    private static final BigDecimal COORDINATE_LENGTH_COEFFICIENT =
+            COORDINATE_ENVELOPE.pow(2).multiply(BigDecimal.valueOf(8));
+    private static final BigDecimal PROJECTION_AREA_CONSTANT =
+            PROJECTION_ERROR_METERS.pow(2).multiply(BigDecimal.valueOf(8));
     // A shorter original arc starts in [-180,180] degrees from origin and ends
     // in [-360,360]; shifting context by +/-360 reaches [-720,720]. Its maximum
     // separation from an unshifted changed endpoint is 1080 degrees east and
@@ -215,7 +227,7 @@ final class CertifiedContextSegmentClipper {
                         .subtract(min(min(a.north(), b.north()), min(c.north(), d.north()))));
         BigDecimal areaUpper = AREA_EPSILON.add(PROJECTION_ERROR_METERS
                 .multiply(BigDecimal.valueOf(4)).multiply(span))
-                .add(PROJECTION_ERROR_METERS.pow(2).multiply(BigDecimal.valueOf(8)));
+                .add(PROJECTION_AREA_CONSTANT);
         if (beyondBoth(eastGap, first, second, areaUpper)
                 || beyondBoth(northGap, first, second, areaUpper)) {
             return new ContactEvidence(false, false, false, false, java.util.List.of());
@@ -407,8 +419,7 @@ final class CertifiedContextSegmentClipper {
     private static BigDecimal toleranceBoundSquared(BigDecimal lengthSquared,
             BigDecimal areaAllowance) {
         return areaAllowance.pow(2).multiply(BigDecimal.valueOf(2))
-                .add(COORDINATE_ENVELOPE.pow(2).multiply(BigDecimal.valueOf(8))
-                        .multiply(lengthSquared));
+                .add(COORDINATE_LENGTH_COEFFICIENT.multiply(lengthSquared));
     }
 
     private static boolean onSegment(ExactPoint a, ExactPoint b, ExactPoint point) {
@@ -443,8 +454,7 @@ final class CertifiedContextSegmentClipper {
                 .add(c.east().subtract(a.east()).abs())
                 .add(c.north().subtract(a.north()).abs());
         return AREA_EPSILON.add(PROJECTION_ERROR_METERS.multiply(BigDecimal.valueOf(2))
-                .multiply(extent)).add(PROJECTION_ERROR_METERS.pow(2)
-                        .multiply(BigDecimal.valueOf(8)));
+                .multiply(extent)).add(PROJECTION_AREA_CONSTANT);
     }
 
     private static BigDecimal orientation(ExactPoint a, ExactPoint b, ExactPoint c) {
