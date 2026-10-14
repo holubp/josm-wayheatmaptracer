@@ -1336,8 +1336,34 @@ public final class FinalGeometryEvaluator {
         return candidateEnds.contains(incident.get(0)) || candidateEnds.contains(incident.get(incident.size() - 1));
     }
 
+    /** One ordered midpoint observation and its physical integration weight. */
+    public record SupportSample(int edgeIndex, boolean directlyLocalized, double pieceMeters) { }
+
+    /** Exact common support integration, including unavailable image cost and ordered evidence. */
+    public record SupportInspection(double totalLengthMeters, double directlySupportedLengthMeters,
+            double worstUnsupportedSpanMeters, double meanImageCenterCost, List<SupportSample> samples) {
+        public SupportInspection { samples = List.copyOf(samples); }
+    }
+
+    /** Reuses the evaluator's exact directed sampling and cross-vertex gap integration. */
+    public static SupportInspection inspectSupport(List<MetricPoint> points, ImageCostField image, double pitch) {
+        if (points == null || points.size() < 2 || image == null || !Double.isFinite(pitch) || pitch <= 0.0) {
+            throw new IllegalArgumentException("Physical support inputs are incomplete");
+        }
+        DirectedSamplingMemo sampling = new DirectedSamplingMemo(2_048);
+        List<SupportSample> samples = new ArrayList<>();
+        SupportMetrics support = supportMetrics(points, image, pitch, sampling, samples);
+        return new SupportInspection(support.totalLength, support.directLength, support.worstUnsupportedSpan,
+                sampling.routePolylineCost(points, image), samples);
+    }
+
     private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image,
             double pitch, DirectedSamplingMemo sampling) {
+        return supportMetrics(points, image, pitch, sampling, null);
+    }
+
+    private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image,
+            double pitch, DirectedSamplingMemo sampling, List<SupportSample> retainedSamples) {
         double total = 0.0;
         double direct = 0.0;
         double currentUnsupported = 0.0;
@@ -1346,6 +1372,7 @@ public final class FinalGeometryEvaluator {
             SupportSamples samples = sampling.support(points.get(segment), points.get(segment + 1),
                 image, pitch);
             for (boolean supported : samples.directlyLocalized()) {
+                if (retainedSamples != null) retainedSamples.add(new SupportSample(segment, supported, samples.pieceMeters()));
                 total += samples.pieceMeters();
                 if (supported) {
                     direct += samples.pieceMeters();

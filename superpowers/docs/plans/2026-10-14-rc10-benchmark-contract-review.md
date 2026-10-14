@@ -1,5 +1,31 @@
 # RC10 approved benchmark contract: independent review closure
 
+## Retained native interior support: scoped source clearance
+
+Independent Sol/high inspected the actual five-file delta against `19bce0b`,
+including new `NativeInteriorSupportVerifier.java`, source hashes and retained
+production RED/GREEN evidence. Safe REVIEW spans retain exact chosen native
+geometry, request/raw-inference/source binding, recomputed physical support and
+direct brackets inside one unbroken native interval. New joins, receivers and
+protected boundary approaches retain strict connector checks. All findings,
+unavailable image cost and exact session confirmation remain unchanged.
+
+The initial 405-test local run found one typed backtrack-reporting regression.
+The first filter-order hypothesis failed the focused test and was rejected.
+The corrected adapter computes the existing backtrack/topology findings once,
+uses their existing HARD predicate to grant zero body exemptions on actual
+HARD geometry, retains strict connector checks, and reuses those findings in
+the final plan. Inherited nontransport contact remains REVIEW. No second
+geometry implementation or numerical/support threshold was introduced.
+
+Final focused XML: eight tests, zero failures/errors/skips in 2m59s. The reviewer
+independently checked all five hashes and granted source clearance for a scoped
+CI commit. Exact 405-case regression verification is assigned to final-tree
+full public CI, with testcase multiset comparison required. GUI, actual private
+production benchmark speed/cancellation/latency and downloaded release artifact
+remain pending. Saved N1 component diagnosis is not a plan or timing claim.
+Evidence: ignored `build/rc10-benchmark-contract/native-interior-*`.
+
 Scope: approved `2026-10-13-rc10-benchmark-contract-reconciliation.md`, on
 HEAD `23363c85527787d6921ff102aa3d4014253d343d` plus the stable benchmark
 implementation delta. Sol 6.1/high implemented; a separate Sol 6.1/high

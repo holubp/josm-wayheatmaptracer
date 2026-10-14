@@ -661,6 +661,243 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
+    void productionNativeInteriorGapRetainsExactReviewPlan() throws Exception {
+        var batch = batch(296.0, 296.0, TrackerMode.PROBABILISTIC, false, false, true);
+        var route = batch.runs().get(0).routes().get(0);
+        var quality = route.quality();
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, quality.disposition());
+        assertTrue(quality.directlySupportedLengthMeters() > 0.0);
+        assertEquals(Double.POSITIVE_INFINITY, quality.meanImageCenterCost());
+        assertFalse(quality.findings().stream().anyMatch(finding ->
+                finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK));
+        var source = new ArrayList<MetricPoint>();
+        for (int occurrence = batch.runs().get(0).request().selectedRange().firstIndex();
+                occurrence <= batch.runs().get(0).request().selectedRange().lastIndex(); occurrence++) {
+            source.add(originalMetric(batch, occurrence));
+        }
+        var anchors = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticProfileFactory().sourceSamplingGeometry(source,
+                        batch.runs().get(0).request().configuredSampleStepMeters());
+        var image = new ImageCostField(batch.evidence().fields().get(batch.options().fieldName()),
+                batch.evidence().transform(), batch.evidence().decisionRegion(), batch.evidence().resolution().effectivePitchMeters());
+        var points = route.pointIds().stream().map(route.assignments()::get).toList();
+        List<Boolean> sampledDirect = new ArrayList<>(); List<Integer> sampledEdges = new ArrayList<>();
+        for (int edge = 1; edge < points.size(); edge++) {
+            var a = points.get(edge - 1); var b = points.get(edge);
+            var tangent = new MetricPoint(b.xMeters() - a.xMeters(), b.yMeters() - a.yMeters());
+            int count = Math.max(1, (int) Math.ceil(a.distanceTo(b)
+                    / Math.min(1.0, batch.evidence().resolution().effectivePitchMeters() / 2.0)));
+            for (int sample = 0; sample < count; sample++) {
+                double fraction = (sample + 0.5) / count;
+                var point = new MetricPoint(a.xMeters() + fraction * tangent.xMeters(),
+                        a.yMeters() + fraction * tangent.yMeters());
+                sampledDirect.add(image.sampleRoute(point, tangent).map(value ->
+                        value.ownership() == ObservationOwnership.DIRECT_TWO_SIDED).orElse(false));
+                sampledEdges.add(edge);
+            }
+        }
+        int firstDirect = sampledDirect.indexOf(true), lastDirect = sampledDirect.lastIndexOf(true);
+        boolean movedBoundedNativeWitness = false;
+        for (int edge = 2; edge < points.size() - 1; edge++) {
+            var left = route.pointIds().get(edge - 1); var right = route.pointIds().get(edge);
+            var leftSource = left instanceof GeneratedCandidatePoint generated
+                    ? anchors.points().get(generated.originalPointIndex())
+                    : originalMetric(batch, ((FinalRoutePointId.ExistingWayNodeOccurrence) left).originalOccurrenceIndex());
+            var rightSource = right instanceof GeneratedCandidatePoint generated
+                    ? anchors.points().get(generated.originalPointIndex())
+                    : originalMetric(batch, ((FinalRoutePointId.ExistingWayNodeOccurrence) right).originalOccurrenceIndex());
+            boolean moved = !points.get(edge - 1).equals(leftSource) || !points.get(edge).equals(rightSource);
+            int firstSample = sampledEdges.indexOf(edge), lastSample = sampledEdges.lastIndexOf(edge);
+            boolean noDirect = !sampledDirect.subList(firstSample, lastSample + 1).contains(true);
+            movedBoundedNativeWitness |= moved && noDirect && firstSample > firstDirect && lastSample < lastDirect;
+        }
+        assertTrue(movedBoundedNativeWitness, "Fixture must contain a genuinely moved native FINAL body edge with direct brackets");
+        var state = new AlignWayAction.IntervalPreviewState(batch);
+        assertEquals(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                state.assessment().intervals().get(0).disposition(),
+                "Retained native body gap with physical review support is not a new connector: "
+                        + state.assessment().intervals().get(0).reason().split(":", 2)[0]);
+        var plan = state.assessment().plan().orElseThrow();
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, plan.validation().disposition());
+        for (var finding : quality.findings()) {
+            assertTrue(plan.validation().findingCodes().contains("interval-0:" + finding.code().name()));
+        }
+        assertFalse(state.applyAvailable());
+        assertThrows(IllegalStateException.class, state::currentPlanForApply);
+        state.confirmReview();
+        assertEquals(plan.canonicalHash(), state.currentPlanForApply().canonicalHash());
+        for (var island : batch.partition().fixedIslands()) {
+            for (var key : island.occurrenceKeys()) assertEquals(batch.network().primitives().get(key),
+                    plan.after().primitives().get(key));
+        }
+        assertEquals(Double.POSITIVE_INFINITY, route.quality().meanImageCenterCost());
+    }
+
+    @Test
+    void retainedNativeInteriorProofRejectsChangedGeometryIdentityAndBorrowedBrackets() throws Exception {
+        var batch = batch(296.0, 296.0, TrackerMode.PROBABILISTIC, false, false, true);
+        var view = nativeInteriorView(batch);
+        var proved = NativeInteriorSupportVerifier.verify(batch, view.ids(), view.assignments(), view.keys(), view.after(), Map.of());
+        assertFalse(proved.isEmpty());
+        var edge = proved.iterator().next();
+        int left = view.keys().indexOf(edge.left()), right = left + 1;
+        var id = view.ids().get(left);
+        var point = view.assignments().get(id);
+        var changed = new LinkedHashMap<>(view.assignments());
+        changed.put(id, new MetricPoint(Math.nextUp(point.xMeters()), point.yMeters()));
+        assertFalse(NativeInteriorSupportVerifier.verify(batch, view.ids(), changed, view.keys(), view.after(), Map.of()).contains(edge));
+        var changedAfter = new LinkedHashMap<>(view.after());
+        var node = (DetachedNode) changedAfter.get(edge.left());
+        changedAfter.put(node.key(), new DetachedNode(node.key(), new GeographicPoint(
+                Math.nextUp(node.coordinate().latitudeDegrees()), node.coordinate().longitudeDegrees()), node.tags(), node.deleted(), node.modified()));
+        assertFalse(NativeInteriorSupportVerifier.verify(batch, view.ids(), view.assignments(), view.keys(), changedAfter, Map.of()).contains(edge));
+        var reorderedIds = new ArrayList<>(view.ids());
+        var reorderedKeys = new ArrayList<>(view.keys());
+        java.util.Collections.swap(reorderedIds, left, right); java.util.Collections.swap(reorderedKeys, left, right);
+        assertFalse(NativeInteriorSupportVerifier.verify(batch, reorderedIds, view.assignments(), reorderedKeys, view.after(), Map.of()).contains(edge));
+        var duplicatedIds = new ArrayList<>(view.ids()); duplicatedIds.set(left, duplicatedIds.get(right));
+        assertTrue(NativeInteriorSupportVerifier.verify(batch, duplicatedIds, view.assignments(), view.keys(), view.after(), Map.of()).isEmpty());
+        var insertedIds = new ArrayList<>(view.ids()); var insertedKeys = new ArrayList<>(view.keys());
+        insertedIds.add(right, new GeneratedCandidatePoint("foreign-join", 0));
+        insertedKeys.add(right, PrimitiveKey.planned(PrimitiveKey.Type.NODE, 999_999));
+        assertFalse(NativeInteriorSupportVerifier.verify(batch, insertedIds, view.assignments(), insertedKeys, view.after(), Map.of()).contains(edge));
+        assertTrue(NativeInteriorSupportVerifier.verify(batch, view.ids(), view.assignments(), view.keys(), view.after(), Map.of(0, -1)).isEmpty());
+        var wrongIds = new ArrayList<>(view.ids());
+        wrongIds.set(left, new GeneratedCandidatePoint("wrong-choice", 0));
+        assertFalse(NativeInteriorSupportVerifier.verify(batch, wrongIds, view.assignments(), view.keys(), view.after(), Map.of()).contains(edge));
+
+        var route = batch.runs().get(0).routes().get(0);
+        // Real common evaluation of truncated native geometry: direct evidence from the removed
+        // prefix/suffix or the neighboring interval cannot bracket this retained edge.
+        for (boolean removePrefix : List.of(true, false)) {
+            int first = removePrefix ? left : 0, last = removePrefix ? route.pointIds().size() : right + 1;
+            var cropped = cropNativeRoute(batch, route, first, last);
+            var changedBatch = withRoute(batch, 0, cropped);
+            assertFalse(NativeInteriorSupportVerifier.verify(changedBatch,
+                    view.ids().subList(first, last), view.assignments(), view.keys().subList(first, last), view.after(), Map.of()).contains(edge),
+                    "Native prefix/suffix cannot borrow a direct bracket across its boundary");
+        }
+        var request = batch.fullRequest();
+        var wrongRequest = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest(
+                request.selectedWayKey(), request.selectedRange(), request.engine(), request.geometryMode(),
+                request.permissions(), request.budgets(), request.evidenceSnapshotId(), "stale-evidence",
+                request.networkSnapshotId(), request.networkContentHash(), request.settingsHash(), request.parameterHash(),
+                request.samplerId(), request.configuredSampleStepMeters(), request.profileChainage(), request.evidenceResolution(), request.corridorInput());
+        var input = new NativeInteriorSupportVerifier.Input(wrongRequest, batch.evidence(), batch.network(), batch.options(),
+                batch.runs().stream().map(run -> new NativeInteriorSupportVerifier.Geometry(run.interval(), run.request(),
+                        run.result().inference(), run.routes())).toList());
+        assertTrue(NativeInteriorSupportVerifier.verify(input, view.ids(), view.assignments(), view.keys(), view.after(), Map.of()).isEmpty());
+        var evidence = batch.evidence(); var origin = evidence.coordinateFrame().origin();
+        var changedFrame = org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame.certifiedEquirectangular(
+                new GeographicPoint(Math.nextUp(origin.latitudeDegrees()), origin.longitudeDegrees()),
+                new GeographicPoint(origin.latitudeDegrees() - 0.01, origin.longitudeDegrees() - 0.01),
+                new GeographicPoint(origin.latitudeDegrees() + 0.01, origin.longitudeDegrees() + 0.01));
+        var changedEvidence = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot(evidence.snapshotId(),
+                changedFrame, evidence.transform(), evidence.resolution(), evidence.decisionRegion(), evidence.evidenceRegion(),
+                evidence.fields(), evidence.resampling(), evidence.sourceIdentity());
+        var staleFrame = new NativeInteriorSupportVerifier.Input(batch.fullRequest(), changedEvidence, batch.network(),
+                batch.options(), input.runs());
+        assertTrue(NativeInteriorSupportVerifier.verify(staleFrame, view.ids(), view.assignments(), view.keys(), view.after(), Map.of()).isEmpty());
+        var raw = route.rawHypothesis(); var changedRawPoints = new ArrayList<>(raw.points());
+        var rawPoint = changedRawPoints.get(1);
+        changedRawPoints.set(1, new MetricPoint(Math.nextUp(rawPoint.xMeters()), rawPoint.yMeters()));
+        var changedRaw = new TraceHypothesis(raw.id(), raw.branchSignature(), changedRawPoints, raw.support(),
+                raw.objective(), raw.posteriorProbability(), raw.diagnostics());
+        var changedRoute = new ModernTracePipeline.Route(changedRaw, route.hypothesis(), route.pointIds(), route.assignments(),
+                route.sourceOwnership(), route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertThrows(IllegalArgumentException.class, () -> NativeInteriorSupportVerifier.verify(withRoute(batch, 0, changedRoute),
+                view.ids(), view.assignments(), view.keys(), view.after(), Map.of()), "Native raw route must belong to the captured inference");
+    }
+
+    @Test
+    void retainedNativeInteriorSupportsMovedExistingNodesAndStopsAtProtectedOwnership() throws Exception {
+        var batch = batch(296.0, 296.0, TrackerMode.PROBABILISTIC, false, false, true,
+                false, false, false, AlignmentMode.MOVE_EXISTING_NODES);
+        var route = batch.runs().get(0).routes().get(0);
+        assertTrue(route.pointIds().stream().allMatch(FinalRoutePointId.ExistingWayNodeOccurrence.class::isInstance));
+        assertEquals(FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED, route.quality().disposition());
+        assertEquals(Double.POSITIVE_INFINITY, route.quality().meanImageCenterCost());
+        var view = nativeInteriorView(batch);
+        var body = NativeInteriorSupportVerifier.verify(batch, view.ids(), view.assignments(), view.keys(), view.after(), Map.of());
+        assertFalse(body.isEmpty(), "Moved all-existing native FINAL geometry needs the same physical body review policy");
+        var edge = body.iterator().next(); int left = view.keys().indexOf(edge.left());
+        var existing = (FinalRoutePointId.ExistingWayNodeOccurrence) view.ids().get(left);
+        assertNotEquals(originalMetric(batch, existing.originalOccurrenceIndex()), view.assignments().get(existing),
+                "Positive must represent actual movement, not a source subdivision exemption");
+        var ownership = new LinkedHashMap<>(route.sourceOwnership());
+        ownership.put(route.pointIds().get(left), ObservationOwnership.FIXED_TOPOLOGY_ONLY);
+        var protectedRoute = new ModernTracePipeline.Route(route.rawHypothesis(), route.hypothesis(), route.pointIds(),
+                route.assignments(), ownership, route.quality(), route.cleanupStatus(), route.geometryChanged());
+        assertFalse(NativeInteriorSupportVerifier.verify(withRoute(batch, 0, protectedRoute), view.ids(), view.assignments(),
+                view.keys(), view.after(), Map.of()).contains(edge), "A protected boundary cannot borrow a direct bracket across itself");
+        var state = new AlignWayAction.IntervalPreviewState(batch);
+        var plan = state.assessment().plan().orElseThrow();
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED, plan.validation().disposition());
+        assertFalse(state.applyAvailable()); state.confirmReview();
+        assertEquals(plan.canonicalHash(), state.currentPlanForApply().canonicalHash());
+        assertEquals(((DetachedWay) batch.network().primitives().get(batch.fullRequest().selectedWayKey())).nodeKeys(),
+                ((DetachedWay) plan.after().primitives().get(batch.fullRequest().selectedWayKey())).nodeKeys());
+        for (var island : batch.partition().fixedIslands()) for (var key : island.occurrenceKeys())
+            assertEquals(batch.network().primitives().get(key), plan.after().primitives().get(key));
+    }
+
+    @Test
+    void retainedNativeInteriorRejectsForgedPhysicalSummaryAndHardFindingWithReviewDisposition() throws Exception {
+        var batch = batch(296.0, 296.0, TrackerMode.PROBABILISTIC, false, false, true);
+        var view = nativeInteriorView(batch); var route = batch.runs().get(0).routes().get(0); var q = route.quality();
+        var findings = new ArrayList<>(q.findings());
+        findings.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.SELF_INTERSECTION,
+                FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, 1, 1.0));
+        var other = batch.runs().get(1).routes().get(0).quality();
+        var forged = List.of(
+                new FinalGeometryEvaluator.Result(q.id(), q.disposition(), q.findings(), Math.nextUp(q.totalLengthMeters()), q.directlySupportedLengthMeters(), q.worstUnsupportedSpanMeters(), q.meanImageCenterCost(), q.bendPreservingRoughness()),
+                new FinalGeometryEvaluator.Result(q.id(), q.disposition(), q.findings(), q.totalLengthMeters(), Math.nextUp(q.directlySupportedLengthMeters()), q.worstUnsupportedSpanMeters(), q.meanImageCenterCost(), q.bendPreservingRoughness()),
+                new FinalGeometryEvaluator.Result(q.id(), q.disposition(), q.findings(), q.totalLengthMeters(), q.directlySupportedLengthMeters(), Math.nextUp(q.worstUnsupportedSpanMeters()), q.meanImageCenterCost(), q.bendPreservingRoughness()),
+                new FinalGeometryEvaluator.Result(q.id(), q.disposition(), q.findings(), other.totalLengthMeters(), other.directlySupportedLengthMeters(), other.worstUnsupportedSpanMeters(), q.meanImageCenterCost(), q.bendPreservingRoughness()),
+                new FinalGeometryEvaluator.Result(q.id(), q.disposition(), findings, q.totalLengthMeters(), q.directlySupportedLengthMeters(), q.worstUnsupportedSpanMeters(), q.meanImageCenterCost(), q.bendPreservingRoughness()));
+        for (var quality : forged) {
+            var changed = withRoute(batch, 0, new ModernTracePipeline.Route(route.rawHypothesis(), route.hypothesis(),
+                    route.pointIds(), route.assignments(), route.sourceOwnership(), quality, route.cleanupStatus(), route.geometryChanged()));
+            assertThrows(IllegalArgumentException.class, () -> NativeInteriorSupportVerifier.verify(changed,
+                    view.ids(), view.assignments(), view.keys(), view.after(), Map.of()));
+            var assessment = new FixedIntervalEditPlanComposer().compose(changed, Map.of());
+            assertFalse(assessment.applyAvailable());
+            assertTrue(assessment.plan().isEmpty(), "Forged native support/finding cannot produce a confirmable plan");
+        }
+    }
+
+    private record NativeInteriorView(List<FinalRoutePointId> ids, Map<FinalRoutePointId, MetricPoint> assignments,
+            List<PrimitiveKey> keys, Map<PrimitiveKey, DetachedPrimitive> after) { }
+
+    private static NativeInteriorView nativeInteriorView(IntervalTraceBatch batch) {
+        var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
+        var plan = assessment.plan().orElseThrow();
+        var route = batch.runs().get(0).routes().get(0);
+        List<FinalRoutePointId> ids = route.pointIds().stream().map(id -> id instanceof GeneratedCandidatePoint generated
+                ? (FinalRoutePointId) new GeneratedCandidatePoint("interval-0:" + route.hypothesis().id(), generated.originalPointIndex()) : id).toList();
+        var afterWay = (DetachedWay) plan.after().primitives().get(batch.fullRequest().selectedWayKey());
+        int first = batch.fullRequest().selectedRange().firstIndex();
+        return new NativeInteriorView(ids, assessment.assignments(), afterWay.nodeKeys().subList(first, first + ids.size()), plan.after().primitives());
+    }
+
+    private static ModernTracePipeline.Route cropNativeRoute(IntervalTraceBatch batch, ModernTracePipeline.Route route, int first, int last) {
+        var ids = route.pointIds().subList(first, last);
+        var points = ids.stream().map(route.assignments()::get).toList();
+        var h = route.hypothesis();
+        var hypothesis = new TraceHypothesis(h.id(), h.branchSignature(), points,
+                h.support().subList(first, last), h.objective(), h.posteriorProbability(), h.diagnostics());
+        Map<FinalRoutePointId, MetricPoint> assignments = new LinkedHashMap<>();
+        Map<FinalRoutePointId, ObservationOwnership> ownership = new LinkedHashMap<>();
+        for (var id : ids) { assignments.put(id, route.assignments().get(id)); ownership.put(id, route.sourceOwnership().get(id)); }
+        var image = new ImageCostField(batch.evidence().fields().get(batch.options().fieldName()), batch.evidence().transform(),
+                batch.evidence().decisionRegion(), batch.evidence().resolution().effectivePitchMeters());
+        var quality = new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(h.id(), points, ids, image,
+                batch.evidence().resolution().effectivePitchMeters(), Map.of(), List.of(), false, false, false, false));
+        return new ModernTracePipeline.Route(route.rawHypothesis(), hypothesis, ids, assignments, ownership,
+                quality, route.cleanupStatus(), route.geometryChanged());
+    }
+
+    @Test
     void supportedReviewRouteWithUnavailableImageCostRetainsExactReviewPlan() throws Exception {
         IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE,
                 false, false, true);
@@ -2168,12 +2405,23 @@ class V022FixedIntervalEditPlanComposerTest {
     private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
             TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap,
             boolean sourcePreservingBoundary, boolean remoteUnselectedEndpoints, boolean coincidentOriginalOccurrences) throws Exception {
+        return batch(leftCenter, rightCenter, engine, dualLeft, crossingContext, shortInternalGap,
+                sourcePreservingBoundary, remoteUnselectedEndpoints, coincidentOriginalOccurrences, AlignmentMode.PRECISE_SHAPE);
+    }
+
+    private static IntervalTraceBatch batch(double leftCenter, double rightCenter,
+            TrackerMode engine, boolean dualLeft, boolean crossingContext, boolean shortInternalGap,
+            boolean sourcePreservingBoundary, boolean remoteUnselectedEndpoints, boolean coincidentOriginalOccurrences,
+            AlignmentMode mode) throws Exception {
         DataSet dataSet = new DataSet();
-        double[] east = sourcePreservingBoundary ? new double[] {-40, -32, -16, 0, 16, 32, 40}
+        boolean moveExisting = mode == AlignmentMode.MOVE_EXISTING_NODES;
+        double[] east = moveExisting ? new double[] {-20, -16, -12, -8, -4, 0, 4, 8, 12, 16, 20}
+                : sourcePreservingBoundary ? new double[] {-40, -32, -16, 0, 16, 32, 40}
                 : new double[] {-19, -14, -8, 0, 8, 14, 19};
         if (remoteUnselectedEndpoints) { east[0] = -200_000.0; east[east.length - 1] = 200_000.0; }
         if (coincidentOriginalOccurrences) east[2] = east[3];
-        double[] north = {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
+        double[] north = moveExisting ? new double[] {0, 0.2, 0.4, 0.7, 0.9, 1.0, 0.9, 0.7, 0.4, 0.2, 0}
+                : new double[] {0, 0.2, 0.7, 1.0, 0.5, 0.1, 0};
         java.util.ArrayList<Node> nodes = new java.util.ArrayList<>();
         for (int i = 0; i < east.length; i++) {
             Node node = new Node(new LatLon(degrees(sourcePreservingBoundary ? 0.0 : north[i]), degrees(east[i])));
@@ -2202,12 +2450,14 @@ class V022FixedIntervalEditPlanComposerTest {
             crossing.setModified(false);
             dataSet.addPrimitive(crossing);
         }
-        var selection = new SelectionContext(way, 1, 5, nodes.subList(1, 6),
-                Set.of(nodes.get(1), nodes.get(5)));
+        int middle = east.length / 2, last = east.length - 2;
+        var selection = new SelectionContext(way, 1, last, nodes.subList(1, last + 1),
+                Set.of(nodes.get(1), nodes.get(last)));
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
         SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(dataSet, selection,
-                raster(leftCenter, rightCenter, dualLeft, shortInternalGap, sourcePreservingBoundary), config(engine)));
+                raster(leftCenter, rightCenter, dualLeft, shortInternalGap, sourcePreservingBoundary,
+                        engine == TrackerMode.PROBABILISTIC && shortInternalGap ? 21 : 11), config(engine, mode)));
         var selected = (DetachedWay) captured[0].network().primitives()
                 .get(captured[0].specification().selectedWayKey());
         var keys = selected.nodeKeys();
@@ -2216,18 +2466,18 @@ class V022FixedIntervalEditPlanComposerTest {
                 SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, 1, keys.get(1),
                 false, false, reason);
         var fixed = new SelectedWayIntervalPartitioner.BoundaryConstraint(
-                SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND, 3, keys.get(3),
+                SelectedWayIntervalPartitioner.BoundaryKind.FIXED_ISLAND, middle, keys.get(middle),
                 false, false, reason);
         var endpoint5 = new SelectedWayIntervalPartitioner.BoundaryConstraint(
-                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, 5, keys.get(5),
+                SelectedWayIntervalPartitioner.BoundaryKind.SELECTED_ENDPOINT, last, keys.get(last),
                 false, false, reason);
-        var island = new SelectedWayIntervalPartitioner.FixedIsland(new OccurrenceRange(3, 3),
-                List.of(keys.get(3)), Set.of(keys.get(3)), List.of(reason), fixed, fixed,
+        var island = new SelectedWayIntervalPartitioner.FixedIsland(new OccurrenceRange(middle, middle),
+                List.of(keys.get(middle)), Set.of(keys.get(middle)), List.of(reason), fixed, fixed,
                 Set.of(), Set.of());
-        var left = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(1, 2),
-                keys.subList(1, 3), endpoint1, fixed);
-        var right = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(4, 5),
-                keys.subList(4, 6), fixed, endpoint5);
+        var left = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(1, middle - 1),
+                keys.subList(1, middle), endpoint1, fixed);
+        var right = new SelectedWayIntervalPartitioner.SlideInterval(new OccurrenceRange(middle + 1, last),
+                keys.subList(middle + 1, last + 1), fixed, endpoint5);
         var partition = new SelectedWayIntervalPartitioner.Partition(
                 captured[0].specification().selectedWayKey(),
                 captured[0].specification().selectedRange(), List.of(island), List.of(left, right),
@@ -2257,6 +2507,11 @@ class V022FixedIntervalEditPlanComposerTest {
 
     private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
             boolean dualLeft, boolean shortInternalGap, boolean sourcePreservingBoundary) {
+        return raster(leftCenter, rightCenter, dualLeft, shortInternalGap, sourcePreservingBoundary, 11);
+    }
+
+    private static LiveBPreviewService.VisibleRaster raster(double leftCenter, double rightCenter,
+            boolean dualLeft, boolean shortInternalGap, boolean sourcePreservingBoundary, int shortGapPixelCount) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
@@ -2270,7 +2525,7 @@ class V022FixedIntervalEditPlanComposerTest {
                     intensity = Math.max(intensity,
                             0.02 + 0.78 * Math.exp(-0.5 * other * other / 1.44));
                 }
-                if (shortInternalGap && x >= 239 && x <= 249) intensity = 0.0;
+                if (shortInternalGap && x >= 239 && x < 239 + shortGapPixelCount) intensity = 0.0;
                 if (sourcePreservingBoundary && x >= 107 && x <= 167) intensity = 0.0;
                 int gray = (int) Math.round(255.0 * intensity);
                 argb[y * width + x] = 0xff000000 | gray << 16 | gray << 8 | gray;
@@ -2286,8 +2541,12 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static AlignmentConfig config(TrackerMode engine) {
+        return config(engine, AlignmentMode.PRECISE_SHAPE);
+    }
+
+    private static AlignmentConfig config(TrackerMode engine, AlignmentMode mode) {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig("", "", "", "", "all", "hot", "", ".*",
-                AlignmentMode.PRECISE_SHAPE, engine, false, false,
+                mode, engine, false, false,
                 false, false, false, false, false, false, false, false,
                 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
                 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);

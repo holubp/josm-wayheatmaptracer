@@ -36,6 +36,29 @@ class V022FinalGeometryTest {
     private final FinalGeometryEvaluator evaluator = new FinalGeometryEvaluator();
 
     @Test
+    void physicalSupportIntegrationCarriesGapAcrossVerticesWithAnalyticalWeights() {
+        var geometry = List.of(p(20, 0), p(32, 0), p(36, 0), p(48, 0), p(60, 0));
+        var image = ridgeImage((x, y) -> x >= 30 && x <= 40 ? 0.0 : gaussian(y), (x, y) -> true);
+        var support = FinalGeometryEvaluator.inspectSupport(geometry, image, 1.0);
+        // 0.5m midpoint quadrature: 80 samples,20 wholly dark samples across three edges.
+        assertEquals(40.0, support.totalLengthMeters());
+        assertEquals(30.0, support.directlySupportedLengthMeters());
+        assertEquals(10.0, support.worstUnsupportedSpanMeters());
+        assertEquals(80, support.samples().size());
+        assertTrue(support.samples().stream().allMatch(sample -> sample.pieceMeters() == 0.5));
+        assertEquals(20, support.samples().stream().filter(sample -> !sample.directlyLocalized()).count());
+        assertEquals(Set.of(0, 1, 2), support.samples().stream().filter(sample -> !sample.directlyLocalized())
+                .map(FinalGeometryEvaluator.SupportSample::edgeIndex).collect(java.util.stream.Collectors.toSet()));
+        var actual = evaluator.evaluate(request("physical-gap", geometry, image, 1.0));
+        assertEquals(actual.totalLengthMeters(), support.totalLengthMeters());
+        assertEquals(actual.directlySupportedLengthMeters(), support.directlySupportedLengthMeters());
+        assertEquals(actual.worstUnsupportedSpanMeters(), support.worstUnsupportedSpanMeters());
+        assertEquals(actual.meanImageCenterCost(), support.meanImageCenterCost());
+        assertEquals(Double.POSITIVE_INFINITY, support.meanImageCenterCost());
+        assertThrows(UnsupportedOperationException.class, () -> support.samples().clear());
+    }
+
+    @Test
     void T067_isolatedDoglegNeedsNoFourReversalPattern() {
         SyntheticHeatmapScene scene = V022SceneCatalog.scene("S03", 11);
         List<MetricPoint> geometry = points(scene);

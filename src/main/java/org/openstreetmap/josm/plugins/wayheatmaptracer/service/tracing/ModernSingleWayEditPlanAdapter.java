@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
@@ -678,20 +679,26 @@ public final class ModernSingleWayEditPlanAdapter {
                 selectedFirst, selectedFirst + ids.size());
         var originalSubdivisions = OriginalSourceSubdivisionVerifier.verify(batch, ids, assignments,
                 finalSelectedKeys, afterValues, routeChoices);
+        List<String> geometryFindings = new ArrayList<>(compositeBacktrackFindings(
+                before, afterValues, selected, finalSelectedKeys, evidence));
+        geometryFindings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
+                request.selectedRange(), evidence, request.permissions().ordinaryRadiusMeters()));
+        Predicate<String> hardFinding = finding -> finding.startsWith("final-topology:")
+                || finding.equals("modern-final:ADJACENT_BACKTRACK")
+                || finding.equals("modern-final:TERMINAL_OVERSHOOT");
+        var retainedNativeBody = geometryFindings.stream().anyMatch(hardFinding)
+                ? Set.<NativeInteriorSupportVerifier.Edge>of()
+                : NativeInteriorSupportVerifier.verify(batch, ids, assignments,
+                        finalSelectedKeys, afterValues, routeChoices);
         requireCompositeChangedSupport(before, afterValues, selected, evidence,
                 batch.options().fieldName(), terminalUncertaintyEndpoints(batch, afterValues, routeChoices),
-                originalSubdivisions);
+                originalSubdivisions, retainedNativeBody);
         NetworkSnapshot after = new NetworkSnapshot(before.snapshotId() + ":proposed:" + identity,
                 SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
                 before.closure(), afterValues, proposedWatches(before, afterValues));
         List<String> findings = new ArrayList<>(routeFindings);
-        findings.addAll(compositeBacktrackFindings(before, afterValues, selected, finalSelectedKeys, evidence));
-        findings.addAll(finalTopologyFindings(before, afterValues, request.selectedWayKey(),
-                request.selectedRange(), evidence, request.permissions().ordinaryRadiusMeters()));
-        ValidationReport.Disposition disposition = findings.stream().anyMatch(finding ->
-                finding.startsWith("final-topology:")
-                        || finding.equals("modern-final:ADJACENT_BACKTRACK")
-                        || finding.equals("modern-final:TERMINAL_OVERSHOOT"))
+        findings.addAll(geometryFindings);
+        ValidationReport.Disposition disposition = findings.stream().anyMatch(hardFinding)
                 ? ValidationReport.Disposition.HARD_BLOCKED
                 : findings.isEmpty() ? ValidationReport.Disposition.APPLICABLE
                         : ValidationReport.Disposition.REVIEW_REQUIRED;
@@ -730,7 +737,8 @@ public final class ModernSingleWayEditPlanAdapter {
     private static void requireCompositeChangedSupport(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, DetachedWay source,
             EvidenceSnapshot evidence, String fieldName, Set<PrimitiveKey> terminalEndpoints,
-            Set<OriginalSourceSubdivisionVerifier.Edge> originalSubdivisions) {
+            Set<OriginalSourceSubdivisionVerifier.Edge> originalSubdivisions,
+            Set<NativeInteriorSupportVerifier.Edge> retainedNativeBody) {
         var field = evidence.fields().get(fieldName);
         if (field == null) throw new IllegalArgumentException("Composite image field is unavailable");
         double pitch = evidence.resolution().effectivePitchMeters();
@@ -747,6 +755,7 @@ public final class ModernSingleWayEditPlanAdapter {
             boolean reverse = uncertainty > 0.0 && toEndpoint && !fromEndpoint;
             if (!unchangedSelectedEdge(before, after, source, left, right)
                     && !originalSubdivisions.contains(new OriginalSourceSubdivisionVerifier.Edge(left, right))
+                    && !retainedNativeBody.contains(new NativeInteriorSupportVerifier.Edge(left, right))
                     && unsupportedBoundaryConnector(image, List.of(),
                             metric(after, reverse ? right : left, evidence),
                             metric(after, reverse ? left : right, evidence),
