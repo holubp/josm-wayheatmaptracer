@@ -12,8 +12,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Bounded direct-observation continuation for Engine B weak-signal reliability. */
 final class LongitudinalModeReliability {
-    private static final double WINDOW_METERS = 20.0;
-    private static final double MINIMUM_DIRECT_SPAN_METERS = 4.0;
+    static final double WINDOW_METERS = 20.0;
+    static final double MINIMUM_DIRECT_SPAN_METERS = 4.0;
     private static final long MAXIMUM_PAIR_EVALUATIONS = 1_000_000L;
     private static final long MAXIMUM_SUPPORT_EDGE_VISITS = 4_000_000L;
     private static final double EPSILON = 1e-12;
@@ -145,10 +145,14 @@ final class LongitudinalModeReliability {
                         double coherence = mode.localizationConfidence() * continuation;
                         double reliability = ProbabilisticProfile.Mode.combineReliability(
                                 mode.scalarAmplitudeReliability(), coherence);
-                        modes.add(owner == null ? copy(mode, coherence, reliability)
+                        double leftSpan = directSpan(profiles, forward, backward,
+                                profileIndex, modeIndex, -1, workBudget, cancellation);
+                        double rightSpan = directSpan(profiles, forward, backward,
+                                profileIndex, modeIndex, 1, workBudget, cancellation);
+                        modes.add(owner == null ? copy(mode, coherence, reliability, leftSpan, rightSpan)
                                 : ProbabilisticInference.allocated(retainedOwner,
-                                    AttemptMemoryLedger.objectBytes(112), "sampled profiles",
-                                    () -> copy(mode, coherence, reliability)));
+                                    AttemptMemoryLedger.objectBytes(128), "sampled profiles",
+                                    () -> copy(mode, coherence, reliability, leftSpan, rightSpan)));
                     }
                     if (owner != null) {
                         List<ProbabilisticProfile.Mode> builtModes = modes;
@@ -298,7 +302,7 @@ final class LongitudinalModeReliability {
         return capacity;
     }
 
-    private static double pairScore(ProbabilisticProfile leftProfile,
+    static double pairScore(ProbabilisticProfile leftProfile,
             ProbabilisticProfile.Mode leftMode, ProbabilisticProfile rightProfile,
             ProbabilisticProfile.Mode rightMode) {
         double chainageGap = rightProfile.chainageMeters() - leftProfile.chainageMeters();
@@ -449,7 +453,44 @@ final class LongitudinalModeReliability {
                 || observedKernelMass <= EPSILON) {
             return 0.0;
         }
-        return Math.min(1.0, integral / observedKernelMass);
+        // An interior missing edge is absent support, not a shorter selection.
+        // Normalize over the whole available physical window so a short island
+        // cannot borrow confidence from the unobserved remainder. A true
+        // selection boundary still truncates the window on that side.
+        double selectionBoundary = direction > 0
+                ? profiles.get(profiles.size() - 1).chainageMeters()
+                : profiles.get(0).chainageMeters();
+        double availableSpan = Math.min(WINDOW_METERS,
+                Math.abs(selectionBoundary - originChainage));
+        double availableKernelMass = availableSpan
+                * (1.0 - 0.5 * availableSpan / WINDOW_METERS);
+        if (availableKernelMass <= EPSILON) return 0.0;
+        return Math.min(1.0, integral / availableKernelMass);
+    }
+
+    /** Factual one-sided reach; does not require or create two-sided gap coherence. */
+    private static double directSpan(List<ProbabilisticProfile> profiles,
+            List<Map<Integer, Edge>> forward, List<Map<Integer, Edge>> backward,
+            int originProfile, int originMode, int direction, WorkBudget workBudget,
+            CancellationProbe cancellation) {
+        double origin = profiles.get(originProfile).chainageMeters();
+        double span = 0.0;
+        int profileIndex = originProfile;
+        int modeIndex = originMode;
+        while (span < WINDOW_METERS) {
+            cancellation.checkpoint();
+            int edgeIndex = direction > 0 ? profileIndex : profileIndex - 1;
+            if (edgeIndex < 0 || edgeIndex >= forward.size()) break;
+            workBudget.visitEdge();
+            Edge edge = direction > 0 ? forward.get(edgeIndex).get(modeIndex)
+                    : backward.get(edgeIndex).get(modeIndex);
+            if (edge == null) break;
+            profileIndex += direction;
+            modeIndex = direction > 0 ? edge.rightMode() : edge.leftMode();
+            span = Math.min(WINDOW_METERS,
+                    Math.abs(profiles.get(profileIndex).chainageMeters() - origin));
+        }
+        return span;
     }
 
     private static MetricPoint center(ProbabilisticProfile profile,
@@ -460,14 +501,14 @@ final class LongitudinalModeReliability {
     }
 
     private static ProbabilisticProfile.Mode copy(ProbabilisticProfile.Mode mode,
-            double coherence, double reliability) {
+            double coherence, double reliability, double leftSpan, double rightSpan) {
         return new ProbabilisticProfile.Mode(mode.id(), mode.evidenceLineage(),
                 mode.coreMinimumMeters(), mode.coreMaximumMeters(),
                 mode.localizationSigmaMeters(), mode.existenceConfidence(),
                 mode.localizationConfidence(), mode.peakOffsetsMeters(),
                 mode.nestedCenterOffsetsMeters(), mode.groupedParent(),
                 mode.orientationSupport(), mode.scalarAmplitudeReliability(),
-                coherence, reliability);
+                coherence, reliability, leftSpan, rightSpan);
     }
 
     private static ProbabilisticProfile copy(ProbabilisticProfile profile,

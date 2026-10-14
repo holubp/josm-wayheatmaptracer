@@ -1245,8 +1245,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
     @ParameterizedTest
     @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
     void fixedNonHighwayJunctionCannotWaiveFinalBacktrack(TrackerMode engine) throws Exception {
-        Fixture fixture = engine == TrackerMode.PROBABILISTIC
-                ? relationJunctionWithStraightOutsideFixture() : relationJunctionFixture();
+        // Both engines now partition manual endpoint islands. Leave enough
+        // supported outside length for two adjacent movable points in the mutant.
+        Fixture fixture = relationJunctionWithStraightOutsideFixture();
         fixture.way().put("highway", "path");
         fixture.way().setModified(false);
         for (Relation relation : List.copyOf(fixture.dataSet().getRelations())) fixture.dataSet().removePrimitive(relation);

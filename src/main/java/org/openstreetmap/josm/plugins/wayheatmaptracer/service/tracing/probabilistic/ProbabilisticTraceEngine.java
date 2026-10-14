@@ -33,6 +33,28 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     /** Caller-owned capability boundary for B's experimental weak-signal semantics. */
     public enum ReliabilityPolicy { DIRECT_LONGITUDINAL_V2, BASELINE }
 
+    /** Returns the reliability policy actually selected for a modern probabilistic engine. */
+    public static ReliabilityPolicy reliabilityPolicyFor(TrackerMode mode) {
+        return switch (mode) {
+            case PROBABILISTIC -> ReliabilityPolicy.DIRECT_LONGITUDINAL_V2;
+            case HYBRID -> ReliabilityPolicy.BASELINE;
+            default -> throw new IllegalArgumentException("Mode does not execute probabilistic B");
+        };
+    }
+
+    /** Declares the work policy executed by this route, independently of shared numeric defaults. */
+    public static String reliabilityPolicyVersionFor(TrackerMode mode) {
+        return reliabilityPolicyFor(mode) == ReliabilityPolicy.BASELINE
+                ? "baseline-v1" : "direct-longitudinal-10";
+    }
+
+    /** Returns the state-lattice policy for the actual B/Hybrid engine routing. */
+    public static String stateSamplingPolicyVersionFor(TrackerMode mode) {
+        return reliabilityPolicyFor(mode) == ReliabilityPolicy.BASELINE
+                ? ProbabilisticStateBuilder.baselineStateSamplingPolicyVersion()
+                : EvidenceModelParameters.defaults().stateSamplingPolicyVersion();
+    }
+
     private final String fieldName;
     private final EvidenceModelParameters parameters;
     private final ReliabilityPolicy reliabilityPolicy;
@@ -156,6 +178,9 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         } catch (LongitudinalModeReliability.ResourceLimitException exception) {
             return resourceFailure(request, exception.getMessage(), "sampled profiles",
                     null, work, engineOwner, candidateOwner, workingOwner);
+        } catch (ProbabilisticContinuationProposals.ResourceLimitException exception) {
+            return resourceFailure(request, exception.getMessage(), "continuation proposals",
+                    null, work, engineOwner, candidateOwner, workingOwner);
         } catch (LocalScalarProfileExtractor.ResourceLimitException exception) {
             return resourceFailure(request, exception.getMessage(), "sampled profiles",
                     ledgerCause(exception), work, engineOwner, candidateOwner, workingOwner);
@@ -262,6 +287,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         long stateCount = 0;
         int minimumStates = Integer.MAX_VALUE;
         int maximumStates = 0;
+        double[] continuationOffsets = reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2
+                ? ProbabilisticContinuationProposals.build(profiles, cancellation, workingOwner,
+                    parameters.localization()) : null;
+        int admittedContinuationPositions = 0;
         ProbabilisticStateBuilder stateBuilder = new ProbabilisticStateBuilder();
         ProbabilisticObservationModel observationModel = new ProbabilisticObservationModel();
         for (ProbabilisticProfile profile : profiles) {
@@ -269,8 +298,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             AttemptMemoryLedger.Owner evaluatedOwner = workingOwner.child(
                     "evaluated-profile-" + profile.profileIndex());
             AttemptMemoryLedger.Owner latticeOwner = evaluatedOwner.child("state-lattice");
-            StateSpaceBuildResult stateResult = stateBuilder.build(profile,
-                request.budgets().maximumStatesPerProfile(), latticeOwner);
+            StateSpaceBuildResult stateResult = continuationOffsets == null
+                    ? stateBuilder.build(profile, request.budgets().maximumStatesPerProfile(), latticeOwner)
+                    : stateBuilder.buildWithProposal(profile, request.budgets().maximumStatesPerProfile(),
+                        continuationOffsets[profile.profileIndex()], latticeOwner);
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
                 TraceHypothesisSet limited = emptySet(request,
                         TraceHypothesisSet.Status.RESOURCE_LIMIT,
@@ -280,6 +311,11 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 return accountedRun(limited, 0, 0, candidateOwner);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
+            if ("baseline-plus-continuation-position".equals(stateResult.explanation())) {
+                admittedContinuationPositions++;
+            } else if (continuationOffsets != null) {
+                continuationOffsets[profile.profileIndex()] = Double.NaN;
+            }
             stateCount += lattice.cells().size();
             work.stateCount = stateCount;
             minimumStates = Math.min(minimumStates, lattice.cells().size());
@@ -300,6 +336,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             }
         }
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+            "trace.continuationPositionsAdmitted", admittedContinuationPositions);
         long inferenceStarted = System.nanoTime();
         ProbabilisticInferenceResult inference = new ProbabilisticInference().solve(evaluated,
             parameters, request.budgets(), evidence.decisionRegion(), cancellation, workingOwner,

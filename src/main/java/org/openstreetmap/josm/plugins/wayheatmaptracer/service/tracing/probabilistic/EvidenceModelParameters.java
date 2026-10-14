@@ -40,7 +40,7 @@ public record EvidenceModelParameters(
 
     /** Returns the version of the direct longitudinal weak-signal policy. */
     public static String reliabilityPolicyVersion() {
-        return "direct-longitudinal-3";
+        return "direct-longitudinal-8";
     }
 
     /** Branch-owned orientation is physically integrated across both adjacent endpoints. */
@@ -53,11 +53,18 @@ public record EvidenceModelParameters(
         return "profile-window-centered-v2";
     }
 
+    /** Bounded geometric positions supplement, never replace, the original half-native lattice. */
+    public static String stateSamplingPolicyVersion() {
+        return "baseline-plus-bounded-continuation-v2";
+    }
+
     /** Returns the normative initial v0.22 parameter set. */
     public static EvidenceModelParameters defaults() {
         return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
             + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.CURRENT_VERSION
-            + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion(),
+            + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion()
+            + "/" + stateSamplingPolicyVersion()
+            + "/" + ModernNumericalPolicy.SCALAR_MODE_NOISE,
             1.0, 1.0, 2.0,
             0.5, 0.5, DEFAULT_TURN_SCALE_RADIANS, 1.0, 2.0, Localization.defaults());
     }
@@ -66,7 +73,9 @@ public record EvidenceModelParameters(
     public static EvidenceModelParameters withoutShapeTerms() {
         return new EvidenceModelParameters("probabilistic-v0.22-" + reliabilityPolicyVersion()
             + "/" + ModernNumericalPolicy.B_INFERENCE + "/" + ProbabilisticExecutionPolicy.CURRENT_VERSION
-            + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion() + "-data-only", 1.0,
+            + "/" + orientationIntegrationVersion() + "/" + profileSamplingPolicyVersion()
+            + "/" + stateSamplingPolicyVersion()
+            + "/" + ModernNumericalPolicy.SCALAR_MODE_NOISE + "-data-only", 1.0,
             1.0, 0.0, 0.0, 0.0, DEFAULT_TURN_SCALE_RADIANS, 1.0, 1e-9,
             Localization.defaults());
     }

@@ -1,5 +1,27 @@
 # Unattended v0.22 ordinary-action benchmark
 
+## Approved RC10 comparison
+
+The default contract remains `rc6-identical-v1`. To use the maintainer-approved
+RC10 comparison, set `"comparisonContract": "rc10-approved-numerical-readonly-v1"`
+in the private manifest. Unknown names fail. This mode retains the pinned RC6
+build and the same original OSM, selection, imagery/validity, capture frame,
+settings and budgets. It permits only the pinned numerical-policy change and
+the factual read-only context/fixed-interval protection added after RC6.
+
+Each version must repeat its own complete output exactly. Current output,
+execution-work records and stored plan are checked against strict production
+replay; current interval authority and partition must match a fresh capture of
+the original OSM. Cross-version geometry and publication-kind differences are
+reported rather than labelled identical. Both cases still require at least one
+warm-up, three measured runs, at least 2× median total preview speed, and the
+production cancellation/no-late-publication checks. Comparator replay runs
+outside the action timer with a bounded, reported comparison timeout. A passing
+comparison does not replace independent fitting, Apply or release checks.
+
+The strict-equality statements below describe the default contract. An approved
+comparison cannot be reported as a pass of that original strict contract.
+
 Run `python3 scripts/run-v022-benchmark.py --manifest <private-json> --output <new-private-directory>` on one controlled GUI host. The entry point builds the pinned RC6 and candidate plugin JARs, launches a fresh JOSM 19555 process for every warm-up, measured run and cancellation probe, and invokes the registered ordinary Align action. It never calls an AI service. A synthetic harness receipt cannot pass this runner.
 
 The host needs Java 17, JOSM 19555, a working Swing display (`DISPLAY` or `WAYLAND_DISPLAY` with an X-compatible Java display), the complete original OSM layer, both checksum-bound long case archives, and the selected Hot tile fixture. The runner uses an isolated JOSM preferences, data and cache directory for each process. Its transport is offline and a cache miss fails. No real access values or external tile request are needed. A private example manifest with all currently known paths and SHA-256 values is at `build/v022/benchmark-private-manifest.json` in the benchmark worktree; it is ignored by Git. Move or edit the `environment.java` and `environment.josmJar.path` values when using another host, and refresh their hashes. Put all output outside public CI artifacts.

@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 public final class LocalScalarProfileExtractor {
     private static final double[] B3 = {1, 2, 1};
     private static final double[] B5 = {1, 4, 6, 4, 1};
+    private static final double SECOND_DIFFERENCE_NOISE_RATIO = StrictMath.sqrt(3.0);
 
     /** One ordered physical profile sample. */
     public record Sample(double offsetMeters, double intensity, boolean valid) {
@@ -73,7 +74,14 @@ public final class LocalScalarProfileExtractor {
     /** One edge-censored component, which cannot provide a measured center. */
     public record CensoredMode(CensorSide side, double boundaryOffsetMeters,
             double existenceConfidence, boolean gradientTowardEdge,
-            boolean inwardExtentMeasured, double inwardSupportOffsetMeters) {
+            boolean inwardExtentMeasured, double inwardSupportOffsetMeters, double shoulderThreshold) {
+        /** Retains older callers without reconstructing an unavailable scalar threshold. */
+        public CensoredMode(CensorSide side, double boundaryOffsetMeters,
+                double existenceConfidence, boolean gradientTowardEdge,
+                boolean inwardExtentMeasured, double inwardSupportOffsetMeters) {
+            this(side, boundaryOffsetMeters, existenceConfidence, gradientTowardEdge,
+                    inwardExtentMeasured, inwardSupportOffsetMeters, Double.NaN);
+        }
         /** Retains callers that predate factual censored-interval extent. */
         public CensoredMode(CensorSide side, double boundaryOffsetMeters,
                 double existenceConfidence, boolean gradientTowardEdge) {
@@ -87,6 +95,8 @@ public final class LocalScalarProfileExtractor {
                     || !Double.isFinite(existenceConfidence) || existenceConfidence < 0.0
                     || existenceConfidence > 1.0
                     || !Double.isFinite(inwardSupportOffsetMeters)
+                    || !Double.isNaN(shoulderThreshold) && (!Double.isFinite(shoulderThreshold)
+                            || shoulderThreshold < 0.0 || shoulderThreshold > 1.0)
                     || inwardExtentMeasured && (side == CensorSide.LEFT
                             ? inwardSupportOffsetMeters < boundaryOffsetMeters
                             : inwardSupportOffsetMeters > boundaryOffsetMeters)) {
@@ -102,6 +112,257 @@ public final class LocalScalarProfileExtractor {
         public Result {
             modes = List.copyOf(modes);
             censoredModes = List.copyOf(censoredModes);
+        }
+    }
+
+    /** Reason a detailed mode passed every unchanged position gate except local RMS uncertainty. */
+    public enum SuppressionReason { RMS_ONLY }
+
+    /** One raw local maximum with its original profile sample interval. */
+    public record RawPeak(int firstSampleIndex, int lastSampleIndex,
+            double offsetMeters, double value) {
+        /** Validates the immutable raw-peak census row. */
+        public RawPeak {
+            if (firstSampleIndex < 0 || lastSampleIndex < firstSampleIndex
+                    || !Double.isFinite(offsetMeters) || !Double.isFinite(value)) {
+                throw new IllegalArgumentException("Raw scalar peak is invalid");
+            }
+        }
+    }
+
+    /** A fully shaped but non-authoritative mode suppressed solely by RMS uncertainty. */
+    public record SuppressedMode(Mode mode, int firstSampleIndex, int lastSampleIndex,
+            double rawPeakOffsetMeters, double rawPeakValue, double localBackground,
+            double prominence, double rmsUncertainty, double filterUncertainty,
+            double fractionalThreshold, SuppressionReason reason) {
+        /** Validates the detailed evidence while retaining the exact measured core shape. */
+        public SuppressedMode {
+            if (mode == null || firstSampleIndex < 0 || lastSampleIndex < firstSampleIndex
+                    || !Double.isFinite(rawPeakOffsetMeters) || !Double.isFinite(rawPeakValue)
+                    || !Double.isFinite(localBackground) || !Double.isFinite(prominence)
+                    || !Double.isFinite(rmsUncertainty) || rmsUncertainty < 0.0
+                    || !Double.isFinite(filterUncertainty) || filterUncertainty < 0.0
+                    || !Double.isFinite(fractionalThreshold) || fractionalThreshold < 0.0
+                    || reason != SuppressionReason.RMS_ONLY || !(prominence > 0.0)
+                    || prominence + 1e-12 < filterUncertainty
+                    || prominence + 1e-12 < fractionalThreshold
+                    || !(rmsUncertainty > Math.max(filterUncertainty, fractionalThreshold))
+                    || !(prominence + 1e-12 < rmsUncertainty)) {
+                throw new IllegalArgumentException("Suppressed scalar mode is invalid");
+            }
+        }
+    }
+
+    /** Actual threshold-bracket provenance for one exact mode object in a detailed extraction. */
+    public record FlankReceipt(Mode mode, int leftBracketSampleIndex, int rightBracketSampleIndex,
+            boolean leftValidOutwardContinuation, boolean rightValidOutwardContinuation) {
+        /** Validates indices while preserving the exact mode object identity. */
+        public FlankReceipt {
+            if (mode == null || leftBracketSampleIndex < -1 || rightBracketSampleIndex < -1
+                    || leftValidOutwardContinuation && leftBracketSampleIndex < 1
+                    || rightValidOutwardContinuation && rightBracketSampleIndex < 0) {
+                throw new IllegalArgumentException("Scalar flank receipt is invalid");
+            }
+        }
+
+        /** Returns whether this exact mode has measured valid continuation beyond both brackets. */
+        public boolean hasTwoSidedValidOutwardContinuation() {
+            return leftValidOutwardContinuation && rightValidOutwardContinuation;
+        }
+    }
+
+    /** Raw high-core extent and adjacent observed samples from one exact nested-center calculation. */
+    public record RawCoreReceipt(Mode mode, RawPeak rawPeak, int rawStageWinnerSampleIndex,
+            int firstHighCoreSampleIndex,
+            int lastHighCoreSampleIndex, int leftAdjacentSampleIndex,
+            boolean leftAdjacentObservedValid, boolean leftAdjacentBelowCore,
+            int rightAdjacentSampleIndex, boolean rightAdjacentObservedValid,
+            boolean rightAdjacentBelowCore) {
+        /** Validates immutable raw-stage provenance while preserving exact object identities. */
+        public RawCoreReceipt {
+            if (mode == null || rawPeak == null || rawStageWinnerSampleIndex < rawPeak.firstSampleIndex()
+                    || rawStageWinnerSampleIndex > rawPeak.lastSampleIndex() || firstHighCoreSampleIndex < 0
+                    || firstHighCoreSampleIndex > rawStageWinnerSampleIndex
+                    || lastHighCoreSampleIndex < rawStageWinnerSampleIndex
+                    || firstHighCoreSampleIndex > rawPeak.firstSampleIndex()
+                    || lastHighCoreSampleIndex < rawPeak.lastSampleIndex()
+                    || lastHighCoreSampleIndex < firstHighCoreSampleIndex
+                    || leftAdjacentSampleIndex != firstHighCoreSampleIndex - 1
+                    || rightAdjacentSampleIndex != lastHighCoreSampleIndex + 1
+                    || leftAdjacentSampleIndex < -1 || rightAdjacentSampleIndex < -1
+                    || leftAdjacentObservedValid && leftAdjacentSampleIndex < 0
+                    || rightAdjacentObservedValid && rightAdjacentSampleIndex < 0
+                    || leftAdjacentBelowCore && !leftAdjacentObservedValid
+                    || rightAdjacentBelowCore && !rightAdjacentObservedValid) {
+                throw new IllegalArgumentException("Scalar raw-core receipt is invalid");
+            }
+        }
+    }
+
+    /** Baseline extraction plus optional, non-authoritative peak/core diagnostics. */
+    public record DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
+            List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts,
+            List<RawCoreReceipt> rawCoreReceipts) {
+        /** Retains the earlier detailed-result constructor without inventing flank authority. */
+        public DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
+                List<RawPeak> rawPeaks) {
+            this(baseline, suppressedModes, rawPeaks, List.of(), List.of());
+        }
+
+        /** Retains the flank-aware constructor without inventing raw-core provenance. */
+        public DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
+                List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts) {
+            this(baseline, suppressedModes, rawPeaks, flankReceipts, List.of());
+        }
+
+        /** Freezes all result collections. */
+        public DetailedResult {
+            if (baseline == null || suppressedModes == null || rawPeaks == null || flankReceipts == null
+                    || rawCoreReceipts == null) {
+                throw new IllegalArgumentException("Detailed scalar result is incomplete");
+            }
+            suppressedModes = List.copyOf(suppressedModes);
+            rawPeaks = List.copyOf(rawPeaks);
+            flankReceipts = List.copyOf(flankReceipts);
+            rawCoreReceipts = List.copyOf(rawCoreReceipts);
+        }
+    }
+
+    /** Opaque negative-only context; it cannot be consumed as complete positional evidence. */
+    public static final class ContextVetoProjection {
+        private final DetailedResult projection;
+        private final RawPeak requestedPeak;
+
+        private ContextVetoProjection(DetailedResult projection, RawPeak requestedPeak) {
+            this.projection = projection;
+            this.requestedPeak = requestedPeak;
+        }
+
+        // These scoped views are available only to the evidence veto and its tests.
+        DetailedResult detailsForVetoOnly() { return projection; }
+        RawPeak requestedPeak() { return requestedPeak; }
+        List<RawCoreReceipt> matchingReceipts() { return projection.rawCoreReceipts(); }
+    }
+
+    private static final class DetailedCollector {
+        private final AttemptMemoryLedger.Owner resultOwner;
+        private final List<SuppressedMode> suppressed;
+        private final List<RawPeak> rawPeaks;
+        private final List<FlankReceipt> flankReceipts;
+        private final List<RawCoreReceipt> rawCoreReceipts;
+        private WorkProbe work;
+
+        DetailedCollector(AttemptMemoryLedger.Owner scratchOwner,
+                AttemptMemoryLedger.Owner resultOwner, int capacity) {
+            this.resultOwner = resultOwner;
+            long eachList = listBytes(capacity);
+            this.suppressed = allocated(scratchOwner, eachList,
+                    () -> new ArrayList<>(capacity));
+            this.rawPeaks = allocated(scratchOwner, eachList,
+                    () -> new ArrayList<>(capacity));
+            this.flankReceipts = allocated(scratchOwner, eachList,
+                    () -> new ArrayList<>(capacity));
+            this.rawCoreReceipts = allocated(scratchOwner, eachList,
+                    () -> new ArrayList<>(capacity));
+        }
+
+        void rawPeak(RawPeak value) {
+            rawPeaks.add(value);
+        }
+
+        void suppressed(SuppressedMode value) {
+            suppressed.add(value);
+        }
+
+        void flank(FlankReceipt value) {
+            flankReceipts.add(value);
+        }
+
+        void rawCore(RawCoreReceipt value) {
+            rawCoreReceipts.add(value);
+        }
+
+        DetailedResult freeze(Result baseline) {
+            long immutableBytes = AttemptMemoryLedger.objectBytes(40)
+                    + listBytes(suppressed.size()) + listBytes(rawPeaks.size())
+                    + listBytes(flankReceipts.size()) + listBytes(rawCoreReceipts.size());
+            work.bulk(Math.addExact(Math.addExact(suppressed.size(), rawPeaks.size()),
+                    Math.addExact(flankReceipts.size(), rawCoreReceipts.size())));
+            return allocated(resultOwner, immutableBytes,
+                    () -> new DetailedResult(baseline, suppressed, rawPeaks, flankReceipts, rawCoreReceipts));
+        }
+    }
+
+    /** Extracts baseline and detailed evidence without changing the baseline decision. */
+    public DetailedResult extractDetailed(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters) {
+        return extractDetailed(samples, sourcePitchMeters, parameters, null,
+                CancellationProbe.NONE, ignored -> { });
+    }
+
+    /** Extracts detailed evidence retained by the caller's attempt owner on success. */
+    public DetailedResult extractDetailed(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner) {
+        return extractDetailed(samples, sourcePitchMeters, parameters, owner,
+                CancellationProbe.NONE, ignored -> { });
+    }
+
+    /** Extracts detailed evidence with bounded cancellation, memory ownership, and work charging. */
+    public DetailedResult extractDetailed(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge) {
+        return extractDetailedScoped(samples, sourcePitchMeters, parameters, owner, cancellation, charge, null);
+    }
+
+    /**
+     * Retains all raw competitors and censored bands, but shapes only the preregistered peak.
+     * The target is borrowed from the decision query and must remain alive with the result.
+     * Only the negative context veto may consume this projection; it grants no center authority.
+     */
+    public ContextVetoProjection projectContextVeto(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, RawPeak target) {
+        if (target == null || cancellation == null || charge == null)
+            throw new IllegalArgumentException("Context veto scope is incomplete");
+        cancellation.checkpoint();
+        var projectionOwner = owner == null ? null : owner.child("context-veto-projection");
+        try {
+            var details = extractDetailedScoped(samples, sourcePitchMeters, parameters, projectionOwner,
+                    cancellation, charge, target);
+            cancellation.checkpoint();
+            charge.accept(1L);
+            ContextVetoProjection result = allocated(projectionOwner, AttemptMemoryLedger.objectBytes(16),
+                    () -> new ContextVetoProjection(details, target));
+            if (projectionOwner != null) projectionOwner.transferTo(owner);
+            return result;
+        } finally {
+            if (projectionOwner != null) projectionOwner.close();
+        }
+    }
+
+    private DetailedResult extractDetailedScoped(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, RawPeak contextTarget) {
+        if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
+                || cancellation == null || charge == null) {
+            throw new IllegalArgumentException("Scalar profile extraction inputs are incomplete");
+        }
+        AttemptMemoryLedger.Owner detailedOwner = owner == null ? null : owner.child("detailed-profile-extractor");
+        AttemptMemoryLedger.Owner detailScratch = detailedOwner == null ? null
+                : detailedOwner.child("detailed-profile-diagnostics");
+        try {
+            cancellation.checkpoint();
+            DetailedCollector collector = allocated(detailScratch, AttemptMemoryLedger.objectBytes(48),
+                    () -> new DetailedCollector(detailScratch, detailedOwner, samples.size()));
+            Result baseline = extractInternal(samples, sourcePitchMeters, parameters,
+                    detailedOwner, cancellation, charge, collector, contextTarget);
+            DetailedResult result = collector.freeze(baseline);
+            if (detailScratch != null) detailScratch.close();
+            if (detailedOwner != null) detailedOwner.transferTo(owner);
+            return result;
+        } finally {
+            if (detailedOwner != null) detailedOwner.close();
+            // On refusal/cancellation close releases all partially retained diagnostic identities.
         }
     }
 
@@ -129,6 +390,20 @@ public final class LocalScalarProfileExtractor {
     public Result extract(List<Sample> samples, double sourcePitchMeters,
             EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
             CancellationProbe cancellation, LongConsumer charge) {
+        return extractInternal(samples, sourcePitchMeters, parameters, owner, cancellation, charge, null);
+    }
+
+    private Result extractInternal(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, DetailedCollector detailed) {
+        return extractInternal(samples, sourcePitchMeters, parameters, owner, cancellation, charge,
+                detailed, null);
+    }
+
+    private Result extractInternal(List<Sample> samples, double sourcePitchMeters,
+            EvidenceModelParameters.Localization parameters, AttemptMemoryLedger.Owner owner,
+            CancellationProbe cancellation, LongConsumer charge, DetailedCollector detailed,
+            RawPeak contextTarget) {
         if (samples == null || samples.isEmpty() || !positive(sourcePitchMeters) || parameters == null
                 || cancellation == null || charge == null) {
             throw new IllegalArgumentException("Scalar profile extraction inputs are incomplete");
@@ -138,6 +413,7 @@ public final class LocalScalarProfileExtractor {
         try {
         WorkProbe work = allocated(scratch, AttemptMemoryLedger.objectBytes(16),
                 () -> new WorkProbe(cancellation, charge));
+        if (detailed != null) detailed.work = work;
         work.checkpoint();
         double noiseFloor = robustNoiseFloor(samples, scratch, work);
         double[] raw = allocated(scratch,
@@ -163,18 +439,48 @@ public final class LocalScalarProfileExtractor {
                 () -> new ArrayList<>(samples.size()));
         for (LocalPeak peak : localPeaks(raw, scratch, work)) {
             work.checkpoint();
+            RawPeak detailedPeak = null;
+            if (detailed != null) {
+                double rawOffset = 0.5 * (samples.get(peak.first()).offsetMeters()
+                        + samples.get(peak.last()).offsetMeters());
+                work.bulk(1L);
+                detailedPeak = allocated(detailed.resultOwner, AttemptMemoryLedger.objectBytes(24),
+                        () -> new RawPeak(peak.first(), peak.last(), rawOffset, peak.value()));
+                detailed.rawPeak(detailedPeak);
+            }
             AttemptMemoryLedger.Owner peakScratch = scratch == null ? null
                     : scratch.child("peak-helper");
             try {
+            int[] rawCoreProbe = detailed == null ? null : allocated(peakScratch,
+                    AttemptMemoryLedger.arrayBytes(9, Integer.BYTES), () -> {
+                        int[] probe = new int[9];
+                        probe[0] = -1;
+                        return probe;
+                    });
             double localBackground = Math.max(noiseFloor,
                     Math.max(peak.leftMinimum(), peak.rightMinimum()));
             double prominence = peak.value() - localBackground;
             double localResponseRange = Math.max(0.0, peak.value() - noiseFloor);
-            double uncertainty = localModeUncertainty(raw, b3, b5, peak, peakScratch, work);
+            double[] uncertaintyParts = detailed == null ? null
+                    : allocated(peakScratch, AttemptMemoryLedger.arrayBytes(2, Double.BYTES),
+                            () -> new double[2]);
+            double uncertainty = localModeUncertainty(raw, b3, b5, peak, peakScratch, work,
+                    uncertaintyParts);
             double requiredProminence = Math.max(
                     parameters.localModeProminenceFraction() * localResponseRange, uncertainty);
+            boolean rmsOnly = false;
             if (!(prominence > 0.0) || prominence + 1e-12 < requiredProminence) {
-                continue;
+                if (detailed == null || uncertaintyParts == null) continue;
+                double fractionThreshold = parameters.localModeProminenceFraction() * localResponseRange;
+                double rmsUncertainty = uncertaintyParts[0];
+                double filterUncertainty = uncertaintyParts[1];
+                if (!(prominence > 0.0) || prominence + 1e-12 < fractionThreshold
+                        || prominence + 1e-12 < filterUncertainty
+                        || !(rmsUncertainty > Math.max(fractionThreshold, filterUncertainty))
+                        || !(prominence + 1e-12 < rmsUncertainty)) {
+                    continue;
+                }
+                rmsOnly = true;
             }
             double threshold = localBackground + parameters.localModeShoulderFraction() * prominence;
             IndexInterval interval = containingInterval(raw, peak.first(), peak.last(), threshold, work);
@@ -185,6 +491,9 @@ public final class LocalScalarProfileExtractor {
                     || interval.last() + 1 < raw.length && !Double.isFinite(raw[interval.last() + 1]);
             double existence = clamp(prominence / Math.max(localResponseRange, 1e-12));
             if (leftCensored || rightCensored) {
+                // Detailed RMS-only candidates are diagnostics only and cannot create baseline
+                // censored evidence that the unchanged extractor rejected before this gate.
+                if (rmsOnly) continue;
                 boolean right = rightCensored && !leftCensored;
                 int edge = right ? interval.last() : interval.first();
                 int inward = right ? interval.first() : interval.last();
@@ -194,18 +503,22 @@ public final class LocalScalarProfileExtractor {
                 boolean gradient = gradientTowardEdge(raw, edge, right);
                 censored.add(allocated(owner, AttemptMemoryLedger.objectBytes(48),
                         () -> new CensoredMode(side, boundary, existence, gradient,
-                                true, inwardSupport)));
+                                true, inwardSupport, threshold)));
                 continue;
+            }
+            if (contextTarget != null) {
+                work.checkpoint();
+                if (!ProbabilisticRawCoreContextVeto.samePeak(contextTarget, detailedPeak)) continue;
             }
             List<Double> centers = allocated(peakScratch,
                     listBytes(3) + 3L * AttemptMemoryLedger.objectBytes(8),
                     () -> new ArrayList<>(3));
             addNestedCenter(centers, raw, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), true, work);
+                    parameters.localModeCoreFraction(), true, work, rawCoreProbe);
             addNestedCenter(centers, b3, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work);
+                    parameters.localModeCoreFraction(), false, work, null);
             addNestedCenter(centers, b5, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work);
+                    parameters.localModeCoreFraction(), false, work, null);
             if (centers.size() < 2) {
                 continue;
             }
@@ -234,9 +547,28 @@ public final class LocalScalarProfileExtractor {
                     listBytes(centers.size())
                         + Math.multiplyExact(centers.size(), AttemptMemoryLedger.objectBytes(8)),
                     () -> List.copyOf(centers));
-            modes.add(allocated(owner, AttemptMemoryLedger.objectBytes(64),
+            Mode measured = allocated(rmsOnly ? detailed.resultOwner : owner, AttemptMemoryLedger.objectBytes(64),
                     () -> new Mode(center - halfCenter, center + halfCenter, sigma, existence,
-                        confidence, peakOffsets, nestedCenters, amplitudeReliability)));
+                        confidence, peakOffsets, nestedCenters, amplitudeReliability));
+            if (rawCoreProbe != null && rawCoreProbe[0] >= peak.first()
+                    && rawCoreProbe[0] <= peak.last() && rawCoreProbe[1] <= peak.first()
+                    && rawCoreProbe[2] >= peak.last()) {
+                retainRawCoreReceipt(measured, detailedPeak, rawCoreProbe, detailed, work);
+            }
+            if (rmsOnly) {
+                double[] components = uncertaintyParts;
+                work.bulk(1L);
+                SuppressedMode suppressed = allocated(detailed.resultOwner, AttemptMemoryLedger.objectBytes(80),
+                        () -> new SuppressedMode(measured, peak.first(), peak.last(), peakOffset,
+                                peak.value(), localBackground, prominence, components[0], components[1],
+                                parameters.localModeProminenceFraction() * localResponseRange,
+                                SuppressionReason.RMS_ONLY));
+                detailed.suppressed(suppressed);
+                retainFlankReceipt(measured, interval, raw, threshold, detailed, work);
+            } else {
+                modes.add(measured);
+                if (detailed != null) retainFlankReceipt(measured, interval, raw, threshold, detailed, work);
+            }
             } finally {
                 if (peakScratch != null) peakScratch.close();
             }
@@ -248,6 +580,24 @@ public final class LocalScalarProfileExtractor {
         } finally {
             if (scratch != null) scratch.close();
         }
+    }
+
+    private static void retainFlankReceipt(Mode mode, IndexInterval interval, double[] raw,
+            double threshold, DetailedCollector detailed, WorkProbe work) {
+        int leftBracket = interval.first() - 1;
+        int rightBracket = interval.last() + 1;
+        int leftOutward = leftBracket - 1;
+        int rightOutward = rightBracket + 1;
+        work.bulk(4L);
+        boolean leftValid = leftBracket >= 0 && leftOutward >= 0
+                && Double.isFinite(raw[leftBracket]) && raw[leftBracket] < threshold
+                && Double.isFinite(raw[leftOutward]);
+        boolean rightValid = rightBracket < raw.length && rightOutward < raw.length
+                && Double.isFinite(raw[rightBracket]) && raw[rightBracket] < threshold
+                && Double.isFinite(raw[rightOutward]);
+        FlankReceipt receipt = allocated(detailed.resultOwner, AttemptMemoryLedger.objectBytes(18),
+                () -> new FlankReceipt(mode, leftBracket, rightBracket, leftValid, rightValid));
+        detailed.flank(receipt);
     }
 
     private static List<LocalPeak> localPeaks(double[] values, AttemptMemoryLedger.Owner owner,
@@ -321,7 +671,7 @@ public final class LocalScalarProfileExtractor {
 
     private static void addNestedCenter(List<Double> centers, double[] values, List<Sample> samples,
             IndexInterval search, double localBackground, double coreFraction, boolean requiredFine,
-            WorkProbe work) {
+            WorkProbe work, int[] rawCoreProbe) {
         int peakIndex = peak(values, search, work);
         if (!Double.isFinite(values[peakIndex])) {
             return;
@@ -344,11 +694,41 @@ public final class LocalScalarProfileExtractor {
                 && Double.isFinite(values[left - 1]) && Double.isFinite(values[right + 1]);
         if (twoSided && (!requiredFine || localMaximum > localBackground)) {
             centers.add(0.5 * (samples.get(left).offsetMeters() + samples.get(right).offsetMeters()));
+            if (rawCoreProbe != null) {
+                int leftAdjacent = left - 1;
+                int rightAdjacent = right + 1;
+                boolean leftValid = Double.isFinite(values[leftAdjacent]);
+                boolean rightValid = Double.isFinite(values[rightAdjacent]);
+                rawCoreProbe[0] = peakIndex;
+                rawCoreProbe[1] = left;
+                rawCoreProbe[2] = right;
+                rawCoreProbe[3] = leftAdjacent;
+                rawCoreProbe[4] = rightAdjacent;
+                rawCoreProbe[5] = leftValid ? 1 : 0;
+                rawCoreProbe[6] = leftValid && values[leftAdjacent] < threshold ? 1 : 0;
+                rawCoreProbe[7] = rightValid ? 1 : 0;
+                rawCoreProbe[8] = rightValid && values[rightAdjacent] < threshold ? 1 : 0;
+            }
         }
+    }
+
+    private static void retainRawCoreReceipt(Mode mode, RawPeak rawPeak, int[] probe,
+            DetailedCollector detailed, WorkProbe work) {
+        work.bulk(1L);
+        RawCoreReceipt receipt = allocated(detailed.resultOwner, AttemptMemoryLedger.objectBytes(40),
+                () -> new RawCoreReceipt(mode, rawPeak, probe[0], probe[1], probe[2], probe[3],
+                        probe[5] != 0, probe[6] != 0, probe[4], probe[7] != 0, probe[8] != 0));
+        detailed.rawCore(receipt);
     }
 
     private static double localModeUncertainty(double[] raw, double[] b3, double[] b5,
             LocalPeak peak, AttemptMemoryLedger.Owner owner, WorkProbe work) {
+        return localModeUncertainty(raw, b3, b5, peak, owner, work, null);
+    }
+
+    private static double localModeUncertainty(double[] raw, double[] b3, double[] b5,
+            LocalPeak peak, AttemptMemoryLedger.Owner owner, WorkProbe work,
+            double[] components) {
         AttemptMemoryLedger.Owner helper = owner == null ? null : owner.child("local-uncertainty");
         try {
         int first = Math.max(0, peak.first() - 6);
@@ -358,13 +738,24 @@ public final class LocalScalarProfileExtractor {
                 listBytes(maximumVariation) + Math.multiplyExact(maximumVariation,
                     AttemptMemoryLedger.objectBytes(8)),
                 () -> new ArrayList<>(maximumVariation));
-        for (int index = first + 1; index <= last; index++) {
+        for (int index = first + 2; index <= last; index++) {
             work.checkpoint();
-            if (Double.isFinite(raw[index - 1]) && Double.isFinite(raw[index])) {
-                variation.add(Math.abs(raw[index] - raw[index - 1]));
+            if (Double.isFinite(raw[index - 2]) && Double.isFinite(raw[index - 1])
+                    && Double.isFinite(raw[index])) {
+                // A coherent affine slope is signal, not sample noise. For
+                // independent noise, second differences have three times the
+                // variance of first differences; normalize that variance before
+                // taking RMS so interpolation zeros cannot erase noise energy.
+                variation.add(Math.abs((raw[index] - raw[index - 1])
+                        - (raw[index - 1] - raw[index - 2])) / SECOND_DIFFERENCE_NOISE_RATIO);
             }
         }
-        double localNoise = variation.isEmpty() ? 0.0 : median(variation, helper, work);
+        double squareSum = 0.0;
+        for (double value : variation) {
+            work.checkpoint();
+            squareSum += value * value;
+        }
+        double localNoise = variation.isEmpty() ? 0.0 : StrictMath.sqrt(squareSum / variation.size());
         int peakIndex = peak(raw, new IndexInterval(peak.first(), peak.last()), work);
         double filterUncertainty = 0.0;
         if (Double.isFinite(b3[peakIndex])) {
@@ -373,7 +764,14 @@ public final class LocalScalarProfileExtractor {
         if (Double.isFinite(b3[peakIndex]) && Double.isFinite(b5[peakIndex])) {
             filterUncertainty = Math.max(filterUncertainty, Math.abs(b3[peakIndex] - b5[peakIndex]));
         }
-        return Math.max(3.0 * localNoise, filterUncertainty);
+        double rmsUncertainty = 3.0 * localNoise;
+        if (components != null) {
+            if (components.length != 2) throw new IllegalArgumentException("Uncertainty output must have two values");
+            work.bulk(2L);
+            components[0] = rmsUncertainty;
+            components[1] = filterUncertainty;
+        }
+        return Math.max(rmsUncertainty, filterUncertainty);
         } finally {
             if (helper != null) helper.close();
         }

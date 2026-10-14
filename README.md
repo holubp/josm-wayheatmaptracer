@@ -132,6 +132,12 @@ inputs, and raw execution logs stay outside CI artifacts. Controlled timing and
 private benchmark runs remain local workflows; shared CI results are not used
 as release timing evidence.
 
+The private benchmark retains strict RC6 equality by default. Its explicitly
+approved RC10 mode allows the reviewed fitting and junction-protection changes
+while retaining source, repeatability, native-plan, cancellation and 2× speed
+checks. See [the benchmark host guide](scripts/v022-benchmark-host.md) for the
+manifest choice and recorded differences.
+
 ### Plugin jar
 
 The plugin jar is produced at:

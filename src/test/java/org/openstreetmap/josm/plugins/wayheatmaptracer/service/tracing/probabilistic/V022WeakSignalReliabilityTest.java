@@ -190,6 +190,67 @@ class V022WeakSignalReliabilityTest {
     }
 
     @Test
+    void shortObservedIslandCannotNormalizeAwayItsMissingSurroundings() {
+        List<ProbabilisticProfile> profiles = new ArrayList<>();
+        var unavailable = ImageOrientationSupport.unknown(
+                ImageOrientationSupport.Status.INVALID_CENTER);
+        for (int index = 0; index < 81; index++) {
+            var support = index < 38 || index > 42 ? unavailable : measuredHorizontal();
+            profiles.add(profileAt(index, index * 2.0, List.of(modeAt(index, 0, 0, support))));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        double islandCoherence = result.profiles().get(40).modes().get(0).branchCoherence();
+        // Each side has only 4 m of observed support in a 20 m triangular
+        // window. Even perfect support cannot exceed (4-4²/40)/(20-20²/40).
+        double maximumObservedFraction = (4.0 - 16.0 / 40.0) / (20.0 - 400.0 / 40.0);
+        assertTrue(islandCoherence <= maximumObservedFraction + 1e-12,
+                "Missing surroundings must not disappear from continuation confidence: " + islandCoherence);
+        assertTrue(appliedCenter(coherentSeries(2.0)).branchCoherence() > 0.999999);
+    }
+
+    @Test
+    void completeShortSelectionIsNotMistakenForMissingWindowSupport() {
+        List<ProbabilisticProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 5; index++) {
+            profiles.add(profileAt(index, index * 2.0,
+                    List.of(modeAt(index, 0, 0, measuredHorizontal()))));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        assertEquals(1.0, result.profiles().get(2).modes().get(0).branchCoherence(), 1e-12,
+                "Actual selection ends truncate the window; they are not missing observations");
+    }
+
+    @Test
+    void asymmetricCompleteSelectionKeepsFullContinuationConfidence() {
+        List<ProbabilisticProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 11; index++) {
+            profiles.add(profileAt(index, index * 2.0,
+                    List.of(modeAt(index, 0, 0, measuredHorizontal()))));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        assertEquals(1.0, result.profiles().get(2).modes().get(0).branchCoherence(), 1e-12,
+                "The 4 m left window and 16 m right window are independently complete");
+    }
+
+    @Test
+    void missingSupportOnOnlyOneSideStillAttenuatesContinuation() {
+        List<ProbabilisticProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 81; index++) {
+            var support = index > 42 ? ImageOrientationSupport.unknown(
+                    ImageOrientationSupport.Status.INVALID_CENTER) : measuredHorizontal();
+            profiles.add(profileAt(index, index * 2.0, List.of(modeAt(index, 0, 0, support))));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        double coherence = result.profiles().get(40).modes().get(0).branchCoherence();
+        assertTrue(coherence > 0 && coherence <= Math.sqrt(0.36) + 1e-12,
+                "One complete side cannot replace the missing support on the other: " + coherence);
+    }
+
+    @Test
     void profileGapBeyondPhysicalWindowCannotContributeDirectContinuation() {
         List<ProbabilisticProfile> profiles = new ArrayList<>();
         for (int index = 0; index < 5; index++) {
@@ -198,6 +259,103 @@ class V022WeakSignalReliabilityTest {
         }
 
         assertEquals(0.0, appliedCenter(profiles).branchCoherence(), 0.0);
+    }
+
+    @Test
+    void boundaryModeKeepsFactualExteriorSupportWithoutInventingGapCoherence() {
+        List<ProbabilisticProfile> profiles = new ArrayList<>();
+        for (int index = 0; index < 12; index++) {
+            profiles.add(profileAt(index, index * 2.0, index < 5 || index > 6
+                    ? List.of(modeAt(index, 0, 0, measuredHorizontal())) : List.of()));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        var left = result.profiles().get(4).modes().get(0);
+        var right = result.profiles().get(7).modes().get(0);
+        assertEquals(0.0, left.branchCoherence(), 0.0);
+        assertEquals(0.0, right.branchCoherence(), 0.0);
+        assertTrue(left.leftDirectSpanMeters() >= 4.0);
+        assertEquals(0.0, left.rightDirectSpanMeters(), 0.0);
+        assertEquals(0.0, right.leftDirectSpanMeters(), 0.0);
+        assertTrue(right.rightDirectSpanMeters() >= 4.0);
+    }
+
+    @Test
+    void failedRasterAssociationCannotSupplyExteriorSupport() {
+        var result = LongitudinalModeReliability.apply(profileSeries(
+                List.of(0.0, 0.0, 0.0, 0.0, 0.0), measuredHorizontal(), -1),
+                (leftProfile, leftMode, rightProfile, rightMode, cancellation) -> 0.0,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        var center = result.profiles().get(2).modes().get(0);
+        assertEquals(0.0, center.leftDirectSpanMeters(), 0.0);
+        assertEquals(0.0, center.rightDirectSpanMeters(), 0.0);
+    }
+
+    @Test
+    void exteriorReachUsesFactualNonuniformChainageAndStopsAtTwentyMeters() {
+        double[] chainage = {0.0, 0.7, 2.2, 4.0, 8.0, 16.0, 25.0, 40.0};
+        var profiles = new ArrayList<ProbabilisticProfile>();
+        for (int index = 0; index < chainage.length; index++) {
+            profiles.add(profileAt(index, chainage[index],
+                    List.of(modeAt(index, 0, 0, measuredHorizontal()))));
+        }
+        var result = LongitudinalModeReliability.apply(profiles,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+        var mode = result.profiles().get(3).modes().get(0);
+        assertEquals(4.0, mode.leftDirectSpanMeters(), 0.0);
+        assertEquals(20.0, mode.rightDirectSpanMeters(), 0.0);
+    }
+
+    @Test
+    void sharedAssociationWorkExhaustionReleasesTheAdditionalReachGraph() {
+        var profiles = new ArrayList<ProbabilisticProfile>();
+        for (int index = 0; index < 5_000; index++) {
+            profiles.add(profileAt(index, index * 0.01,
+                    List.of(modeAt(index, 0, 0, measuredHorizontal()))));
+        }
+        var ledger = AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var inputIdentities = new java.util.IdentityHashMap<Object, Boolean>();
+        for (var profile : profiles) {
+            chargeFixtureIdentity(owner, inputIdentities, profile.anchor());
+            chargeFixtureIdentity(owner, inputIdentities, profile.normalUnit());
+            for (var sample : profile.samples()) chargeFixtureIdentity(owner, inputIdentities, sample);
+            chargeFixtureOrientation(owner, inputIdentities, profile.orientationSupport());
+            for (var mode : profile.modes()) {
+                if (!mode.peakOffsetsMeters().isEmpty()) {
+                    chargeFixtureIdentity(owner, inputIdentities, mode.peakOffsetsMeters());
+                }
+                if (!mode.nestedCenterOffsetsMeters().isEmpty()) {
+                    chargeFixtureIdentity(owner, inputIdentities, mode.nestedCenterOffsetsMeters());
+                }
+                chargeFixtureOrientation(owner, inputIdentities, mode.orientationSupport());
+            }
+        }
+        long inputBytes = owner.currentBytes();
+        assertThrows(LongitudinalModeReliability.ResourceLimitException.class,
+                () -> LongitudinalModeReliability.apply(profiles,
+                    (left, leftMode, right, rightMode, cancellation) -> 1.0,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,
+                    owner));
+        assertEquals(inputBytes, ledger.currentBytes(),
+                "refused reliability output must release its charges and preserve the input owner");
+        owner.close();
+        assertEquals(0L, ledger.currentBytes());
+    }
+
+    private static void chargeFixtureOrientation(AttemptMemoryLedger.Owner owner,
+            java.util.IdentityHashMap<Object, Boolean> identities, ImageOrientationSupport support) {
+        chargeFixtureIdentity(owner, identities, support);
+        if (!support.modes().isEmpty()) {
+            chargeFixtureIdentity(owner, identities, support.modes());
+            for (var mode : support.modes()) chargeFixtureIdentity(owner, identities, mode);
+        }
+    }
+
+    /** Registers this small synthetic borrowed graph conservatively before production retention. */
+    private static void chargeFixtureIdentity(AttemptMemoryLedger.Owner owner,
+            java.util.IdentityHashMap<Object, Boolean> identities, Object identity) {
+        if (identities.put(identity, Boolean.TRUE) == null) owner.reserve(256).adopt(identity);
     }
 
     @Test

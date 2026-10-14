@@ -18,6 +18,35 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_unknown_comparison_contract_is_rejected_before_any_host_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"schemaVersion": 1, "warmups": 1,
+                "repetitions": 3, "comparisonContract": "ignore-everything",
+                "cases": [{"id": "N1"}, {"id": "N2"}]}))
+            output = root / "out"
+            self.assertEqual(1, benchmark.main(["--manifest", str(manifest), "--output", str(output)]))
+            report = json.loads((output / "benchmark.json").read_text())
+            self.assertEqual("Unknown benchmark comparison contract", report["failure"])
+
+    def test_approved_cross_version_changes_are_reported_and_within_version_stays_exact(self):
+        baseline = {"selectedRasterSha256": "a" * 64, "finalGeometrySha256": "b" * 64, "kind": "single"}
+        current = {**baseline, "finalGeometrySha256": "c" * 64, "kind": "interval"}
+        differences = benchmark.require_cross_version_preview(baseline, current, "N1", benchmark.APPROVED_CONTRACT)
+        self.assertEqual({"finalGeometrySha256", "kind"}, set(differences))
+        self.assertEqual("single", differences["kind"]["baseline"])
+        self.assertEqual("interval", differences["kind"]["candidate"])
+        with self.assertRaisesRegex(benchmark.GateFailure, "finalGeometrySha256"):
+            benchmark.require_same_preview(baseline, current, "N1")
+        with self.assertRaisesRegex(benchmark.GateFailure, "selectedRasterSha256"):
+            benchmark.require_cross_version_preview(baseline, {**current, "selectedRasterSha256": "d" * 64},
+                "N1", benchmark.APPROVED_CONTRACT)
+        with self.assertRaises(benchmark.GateFailure):
+            benchmark.require_cross_version_preview(baseline, current, "N1", benchmark.STRICT_CONTRACT)
+        self.assertEqual(benchmark.STRICT_CONTRACT, benchmark.comparison_contract({}))
+
+
     def test_gui_host_command_scopes_josms_required_module_exports(self):
         exports = [
             "--add-exports=java.base/sun.security.action=ALL-UNNAMED",

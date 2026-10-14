@@ -113,7 +113,7 @@ class V022MetricRegionSegmentWorkTest {
     }
 
     // Frozen pre-hook segment algorithm: independent event inventory, dedup and midpoint oracle.
-    private static boolean historicalSegment(MetricRegion region, MetricPoint start, MetricPoint end) {
+    static boolean historicalSegment(MetricRegion region, MetricPoint start, MetricPoint end) {
         if (!historicalContains(region, start) || !historicalContains(region, end)) return false;
         var events = new java.util.ArrayList<Double>();
         events.add(0.0); events.add(1.0);

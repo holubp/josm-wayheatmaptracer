@@ -11,6 +11,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Constructs a stable bounded full-profile lattice without consulting Corridor A tracks. */
 public final class ProbabilisticStateBuilder {
+    /** Version of the unaugmented half-native baseline lattice built here. */
+    public static String baselineStateSamplingPolicyVersion() {
+        return "half-native-baseline-v1";
+    }
+
     /**
      * Builds the complete admitted lateral lattice.
      *
@@ -26,6 +31,50 @@ public final class ProbabilisticStateBuilder {
     StateSpaceBuildResult build(ProbabilisticProfile profile, int maximumStates,
             AttemptMemoryLedger.Owner owner) {
         return build(profile, maximumStates, ObservationFamily.ELEMENTARY, owner);
+    }
+
+    /** Adds a coordinate choice after baseline admission, without replacing old states or evidence. */
+    StateSpaceBuildResult buildWithProposal(ProbabilisticProfile profile, int maximumStates,
+            double proposedOffset, AttemptMemoryLedger.Owner owner) {
+        StateSpaceBuildResult baseline = build(profile, maximumStates, owner);
+        if (baseline.status() != StateSpaceBuildResult.Status.COMPLETE
+                || Double.isNaN(proposedOffset) || profile.exactAnchorOffsetMeters().isPresent()) {
+            return baseline;
+        }
+        if (!Double.isFinite(proposedOffset) || proposedOffset < profile.minimumOffsetMeters()
+                || proposedOffset > profile.maximumOffsetMeters()) {
+            throw new IllegalArgumentException("Continuation position is outside the decision window");
+        }
+        var original = baseline.lattice().orElseThrow();
+        double tolerance = 1e-6 * Math.max(profile.sourcePitchMeters(), 1.0);
+        for (var cell : original.cells()) {
+            if (Math.abs(cell.offsetMeters() - proposedOffset) <= tolerance) return baseline;
+        }
+        if (original.cells().size() >= Math.min(maximumStates, 96)) {
+            return new StateSpaceBuildResult(StateSpaceBuildResult.Status.STATE_LIMIT, Optional.empty(),
+                    baseline.retainedMandatoryOffsets(), "continuation cannot retain every baseline state");
+        }
+        var scratch = owner == null ? null : owner.child("continuation-lattice-builder");
+        try {
+            int count = original.cells().size() + 1;
+            List<RequiredOffset> offsets = scratch == null ? new ArrayList<>(count)
+                    : ProbabilisticInference.allocated(scratch,
+                        ProbabilisticInference.listBytes(count)
+                            + Math.multiplyExact(count, AttemptMemoryLedger.objectBytes(16)),
+                        "state lattice", () -> new ArrayList<>(count));
+            for (var cell : original.cells()) {
+                offsets.add(new RequiredOffset(cell.offsetMeters(), cell.mandatory(), cell.exactAnchor()));
+            }
+            offsets.add(new RequiredOffset(proposedOffset, false, false));
+            offsets.sort(Comparator.comparingDouble(RequiredOffset::offset));
+            List<LateralStateCell> cells = createCells(profile, offsets, ObservationFamily.ELEMENTARY, owner);
+            var augmented = lattice(cells, original.components(), maximumAdjacentPitch(cells),
+                    original.resolutionLimited(), owner);
+            return new StateSpaceBuildResult(StateSpaceBuildResult.Status.COMPLETE, Optional.of(augmented),
+                    baseline.retainedMandatoryOffsets(), "baseline-plus-continuation-position");
+        } finally {
+            if (scratch != null) scratch.close();
+        }
     }
 
     /**

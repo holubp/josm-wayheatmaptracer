@@ -129,7 +129,7 @@ public record EvidenceSnapshot(
             double[] values = field.copiedValues();
             boolean[] valid = field.copiedValidity();
             for (int index = 0; index < values.length; index++) {
-                encoder.field(valid[index]).field(Double.toHexString(values[index]));
+                encoder.field(valid[index]).fieldHexDouble(values[index]);
             }
             boolean[] interpolationValid = field.copiedInterpolationValidity();
             for (boolean completeCellSupport : interpolationValid) {

@@ -8,8 +8,12 @@ public final class ModernNumericalPolicy {
     /** Complete B inference uses Java 17 ordered arithmetic and fdlibm 5.3 functions. */
     public static final String B_INFERENCE = "java17-fdlibm53-v1/" + ORDERED_SUM;
 
-    /** Shared modern metric, orientation and final-cost leaves use fdlibm 5.3. */
-    public static final String SHARED_COST = "shared-modern-cost-fdlibm53-v1/" + ORDERED_SUM;
+    /** Scalar mode uncertainty excludes coherent local slope while retaining noise normalization. */
+    public static final String SCALAR_MODE_NOISE = "scalar-mode-second-difference-rms-v2";
+
+    /** Shared modern metric, scalar extraction, orientation and final-cost policy. */
+    public static final String SHARED_COST = "shared-modern-cost-fdlibm53-v1/" + ORDERED_SUM
+            + "/" + SCALAR_MODE_NOISE;
 
     private ModernNumericalPolicy() { }
 }

@@ -19,6 +19,14 @@ public final class BenchmarkFinalOutputComparison {
     /** Independently bound native outputs whose complete component inventories match. */
     public record Comparison(VerifiedOutput baseline, VerifiedOutput candidate) { }
 
+    /** Verifies one archive against its own identities without cross-version output equality. */
+    public static VerifiedOutput verifyNative(Format15Archive archive, FrozenReplayInput input) {
+        var snapshot = read(archive, input);
+        System.out.println("nativeOutputRoot=" + snapshot.binding().rootFingerprint());
+        System.out.println("nativeOutputComponents=" + snapshot.digests());
+        return published(archive, snapshot.output());
+    }
+
     /**
      * Validates each own envelope before comparing every component digest and complete root.
      * Build and input identities remain native to each archive; no payload is rebound or replayed.

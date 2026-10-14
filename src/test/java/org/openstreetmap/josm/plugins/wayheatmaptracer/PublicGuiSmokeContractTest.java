@@ -39,6 +39,13 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticExecutionPolicy;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticInference;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticInferenceResult;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticObservationModel;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticStateBuilder;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
@@ -68,6 +75,59 @@ class PublicGuiSmokeContractTest {
 
     @Test
     void publicNativeHotRasterDrivesTheRealManagedProbabilisticEngineToItsRidge() throws Exception {
+        var computed = publicComputed();
+        assertFalse(computed.pipeline().routes().isEmpty());
+        var choices = new LiveBPreviewService().adaptChoices(computed, point -> ProjectionRegistry.getProjection()
+                .latlon2eastNorth(new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+        assertEquals(computed.pipeline().routes().size(), choices.size());
+        for (int i = 0; i < choices.size(); i++) {
+            assertEquals(computed, choices.get(i).owner());
+            assertEquals(i, choices.get(i).localRouteIndex());
+        }
+        assertEquals(choices.size(), choices.stream().map(choice -> choice.candidate().id()).distinct().count());
+        var first = new ModernSingleWayEditPlanAdapter().assess(computed, 0).plan().orElseThrow();
+        PublicGuiSmokeOracle.verifyFinalGeometry(first.finalPreviewWays().get(first.selectedWayKey()));
+        int selected = PublicGuiSmokeMain.oraclePassingRouteIndex(choices);
+        var selectedPlan = new ModernSingleWayEditPlanAdapter().assess(computed, selected).plan().orElseThrow();
+        assertEquals(choices.get(selected).candidate().id(), selectedPlan.routeIdentity());
+        PublicGuiSmokeOracle.verifyFinalGeometry(selectedPlan.finalPreviewWays().get(selectedPlan.selectedWayKey()));
+    }
+
+    @Test
+    void publicMeasuredRidgeRetainsExactEagerAndOptimizedPaths() throws Exception {
+        var computed = publicComputed();
+        var request = computed.request();
+        var network = computed.captured().network();
+        var way = (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay)
+                network.primitives().get(request.selectedWayKey());
+        var source = way.nodeKeys().subList(request.selectedRange().firstIndex(), request.selectedRange().lastIndex() + 1)
+                .stream().map(key -> computed.evidence().coordinateFrame().toMetric(
+                        ((org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode)
+                                network.primitives().get(key)).coordinate())).toList();
+        var parameters = EvidenceModelParameters.defaults();
+        var profiles = new ProbabilisticProfileFactory().create(source, request.configuredSampleStepMeters(),
+                request.permissions().ordinaryRadiusMeters(), true, computed.evidence(),
+                computed.evidence().fields().get(computed.options().fieldName()));
+        var evaluated = profiles.stream().map(profile -> new ProbabilisticObservationModel().evaluate(profile,
+                new ProbabilisticStateBuilder().build(profile, request.budgets().maximumStatesPerProfile())
+                        .lattice().orElseThrow(), parameters)).toList();
+        ProbabilisticInferenceResult reference = null;
+        for (var policy : ProbabilisticExecutionPolicy.Mode.values()) {
+            var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+            var owner = ledger.rootOwner();
+            try {
+                var result = new ProbabilisticInference().solve(evaluated, parameters, request.budgets(),
+                        computed.evidence().decisionRegion(), CancellationProbe.NONE, owner, policy);
+                if (reference == null) reference = result;
+                else {
+                    assertEquals(reference.rawPaths(), result.rawPaths());
+                    assertEquals(reference.distinctPaths(), result.distinctPaths());
+                }
+            } finally { owner.close(); }
+        }
+    }
+
+    private LiveBPreviewService.Computed publicComputed() throws Exception {
         var fixture = PublicGuiSmokeFixture.create(temporary);
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
         fixture.dataSet().setSelected(fixture.selectedWay());
@@ -87,25 +147,8 @@ class PublicGuiSmokeContractTest {
                 SupportedInputRasterTransform.webMercator(15, 16_384 * 256.0,
                         16_383 * 256.0, 2.0), "hot", 15, "public-native-hot",
                 new ManagedTileGeneration(0L));
-        var computed = service.compute(service.attachManagedRaster(seed[0], raster),
+        return service.compute(service.attachManagedRaster(seed[0], raster),
                 CancellationProbe.NONE);
-        assertTrue(computed.pipeline().routes().size() > 1);
-        var choices = service.adaptChoices(computed, point -> ProjectionRegistry.getProjection()
-                .latlon2eastNorth(new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
-        assertEquals(computed, choices.get(0).owner());
-        assertEquals(computed, choices.get(1).owner());
-        assertEquals(0, choices.get(0).localRouteIndex());
-        assertEquals(1, choices.get(1).localRouteIndex());
-        assertFalse(choices.get(0).candidate().id().equals(choices.get(1).candidate().id()));
-        var first = new ModernSingleWayEditPlanAdapter().assess(computed, 0).plan().orElseThrow();
-        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeOracle.verifyFinalGeometry(
-                first.finalPreviewWays().get(first.selectedWayKey())));
-        var assessment = new ModernSingleWayEditPlanAdapter().assess(computed, 1);
-        var plan = assessment.plan().orElseThrow(() -> new AssertionError(
-                "Managed Engine B fixture produced no edit plan: " + assessment.availability()));
-        assertEquals(choices.get(1).candidate().id(), plan.routeIdentity());
-        PublicGuiSmokeOracle.verifyFinalGeometry(
-                plan.finalPreviewWays().get(plan.selectedWayKey()));
     }
 
     @Test
@@ -160,6 +203,21 @@ class PublicGuiSmokeContractTest {
         panel.add(new JComboBox<>(new String[] {"ambiguous"}));
         assertThrows(IllegalStateException.class,
                 () -> PublicGuiSmokeMain.visibleChoiceCombo(panel, String.class));
+    }
+
+    @Test
+    void soleProductionChoiceNeedsNoChooserButCannotHideMultipleRoutes() {
+        JPanel panel = new JPanel();
+        assertEquals("ridge", PublicGuiSmokeMain.soleChoiceWithoutControl(
+            panel, List.of("ridge"), String.class));
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.soleChoiceWithoutControl(panel, List.of(), String.class));
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.soleChoiceWithoutControl(
+                panel, List.of("ridge", "other"), String.class));
+        panel.add(new JComboBox<>(new String[] {"ridge"}));
+        assertThrows(IllegalStateException.class,
+            () -> PublicGuiSmokeMain.soleChoiceWithoutControl(panel, List.of("ridge"), String.class));
     }
 
     @Test

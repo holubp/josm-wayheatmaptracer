@@ -15,6 +15,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Detached
 
 class V022EvidenceSnapshotTest {
     @Test
+    void canonicalHashPreservesPreOptimizationSnapshotReceipts() {
+        // Captured from the pinned pre-optimization Java 17 production implementation.
+        assertEquals("2703b23c5d167157c4c18e5bdfbbc198514649f82571e4115b790db42fce3281",
+            snapshot(Map.of("hot", field("hot"))).canonicalHash());
+        ScalarEvidenceField special = new ScalarEvidenceField(2, 2,
+            new double[] {-0.0, Double.MIN_VALUE, Double.NaN, Double.NEGATIVE_INFINITY},
+            new boolean[] {true, true, false, false}, lineage("hot"));
+        EvidenceSnapshot evidence = snapshot(Map.of("hot", special));
+        assertEquals("e6e9129dd632b61a77283246ee3f69e751f53752f71ae6d927852e15b8d8b299",
+            evidence.canonicalHash());
+        special.copiedValues()[0] = 1.0;
+        special.copiedValidity()[2] = true;
+        assertEquals("e6e9129dd632b61a77283246ee3f69e751f53752f71ae6d927852e15b8d8b299",
+            evidence.canonicalHash());
+    }
+
+    @Test
     void t007ConstructorInputsAndReturnedArraysCannotMutateSnapshot() {
         double[] values = {0.2, 0.8, 0.4, 0.6};
         boolean[] valid = {true, true, true, true};

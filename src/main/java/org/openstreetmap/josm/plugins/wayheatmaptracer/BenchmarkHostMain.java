@@ -161,7 +161,18 @@ public final class BenchmarkHostMain {
                 slideConfig, fixtureSource.sourceIdentity()));
         var actual = seed.network();
         var frozen = historical.network();
-        if (!actual.closure().equals(frozen.closure())
+        BenchmarkComparisonContract contract = BenchmarkComparisonContract.parse(System.getProperty(
+                "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
+        if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
+            BenchmarkComparisonContract.requireReadOnlyExtension(frozen, actual,
+                    BenchmarkComparisonContract.frozenKeys(seed.intervalPartition()));
+            BenchmarkComparisonContract.requireApprovedParameters(historical.request().parameterHash(), seed.parameterHash());
+            if (!historical.evidence().coordinateFrame().equals(seed.frame())
+                    || !historical.request().permissions().equals(seed.specification().permissions())
+                    || !historical.request().settingsHash().equals(seed.settingsHash())) {
+                throw new IllegalStateException("Original capture frame or effective settings differ");
+            }
+        } else if (!actual.closure().equals(frozen.closure())
                 || !actual.primitives().equals(frozen.primitives())
                 || !actual.incomingReferrerWatches().equals(frozen.incomingReferrerWatches())
                 || actual.sourceGeneration() != frozen.sourceGeneration()) {
@@ -220,7 +231,7 @@ public final class BenchmarkHostMain {
         throw new IllegalStateException("Real preview did not publish within host deadline");
     }
 
-    static <T> T onEventThread(Callable<T> action) throws Exception {
+    public static <T> T onEventThread(Callable<T> action) throws Exception {
         FutureTask<T> task = new FutureTask<>(action);
         if (SwingUtilities.isEventDispatchThread()) {
             task.run();

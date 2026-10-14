@@ -148,10 +148,12 @@ public final class ProbabilisticObservationModel {
         if (uniform < 0) throw new IllegalArgumentException("Observation mixture has no uniform component");
         for (int index = 0; index < components.size(); index++) {
             ObservationComponent component = components.get(index);
-            if (component.kind() != ObservationComponent.Kind.MEASURED) continue;
-            ProbabilisticProfile.Mode mode = findMode(profile, component);
+            if (component.kind() == ObservationComponent.Kind.MISSING) continue;
+            double reliability = component.kind() == ObservationComponent.Kind.MEASURED
+                    ? findMode(profile, component).positionalReliability()
+                    : findCensored(profile, component).directionalReliability();
             double original = result[index];
-            double retained = original * mode.positionalReliability();
+            double retained = original * reliability;
             result[index] = retained;
             result[uniform] += original - retained;
         }

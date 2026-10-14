@@ -1865,8 +1865,9 @@ class V022EndToEndTest {
         var assessment = new FixedIntervalEditPlanComposer().compose(
                 computed.intervalBatch(), Map.of());
         assertTrue(assessment.applyAvailable(), assessment.intervals().toString());
-        assertEquals(1, assessment.intervals().stream().filter(interval ->
-                interval.disposition() == FixedIntervalEditPlanComposer.Disposition.CHANGED).count(),
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED), assessment.intervals().stream()
+                .map(FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList(),
                 assessment.intervals().toString());
         AlignmentEditPlan plan = assessment.plan().orElseThrow();
         var receipt = onEdt(() -> NetworkSnapshotCapture.captureBound(fixture.dataSet(),
@@ -1888,6 +1889,24 @@ class V022EndToEndTest {
         onEdt(() -> { UndoRedoHandler.getInstance().add(command); return null; });
         assertAppliedPreviewWays(plan, fixture.dataSet(), command);
         assertEquals(1, UndoRedoHandler.getInstance().getUndoCommands().size());
+        Map<PrimitiveKey, DatasetPrimitiveState> applied = snapshot(fixture.dataSet());
+        for (int fixedIndex : new int[] {0, 4, 10, 16, 17, 20}) {
+            PrimitiveKey key = PrimitiveKey.existing(PrimitiveKey.Type.NODE,
+                    nodes.get(fixedIndex).getUniqueId());
+            assertEquals(before.get(key), applied.get(key),
+                    "Managed interval Apply must preserve protected occurrence " + fixedIndex);
+        }
+        for (Way way : fixture.dataSet().getWays()) {
+            if (way == fixture.selected()) continue;
+            PrimitiveKey wayKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, way.getUniqueId());
+            assertEquals(before.get(wayKey), applied.get(wayKey),
+                    "Managed interval Apply must preserve the connected receiver");
+            for (Node node : way.getNodes()) {
+                PrimitiveKey nodeKey = PrimitiveKey.existing(PrimitiveKey.Type.NODE, node.getUniqueId());
+                assertEquals(before.get(nodeKey), applied.get(nodeKey),
+                        "Managed interval Apply must preserve receiver nodes");
+            }
+        }
         onEdt(() -> { UndoRedoHandler.getInstance().undo(); return null; });
         assertEquals(before, snapshot(fixture.dataSet()));
         generation.incrementAndGet();

@@ -116,8 +116,11 @@ final class Format15NumericalPolicyReceipt {
     private static String inferencePolicy(TrackerMode engine) {
         return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
             ? ModernNumericalPolicy.B_INFERENCE + "/" + EvidenceModelParameters.orientationIntegrationVersion()
-                + "/" + EvidenceModelParameters.reliabilityPolicyVersion()
+                + "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine)
                 + "/" + EvidenceModelParameters.profileSamplingPolicyVersion()
+                + "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.stateSamplingPolicyVersionFor(engine)
                 + "/" + ProbabilisticExecutionPolicy.CURRENT_VERSION
             : "engine-specific";
     }

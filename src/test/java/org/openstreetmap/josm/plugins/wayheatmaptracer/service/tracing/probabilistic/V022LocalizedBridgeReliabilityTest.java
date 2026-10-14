@@ -93,6 +93,18 @@ class V022LocalizedBridgeReliabilityTest {
                 full.transform(), full.resolution(), decision, full.evidenceRegion(), full.fields(),
                 full.resampling(), full.sourceIdentity());
         assertTrue(clipped.routeSegmentAuthorized(SOURCE.get(0), SOURCE.get(1)));
+        List<ProbabilisticProfile> raw = profiles(clipped, false);
+        var callback = new ProbabilisticProfileFactory.RasterIntervalEvidence(clipped,
+                clipped.fields().get("scalar"), EvidenceModelParameters.defaults().localization(), null);
+        assertEquals(0.0, callback.support(raw.get(0), raw.get(0).modes().get(0),
+                raw.get(1), raw.get(1).modes().get(0), CancellationProbe.NONE), 0.0,
+                "the clipped x=7-9 flank cannot prove the direct x=0-16 leg");
+        assertTrue(callback.support(raw.get(1), raw.get(1).modes().get(0),
+                raw.get(2), raw.get(2).modes().get(0), CancellationProbe.NONE) > 0.0,
+                "the unaffected x=16-32 leg retains direct support");
+        var localized = profiles(clipped, true);
+        assertEquals(0.0, localized.get(1).modes().get(0).branchCoherence(), 0.0,
+                "the x=16 bridge marker cannot borrow its incoming halo bracket");
         assertEquals(0.0, coherence(clipped), 0.0,
                 "positive valid halo shoulders cannot certify positional continuation inside a clipped decision band");
     }
@@ -148,13 +160,16 @@ class V022LocalizedBridgeReliabilityTest {
         EvidenceSnapshot evidence = scene(1.0, 0.12);
         var raw = profiles(evidence, false);
         var localization = EvidenceModelParameters.defaults().localization();
-        AttemptMemoryLedger small = new AttemptMemoryLedger(8192L);
+        // Leave room for the new source-cell traversal so this control still refuses
+        // inside extraction rather than at the earlier owned geometry preflight.
+        AttemptMemoryLedger small = new AttemptMemoryLedger(12_288L);
         var smallOwner = small.rootOwner();
         var refusal = assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class,
                 () -> support(evidence, raw, localization, smallOwner));
         assertTrue(refusal.getCause() instanceof AttemptMemoryLedger.ResourceLimitException);
-        assertEquals(0L, small.currentBytes(), "query and extractor scratch close after memory rejection");
+        assertEquals(176L, small.currentBytes(), "only the two attempt-owned rectangle indexes remain");
         smallOwner.close();
+        assertEquals(0L, small.currentBytes());
 
         AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
         var owner = ledger.rootOwner();
@@ -162,10 +177,11 @@ class V022LocalizedBridgeReliabilityTest {
                 evidence, evidence.fields().get("scalar"), localization, owner);
         assertThrows(CancellationException.class, () -> callback.support(
                 raw.get(1), raw.get(1).modes().get(0), raw.get(2), raw.get(2).modes().get(0),
-                () -> ledger.peakBytes() > 8192L));
-        assertTrue(ledger.peakBytes() > 8192L, "cancellation happens after local extraction scratch admission");
-        assertEquals(0L, ledger.currentBytes());
+                () -> ledger.peakBytes() > 12_288L));
+        assertTrue(ledger.peakBytes() > 12_288L, "cancellation happens after local extraction scratch admission");
+        assertEquals(176L, ledger.currentBytes(), "canceled query retains only attempt indexes");
         owner.close();
+        assertEquals(0L, ledger.currentBytes());
     }
 
     private static double support(EvidenceSnapshot evidence, List<ProbabilisticProfile> raw,

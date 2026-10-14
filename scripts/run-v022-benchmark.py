@@ -32,6 +32,8 @@ HOST_JVM_EXPORTS = (
     "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
 )
 PRODUCER = "AlignWayAction.production-preview-v1"
+STRICT_CONTRACT = "rc6-identical-v1"
+APPROVED_CONTRACT = "rc10-approved-numerical-readonly-v1"
 BASELINE_REVISION = "6288aafe6dc79e948a6981ae795d27ee56a653fe"
 HEX64 = set("0123456789abcdef")
 _RC6_SOURCE = "src/main/java/org/openstreetmap/josm/plugins/wayheatmaptracer/"
@@ -168,12 +170,14 @@ def check_host(manifest: dict, output: Path) -> tuple[Path, Path]:
 
 def host_command(java: Path, run_dir: Path, josm: Path, plugin: Path,
                  archive: Path, osm: Path, tiles: Path, receipt: Path,
-                 nonce: str, case_version: str, action: str) -> list[str]:
+                 nonce: str, case_version: str, action: str,
+                 contract: str = STRICT_CONTRACT) -> list[str]:
     """Build one production GUI host invocation for preview or cancellation."""
     return [str(java), *HOST_JVM_EXPORTS, f"-Djava.io.tmpdir={run_dir}",
             f"-Djosm.pref={run_dir / 'josm-pref'}",
             f"-Djosm.userdata={run_dir / 'josm-userdata'}",
-            f"-Djosm.cache={run_dir / 'josm-cache'}", "-cp",
+            f"-Djosm.cache={run_dir / 'josm-cache'}",
+            f"-Dwayheatmaptracer.benchmark.comparisonContract={contract}", "-cp",
             os.pathsep.join((str(josm), str(plugin))), HOST_CLASS,
             str(archive), str(osm), str(tiles), str(receipt),
             str(plugin), nonce, case_version, action]
@@ -325,6 +329,24 @@ def require_same_preview(reference: dict, run: dict, case_id: str) -> None:
             raise GateFailure(f"{case_id}: {key} differs")
 
 
+def comparison_contract(manifest: dict) -> str:
+    contract = manifest.get("comparisonContract", STRICT_CONTRACT)
+    if contract not in (STRICT_CONTRACT, APPROVED_CONTRACT):
+        raise GateFailure("Unknown benchmark comparison contract")
+    return contract
+
+
+def require_cross_version_preview(reference: dict, run: dict, case_id: str, contract: str) -> dict:
+    """Keep raster equality; disclose approved geometry and publication changes."""
+    comparison_contract({"comparisonContract": contract})
+    if contract == STRICT_CONTRACT:
+        require_same_preview(reference, run, case_id)
+    elif reference.get("selectedRasterSha256") != run.get("selectedRasterSha256"):
+        raise GateFailure(f"{case_id}: selectedRasterSha256 differs")
+    return {key: {"baseline": reference.get(key), "candidate": run.get(key)}
+            for key in ("finalGeometrySha256", "kind") if reference.get(key) != run.get(key)}
+
+
 def measured_median(runs: list[dict], repetitions: int, case_id: str) -> float:
     measured = [run["totalNanos"] for run in runs if run["phase"] == "measured"]
     warmups = [run for run in runs if run["phase"] == "warmup"]
@@ -363,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         locks.append(exclusive_lock(fixed_lock_path(output)))
         manifest_path = args.manifest.expanduser().resolve()
         manifest = json.loads(manifest_path.read_text())
+        contract = comparison_contract(manifest)
+        report["comparisonContract"] = contract
         report["manifestSha256"] = sha256(manifest_path)
         if manifest.get("schemaVersion") != 1 or manifest.get("warmups", 0) < 1 or manifest.get("repetitions", 0) < 3:
             raise GateFailure("Manifest requires schema 1, >=1 warmup and >=3 measured repetitions")
@@ -393,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout = int(manifest.get("runTimeoutSeconds", 900))
         if timeout < 60 or timeout > 3600:
             raise GateFailure("Run timeout must be 60-3600 seconds")
+        report["comparisonTimeoutSeconds"] = timeout
         for case in cases:
             case_id = case["id"]
             archive = required_file(case["archive"], f"{case_id} archive")
@@ -412,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
                     host_env["JAVA_TOOL_OPTIONS"] = ""
                     command = host_command(
                         java, run_dir, josm, plugins[version], archive, osm, tiles,
-                        receipt, nonce, f"{case_id}:{version}", "preview")
+                        receipt, nonce, f"{case_id}:{version}", "preview", contract)
                     result = run_process(command, run_dir, run_dir / "host.log", timeout, host_env)
                     run_record = {"case": case_id, "version": version, "iteration": iteration,
                                   "phase": phase, **result}
@@ -427,21 +452,43 @@ def main(argv: list[str] | None = None) -> int:
             reference = grouped["baseline"][0]
             for version in ("baseline", "candidate"):
                 for run in grouped[version]:
-                    require_same_preview(reference, run, case_id)
+                    native_reference = grouped[version][0]
+                    require_same_preview(native_reference, run, case_id)
                     comparison_log = output / case_id / "comparisons" / f"{version}-{run['iteration']:02d}.log"
-                    compared = run_process([str(java), "-cp", os.pathsep.join((str(josm), str(plugins["candidate"]))),
-                                            COMPARE_CLASS, reference["diagnosticsPath"],
-                                            run["diagnosticsPath"], str(osm), case["osm"]["sha256"]],
-                                            output, comparison_log, 120)
+                    command = [str(java), "-cp", os.pathsep.join((str(josm), str(plugins["candidate"]))),
+                                            COMPARE_CLASS, native_reference["diagnosticsPath"],
+                                            run["diagnosticsPath"], str(osm), case["osm"]["sha256"]]
+                    if version == "candidate" and contract == APPROVED_CONTRACT:
+                        command.append(contract)
+                    compared = run_process(command, output, comparison_log, timeout)
                     report["comparisons"].append({"case": case_id, "version": version,
                                                   "iteration": run["iteration"], **compared})
                     if compared["exitCode"]:
                         raise GateFailure(f"Typed decision input differs: {comparison_log}")
+            differences = require_cross_version_preview(reference, grouped["candidate"][0], case_id, contract)
+            comparison_log = output / case_id / "comparisons" / "cross-version.log"
+            command = [str(java), "-cp", os.pathsep.join((str(josm), str(plugins["candidate"]))),
+                       COMPARE_CLASS, reference["diagnosticsPath"], grouped["candidate"][0]["diagnosticsPath"],
+                       str(osm), case["osm"]["sha256"]]
+            if contract == APPROVED_CONTRACT:
+                command.append(contract)
+            compared = run_process(command, output, comparison_log, timeout)
+            report["comparisons"].append({"case": case_id, "scope": "cross-version",
+                                          "comparisonContract": contract, **compared})
+            if compared["exitCode"]:
+                raise GateFailure(f"Typed cross-version contract failed: {comparison_log}")
+            native_evidence = {"log": str(comparison_log), "sha256": sha256(comparison_log),
+                               "records": comparison_log.read_text().splitlines()}
             medians = {version: measured_median(grouped[version], manifest["repetitions"], case_id)
                        for version in ("baseline", "candidate")}
             ratio = require_speedup(medians["baseline"], medians["candidate"], case_id)
             report["cases"][case_id] = {"medianTotalNanos": medians, "speedup": ratio,
-                                        "sameDecisionInput": True, "sameFinalGeometry": True}
+                                        "comparisonContract": contract,
+                                        "withinVersionDeterministic": True,
+                                        "crossVersionDifferences": differences,
+                                        "nativeComparisonEvidence": native_evidence,
+                                        "sameDecisionInput": contract == STRICT_CONTRACT,
+                                        "sameFinalGeometry": "finalGeometrySha256" not in differences}
             cancellation: dict[str, list[int]] = {"baseline": [], "candidate": []}
             for version in ("baseline", "candidate"):
                 for iteration in range(3):
@@ -453,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
                     receipt = run_dir / "cancellation.json"
                     command = host_command(
                         java, run_dir, josm, plugins[version], archive, osm, tiles,
-                        receipt, nonce, f"{case_id}:{version}", "cancel")
+                        receipt, nonce, f"{case_id}:{version}", "cancel", contract)
                     result = run_process(command, run_dir, run_dir / "host.log", timeout)
                     record = {"case": case_id, "version": version, "iteration": iteration,
                               "phase": "cancel", **result}

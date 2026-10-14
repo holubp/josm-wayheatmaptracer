@@ -393,6 +393,37 @@ class V022LocalizationCorrectionTest {
     }
 
     @Test
+    void actualEngineDoesNotInventStaircaseTurnsInsideAnUnsupportedStraightContinuation() {
+        var fixture = engineFixture(snapshot((x, y) -> x < 35 || x > 85
+                ? 0.02 + 0.6 * gaussian(y, 48 + 0.07 * (x - 10), 1.0) : 0.02), 1.5);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.begin();
+        TraceHypothesisSet traced;
+        Map<String, Number> counters;
+        try {
+            traced = new ProbabilisticTraceEngine("scalar").trace(fixture.request(),
+                    fixture.evidence(), fixture.network(), CancellationProbe.NONE);
+            counters = org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.snapshot();
+        } finally {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.end();
+        }
+        assertFalse(traced.hypotheses().isEmpty(), traced.explanation());
+        var points = traced.hypotheses().get(0).points();
+        double absoluteTurn = 0;
+        for (int index = 1; index + 1 < points.size(); index++) {
+            var a = points.get(index - 1);
+            var b = points.get(index);
+            var c = points.get(index + 1);
+            if (b.xMeters() < 40 || b.xMeters() > 80) continue;
+            double delta = Math.atan2(c.yMeters() - b.yMeters(), c.xMeters() - b.xMeters())
+                    - Math.atan2(b.yMeters() - a.yMeters(), b.xMeters() - a.xMeters());
+            absoluteTurn += Math.abs(Math.atan2(Math.sin(delta), Math.cos(delta)));
+        }
+        assertTrue(absoluteTurn < Math.toRadians(10),
+                "Actual default B must not invent a sampling staircase; turnRadians=" + absoluteTurn
+                        + " counters=" + counters);
+    }
+
+    @Test
     void actualEngineTransfersItsAccountedResultAndReportsTheAttemptPeak() {
         EngineFixture fixture = engineFixture();
         AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
@@ -421,20 +452,34 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(88)
                 + ProbabilisticInference.listBytes(11)
                 + diagnosticMapBytes;
-        long resultBytes = AttemptMemoryLedger.objectBytes(64)
+        long receiptBytes = AttemptMemoryLedger.objectBytes(40)
+                + 2L * AttemptMemoryLedger.objectBytes(24)
+                + AttemptMemoryLedger.referenceArrayBytes(1)
+                + AttemptMemoryLedger.objectBytes(8);
+        long resultBytes = AttemptMemoryLedger.objectBytes(72) + receiptBytes
                 + AttemptMemoryLedger.objectBytes(24)
                 + AttemptMemoryLedger.objectBytes(32);
-        assertEquals(2_248L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
-        assertEquals(2_248L, ledger.currentBytes());
+        assertEquals(2_440L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
+        assertEquals(2_440L, ledger.currentBytes());
         assertEquals(29L, maximumStates);
-        long descriptorScratch = AttemptMemoryLedger.arrayBytes(maximumStates * 32L, Double.BYTES)
-                + AttemptMemoryLedger.arrayBytes(maximumStates * 32L, Integer.BYTES)
-                + 3L * AttemptMemoryLedger.arrayBytes(maximumStates, Integer.BYTES);
-        assertEquals(11_576L, descriptorScratch);
-        assertEquals(8_908_896L + descriptorScratch, ledger.peakBytes(),
+        long descriptorScratch = AttemptMemoryLedger.objectBytes(48)
+                + 2L * AttemptMemoryLedger.arrayBytes(32, Integer.BYTES)
+                + AttemptMemoryLedger.arrayBytes(32, Double.BYTES)
+                + AttemptMemoryLedger.arrayBytes(32, Long.BYTES);
+        assertEquals(896L, descriptorScratch);
+        // Eleven retained modes each gained two exterior-reach doubles. The
+        // continuation frontend also retains one eleven-entry offset array.
+        long continuationMetadata = 11L * 2L * Double.BYTES
+                + AttemptMemoryLedger.arrayBytes(11, Double.BYTES);
+        assertEquals(280L, continuationMetadata);
+        assertEquals(8_908_896L + descriptorScratch + AttemptMemoryLedger.objectBytes(80)
+                + continuationMetadata, ledger.peakBytes(),
                 "the full forward/backward solve, not the smaller pair helper, owns the peak");
         assertEquals(6_786L, accounted.value().usage().pairVisits());
-        assertEquals(5_006_473L, accounted.value().usage().transitions());
+        var work = accounted.value().result().workAccounting().orElseThrow().bStages().get(0);
+        assertEquals(5_006_473L, work.forwardBackwardScores() + work.logicalKBestExtensions());
+        assertEquals(work.computedScores(), accounted.value().usage().transitions());
+        assertTrue(work.kBestScores() < work.logicalKBestExtensions());
         assertEquals(32, accounted.value().usage().rawAlternatives());
         assertEquals(1, accounted.value().usage().distinctAlternatives());
         assertEquals(ledger.peakBytes(), accounted.value().peakAdditionalRetainedBytes());
@@ -508,7 +553,7 @@ class V022LocalizationCorrectionTest {
                     + ProbabilisticInference.listBytes(after.samples().size())
                     + (after.modes().isEmpty() ? 0L
                         : ProbabilisticInference.listBytes(after.modes().size()))
-                    + after.modes().size() * AttemptMemoryLedger.objectBytes(112);
+                    + after.modes().size() * AttemptMemoryLedger.objectBytes(128);
         }
         assertEquals(rawCurrent + newGraphBytes, rawLedger.currentBytes(),
                 "shared profile children add no second charge while both generations coexist");
@@ -547,7 +592,15 @@ class V022LocalizationCorrectionTest {
         nearFullOwner.close();
         assertEquals(0L, nearFullLedger.currentBytes());
 
-        AttemptMemoryLedger diagnosticLedger = new AttemptMemoryLedger(168);
+        AttemptMemoryLedger tooSmallDiagnosticLedger = new AttemptMemoryLedger(168);
+        AttemptMemoryLedger.Owner tooSmallDiagnosticOwner = tooSmallDiagnosticLedger.rootOwner();
+        assertThrows(TraceMemoryLimitException.class, () -> new ProbabilisticTraceEngine("scalar")
+                .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
+                        CancellationProbe.NONE, tooSmallDiagnosticOwner));
+        assertEquals(0L, tooSmallDiagnosticLedger.currentBytes());
+        tooSmallDiagnosticOwner.close();
+
+        AttemptMemoryLedger diagnosticLedger = new AttemptMemoryLedger(176);
         AttemptMemoryLedger.Owner diagnosticOwner = diagnosticLedger.rootOwner();
         Accounted<TraceEngineRun> diagnostic = new ProbabilisticTraceEngine("scalar")
                 .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
@@ -555,8 +608,8 @@ class V022LocalizationCorrectionTest {
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,
                 diagnostic.value().result().status());
         assertTrue(diagnostic.value().result().hypotheses().isEmpty());
-        assertEquals(168L, diagnosticLedger.currentBytes());
-        assertEquals(168L, diagnosticLedger.peakBytes(),
+        assertEquals(176L, diagnosticLedger.currentBytes());
+        assertEquals(176L, diagnosticLedger.peakBytes(),
                 "working allocations are closed before the atomic native diagnostic is built");
         diagnostic.owner().close();
         diagnosticOwner.close();
@@ -566,7 +619,7 @@ class V022LocalizationCorrectionTest {
     @Test
     void candidateOutputIsAtomicAtSetAndRunWrapperBoundaries() {
         EngineFixture fixture = engineFixture();
-        for (long cap : List.of(79L, 120L)) {
+        for (long cap : List.of(79L, 120L, 168L, 175L)) {
             AttemptMemoryLedger ledger = new AttemptMemoryLedger(cap);
             AttemptMemoryLedger.Owner owner = ledger.rootOwner();
             TraceMemoryLimitException abort = assertThrows(TraceMemoryLimitException.class,
@@ -579,13 +632,14 @@ class V022LocalizationCorrectionTest {
             owner.close();
         }
 
-        AttemptMemoryLedger enoughLedger = new AttemptMemoryLedger(168);
+        AttemptMemoryLedger enoughLedger = new AttemptMemoryLedger(176);
         AttemptMemoryLedger.Owner enoughOwner = enoughLedger.rootOwner();
         Accounted<TraceEngineRun> accounted = new ProbabilisticTraceEngine("absent")
                 .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
                         CancellationProbe.NONE, enoughOwner);
         assertEquals(TraceHypothesisSet.Status.NO_ROUTE, accounted.value().result().status());
         assertTrue(accounted.value().result().hypotheses().isEmpty());
+        assertEquals(176L, enoughLedger.currentBytes());
         accounted.owner().close();
         enoughOwner.close();
         assertEquals(0L, enoughLedger.currentBytes());

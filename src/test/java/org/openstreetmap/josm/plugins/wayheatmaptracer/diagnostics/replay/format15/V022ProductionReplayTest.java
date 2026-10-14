@@ -382,6 +382,123 @@ class V022ProductionReplayTest {
     }
 
     @Test
+    void executingStateLatticePolicyDistinguishesDirectBFromHybrid() {
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        String direct = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
+                TrackerMode.PROBABILISTIC).bytes(), StandardCharsets.UTF_8);
+        String hybrid = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
+                TrackerMode.HYBRID).bytes(), StandardCharsets.UTF_8);
+        assertTrue(direct.contains("/" + EvidenceModelParameters.stateSamplingPolicyVersion()));
+        assertTrue(hybrid.contains("/half-native-baseline-v1"),
+                "Hybrid executes baseline state sampling, not B's proposal continuation policy");
+        assertFalse(hybrid.contains("/" + EvidenceModelParameters.stateSamplingPolicyVersion()));
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyFor(TrackerMode.PROBABILISTIC));
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyFor(TrackerMode.HYBRID));
+        for (TrackerMode mode : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            var expectedPolicy = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyFor(mode);
+            assertEquals(expectedPolicy, reliabilityPolicy(productionEngine(mode)));
+            assertEquals(expectedPolicy, reliabilityPolicy(replayEngine(mode)));
+        }
+        for (TrackerMode mode : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
+            String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(), input.request().parameterHash(), mode, mode).bytes(),
+                    StandardCharsets.UTF_8);
+            assertFalse(receipt.contains("/" + EvidenceModelParameters.stateSamplingPolicyVersion()));
+            assertFalse(receipt.contains("/half-native-baseline-v1"));
+        }
+    }
+
+    @Test
+    void wrongStateLatticePolicyRemainsReadableButCannotCertifyReplay(@TempDir Path directory)
+            throws Exception {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            FrozenReplayInput input = fixture(engine, Scene.RIDGE);
+            Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                    "runtime-state-lattice-test-" + engine.name(), input, engine);
+            String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+            String right = engine == TrackerMode.PROBABILISTIC
+                    ? "/" + EvidenceModelParameters.stateSamplingPolicyVersion()
+                    : "/half-native-baseline-v1";
+            List<String> invalidPolicies = List.of(current.replace(right, engine == TrackerMode.PROBABILISTIC
+                            ? "/half-native-baseline-v1" : "/" + EvidenceModelParameters.stateSamplingPolicyVersion()),
+                    current.replace(right, ""));
+            for (int variant = 0; variant < invalidPolicies.size(); variant++) {
+                String invalidPolicy = invalidPolicies.get(variant);
+                assertNotEquals(current, invalidPolicy);
+                Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+                artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", invalidPolicy));
+                Path path = directory.resolve("invalid-state-lattice-receipt-" + engine.name()
+                        + "-" + variant + ".zip");
+                Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                        base.parameterHash(), artifacts), path);
+                Format15Archive archive = Format15ArchiveReader.read(path);
+                assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                        archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+                assertEquals(input.request().parameterHash(), archive.parameterHash());
+                var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(
+                        archive, ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(), archive.parameterHash()));
+                assertEquals("numerical-policy-invalid", failure.getMessage());
+            }
+        }
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine
+            productionEngine(TrackerMode mode) {
+        try {
+            var pipeline = new ModernTracePipeline(
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                            .ProbabilisticTraceEngine("native"));
+            var method = ModernTracePipeline.class.getDeclaredMethod("engine", TrackerMode.class, String.class);
+            method.setAccessible(true);
+            return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine)
+                    method.invoke(pipeline, mode, "native");
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError("Unable to inspect constructed production engine", exception);
+        }
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine
+            replayEngine(TrackerMode mode) {
+        try {
+            var method = Format15ReplayRunner.class.getDeclaredMethod("engine", TrackerMode.class, String.class);
+            method.setAccessible(true);
+            return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine)
+                    method.invoke(null, mode, "native");
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError("Unable to inspect constructed replay engine", exception);
+        }
+    }
+
+    private static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+            .ProbabilisticTraceEngine.ReliabilityPolicy reliabilityPolicy(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine engine) {
+        try {
+            var probabilistic = engine;
+            if (engine instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.HybridTraceEngine) {
+                var hybridField = engine.getClass().getDeclaredField("probabilisticEngine");
+                hybridField.setAccessible(true);
+                probabilistic = (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine)
+                        hybridField.get(engine);
+            }
+            var policyField = probabilistic.getClass().getDeclaredField("reliabilityPolicy");
+            policyField.setAccessible(true);
+            return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.ReliabilityPolicy) policyField.get(probabilistic);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError("Unable to inspect constructed B reliability policy", exception);
+        }
+    }
+
+    @Test
     void oldSamplingReceiptReadsOriginalInputButCannotCertifyCurrentFactory(@TempDir Path directory)
             throws Exception {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
@@ -406,8 +523,9 @@ class V022ProductionReplayTest {
     @Test
     void bRuntimeReliabilityPolicyIsBoundIndependentlyOfCapturedParameters() {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
-        String runtime = "/" + EvidenceModelParameters.reliabilityPolicyVersion();
         for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            String runtime = "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine);
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                     input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
                     engine).bytes(), StandardCharsets.UTF_8);
@@ -417,7 +535,174 @@ class V022ProductionReplayTest {
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                     input.canonicalHash(), input.request().parameterHash(), engine,
                     engine).bytes(), StandardCharsets.UTF_8);
-            assertFalse(receipt.contains(runtime));
+            assertFalse(receipt.contains("/direct-longitudinal-"));
+            assertFalse(receipt.contains("/baseline-v1/"));
+        }
+    }
+
+    @Test
+    void bReceiptDeclaresExecutedCensoredDirectionReliability() {
+        var input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
+                TrackerMode.PROBABILISTIC).bytes(), StandardCharsets.UTF_8);
+        assertTrue(receipt.contains("/direct-longitudinal-10/"));
+        assertFalse(receipt.contains("/baseline-v1/"));
+        assertEquals("direct-longitudinal-8", EvidenceModelParameters.reliabilityPolicyVersion(),
+                "shared numeric defaults do not change for a B-only work projection");
+    }
+
+    @Test
+    void oldCensoredDirectionReceiptIsReadableButCannotCertifyCurrentB(@TempDir Path directory) throws Exception {
+        var input = fixture(TrackerMode.PROBABILISTIC,Scene.RIDGE);
+        var base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "old-censored-direction",input,TrackerMode.PROBABILISTIC);
+        String current = new String(base.artifact("numerical-policy.json").bytes(),StandardCharsets.UTF_8);
+        assertTrue(current.contains("/direct-longitudinal-10/"));
+        var artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("numerical-policy.json",Format15Artifact.text("numerical-policy.json",
+                current.replace("/direct-longitudinal-10/","/direct-longitudinal-9/")));
+        var path = directory.resolve("old-censored-direction.zip");
+        Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(),base.sourceIdentityHash(),base.parameterHash(),artifacts),path);
+        var archive = Format15ArchiveReader.read(path);
+        assertEquals(input.canonicalHash(),FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+        var failure = assertThrows(ReplayMismatchException.class,()->Format15ReplayRunner.replay(
+                archive,ReplayLevel.SCALAR_INFERENCE,archive.sourceIdentityHash(),archive.parameterHash()));
+        assertEquals("numerical-policy-invalid",failure.getMessage());
+    }
+
+    @Test
+    void hybridReceiptDeclaresItsActualBaselinePolicy() {
+        var input = fixture(TrackerMode.HYBRID, Scene.RIDGE);
+        String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                input.canonicalHash(), input.request().parameterHash(), TrackerMode.HYBRID,
+                TrackerMode.HYBRID).bytes(), StandardCharsets.UTF_8);
+        assertTrue(receipt.contains("/baseline-v1/"));
+        assertFalse(receipt.contains("/direct-longitudinal-"));
+    }
+
+    @Test
+    void versionFourReliabilityReceiptsCannotCertifyContextVetoRuntime(@TempDir Path directory) throws Exception {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            FrozenReplayInput input = fixture(engine, Scene.RIDGE);
+            Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                    "old-context-veto-policy-test", input, engine);
+            String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+            String old = current.replace("/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine),
+                    "/direct-longitudinal-4");
+            assertNotEquals(current, old, "activated context veto must be distinguished from version four");
+            Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+            artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+            Path path = directory.resolve(engine.name() + "-version-four.zip");
+            Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                    base.parameterHash(), artifacts), path);
+            Format15Archive archive = Format15ArchiveReader.read(path);
+            assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                    archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+            var failure = assertThrows(ReplayMismatchException.class, () ->
+                    Format15NumericalPolicyReceipt.validate(archive, input, input.canonicalHash()));
+            assertEquals("numerical-policy-invalid", failure.getMessage());
+        }
+    }
+
+    @Test
+    void versionFiveReceiptCannotCertifySingletonRecoveryRuntime(@TempDir Path directory) throws Exception {
+        assertEquals("direct-longitudinal-8", EvidenceModelParameters.reliabilityPolicyVersion());
+        FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                "old-rms-restoration-policy-test", input, TrackerMode.PROBABILISTIC);
+        String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+        String old = current.replace("/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(TrackerMode.PROBABILISTIC), "/direct-longitudinal-5");
+        assertNotEquals(current, old);
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+        Path path = directory.resolve("version-five-rms-policy.zip");
+        Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                base.parameterHash(), artifacts), path);
+        Format15Archive archive = Format15ArchiveReader.read(path);
+        assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+        var failure = assertThrows(ReplayMismatchException.class, () ->
+                Format15NumericalPolicyReceipt.validate(archive, input, input.canonicalHash()));
+        assertEquals("numerical-policy-invalid", failure.getMessage());
+    }
+
+    @Test
+    void versionSixReceiptsCannotCertifyQueryLocalProofReuse(@TempDir Path directory) throws Exception {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            FrozenReplayInput input = fixture(engine, Scene.RIDGE);
+            Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                    "old-query-local-proof-policy", input, engine);
+            String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+            String old = current.replace("/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine), "/direct-longitudinal-6");
+            assertNotEquals(current, old);
+            Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+            artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+            Path path = directory.resolve(engine.name() + "-version-six.zip");
+            Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                    base.parameterHash(), artifacts), path);
+            Format15Archive archive = Format15ArchiveReader.read(path);
+            var failure = assertThrows(ReplayMismatchException.class, () ->
+                    Format15NumericalPolicyReceipt.validate(archive, input, input.canonicalHash()));
+            assertEquals("numerical-policy-invalid", failure.getMessage());
+        }
+    }
+
+    @Test
+    void versionSevenReceiptsCannotCertifyOwnedMembershipAdmission(@TempDir Path directory) throws Exception {
+        assertEquals("direct-longitudinal-8",EvidenceModelParameters.reliabilityPolicyVersion());
+        for(TrackerMode engine:List.of(TrackerMode.PROBABILISTIC,TrackerMode.HYBRID)) {
+            FrozenReplayInput input=fixture(engine,Scene.RIDGE);
+            Format15Bundle base=Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                    "old-owned-membership-policy",input,engine);
+            String current=new String(base.artifact("numerical-policy.json").bytes(),StandardCharsets.UTF_8);
+            String old=current.replace("/"+org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine),"/direct-longitudinal-7");
+            assertNotEquals(current,old);
+            Map<String,Format15Artifact> artifacts=new LinkedHashMap<>(base.artifacts());
+            artifacts.put("numerical-policy.json",Format15Artifact.text("numerical-policy.json",old));
+            Path path=directory.resolve(engine.name()+"-version-seven.zip");
+            Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(),base.sourceIdentityHash(),
+                    base.parameterHash(),artifacts),path);
+            Format15Archive archive=Format15ArchiveReader.read(path);
+            var failure=assertThrows(ReplayMismatchException.class,()->
+                    Format15NumericalPolicyReceipt.validate(archive,input,input.canonicalHash()));
+            assertEquals("numerical-policy-invalid",failure.getMessage());
+        }
+        for(TrackerMode engine:List.of(TrackerMode.DIRECTIONAL_IMAGE,TrackerMode.CORRIDOR_AWARE)) {
+            FrozenReplayInput input=fixture(engine,Scene.RIDGE);
+            String receipt=new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
+                    input.canonicalHash(),input.request().parameterHash(),engine,engine).bytes(),StandardCharsets.UTF_8);
+            assertFalse(receipt.contains("/direct-longitudinal-8"));
+        }
+    }
+
+    @Test
+    void versionEightReceiptsRemainReadableButCannotCertifyProjectedRuntime(@TempDir Path directory)
+            throws Exception {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+            FrozenReplayInput input = fixture(engine, Scene.RIDGE);
+            Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
+                    "old-full-context-work-policy", input, engine);
+            String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
+            String old = current.replace("/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                    .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine), "/direct-longitudinal-8");
+            assertNotEquals(current, old, "old B work and incorrectly labelled Hybrid must not certify runtime");
+            Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+            artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));
+            Path path = directory.resolve(engine.name() + "-version-eight.zip");
+            Format15BundleWriter.write(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+                    base.parameterHash(), artifacts), path);
+            Format15Archive archive = Format15ArchiveReader.read(path);
+            assertEquals(input.canonicalHash(), FrozenReplayCodec.decode(
+                    archive.artifact("frozen-input.bin").orElseThrow().bytes()).canonicalHash());
+            assertEquals(input.request().parameterHash(), archive.parameterHash());
+            var failure = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(
+                    archive, ReplayLevel.SCALAR_INFERENCE, archive.sourceIdentityHash(), archive.parameterHash()));
+            assertEquals("numerical-policy-invalid", failure.getMessage());
         }
     }
 
@@ -428,7 +713,8 @@ class V022ProductionReplayTest {
         Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                 "runtime-reliability-test", input, TrackerMode.PROBABILISTIC);
         String current = new String(base.artifact("numerical-policy.json").bytes(), StandardCharsets.UTF_8);
-        String old = current.replace("/" + EvidenceModelParameters.reliabilityPolicyVersion(), "");
+        String old = current.replace("/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(TrackerMode.PROBABILISTIC), "");
         assertNotEquals(current, old);
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put("numerical-policy.json", Format15Artifact.text("numerical-policy.json", old));

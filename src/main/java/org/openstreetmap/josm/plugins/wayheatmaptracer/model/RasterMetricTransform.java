@@ -112,12 +112,37 @@ public record RasterMetricTransform(
         double dy = point.yMeters() - origin.yMeters();
         double determinant = xAxisEastMetersPerSourcePixel * yAxisNorthMetersPerSourcePixel
             - xAxisNorthMetersPerSourcePixel * yAxisEastMetersPerSourcePixel;
+        return new RasterPoint(rasterX(dx, dy, determinant), rasterY(dx, dy, determinant));
+    }
+
+    /**
+     * Maximum absolute raster-axis displacement between metric endpoints, without allocation.
+     * Sampling at twice this span bounds each raster-axis step to half a pixel, including
+     * anisotropic and skewed transforms. Non-finite results must be rejected by the caller.
+     */
+    public double maximumRasterAxisSpan(double leftEast, double leftNorth,
+            double rightEast, double rightNorth) {
+        double determinant = xAxisEastMetersPerSourcePixel * yAxisNorthMetersPerSourcePixel
+            - xAxisNorthMetersPerSourcePixel * yAxisEastMetersPerSourcePixel;
+        double lx = leftEast - origin.xMeters(), ly = leftNorth - origin.yMeters();
+        double rx = rightEast - origin.xMeters(), ry = rightNorth - origin.yMeters();
+        return Math.max(Math.abs(rasterX(rx, ry, determinant) - rasterX(lx, ly, determinant)),
+                Math.abs(rasterY(rx, ry, determinant) - rasterY(lx, ly, determinant)));
+    }
+
+    private double rasterX(double dx, double dy, double determinant) {
         double axisX = (dx * yAxisNorthMetersPerSourcePixel - dy * yAxisEastMetersPerSourcePixel)
             / determinant;
+        double phase = originKind == OriginKind.MANAGED_SOURCE_PIXEL_BOUNDARY ? 0.5 : 0.0;
+        double scale = axisUnit == AxisUnit.SOURCE_PIXEL ? rasterPixelsPerSourcePixel : 1.0;
+        return (axisX - phase) * scale;
+    }
+
+    private double rasterY(double dx, double dy, double determinant) {
         double axisY = (dy * xAxisEastMetersPerSourcePixel - dx * xAxisNorthMetersPerSourcePixel)
             / determinant;
         double phase = originKind == OriginKind.MANAGED_SOURCE_PIXEL_BOUNDARY ? 0.5 : 0.0;
         double scale = axisUnit == AxisUnit.SOURCE_PIXEL ? rasterPixelsPerSourcePixel : 1.0;
-        return new RasterPoint((axisX - phase) * scale, (axisY - phase) * scale);
+        return (axisY - phase) * scale;
     }
 }

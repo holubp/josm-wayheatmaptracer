@@ -73,6 +73,8 @@ class V022BenchmarkFinalOutputComparisonTest {
                 output.engine(), output.inference(), routes, output.inputHash());
         var baseline = archive(directory.resolve("base.zip"), bundle("old-build", input, output));
         var candidate = archive(directory.resolve("candidate.zip"), bundle("new-build", input, altered));
+        assertEquals(altered.routes(), BenchmarkFinalOutputComparison.verifyNative(candidate, input).output().routes(),
+                "cross-version admission validates the native companion without demanding old quality values");
         assertThrows(IllegalStateException.class,
                 () -> BenchmarkFinalOutputComparison.compare(baseline, input, candidate, input));
     }
@@ -85,6 +87,16 @@ class V022BenchmarkFinalOutputComparisonTest {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(original.artifacts());
         if (corruption.equals("missing-companion")) artifacts.remove(FinalOutputComponentsCodec.ARTIFACT);
         else if (corruption.equals("missing-expectation")) artifacts.remove(FinalReplayExpectation.ARTIFACT_NAME);
+        else if (corruption.equals("forged-input-binding") || corruption.equals("forged-parameter-binding")
+                || corruption.equals("forged-build-binding")) {
+            String expectation = new String(artifacts.get(FinalReplayExpectation.ARTIFACT_NAME).bytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String from = corruption.equals("forged-input-binding") ? input.canonicalHash()
+                    : corruption.equals("forged-parameter-binding") ? input.request().parameterHash() : "\"build\"";
+            String to = corruption.equals("forged-build-binding") ? "\"forged-build\"" : "f".repeat(64);
+            artifacts.put(FinalReplayExpectation.ARTIFACT_NAME,
+                    Format15Artifact.text(FinalReplayExpectation.ARTIFACT_NAME, expectation.replace(from, to)));
+        }
         else if (corruption.equals("trailing-companion")) {
             byte[] old = artifacts.get(FinalOutputComponentsCodec.ARTIFACT).bytes();
             artifacts.put(FinalOutputComponentsCodec.ARTIFACT, Format15Artifact.binary(
@@ -104,11 +116,13 @@ class V022BenchmarkFinalOutputComparisonTest {
                 original.sourceIdentityHash(), original.parameterHash(), artifacts));
         assertThrows(RuntimeException.class,
                 () -> BenchmarkFinalOutputComparison.compare(good, input, bad, input));
+        assertThrows(RuntimeException.class, () -> BenchmarkFinalOutputComparison.verifyNative(bad, input));
     }
 
     static Stream<String> corruptions() {
         return Stream.of("missing-companion", "missing-expectation", "trailing-companion",
-                "final-route", "blocked", "missing-index", "invalid-index");
+                "final-route", "blocked", "missing-index", "invalid-index", "forged-input-binding",
+                "forged-parameter-binding", "forged-build-binding");
     }
 
     private static Format15Bundle bundle(String build, FrozenReplayInput frozen,

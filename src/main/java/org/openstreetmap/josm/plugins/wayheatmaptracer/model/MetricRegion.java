@@ -4,9 +4,12 @@ import java.awt.geom.Area;
 import java.awt.geom.Path2D;
 
 import java.util.ArrayList;
+import java.util.AbstractList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.RandomAccess;
 import java.util.function.LongConsumer;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
@@ -16,6 +19,52 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 public final class MetricRegion {
     private static final double EPSILON = 1e-10;
     private final List<List<MetricPoint>> polygons;
+
+    /** Immutable bounds borrowed only while their creating attempt owner remains alive. */
+    public static final class YMembershipIndex {
+        private final MetricRegion region;
+        private final double[] lower, upper;
+        private YMembershipIndex(MetricRegion region, double[] lower, double[] upper) {
+            this.region = region; this.lower = lower; this.upper = upper;
+        }
+    }
+
+    /** Prepares owned point bounds; segment edge events always remain complete. */
+    public YMembershipIndex prepareYMembership(CancellationProbe cancellation,
+            LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        if (cancellation == null || admission == null)
+            throw new IllegalArgumentException("Membership work controls are required");
+        cancellation.checkpoint();
+        admission.accept(1L);
+        AttemptMemoryLedger.Owner inventory = owner == null ? null : owner.child("region-y-membership");
+        boolean complete = false;
+        try {
+            cancellation.checkpoint();
+            admission.accept(Math.addExact(Math.multiplyExact(2L, polygons.size()), 1L));
+            if (inventory != null) inventory.reserve(Math.addExact(AttemptMemoryLedger.objectBytes(24),
+                    Math.multiplyExact(2L, AttemptMemoryLedger.arrayBytes(polygons.size(), Double.BYTES))));
+            double[] lower = new double[polygons.size()];
+            double[] upper = new double[polygons.size()];
+            for (int index = 0; index < polygons.size(); index++) {
+                cancellation.checkpoint(); admission.accept(1L);
+                List<MetricPoint> polygon = polygons.get(index);
+                double minimum = Double.POSITIVE_INFINITY, maximum = Double.NEGATIVE_INFINITY;
+                for (int vertex = 0; vertex < polygon.size(); vertex++) {
+                    cancellation.checkpoint(); admission.accept(1L);
+                    double y = polygon.get(vertex).yMeters();
+                    minimum = Math.min(minimum, y); maximum = Math.max(maximum, y);
+                }
+                // Exactly the original onSegment Y bounds, including conservative overflow.
+                lower[index] = minimum - 1e-9;
+                upper[index] = maximum + 1e-9;
+            }
+            YMembershipIndex result = new YMembershipIndex(this, lower, upper);
+            complete = true;
+            return result;
+        } finally {
+            if (!complete && inventory != null) inventory.close();
+        }
+    }
 
     /** Creates a union from nondegenerate simple polygons with at least three vertices each. */
     public MetricRegion(List<List<MetricPoint>> polygons) {
@@ -65,6 +114,28 @@ public final class MetricRegion {
      */
     public boolean containsSegment(MetricPoint start, MetricPoint end,
             CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        return containsSegment(start, end, cancellation, admission, owner, false, null);
+    }
+
+    /**
+     * Proves the same segment authority with explicitly owned event storage grown only
+     * for distinct observed events. Intended for modern raster interval evidence.
+     */
+    public boolean containsSegmentWithBoundedEvents(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        return containsSegment(start, end, cancellation, admission, owner, true, null);
+    }
+
+    /** Uses owned bounds for membership only; foreign indices retain the original predicate. */
+    public boolean containsSegmentWithBoundedEvents(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner,
+            YMembershipIndex membershipIndex) {
+        return containsSegment(start, end, cancellation, admission, owner, true, membershipIndex);
+    }
+
+    private boolean containsSegment(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner,
+            boolean boundedEvents, YMembershipIndex membershipIndex) {
         if (cancellation == null || admission == null) {
             throw new IllegalArgumentException("Segment authority work controls are required");
         }
@@ -81,18 +152,26 @@ public final class MetricRegion {
         }
         AttemptMemoryLedger.Owner scratch = owner == null ? null : owner.child("segment-authority");
         try {
-        // Boxed events, retained references, opaque sort scratch, and transient midpoint points.
-        long bytes = Math.addExact(AttemptMemoryLedger.arrayBytes(eventBound, 2L * Long.BYTES),
+        // Bounded storage also needs one live deduplication iterator (three ints and
+        // its list reference), independently of the separately reserved sort scratch.
+        long bytes = boundedEvents
+                ? AttemptMemoryLedger.objectBytes(56) + AttemptMemoryLedger.objectBytes(16)
+                    + AttemptMemoryLedger.objectBytes(24)
+                : Math.addExact(AttemptMemoryLedger.arrayBytes(eventBound, 2L * Long.BYTES),
                 Math.addExact(AttemptMemoryLedger.objectBytes(24),
                     Math.multiplyExact(eventBound, 2L * AttemptMemoryLedger.objectBytes(16))));
         if (scratch != null) scratch.reserve(bytes);
-        if (!contains(start, cancellation, admission) || !contains(end, cancellation, admission)) {
+        if (!contains(start, cancellation, admission, membershipIndex)
+                || !contains(end, cancellation, admission, membershipIndex)) {
             return false;
         }
-        admission.accept(eventBound);
-        List<Double> events = new ArrayList<>((int) eventBound);
-        events.add(0.0);
-        events.add(1.0);
+        if (boundedEvents) admission.accept(1L); // Facade allocation, before construction.
+        else admission.accept(eventBound);
+        List<Double> events = boundedEvents
+                ? new BoundedEventList((int) eventBound, cancellation, admission, scratch)
+                : new ArrayList<>((int) eventBound);
+        appendEvent(events, 0.0);
+        appendEvent(events, 1.0);
         for (List<MetricPoint> polygon : polygons) {
             for (int index = 0; index < polygon.size(); index++) {
                 cancellation.checkpoint();
@@ -112,7 +191,7 @@ public final class MetricRegion {
             double left = events.get(index - 1);
             double right = events.get(index);
             if (right - left > EPSILON && !contains(interpolate(start, end, (left + right) / 2.0),
-                    cancellation, admission)) {
+                    cancellation, admission, membershipIndex)) {
                 return false;
             }
         }
@@ -122,10 +201,99 @@ public final class MetricRegion {
         }
     }
 
+    /** Keeps ArrayList's exact sort while preventing every implicit backing-array resize. */
+    private static final class BoundedEventList extends AbstractList<Double> implements RandomAccess {
+        private final int bound;
+        private final CancellationProbe cancellation;
+        private final LongConsumer admission;
+        private final AttemptMemoryLedger.Owner owner;
+        private ArrayList<Double> values;
+        private AttemptMemoryLedger.Reservation storage;
+        private int capacity;
+
+        BoundedEventList(int bound, CancellationProbe cancellation, LongConsumer admission,
+                AttemptMemoryLedger.Owner owner) {
+            this.bound = bound; this.cancellation = cancellation;
+            this.admission = admission; this.owner = owner;
+            capacity = 2;
+            cancellation.checkpoint();
+            admission.accept(capacity + 1L); // Backing slots and the ArrayList object.
+            storage = reserveStorage(capacity);
+            values = new ArrayList<>(capacity);
+        }
+
+        private AttemptMemoryLedger.Reservation reserveStorage(int slots) {
+            return owner == null ? null : owner.reserve(Math.addExact(
+                    AttemptMemoryLedger.objectBytes(24), AttemptMemoryLedger.referenceArrayBytes(slots)));
+        }
+
+        void append(double value) {
+            cancellation.checkpoint();
+            if (values.size() == capacity) grow();
+            admission.accept(1L); // A new boxed event and its occupied slot.
+            if (owner != null) owner.reserve(AttemptMemoryLedger.objectBytes(Double.BYTES));
+            values.add(Double.valueOf(value));
+            modCount++;
+        }
+
+        private void grow() {
+            if (capacity >= bound) throw new IllegalArgumentException("Segment event inventory exceeded");
+            int next = Math.toIntExact(Math.min((long) bound, Math.multiplyExact(2L, capacity)));
+            cancellation.checkpoint();
+            admission.accept(next + 1L);
+            var nextStorage = reserveStorage(next); // Old and new storage coexist through copying.
+            ArrayList<Double> replacement = new ArrayList<>(next);
+            for (int index = 0; index < values.size(); index++) {
+                cancellation.checkpoint();
+                admission.accept(2L); // Read old reference, then write it into new storage.
+                replacement.add(values.get(index));
+            }
+            values = replacement;
+            capacity = next;
+            if (storage != null) storage.close();
+            storage = nextStorage;
+        }
+
+        @Override public Double get(int index) { return values.get(index); }
+        @Override public int size() { return values.size(); }
+        @Override public void sort(Comparator<? super Double> comparator) {
+            cancellation.checkpoint();
+            // Retain the existing conservative opaque-sort inventory, now sized by
+            // actual events. Boxed values and live backing storage are owned separately.
+            long bytes = Math.addExact(AttemptMemoryLedger.arrayBytes(size(), 2L * Long.BYTES),
+                    Math.addExact(AttemptMemoryLedger.objectBytes(24),
+                        Math.multiplyExact((long) size(), 2L * AttemptMemoryLedger.objectBytes(16))));
+            try (var sortScratch = owner == null ? null : owner.reserve(bytes)) {
+                values.sort(comparator);
+            }
+            cancellation.checkpoint();
+        }
+    }
+
+    private static void appendEvent(List<Double> events, double value) {
+        if (events instanceof BoundedEventList bounded) bounded.append(value);
+        else events.add(value);
+    }
+
     private boolean contains(MetricPoint point, CancellationProbe cancellation, LongConsumer admission) {
         if (point == null) return false;
         for (List<MetricPoint> polygon : polygons) {
             if (contains(polygon, point, cancellation, admission)) return true;
+        }
+        return false;
+    }
+
+    private boolean contains(MetricPoint point, CancellationProbe cancellation, LongConsumer admission,
+            YMembershipIndex index) {
+        if (index == null || point == null) return contains(point, cancellation, admission);
+        cancellation.checkpoint(); admission.accept(1L);
+        if (index.region != this) return contains(point, cancellation, admission);
+        for (int polygonIndex = 0; polygonIndex < polygons.size(); polygonIndex++) {
+            cancellation.checkpoint();
+            admission.accept(2L); // Both comparisons precede even an early outside result.
+            if (point.yMeters() < index.lower[polygonIndex]
+                    || point.yMeters() > index.upper[polygonIndex]) continue;
+            if (contains(polygons.get(polygonIndex), point, cancellation, admission)) return true;
         }
         return false;
     }
@@ -276,7 +444,7 @@ public final class MetricRegion {
                 admission.accept(1L);
                 if (Math.abs(existing - bounded) <= EPSILON) return;
             }
-            events.add(bounded);
+            appendEvent(events, bounded);
         }
     }
 

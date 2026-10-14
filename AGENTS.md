@@ -1,5 +1,7 @@
 # AGENTS
 
+- Benchmark contracts must remain explicit. Retain strict RC6 equality as the default; a named approved numerical/read-only protection comparison must bind current interval authority and partition to fresh original-OSM capture, preserve each version's native output/work/plan identities, and report changed geometry/kind. Do not treat self-consistent archive hashes as factual authority or silently weaken the two-case speed, repetition, production-observer, or cancellation gates.
+
 - Modern job cancellation must atomically target the latest nonterminal state of the same attempt sequence, preserving its snapshot. Never compare-and-set only the initial acquisition object after worker phase transitions; never overwrite a newer sequence or terminal outcome.
 
 Repository-specific guardrails for future changes:

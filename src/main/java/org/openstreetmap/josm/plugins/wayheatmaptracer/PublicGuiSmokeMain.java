@@ -28,6 +28,7 @@ import javax.swing.JMenuItem;
 import javax.swing.SwingUtilities;
 
 import org.openstreetmap.josm.data.osm.Node;
+import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.gui.MainApplication;
@@ -52,6 +53,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TracingSettings;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PreviewSessionController;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 
@@ -100,6 +102,7 @@ public final class PublicGuiSmokeMain {
             int originalUndo = UndoRedoHandler.getInstance().getUndoCommands().size();
             stage = "preview";
             String selectedId = null;
+            int selectedRouteIndex = -1;
             CompletableFuture<JDialog> visiblePreview = new CompletableFuture<>();
             AWTEventListener listener = event -> {
                 if (event instanceof WindowEvent windowEvent
@@ -123,12 +126,17 @@ public final class PublicGuiSmokeMain {
                 if (!initialStatus.contains("\"routeIndex\":0")) {
                     throw new IllegalStateException("Initial production route diagnostics are missing");
                 }
-                // The ordinary preview presents two real Engine B alternatives for this
-                // fixture. Its default leaves the displaced center unchanged; a user can
-                // select the second, ridge-following route in the visible combo box.
+                // Choose an actual ridge-following production route. A correct
+                // single result is valid; never manufacture an alternative.
+                if (!(ready.result() instanceof LiveBPreviewService.Computed computed)) {
+                    throw new IllegalStateException("Preview has no production computation");
+                }
                 LiveBPreviewService.PreviewChoice selected = onEventThread(() ->
-                        selectRidgeRoute(preview));
+                        selectRidgeRoute(preview, computed));
                 selectedId = requireSafeCandidateId(selected.candidate().id());
+                selectedRouteIndex = selected.localRouteIndex();
+                var selectedPlan = new ModernSingleWayEditPlanAdapter()
+                        .assess(selected.owner(), selectedRouteIndex).plan().orElseThrow();
                 if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
                     throw new IllegalStateException("Selected production preview is no longer visible");
                 }
@@ -146,7 +154,7 @@ public final class PublicGuiSmokeMain {
                 if (!status.contains("\"sourceLineage\":\"managed-tiles\"")) {
                     throw new IllegalStateException("Production preview did not use managed source tiles");
                 }
-                if (!status.contains("\"routeIndex\":1")) {
+                if (!status.contains("\"routeIndex\":" + selectedRouteIndex)) {
                     throw new IllegalStateException("Selected route was not published in diagnostics");
                 }
                 var frozen = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin")
@@ -156,7 +164,8 @@ public final class PublicGuiSmokeMain {
                 }
                 var plan = FrozenReplayCodec.decodeEditPlan(archive.artifact("frozen-edit-plan.bin")
                         .orElseThrow().bytes());
-                if (!plan.routeIdentity().equals(selectedId)) {
+                if (!plan.routeIdentity().equals(selectedId)
+                        || !plan.canonicalHash().equals(selectedPlan.canonicalHash())) {
                     throw new IllegalStateException("Selected route and frozen preview differ");
                 }
                 List<GeographicPoint> geometry = plan.finalPreviewWays().get(plan.selectedWayKey());
@@ -205,7 +214,7 @@ public final class PublicGuiSmokeMain {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"PASS\",\"source\":\"public-analytic-hot\","
                     + "\"engine\":\"PROBABILISTIC\",\"ordinaryAction\":true,"
-                    + "\"visiblePreview\":true,\"selectedRouteIndex\":1,"
+                    + "\"visiblePreview\":true,\"selectedRouteIndex\":" + selectedRouteIndex + ","
                     + "\"selectedCandidateId\":\"" + selectedId + "\",\"geometryOracle\":true,"
                     + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
                     + "\"datasetUnchanged\":true,\"undoUnchanged\":true}\n");
@@ -373,25 +382,81 @@ public final class PublicGuiSmokeMain {
         }
     }
 
-    private static LiveBPreviewService.PreviewChoice selectRidgeRoute(JDialog preview) {
+    private static LiveBPreviewService.PreviewChoice selectRidgeRoute(JDialog preview,
+            LiveBPreviewService.Computed computed) {
+        if (computed.partitioned()) {
+            throw new IllegalStateException("Junctionless analytic fixture unexpectedly has interval routes");
+        }
+        List<LiveBPreviewService.PreviewChoice> production = new LiveBPreviewService().adaptChoices(computed,
+                point -> ProjectionRegistry.getProjection().latlon2eastNorth(
+                        new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+        if (production.size() == 1) {
+            LiveBPreviewService.PreviewChoice sole = soleChoiceWithoutControl(
+                    preview.getContentPane(), production, LiveBPreviewService.PreviewChoice.class);
+            if (sole.owner() != computed || oraclePassingRouteIndex(production) != 0) {
+                throw new IllegalStateException("Sole route is not the production analytic ridge");
+            }
+            return sole;
+        }
         JComboBox<LiveBPreviewService.PreviewChoice> choices = visibleChoiceCombo(
                 preview.getContentPane(), LiveBPreviewService.PreviewChoice.class);
-        if (!choices.isShowing() || choices.getItemCount() < 2 || choices.getSelectedIndex() != 0) {
+        if (!choices.isShowing() || choices.getItemCount() < 1 || choices.getSelectedIndex() != 0) {
             throw new IllegalStateException("Expected visible initial Engine B route choices");
         }
-        LiveBPreviewService.PreviewChoice first = choices.getItemAt(0);
-        LiveBPreviewService.PreviewChoice ridge = choices.getItemAt(1);
-        if (first.owner() != ridge.owner() || first.localRouteIndex() != 0
-                || ridge.localRouteIndex() != 1
-                || ridge.owner().request().engine() != TrackerMode.PROBABILISTIC
-                || first.candidate().id().equals(ridge.candidate().id())) {
-            throw new IllegalStateException("Expected two distinct routes from one Engine B run");
+        if (choices.getItemCount() != production.size()) {
+            throw new IllegalStateException("Displayed routes differ from the production run");
         }
-        choices.setSelectedIndex(1); // Invokes the real preview listener on the EDT.
+        List<LiveBPreviewService.PreviewChoice> actual = new ArrayList<>();
+        for (int index = 0; index < choices.getItemCount(); index++) {
+            var choice = choices.getItemAt(index);
+            if (choice.owner() != production.get(index).owner()
+                    || !choice.candidate().id().equals(production.get(index).candidate().id())) {
+                throw new IllegalStateException("Displayed route ownership differs from production");
+            }
+            actual.add(choice);
+        }
+        int index = oraclePassingRouteIndex(actual);
+        LiveBPreviewService.PreviewChoice ridge = choices.getItemAt(index);
+        choices.setSelectedIndex(index); // Invokes the real listener when the route changes.
         if (choices.getSelectedItem() != ridge || !preview.isVisible()) {
             throw new IllegalStateException("Ridge route was not selected in the visible preview");
         }
         return ridge;
+    }
+
+    static <T> T soleChoiceWithoutControl(Container root, List<T> production, Class<T> choiceType) {
+        List<JComboBox<T>> controls = new ArrayList<>();
+        findChoiceCombos(root, choiceType, controls);
+        if (production.size() != 1 || !controls.isEmpty()) {
+            throw new IllegalStateException("Expected one production route with no attached chooser");
+        }
+        return production.get(0);
+    }
+
+    static int oraclePassingRouteIndex(List<LiveBPreviewService.PreviewChoice> choices) {
+        if (choices.isEmpty()) throw new IllegalStateException("Production preview has no routes");
+        var owner = choices.get(0).owner();
+        var ids = new java.util.HashSet<String>();
+        int selected = -1;
+        for (int i = 0; i < choices.size(); i++) {
+            var choice = choices.get(i);
+            if (choice.owner() != owner || choice.localRouteIndex() != i
+                    || owner.request().engine() != TrackerMode.PROBABILISTIC
+                    || !ids.add(choice.candidate().id())) {
+                throw new IllegalStateException("Expected distinct owned routes from one Engine B run");
+            }
+            var assessment = new ModernSingleWayEditPlanAdapter().assess(owner, i);
+            if (assessment.plan().isEmpty()) continue;
+            var plan = assessment.plan().orElseThrow();
+            try {
+                PublicGuiSmokeOracle.verifyFinalGeometry(plan.finalPreviewWays().get(plan.selectedWayKey()));
+                selected = i;
+            } catch (IllegalStateException rejectedGeometry) {
+                // Other actual alternatives may disagree with the analytic ridge.
+            }
+        }
+        if (selected < 0) throw new IllegalStateException("No production route follows the analytic ridge");
+        return selected;
     }
 
     static <T> JComboBox<T> visibleChoiceCombo(Container root, Class<T> choiceType) {

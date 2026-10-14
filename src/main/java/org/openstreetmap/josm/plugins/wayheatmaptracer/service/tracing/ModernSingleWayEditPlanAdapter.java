@@ -429,6 +429,19 @@ public final class ModernSingleWayEditPlanAdapter {
     public static ValidationReport requireFixedInheritedReviewPlan(AlignmentEditPlan plan,
             TraceRequest request, EvidenceSnapshot evidence, ModernTracePipeline.Options options,
             ModernTracePipeline.Route route, double capturedHalfWidthMeters) {
+        return requireFixedNativePlan(plan, request, evidence, options, route, capturedHalfWidthMeters, true);
+    }
+
+    /** Independently reconstructs a native fixed-policy plan, including its exact validation. */
+    public static ValidationReport requireFixedNativePlan(AlignmentEditPlan plan,
+            TraceRequest request, EvidenceSnapshot evidence, ModernTracePipeline.Options options,
+            ModernTracePipeline.Route route, double capturedHalfWidthMeters) {
+        return requireFixedNativePlan(plan, request, evidence, options, route, capturedHalfWidthMeters, false);
+    }
+
+    private static ValidationReport requireFixedNativePlan(AlignmentEditPlan plan,
+            TraceRequest request, EvidenceSnapshot evidence, ModernTracePipeline.Options options,
+            ModernTracePipeline.Route route, double capturedHalfWidthMeters, boolean inheritedOnly) {
         if (plan == null || request == null || evidence == null || options == null || route == null
                 || request.engine() != TrackerMode.PROBABILISTIC
                 || request.geometryMode() != AlignmentMode.PRECISE_SHAPE
@@ -490,12 +503,15 @@ public final class ModernSingleWayEditPlanAdapter {
                 finalTopologyFindings(before, expected, request.selectedWayKey(), request.selectedRange(),
                         evidence, capturedHalfWidthMeters));
         if (!after.equals(plan.after()) || !finalPreviewWays(before, expected).equals(plan.finalPreviewWays())
-                || !actual.equals(plan.validation()) || !actual.reviewRequired()
+                || !actual.equals(plan.validation()) || inheritedOnly && (!actual.reviewRequired()
                 || !actual.findingCodes().contains("inherited-nontransport-contact-review-required")
                 || InheritedNonTransportContacts.prove(before, expected, request.selectedWayKey(),
-                        request.selectedRange(), evidence, capturedHalfWidthMeters).isEmpty()) {
-            throw new IllegalArgumentException("Native route does not prove the complete inherited review plan");
+                        request.selectedRange(), evidence, capturedHalfWidthMeters).isEmpty())) {
+            throw new IllegalArgumentException(inheritedOnly
+                    ? "Native route does not prove the complete inherited review plan"
+                    : "Native route does not prove the complete fixed plan");
         }
+        if (!inheritedOnly) return actual;
         return validation(route.quality(), request.permissions().junctionPolicy(), finalTopologyFindings(
                 before, expected, request.selectedWayKey(), request.selectedRange(), evidence));
     }

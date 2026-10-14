@@ -561,10 +561,11 @@ public final class Format15ReplayRunner {
     private static TraceEngine engine(TrackerMode mode, String fieldName) {
         return switch (mode) {
             case CORRIDOR_AWARE -> new CorridorEngineAdapter(fieldName);
-            case PROBABILISTIC -> new ProbabilisticTraceEngine(fieldName);
+            case PROBABILISTIC -> new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
+                    ProbabilisticTraceEngine.reliabilityPolicyFor(mode));
             case HYBRID -> new HybridTraceEngine(new CorridorEngineAdapter(fieldName),
                 new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
-                        ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE));
+                        ProbabilisticTraceEngine.reliabilityPolicyFor(mode)));
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new ReplayMismatchException(
                 "Legacy engine has no modern frozen replay route");

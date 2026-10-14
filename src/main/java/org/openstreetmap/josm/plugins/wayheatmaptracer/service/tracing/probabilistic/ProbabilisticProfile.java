@@ -41,7 +41,21 @@ public record ProbabilisticProfile(
         double localizationConfidence, List<Double> peakOffsetsMeters,
         List<Double> nestedCenterOffsetsMeters, boolean groupedParent,
         ImageOrientationSupport orientationSupport, double scalarAmplitudeReliability,
-        double branchCoherence, double positionalReliability) {
+        double branchCoherence, double positionalReliability,
+        double leftDirectSpanMeters, double rightDirectSpanMeters) {
+        /** Retains old mode callers without inventing unavailable exterior support. */
+        public Mode(String id, String evidenceLineage, double coreMinimumMeters,
+            double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
+            double localizationConfidence, List<Double> peakOffsetsMeters,
+            List<Double> nestedCenterOffsetsMeters, boolean groupedParent,
+            ImageOrientationSupport orientationSupport, double scalarAmplitudeReliability,
+            double branchCoherence, double positionalReliability) {
+            this(id, evidenceLineage, coreMinimumMeters, coreMaximumMeters,
+                localizationSigmaMeters, existenceConfidence, localizationConfidence,
+                peakOffsetsMeters, nestedCenterOffsetsMeters, groupedParent,
+                orientationSupport, scalarAmplitudeReliability, branchCoherence,
+                positionalReliability, 0.0, 0.0);
+        }
         /** Retains mode fixtures that predate branch-local image orientation. */
         public Mode(String id, String evidenceLineage, double coreMinimumMeters,
             double coreMaximumMeters, double localizationSigmaMeters, double existenceConfidence,
@@ -74,6 +88,7 @@ public record ProbabilisticProfile(
                 || peakOffsetsMeters == null || nestedCenterOffsetsMeters == null
                 || orientationSupport == null || !unit(scalarAmplitudeReliability)
                 || !unit(branchCoherence) || !unit(positionalReliability)
+                || !directSpan(leftDirectSpanMeters) || !directSpan(rightDirectSpanMeters)
                 || peakOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))
                 || nestedCenterOffsetsMeters.stream().anyMatch(value -> !Double.isFinite(value))) {
                 throw new IllegalArgumentException("Measured mode is invalid");
@@ -111,15 +126,41 @@ public record ProbabilisticProfile(
         public double strength() {
             return existenceConfidence * localizationConfidence;
         }
+
+        private static boolean directSpan(double meters) {
+            return Double.isFinite(meters) && meters >= 0.0 && meters <= 20.0;
+        }
     }
 
     /** One-sided, position-incomplete evidence at a decision boundary. */
     public record CensoredMode(String id, String evidenceLineage, CensorSide side,
-        double observedBoundaryMeters, double existenceConfidence, boolean gradientSupported) {
+        double observedBoundaryMeters, double existenceConfidence, boolean gradientSupported,
+        boolean inwardExtentMeasured, double inwardSupportOffsetMeters, double shoulderThreshold,
+        double directionalReliability) {
+        /** Preserves baseline observation behavior until the B-only prepass supplies a weight. */
+        public CensoredMode(String id, String evidenceLineage, CensorSide side,
+                double observedBoundaryMeters, double existenceConfidence, boolean gradientSupported,
+                boolean inwardExtentMeasured, double inwardSupportOffsetMeters, double shoulderThreshold) {
+            this(id,evidenceLineage,side,observedBoundaryMeters,existenceConfidence,gradientSupported,
+                    inwardExtentMeasured,inwardSupportOffsetMeters,shoulderThreshold,1.0);
+        }
+        /** Retains older callers; unavailable band extent and threshold are not inferred. */
+        public CensoredMode(String id, String evidenceLineage, CensorSide side,
+                double observedBoundaryMeters, double existenceConfidence, boolean gradientSupported) {
+            this(id, evidenceLineage, side, observedBoundaryMeters, existenceConfidence, gradientSupported,
+                    false, observedBoundaryMeters, Double.NaN);
+        }
         /** Validates one censored observation. */
         public CensoredMode {
             if (blank(id) || blank(evidenceLineage) || side == null
-                || !Double.isFinite(observedBoundaryMeters) || !unit(existenceConfidence)) {
+                || !Double.isFinite(observedBoundaryMeters) || !unit(existenceConfidence)
+                || !unit(directionalReliability)
+                || !Double.isFinite(inwardSupportOffsetMeters)
+                || inwardExtentMeasured && (side == CensorSide.LEFT
+                        ? inwardSupportOffsetMeters < observedBoundaryMeters
+                        : inwardSupportOffsetMeters > observedBoundaryMeters)
+                || !Double.isNaN(shoulderThreshold) && (!Double.isFinite(shoulderThreshold)
+                        || shoulderThreshold < 0.0 || shoulderThreshold > 1.0)) {
                 throw new IllegalArgumentException("Censored mode is invalid");
             }
         }

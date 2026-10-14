@@ -1,5 +1,16 @@
 # Development Notes
 
+Benchmark comparison defaults to strict RC6 equality. The separately approved
+`rc10-approved-numerical-readonly-v1` contract pins its two numerical parameter
+identities and admits only original-OSM-bound read-only context extensions and
+factual fixed-interval protection. Verify candidate authority and partition
+against fresh original capture, not merely against another field of the same
+archive. Native replay must preserve output-component, execution-work and
+stored-plan validation checks; independently repeat each version. Keep replay
+outside timed action latency. The operational manifest and mandatory two-case,
+2× speed and cancellation gates are documented in
+[the benchmark host guide](scripts/v022-benchmark-host.md).
+
 Modern background attempts cancel the latest active state of their own sequence.
 Worker cancellation or interruption retains the captured snapshot; late workers
 cannot cancel a replacement attempt or overwrite an already terminal outcome.

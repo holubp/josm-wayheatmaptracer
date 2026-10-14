@@ -47,6 +47,8 @@ class V022FinalOutputCompanionTest {
         String status = routeIndex < 0 ? "blocked" : "review-required";
         Format15Bundle live = Format15ProductionBundleFactory.createLive("synthetic-build",
                 input, actual, status, "synthetic-source", routeIndex, null, false, false);
+        live = Format15ProductionBundleFactory.withCurrentNumericalPolicy(live, input,
+                TrackerMode.PROBABILISTIC, List.of(produced.inference()));
 
         assertTrue(live.artifactNames().contains(COMPANION),
                 "live production export must retain typed final-output components");
@@ -62,7 +64,16 @@ class V022FinalOutputCompanionTest {
         assertEquals(FinalReplayFingerprint.sha256(produced),
                 FinalReplayFingerprint.sha256(reconstructed));
         assertEquals(FinalOutputComponentsCodec.componentDigests(produced), snapshot.digests());
-        assertEquals(produced, reconstructed);
+        var producedInference = produced.inference();
+        var historicalInference = new TraceHypothesisSet(producedInference.engine(),
+                producedInference.hypotheses(), producedInference.status(),
+                producedInference.alternativesTruncated(), producedInference.evaluatedStates(),
+                producedInference.evaluatedTransitions(), producedInference.explanation());
+        assertEquals(withInference(produced, historicalInference), reconstructed,
+                "v1 final-output components preserve their receipt-free historical encoding");
+        assertTrue(producedInference.workAccounting().isPresent());
+        assertEquals(List.of(producedInference.workAccounting()), Format15ExecutionWorkCodec.read(
+                archive.artifact(Format15ExecutionWorkCodec.ARTIFACT).orElseThrow()));
         assertEquals(produced.routes().get(0).quality().findings(),
                 reconstructed.routes().get(0).quality().findings(),
                 "UI grouping must not replace detailed exported findings");

@@ -653,7 +653,16 @@ class V022FixedIntervalEditPlanComposerTest {
             ModernTracePipeline.Route left, ModernTracePipeline.Route right) { }
 
     private static CrossingFixture crossingFixture() throws Exception {
-        IntervalTraceBatch source = uBatch(uRaster(true));
+        return crossingFixture(true);
+    }
+
+    private static CrossingFixture crossingFixture(boolean paintedApproaches) throws Exception {
+        return bendFixture(uRaster(paintedApproaches), 4.0);
+    }
+
+    private static CrossingFixture bendFixture(LiveBPreviewService.VisibleRaster raster,
+            double bendHeightMeters) throws Exception {
+        IntervalTraceBatch source = uBatch(raster);
         var selected = (DetachedWay) source.network().primitives()
                 .get(source.fullRequest().selectedWayKey());
         MetricPoint lower = source.evidence().coordinateFrame().toMetric(
@@ -672,21 +681,21 @@ class V022FixedIntervalEditPlanComposerTest {
         assertEquals(List.of(4, -1, 5, -1, -1, 6), right.pointIds().stream()
                 .map(id -> id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
                         ? existing.originalOccurrenceIndex() : -1).toList());
-        // The two observed bumps cross, while both fixed-island joins turn only 90 degrees.
+        // The 4 m bumps cross; the 1 m control keeps the two branches separate.
         var alteredLeft = withGeneratedPositions(source, left, Map.of(
                 left.pointIds().get(1),
                         new MetricPoint(lower.xMeters() - 13.5, lower.yMeters()),
                 left.pointIds().get(2),
                         new MetricPoint(lower.xMeters() - 12.0, lower.yMeters()),
                 existingPointId(left, 2),
-                        new MetricPoint(lower.xMeters() - 6.0, lower.yMeters() + 4.0),
+                        new MetricPoint(lower.xMeters() - 6.0, lower.yMeters() + bendHeightMeters),
                 left.pointIds().get(4),
                         new MetricPoint(lower.xMeters() - 4.0, lower.yMeters())));
         var alteredRight = withGeneratedPositions(source, right, Map.of(
                 right.pointIds().get(1),
                         new MetricPoint(upper.xMeters() - 4.0, upper.yMeters()),
                 existingPointId(right, 5),
-                        new MetricPoint(upper.xMeters() - 6.0, upper.yMeters() - 4.0),
+                        new MetricPoint(upper.xMeters() - 6.0, upper.yMeters() - bendHeightMeters),
                 right.pointIds().get(3),
                         new MetricPoint(upper.xMeters() - 12.0, upper.yMeters()),
                 right.pointIds().get(4),
@@ -712,7 +721,7 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
-    void crossingImageAmbiguityCannotAuthorizeAnUnsupportedIntervalConnector() throws Exception {
+    void strongPaintedEvidenceCannotMakeCombinedCrossingGeometrySafe() throws Exception {
         var fixture = crossingFixture();
         var source = fixture.source();
         var image = new ImageCostField(source.evidence().fields().get(source.options().fieldName()),
@@ -737,13 +746,62 @@ class V022FixedIntervalEditPlanComposerTest {
             samples.add(value);
         }
         assertTrue(samples.stream().anyMatch(value -> value.ownership() == ObservationOwnership.DIRECT_AMBIGUOUS));
-        var composer = new FixedIntervalEditPlanComposer();
-        var left = composer.compose(withoutRoutes(withRoute(source, 0, fixture.left()), 1), Map.of());
-        assertFalse(left.applyAvailable());
-        assertTrue(left.intervals().get(0).reason().startsWith("LOCAL_CONNECTOR_SUPPORT:"),
-                left.intervals().toString());
-        var both = composer.compose(withRoute(withRoute(source, 0, fixture.left()), 1, fixture.right()), Map.of());
-        assertFalse(both.applyAvailable());
+        var combined = topologyProposal(source, Map.of(0, fixture.left(), 1, fixture.right()));
+        assertTrue(topologyFindings(source, combined).contains("final-topology:CROSSING"));
+        // A composer may freeze a failed interval. Any available plan must still
+        // validate its actual stored geometry, not the two raw crossing proposals.
+        var composed = new FixedIntervalEditPlanComposer().compose(
+                withRoute(withRoute(source, 0, fixture.left()), 1, fixture.right()), Map.of());
+        if (composed.applyAvailable()) {
+            assertEquals(List.of(), topologyFindings(source,
+                    composed.plan().orElseThrow().after().primitives()));
+            assertNotEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                    FixedIntervalEditPlanComposer.Disposition.CHANGED),
+                    composed.intervals().stream().map(
+                            FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        }
+    }
+
+    @Test
+    void supportedNonCrossingBendsComposeBothIntervalsAndPreserveFixedIsland() throws Exception {
+        var fixture = bendFixture(uRaster(true, 1.0), 1.0);
+        var source = fixture.source();
+        var combined = topologyProposal(source, Map.of(0, fixture.left(), 1, fixture.right()));
+        assertEquals(List.of(), topologyFindings(source, combined));
+        var result = new FixedIntervalEditPlanComposer().compose(
+                withRoute(withRoute(source, 0, fixture.left()), 1, fixture.right()), Map.of());
+        assertTrue(result.applyAvailable(), result.intervals().toString());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED), result.intervals().stream()
+                .map(FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList());
+        var after = result.plan().orElseThrow().after().primitives();
+        var expectedWay = (DetachedWay) combined.get(source.fullRequest().selectedWayKey());
+        var expectedCoordinates = expectedWay.nodeKeys().stream()
+                .map(key -> ((DetachedNode) combined.get(key)).coordinate()).toList();
+        assertEquals(expectedCoordinates, result.selectedWayPreview(),
+                "Both supported bends must appear in the stored final geometry");
+        var storedWay = (DetachedWay) after.get(source.fullRequest().selectedWayKey());
+        assertEquals(expectedCoordinates, storedWay.nodeKeys().stream()
+                .map(key -> ((DetachedNode) after.get(key)).coordinate()).toList(),
+                "The immutable Apply plan must store exactly the supported preview");
+        assertEquals(List.of(), topologyFindings(source, after));
+        var original = (DetachedWay) source.network().primitives()
+                .get(source.fullRequest().selectedWayKey());
+        for (int occurrence : List.of(0, 1, 3, 4, 6, 7)) {
+            var key = original.nodeKeys().get(occurrence);
+            assertEquals(source.network().primitives().get(key), after.get(key),
+                    "Fixed or unselected occurrence " + occurrence + " must remain exact");
+        }
+    }
+
+    @Test
+    void unpaintedCrossingApproachCannotAuthorizeAnIntervalConnector() throws Exception {
+        var unsupported = crossingFixture(false);
+        var refused = new FixedIntervalEditPlanComposer().compose(withoutRoutes(
+                withRoute(unsupported.source(), 0, unsupported.left()), 1), Map.of());
+        assertFalse(refused.applyAvailable(), "Unpainted interval connector must remain unavailable");
+        assertTrue(refused.intervals().get(0).reason().startsWith("LOCAL_CONNECTOR_SUPPORT:"),
+                refused.intervals().toString());
     }
 
     private static List<String> topologyFindings(IntervalTraceBatch source,
@@ -978,6 +1036,11 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     private static LiveBPreviewService.VisibleRaster uRaster(boolean extendedCrossingApproaches) {
+        return uRaster(extendedCrossingApproaches, 4.0);
+    }
+
+    private static LiveBPreviewService.VisibleRaster uRaster(boolean extendedCrossingApproaches,
+            double bendHeightMeters) {
         int width = 600;
         int height = 600;
         int[] argb = new int[width * height];
@@ -994,17 +1057,17 @@ class V022FixedIntervalEditPlanComposerTest {
                         distanceToSegment(east, north, 0, 0, 0, 5));
                 if (extendedCrossingApproaches) {
                     distance = Math.min(distance,
-                            distanceToSegment(east, north, -12, 0, -6, 4));
+                            distanceToSegment(east, north, -12, 0, -6, bendHeightMeters));
                     distance = Math.min(distance,
-                            distanceToSegment(east, north, -6, 4, -4, 0));
+                            distanceToSegment(east, north, -6, bendHeightMeters, -4, 0));
                     distance = Math.min(distance,
                             distanceToSegment(east, north, -4, 0, 0, 0));
                     distance = Math.min(distance,
                             distanceToSegment(east, north, 0, 5, -4, 5));
                     distance = Math.min(distance,
-                            distanceToSegment(east, north, -4, 5, -6, 1));
+                            distanceToSegment(east, north, -4, 5, -6, 5 - bendHeightMeters));
                     distance = Math.min(distance,
-                            distanceToSegment(east, north, -6, 1, -12, 5));
+                            distanceToSegment(east, north, -6, 5 - bendHeightMeters, -12, 5));
                 } else {
                     distance = Math.min(distance,
                             distanceToSegment(east, north, -7, 0, -5, 3));
