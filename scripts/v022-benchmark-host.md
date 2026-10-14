@@ -19,6 +19,15 @@ production cancellation/no-late-publication checks. Comparator replay runs
 outside the action timer with a bounded, reported comparison timeout. A passing
 comparison does not replace independent fitting, Apply or release checks.
 
+Candidate preflight uses the runner's checksummed actual RC6 warm-up publication
+and receipt as its effective benchmark-settings reference. The historical host
+uses fixed fixture settings rather than adopting the case bookmark's settings.
+The original archive, OSM, tiles, selection, frame, source, validity and factual
+context remain pinned independently. Bookmark settings semantics are not
+asserted equal; observed bookmark scalar differences are reported. Actual
+native RC6/current settings and scalar comparisons remain exact. Missing,
+altered or wrong-case warm-up references fail before alignment.
+
 The strict-equality statements below describe the default contract. An approved
 comparison cannot be reported as a pass of that original strict contract.
 

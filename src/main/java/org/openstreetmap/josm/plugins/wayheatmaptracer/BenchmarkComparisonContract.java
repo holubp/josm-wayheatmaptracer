@@ -101,6 +101,47 @@ public enum BenchmarkComparisonContract {
         requireRequests(baseline.request(), candidate.request());
     }
 
+    /** The bookmark pins source provenance; actual native publications pin effective settings/scalars. */
+    public static void requireBookmarkProvenance(FrozenReplayInput bookmark, FrozenReplayInput nativeBaseline) {
+        var n = bookmark.network(); var m = nativeBaseline.network();
+        var a = bookmark.request(); var b = nativeBaseline.request();
+        var x = bookmark.evidence(); var y = nativeBaseline.evidence();
+        if (n.role() != m.role() || n.sourceGeneration() != m.sourceGeneration()
+                || !n.closure().equals(m.closure()) || !n.primitives().equals(m.primitives())
+                || !n.incomingReferrerWatches().equals(m.incomingReferrerWatches())
+                || !a.selectedWayKey().equals(b.selectedWayKey()) || !a.selectedRange().equals(b.selectedRange())
+                || a.engine() != b.engine() || a.geometryMode() != b.geometryMode()
+                || !a.permissions().equals(b.permissions()) || !a.budgets().equals(b.budgets())
+                || !a.parameterHash().equals(b.parameterHash()) || !a.samplerId().equals(b.samplerId())
+                || Double.doubleToRawLongBits(a.configuredSampleStepMeters()) != Double.doubleToRawLongBits(b.configuredSampleStepMeters())
+                || !a.profileChainage().equals(b.profileChainage()) || !a.evidenceResolution().equals(b.evidenceResolution())
+                || !a.corridorInput().equals(b.corridorInput()) || !bookmark.options().equals(nativeBaseline.options())
+                || !x.coordinateFrame().equals(y.coordinateFrame()) || !x.transform().equals(y.transform())
+                || !x.resolution().equals(y.resolution()) || !x.decisionRegion().equals(y.decisionRegion())
+                || !x.evidenceRegion().equals(y.evidenceRegion()) || !x.resampling().equals(y.resampling())
+                || !x.sourceIdentity().equals(y.sourceIdentity()) || !x.fields().keySet().equals(y.fields().keySet())) {
+            throw new IllegalStateException("Native baseline does not belong to original bookmark source");
+        }
+        for (var name : x.fields().keySet()) {
+            var p = x.fields().get(name); var q = y.fields().get(name);
+            if (p.width() != q.width() || p.height() != q.height() || !p.lineage().equals(q.lineage())
+                    || !java.util.Arrays.equals(p.copiedValidity(), q.copiedValidity())
+                    || !java.util.Arrays.equals(p.copiedInterpolationValidity(), q.copiedInterpolationValidity())) {
+                throw new IllegalStateException("Native baseline bookmark raster provenance differs");
+            }
+            double[] oldValues = p.copiedValues(), nativeValues = q.copiedValues();
+            long changed = 0; double maximumDifference = 0;
+            for (int i = 0; i < oldValues.length; i++) {
+                if (Double.doubleToRawLongBits(oldValues[i]) != Double.doubleToRawLongBits(nativeValues[i])) {
+                    changed++;
+                    maximumDifference = Math.max(maximumDifference, Math.abs(oldValues[i] - nativeValues[i]));
+                }
+            }
+            System.out.println("bookmarkScalarDifferenceCount=" + changed);
+            System.out.println("bookmarkScalarMaximumAbsoluteDifference=" + maximumDifference);
+        }
+    }
+
     public static void requireRequests(TraceRequest a, TraceRequest b) {
         requireApprovedParameters(a.parameterHash(), b.parameterHash());
         if (a.engine() != TrackerMode.PROBABILISTIC || b.engine() != TrackerMode.PROBABILISTIC

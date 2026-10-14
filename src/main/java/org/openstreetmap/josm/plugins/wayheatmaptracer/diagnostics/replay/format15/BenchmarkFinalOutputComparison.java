@@ -19,6 +19,20 @@ public final class BenchmarkFinalOutputComparison {
     /** Independently bound native outputs whose complete component inventories match. */
     public record Comparison(VerifiedOutput baseline, VerifiedOutput candidate) { }
 
+    /** Binds the runner's pinned warmup receipt to its own native baseline archive. */
+    public static void requireBaselineReceipt(byte[] bytes, String caseId, String nonce,
+            String archiveName, String archiveHash) throws Format15ArchiveException {
+        var publication = Format15ArchiveReader.parseObject(bytes, "baseline receipt");
+        if (!"AlignWayAction.production-preview-v1".equals(publication.get("producer"))
+                || !caseId.equals(publication.get("caseId")) || !"baseline".equals(publication.get("version"))
+                || !"single".equals(publication.get("kind")) || nonce.isBlank()
+                || !nonce.equals(publication.get("nonce"))
+                || !archiveName.equals(publication.get("diagnosticsFile"))
+                || !archiveHash.equals(publication.get("diagnosticsSha256"))) {
+            throw new IllegalStateException("Native baseline publication binding differs");
+        }
+    }
+
     /** Verifies one archive against its own identities without cross-version output equality. */
     public static VerifiedOutput verifyNative(Format15Archive archive, FrozenReplayInput input) {
         var snapshot = read(archive, input);

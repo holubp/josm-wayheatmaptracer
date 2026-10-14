@@ -424,6 +424,76 @@ class BenchmarkDecisionComparatorIntegrationTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"none", "changed-archive", "changed-receipt", "wrong-case", "wrong-nonce", "unbound-hash",
+            "wrong-source", "wrong-budget", "wrong-permissions", "wrong-validity", "missing-companion"})
+    void hostReferenceBindsNativePublicationToOriginalBookmark(String mutation, @TempDir Path directory) throws Exception {
+        // Current-engine compatibility fixture; this does not certify historical RC6 production/performance.
+        Pair pair = archives(directory, mutation.equals("missing-companion") ? mutation : "none");
+        var nativeInput = FrozenReplayCodec.decode(Format15ArchiveReader.read(pair.candidate())
+                .artifact("frozen-input.bin").orElseThrow().bytes());
+        var changedEvidence = recordWith(nativeInput.evidence(), "snapshotId", "bookmark-evidence");
+        var fields = new LinkedHashMap<>(changedEvidence.fields());
+        String fieldName = fields.keySet().iterator().next(); var field = fields.get(fieldName);
+        double[] values = field.copiedValues(); values[0] = Math.nextUp(values[0]);
+        boolean[] validity = field.copiedValidity();
+        if (mutation.equals("wrong-validity")) validity[0] = !validity[0];
+        fields.put(fieldName, new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField(
+                field.width(), field.height(), values, validity, field.copiedInterpolationValidity(), field.lineage()));
+        changedEvidence = recordWith(changedEvidence, "fields", fields);
+        var network = recordWith(nativeInput.network(), "snapshotId", "bookmark-network");
+        var request = recordWith(recordWith(recordWith(recordWith(recordWith(nativeInput.request(),
+                "settingsHash", "original-bookmark-settings"), "evidenceSnapshotId", changedEvidence.snapshotId()),
+                "evidenceContentHash", changedEvidence.canonicalHash()), "networkSnapshotId", network.snapshotId()),
+                "networkContentHash", network.canonicalHash());
+        if (mutation.equals("wrong-source")) {
+            changedEvidence = recordWith(changedEvidence, "sourceIdentity", "other-source");
+            request = recordWith(request, "evidenceContentHash", changedEvidence.canonicalHash());
+        }
+        if (mutation.equals("wrong-budget")) request = recordWith(request, "budgets",
+                recordWith(request.budgets(), "maximumTransitions", request.budgets().maximumTransitions() + 1));
+        if (mutation.equals("wrong-permissions")) request = recordWith(request, "permissions",
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions.disabled(8));
+        var bookmark = new FrozenReplayInput(request, changedEvidence, network, nativeInput.options());
+        Path receipt = directory.resolve("publication.json");
+        Files.writeString(receipt, "{\"producer\":\"AlignWayAction.production-preview-v1\",\"caseId\":\"N1\","
+                + "\"version\":\"baseline\",\"kind\":\"single\",\"nonce\":\"native-run\",\"diagnosticsFile\":\""
+                + pair.candidate().getFileName() + "\",\"diagnosticsSha256\":\"" + sha256(pair.candidate()) + "\"}");
+        Map<String, String> properties = Map.of("baselineArchive", pair.candidate().toString(),
+                "baselineArchiveSha256", sha256(pair.candidate()), "baselineReceipt", receipt.toString(),
+                "baselineReceiptSha256", sha256(receipt), "baselineNonce", mutation.equals("wrong-nonce") ? "wrong-run" : "native-run");
+        properties.forEach((key, value) -> System.setProperty("wayheatmaptracer.benchmark." + key, value));
+        try {
+            if (mutation.equals("changed-archive")) Files.writeString(pair.candidate(), "changed");
+            if (mutation.equals("changed-receipt")) Files.writeString(receipt, "changed");
+            if (mutation.equals("unbound-hash")) System.clearProperty("wayheatmaptracer.benchmark.baselineArchiveSha256");
+            if (mutation.equals("none")) {
+                assertEquals(nativeInput.canonicalHash(), BenchmarkHostMain.readBaselineReference(bookmark, "N1").canonicalHash());
+                assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.requireSame(bookmark, nativeInput));
+            } else {
+                assertThrows(Exception.class, () -> BenchmarkHostMain.readBaselineReference(bookmark,
+                        mutation.equals("wrong-case") ? "N2" : "N1"));
+            }
+        } finally {
+            properties.keySet().forEach(key -> System.clearProperty("wayheatmaptracer.benchmark." + key));
+        }
+    }
+
+    @Test
+    void nativeBaselineCaptureStillRejectsDifferentEffectiveSettings() throws Exception {
+        var fixture = BenchmarkHostMain.fixtureSource(37);
+        PluginPreferences.save(fixture.config()); fixture.saveCacheGenerationPreference();
+        PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
+        var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
+                SelectionResolver.resolve(original, false),
+                new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
+        var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
+        BenchmarkHostMain.requireNativeBaselineCapture(input, seed);
+        var changed = recordWith(seed, "settingsHash", "unapproved-config");
+        assertEquals("Original capture frame or effective settings differ", assertThrows(IllegalStateException.class,
+                () -> BenchmarkHostMain.requireNativeBaselineCapture(input, changed)).getMessage());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"values", "validity", "interpolation", "sourceIdentity"})
     void approvedContractStillRequiresIdenticalScalarRasterSupportAndSource(String field) throws Exception {
         var originalEvidence = computed.evidence();

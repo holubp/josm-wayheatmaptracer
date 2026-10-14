@@ -43,3 +43,24 @@ hashes are in ignored `build/rc10-benchmark-contract/` and adjacent log files.
 This audit certifies source/test correctness only. Fresh pinned RC6/current
 paired benchmark and cancellation, public CI/GUI, quality/Apply and downloaded
 artifact gates remain controller-owned. No release is certified by this review.
+
+## Native benchmark reference repair
+
+Independent Sol/high affected-delta review against `ace8a75`: no blockers.
+The historical host uses fixed benchmark settings, not bookmark settings.
+Candidate preflight now binds the runner's validated actual RC6 warm-up archive
+and receipt by hashes, producer, case, baseline version, publication kind, nonce,
+artifact name and directory, and independently verifies native output.
+Original bookmark source, frame, selection, validity, context, permissions and
+budgets remain bound. Native RC6/current settings and scalar equality remain
+strict. Bookmark settings semantics remain unverified; its observed scalar
+differences are reported, not substituted into native comparison or tolerated
+across versions. Historical outputs are not rebound; strict remains default.
+Fatal host failures exit with a fixed safe message rather than entering JOSM's
+nonterminal bug-report queue.
+
+Reviewer verified all eight frozen source hashes and inspected 118 passing
+Java tests (zero failures/errors/skips) and 34 passing script tests. RED proves
+the previous fatal-host hang and missing runner reference interface. Evidence
+is under ignored `build/rc10-benchmark-contract/reference-*`. Fresh paired
+performance/cancellation and public CI remain required for this repaired tree.

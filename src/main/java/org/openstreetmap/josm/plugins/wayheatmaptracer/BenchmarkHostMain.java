@@ -88,6 +88,17 @@ public final class BenchmarkHostMain {
     }
 
     public static void main(String[] args) throws Exception {
+        try {
+            run(args);
+        } catch (Throwable failure) {
+            // JOSM's default handler queues a GUI bug report and may keep this owned
+            // process alive. Never print arbitrary exception/server text here.
+            System.err.println("benchmark-host-fatal");
+            System.exit(1);
+        }
+    }
+
+    private static void run(String[] args) throws Exception {
         if (args.length != 8) {
             throw new IllegalArgumentException("archive osm tiles receipt plugin nonce case version mode required");
         }
@@ -164,14 +175,8 @@ public final class BenchmarkHostMain {
         BenchmarkComparisonContract contract = BenchmarkComparisonContract.parse(System.getProperty(
                 "wayheatmaptracer.benchmark.comparisonContract", BenchmarkComparisonContract.STRICT.identity()));
         if (contract == BenchmarkComparisonContract.RC10_APPROVED) {
-            BenchmarkComparisonContract.requireReadOnlyExtension(frozen, actual,
-                    BenchmarkComparisonContract.frozenKeys(seed.intervalPartition()));
-            BenchmarkComparisonContract.requireApprovedParameters(historical.request().parameterHash(), seed.parameterHash());
-            if (!historical.evidence().coordinateFrame().equals(seed.frame())
-                    || !historical.request().permissions().equals(seed.specification().permissions())
-                    || !historical.request().settingsHash().equals(seed.settingsHash())) {
-                throw new IllegalStateException("Original capture frame or effective settings differ");
-            }
+            var reference = readBaselineReference(historical, args[6].split(":", 2)[0]);
+            requireNativeBaselineCapture(reference, seed);
         } else if (!actual.closure().equals(frozen.closure())
                 || !actual.primitives().equals(frozen.primitives())
                 || !actual.incomingReferrerWatches().equals(frozen.incomingReferrerWatches())
@@ -229,6 +234,63 @@ public final class BenchmarkHostMain {
             TimeUnit.SECONDS.sleep(1);
         }
         throw new IllegalStateException("Real preview did not publish within host deadline");
+    }
+
+    static void requireNativeBaselineCapture(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput reference,
+            LiveBPreviewService.ManagedCaptureSeed seed) {
+        BenchmarkComparisonContract.requireReadOnlyExtension(reference.network(), seed.network(),
+                BenchmarkComparisonContract.frozenKeys(seed.intervalPartition()));
+        BenchmarkComparisonContract.requireApprovedParameters(reference.request().parameterHash(), seed.parameterHash());
+        if (!reference.evidence().coordinateFrame().equals(seed.frame())
+                || !reference.request().permissions().equals(seed.specification().permissions())
+                || !reference.request().settingsHash().equals(seed.settingsHash())) {
+            throw new IllegalStateException("Original capture frame or effective settings differ");
+        }
+    }
+
+    static org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput
+            readBaselineReference(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput bookmark,
+                    String caseId) throws Exception {
+        Path archive = pinnedPropertyPath("baselineArchive");
+        Path receipt = pinnedPropertyPath("baselineReceipt");
+        if (!archive.getParent().equals(receipt.getParent()) || Files.size(receipt) > 65_536L) {
+            throw new IllegalStateException("Native baseline publication binding differs");
+        }
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.BenchmarkFinalOutputComparison
+                .requireBaselineReceipt(Files.readAllBytes(receipt), caseId,
+                        System.getProperty("wayheatmaptracer.benchmark.baselineNonce", ""),
+                        archive.getFileName().toString(),
+                        System.getProperty("wayheatmaptracer.benchmark.baselineArchiveSha256"));
+        var nativeArchive = Format15ArchiveReader.read(archive);
+        var input = FrozenReplayCodec.decode(nativeArchive.artifact("frozen-input.bin").orElseThrow().bytes());
+        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.BenchmarkFinalOutputComparison
+                .verifyNative(nativeArchive, input);
+        BenchmarkComparisonContract.requireBookmarkProvenance(bookmark, input);
+        pinnedPropertyPath("baselineArchive"); pinnedPropertyPath("baselineReceipt");
+        System.out.println("bookmarkSettingsHash=" + bookmark.request().settingsHash());
+        System.out.println("nativeBaselineSettingsHash=" + input.request().settingsHash());
+        return input;
+    }
+
+    private static Path pinnedPropertyPath(String stem) throws Exception {
+        String value = System.getProperty("wayheatmaptracer.benchmark." + stem, "");
+        String hash = System.getProperty("wayheatmaptracer.benchmark." + stem + "Sha256", "");
+        if (value.isBlank() || !hash.matches("[0-9a-f]{64}")) {
+            throw new IllegalStateException("Native baseline pin is missing");
+        }
+        Path path = Path.of(value).toAbsolutePath().normalize();
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        if (!Files.isRegularFile(path)) throw new IllegalStateException("Native baseline pin differs");
+        try (InputStream stream = Files.newInputStream(path)) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = stream.read(buffer)) != -1) digest.update(buffer, 0, count);
+        }
+        if (!HexFormat.of().formatHex(digest.digest()).equals(hash)) {
+            throw new IllegalStateException("Native baseline pin differs");
+        }
+        return path;
     }
 
     public static <T> T onEventThread(Callable<T> action) throws Exception {

@@ -18,6 +18,25 @@ SPEC.loader.exec_module(benchmark)
 
 
 class BenchmarkRunnerTest(unittest.TestCase):
+    def test_current_host_pins_the_actual_native_baseline_reference_for_preview_and_cancel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = {"diagnosticsPath": str(root / "native-baseline.zip"), "diagnosticsSha256": "a" * 64,
+                         "receiptPath": str(root / "publication.json"), "receiptSha256": "b" * 64, "nonce": "old-run"}
+            for action in ("preview", "cancel"):
+                command = benchmark.host_command(root / "java", root / action, root / "josm.jar", root / "plugin.jar",
+                    root / "bookmark.zip", root / "original.osm", root / "tiles.tsv", root / "receipt.json",
+                    "nonce", "N1:candidate", action, benchmark.APPROVED_CONTRACT, reference)
+                self.assertIn("-Dwayheatmaptracer.benchmark.baselineArchive=" + reference["diagnosticsPath"], command)
+                self.assertIn("-Dwayheatmaptracer.benchmark.baselineArchiveSha256=" + reference["diagnosticsSha256"], command)
+                self.assertEqual(str(root / "bookmark.zip"), command[-8], "original bookmark stays pinned as the case argument")
+                self.assertIn("-Dwayheatmaptracer.benchmark.baselineReceiptSha256=" + "b" * 64, command)
+                self.assertIn("-Dwayheatmaptracer.benchmark.baselineNonce=old-run", command)
+            with self.assertRaisesRegex(benchmark.GateFailure, "native baseline"):
+                benchmark.host_command(root / "java", root, root / "josm.jar", root / "plugin.jar",
+                    root / "bookmark.zip", root / "original.osm", root / "tiles.tsv", root / "receipt.json",
+                    "nonce", "N1:candidate", "preview", benchmark.APPROVED_CONTRACT)
+
     def test_unknown_comparison_contract_is_rejected_before_any_host_work(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -171,9 +171,17 @@ def check_host(manifest: dict, output: Path) -> tuple[Path, Path]:
 def host_command(java: Path, run_dir: Path, josm: Path, plugin: Path,
                  archive: Path, osm: Path, tiles: Path, receipt: Path,
                  nonce: str, case_version: str, action: str,
-                 contract: str = STRICT_CONTRACT) -> list[str]:
+                 contract: str = STRICT_CONTRACT, baseline_reference: dict | None = None) -> list[str]:
     """Build one production GUI host invocation for preview or cancellation."""
-    return [str(java), *HOST_JVM_EXPORTS, f"-Djava.io.tmpdir={run_dir}",
+    reference_options = []
+    if contract == APPROVED_CONTRACT and case_version.endswith(":candidate"):
+        if baseline_reference is None:
+            raise GateFailure("Approved current host requires a native baseline publication")
+        reference_options = [f"-Dwayheatmaptracer.benchmark.baseline{stem}={baseline_reference[key]}"
+                             for stem, key in (("Archive", "diagnosticsPath"), ("ArchiveSha256", "diagnosticsSha256"),
+                                               ("Receipt", "receiptPath"), ("ReceiptSha256", "receiptSha256"),
+                                               ("Nonce", "nonce"))]
+    return [str(java), *HOST_JVM_EXPORTS, *reference_options, f"-Djava.io.tmpdir={run_dir}",
             f"-Djosm.pref={run_dir / 'josm-pref'}",
             f"-Djosm.userdata={run_dir / 'josm-userdata'}",
             f"-Djosm.cache={run_dir / 'josm-cache'}",
@@ -295,6 +303,8 @@ def receipt_file(path: Path, expected: dict, expected_zooms: set[int]) -> dict:
     if observed_zooms != expected_zooms:
         raise GateFailure(f"Selected source zooms differ: {path}: {observed_zooms}")
     receipt["observedZooms"] = sorted(observed_zooms)
+    receipt["receiptPath"] = str(path.resolve())
+    receipt["receiptSha256"] = sha256(path)
     return receipt
 
 
@@ -437,7 +447,8 @@ def main(argv: list[str] | None = None) -> int:
                     host_env["JAVA_TOOL_OPTIONS"] = ""
                     command = host_command(
                         java, run_dir, josm, plugins[version], archive, osm, tiles,
-                        receipt, nonce, f"{case_id}:{version}", "preview", contract)
+                        receipt, nonce, f"{case_id}:{version}", "preview", contract,
+                        grouped["baseline"][0] if version == "candidate" else None)
                     result = run_process(command, run_dir, run_dir / "host.log", timeout, host_env)
                     run_record = {"case": case_id, "version": version, "iteration": iteration,
                                   "phase": phase, **result}
@@ -500,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                     receipt = run_dir / "cancellation.json"
                     command = host_command(
                         java, run_dir, josm, plugins[version], archive, osm, tiles,
-                        receipt, nonce, f"{case_id}:{version}", "cancel", contract)
+                        receipt, nonce, f"{case_id}:{version}", "cancel", contract, reference)
                     result = run_process(command, run_dir, run_dir / "host.log", timeout)
                     record = {"case": case_id, "version": version, "iteration": iteration,
                               "phase": "cancel", **result}
