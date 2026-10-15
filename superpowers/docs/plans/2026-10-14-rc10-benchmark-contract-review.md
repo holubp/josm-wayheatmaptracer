@@ -1,5 +1,89 @@
 # RC10 approved benchmark contract: independent review closure
 
+## RC10 requirement-disposition audit, 2026-10-15
+
+Independent Sol/high verified final-tree CI `38727220927` at `348ed9a`:
+2,081/0/0/0, all previous 2,068 cases retained, actual sole-route GUI pass and
+byte-identical CI/local runtime JARs. Earlier actual-delta reviews remain
+qualifying; this audit found no new demonstrated source defect.
+
+The audit identified genuine graphical alternative switching as an unclosed
+explicit requirement. A sole-route preview cannot substitute for the actual
+chooser/listener. Require 0→1→0 with distinct real production alternatives,
+stable owned attempt, matching overlay/export/plan identity, unchanged dataset
+and history, review reset and stale-source rejection. An external harness is
+compiled and run twice on the unchanged public fixture; it has not supplied
+passing switching evidence. Diagnostic run02 establishes one production route
+and no chooser, so the existing helper fails before any switching. Both runs
+and the initial native export are preserved. A faithful offline R5 source
+mapping is being prepared; do not inject alternatives or waive the gate.
+
+Task4's bounded quality comparison is reviewed with explicit limitations from
+the current factory runs, not admission alone. The independently checked
+50375/85282 invocations exited zero with stable source/classes and actual B10
+receipts; all 16 raw/final geometry CSVs match the preceding B10 outputs.
+
+| Case / route | Absolute turn (rad) | Direct support | Worst gap (m) |
+| --- | ---: | ---: | ---: |
+| M1 / 0 | 15.679 | 89.61% | 24.842 |
+| M3 / 0 | 55.449 | 63.10% | 41.546 |
+| R0 / 0 | 4.137 | 95.52% | 4.045 |
+| R1 / 0 | 5.943 | 72.93% | 16.240 |
+| R2 / 0 | 15.463 | 80.01% | 17.897 |
+| R4 / 0 | 3.003 | 97.79% | 2.318 |
+| R5 / 0 | 3.576 | 44.80% | 37.030 |
+| R5 / 1 | 3.590 | 46.56% | 37.030 |
+
+All rows remain AMBIGUOUS, search-truncated and REVIEW_REQUIRED, with no HARD
+finding in these emitted routes. M1/M3's diagnosed excursions improve. Owned-core
+and R5 early/later checks reveal no demonstrated sustained supported-bend loss;
+they do not establish semantic truth. R5's longer gap and weak-fit uncertainty
+must remain visible limitations. Stock probes do not assess plan availability;
+mark it unavailable evidence, never `planAvailable=false`. Actual both-mode
+Apply tests and native benchmark plans are separate requirements. Sources:
+local factory-transaction stock/neighbor invocation and stock logs, local
+owned-core comparisons, and the earlier integrated source review's R5 follow-up.
+
+The current five required private methods passed with 15 additional public
+methods (20/0/0/0), independently reconciled against final CI and source pins.
+Retain this evidence unless a subsequent source change invalidates its scope.
+
+Still required: complete both-case 2x/native/cancellation/latency gates,
+graphical switching, final scope/artifact audit,
+publication and downloaded-JAR verification. Stable corpus/calibration gates
+remain separate; only explicitly approved deferrals apply.
+
+P7 is now controller-authorized against348ed9a, following the fresh complete
+profile attribution: exact-certified chord separation with unchanged exact
+fallback, invocation-local exact branch-shift reuse, convenience-only region
+scratch, and corresponding full chord-payload accounting. The task packet is
+`build/rc10-benchmark-contract/p7-exact-geometry-task-packet.md` (SHA256
+fccf2a0b233cb494b67e67cb65ca46bba3a314b5a70e9e0c02ef7339199fc368).
+The actual outward pair-box span proof replaces a rejected per-chord shortcut.
+The existing sole writer froze implementation and passed23 focused tests. The
+independent reviewer verified all eight hashes, unchanged frozen reference and
+actual source/test delta without a blocking finding. Affected clearance still
+has broader suite40457's terminal XML/inventory:326/0/0/0 in23suites, exact316
+selected prior CI cases plus10new and all eight hashes unchanged. Its initial
+collector expected method-prefixed parameter display names; the original FAIL
+is preserved and the corrected exact-name mapping passes without rerunning or
+altering tests. Final independent review verified the actual XML outcomes,
+exact prior/new multiset, unchanged eight source hashes and932 compiled-class
+hashes, and cleared scoped integration without blocking findings.
+A separate reviewed reconstructed stored-plan contact-pair census is authorized
+after that run, using the unchanged bounded reader, every relevant pair and
+complete ordered reference evidence. It is not actual adapter instrumentation
+or a speed gate. Census2128 completed one compile/one execution, both exit0,
+with unchanged source/helper and932 loaded class hashes. The1770 stored-plan
+chords generated1,129,854 relevant contact calls; every complete ordered
+witness matches the frozen predicate. Fast north rejection covers932,931 calls
+(82.57%);552,441 branch visits have442,664 certified rejections (80.13%) and
+109,777 exact fallbacks. Ten chords refuse certification and retain fallback.
+This is reconstructed native component coverage, not actual adapter/engine
+execution, full topology parity or a measured preview speedup. Full-action
+saving remains open.
+No gate is relaxed and no further host/profile run is authorized here.
+
 ## Retained native interior support: scoped source clearance
 
 Independent Sol/high inspected the actual five-file delta against `19bce0b`,

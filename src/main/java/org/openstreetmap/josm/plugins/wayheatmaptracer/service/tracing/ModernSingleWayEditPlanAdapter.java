@@ -2074,6 +2074,7 @@ public final class ModernSingleWayEditPlanAdapter {
         Set<String> findings = new LinkedHashSet<>();
         Set<PrimitiveKey> inherited = InheritedNonTransportContacts.prove(before, after,
                 selectedWay, selectedRange, evidence, searchHalfWidthMeters);
+        var contactFrame = CertifiedContextSegmentClipper.prepareOriginalContactFrame(evidence.coordinateFrame());
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             Segment first = segments.get(firstIndex);
             for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
@@ -2092,7 +2093,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     boolean changedIncidentContinuation = !first.wayKey().equals(selectedWay)
                             && (first.changed() || second.changed());
                     if (changedSelectedContinuation && pairDecision(first, second,
-                            evidence.coordinateFrame()).defect()
+                            evidence.coordinateFrame(), contactFrame).defect()
                                     == TopologyDefect.COLLINEAR_OVERLAP) {
                         findings.add("final-topology:COLLINEAR_OVERLAP");
                     }
@@ -2102,7 +2103,7 @@ public final class ModernSingleWayEditPlanAdapter {
                     }
                     continue;
                 }
-                PairDecision decision = pairDecision(first, second, evidence.coordinateFrame());
+                PairDecision decision = pairDecision(first, second, evidence.coordinateFrame(), contactFrame);
                 TopologyDefect defect = decision.defect();
                 if (defect == TopologyDefect.NONE) {
                     continue;
@@ -2170,10 +2171,11 @@ public final class ModernSingleWayEditPlanAdapter {
     private record PairDecision(TopologyDefect defect, boolean soleSharedContact) { }
 
     private static PairDecision pairDecision(Segment first, Segment second,
-            org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame frame) {
-        var original = CertifiedContextSegmentClipper.originalContactEvidence(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame frame,
+            CertifiedContextSegmentClipper.OriginalContactFrame contactFrame) {
+        var original = CertifiedContextSegmentClipper.originalContactEvidencePrepared(
                 first.originalChord(), first.firstKey(), first.secondKey(),
-                second.originalChord(), second.firstKey(), second.secondKey(), frame);
+                second.originalChord(), second.firstKey(), second.secondKey(), frame, contactFrame);
         TopologyDefect robust = switch (original.displayDefect()) {
             case NONE -> TopologyDefect.NONE;
             case CROSSING -> TopologyDefect.CROSSING;

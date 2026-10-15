@@ -175,7 +175,7 @@ class V022ContextChordCacheTest {
     }
 
     private static long independentChordBound(CertifiedContextSegmentClipper.ExactChord chord) {
-        long total = 56 + 2 * 32;
+        long total = 96 + 2 * 32; // Header16 + five references40 + five primitive doubles40.
         for (BigDecimal value : List.of(chord.start().east(), chord.start().north(),
                 chord.end().east(), chord.end().north(), chord.lengthSquared(),
                 chord.minNorth(), chord.maxNorth())) {

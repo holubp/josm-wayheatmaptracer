@@ -105,7 +105,7 @@ public final class MetricRegion {
 
     /** Proves a whole segment lies inside the polygon union without discrete-step gaps. */
     public boolean containsSegment(MetricPoint start, MetricPoint end) {
-        return containsSegment(start, end, CancellationProbe.NONE, ignored -> { }, null);
+        return containsSegment(start, end, CancellationProbe.NONE, ignored -> { }, null, false, null, true);
     }
 
     /**
@@ -136,6 +136,12 @@ public final class MetricRegion {
     private boolean containsSegment(MetricPoint start, MetricPoint end,
             CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner,
             boolean boundedEvents, YMembershipIndex membershipIndex) {
+        return containsSegment(start, end, cancellation, admission, owner, boundedEvents, membershipIndex, false);
+    }
+
+    private boolean containsSegment(MetricPoint start, MetricPoint end,
+            CancellationProbe cancellation, LongConsumer admission, AttemptMemoryLedger.Owner owner,
+            boolean boundedEvents, YMembershipIndex membershipIndex, boolean convenienceScratch) {
         if (cancellation == null || admission == null) {
             throw new IllegalArgumentException("Segment authority work controls are required");
         }
@@ -169,7 +175,7 @@ public final class MetricRegion {
         else admission.accept(eventBound);
         List<Double> events = boundedEvents
                 ? new BoundedEventList((int) eventBound, cancellation, admission, scratch)
-                : new ArrayList<>((int) eventBound);
+                : convenienceScratch ? new LazyEventList((int) eventBound) : new ArrayList<>((int) eventBound);
         appendEvent(events, 0.0);
         appendEvent(events, 1.0);
         for (List<MetricPoint> polygon : polygons) {
@@ -198,6 +204,25 @@ public final class MetricRegion {
         return true;
         } finally {
             if (scratch != null) scratch.close();
+        }
+    }
+
+    /**
+     * Convenience queries have no owned scratch. Keep only the mandatory two
+     * slots until a third event; then grow exactly to the original bound.
+     * Adds one int/padding and transient coexistence of the old two-slot array.
+     */
+    private static final class LazyEventList extends ArrayList<Double> {
+        private final int eventBound;
+
+        LazyEventList(int eventBound) {
+            super(2);
+            this.eventBound = eventBound;
+        }
+
+        @Override public boolean add(Double value) {
+            if (size() == 2) ensureCapacity(eventBound);
+            return super.add(value);
         }
     }
 

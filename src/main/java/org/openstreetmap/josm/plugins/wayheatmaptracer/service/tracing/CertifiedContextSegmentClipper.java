@@ -28,19 +28,31 @@ final class CertifiedContextSegmentClipper {
         private final BigDecimal lengthSquared;
         private final BigDecimal minNorth;
         private final BigDecimal maxNorth;
+        // Five primitive doubles,40 additional retained bytes per immutable chord.
+        private final double minEastLower;
+        private final double maxEastUpper;
+        private final double minNorthLower;
+        private final double maxNorthUpper;
+        private final double separationRadius;
 
         ExactChord(ExactPoint start, ExactPoint end) {
             this(start, end, distanceSquared(start, end),
-                    min(start.north(), end.north()), max(start.north(), end.north()));
+                    min(start.north(), end.north()), max(start.north(), end.north()), Double.NaN);
         }
 
         private ExactChord(ExactPoint start, ExactPoint end, BigDecimal lengthSquared,
-                BigDecimal minNorth, BigDecimal maxNorth) {
+                BigDecimal minNorth, BigDecimal maxNorth, double inheritedRadius) {
             this.start = start;
             this.end = end;
             this.lengthSquared = lengthSquared;
             this.minNorth = minNorth;
             this.maxNorth = maxNorth;
+            minEastLower = Math.nextDown(min(start.east(), end.east()).doubleValue());
+            maxEastUpper = Math.nextUp(max(start.east(), end.east()).doubleValue());
+            minNorthLower = Math.nextDown(minNorth.doubleValue());
+            maxNorthUpper = Math.nextUp(maxNorth.doubleValue());
+            separationRadius = Double.isNaN(inheritedRadius)
+                    ? certifiedSeparationRadius(lengthSquared) : inheritedRadius;
         }
 
         ExactPoint start() { return start; }
@@ -52,7 +64,7 @@ final class CertifiedContextSegmentClipper {
         ExactChord shifted(BigDecimal eastShift) {
             // Unlimited-precision east translation leaves length and north bounds exact.
             return new ExactChord(start.shifted(eastShift), end.shifted(eastShift),
-                    lengthSquared, minNorth, maxNorth);
+                    lengthSquared, minNorth, maxNorth, separationRadius);
         }
     }
 
@@ -132,10 +144,68 @@ final class CertifiedContextSegmentClipper {
     // The area error below is <=4*5e-8*141e6+8*(5e-8)^2 <29 m^2; 64 m^2 is
     // an outward bound for the exact latitude-box rejection before three branches.
     private static final BigDecimal GLOBAL_AREA_UPPER = BigDecimal.valueOf(64);
+    private static final BigDecimal GLOBAL_TWICE_AREA_SQUARED =
+            GLOBAL_AREA_UPPER.pow(2).multiply(BigDecimal.valueOf(2));
     // StrictFrameArithmetic's exact binary64 radians-per-degree factor. The predicate
     // treats this and the certificate's two binary64 scales as exact coefficients.
     private static final BigDecimal RADIANS_PER_DEGREE =
             new BigDecimal(0x1.1df46a2529d39p-6);
+
+    /** A floating proposal never authorizes separation without this exact certificate. */
+    private static double certifiedSeparationRadius(BigDecimal lengthSquared) {
+        if (lengthSquared.signum() <= 0) return 0;
+        double length = lengthSquared.doubleValue();
+        if (!(length > 0) || !Double.isFinite(length)) return 0;
+        double radius = Math.nextUp(StrictMath.sqrt(GLOBAL_TWICE_AREA_SQUARED.doubleValue() / length
+                + COORDINATE_LENGTH_COEFFICIENT.doubleValue()));
+        if (!(radius > 0) || !Double.isFinite(radius)) return 0;
+        try {
+            BigDecimal exactRadius = new BigDecimal(radius);
+            return exactRadius.pow(2).multiply(lengthSquared).compareTo(
+                    GLOBAL_TWICE_AREA_SQUARED.add(COORDINATE_LENGTH_COEFFICIENT.multiply(lengthSquared))) >= 0
+                    ? radius : 0;
+        } catch (ArithmeticException refusedPreparation) {
+            // New-only preparation failure disables the filter, never the old predicate.
+            return 0;
+        }
+    }
+
+    private static boolean certifiedAxisSeparation(double lowerFirst, double upperFirst,
+            double lowerSecond, double upperSecond, ExactChord first, ExactChord second) {
+        if (!(first.separationRadius > 0) || !(second.separationRadius > 0)) return false;
+        double gapLower = Math.nextDown(Math.max(lowerFirst, lowerSecond) - Math.min(upperFirst, upperSecond));
+        return Double.isFinite(gapLower) && gapLower > Math.max(first.separationRadius, second.separationRadius);
+    }
+
+    private static boolean certifiedNorthSeparation(ExactChord first, ExactChord second) {
+        return certifiedAxisSeparation(first.minNorthLower, first.maxNorthUpper,
+                second.minNorthLower, second.maxNorthUpper, first, second);
+    }
+
+    private static boolean certifiedBranchSeparation(ExactChord first, ExactChord second) {
+        double eastSpan = Math.nextUp(Math.max(first.maxEastUpper, second.maxEastUpper)
+                - Math.min(first.minEastLower, second.minEastLower));
+        double northSpan = Math.nextUp(Math.max(first.maxNorthUpper, second.maxNorthUpper)
+                - Math.min(first.minNorthLower, second.minNorthLower));
+        double span = Math.nextUp(eastSpan + northSpan);
+        // Only this complete PAIR span proves the dynamic area allowance<=64.
+        // A per-chord origin-distance bound does not suffice (orthogonal axes).
+        if (!Double.isFinite(span) || span > 300_000_000) return false;
+        return certifiedAxisSeparation(first.minEastLower, first.maxEastUpper,
+                    second.minEastLower, second.maxEastUpper, first, second)
+                || certifiedNorthSeparation(first, second);
+    }
+
+    /** Invocation-local exact shifts;32 reference payload bytes plus all3 decimal graphs. */
+    record OriginalContactFrame(LocalMetricFrame frame, BigDecimal negativeShift,
+            BigDecimal zeroShift, BigDecimal positiveShift) { }
+
+    static OriginalContactFrame prepareOriginalContactFrame(LocalMetricFrame frame) {
+        BigDecimal fullTurnMetres = FULL_TURN.multiply(RADIANS_PER_DEGREE)
+                .multiply(exact(frame.distortionCertificate().eastMetersPerRadian()));
+        return new OriginalContactFrame(frame, fullTurnMetres.multiply(BigDecimal.valueOf(-1)),
+                fullTurnMetres.multiply(BigDecimal.valueOf(0)), fullTurnMetres.multiply(BigDecimal.valueOf(1)));
+    }
 
     /**
      * Unwraps the original shorter arc and scales exact input values without calling
@@ -176,17 +246,44 @@ final class CertifiedContextSegmentClipper {
     static ContactEvidence originalContactEvidence(ExactChord changed,
             PrimitiveKey changedStart, PrimitiveKey changedEnd, ExactChord context,
             PrimitiveKey contextStart, PrimitiveKey contextEnd, LocalMetricFrame frame) {
+        if (certifiedNorthSeparation(changed, context)) {
+            return new ContactEvidence(false, false, false, false, java.util.List.of());
+        }
         BigDecimal northGap = max(changed.minNorth(), context.minNorth())
                 .subtract(min(changed.maxNorth(), context.maxNorth()));
         if (beyondBoth(northGap, changed, context, GLOBAL_AREA_UPPER)) {
             return new ContactEvidence(false, false, false, false, java.util.List.of());
         }
-        BigDecimal fullTurnMetres = FULL_TURN.multiply(RADIANS_PER_DEGREE)
-                .multiply(exact(frame.distortionCertificate().eastMetersPerRadian()));
+        // Keep frame first-use AFTER the original north rejection on this legacy path.
+        return contactBranches(changed, changedStart, changedEnd, context, contextStart,
+                contextEnd, prepareOriginalContactFrame(frame));
+    }
+
+    static ContactEvidence originalContactEvidencePrepared(ExactChord changed,
+            PrimitiveKey changedStart, PrimitiveKey changedEnd, ExactChord context,
+            PrimitiveKey contextStart, PrimitiveKey contextEnd, LocalMetricFrame frame,
+            OriginalContactFrame prepared) {
+        if (prepared.frame() != frame) throw new IllegalArgumentException("Foreign original contact frame");
+        if (certifiedNorthSeparation(changed, context)) {
+            return new ContactEvidence(false, false, false, false, java.util.List.of());
+        }
+        BigDecimal northGap = max(changed.minNorth(), context.minNorth())
+                .subtract(min(changed.maxNorth(), context.maxNorth()));
+        if (beyondBoth(northGap, changed, context, GLOBAL_AREA_UPPER)) {
+            return new ContactEvidence(false, false, false, false, java.util.List.of());
+        }
+        return contactBranches(changed, changedStart, changedEnd, context, contextStart, contextEnd, prepared);
+    }
+
+    private static ContactEvidence contactBranches(ExactChord changed, PrimitiveKey changedStart,
+            PrimitiveKey changedEnd, ExactChord context, PrimitiveKey contextStart,
+            PrimitiveKey contextEnd, OriginalContactFrame prepared) {
         ContactEvidence result = new ContactEvidence(false, false, false, false,
                 java.util.List.of());
         for (int shift = -1; shift <= 1; shift++) {
-            ExactChord branch = context.shifted(fullTurnMetres.multiply(BigDecimal.valueOf(shift)));
+            BigDecimal eastShift = shift < 0 ? prepared.negativeShift()
+                    : shift == 0 ? prepared.zeroShift() : prepared.positiveShift();
+            ExactChord branch = context.shifted(eastShift);
             ContactEvidence contact = branchEvidence(changed, changedStart, changedEnd,
                     branch, contextStart, contextEnd, shift);
             result = result.union(contact);
@@ -213,6 +310,9 @@ final class CertifiedContextSegmentClipper {
     private static ContactEvidence branchEvidence(ExactChord first, PrimitiveKey firstStart,
             PrimitiveKey firstEnd, ExactChord second, PrimitiveKey secondStart,
             PrimitiveKey secondEnd, int branchShift) {
+        if (certifiedBranchSeparation(first, second)) {
+            return new ContactEvidence(false, false, false, false, java.util.List.of());
+        }
         ExactPoint a = first.start(), b = first.end();
         ExactPoint c = second.start(), d = second.end();
         // A positive axis-aligned box gap is a lower bound on the pair distance.

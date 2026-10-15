@@ -77,7 +77,7 @@ final class InheritedNonTransportContacts {
 
         private static long chordBytes(CertifiedContextSegmentClipper.ExactChord chord) {
             try {
-                long bytes = AttemptMemoryLedger.objectBytes(40)
+                long bytes = AttemptMemoryLedger.objectBytes(80)
                         + 2L * AttemptMemoryLedger.objectBytes(16);
                 bytes = Math.addExact(bytes, decimalBytes(chord.start().east()));
                 bytes = Math.addExact(bytes, decimalBytes(chord.start().north()));
