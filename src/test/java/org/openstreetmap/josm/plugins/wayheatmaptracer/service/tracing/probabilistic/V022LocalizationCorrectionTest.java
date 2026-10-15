@@ -432,11 +432,13 @@ class V022LocalizationCorrectionTest {
         ModernDiagnosticCounters.begin();
         Accounted<TraceEngineRun> accounted;
         long maximumStates;
+        Map<String, Number> traceCounters;
         try {
             accounted = new ProbabilisticTraceEngine("scalar")
                     .traceWithUsage(fixture.request(), fixture.evidence(), fixture.network(),
                             CancellationProbe.NONE, parent);
-            maximumStates = ModernDiagnosticCounters.snapshot().get("trace.maxStates").longValue();
+            traceCounters = ModernDiagnosticCounters.snapshot();
+            maximumStates = traceCounters.get("trace.maxStates").longValue();
         } finally {
             ModernDiagnosticCounters.end();
         }
@@ -462,6 +464,15 @@ class V022LocalizationCorrectionTest {
         assertEquals(2_440L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
         assertEquals(2_440L, ledger.currentBytes());
         assertEquals(29L, maximumStates);
+        assertEquals(11L, traceCounters.get("trace.profiles").longValue());
+        assertEquals(2L + 9L * 29L, traceCounters.get("trace.states").longValue());
+        // All admitted pairs retain min(K, incoming prefixes): 29 initial pairs
+        // each create two records, then 841, 29^3, six full 841*K stages and
+        // the final 29*K roots. This is independent of the ledger byte total.
+        long ancestryAllocations = 2L * 29L + 29L * 29L + 29L * 29L * 29L
+                + 6L * 29L * 29L * 32L + 29L * 32L;
+        assertEquals(ancestryAllocations,
+                traceCounters.get("inference.ancestryRecordsAllocated").longValue());
         long descriptorScratch = AttemptMemoryLedger.objectBytes(48)
                 + 2L * AttemptMemoryLedger.arrayBytes(32, Integer.BYTES)
                 + AttemptMemoryLedger.arrayBytes(32, Double.BYTES)
@@ -472,9 +483,36 @@ class V022LocalizationCorrectionTest {
         long continuationMetadata = 11L * 2L * Double.BYTES
                 + AttemptMemoryLedger.arrayBytes(11, Double.BYTES);
         assertEquals(280L, continuationMetadata);
-        assertEquals(8_908_896L + descriptorScratch + AttemptMemoryLedger.objectBytes(80)
-                + continuationMetadata, ledger.peakBytes(),
-                "the full forward/backward solve, not the smaller pair helper, owns the peak");
+        // The eliminated ancestry index used to peak during table growth. With
+        // direct leases, stage9 lexical sorting peaks before the prior frontier
+        // releases. GOLDEN deterministic fixture census by prefix lengths1..8:
+        // 3,3,7,13,20,30,52,964 (an observation, not a theoretical path-count proof).
+        // Both length9/10 frontiers still have 841*K roots. Descriptor scratch
+        // has already closed, so it must not be added.
+        long ancestorPrefixes = 3L + 3L + 7L + 13L + 20L + 30L + 52L + 964L;
+        long frontierRoots = 29L * 29L * 32L;
+        long liveAncestry = ancestorPrefixes + 2L * frontierRoots;
+        long messages = 2L * (ProbabilisticInference.listBytes(10)
+                + ProbabilisticInference.deepArrayBytes(1, 29, Double.BYTES)
+                + 8L * ProbabilisticInference.deepArrayBytes(29, 29, Double.BYTES)
+                + ProbabilisticInference.deepArrayBytes(29, 1, Double.BYTES));
+        long frontiers = 2L * (ProbabilisticInference.deepArrayBytes(29, 29, Long.BYTES)
+                + ProbabilisticInference.deepArrayBytes(29, 29, Integer.BYTES)
+                + 29L * 29L * ProbabilisticInference.listBytes(32));
+        // 6786 admission keys require capacity16384 at the ordinary .75 load.
+        long admissionMemo = 2L * AttemptMemoryLedger.objectBytes(48)
+                + 2L * AttemptMemoryLedger.referenceArrayBytes(16_384)
+                + 6_786L * (AttemptMemoryLedger.objectBytes(16)
+                    + 2L * AttemptMemoryLedger.objectBytes(48)
+                    + AttemptMemoryLedger.objectBytes(16)
+                    + 2L * AttemptMemoryLedger.objectBytes(40));
+        long lexicalOrder = ProbabilisticInference.listBytes(frontierRoots);
+        assertTrue(lexicalOrder > descriptorScratch);
+        long expectedPeak = localizationFixtureFrontendBytes() + messages + admissionMemo
+                + AttemptMemoryLedger.objectBytes(80) + AttemptMemoryLedger.objectBytes(40)
+                + liveAncestry * AttemptMemoryLedger.objectBytes(64) + frontiers + lexicalOrder;
+        assertEquals(expectedPeak, ledger.peakBytes(),
+                "the complete solve peaks with stage9 lexical roots and both live frontiers");
         assertEquals(6_786L, accounted.value().usage().pairVisits());
         var work = accounted.value().result().workAccounting().orElseThrow().bStages().get(0);
         assertEquals(5_006_473L, work.forwardBackwardScores() + work.logicalKBestExtensions());
@@ -489,6 +527,48 @@ class V022LocalizationCorrectionTest {
         assertTrue(ledger.currentBytes() > 0L, "the parent retains the returned engine result");
         parent.close();
         assertEquals(0L, ledger.currentBytes());
+    }
+
+    /** Live profile graph for eleven single-ridge profiles, including two exact endpoints. */
+    private static long localizationFixtureFrontendBytes() {
+        long oneSampledProfile = AttemptMemoryLedger.objectBytes(104)
+                + ProbabilisticInference.listBytes(29)
+                + 29L * AttemptMemoryLedger.objectBytes(24)
+                + 2L * AttemptMemoryLedger.objectBytes(16) // anchor and normal
+                + AttemptMemoryLedger.objectBytes(128) // mode, including exterior reach
+                + 2L * AttemptMemoryLedger.objectBytes(24) // mode/aggregate orientation
+                + AttemptMemoryLedger.objectBytes(32) // angular mode
+                + 3L * ProbabilisticInference.listBytes(1) // modes and shared orientation lists
+                + ProbabilisticInference.listBytes(1) + AttemptMemoryLedger.objectBytes(8)
+                + ProbabilisticInference.listBytes(3) + 3L * AttemptMemoryLedger.objectBytes(8);
+        long sampled = 11L * oneSampledProfile
+                + AttemptMemoryLedger.objectBytes(24) + ProbabilisticInference.listBytes(11)
+                + ProbabilisticInference.listBytes(11) // evaluated-profile list
+                + AttemptMemoryLedger.arrayBytes(11, Double.BYTES) // continuation offsets
+                + 2L * AttemptMemoryLedger.objectBytes(16); // exact-anchor optionals
+        return sampled + 9L * (localizationFixtureLatticeBytes(29)
+                + localizationFixtureObservationBytes(29))
+                + 2L * (localizationFixtureLatticeBytes(1)
+                + localizationFixtureObservationBytes(1));
+    }
+
+    private static long localizationFixtureLatticeBytes(int states) {
+        return AttemptMemoryLedger.objectBytes(32)
+                + states * AttemptMemoryLedger.objectBytes(32)
+                + ProbabilisticInference.listBytes(states)
+                + 2L * AttemptMemoryLedger.objectBytes(32)
+                + ProbabilisticInference.listBytes(2)
+                + (states == 1 ? 0L : ProbabilisticInference.listBytes(1)
+                    + AttemptMemoryLedger.objectBytes(8)); // retained mandatory offset
+    }
+
+    private static long localizationFixtureObservationBytes(int states) {
+        long oneBranchMap = AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.objectBytes(40) + AttemptMemoryLedger.referenceArrayBytes(2);
+        return AttemptMemoryLedger.objectBytes(80) + ProbabilisticInference.listBytes(states)
+                + 2L * AttemptMemoryLedger.arrayBytes(states, Double.BYTES)
+                + 2L * oneBranchMap + AttemptMemoryLedger.referenceArrayBytes(states)
+                + states * AttemptMemoryLedger.arrayBytes(2, Double.BYTES);
     }
 
     @Test

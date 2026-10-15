@@ -198,3 +198,21 @@ highscale/1ULP, distortion, antimeridian and clipping/refusal parity. Final neig
 XML, exact case multiset and hashes in p2a-neighbor-terminal-proof.json.
 Evidence under build/rc10-benchmark-contract/p2a-*. Speed remains unmeasured;
 public CI/GUI, fresh paired benchmarks and publication gates remain mandatory.
+
+## Full-CI allocation oracle correction — 2026-10-15
+
+CI38677986160 ran2045/1/0/0, retaining all2035 old cases plus10 new. Sole
+failure was the old full-engine memory-peak literal. Independent Sol/high clears
+the test-only correction with no blockers: expanded typed frontend/memo/matrix/
+frontier/lexical allocation formulas, explicitly GOLDEN ancestry-depth census,
+and new fixture-shape/allocation-count guards. Existing exact-output/work/current
+retention/cap/ownership/peak-receipt assertions remain. Production delta79c6 is
+zero; no cap or engine behavior is relaxed.
+
+Normal focused73421 PASS39s1/0/0/0. Final four-suite96384 PASS1m16s66/0/0/0;
+independently verified XML/multiset/hashes. Test SHA
+e9316f93e327f38895cb894e90030fea83041322eeb51dd924346b42ee22bb10.
+Evidence: build/rc10-benchmark-contract/localization-census/.
+Current79c6 interrupted timing receipts remain diagnostic only: approved contract
+requires full tests and GUI before qualifying measurements. Fresh final-tree
+CI/GUI and paired benchmarks remain open.
