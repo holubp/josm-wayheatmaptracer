@@ -6,6 +6,53 @@ Exact 2x improvement is now informational, not an RC10 release gate. The user
 prioritizes stable working tracing before more aggressive performance tuning.
 Historical mandatory-2x language below is superseded only for that target;
 all native/production/Apply/Undo/Redo/cancellation/freshness/review gates remain.
+
+Final-source update: `fce9b00` public CI38770614946 passes2111/0/0/0 and
+all7ordinary GUI smoke guards. CI/local full JAR SHA6335ea0d83114f9515e42e0ee9cb6d09577ee83863c52112df152083ddefcaf8
+is identical. Independent runtime-scope review qualifies N1 and20fixture reuse
+under their actual old producers;947 other runtime entries are unchanged.
+Final N2 continuation19475 terminated0/PASS14runs/9fresh comparisons,4oldRC6
+previews explicitly reused,4fresh final candidate previews and6fresh cancels.
+Report SHA8ab0e873303c5386ea9799ef07a641649380256d3640cf19a7fa6870706ab028.
+Independent Sol report/receipt/artifact audit clears all non-speed gates;
+qualified N1+N2 totals28cohort-labeled runs/18comparisons. N2 cancellation median
+6.905ms candidate versus8.520781ms baseline; tracing1.654913x is informational.
+No original timing failure or execution identity is rewritten.
+
+Positive actual GUI review reset subsequently passed in run35889 at the exact
+final6335 JAR:compile0/host0, two actual production B Review/available plans,
+real Confirm and0→1→0 reset, exact native/overlay/export/plan identity, same
+sequence, cloned dataset/history unchanged and stale close/no exported plan.
+Summary SHA8213aa988fcba0ce328f00ff9850429e1304a243030d9582f6faafaf860ef5f7.
+The independently designed/source-reviewed fixture is explicitly PRIVATE and
+isolated, preserving the full selected way/imagery/settings and actual seven
+ordinary/two-fixed edit authority while deliberately omitting external context.
+Original parent dataset guards pass construction, termination and shutdown.
+This proves UI behavior only, not original R5 applicability or benchmark parity.
+The first clone attempt's harness generic-cast failure was retained, reproduced
+RED on the actual method and fixed GREEN before the successful GUI run.
+Independent Sol/high final whole-task requirement/evidence audit found no
+remaining RC10 implementation or prepublication verification blocker. It
+qualifies the earlier source reviews, retained private fixtures, both-mode
+Apply/Undo/Redo/stale matrix in final CI, both benchmark cohorts and this actual
+UI result without repeating or overstating them. Weak, dispersed fitting remains
+open; stable0.22 corpus/calibration/visible scope is not certified by this RC.
+Remaining steps are the scoped metadata commit/source-equivalence proof,
+publication and actual downloaded artifact/tag verification.
+
+Historical fixture investigation (superseded for GUI closure by run35889 above):
+saved final N2 had only one route. The mixed R5 contract then allowed actual
+0→1→0 or1→0→1, confirming only an eligible stored Review and retaining disabled
+Apply/Confirm on a HARD alternative. At that point source/runtime verification
+was pending. The reviewed mixed harness subsequently compiled0/ran1, correctly
+refusing both actual plans as FINAL_TOPOLOGY_CROSSING/HARD before confirmation.
+Positive reset was still open then; the independently reviewed PRIVATE isolated
+fixture later supplied the passing evidence. The original full-network refusal
+remains valid and is not waived by that separate UI result.
+
+The following earlier status statements are historical and do not supersede
+the final-source results above.
+
 Final `ab68bb7` CI38748586697 passes2091/0/0/0 plus GUI smoke; private fixtures
 pass20/0/0/0, with byte-identical CI/local production JARs. Original benchmark
 3542 terminated with eight N1 previews/nine native comparisons all successful
