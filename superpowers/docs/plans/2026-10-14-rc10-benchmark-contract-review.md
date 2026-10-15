@@ -37,8 +37,16 @@ qualifies the earlier source reviews, retained private fixtures, both-mode
 Apply/Undo/Redo/stale matrix in final CI, both benchmark cohorts and this actual
 UI result without repeating or overstating them. Weak, dispersed fitting remains
 open; stable0.22 corpus/calibration/visible scope is not certified by this RC.
-Remaining steps are the scoped metadata commit/source-equivalence proof,
-publication and actual downloaded artifact/tag verification.
+Publication chain is now verified: scoped status commit
+`d1a88786568c431f31ae1156b91edde111a48558` differs from testedfce9b00 only in
+two Markdown documents, with all86source/dependency pins unchanged. The
+[v0.22.0-rc.10 prerelease](https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.10)
+points to that exact commit. Its sole primary `wayheatmaptracer.jar` asset was
+downloaded fresh and matches complete tested bytes/SHA6335ea0d...,2,672,584bytes,
+948entries/922Java17classes/Plugin-Version0.22.0-rc.10/minimumJOSM19555. Remote
+asset digest/tag/prerelease status and unchangedRC9tag pass. Proof is retained
+locally at `build/rc10-approved-benchmark/released-rc10-verified/proof.json`.
+RC10 is released; no stable0.22 completion or original-R5 safety waiver is claimed.
 
 Historical fixture investigation (superseded for GUI closure by run35889 above):
 saved final N2 had only one route. The mixed R5 contract then allowed actual
