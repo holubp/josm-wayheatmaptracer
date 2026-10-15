@@ -2,12 +2,21 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/** Attempt-scoped accounting for additional retained allocations owned by modern tracing work. */
+/**
+ * Attempt-scoped accounting for caller-declared retained allocations owned by modern tracing work.
+ * Ledger bookkeeping is not recursively charged and this limit is not a total JVM heap limit.
+ * Identity indexes retain bucket arrays and one map node per live charge/owner lease, plus the
+ * identity/hash fields in each charge. Collision tree nodes may be larger than ordinary nodes;
+ * arrays can retain their historical capacity after removal. Zero-byte identities have no count
+ * cap. None of this bookkeeping changes the caller payload reservation/receipt contract.
+ */
 public final class AttemptMemoryLedger {
     public static final long MAX_BYTES = 256L * 1024L * 1024L;
 
@@ -17,7 +26,7 @@ public final class AttemptMemoryLedger {
     private static final long REFERENCE_BYTES = 8;
 
     private final long limitBytes;
-    private final IdentityHashMap<Object, Charge> charges = new IdentityHashMap<>();
+    private final Map<IdentityKey, Charge> charges = new HashMap<>();
     private long currentBytes;
     private long peakBytes;
     private Owner root;
@@ -105,18 +114,18 @@ public final class AttemptMemoryLedger {
         reservation.owner.ensureOpen();
         reservation.ensureActive();
         Objects.requireNonNull(identity, "newlyAllocatedIdentity");
-        if (charges.containsKey(identity)) {
+        if (charges.containsKey(new IdentityKey(identity))) {
             throw new IllegalStateException("identity is already accounted by this attempt");
         }
-        Charge charge = new Charge(reservation.bytes);
+        Charge charge = new Charge(identity, reservation.bytes);
         MemoryLease lease = new MemoryLease(this, reservation.owner, identity, charge);
-        charges.put(identity, charge);
+        charges.put(charge, charge);
         if (!reservation.owner.reservations.remove(reservation)) {
-            charges.remove(identity);
+            charges.remove(charge);
             throw new IllegalStateException("reservation is not owned by its recorded owner");
         }
         reservation.state = Reservation.State.ADOPTED;
-        reservation.owner.leases.put(identity, lease);
+        reservation.owner.leases.put(charge, lease);
         return lease;
     }
 
@@ -135,25 +144,25 @@ public final class AttemptMemoryLedger {
     private synchronized MemoryLease retain(Owner owner, Object identity) {
         owner.ensureOpen();
         Objects.requireNonNull(identity, "identity");
-        Charge charge = charges.get(identity);
+        Charge charge = charges.get(new IdentityKey(identity));
         if (charge == null) {
             throw new IllegalArgumentException("identity is not accounted by this attempt");
         }
-        if (owner.leases.containsKey(identity)) {
+        if (owner.leases.containsKey(charge)) {
             throw new IllegalStateException("owner already retains this identity");
         }
         charge.references = Math.addExact(charge.references, 1);
         MemoryLease lease = new MemoryLease(this, owner, identity, charge);
-        owner.leases.put(identity, lease);
+        owner.leases.put(charge, lease);
         return lease;
     }
 
     private synchronized MemoryLease retainIfAbsent(Owner owner, Object identity) {
         owner.ensureOpen();
         Objects.requireNonNull(identity, "identity");
-        MemoryLease existing = owner.leases.get(identity);
+        MemoryLease existing = owner.leases.get(new IdentityKey(identity));
         if (existing != null) {
-            if (!existing.active || charges.get(identity) != existing.charge) {
+            if (!existing.active || charges.get(existing.charge) != existing.charge) {
                 throw new IllegalStateException("owner contains an invalid memory lease");
             }
             return existing;
@@ -191,15 +200,15 @@ public final class AttemptMemoryLedger {
                 continue;
             }
             for (MemoryLease lease : owner.leases.values()) {
-                if (!lease.active || charges.get(lease.identity) != lease.charge) {
+                if (!lease.active || charges.get(lease.charge) != lease.charge) {
                     throw new IllegalStateException("source subtree contains an invalid memory lease");
                 }
                 incoming.computeIfAbsent(lease.identity, ignored -> new ArrayList<>()).add(lease);
             }
         }
         for (Object identity : incoming.keySet()) {
-            MemoryLease existing = destination.leases.get(identity);
-            if (existing != null && (!existing.active || charges.get(identity) != existing.charge)) {
+            MemoryLease existing = destination.leases.get(new IdentityKey(identity));
+            if (existing != null && (!existing.active || charges.get(existing.charge) != existing.charge)) {
                 throw new IllegalStateException("destination contains an invalid memory lease");
             }
             List<MemoryLease> leases = incoming.get(identity);
@@ -223,12 +232,12 @@ public final class AttemptMemoryLedger {
         for (var entry : incoming.entrySet()) {
             Object identity = entry.getKey();
             List<MemoryLease> leases = entry.getValue();
-            MemoryLease keep = destination.leases.get(identity);
+            MemoryLease keep = destination.leases.get(new IdentityKey(identity));
             int discardedFrom = 0;
             if (keep == null) {
                 keep = leases.get(0);
                 keep.owner = destination;
-                destination.leases.put(identity, keep);
+                destination.leases.put(keep.charge, keep);
                 discardedFrom = 1;
             }
             for (int index = discardedFrom; index < leases.size(); index++) {
@@ -269,8 +278,8 @@ public final class AttemptMemoryLedger {
     private synchronized void close(MemoryLease lease) {
         lease.ensureActive();
         Owner owner = lease.owner;
-        Charge charge = charges.get(lease.identity);
-        if (charge != lease.charge || owner.leases.remove(lease.identity) != lease) {
+        Charge charge = charges.get(lease.charge);
+        if (charge != lease.charge || owner.leases.remove(lease.charge) != lease) {
             throw new IllegalStateException("memory lease is not registered with its owner");
         }
         if (charge.references <= 0) {
@@ -279,7 +288,7 @@ public final class AttemptMemoryLedger {
         charge.references--;
         lease.active = false;
         if (charge.references == 0) {
-            charges.remove(lease.identity);
+            charges.remove(lease.charge);
             subtract(charge.bytes);
         }
     }
@@ -298,7 +307,7 @@ public final class AttemptMemoryLedger {
         private final String name;
         private final Set<Owner> children = Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<Reservation> reservations = Collections.newSetFromMap(new IdentityHashMap<>());
-        private final IdentityHashMap<Object, MemoryLease> leases = new IdentityHashMap<>();
+        private final Map<IdentityKey, MemoryLease> leases = new HashMap<>();
         private boolean closed;
 
         private Owner(AttemptMemoryLedger ledger, Owner parent, String name) {
@@ -441,11 +450,33 @@ public final class AttemptMemoryLedger {
         }
     }
 
-    private static final class Charge {
+    /** Lookup probes and canonical charges share exactly the same symmetric identity relation. */
+    private static class IdentityKey {
+        private final Object identity;
+        private final int cachedIdentityHash;
+
+        private IdentityKey(Object identity) {
+            this.identity = identity;
+            this.cachedIdentityHash = System.identityHashCode(identity);
+        }
+
+        @Override
+        public final int hashCode() {
+            return cachedIdentityHash;
+        }
+
+        @Override
+        public final boolean equals(Object other) {
+            return other instanceof IdentityKey key && identity == key.identity;
+        }
+    }
+
+    private static final class Charge extends IdentityKey {
         private final long bytes;
         private int references = 1;
 
-        private Charge(long bytes) {
+        private Charge(Object identity, long bytes) {
+            super(identity);
             this.bytes = bytes;
         }
     }

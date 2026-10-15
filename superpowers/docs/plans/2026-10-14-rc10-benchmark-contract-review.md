@@ -236,3 +236,28 @@ Frozen old-predicate full ordered evidence, tiny/full/highprecision/capacity
 misses, fresh inputs and actual early-null-before-later-invalid-arc controls pass.
 Evidence: build/rc10-benchmark-contract/p2b-*. Performance effect remains unmeasured.
 Full final-tree CI and GUI must pass BEFORE fresh paired qualifying measurements.
+
+## P3 authoritative ledger indexes — independent affected clearance
+
+Independent Sol/high reviewed the actual frozen ledger/test delta and found no
+blocking findings. Only the two hot authoritative indexes change; canonical
+Charge keys use cached identity hashes and referent equality, without user
+methods. Monitor boundaries, validation order, transfer survivors, reference
+counts, cancellation and caller-byte receipts/caps remain unchanged. Global
+charge validation still precedes owner removal, including stale re-adoption.
+
+The existing caller-payload accounting boundary remains explicit, not a total
+heap cap. The reviewed metadata model includes conservative Charge48, map
+nodes/buckets/resize coexistence and retained capacity. Zero-byte identities
+have no count bound; no fixed lookup-probe guarantee is claimed.
+
+Intended RED12188: five cases/one expected index failure; four semantic controls
+pass. Focused GREEN10159:22/0/0/0. Neighbor36693:10 suites123/0/0/0; all prior100
+cases retained with multiplicity, plus six new controls and17 localization
+cases. Reviewer independently checked XML, full case multisets and three frozen
+hashes. The inverse-renamed old-ledger reference is byte-exact to65438c9.
+Controls cover hostile referents, deliberate collisions, zero-byte identities,
+co-ownership, stale close/re-adopt, transfer and latch-controlled cancellation.
+Local evidence: build/rc10-benchmark-contract/p3-ledger-index-evidence.md and
+associated frozen-source manifest, proof and XML. No speedup is established;
+full final-tree CI/GUI then fresh complete paired gates remain mandatory.
