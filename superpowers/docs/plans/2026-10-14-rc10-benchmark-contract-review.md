@@ -281,3 +281,28 @@ length orders, degeneracy, decimal scales/ULPs and frozen complete flags/ordered
 witnesses remain covered. Evidence: build/rc10-benchmark-contract/p4-pair-inequality-evidence.md.
 No speed improvement is established. Final-tree CI/GUI and fresh complete paired
 performance/cancellation/latency gates are required before publication.
+
+## P5 measured release and orientation overhead — independent clearance
+
+Focused Sol6.1/xhigh source/data design selected two measured hotpaths together:
+canonical ledger release and orientation stream allocation. Actual production
+mode is EXACT_DOMINANCE_V2; no policy/input mismatch or benchmark rebinding.
+An independent Sol/high then reviewed the actual frozen two-file diff and tests,
+finding no blockers. Positive charge references certify canonical publication
+under the existing monitor; sole adoption rollback retires its unpublished
+charge. Exact owner-lease conditional removal and returned global Charge identity
+checks preserve stale/readopt/transfer safety before byte subtraction. No new
+fields, caps, inference traversal, score, work, checkpoint or API changes.
+Orientation uses the same encounter-ordered distance minimum then unchanged
+StrictMath.sin/square; empty and invalid-bearing behavior is preserved exactly.
+
+Prechange83551:12 tests/3 intended ledger failures, orientation parity already
+PASS; extra final-identity RED89980:1/1. FocusedGREEN79223:29/0/0/0.
+Terminal neighbor71666:13 suites153/0/0/0. Reviewer independently checked XML,
+all prior123 case multiplicities plus seven new controls and23 existing
+orientation cases, and seven frozen hashes. Frozen-ledger public traces,
+counted global lookups, rollback, revived discarded handles, equal-but-distinct
+returned charges, raw-bit old-stream and analytic orientation controls pass.
+Local evidence: build/rc10-benchmark-contract/p5-evidence.md and related proof/XML.
+Measured samples motivate this batch but do not establish a 2x speed gain.
+Full final-tree CI/GUI and fresh complete paired gates remain mandatory.

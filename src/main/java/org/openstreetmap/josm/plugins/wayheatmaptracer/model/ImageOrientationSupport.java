@@ -89,8 +89,10 @@ public record ImageOrientationSupport(Status status, List<AngularMode> modes, do
         if (modes.isEmpty()) {
             return 0.0;
         }
-        double distance = modes.stream().mapToDouble(mode -> mode.distanceTo(bearingRadians))
-            .min().orElse(0.0);
+        double distance = modes.get(0).distanceTo(bearingRadians);
+        for (int index = 1; index < modes.size(); index++) {
+            distance = Math.min(distance, modes.get(index).distanceTo(bearingRadians));
+        }
         double sine = StrictMath.sin(distance);
         return sine * sine;
     }

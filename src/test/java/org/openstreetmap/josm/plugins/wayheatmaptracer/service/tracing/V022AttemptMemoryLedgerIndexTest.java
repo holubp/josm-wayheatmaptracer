@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +25,94 @@ import org.junit.jupiter.api.Test;
 
 /** Identity-index implementation contract plus the unmodified pre-P3 semantic oracle. */
 class V022AttemptMemoryLedgerIndexTest {
+    @Test
+    void closingCanonicalLeasesNeedsNoGlobalGetAndRemovesExactlyOnFinalRelease() throws Exception {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(7);
+        var root = ledger.rootOwner();
+        var child = root.child("co-owner");
+        var first = root.reserve(7).adopt(new HostileIdentity());
+        var second = first.fork(child);
+        Object charge = field(first, "charge");
+        GlobalIndex index = new GlobalIndex((Map<?, ?>) field(ledger, "charges"));
+        set(ledger, "charges", index);
+
+        first.close();
+        assertEquals(7, ledger.currentBytes());
+        assertEquals(0, index.removals);
+        second.close();
+        assertEquals(0, ledger.currentBytes());
+        assertEquals(7, ledger.peakBytes());
+        assertEquals(1, index.removals);
+        assertSame(charge, index.lastRemovedKey);
+        assertSame(charge, index.lastRemovedValue);
+        assertTrue(index.isEmpty());
+        assertEquals(0, index.gets, "canonical published charge certificate replaces repeated global lookup");
+        assertThrows(IllegalStateException.class, first::close);
+        assertThrows(IllegalStateException.class, second::close);
+    }
+
+    @Test
+    void finalRemovalValidatesReturnedChargeIdentityBeforeSubtractingBytes() throws Exception {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(7);
+        var root = ledger.rootOwner();
+        Object identity = new HostileIdentity();
+        var lease = root.reserve(7).adopt(identity);
+        Object charge = field(lease, "charge");
+        Constructor<?> constructor = charge.getClass().getDeclaredConstructor(Object.class, long.class);
+        constructor.setAccessible(true);
+        Object equalButDifferent = constructor.newInstance(identity, 7L);
+        assertTrue(charge.equals(equalButDifferent));
+        assertFalse(charge == equalButDifferent);
+        GlobalIndex index = new GlobalIndex((Map<?, ?>) field(ledger, "charges"));
+        index.substitutedRemovalValue = equalButDifferent;
+        set(ledger, "charges", index);
+        // Fault injection isolates the final map-return guard: key equality alone
+        // must never certify that the removed value is this canonical charge.
+        assertThrows(IllegalStateException.class, lease::close);
+        assertEquals(7, ledger.currentBytes(), "invalid global removal must not subtract caller bytes");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void adoptionRollbackInvalidatesItsUnpublishedChargeCertificate() throws Exception {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(7);
+        var root = ledger.rootOwner();
+        var reservation = root.reserve(7);
+        Set<Object> reservations = (Set<Object>) field(root, "reservations");
+        assertTrue(reservations.remove(reservation)); // Force the sole rollback after publication.
+        GlobalIndex index = new GlobalIndex((Map<?, ?>) field(ledger, "charges"));
+        set(ledger, "charges", index);
+        assertThrows(IllegalStateException.class, () -> reservation.adopt(new HostileIdentity()));
+        Object unpublished = index.lastRemovedValue;
+        int references = (Integer) field(unpublished, "references");
+        assertTrue(index.isEmpty());
+        assertEquals(7, ledger.currentBytes(), "the still-active caller reservation owns its bytes");
+        assertTrue(reservations.add(reservation));
+        reservation.close();
+        assertEquals(0, ledger.currentBytes());
+        assertEquals(0, references, "an unpublished rollback charge cannot retain a live registration certificate");
+    }
+
+    @Test
+    void revivedDiscardedTransferHandleCannotRemoveTheSourcesReplacementLease() throws Exception {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(4);
+        var root = ledger.rootOwner();
+        var source = root.child("source");
+        var destination = root.child("destination");
+        Object identity = new HostileIdentity();
+        var discarded = source.reserve(4).adopt(identity);
+        destination.retain(identity);
+        source.transferTo(destination); // Destination survives; source's handle is discarded.
+        var replacement = source.retain(identity);
+        set(discarded, "active", true);
+        assertThrows(IllegalStateException.class, discarded::close);
+        assertSame(replacement, source.retainIfAbsent(identity),
+                "failed expected-handle removal must leave the replacement lease registered");
+        assertEquals(4, ledger.currentBytes());
+        root.close();
+        assertEquals(0, ledger.currentBytes());
+    }
+
     @Test
     void canonicalChargeIsTheReusedKeyOfBothDeletionIndependentIndexes() throws Exception {
         AttemptMemoryLedger ledger = new AttemptMemoryLedger(7);
@@ -289,6 +378,34 @@ class V022AttemptMemoryLedgerIndexTest {
         @Override public boolean equals(Object other) { throw new AssertionError("User equals called"); }
         @Override public int hashCode() { throw new AssertionError("User hashCode called"); }
         @Override public String toString() { throw new AssertionError("User toString called"); }
+    }
+
+    private static final class GlobalIndex extends HashMap<Object, Object> {
+        private int gets;
+        private int removals;
+        private Object lastRemovedKey;
+        private Object lastRemovedValue;
+        private Object substitutedRemovalValue;
+
+        GlobalIndex(Map<?, ?> source) {
+            source.forEach(super::put);
+        }
+
+        @Override public Object get(Object key) {
+            gets++;
+            return super.get(key);
+        }
+
+        @Override public Object remove(Object key) {
+            removals++;
+            lastRemovedKey = key;
+            lastRemovedValue = super.remove(key);
+            return substitutedRemovalValue == null ? lastRemovedValue : substitutedRemovalValue;
+        }
+
+        @Override public boolean remove(Object key, Object value) {
+            throw new AssertionError("Global removal must validate returned Charge with ==, not referent-only equals");
+        }
     }
 
     private static final class EqualIdentity {

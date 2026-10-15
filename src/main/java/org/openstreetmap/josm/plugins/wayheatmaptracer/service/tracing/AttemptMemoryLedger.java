@@ -122,6 +122,7 @@ public final class AttemptMemoryLedger {
         charges.put(charge, charge);
         if (!reservation.owner.reservations.remove(reservation)) {
             charges.remove(charge);
+            charge.references = 0; // The sole unpublished-adoption rollback invalidates its certificate.
             throw new IllegalStateException("reservation is not owned by its recorded owner");
         }
         reservation.state = Reservation.State.ADOPTED;
@@ -278,17 +279,19 @@ public final class AttemptMemoryLedger {
     private synchronized void close(MemoryLease lease) {
         lease.ensureActive();
         Owner owner = lease.owner;
-        Charge charge = charges.get(lease.charge);
-        if (charge != lease.charge || owner.leases.remove(lease.charge) != lease) {
+        Charge charge = lease.charge;
+        // Under this monitor, positive references certify canonical global publication.
+        // Final release and the sole adoption rollback invalidate that certificate.
+        if (charge.references <= 0 || !owner.leases.remove(charge, lease)) {
             throw new IllegalStateException("memory lease is not registered with its owner");
-        }
-        if (charge.references <= 0) {
-            throw new IllegalStateException("memory lease reference count underflow");
         }
         charge.references--;
         lease.active = false;
         if (charge.references == 0) {
-            charges.remove(lease.charge);
+            // Charge.equals compares referents, so only the returned object's identity is proof.
+            if (charges.remove(charge) != charge) {
+                throw new IllegalStateException("memory lease is not registered with its owner");
+            }
             subtract(charge.bytes);
         }
     }
