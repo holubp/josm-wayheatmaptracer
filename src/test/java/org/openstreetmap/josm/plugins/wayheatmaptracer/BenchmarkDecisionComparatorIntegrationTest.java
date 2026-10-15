@@ -48,6 +48,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentSourceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterTransformCertificate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
@@ -425,7 +429,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"none", "changed-archive", "changed-receipt", "wrong-case", "wrong-nonce", "unbound-hash",
-            "wrong-source", "wrong-budget", "wrong-permissions", "wrong-validity", "missing-companion"})
+            "wrong-source", "wrong-budget", "wrong-permissions", "wrong-validity", "missing-companion", "one-ulp-grid"})
     void hostReferenceBindsNativePublicationToOriginalBookmark(String mutation, @TempDir Path directory) throws Exception {
         // Current-engine compatibility fixture; this does not certify historical RC6 production/performance.
         Pair pair = archives(directory, mutation.equals("missing-companion") ? mutation : "none");
@@ -440,11 +444,18 @@ class BenchmarkDecisionComparatorIntegrationTest {
         fields.put(fieldName, new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField(
                 field.width(), field.height(), values, validity, field.copiedInterpolationValidity(), field.lineage()));
         changedEvidence = recordWith(changedEvidence, "fields", fields);
+        if (mutation.equals("one-ulp-grid")) {
+            double pitch = Math.nextUp(nativeInput.evidence().resolution().nativePitchMeters().orElseThrow());
+            changedEvidence = recordWith(recordWith(changedEvidence, "transform", RasterMetricTransform.metricGrid(
+                    changedEvidence.transform().origin(), pitch, 0.0, 0.0, -pitch)), "resolution",
+                    EvidenceResolution.nativeSource(pitch, pitch).resampledTo(pitch));
+        }
         var network = recordWith(nativeInput.network(), "snapshotId", "bookmark-network");
         var request = recordWith(recordWith(recordWith(recordWith(recordWith(nativeInput.request(),
                 "settingsHash", "original-bookmark-settings"), "evidenceSnapshotId", changedEvidence.snapshotId()),
                 "evidenceContentHash", changedEvidence.canonicalHash()), "networkSnapshotId", network.snapshotId()),
                 "networkContentHash", network.canonicalHash());
+        if (mutation.equals("one-ulp-grid")) request = recordWith(request, "evidenceResolution", changedEvidence.resolution());
         if (mutation.equals("wrong-source")) {
             changedEvidence = recordWith(changedEvidence, "sourceIdentity", "other-source");
             request = recordWith(request, "evidenceContentHash", changedEvidence.canonicalHash());
@@ -466,7 +477,7 @@ class BenchmarkDecisionComparatorIntegrationTest {
             if (mutation.equals("changed-archive")) Files.writeString(pair.candidate(), "changed");
             if (mutation.equals("changed-receipt")) Files.writeString(receipt, "changed");
             if (mutation.equals("unbound-hash")) System.clearProperty("wayheatmaptracer.benchmark.baselineArchiveSha256");
-            if (mutation.equals("none")) {
+            if (mutation.equals("none") || mutation.equals("one-ulp-grid")) {
                 assertEquals(nativeInput.canonicalHash(), BenchmarkHostMain.readBaselineReference(bookmark, "N1").canonicalHash());
                 assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.requireSame(bookmark, nativeInput));
             } else {
@@ -476,6 +487,115 @@ class BenchmarkDecisionComparatorIntegrationTest {
         } finally {
             properties.keySet().forEach(key -> System.clearProperty("wayheatmaptracer.benchmark." + key));
         }
+    }
+
+    /** Typed predicate fixture only; no historical/native publication is fabricated. */
+    private static FrozenReplayInput bookmarkGrid(double pitch, int width, int height) throws Exception {
+        var source = computed.evidence();
+        var originalField = source.fields().values().iterator().next();
+        double[] values = new double[width * height]; Arrays.fill(values, 0.5);
+        boolean[] valid = new boolean[values.length]; Arrays.fill(valid, true);
+        var field = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField(
+                width, height, values, valid, originalField.lineage());
+        var region = org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.rectangle(
+                0.0, 0.0, pitch / 4, pitch / 4);
+        var evidence = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot(
+                source.snapshotId(), source.coordinateFrame(), RasterMetricTransform.metricGrid(new MetricPoint(0, 0),
+                        pitch, 0.0, 0.0, -pitch), EvidenceResolution.nativeSource(pitch, pitch).resampledTo(pitch),
+                region, region, Map.of("hot", field), source.sourceIdentity());
+        return withBookmarkEvidence(new FrozenReplayInput(computed.request(), computed.evidence(),
+                computed.captured().network(), computed.options()), evidence);
+    }
+
+    private static FrozenReplayInput withBookmarkEvidence(FrozenReplayInput input,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot evidence) throws Exception {
+        var request = recordWith(recordWith(input.request(), "evidenceContentHash", evidence.canonicalHash()),
+                "evidenceResolution", evidence.resolution());
+        return new FrozenReplayInput(request, evidence, input.network(), input.options());
+    }
+
+    private static FrozenReplayInput repitch(FrozenReplayInput input, double pitch) throws Exception {
+        var evidence = recordWith(recordWith(input.evidence(), "transform", RasterMetricTransform.metricGrid(
+                input.evidence().transform().origin(), pitch, 0.0, 0.0, -pitch)), "resolution",
+                EvidenceResolution.nativeSource(pitch, pitch).resampledTo(pitch));
+        return withBookmarkEvidence(input, evidence);
+    }
+
+    @Test
+    void bookmarkOnlyAcceptsConsistentActualN2PitchConstants() throws Exception {
+        double nativePitch = 1.7546997679008602, bookmarkPitch = 1.7546997679008605;
+        assertEquals(Math.nextUp(nativePitch), bookmarkPitch);
+        var nativeInput = bookmarkGrid(nativePitch, 8, 8);
+        var bookmark = repitch(nativeInput, bookmarkPitch);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireBookmarkProvenance(bookmark, nativeInput));
+        assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.requireSame(bookmark, nativeInput));
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireInputs(
+                nativeInput, bookmark, java.util.Set.of()), "actual native-to-current comparison remains exact");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"two-ulp", "origin", "shear", "phase", "kind", "certificate", "cross-signed-zero", "axis-pitch-mismatch",
+            "multiple-samples", "sample-negative-zero", "missing-native", "missing-resampled", "rendered-mismatch",
+            "resampled-mismatch", "request-resolution-mismatch", "large-pitch-bound"})
+    void bookmarkPitchFallbackRejectsEveryOtherMetadataChange(String mutation) throws Exception {
+        double pitch = mutation.equals("large-pitch-bound") ? Math.scalb(1.0, 22) : 1.7546997679008602;
+        var input = bookmarkGrid(pitch, 8, 8);
+        var bookmark = repitch(input, mutation.equals("two-ulp") ? Math.nextUp(Math.nextUp(pitch)) : Math.nextUp(pitch));
+        var evidence = bookmark.evidence(); var transform = evidence.transform(); var resolution = evidence.resolution();
+        double p = resolution.nativePitchMeters().orElseThrow();
+        if (mutation.equals("origin")) transform = recordWith(transform, "origin", new MetricPoint(Math.ulp(p), 0));
+        if (mutation.equals("shear")) transform = recordWith(transform, "xAxisNorthMetersPerSourcePixel", Math.ulp(p));
+        if (mutation.equals("phase")) transform = new RasterMetricTransform("metric-first-center-v1",
+                RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER, transform.axisUnit(), transform.origin(),
+                p, 0.0, 0.0, -p, 1.0, transform.accuracyCertificate());
+        if (mutation.equals("kind")) transform = recordWith(transform, "transformId", "other-grid");
+        if (mutation.equals("certificate")) transform = recordWith(transform, "accuracyCertificate", new RasterTransformCertificate("other", 0, 0, 0));
+        if (mutation.equals("cross-signed-zero")) transform = recordWith(transform, "yAxisEastMetersPerSourcePixel", -0.0);
+        if (mutation.equals("axis-pitch-mismatch")) transform = recordWith(transform, "xAxisEastMetersPerSourcePixel", Math.nextUp(p));
+        if (mutation.equals("multiple-samples")) resolution = new EvidenceResolution(resolution.kind(), resolution.nativePitchMeters(), p,
+                List.of(new EvidenceResolution.PitchSample(0, java.util.OptionalDouble.of(p), p),
+                        new EvidenceResolution.PitchSample(100, java.util.OptionalDouble.of(p), p)), java.util.OptionalDouble.of(p));
+        if (mutation.equals("sample-negative-zero")) resolution = new EvidenceResolution(resolution.kind(), resolution.nativePitchMeters(), p,
+                List.of(new EvidenceResolution.PitchSample(-0.0, java.util.OptionalDouble.of(p), p)), java.util.OptionalDouble.of(p));
+        if (mutation.equals("missing-native")) resolution = EvidenceResolution.renderedOnly(p).resampledTo(p);
+        if (mutation.equals("missing-resampled")) resolution = EvidenceResolution.nativeSource(p, p);
+        if (mutation.equals("rendered-mismatch")) resolution = EvidenceResolution.nativeSource(p, Math.nextUp(p)).resampledTo(p);
+        if (mutation.equals("resampled-mismatch")) resolution = EvidenceResolution.nativeSource(p, p).resampledTo(Math.nextUp(p));
+        evidence = recordWith(recordWith(evidence, "transform", transform), "resolution", resolution);
+        var changed = withBookmarkEvidence(bookmark, evidence);
+        if (mutation.equals("request-resolution-mismatch")) changed = new FrozenReplayInput(
+                recordWith(changed.request(), "evidenceResolution", input.request().evidenceResolution()),
+                changed.evidence(), changed.network(), changed.options());
+        var rejected = changed;
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireBookmarkProvenance(rejected, input));
+    }
+
+    @Test
+    void bookmarkPitchFallbackUsesOutwardWholeRasterBound() throws Exception {
+        double pitch = 4096.0, adjacent = Math.nextUp(pitch);
+        assertTrue(Math.nextUp((adjacent - pitch) * 1099) <= 1e-9);
+        assertTrue(Math.nextUp((adjacent - pitch) * 1100) > 1e-9);
+        var below = bookmarkGrid(pitch, 1098, 1);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireBookmarkProvenance(repitch(below, adjacent), below));
+        var above = bookmarkGrid(pitch, 1099, 1);
+        assertThrows(IllegalStateException.class, () -> BenchmarkComparisonContract.requireBookmarkProvenance(repitch(above, adjacent), above));
+        var exactLarge = bookmarkGrid(Math.scalb(1.0, 22), 8, 8);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireBookmarkProvenance(exactLarge, exactLarge),
+                "the unchanged exact-metadata fast path does not use a discrepancy bound");
+    }
+
+    @Test
+    void metricGridConstructorsAlreadyRejectWrongScaleUnitsAndSamplePitch() {
+        double p = 1.7546997679008602;
+        assertThrows(IllegalArgumentException.class, () -> new RasterMetricTransform("metric-first-center-v1",
+                RasterMetricTransform.OriginKind.METRIC_FIRST_PIXEL_CENTER, RasterMetricTransform.AxisUnit.RASTER_PIXEL,
+                new MetricPoint(0, 0), p, 0, 0, -p, Math.nextUp(1.0), RasterTransformCertificate.exactMetricGrid()));
+        assertThrows(IllegalArgumentException.class, () -> new RasterMetricTransform("metric-first-center-v1",
+                RasterMetricTransform.OriginKind.METRIC_FIRST_PIXEL_CENTER, RasterMetricTransform.AxisUnit.SOURCE_PIXEL,
+                new MetricPoint(0, 0), p, 0, 0, -p, 1.0, RasterTransformCertificate.exactMetricGrid()));
+        assertThrows(IllegalArgumentException.class, () -> new EvidenceResolution(EvidenceResolution.Kind.NATIVE_SOURCE,
+                java.util.OptionalDouble.of(p), p, List.of(new EvidenceResolution.PitchSample(0,
+                        java.util.OptionalDouble.of(Math.nextUp(p)), p)), java.util.OptionalDouble.of(p)));
     }
 
     @Test

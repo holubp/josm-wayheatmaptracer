@@ -1,5 +1,35 @@
 # RC10 approved benchmark contract: independent review closure
 
+## User correction — 2026-10-15
+
+Exact 2x improvement is now informational, not an RC10 release gate. The user
+prioritizes stable working tracing before more aggressive performance tuning.
+Historical mandatory-2x language below is superseded only for that target;
+all native/production/Apply/Undo/Redo/cancellation/freshness/review gates remain.
+Final `ab68bb7` CI38748586697 passes2091/0/0/0 plus GUI smoke; private fixtures
+pass20/0/0/0, with byte-identical CI/local production JARs. Original benchmark
+3542 terminated with eight N1 previews/nine native comparisons all successful
+and a retained strict timing FAIL (1.937x, medians148.857296505s/76.861420960s).
+Reviewed continuation86228 has since completed all6N1cancellations (terminal
+Cancelled/no preview, medians6.940052ms baseline/6.415261ms candidate). FullN2
+stopped at candidate warmup before action publication, after four successful
+baseline previews (terminal86228,19runs/9comparisons). Diagnosis targets the
+original-bookmark/native-baseline provenance guard; no guard is waived.
+Final source/evidence rechecks and actual review reset remain open.
+
+Independent Sol source/test review clears the narrow bookmark-only metadata
+correction for integration and CI. It preserves the original exact fast path
+and all actual native/current and strict comparisons. The fallback accepts
+only one consistent adjacent-double metric-grid pitch, exact origin/phase/
+certificate and a conservatively rounded whole-raster difference<=1nm.
+Retained RED:14 cases/3 intended provenance failures. GREEN:focused31, Java
+neighbors119/0/0/0 with exact99 prior invocations retained plus20 new, Python
+runner15 passed. Six source hashes unchanged, diff-check clean. These results
+do not prove private N2 execution, final artifact identity, remaining native/
+cancellation checks or actual graphical review reset.
+R5's final stored plan is HARD_BLOCKED for `final-topology:CROSSING`; its
+successful switching/history/stale checks do not establish confirmability.
+
 ## RC10 requirement-disposition audit, 2026-10-15
 
 Independent Sol/high verified final-tree CI `38727220927` at `348ed9a`:

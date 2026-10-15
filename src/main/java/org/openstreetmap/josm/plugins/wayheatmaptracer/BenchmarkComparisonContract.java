@@ -5,8 +5,11 @@ import java.util.Set;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayInput;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterTransformCertificate;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
@@ -101,11 +104,17 @@ public enum BenchmarkComparisonContract {
         requireRequests(baseline.request(), candidate.request());
     }
 
-    /** The bookmark pins source provenance; actual native publications pin effective settings/scalars. */
+    /**
+     * The bookmark pins source provenance; actual native publications pin effective settings/scalars.
+     * The approved host calls this only after authenticating its pinned native baseline receipt/output.
+     * The bounded fallback below is bookmark provenance, never native-grid equivalence or an engine tolerance.
+     */
     public static void requireBookmarkProvenance(FrozenReplayInput bookmark, FrozenReplayInput nativeBaseline) {
         var n = bookmark.network(); var m = nativeBaseline.network();
         var a = bookmark.request(); var b = nativeBaseline.request();
         var x = bookmark.evidence(); var y = nativeBaseline.evidence();
+        boolean exactGridMetadata = a.evidenceResolution().equals(b.evidenceResolution())
+                && x.transform().equals(y.transform()) && x.resolution().equals(y.resolution());
         if (n.role() != m.role() || n.sourceGeneration() != m.sourceGeneration()
                 || !n.closure().equals(m.closure()) || !n.primitives().equals(m.primitives())
                 || !n.incomingReferrerWatches().equals(m.incomingReferrerWatches())
@@ -114,12 +123,12 @@ public enum BenchmarkComparisonContract {
                 || !a.permissions().equals(b.permissions()) || !a.budgets().equals(b.budgets())
                 || !a.parameterHash().equals(b.parameterHash()) || !a.samplerId().equals(b.samplerId())
                 || Double.doubleToRawLongBits(a.configuredSampleStepMeters()) != Double.doubleToRawLongBits(b.configuredSampleStepMeters())
-                || !a.profileChainage().equals(b.profileChainage()) || !a.evidenceResolution().equals(b.evidenceResolution())
+                || !a.profileChainage().equals(b.profileChainage())
                 || !a.corridorInput().equals(b.corridorInput()) || !bookmark.options().equals(nativeBaseline.options())
-                || !x.coordinateFrame().equals(y.coordinateFrame()) || !x.transform().equals(y.transform())
-                || !x.resolution().equals(y.resolution()) || !x.decisionRegion().equals(y.decisionRegion())
+                || !x.coordinateFrame().equals(y.coordinateFrame()) || !x.decisionRegion().equals(y.decisionRegion())
                 || !x.evidenceRegion().equals(y.evidenceRegion()) || !x.resampling().equals(y.resampling())
-                || !x.sourceIdentity().equals(y.sourceIdentity()) || !x.fields().keySet().equals(y.fields().keySet())) {
+                || !x.sourceIdentity().equals(y.sourceIdentity()) || !x.fields().keySet().equals(y.fields().keySet())
+                || !exactGridMetadata && !boundedBookmarkGridMetadata(bookmark, nativeBaseline)) {
             throw new IllegalStateException("Native baseline does not belong to original bookmark source");
         }
         for (var name : x.fields().keySet()) {
@@ -140,6 +149,52 @@ public enum BenchmarkComparisonContract {
             System.out.println("bookmarkScalarDifferenceCount=" + changed);
             System.out.println("bookmarkScalarMaximumAbsoluteDifference=" + maximumDifference);
         }
+        if (!exactGridMetadata) {
+            // The numerical cause is unproved. Report only the two common pitch identities.
+            System.out.println("bookmarkCommonPitchBits=" + Long.toHexString(Double.doubleToRawLongBits(
+                    x.resolution().nativePitchMeters().orElseThrow())));
+            System.out.println("nativeBaselineCommonPitchBits=" + Long.toHexString(Double.doubleToRawLongBits(
+                    y.resolution().nativePitchMeters().orElseThrow())));
+        }
+    }
+
+    private static boolean boundedBookmarkGridMetadata(FrozenReplayInput bookmark, FrozenReplayInput nativeBaseline) {
+        double a = commonBookmarkPitch(bookmark), b = commonBookmarkPitch(nativeBaseline);
+        if (!Double.isFinite(a) || !Double.isFinite(b)
+                || !bookmark.evidence().transform().origin().equals(nativeBaseline.evidence().transform().origin())
+                || Math.abs(Double.doubleToRawLongBits(a) - Double.doubleToRawLongBits(b)) > 1L) return false;
+        for (var field : bookmark.evidence().fields().values()) {
+            long span = (long) field.width() + field.height();
+            double bound = Math.nextUp(Math.abs(a - b) * span);
+            if (!Double.isFinite(bound) || bound > 1e-9) return false;
+        }
+        return true;
+    }
+
+    /** Returns the single common pitch, or NaN when outside the narrowly named bookmark shape. */
+    private static double commonBookmarkPitch(FrozenReplayInput input) {
+        var r = input.evidence().resolution(); var t = input.evidence().transform();
+        if (!input.request().evidenceResolution().equals(r) || r.kind() != EvidenceResolution.Kind.NATIVE_SOURCE
+                || r.nativePitchMeters().isEmpty() || r.resampledPitchMeters().isEmpty()
+                || r.spatialPitchSamples().size() != 1
+                || !t.transformId().equals("metric-first-center-v1")
+                || t.originKind() != RasterMetricTransform.OriginKind.METRIC_FIRST_PIXEL_CENTER
+                || t.axisUnit() != RasterMetricTransform.AxisUnit.RASTER_PIXEL
+                || !t.accuracyCertificate().equals(RasterTransformCertificate.exactMetricGrid())) return Double.NaN;
+        double p = r.nativePitchMeters().getAsDouble();
+        var sample = r.spatialPitchSamples().get(0);
+        if (!Double.isFinite(p) || p <= 0.0 || sample.nativePitchMeters().isEmpty()
+                || !sameBits(sample.chainageMeters(), 0.0)
+                || !sameBits(r.renderedPitchMeters(), p) || !sameBits(r.resampledPitchMeters().getAsDouble(), p)
+                || !sameBits(sample.nativePitchMeters().getAsDouble(), p) || !sameBits(sample.renderedPitchMeters(), p)
+                || !sameBits(t.xAxisEastMetersPerSourcePixel(), p) || !sameBits(t.yAxisNorthMetersPerSourcePixel(), -p)
+                || !sameBits(t.xAxisNorthMetersPerSourcePixel(), 0.0) || !sameBits(t.yAxisEastMetersPerSourcePixel(), 0.0)
+                || !sameBits(t.rasterPixelsPerSourcePixel(), 1.0)) return Double.NaN;
+        return p;
+    }
+
+    private static boolean sameBits(double a, double b) {
+        return Double.doubleToRawLongBits(a) == Double.doubleToRawLongBits(b);
     }
 
     public static void requireRequests(TraceRequest a, TraceRequest b) {
