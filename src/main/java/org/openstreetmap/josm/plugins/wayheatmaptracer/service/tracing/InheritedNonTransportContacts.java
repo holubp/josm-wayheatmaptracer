@@ -13,6 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness;
@@ -22,6 +23,85 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 /** Independent complete-contact proof for the narrow inherited non-transport exception. */
 final class InheritedNonTransportContacts {
     private InheritedNonTransportContacts() { }
+
+    /** Lazy original chords, bound to one contacts invocation's immutable inputs. */
+    static final class ContextChordCache {
+        private static final int MAX_SLOTS = 128;
+        private static final long MAX_BYTES = 256L * 1024L;
+        private static final long WRAPPER_BYTES = AttemptMemoryLedger.objectBytes(48);
+        private final DetachedWay context;
+        private final Map<PrimitiveKey, DetachedPrimitive> values;
+        private final LocalMetricFrame frame;
+        private final long byteBudget;
+        private final CertifiedContextSegmentClipper.ExactChord[] slots;
+        private long retainedBytes;
+
+        private ContextChordCache(DetachedWay context, Map<PrimitiveKey, DetachedPrimitive> values,
+                LocalMetricFrame frame, long byteBudget, int slotCount) {
+            this.context = context;
+            this.values = values;
+            this.frame = frame;
+            this.byteBudget = byteBudget;
+            this.slots = new CertifiedContextSegmentClipper.ExactChord[slotCount];
+            this.retainedBytes = WRAPPER_BYTES + AttemptMemoryLedger.referenceArrayBytes(slotCount);
+        }
+
+        static ContextChordCache create(DetachedWay context,
+                Map<PrimitiveKey, DetachedPrimitive> values, LocalMetricFrame frame, long byteBudget) {
+            long boundedBytes = Math.min(byteBudget, MAX_BYTES);
+            if (boundedBytes < WRAPPER_BYTES
+                    + AttemptMemoryLedger.referenceArrayBytes(1)) return null;
+            int count = (int) Math.min(Math.min(MAX_SLOTS, context.nodeKeys().size() - 1L),
+                    (boundedBytes - WRAPPER_BYTES - AttemptMemoryLedger.referenceArrayBytes(0)) / Long.BYTES);
+            return new ContextChordCache(context, values, frame, boundedBytes, count);
+        }
+
+        CertifiedContextSegmentClipper.ExactChord chord(int occurrence) {
+            if (occurrence >= 0 && occurrence < slots.length && slots[occurrence] != null) {
+                return slots[occurrence];
+            }
+            // Compute only when this occurrence is naturally visited; later malformed
+            // arcs must not supersede an earlier uncertain-contact refusal.
+            var chord = CertifiedContextSegmentClipper.originalChord(
+                    geographic(values, context.nodeKeys().get(occurrence)),
+                    geographic(values, context.nodeKeys().get(occurrence + 1)), frame);
+            if (occurrence >= 0 && occurrence < slots.length) {
+                long bytes = chordBytes(chord);
+                if (bytes <= byteBudget - retainedBytes) {
+                    slots[occurrence] = chord;
+                    retainedBytes += bytes;
+                }
+            }
+            return chord;
+        }
+
+        private static long chordBytes(CertifiedContextSegmentClipper.ExactChord chord) {
+            try {
+                long bytes = AttemptMemoryLedger.objectBytes(40)
+                        + 2L * AttemptMemoryLedger.objectBytes(16);
+                bytes = Math.addExact(bytes, decimalBytes(chord.start().east()));
+                bytes = Math.addExact(bytes, decimalBytes(chord.start().north()));
+                bytes = Math.addExact(bytes, decimalBytes(chord.end().east()));
+                bytes = Math.addExact(bytes, decimalBytes(chord.end().north()));
+                bytes = Math.addExact(bytes, decimalBytes(chord.lengthSquared()));
+                // Count both north-bound references again, conservatively including
+                // decimal, bigint and magnitude-array payload even when shared.
+                bytes = Math.addExact(bytes, decimalBytes(chord.minNorth()));
+                return Math.addExact(bytes, decimalBytes(chord.maxNorth()));
+            } catch (ArithmeticException overflow) {
+                return Long.MAX_VALUE; // Refuse retention, never the geometric pair.
+            }
+        }
+
+        private static long decimalBytes(BigDecimal value) {
+            long words = ((long) value.unscaledValue().bitLength() + 1L + 31L) / 32L;
+            return Math.addExact(2L * AttemptMemoryLedger.objectBytes(32),
+                    AttemptMemoryLedger.arrayBytes(words, Integer.BYTES));
+        }
+
+        int slotCount() { return slots.length; }
+        long retainedBytes() { return retainedBytes; }
+    }
 
     private record Fraction(BigDecimal numerator, BigDecimal denominator) implements Comparable<Fraction> {
         Fraction {
@@ -229,6 +309,8 @@ final class InheritedNonTransportContacts {
     private static List<Event> contacts(DetachedWay selected, OccurrenceRange range,
             DetachedWay context, Map<PrimitiveKey, DetachedPrimitive> values, EvidenceSnapshot evidence) {
         List<Event> events = new ArrayList<>();
+        ContextChordCache contextChords = ContextChordCache.create(context, values,
+                evidence.coordinateFrame(), ContextChordCache.MAX_BYTES);
         for (int i = range.firstIndex(); i < range.lastIndex(); i++) {
             PrimitiveKey aKey = selected.nodeKeys().get(i), bKey = selected.nodeKeys().get(i + 1);
             GeographicPoint a = geographic(values, aKey), b = geographic(values, bKey);
@@ -236,7 +318,9 @@ final class InheritedNonTransportContacts {
             for (int j = 0; j < context.nodeKeys().size() - 1; j++) {
                 PrimitiveKey cKey = context.nodeKeys().get(j), dKey = context.nodeKeys().get(j + 1);
                 GeographicPoint c = geographic(values, cKey), d = geographic(values, dKey);
-                var contextChord = CertifiedContextSegmentClipper.originalChord(c, d, evidence.coordinateFrame());
+                var contextChord = contextChords == null
+                        ? CertifiedContextSegmentClipper.originalChord(c, d, evidence.coordinateFrame())
+                        : contextChords.chord(j);
                 var contact = CertifiedContextSegmentClipper.originalContactEvidence(selectedChord,
                         aKey, bKey, contextChord, cKey, dKey, evidence.coordinateFrame());
                 if (!contact.hasAnyContact()) continue;

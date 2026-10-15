@@ -216,3 +216,23 @@ Evidence: build/rc10-benchmark-contract/localization-census/.
 Current79c6 interrupted timing receipts remain diagnostic only: approved contract
 requires full tests and GUI before qualifying measurements. Fresh final-tree
 CI/GUI and paired benchmarks remain open.
+
+## P2b bounded exact context reuse — 2026-10-15
+
+Independent Sol/high grants final clearance with no blockers. Reviewed actual
+clipper/inherited-contact delta, natural pair/branch/early-refusal traversal and
+exact local squared-operand reuse. Cache is fresh per contacts invocation, bound
+to its immutable context/values/frame; max128 slots and256KiB inclusive of wrapper,
+array, chord/point and conservative seven-decimal BigInteger/magnitude storage.
+Overflow/budget/capacity refusal recomputes; no pair is skipped, no global cache,
+new per-chord field, numerical approximation, state/cap change or eager projection.
+
+Corrected intended RED92239:8/2, only missing reuse/capacity. Initial fixture
+setup failure is retained separately. Final focused22346 PASS34s22/0/0/0.
+Final neighbor53075 PASS11m48s217/0/0/0 across nine suites; all211 old selected
+cases retained plus six new cache controls. Reviewer independently checked exact
+case multisets, saved XML and all six hashes in p2b-frozen-source-sha256.txt.
+Frozen old-predicate full ordered evidence, tiny/full/highprecision/capacity
+misses, fresh inputs and actual early-null-before-later-invalid-arc controls pass.
+Evidence: build/rc10-benchmark-contract/p2b-*. Performance effect remains unmeasured.
+Full final-tree CI and GUI must pass BEFORE fresh paired qualifying measurements.

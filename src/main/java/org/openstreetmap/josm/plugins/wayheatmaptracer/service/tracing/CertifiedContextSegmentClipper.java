@@ -403,17 +403,17 @@ final class CertifiedContextSegmentClipper {
         if (first.lengthSquared().signum() == 0 || second.lengthSquared().signum() == 0) {
             return false;
         }
-        return gap.signum() > 0 && beyond(gap, first.lengthSquared(), areaUpper)
-                && beyond(gap, second.lengthSquared(), areaUpper);
+        if (gap.signum() <= 0) return false;
+        BigDecimal gapSquared = gap.pow(2);
+        BigDecimal twiceAreaSquared = areaUpper.pow(2).multiply(BigDecimal.valueOf(2));
+        return beyondSquared(gapSquared, first.lengthSquared(), twiceAreaSquared)
+                && beyondSquared(gapSquared, second.lengthSquared(), twiceAreaSquared);
     }
 
-    private static boolean beyond(BigDecimal gap, BigDecimal lengthSquared,
-            BigDecimal areaUpper) {
-        if (lengthSquared.signum() == 0) {
-            return gap.compareTo(COORDINATE_ENVELOPE.multiply(BigDecimal.valueOf(2))) > 0;
-        }
-        return gap.pow(2).multiply(lengthSquared)
-                .compareTo(toleranceBoundSquared(lengthSquared, areaUpper)) > 0;
+    private static boolean beyondSquared(BigDecimal gapSquared, BigDecimal lengthSquared,
+            BigDecimal twiceAreaSquared) {
+        return gapSquared.multiply(lengthSquared).compareTo(twiceAreaSquared
+                .add(COORDINATE_LENGTH_COEFFICIENT.multiply(lengthSquared))) > 0;
     }
 
     private static BigDecimal toleranceBoundSquared(BigDecimal lengthSquared,
