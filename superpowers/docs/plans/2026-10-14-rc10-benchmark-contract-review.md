@@ -306,3 +306,50 @@ returned charges, raw-bit old-stream and analytic orientation controls pass.
 Local evidence: build/rc10-benchmark-contract/p5-evidence.md and related proof/XML.
 Measured samples motivate this batch but do not establish a 2x speed gain.
 Full final-tree CI/GUI and fresh complete paired gates remain mandatory.
+
+## NUM01 certified probability repair — independent clearance
+
+Independent Sol/high cleared the frozen actual source/tests: no blockers.
+The original public one-route regression failed in both EAGER and EXACT
+(55319:2/2/0/0) and now returns exact unit mass (42601:2/0/0/0), retaining
+stored energy/log-measure bits. Only an old finite mass above one triggers
+forward-grouped replay, with existing forward-prefix/terminal certificates and
+stored-score bit checks. Inconsistencies still fail the strict Path guard;
+no epsilon, clamp, policy, comparator, cap or parameter change is introduced.
+All previously valid mass bits and normal work/checkpoint receipts are unchanged.
+Exceptional replay checkpoints every stage and retains no new array or field.
+
+Focused31900 passed13/0/0/0. Neighbor36890 passed166/0/0/0 across15 suites;
+independent XML Counter comparison retained all prior159 cases exactly plus
+seven new controls. Reviewer verified all10 hashes and mechanically restored
+the byte-exact cleared P6 source by removing only this helper/plumbing.
+Controls cover invalid/nonfinite inputs, stored-score/forward corruption,
+cancellation/owner cleanup, and independent unequal-measure distributions.
+No exceptional two-profile witness is claimed; its exact forward initialization
+is source-reviewed, with one/two/four-profile distribution controls retained.
+Evidence: build/rc10-benchmark-contract/num01-implementation-evidence.md.
+The source-level defect is resolved; final combined-tree CI/GUI, runtime
+artifact verification and fresh complete paired release gates remain required.
+
+## P6 lazy pair-local arithmetic reuse — independent clearance
+
+Independent Sol/high inspected the frozen actual production/test delta and
+mechanically verified nine source hashes, exact scope restoration, unchanged
+original energy bodies, all prior153 neighbor cases and six new controls:
+159 tests across14 suites, zero failures/errors/skips. No new blocking findings.
+Only EXACT_DOMINANCE_V2 expansion reuses rounded unary/pair arithmetic and an
+identical adjacent heading after the original admission and work-accounting
+operations. No state pruning, objective reassociation, cap, policy, checkpoint
+or public API change. EAGER and other loops remain unchanged.
+
+Pre-edit parity75145 passed5 controls; final82887 passed6 controls. Neighbor
+52163 passed159. Frozen reference and direct helper controls cover original
+raw-bit arithmetic, all weight branches, rejected/empty prefixes, gaps,
+exception order, refusal, cancellation and memory receipts. Evidence is under
+build/rc10-benchmark-contract/p6-evidence.md and its frozen manifest/proofs.
+These checks establish equivalence, not the required measured2x speed gain.
+
+Separately, valid pre-edit one-route input exposed NUM01: measured tuple4
+guide0.75 yields posterior1.0000000000000002 in both EAGER and EXACT and is
+rejected by ProbabilisticPath. It remains release-blocking and is not fixed by
+P6. The exact measured tuple supersedes earlier unmeasured attribution.

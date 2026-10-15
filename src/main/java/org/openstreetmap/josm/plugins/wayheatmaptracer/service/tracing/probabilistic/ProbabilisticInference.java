@@ -127,7 +127,7 @@ public final class ProbabilisticInference {
             long alternativesStarted = System.nanoTime();
             AttemptMemoryLedger.Owner retainedOwner = workOwner.child("inference-result");
             List<ProbabilisticPath> rawPaths = materialize(kBest.paths(), profiles, parameters,
-                messages.logPartition(), retainedOwner);
+                messages, cancellation, retainedOwner);
             kBest.close();
             double pitch = representativePitch(profiles);
             int distinctCap = Math.min(8, budgets.maximumDistinctAlternatives());
@@ -460,6 +460,10 @@ public final class ProbabilisticInference {
                 for (int state = 0; state < nextStates; state++) {
                     if (exact) {
                         descriptors.reset(state);
+                        boolean pairReady = false;
+                        double unaryPair = 0.0;
+                        boolean headingReady = false;
+                        double secondHeading = 0.0;
                         for (int before = 0; before < current.length; before++) {
                             if (!transitionAllowed(profiles, profileIndex - 1, prior, state,
                                     decisionRegion, admissions)) continue;
@@ -468,9 +472,44 @@ public final class ProbabilisticInference {
                             List<PathRecord> prefixes = current[before][prior];
                             if (prefixes == null || prefixes.isEmpty()) continue;
                             workCounter.recordLogicalKBestExtensions(prefixes.size());
-                            double increment = profileEnergy(profiles, profileIndex, state, parameters)
-                                    + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
-                                    + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
+                            // First use stays after admission and logical-extension accounting.
+                            // These immutable pair terms keep their original rounded sum.
+                            if (!pairReady) {
+                                double unary = profileEnergy(profiles, profileIndex, state, parameters);
+                                double pair = 0.0;
+                                if (parameters.orientationWeight() != 0.0) {
+                                    InferenceProfile start = profiles.get(profileIndex - 1);
+                                    InferenceProfile end = profiles.get(profileIndex);
+                                    MetricPoint first = start.point(prior);
+                                    MetricPoint second = end.point(state);
+                                    secondHeading = StrictMath.atan2(second.yMeters() - first.yMeters(),
+                                            second.xMeters() - first.xMeters());
+                                    headingReady = true;
+                                    pair = pairEnergyAtHeading(start, end, prior, state, parameters, secondHeading);
+                                }
+                                unaryPair = unary + pair;
+                                pairReady = true;
+                            }
+                            double triple = 0.0;
+                            if (parameters.turnWeight() != 0.0) {
+                                // Keep all three point validations and their original order,
+                                // even when the second heading has already been evaluated.
+                                MetricPoint beforePoint = profiles.get(profileIndex - 2).point(before);
+                                MetricPoint priorPoint = profiles.get(profileIndex - 1).point(prior);
+                                MetricPoint currentPoint = profiles.get(profileIndex).point(state);
+                                double firstHeading = StrictMath.atan2(
+                                        priorPoint.yMeters() - beforePoint.yMeters(),
+                                        priorPoint.xMeters() - beforePoint.xMeters());
+                                if (!headingReady) {
+                                    secondHeading = StrictMath.atan2(
+                                            currentPoint.yMeters() - priorPoint.yMeters(),
+                                            currentPoint.xMeters() - priorPoint.xMeters());
+                                    headingReady = true;
+                                }
+                                triple = tripleEnergyAtHeadings(profiles, profileIndex, parameters,
+                                        firstHeading, secondHeading);
+                            }
+                            double increment = unaryPair + triple;
                             for (int index = 0; index < prefixes.size(); index++) {
                                 cancellation.checkpoint();
                                 if (!workCounter.score(false)) {
@@ -641,8 +680,8 @@ public final class ProbabilisticInference {
     }
 
     private static List<ProbabilisticPath> materialize(List<PathRecord> paths,
-        List<InferenceProfile> profiles, EvidenceModelParameters parameters, double logPartition,
-        AttemptMemoryLedger.Owner owner) {
+        List<InferenceProfile> profiles, EvidenceModelParameters parameters, GraphMessages messages,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
         AttemptMemoryLedger.Owner builder = owner.child("path-list-builder");
         try {
             List<ProbabilisticPath> result = allocated(builder, listBytes(paths.size()),
@@ -673,8 +712,8 @@ public final class ProbabilisticInference {
                             "materialization",
                             () -> profiles.get(profileIndex).point(states[profileIndex])));
                 }
-                double mass = StrictMath.exp(-record.energy() / parameters.temperature()
-                    + record.logMeasure() - logPartition);
+                double mass = materializedPosteriorMass(record, states, profiles, parameters,
+                        messages, cancellation);
                 ProbabilisticPath path = new ProbabilisticPath(states, points,
                         branchSignature(states, profiles, temporary), record.energy(),
                         record.logMeasure(), mass);
@@ -694,6 +733,58 @@ public final class ProbabilisticInference {
         } finally {
             builder.close();
         }
+    }
+
+    // Exceptional O(K*n) materialization replay is outside scored FB/K work.
+    // Normal masses retain their exact bits and original checkpoint sequence.
+    private static double materializedPosteriorMass(PathRecord record, int[] states,
+            List<InferenceProfile> profiles, EvidenceModelParameters parameters,
+            GraphMessages messages, CancellationProbe cancellation) {
+        double mass = StrictMath.exp(-record.energy() / parameters.temperature()
+                + record.logMeasure() - messages.logPartition());
+        if (!Double.isFinite(mass) || mass <= 1.0) return mass;
+        if (states.length != profiles.size() || record.length() != states.length) return mass;
+
+        // Only an invalid finite mass is replayed. Match the existing forward
+        // recurrence, certifying each prefix against its already-computed cell.
+        // Any inconsistency leaves the strict ProbabilisticPath guard in force.
+        cancellation.checkpoint();
+        double energy;
+        double measure;
+        double logWeight;
+        double bound;
+        if (states.length == 1) {
+            energy = profileEnergy(profiles, 0, states[0], parameters);
+            measure = logMeasure(profiles.get(0).cells().get(states[0]));
+            logWeight = -energy / parameters.temperature() + measure;
+            bound = messages.singleAlpha()[states[0]];
+        } else {
+            energy = profileEnergy(profiles, 0, states[0], parameters)
+                    + profileEnergy(profiles, 1, states[1], parameters)
+                    + pairEnergy(profiles, 0, states[0], states[1], parameters);
+            double firstMeasure = logMeasure(profiles.get(0).cells().get(states[0]));
+            double secondMeasure = logMeasure(profiles.get(1).cells().get(states[1]));
+            measure = firstMeasure + secondMeasure;
+            logWeight = -energy / parameters.temperature() + firstMeasure + secondMeasure;
+            bound = messages.forward().get(0)[states[0]][states[1]];
+        }
+        if (!Double.isFinite(logWeight) || !Double.isFinite(bound) || logWeight > bound) return mass;
+        for (int index = 2; index < states.length; index++) {
+            cancellation.checkpoint();
+            double increment = profileEnergy(profiles, index, states[index], parameters)
+                    + pairEnergy(profiles, index - 1, states[index - 1], states[index], parameters)
+                    + tripleEnergy(profiles, index, states[index - 2], states[index - 1], states[index], parameters);
+            double nextMeasure = logMeasure(profiles.get(index).cells().get(states[index]));
+            energy = energy + increment;
+            measure = measure + nextMeasure;
+            logWeight = logWeight - increment / parameters.temperature() + nextMeasure;
+            bound = messages.forward().get(index - 1)[states[index - 1]][states[index]];
+            if (!Double.isFinite(logWeight) || !Double.isFinite(bound) || logWeight > bound) return mass;
+        }
+        if (Double.doubleToRawLongBits(energy) != Double.doubleToRawLongBits(record.energy())
+                || Double.doubleToRawLongBits(measure) != Double.doubleToRawLongBits(record.logMeasure())
+                || !Double.isFinite(messages.logPartition()) || logWeight > messages.logPartition()) return mass;
+        return StrictMath.exp(logWeight - messages.logPartition());
     }
 
     private static List<double[]> positionalMarginals(List<InferenceProfile> profiles,
@@ -918,6 +1009,22 @@ public final class ProbabilisticInference {
         if (support.modes().isEmpty() || support.certainty() == 0.0) return 0.0;
         return support.certainty() * profile.orientationReliability(state)
                 * support.mismatchSquared(heading);
+    }
+
+    private static double pairEnergyAtHeading(InferenceProfile start, InferenceProfile end,
+            int startState, int endState, EvidenceModelParameters parameters, double heading) {
+        double span = end.chainageMeters() - start.chainageMeters();
+        return parameters.orientationWeight() * span * 0.5
+            * (orientationMismatch(start, startState, heading)
+                + orientationMismatch(end, endState, heading));
+    }
+
+    private static double tripleEnergyAtHeadings(List<InferenceProfile> profiles, int profileIndex,
+            EvidenceModelParameters parameters, double firstHeading, double secondHeading) {
+        double normalizedTurn = wrap(secondHeading - firstHeading) / parameters.turnScaleRadians();
+        double middleSpan = Math.max(1e-6, 0.5 * (profiles.get(profileIndex).chainageMeters()
+            - profiles.get(profileIndex - 2).chainageMeters()));
+        return parameters.turnWeight() * EvidenceModelParameters.huber(normalizedTurn) / middleSpan;
     }
 
     private static double tripleEnergy(List<InferenceProfile> profiles, int profileIndex,
