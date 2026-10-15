@@ -261,3 +261,23 @@ co-ownership, stale close/re-adopt, transfer and latch-controlled cancellation.
 Local evidence: build/rc10-benchmark-contract/p3-ledger-index-evidence.md and
 associated frozen-source manifest, proof and XML. No speedup is established;
 full final-tree CI/GUI then fresh complete paired gates remain mandatory.
+
+## P4 exact pair-inequality factoring — independent affected clearance
+
+Independent Sol/high reviewed the actual two-private-method clipper delta and
+test source, with no blockers. For positive squared lengths and nonnegative
+T, the exact conjunction g*L1>T+C*L1 and g*L2>T+C*L2 becomes D=g-C>0 and
+D*min(L1,L2)>T. No rounded arithmetic, tolerance, retained cache, field, cap,
+caller guard or ordered witness traversal changes. The proof applies to actual
+finite-binary64-derived production inputs; no arbitrary overflow-scale claim.
+
+Intended RED34245: one test/one failure, old two gap products versus required
+one, measured by test-only exact decimal arithmetic rather than timing/hooks.
+Focused GREEN50844:26/0/0/0. Terminal neighbor48868:10 suites221/0/0/0 in13m53s;
+reviewer independently parsed XML and compared all prior217 case multiplicities
+plus exactly four new controls. All seven source/supporting hashes match.
+Independent expanded scaled-integer inequalities, strict thresholds, unequal
+length orders, degeneracy, decimal scales/ULPs and frozen complete flags/ordered
+witnesses remain covered. Evidence: build/rc10-benchmark-contract/p4-pair-inequality-evidence.md.
+No speed improvement is established. Final-tree CI/GUI and fresh complete paired
+performance/cancellation/latency gates are required before publication.

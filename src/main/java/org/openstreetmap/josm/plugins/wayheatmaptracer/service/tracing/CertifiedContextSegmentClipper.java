@@ -406,14 +406,16 @@ final class CertifiedContextSegmentClipper {
         if (gap.signum() <= 0) return false;
         BigDecimal gapSquared = gap.pow(2);
         BigDecimal twiceAreaSquared = areaUpper.pow(2).multiply(BigDecimal.valueOf(2));
-        return beyondSquared(gapSquared, first.lengthSquared(), twiceAreaSquared)
-                && beyondSquared(gapSquared, second.lengthSquared(), twiceAreaSquared);
+        return beyondSquared(gapSquared, first.lengthSquared(), second.lengthSquared(), twiceAreaSquared);
     }
 
-    private static boolean beyondSquared(BigDecimal gapSquared, BigDecimal lengthSquared,
-            BigDecimal twiceAreaSquared) {
-        return gapSquared.multiply(lengthSquared).compareTo(twiceAreaSquared
-                .add(COORDINATE_LENGTH_COEFFICIENT.multiply(lengthSquared))) > 0;
+    private static boolean beyondSquared(BigDecimal gapSquared, BigDecimal firstLengthSquared,
+            BigDecimal secondLengthSquared, BigDecimal twiceAreaSquared) {
+        // Both lengths are positive and twiceAreaSquared is nonnegative. Exactly factor
+        // g*L > T+C*L into (g-C)*L > T; its conjunction is decided by the smaller L.
+        BigDecimal excess = gapSquared.subtract(COORDINATE_LENGTH_COEFFICIENT);
+        return excess.signum() > 0 && excess.multiply(firstLengthSquared.min(secondLengthSquared))
+                .compareTo(twiceAreaSquared) > 0;
     }
 
     private static BigDecimal toleranceBoundSquared(BigDecimal lengthSquared,
