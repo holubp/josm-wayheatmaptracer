@@ -361,6 +361,25 @@ python3 scripts/heatmap-palette-lab.py /path/to/images-or-bundles --output-dir b
 
 Use `More tools -> Export Heatmap Calibration Tiles` in JOSM to create a redacted tile bundle for the selected way/segment across `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle must not contain cookies, signed headers, or signed URLs. Add `--analyze-filters` to emit `filter-summary.csv`, which reports B3/B5 profile-filter center shifts, width changes, and peak-count changes against raw scanlines. Use the palette lab outputs to tune color-to-intensity transformations and convolution filters numerically, then cover any palette or filter behavior changes with fixture or ridge-tracker tests.
 
+## Modern Failure Diagnostics
+
+RC11 keeps modern capture, no-route and interval-preview failures modeless so the
+ordinary diagnostics export remains accessible. Close and check the current attempt
+owner before publishing terminal failure evidence; a stale callback cannot replace
+the latest attempt's bundle. Capture failures have no fabricated frozen replay input.
+
+`failure-summary.json` is additive Format-15 evidence with fixed local phase/cause
+codes and numeric work counters, never arbitrary exception/source text. `SOURCE_RUN`
+describes one detector, not the availability of all alternatives. Interval export
+fallbacks use `INTERVAL_SOURCE_BATCH`, actual batch work and status counts; they must
+not invent a single full-way inference. Export-budget failure remains distinct from
+solver exhaustion. Incomplete required relations and topology blocks remain enforced.
+
+The cookie pane owns its initial-focus selection through `JOptionPane.selectInitialValue()`;
+a delayed window-open focus request can be superseded by the pane's later selection.
+The graphical regression exercises actual Paste-button opening, immediate Ctrl+V,
+pane focus selection, Enter parsing and Escape cancellation using synthetic values.
+
 ## Release Versioning
 
 Keep releases on `0.x.x` until the maintainer explicitly says the plugin is suitable for broader use by others. Do not use a patch release for changes that add user-visible features, settings, workflow changes, or architecture changes.

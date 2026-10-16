@@ -145,6 +145,32 @@ class AlignWayActionTest {
                 .artifact("attempt-status.json").orElseThrow().bytes(), StandardCharsets.UTF_8);
         assertTrue(status.contains("\"status\":\"blocked\""));
         assertTrue(status.contains("\"manualJunctionReason\":\"PARTICIPATING_RELATION\""));
+        var noRouteArchive = Format15ArchiveReader.read(diagnostic);
+        assertTrue(noRouteArchive.artifact("failure-summary.json").isPresent(),
+                "A computed no-route failure must retain its phase and actual inference work");
+        String noRouteSummary = new String(noRouteArchive.artifact("failure-summary.json")
+                .orElseThrow().bytes(), StandardCharsets.UTF_8);
+        assertTrue(noRouteSummary.contains("NO_PREVIEWABLE_ROUTE"));
+        assertTrue(noRouteSummary.contains("\"scope\":\"SOURCE_RUN\""),
+                "An empty selected detector is not proof that alternative detectors have no routes");
+        assertTrue(noRouteSummary.contains("\"inferenceStatus\":\""
+                + computed.pipeline().inference().status().name() + "\""));
+        Map<String, Number> excessiveCounters = new java.util.HashMap<>();
+        for (int i = 0; i < 129; i++) excessiveCounters.put("counter" + i, i);
+        var cannotExport = new LiveBPreviewService.Computed(computed.captured(), computed.evidence(),
+                computed.request(), computed.pipeline(), computed.options(), excessiveCounters);
+        AlignWayAction.recordModernDiagnostics(cannotExport, "blocked", 0, null, false, false,
+                "export-budget-fallback");
+        Path fallbackFile = directory.resolve("export-budget-fallback.zip");
+        DiagnosticsRegistry.writeLatest(fallbackFile.toFile());
+        var fallback = Format15ArchiveReader.read(fallbackFile);
+        String fallbackSummary = new String(fallback.artifact("failure-summary.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(fallbackSummary.contains("\"phase\":\"DIAGNOSTIC_EXPORT\""));
+        assertTrue(fallbackSummary.contains("counter-budget"));
+        assertTrue(fallbackSummary.contains("\"evaluatedTransitions\":"
+                + computed.pipeline().inference().evaluatedTransitions()));
+        assertFalse(fallback.artifact("frozen-input.bin").isPresent());
         RecoveryPermissions fixed = new RecoveryPermissions(false, 7.01, 7.01,
                 JunctionPolicy.FIXED, false);
         SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
@@ -349,6 +375,30 @@ class AlignWayActionTest {
         assertEquals("RESOURCE_LIMIT", AlignWayAction.workerFailureCode("ResourceLimitException: budget"));
         assertEquals("SCALAR_SOURCE_NOT_NORMALIZED", AlignWayAction.workerFailureCode(
                 "IllegalArgumentException: Valid scalar source must be normalized"));
+        assertEquals("INCOMPLETE_RELATION_MEMBERS", AlignWayAction.workerFailureCode(
+                "IllegalArgumentException: Required relation members are incomplete: private primitive identity"));
+    }
+
+    @Test
+    void incompleteRequiredRelationHasExportableCaptureFailureWithoutInventingFrozenInput(@TempDir Path directory)
+            throws Exception {
+        var failure = new IllegalStateException("Required relation members are incomplete: "
+                + "PrimitiveKey[type=RELATION, identityKind=OSM_UNIQUE, id=123456789]");
+        AlignWayAction.recordCaptureFailure(failure, "managed-tiles", "synthetic-attempt");
+        Path exported = directory.resolve("capture-failure.zip");
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        var archive = Format15ArchiveReader.read(exported);
+        String summary = new String(archive.artifact("failure-summary.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(summary.contains("\"phase\":\"CAPTURE\""));
+        assertTrue(summary.contains("INCOMPLETE_RELATION_MEMBERS"));
+        assertFalse(summary.contains("123456789"));
+        assertFalse(summary.contains("PrimitiveKey"));
+        assertFalse(archive.artifact("frozen-input.bin").isPresent());
+        assertFalse(archive.artifact("frozen-edit-plan.bin").isPresent());
+        assertTrue(AlignWayAction.captureFailureMessage(failure).contains("Download the required relation members"));
+        assertTrue(AlignWayAction.captureFailureMessage(failure).contains("Export Last Alignment Diagnostics"));
+        assertFalse(AlignWayAction.captureFailureMessage(failure).contains("123456789"));
     }
 
     @Test
@@ -522,6 +572,33 @@ class AlignWayActionTest {
         String cancelledIndex = new String(cancelled.artifact("interval-production.json")
                 .bytes(), StandardCharsets.UTF_8);
         assertTrue(cancelledIndex.contains("\"appliedPlanIdentity\":null"));
+    }
+
+    @Test
+    void intervalExportFailureRetainsActualBatchWorkWithoutClaimingFullWayInference(@TempDir Path directory)
+            throws Exception {
+        var computed = computedIntervalFixture();
+        var state = new AlignWayAction.IntervalPreviewState(computed.intervalBatch());
+        var record = AlignWayAction.class.getDeclaredMethod("recordIntervalDiagnostics",
+                LiveBPreviewService.Computed.class, AlignWayAction.IntervalPreviewState.class,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.class, String.class);
+        record.setAccessible(true);
+        // The real exporter refuses a confirmed artifact before the user confirms the plan.
+        record.invoke(null, computed, state,
+                Format15ProductionBundleFactory.IntervalArtifactStatus.CONFIRMED, "unconfirmed-export");
+        Path file = directory.resolve("interval-export-failure.zip");
+        DiagnosticsRegistry.writeLatest(file.toFile());
+        var archive = Format15ArchiveReader.read(file);
+        assertTrue(archive.artifact("failure-summary.json").isPresent());
+        String summary = new String(archive.artifact("failure-summary.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(summary.contains("\"phase\":\"DIAGNOSTIC_EXPORT\""));
+        assertTrue(summary.contains("\"scope\":\"INTERVAL_SOURCE_BATCH\""));
+        assertTrue(summary.contains("\"intervalRuns\":" + computed.intervalBatch().runs().size()));
+        assertTrue(summary.contains("\"intervalTransitions\":" + computed.intervalBatch().totalUsage().transitions()));
+        assertFalse(summary.contains("\"inferenceStatus\":"), "There was no single full-way inference");
+        assertFalse(archive.artifact("frozen-input.bin").isPresent());
+        assertFalse(archive.artifact("frozen-edit-plan.bin").isPresent());
     }
 
     @Test

@@ -1,5 +1,8 @@
 # AGENTS
 
+- Modern capture/no-route/interval-preview failures must leave diagnostics export accessible through modeless UI. Publish failure evidence only for the current attempt owner; preserve fixed safe phase/cause and actual available work in export fallbacks without fabricating frozen inputs or full-way interval inference. An empty detector run does not imply that every alternative detector has no route.
+- Cookie paste initial focus belongs to the pane's `selectInitialValue()` contract. Keep actual-dialog keyboard regression coverage; a delayed window-open request alone can lose focus to the option pane. Use only synthetic cookie values in tests and documentation.
+
 - Benchmark contracts must remain explicit. Retain strict RC6 equality as the default; a named approved numerical/read-only protection comparison must bind current interval authority and partition to fresh original-OSM capture, preserve each version's native output/work/plan identities, and report changed geometry/kind. Do not treat self-consistent archive hashes as factual authority or silently weaken the two-case speed, repetition, production-observer, or cancellation gates.
 
 - Modern job cancellation must atomically target the latest nonterminal state of the same attempt sequence, preserving its snapshot. Never compare-and-set only the initial acquisition object after worker phase transitions; never overwrite a newer sequence or terminal outcome.

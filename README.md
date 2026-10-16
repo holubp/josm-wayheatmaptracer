@@ -211,7 +211,7 @@ assumption when no explicit archive property is supplied.
 1. Install and use the JOSM Strava Heatmap workflow in Firefox so the Strava heatmap is available there.
 2. Copy the cookie header from the Firefox/JOSM heatmap helper. The copied text should contain the cookie names `CloudFront-Key-Pair-Id`, `CloudFront-Policy`, `CloudFront-Signature`, and `_strava_idcf`.
 3. In JOSM, open `More tools -> Heatmap Layer Settings` or press `Ctrl+Shift+U`.
-4. Click `Paste cookie header...`, paste the copied cookie header into the small window, and press `OK`.
+4. Click `Paste cookie header...`. The text field receives focus automatically; press `Ctrl+V` to paste the copied header, then `Enter` (or `OK`) to parse it. `Escape` cancels without changing the fields.
 5. Check that the four cookie fields were split into the visible fields in the settings dialog.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
 7. Enable `Run alternative detector mappings on current source` if you want palette classifier alternatives for the currently sampled source. Enable `Aggregate all managed color schemes into one intensity map` if you want managed source tiles from all base colors fused into an `all-colors-combined` candidate.
@@ -292,6 +292,13 @@ When a slide is wrong:
 4. Run `More tools -> Export Last Alignment Diagnostics`.
 5. Use `Copy file path` or `Copy folder path` from the export dialog.
 6. Share the generated zip, not raw cookies or tokenized URLs.
+
+In RC11, modern capture failures and rejected/no-route previews leave the UI usable,
+so you can run `Export Last Alignment Diagnostics` while the failure window remains
+open. An incomplete-relation failure still requires downloading the missing relation
+members before retrying. When a full export is unavailable, a small failure bundle
+records the failure phase and available inference work; it does not claim to contain
+the frozen inputs or an Apply plan. Geometry and topology safety blocks remain active.
 
 The debug bundle is focused on the latest slide attempt. It includes:
 

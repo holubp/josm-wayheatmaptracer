@@ -678,13 +678,12 @@ public class AlignWayAction extends JosmAction {
             PluginLog.endSlideSession();
             showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
         } catch (Exception ex) {
-            recordModernUnavailable("failed", diagnosticSourceLineage,
-                    diagnosticAttemptIdentity);
+            recordCaptureFailure(ex, diagnosticSourceLineage, diagnosticAttemptIdentity);
             overlay.hide();
             Logging.error(ex);
             PluginLog.verbose("Alignment failed with exception: %s", ex.toString());
             PluginLog.endSlideSession();
-            showError(tr("WayHeatmapTracer failed: {0}", ex.getMessage()));
+            showWorkerFailure(captureFailureMessage(ex));
         }
     }
 
@@ -834,14 +833,15 @@ public class AlignWayAction extends JosmAction {
                                 diagnosticAttemptIdentity, null));
             }
         } catch (RuntimeException exception) {
-            ManualJunctionEligibility.Reason captureJunction = exception
-                    instanceof LiveBPreviewService.ManualJunctionCaptureException manual
-                        ? manual.reason() : null;
-            recordModernUnavailable(captureJunction == null ? "failed" : "blocked",
-                    sourceLineage, diagnosticAttemptIdentity, captureJunction);
-            livePreviewSession.close(previewOwner);
+            boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner,
+                    () -> recordCaptureFailure(exception, sourceLineage, diagnosticAttemptIdentity));
             progress.dispose();
-            throw exception;
+            if (closed) {
+                overlay.hide();
+                PluginLog.endSlideSession();
+                showWorkerFailure(captureFailureMessage(exception));
+            }
+            return;
         }
         failureMonitor.start();
         progress.setVisible(true);
@@ -880,7 +880,9 @@ public class AlignWayAction extends JosmAction {
                 if (closed) {
                     overlay.hide();
                     PluginLog.endSlideSession();
-                    showError(tr("Interval alignment preview was rejected: {0}", exception.getMessage()));
+                    showWorkerFailure(tr("Interval alignment preview was rejected: {0}. "
+                            + "No changes were applied. Use Export Last Alignment Diagnostics for details.",
+                            exception.getMessage()));
                 }
             }
             return;
@@ -926,14 +928,17 @@ public class AlignWayAction extends JosmAction {
                     slideConfig, persistedSlideConfig, tracingAtCapture, computed, previewChoices,
                     diagnosticAttemptIdentity, previewSourceOwner);
         } catch (RuntimeException exception) {
-            recordModernDiagnostics(computed, terminalStatus, 0, null, false, false,
-                    diagnosticAttemptIdentity, terminalManualReason);
-            boolean closed = livePreviewSession.close(previewOwner);
+            String rejectedStatus = terminalStatus;
+            ManualJunctionEligibility.Reason rejectedManualReason = terminalManualReason;
+            boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner,
+                    () -> recordModernDiagnostics(computed, rejectedStatus, 0, null, false, false,
+                            diagnosticAttemptIdentity, rejectedManualReason));
             progress.dispose();
             if (closed) {
                 overlay.hide();
                 PluginLog.endSlideSession();
-                showError(tr("{0} alignment preview was rejected: {1}",
+                showWorkerFailure(tr("{0} alignment preview was rejected: {1}. "
+                                + "No changes were applied. Use Export Last Alignment Diagnostics for details.",
                         livePreviewEngineLabel(slideConfig.heatmap().trackerMode()), exception.getMessage()));
             }
         }
@@ -2344,6 +2349,62 @@ public class AlignWayAction extends JosmAction {
                 manualReason));
     }
 
+    /** Capture failures have no frozen input: retain a safe cause without inventing replay authority. */
+    static void recordCaptureFailure(Exception failure, String sourceLineage, String attemptIdentity) {
+        var manual = failure instanceof LiveBPreviewService.ManualJunctionCaptureException junction
+                ? junction.reason() : null;
+        String code = workerFailureCode(failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        Format15Bundle base = Format15ProductionBundleFactory.createUnavailableLive(
+                LastSlideDebugBundle.buildIdentity(), manual == null ? "failed" : "blocked",
+                sourceLineage, attemptIdentity, manual);
+        DiagnosticsRegistry.setLastModernBundle(withFailureSummary(base, "CAPTURE", code, null));
+    }
+
+    static String captureFailureMessage(Exception failure) {
+        String code = workerFailureCode(failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        String instruction = code.equals("INCOMPLETE_RELATION_MEMBERS")
+                ? tr("Required relation members are not downloaded. Download the required relation members, then run alignment again.")
+                : failure instanceof LiveBPreviewService.ManualJunctionCaptureException manual
+                    ? manual.reason().name() + ". " + tr("Adjust this junction manually, then run alignment again.")
+                    : tr("Alignment could not start ({0}).", code);
+        return instruction + " " + tr("No changes were applied. Use Export Last Alignment Diagnostics for details.");
+    }
+
+    /** Values are fixed local codes/enums and numeric work counters, never exception or source text. */
+    private static Format15Bundle withFailureSummary(Format15Bundle base, String phase, String code,
+            LiveBPreviewService.Computed computed) {
+        String scope = computed == null ? "ATTEMPT" : computed.partitioned()
+                ? "INTERVAL_SOURCE_BATCH" : "SOURCE_RUN";
+        String work;
+        if (computed == null) {
+            work = "";
+        } else if (computed.partitioned()) {
+            // No fictional full-way inference: preserve the actual interval work and status counts.
+            Map<TraceHypothesisSet.Status, Integer> statuses = new java.util.EnumMap<>(TraceHypothesisSet.Status.class);
+            for (var run : computed.intervalBatch().runs()) {
+                statuses.merge(run.result().inference().status(), 1, Integer::sum);
+            }
+            String statusCounts = statuses.entrySet().stream()
+                    .map(entry -> "\"" + entry.getKey().name() + "\":" + entry.getValue())
+                    .collect(java.util.stream.Collectors.joining(","));
+            work = ",\"intervalRuns\":" + computed.intervalBatch().runs().size()
+                    + ",\"intervalTransitions\":" + computed.intervalBatch().totalUsage().transitions()
+                    + ",\"intervalPairVisits\":" + computed.intervalBatch().totalUsage().pairVisits()
+                    + ",\"intervalStatusCounts\":{" + statusCounts + "}";
+        } else {
+            work = ",\"inferenceStatus\":\""
+                + computed.pipeline().inference().status().name() + "\",\"evaluatedStates\":"
+                + computed.pipeline().inference().evaluatedStates() + ",\"evaluatedTransitions\":"
+                + computed.pipeline().inference().evaluatedTransitions() + ",\"finalRoutes\":"
+                + computed.pipeline().routes().size();
+        }
+        Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
+        artifacts.put("failure-summary.json", Format15Artifact.text("failure-summary.json",
+                "{\"phase\":\"" + phase + "\",\"failureCode\":\"" + code
+                + "\",\"scope\":\"" + scope + "\",\"applyPlanIncluded\":false" + work + "}\n"));
+        return new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(), base.parameterHash(), artifacts);
+    }
+
     static ManualJunctionEligibility.Reason manualCaptureReason(String failure) {
         String marker = LiveBPreviewService.ManualJunctionCaptureException.class.getSimpleName()
                 + ": ";
@@ -2408,6 +2469,10 @@ public class AlignWayAction extends JosmAction {
 
     static String workerFailureCode(String reason) {
         if (manualCaptureReason(reason) != null) return "MANUAL_JUNCTION_BLOCKED";
+        if (reason != null && (reason.startsWith("IllegalStateException: Required relation members are incomplete: ")
+                || reason.startsWith("IllegalArgumentException: Required relation members are incomplete: "))) {
+            return "INCOMPLETE_RELATION_MEMBERS";
+        }
         if ("IllegalArgumentException: Valid scalar source must be normalized".equals(reason)
                 || "IllegalArgumentException: Valid scalar evidence must be finite and normalized".equals(reason)) {
             return "SCALAR_SOURCE_NOT_NORMALIZED";
@@ -2491,8 +2556,12 @@ public class AlignWayAction extends JosmAction {
                     : failure.getMessage().toLowerCase(Locale.ROOT);
             String terminal = reason.contains("budget") || reason.contains("limit")
                     || reason.contains("large") ? "resource-limited" : "failed";
-            recordModernUnavailable(terminal, computed.captured().managedRaster() == null
-                    ? "visible-layer" : "managed-tiles", attemptIdentity);
+            Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
+                    LastSlideDebugBundle.buildIdentity(), terminal, computed.captured().managedRaster() == null
+                            ? "visible-layer" : "managed-tiles", attemptIdentity);
+            LiveBPreviewService.Computed selected = state.selectedRun() == null ? computed : state.selectedRun();
+            DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
+                    format15FailureCode(failure), selected));
             PluginLog.verbose("Format15 interval export unavailable status=%s cause=%s",
                     terminal, format15FailureCode(failure));
         }
@@ -2563,15 +2632,23 @@ public class AlignWayAction extends JosmAction {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
-            DiagnosticsRegistry.setLastModernBundle(createModernDiagnostics(root, computed,
+            Format15Bundle bundle = createModernDiagnostics(root, computed,
                     status, routeIndex, plan, reviewed, applied, assessedManualReason,
-                    assessment, currentNoChangeNetwork));
+                    assessment, currentNoChangeNetwork);
+            if (computed.pipeline().routes().isEmpty()) {
+                bundle = withFailureSummary(bundle, "PREVIEW", "NO_PREVIEWABLE_ROUTE", computed);
+            }
+            DiagnosticsRegistry.setLastModernBundle(bundle);
         } catch (RuntimeException failure) {
             String reason = failure.getMessage() == null ? "" : failure.getMessage()
                     .toLowerCase(java.util.Locale.ROOT);
             String diagnosticStatus = reason.contains("budget") || reason.contains("limit")
                     || reason.contains("large") ? "resource-limited" : "failed";
-            recordModernUnavailable(diagnosticStatus, sourceLineage, attemptIdentity);
+            Format15Bundle fallback = Format15ProductionBundleFactory.createUnavailableLive(
+                    LastSlideDebugBundle.buildIdentity(), diagnosticStatus, sourceLineage, attemptIdentity,
+                    assessedManualReason);
+            DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback, "DIAGNOSTIC_EXPORT",
+                    format15FailureCode(failure), computed));
             PluginLog.verbose("Format15 support export unavailable status=%s cause=%s",
                     diagnosticStatus, format15FailureCode(failure));
         }

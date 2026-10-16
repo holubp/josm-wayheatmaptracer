@@ -17,7 +17,6 @@ import javax.swing.JTextField;
 import javax.swing.JDialog;
 import javax.swing.AbstractAction;
 import javax.swing.KeyStroke;
-import javax.swing.SwingUtilities;
 
 import org.openstreetmap.josm.gui.MainApplication;
 import org.openstreetmap.josm.gui.layer.ImageryLayer;
@@ -319,11 +318,6 @@ public final class HeatmapSettingsDialog {
         pasted.setWrapStyleWord(true);
         JOptionPane pane = cookiePastePane(pasted);
         JDialog dialog = pane.createDialog(parent, tr("Paste Strava Cookie Header"));
-        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
-            @Override public void windowOpened(java.awt.event.WindowEvent event) {
-                SwingUtilities.invokeLater(pasted::requestFocusInWindow);
-            }
-        });
         dialog.setVisible(true);
         dialog.dispose();
         if (!Integer.valueOf(JOptionPane.OK_OPTION).equals(pane.getValue())) {
@@ -343,7 +337,11 @@ public final class HeatmapSettingsDialog {
 
     static JOptionPane cookiePastePane(JTextArea pasted) {
         JOptionPane pane = new JOptionPane(new JScrollPane(pasted), JOptionPane.PLAIN_MESSAGE,
-                JOptionPane.OK_CANCEL_OPTION);
+                JOptionPane.OK_CANCEL_OPTION) {
+            @Override public void selectInitialValue() {
+                pasted.requestFocusInWindow();
+            }
+        };
         pasted.getInputMap().put(KeyStroke.getKeyStroke(java.awt.event.KeyEvent.VK_ENTER, 0), "accept-cookie");
         pasted.getActionMap().put("accept-cookie", new AbstractAction() {
             @Override public void actionPerformed(java.awt.event.ActionEvent event) {
