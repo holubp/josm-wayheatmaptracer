@@ -21,6 +21,10 @@ def test_manual_fixed_experiment_has_no_inputs_or_release_permissions():
     assert workflow["on"]["workflow_dispatch"] in (None, "")
     assert workflow["permissions"] == {"contents": "read"}
     job = workflow["jobs"]["observation-identification"]
+    assert "runner.temp" not in str(job.get("env", {}))
+    output = next(s for s in job["steps"] if s.get("name") == "Set synthetic output location")
+    assert 'OBSERVATION_OUTPUT=$RUNNER_TEMP/josm-observation-identification' in output["run"]
+    assert '"$GITHUB_ENV"' in output["run"]
     assert job["timeout-minutes"] == "60"
     assert job.get("continue-on-error") in (None, "false")
     assert all(s.get("continue-on-error") in (None, "false") for s in job["steps"])

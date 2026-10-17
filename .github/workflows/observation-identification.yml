@@ -11,9 +11,9 @@ jobs:
   observation-identification:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      OBSERVATION_OUTPUT: ${{ runner.temp }}/josm-observation-identification
     steps:
+      - name: Set synthetic output location
+        run: echo "OBSERVATION_OUTPUT=$RUNNER_TEMP/josm-observation-identification" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
