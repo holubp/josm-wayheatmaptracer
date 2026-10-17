@@ -204,6 +204,10 @@ all three archive paths. Calling `./gradlew test` without a profile preserves
 the historical full-suite behavior, including the sparse replay's optional
 assumption when no explicit archive property is supplied.
 
+The quarantined Engine B observation experiment has a separate manual,
+[public-only CI workflow](superpowers/docs/plans/2026-10-17-b-observation-ci.md).
+It produces synthetic experiment receipts, not a plugin release or an accepted model.
+
 ## Optimum JOSM Workflow
 
 ### 1. Configure Heatmap Access

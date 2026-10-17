@@ -1,0 +1,118 @@
+{
+  "catalogVersion": "b-observation-public-scenes-v1",
+  "schemaVersion": 1,
+  "rendererRevision": "native-observations-production-resample-v5",
+  "catalogHash": "4e0ec781c883afb9de227c5d0ea876519fa9db26f0db296d45dca47c43224fde",
+  "rendererSourceSha256": "abe854d810ccfd3997a9ace4bd67464ee9ec0b22d414126b8038d933bc7140e8",
+  "validityLabels": "invalid-gap VALID regions stop at x=40 and resume at x=80; transitions are deliberately unlabeled; every cell intersecting a VALID label is checked against output support",
+  "hashing": {
+    "recipeHash": "SHA-256 over rendererRevision, case id, generator/geometry/source group ids, split, recipe id, seed, contrast, side, variant, equation, phase, source pitch, oversampling, reversal, and capabilities",
+    "catalogHash": "SHA-256 over rendererRevision and sorted recipe hashes",
+    "holdoutInventory": "case id, split, and recipeHash only"
+  },
+  "caseLimit": 512,
+  "expandedCaseCount": 356,
+  "splitPolicy": {
+    "groupKeys": ["generatorFamilyId", "geometryGroupId", "sourceGroupId"],
+    "calibrationSplits": ["TRAIN", "SELECT", "HOLDOUT"],
+    "regressionSplit": "REGRESSION",
+    "holdoutMaterialization": "requires-validated-frozen-artifact-receipt; hash syntax alone is refused; no receipt can be minted before Task4",
+    "preselectionMaterialization": ["TRAIN", "SELECT", "REGRESSION"],
+    "catalogView": "inventory-and-recipe-hash-only"
+  },
+  "splitGeometry": {
+    "TRAIN": "0m offset plus 0.8*sin(2*pi*x/120); smooth sinusoidal geometry family",
+    "SELECT": "+2.5m offset plus 0.8*triangle(x/80), triangle(u)=4*abs(frac(u)-0.5)-1; piecewise triangular geometry family",
+    "HOLDOUT": "-2.5m offset plus 0.00045*(x-60)^2-0.75; quadratic geometry family",
+    "REGRESSION": "fixed source geometry; never used for fitting"
+  },
+  "samplingVariants": [
+    {"variant": "v0", "phase": 0.0, "sourcePitchMeters": 0.5, "oversampling": 1, "reversed": false},
+    {"variant": "v1", "phase": 0.25, "sourcePitchMeters": 0.5, "oversampling": 2, "reversed": true},
+    {"variant": "v2", "phase": 0.5, "sourcePitchMeters": 1.0, "oversampling": 1, "reversed": false},
+    {"variant": "v3", "phase": 0.75, "sourcePitchMeters": 1.0, "oversampling": 2, "reversed": true},
+    {"variant": "v4", "phase": 0.25, "sourcePitchMeters": 1.75, "oversampling": 1, "reversed": false},
+    {"variant": "v5", "phase": 0.75, "sourcePitchMeters": 1.75, "oversampling": 2, "reversed": true},
+    {"variant": "v6", "phase": 0.0, "sourcePitchMeters": 0.5, "oversampling": 2, "reversed": false},
+    {"variant": "v7", "phase": 0.5, "sourcePitchMeters": 1.75, "oversampling": 1, "reversed": true}
+  ],
+  "phaseSemantics": "phase offsets the native sampling-grid origin by phase times native pitch; output pixels reuse the same native observations through production strict bilinear capture; metric geometry remains fixed",
+  "expansion": {
+    "learnedContrasts": 7,
+    "calibrationSplits": 3,
+    "variantsPerSideAndSplit": 8,
+    "sidesPerContrast": 2,
+    "regressionCasesPerLearnedContrast": 2,
+    "degenerateContrastRegressionCases": ["blank-valid", "uniform-valid", "invalid-gap", "censored-edge"]
+  },
+  "contrasts": [
+    {
+      "id": "weak-coherent-curve-vs-disconnected-flecks",
+      "left": "0.02 + 0.24*exp(-0.5*((y-(30+2*sin(2*pi*x/80)))/0.9)^2); longitudinal support is continuous",
+      "right": "same transverse amplitude and shape; multiply by sum exp(-0.5*((x-{24,60,96})/3)^2)",
+      "labels": "observed structure, unique acceptable centerline"
+    },
+    {
+      "id": "concentrated-band-vs-diffuse-band",
+      "left": "0.02 + (0.16/(0.8*sqrt(2*pi)))*exp(-0.5*((y-30)/0.8)^2)",
+      "right": "0.02 + (0.16/(3.2*sqrt(2*pi)))*exp(-0.5*((y-30)/3.2)^2)",
+      "labels": "equal integrated scalar evidence budget; distinct spread and localization"
+    },
+    {
+      "id": "sparse-crossing-noisy-strands-vs-persistent-parallel",
+      "left": "0.02 + crossing/noisy traces at 26, 30+4*sin(2*pi*x/48), 34; changing valleys and sparse impulses",
+      "right": "0.02 + persistent traces at 26 and 34 with a stable valley",
+      "labels": "AMBIGUOUS carries the two outer acceptable branches; no midpoint branch"
+    },
+    {
+      "id": "resolved-short-apex-vs-stair-step-alias",
+      "left": "0.02 + 0.14*exp(-0.5*((y-(30+3*max(0,1-|x-60|/6)))/0.75)^2)",
+      "right": "identical physical 12m apex observed with a half-native-pixel phase shift; no artificial second staircase geometry",
+      "labels": "same known physical apex across native phase and resampling aliases"
+    },
+    {
+      "id": "displaced-strong-corridor-vs-nearby-faint-strand",
+      "left": "strong=(0.70,39m), faint=(0.09,27m)",
+      "right": "strong=(0.55,27m), faint=(0.06,34m)",
+      "labels": "full +/-25m acquisition; no original-way preference"
+    },
+    {
+      "id": "blank-uniform-invalid-censored",
+      "regressionCases": {
+        "blank-valid": "valid cells at scalar 0.02",
+        "uniform-valid": "valid cells at scalar 0.80",
+        "invalid-gap": "invalid support where 48m<=x<=72m; invalid is not zero evidence",
+        "censored-edge": "band center y=5.4m lies 0.4m inside the y=5m decision edge; actual factory censoring is asserted"
+      },
+      "labels": "NO_STRUCTURE vs UNKNOWN; VALID, INVALID, and CENSORED remain distinct; regression only"
+    },
+    {
+      "id": "multiple-physical-pitches-vs-reversed-source-order",
+      "equation": "0.02 + 0.3*exp(-0.5*((y-(30+0.04*(x-60)))/1)^2)",
+      "pairedSourceOrder": "forward vs reversed",
+      "sourcePitchMeters": [0.5, 1.0, 1.75],
+      "oversampling": [1, 2],
+      "labels": "same physical geometry and amplitude across equivalent sampling"
+    },
+    {
+      "id": "palette-semantic-vs-rendered-source",
+      "left": "synthetic RGB proxy encoded blue and mapped with RenderedHeatmapSampler.colorIntensity(..., blue); synthetic native pitch is explicit",
+      "right": "same synthetic blue RGB proxy and direct rendered luminance 0.2126R+0.7152G+0.0722B; rendered pitch only",
+      "labels": "synthetic RGB proxy contrasts semantic vs rendered scalar lineage; real rendered-source capability is unavailable until producer fixtures exist"
+    }
+  ],
+  "labelTypes": {
+    "structure": ["OBSERVED_STRUCTURE", "NO_STRUCTURE", "UNKNOWN"],
+    "raster": ["VALID", "INVALID", "CENSORED", "MIXED"],
+    "association": ["UNIQUE", "AMBIGUOUS", "NOT_APPLICABLE"],
+    "position": "one or more explicit acceptable metric curves; ambiguous cases do not synthesize a center"
+  },
+  "evidenceContract": {
+    "type": "EvidenceSnapshot",
+    "field": "ScalarEvidenceField",
+    "resolution": "EvidenceResolution.nativePitchMeters with rendered raster pitch",
+    "coordinateFrame": "LocalMetricFrame.certifiedEquirectangular",
+    "transform": "RasterMetricTransform.metricGrid with physical metres per raster pixel",
+    "resampling": "direct scalar grid with explicit validity mask"
+  }
+}

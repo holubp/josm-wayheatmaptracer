@@ -1,0 +1,65 @@
+name: Public observation identification
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  observation-identification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      OBSERVATION_OUTPUT: ${{ runner.temp }}/josm-observation-identification
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile only the sealed observation tool sources
+        run: sh ./gradlew compileJava compileObservationIdentifyJava --console=plain
+      - name: Register the fixed public catalog
+        run: |
+          set -eu
+          manifest=superpowers/docs/plans/2026-10-16-b-observation-identification-manifest.json
+          printf '%s  %s\n' 6e44cdc2b75d6d960861bea90f0916a809ff10145341c7431dc52fcdedc16003 "$manifest" | sha256sum --check --status
+          sh ./gradlew v022ObservationIdentify \
+            -PobservationPhase=CATALOG \
+            -PobservationManifest="$manifest" \
+            -PobservationOutput="$OBSERVATION_OUTPUT/catalog" \
+            --console=plain
+          grep -Fq '"sourceHash":"cb423116e79008e13180f71d7d0a208f4bcd4ebcb3ba3cacdcd047d381ed085b"' \
+            "$OBSERVATION_OUTPUT/catalog/summary.json"
+      - name: Run the bounded public FIT_SELECT pass
+        id: fit
+        run: |
+          set -eu
+          timeout 3500s sh ./gradlew v022ObservationIdentify \
+            -PobservationPhase=FIT_SELECT \
+            -PobservationManifest=superpowers/docs/plans/2026-10-16-b-observation-identification-manifest.json \
+            -PobservationBinding="$OBSERVATION_OUTPUT/catalog/binding.json" \
+            -PobservationOutput="$OBSERVATION_OUTPUT/fit-select" \
+            --console=plain
+      - name: Require a complete frozen candidate receipt
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['OBSERVATION_OUTPUT']) / 'fit-select'
+          artifact = json.loads((root / 'frozen-candidate.json').read_text())
+          assert artifact['status'] == 'FROZEN_PENDING_REGRESSION'
+          assert not (root / 'failure.json').exists()
+          PY
+      - name: Upload only synthetic receipts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-observation-identification-receipts
+          path: |
+            ${{ runner.temp }}/josm-observation-identification/catalog/*.json
+            ${{ runner.temp }}/josm-observation-identification/fit-select/*.json
+          if-no-files-found: ignore
+          retention-days: 5

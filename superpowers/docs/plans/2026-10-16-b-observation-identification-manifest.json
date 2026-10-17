@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "familyId": "joint-core-excess-v1",
+  "catalogHash": "4e0ec781c883afb9de227c5d0ea876519fa9db26f0db296d45dca47c43224fde",
+  "featureVersion": "b-identification-facts-3",
+  "features": ["BACKGROUND", "PROMINENCE", "RMS_DESCRIPTOR", "FILTER_DESCRIPTOR", "RAW_CENTER", "B3_CENTER", "B5_CENTER", "NATIVE_PITCH", "LEFT_DIRECT_SPAN", "RIGHT_DIRECT_SPAN", "SHOULDER_MINIMUM", "SHOULDER_MAXIMUM"],
+  "equations": {
+    "joint": "c=original RAW center; v=max available |stageCenter-c|; h=(rawHighCoreRight-rawHighCoreLeft)/2+v+rho/2; T=max(0,1-|u-c|/h); tau=T/sum(T*cellWidth); e=max(0,I-ownBackground-lambda*max(RMS,filter)); A=G*(1+B*(leftSpan+rightSpan)/40m)*tau*e; H=sum(A*cellWidth); R=1-sum(frozenCensoredMass); Z=1+sum(H); qm=R*H/Z; fm=A/H; q0=R/Z",
+    "weakLimit": "For fixed receipts e tends uniformly to zero: H and qm tend to zero; measured/uniform contribution tends to R*U. This is not continuous MAP or a claim of calibrated physical-presence probability.",
+    "zeroSupport": "Invalid interpolation or outside own original shoulder: e=0. Zero H has zero mass and no normalized row, residual remains q0. No independent raw/B3/B5 likelihoods or invented quantization/counts.",
+    "uniform": "U=1/sum(all admitted cell widths), including invalid cells; configured full plus/minus25m domain and V3 state admission unchanged",
+    "censored": "Original effective q_c and original normalized f_c from the one shared baseline producer, exactly unchanged; no posterior reconstruction",
+    "anchors": "Conditioned exact anchors have unary=0 and log integration measure=0; no observation grants movement/Apply/endpoint/cleanup authority",
+    "L0": "L0=1 metre; unary=-log(L0*p), existing log floor1e-300 only; FB cell measure=width/L0; negative unary valid",
+    "score": "Unique curve/profile intersection categorical proper log score -log(p_target*cellWidth); physical chainage weighting, equal scene then geometry/source group then contrast family. Ambiguous labels diagnostic only, no invented probabilities.",
+    "selection": "All32 TRAIN configs ranked ascending proper score then G/lambda/B. Best4 on SELECT; select lowest score passing all registered controls and no worse baseline within1e-12. Freeze one; unchanged regressions then holdout once. Failure rejects; no regression/holdout reselection.",
+    "acceptance": "Existing physical shape bounds unchanged; matched resampling per-mode mass delta<=0.02, center displacement<=factual source pitch or explicitly sampling-only descriptor, conditional IQR shrink<=10%; missing correspondence fails. Actual production raw+final geometry and unchanged safety required.",
+    "bounds": "32configs,512scenes,4096profiles/scene,8M extraction and8M mode-cell work/scene/config,60min FIT_SELECT; <=64MiB live scene+scratch within unchanged attempt ledger; <=2GiB disk cache; no holdout before artifact validation"
+  },
+  "units": {"joint": "1/metre", "mass": "dimensionless", "G": "inverse normalized scalar", "lambda": "dimensionless", "B": "dimensionless", "rho": "metre"},
+  "capabilities": {
+    "native": "rho=factual native ground pitch; tagged original RAW plus at least one filtered center and original high-core endpoints required; correlated stage receipts share one physical source lineage",
+    "unknownNative": "rho=max actual adjacent physical sample gap in own shoulder; sampling descriptor only, never native uncertainty/independent information; separate empirical phase/resampling gates",
+    "groupedParent": "No original elementary receipt means unavailable measured field; no fabricated background/stage centers. Record missing capability and fail any required comparison, never hidden baseline substitution.",
+    "connectedCertificate": "Unavailable; diagnosticChord cannot authorize evidence"
+  },
+  "parameterGrid": [
+    {"G":1,"lambda":1,"B":0},{"G":1,"lambda":1,"B":1},{"G":1,"lambda":1,"B":3},{"G":1,"lambda":1,"B":7},
+    {"G":1,"lambda":2,"B":0},{"G":1,"lambda":2,"B":1},{"G":1,"lambda":2,"B":3},{"G":1,"lambda":2,"B":7},
+    {"G":4,"lambda":1,"B":0},{"G":4,"lambda":1,"B":1},{"G":4,"lambda":1,"B":3},{"G":4,"lambda":1,"B":7},
+    {"G":4,"lambda":2,"B":0},{"G":4,"lambda":2,"B":1},{"G":4,"lambda":2,"B":3},{"G":4,"lambda":2,"B":7},
+    {"G":16,"lambda":1,"B":0},{"G":16,"lambda":1,"B":1},{"G":16,"lambda":1,"B":3},{"G":16,"lambda":1,"B":7},
+    {"G":16,"lambda":2,"B":0},{"G":16,"lambda":2,"B":1},{"G":16,"lambda":2,"B":3},{"G":16,"lambda":2,"B":7},
+    {"G":64,"lambda":1,"B":0},{"G":64,"lambda":1,"B":1},{"G":64,"lambda":1,"B":3},{"G":64,"lambda":1,"B":7},
+    {"G":64,"lambda":2,"B":0},{"G":64,"lambda":2,"B":1},{"G":64,"lambda":2,"B":3},{"G":64,"lambda":2,"B":7}
+  ],
+  "maxScenes":512,
+  "maxFitSeconds":3600,
+  "existingAttemptCaps":true,
+  "acceptanceOwners": {
+    "OBS-01":"V022BIdentificationManifestTest and independent numerical review",
+    "OBS-02":"V022BIdentificationCatalogTest split/source alias isolation",
+    "OBS-03":"V022BIdentificationManifestTest immutable family and finite grid",
+    "OBS-04":"V022BIdentificationFactsTest and V022BModeProvenanceTest",
+    "OBS-05":"facts-v3 typed measurements and original stage receipts",
+    "OBS-06":"V022BIdentificationFactsTest source correlation/unavailable precision",
+    "OBS-07":"positive connection certificate unavailable, no kernel consumption",
+    "OBS-08":"V022BObservationMixtureTest normalization/zero support",
+    "OBS-09":"V022BCensoredRowReuseTest frozen baseline censored parity",
+    "OBS-10":"V022BObservationMixtureTest full invalid-cell uniform",
+    "OBS-11":"V022BObservationMixtureTest L0/anchors/negative unary",
+    "OBS-12":"identification runner all-config proper-score receipts",
+    "OBS-13":"runner sealed candidate, manifest and source hashes",
+    "OBS-14":"all eight catalog contrasts plus fixed physical regressions",
+    "OBS-15":"production raw/final baseline/candidate comparison and bypass mutation",
+    "OBS-16":"V022BIdentificationCatalogTest guarded heldout access",
+    "OBS-17":"production component diagnostics and unavailable capability reporting",
+    "OBS-18":"owned preallocation/cancellation tests through kernel and production engine",
+    "OBS-19":"strict bounded runner receipts and deterministic rerun",
+    "OBS-20":"independent whole-delta audit and completion-matrix reconciliation"
+  },
+  "resultDirectory":"b-observation-identification/results"
+}

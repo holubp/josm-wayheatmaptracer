@@ -1046,9 +1046,11 @@ public final class ProbabilisticProfileFactory {
             if (query != null) query.reserve(2L * AttemptMemoryLedger.objectBytes(16));
             MetricPoint start = offset(anchor, normal, from);
             MetricPoint end = offset(anchor, normal, to);
-            return evidence.decisionRegion().containsSegment(start, end, work.cancellation,
+            // Keep every ordered physical prefix and its complete edge/midpoint proof.
+            // Charge event storage for observed events instead of allocating the polygon-edge bound.
+            return evidence.decisionRegion().containsSegmentWithBoundedEvents(start, end, work.cancellation,
                     work::admit, query)
-                && evidence.evidenceRegion().containsSegment(start, end, work.cancellation,
+                && evidence.evidenceRegion().containsSegmentWithBoundedEvents(start, end, work.cancellation,
                     work::admit, query);
         } finally {
             if (query != null) query.close();
