@@ -161,12 +161,80 @@ class V022BIdentificationAcceptanceTest {
                 left.contrastId(),"right","v0",0,1,1,true,"analytic-test",List.of("scalar"));
         var binding=bindPair(left,key(),right,key()).orElseThrow();
         var m=List.of(mode("m",.4,1,0,1));
-        var first=List.of(new ProfileSummary(0,new MetricPoint(0,0),new MetricPoint(0,1),false,m),
-                new ProfileSummary(10,new MetricPoint(10,0),new MetricPoint(0,1),false,m));
-        var reversed=List.of(new ProfileSummary(0,new MetricPoint(10,0),new MetricPoint(0,1),false,m),
-                new ProfileSummary(10,new MetricPoint(0,0),new MetricPoint(0,1),false,m));
+        var first=List.of(new ProfileSummary(0,new MetricPoint(0,30),new MetricPoint(0,1),true,m),
+                new ProfileSummary(60,new MetricPoint(60,30),new MetricPoint(0,1),false,m),
+                new ProfileSummary(120,new MetricPoint(120,30),new MetricPoint(0,1),true,m));
+        var reversed=List.of(new ProfileSummary(0,new MetricPoint(120,30),new MetricPoint(0,1),true,m),
+                new ProfileSummary(60,new MetricPoint(60,30),new MetricPoint(0,1),false,m),
+                new ProfileSummary(120,new MetricPoint(0,30),new MetricPoint(0,1),true,m));
         assertTrue(comparePair(binding,new SceneSummary(left,key(),first),new SceneSummary(right,key(),reversed),CancellationProbe.NONE).passed());
         assertFalse(comparePair(binding,new SceneSummary(left,key(),first),new SceneSummary(right,key(),first),CancellationProbe.NONE).passed());
+    }
+
+    @Test void reversalAcceptsFactoryAffineAnchorsWithDifferentFloatingPointRounding() {
+        var fixture=affineReversalFixture();
+        int forwardIndex=39;
+        int reverseIndex=fixture.first().profiles().size()-1-forwardIndex;
+        var forward=fixture.first().profiles().get(forwardIndex).anchor();
+        var reverse=fixture.second().profiles().get(reverseIndex).anchor();
+        assertNotEquals(forward,reverse,"the fixture must preserve the factory's direction-specific rounding");
+        assertEquals(58.5,forward.xMeters());
+        assertEquals(58.50000000000001,reverse.xMeters());
+
+        var checks=comparePair(fixture.binding(),fixture.first(),fixture.second(),CancellationProbe.NONE);
+        assertTrue(checks.passed(),checks.checks().toString());
+        assertTrue(checks.checks().stream().anyMatch(check->check.code()==Code.PROFILE_CORRESPONDENCE
+                &&check.verdict()==Verdict.PASS));
+    }
+
+    @Test void reversalRejectsAnAnchorOneUlpAwayFromItsOwnAffineResampling() {
+        var fixture=affineReversalFixture();
+        int forwardIndex=39;
+        int reverseIndex=fixture.first().profiles().size()-1-forwardIndex;
+        var changed=replaceAnchor(fixture.second(),reverseIndex,point->
+                new MetricPoint(Math.nextUp(point.xMeters()),point.yMeters()));
+
+        var checks=comparePair(fixture.binding(),fixture.first(),changed,CancellationProbe.NONE);
+        assertFalse(checks.passed());
+        assertTrue(failed(checks,Code.PROFILE_CORRESPONDENCE));
+    }
+
+    @Test void reversalRejectsMirroredAnchorsThatDoNotMatchEachScenesOwnAffineFormula() {
+        var fixture=affineReversalFixture();
+        int forwardIndex=39;
+        int reverseIndex=fixture.first().profiles().size()-1-forwardIndex;
+        MetricPoint sharedButUnowned=new MetricPoint(58.5,30.0);
+        var first=replaceAnchor(fixture.first(),forwardIndex,ignored->sharedButUnowned);
+        var second=replaceAnchor(fixture.second(),reverseIndex,ignored->sharedButUnowned);
+
+        var checks=comparePair(fixture.binding(),first,second,CancellationProbe.NONE);
+        assertFalse(checks.passed());
+        assertTrue(failed(checks,Code.PROFILE_CORRESPONDENCE));
+    }
+
+    @Test void reversalRejectsWrongEndpointOrderAndChangedChainageNormalOrAnchorFlags() {
+        var fixture=affineReversalFixture();
+        int count=fixture.first().profiles().size();
+        var wrongEndpoints=replaceAnchor(fixture.second(),0,ignored->new MetricPoint(0.0,30.0));
+        assertTrue(failed(comparePair(fixture.binding(),fixture.first(),wrongEndpoints,CancellationProbe.NONE),
+                Code.PROFILE_CORRESPONDENCE));
+
+        var changedChainage=replaceSummary(fixture.second(),20,profile->new ProfileSummary(
+                Math.nextUp(profile.chainageMeters()),profile.anchor(),profile.canonicalNormal(),
+                profile.exactAnchor(),profile.modes()));
+        assertTrue(failed(comparePair(fixture.binding(),fixture.first(),changedChainage,CancellationProbe.NONE),
+                Code.PROFILE_CORRESPONDENCE));
+
+        var changedNormal=replaceSummary(fixture.second(),20,profile->new ProfileSummary(profile.chainageMeters(),
+                profile.anchor(),new MetricPoint(Math.nextUp(profile.canonicalNormal().xMeters()),
+                        profile.canonicalNormal().yMeters()),profile.exactAnchor(),profile.modes()));
+        assertTrue(failed(comparePair(fixture.binding(),fixture.first(),changedNormal,CancellationProbe.NONE),
+                Code.PROFILE_CORRESPONDENCE));
+
+        var changedAnchorFlag=replaceSummary(fixture.second(),20,profile->new ProfileSummary(profile.chainageMeters(),
+                profile.anchor(),profile.canonicalNormal(),true,profile.modes()));
+        assertTrue(failed(comparePair(fixture.binding(),fixture.first(),changedAnchorFlag,CancellationProbe.NONE),
+                Code.PROFILE_CORRESPONDENCE));
     }
     @Test void geometryOwnerRefusalAndCancellationRetainNoPartialPayload() {
         var truth=scene(List.of(List.of(new MetricPoint(0,34),new MetricPoint(120,34))));
@@ -193,6 +261,43 @@ class V022BIdentificationAcceptanceTest {
     private static ModeSummary mode(String id,double mass,double rho,double median,double iqr) {
         return new ModeSummary(id,Optional.of(new Interval(-1,1)),Optional.of(new Interval(-2,2)),mass,OptionalDouble.of(rho),Optional.of(new Quantiles(median-iqr/2,median,median+iqr/2)));
     }
+    private static boolean failed(Checks checks,Code code) {
+        return checks.checks().stream().anyMatch(check->check.code()==code&&check.verdict()==Verdict.FAIL);
+    }
+    private static SceneSummary replaceAnchor(SceneSummary scene,int index,
+            java.util.function.UnaryOperator<MetricPoint> replacement) {
+        return replaceSummary(scene,index,profile->new ProfileSummary(profile.chainageMeters(),
+                replacement.apply(profile.anchor()),profile.canonicalNormal(),profile.exactAnchor(),profile.modes()));
+    }
+    private static SceneSummary replaceSummary(SceneSummary scene,int index,
+            java.util.function.UnaryOperator<ProfileSummary> replacement) {
+        var profiles=new ArrayList<>(scene.profiles());profiles.set(index,replacement.apply(profiles.get(index)));
+        return new SceneSummary(scene.definition(),scene.source(),profiles);
+    }
+    private static ReversalFixture affineReversalFixture() {
+        var left=new CaseDefinition(new CaseKey("left-affine","generator","geometry","source",Split.SELECT,"recipe",1),
+                "multiple-physical-pitches-vs-reversed-source-order","left","v0",0,1,1,false,
+                "registered two-point affine reversal",List.of("scalar"));
+        var right=new CaseDefinition(new CaseKey("right-affine","generator","geometry","source",Split.SELECT,"recipe",1),
+                left.contrastId(),"right","v0",0,1,1,true,
+                "registered two-point affine reversal",List.of("scalar"));
+        var binding=bindPair(left,key(),right,key()).orElseThrow();
+        var factory=new ProbabilisticProfileFactory();
+        var forward=factory.sourceSamplingGeometry(List.of(new MetricPoint(0,30),new MetricPoint(120,30)),1.5);
+        var reverse=factory.sourceSamplingGeometry(List.of(new MetricPoint(120,30),new MetricPoint(0,30)),1.5);
+        var modes=List.of(mode("m",.4,1,0,1));
+        var first=summary(left,forward.points(),forward.chainageMeters(),modes);
+        var second=summary(right,reverse.points(),reverse.chainageMeters(),modes);
+        return new ReversalFixture(binding,new SceneSummary(left,key(),first),new SceneSummary(right,key(),second));
+    }
+    private static List<ProfileSummary> summary(CaseDefinition definition,List<MetricPoint> anchors,
+            List<Double> chainage,List<ModeSummary> modes) {
+        var profiles=new ArrayList<ProfileSummary>(anchors.size());
+        for(int i=0;i<anchors.size();i++) profiles.add(new ProfileSummary(chainage.get(i),anchors.get(i),
+                new MetricPoint(0,1),i==0||i==anchors.size()-1,modes));
+        return List.copyOf(profiles);
+    }
+    private record ReversalFixture(PairBinding binding,SceneSummary first,SceneSummary second) { }
     private static SourceKey key() {return new SourceKey("source","0".repeat(64),"frame",Capability.KNOWN_NATIVE);}
     private static CaseDefinition definition(String id,String variant,int over,boolean reversed) {
         return new CaseDefinition(new CaseKey(id,"generator","geometry","source",Split.SELECT,"recipe",1),"concentrated-band-vs-diffuse-band","left",variant,0,1,over,reversed,"analytic-test",List.of("scalar"));

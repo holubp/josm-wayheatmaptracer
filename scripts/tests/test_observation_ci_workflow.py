@@ -39,7 +39,7 @@ def test_manual_fixed_experiment_has_no_inputs_or_release_permissions():
     assert "-PobservationBinding=" in text
     assert "timeout 3500s" in text
     assert "6e44cdc2b75d6d960861bea90f0916a809ff10145341c7431dc52fcdedc16003" in text
-    assert "ccf18c7650068b444824c444d92ba13404fd7079d8ab06653cb82d7cdc8ff958" in text
+    assert "f71a908b223b43ce49c3e88abae0bd7dad0ad5aa91ac3fe1626e3bacee307917" in text
     assert "HOLDOUT" not in text
     assert "gh release" not in text
     assert "test-data" not in text
@@ -92,6 +92,32 @@ def test_registered_build_workflow_can_call_experiment_without_building_a_jar():
     build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
     assert "workflow_dispatch" in build["on"]
     call = build["jobs"]["observation-identification"]
-    assert call["if"] == "github.event_name == 'workflow_dispatch'"
+    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true"
     assert call["uses"] == "./.github/workflows/observation-identification.yml"
     assert build["jobs"]["public-validation"]["if"] == "github.event_name != 'workflow_dispatch'"
+
+
+def test_renderer_diagnostic_dispatch_is_bounded_and_synthetic_only():
+    build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
+    option = build["on"]["workflow_dispatch"]["inputs"]["observation_diagnostics"]
+    assert option["type"] == "boolean"
+    assert option["default"] == "false"
+    job = build["jobs"]["observation-public-diagnostics"]
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true"
+    assert job["timeout-minutes"] == "15"
+    assert build["permissions"] == {"contents": "read"}
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "v022ObservationRendererDiagnostics" in commands
+    assert "timeout 600s" in commands
+    assert "FIT_SELECT" not in commands
+    assert "HOLDOUT" not in commands
+    assert "test-data" not in commands
+    uploads = [step for step in job["steps"] if step.get("uses") == "actions/upload-artifact@v4"]
+    assert len(uploads) == 1
+    assert uploads[0]["if"] == "always()"
+    assert uploads[0]["with"]["path"].splitlines() == [
+        "build/reports/public-observation-renderer/diagnostic.log",
+        "build/reports/public-observation-renderer/receipt/binding.json",
+        "build/reports/public-observation-renderer/receipt/bound-geometry.csv",
+    ]
+    assert all(".jar" not in str(step) and "release" not in step.get("uses", "") for step in uploads)

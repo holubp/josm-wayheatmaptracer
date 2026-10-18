@@ -153,10 +153,13 @@ final class BIdentificationAcceptance {
         int size=first.profiles().size();
         if(size==0||size>4096||size!=second.profiles().size()) {results.test(Code.PROFILE_CORRESPONDENCE,false,1);return results.finish();}
         double length=first.profiles().get(size-1).chainageMeters();int eligible=0;
+        boolean reversalGeometry=binding.kind()!=PairKind.REVERSAL
+                ||registeredAffineReversal(first,false,work)&&registeredAffineReversal(second,true,work);
         for(int i=0;i<size;i++) {
             work.step();var a=first.profiles().get(i);var b=second.profiles().get(binding.kind()==PairKind.REVERSAL?size-1-i:i);
             boolean chainage=binding.kind()==PairKind.REVERSAL?a.chainageMeters()+b.chainageMeters()==length:a.chainageMeters()==b.chainageMeters();
-            boolean matched=chainage&&a.anchor().equals(b.anchor())&&a.canonicalNormal().equals(b.canonicalNormal())&&a.exactAnchor()==b.exactAnchor();
+            boolean anchors=binding.kind()==PairKind.REVERSAL?reversalGeometry:a.anchor().equals(b.anchor());
+            boolean matched=chainage&&anchors&&a.canonicalNormal().equals(b.canonicalNormal())&&a.exactAnchor()==b.exactAnchor();
             results.test(Code.PROFILE_CORRESPONDENCE,matched,1);if(!matched||a.exactAnchor())continue;
             if(a.modes().isEmpty()&&b.modes().isEmpty())continue; // Separate null checks; no fake zero quantile.
             if(a.modes().size()!=b.modes().size()) {results.test(Code.MODE_CORRESPONDENCE,false,1);continue;}
@@ -190,6 +193,42 @@ final class BIdentificationAcceptance {
         }
         results.test(Code.POSITIVE_MATCH,eligible>0,eligible);cancellation.checkpoint();return results.finish();
     }
+
+    /**
+     * The registered reversal contrast uses only the source segment (0,30)-(120,30).
+     * Validate every summary anchor against that scene's own ordered endpoint arithmetic;
+     * forward and reversed interpolation can round differently at the same physical point.
+     */
+    private static boolean registeredAffineReversal(SceneSummary scene,boolean reversed,Work work) {
+        if(scene==null||scene.profiles().size()<2) return false;
+        var definition=scene.definition();
+        if(!"multiple-physical-pitches-vs-reversed-source-order".equals(definition.contrastId())
+                ||definition.reversed()!=reversed
+                ||!definition.side().equals(reversed?"right":"left")) return false;
+        MetricPoint start=reversed?new MetricPoint(120.0,30.0):new MetricPoint(0.0,30.0);
+        MetricPoint end=reversed?new MetricPoint(0.0,30.0):new MetricPoint(120.0,30.0);
+        var profiles=scene.profiles();
+        double length=profiles.get(profiles.size()-1).chainageMeters();
+        if(length!=120.0||profiles.get(0).chainageMeters()!=0.0
+                ||!profiles.get(0).anchor().equals(start)
+                ||!profiles.get(profiles.size()-1).anchor().equals(end)) return false;
+        double previous=Double.NEGATIVE_INFINITY;
+        for(int index=0;index<profiles.size();index++) {
+            work.step();var profile=profiles.get(index);double chainage=profile.chainageMeters();
+            double expectedTarget=index==profiles.size()-1?length:index*length/(profiles.size()-1);
+            if(!Double.isFinite(chainage)||chainage<0.0||chainage>length||chainage<=previous
+                    ||chainage!=expectedTarget) return false;
+            previous=chainage;
+            double fraction=(chainage-0.0)/(length-0.0);
+            MetricPoint expected=new MetricPoint(start.xMeters()+fraction*(end.xMeters()-start.xMeters()),
+                    start.yMeters()+fraction*(end.yMeters()-start.yMeters()));
+            boolean endpoint=index==0||index==profiles.size()-1;
+            if(!profile.anchor().equals(expected)||!profile.canonicalNormal().equals(new MetricPoint(0.0,1.0))
+                    ||profile.exactAnchor()!=endpoint) return false;
+        }
+        return true;
+    }
+
     static ProfileInspection inspectProfile(BIdentificationFacts.ProfileFacts facts,ProbabilisticStateLattice lattice,
             BObservationMixture mixture,BIdentifiedObservationKernel.Parameters parameters,
             CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {

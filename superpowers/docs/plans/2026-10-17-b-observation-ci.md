@@ -5,7 +5,7 @@ synthetic experiment. It does not activate the model in the plugin, qualify a
 release, or claim that the model improves any private capture.
 
 The current reviewed inventory of 27 source files has SHA-256
-`ccf18c7650068b444824c444d92ba13404fd7079d8ab06653cb82d7cdc8ff958`.
+`f71a908b223b43ce49c3e88abae0bd7dad0ad5aa91ac3fe1626e3bacee307917`.
 It includes the transition-admission implementations, which were absent from the
 original 25-file inventory. Final verification and independent review bind the
 renewed run to this inventory before dispatch.
@@ -34,6 +34,17 @@ tracked peak changed from 14,455,408 to 3,601,048 bytes. These measurements do n
 guarantee the fitting deadline. Cache refusal, cancellation and ownership remain
 required tests; no private or holdout evidence was used for these optimizations.
 
+The complete renewed run 39083054992 used generating inventory
+`ccf18c7650068b444824c444d92ba13404fd7079d8ab06653cb82d7cdc8ff958`.
+It finished all 224 TRAIN/SELECT scenes and 22 required pairs within its limits,
+but rejected all shortlisted candidates. Reversal correspondence and three
+parallel-corridor cases failed. No frozen candidate was produced and HOLDOUT
+reads stayed zero. Preserve that generating identity and rejected outcome.
+The current inventory changes only the reversal oracle: each orientation must
+retain the exact factory chainage and its own ordered affine interpolation,
+rather than comparing differently rounded forward/reverse anchors. This uses
+no physical tolerance and does not resolve or waive the parallel failure.
+
 The renewed local prefit check passed 185 tests across 22 suites, with no failures,
 errors or skips; the dedicated fitting tool also compiled. Six Python CI boundary
 and source-binding checks passed. Independent source review found no remaining
@@ -60,6 +71,26 @@ FIT_SELECT. Those are synthetic receipts and, if generated, one
 tile, credential, JAR or release asset is uploaded. HOLDOUT remains inaccessible.
 Even a successful job establishes only a parameter freeze: production integration,
 unchanged regression gates, sealed holdout and private comparison remain required.
+
+A separate fixed public renderer diagnostic is available through the same Build
+workflow with the boolean input `observation_diagnostics=true`. This runs a
+600-second bounded diagnostic instead of FIT_SELECT. It renders one existing
+SELECT case eight times, compares original Gaussian samples with the identical
+Math/StrictMath formula, and records runtime and hash evidence. A checksummed
+public receipt from the rejected run supplies saved state indexes. The tool
+decodes those indexes only when both original native-input and complete facts
+hashes match; otherwise it reports the mismatch and writes no decoded geometry.
+The current diagnostic source hash stays separate from the original generating
+hash. Neither successful execution nor a decoded route qualifies a model.
+The tool atomically claims a fresh `receipt` subdirectory before rendering. An
+existing scope is rejected and its earlier JSON/CSV files remain untouched.
+Only the diagnostic log and the two explicitly named receipt files are uploaded.
+No HOLDOUT/private inputs, fitting retry, JAR, or release action is involved.
+
+```sh
+gh workflow run build.yml --ref codex/b-observation-ci-20261018 \
+  -f observation_diagnostics=true --repo holubp/josm-wayheatmaptracer
+```
 
 Local verification:
 

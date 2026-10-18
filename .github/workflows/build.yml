@@ -6,14 +6,45 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      observation_diagnostics:
+        description: Run the fixed public renderer diagnostic instead of model fitting
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   observation-identification:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true
     uses: ./.github/workflows/observation-identification.yml
+
+  observation-public-diagnostics:
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Diagnose the fixed public renderer and bound receipt
+        run: |
+          mkdir -p build/reports/public-observation-renderer
+          timeout 600s sh ./gradlew v022ObservationRendererDiagnostics --console=plain > build/reports/public-observation-renderer/diagnostic.log 2>&1
+      - name: Upload only public renderer diagnostic evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-observation-renderer-diagnostic
+          path: |
+            build/reports/public-observation-renderer/diagnostic.log
+            build/reports/public-observation-renderer/receipt/binding.json
+            build/reports/public-observation-renderer/receipt/bound-geometry.csv
+          if-no-files-found: error
+          retention-days: 5
 
   public-validation:
     if: github.event_name != 'workflow_dispatch'

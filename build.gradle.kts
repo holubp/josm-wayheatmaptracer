@@ -35,6 +35,7 @@ sourceSets {
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationMixture.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationAdapter.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationGeometry.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationRendererDiagnosticTool.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationCatalog.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationScenes.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationScore.java",
@@ -207,4 +208,12 @@ tasks.register<JavaExec>("v022ObservationIdentify") {
     }
     args("--phase", phase.orNull ?: "", "--manifest", manifest.orNull ?: "", "--output", output.orNull ?: "")
     binding.orNull?.let { args("--binding", it) }
+}
+
+tasks.register<JavaExec>("v022ObservationRendererDiagnostics") {
+    group = "verification"
+    description = "Diagnoses one fixed public SELECT raster and decodes a saved route only after exact input bindings"
+    dependsOn(tasks.named("observationIdentifyClasses"))
+    classpath = sourceSets["observationIdentify"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationRendererDiagnosticTool")
 }

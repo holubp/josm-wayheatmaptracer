@@ -31,7 +31,7 @@ jobs:
             -PobservationManifest="$manifest" \
             -PobservationOutput="$OBSERVATION_OUTPUT/catalog" \
             --console=plain
-          grep -Fq '"sourceHash":"ccf18c7650068b444824c444d92ba13404fd7079d8ab06653cb82d7cdc8ff958"' \
+          grep -Fq '"sourceHash":"f71a908b223b43ce49c3e88abae0bd7dad0ad5aa91ac3fe1626e3bacee307917"' \
             "$OBSERVATION_OUTPUT/catalog/summary.json"
       - name: Run the bounded public FIT_SELECT pass
         id: fit
