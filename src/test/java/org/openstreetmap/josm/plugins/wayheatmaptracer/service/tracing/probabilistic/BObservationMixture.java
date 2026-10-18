@@ -20,6 +20,7 @@ public final class BObservationMixture {
         BASELINE_CENSORED,
         MEASURED,
         OBSERVED_ZERO_EXCESS,
+        UNAVAILABLE_ADMITTED_SHOULDER_SUPPORT,
         NO_ADMITTED_TENT_SUPPORT,
         UNAVAILABLE_ORIGINAL_RECEIPT,
         UNAVAILABLE_SOURCE_PITCH,
@@ -391,7 +392,7 @@ public final class BObservationMixture {
                     throw new IllegalArgumentException("Measured outcome requires measured support");
                 }
             }
-            case OBSERVED_ZERO_EXCESS, NO_ADMITTED_TENT_SUPPORT,
+            case OBSERVED_ZERO_EXCESS, UNAVAILABLE_ADMITTED_SHOULDER_SUPPORT, NO_ADMITTED_TENT_SUPPORT,
                     UNAVAILABLE_ORIGINAL_RECEIPT, UNAVAILABLE_SOURCE_PITCH, GROUPED_PARENT_UNAVAILABLE -> {
                 if (kind != ObservationComponent.Kind.MEASURED || mass != 0.0 || !allNegativeInfinity(logDensity)) {
                     throw new IllegalArgumentException("Zero-support measured outcome requires zero mass and no density");

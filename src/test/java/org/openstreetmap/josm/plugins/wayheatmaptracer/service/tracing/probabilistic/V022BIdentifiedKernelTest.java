@@ -11,14 +11,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 class V022BIdentifiedKernelTest {
     private final BIdentifiedObservationKernel kernel = new BIdentifiedObservationKernel(
             new BIdentifiedObservationKernel.Parameters(1,1,0));
-    @Test void sameJointFieldDeterminesBothMassAndConditionalLocation() {
+    @Test void areaPresenceAndTentPositionAreDerivedSeparately() {
         var mixture=kernel.evaluate(facts(1,false),lattice(),CancellationProbe.NONE,null);
         var reduced=mixture.reduce(lattice(),CancellationProbe.NONE,null);
-        // Core [-1,1], native pitch1 => h1.5, normalized tent [.2,.6,.2].
-        // Own excess [.4,.9,.4] => joint [.08,.54,.08], integral H=.7.
-        assertEquals(-Math.log((1.0/3+.08)/1.7),reduced.unaryCost(0),1e-12);
-        assertEquals(-Math.log((1.0/3+.54)/1.7),reduced.unaryCost(1),1e-12);
-        assertEquals(.54/(1.0/3+.54),reduced.responsibility(1,1),1e-12);
+        // Own-shoulder area E=.4+.9+.4=1.7; normalized core tent f=[.2,.6,.2].
+        // The measured mass depends on E while its conditional position depends only on f.
+        assertEquals(-Math.log((1.0/3+1.7*.2)/2.7),reduced.unaryCost(0),1e-12);
+        assertEquals(-Math.log((1.0/3+1.7*.6)/2.7),reduced.unaryCost(1),1e-12);
+        assertEquals(1.7*.6/(1.0/3+1.7*.6),reduced.responsibility(1,1),1e-12);
     }
     @Test void weakLimitIsContinuousAndInvalidCellsKeepUniformOnly() {
         double previous=Double.POSITIVE_INFINITY;
@@ -31,7 +31,7 @@ class V022BIdentifiedKernelTest {
         var reduced=kernel.evaluate(facts(1,true),lattice(),CancellationProbe.NONE,null)
                 .reduce(lattice(),CancellationProbe.NONE,null);
         assertEquals(0,reduced.responsibility(1,1),0);
-        assertEquals(-Math.log(1.0/(3*1.16)),reduced.unaryCost(1),1e-12);
+        assertEquals(-Math.log(1.0/(3*1.8)),reduced.unaryCost(1),1e-12);
     }
     @Test void unavailableOwnMeasurementsCannotBecomeNumericZero() {
         var original=facts(1,false);
