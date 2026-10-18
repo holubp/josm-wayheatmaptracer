@@ -12,6 +12,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Evaluated immutable profile consumed by the exact pair-state inference graph. */
 public final class InferenceProfile {
+    private static final ImageOrientationSupport UNKNOWN_ORIENTATION = ImageOrientationSupport.unknown(
+        ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT);
     private final double chainageMeters;
     private final MetricPoint anchor;
     private final MetricPoint normalUnit;
@@ -203,9 +205,7 @@ public final class InferenceProfile {
 
     /** Returns orientation evidence owned by the selected lateral state's explicit branch. */
     public ImageOrientationSupport orientationSupport(int stateIndex) {
-        return orientationByBranch.getOrDefault(cells.get(stateIndex).branchLabel(),
-            ImageOrientationSupport.unknown(
-                ImageOrientationSupport.Status.INSUFFICIENT_TWO_SIDED_SUPPORT));
+        return orientationByBranch.getOrDefault(cells.get(stateIndex).branchLabel(), UNKNOWN_ORIENTATION);
     }
 
     /** Returns the branch-local multiplier for image-orientation pair energy. */

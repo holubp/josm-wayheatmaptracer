@@ -17,6 +17,8 @@ final class BIdentificationReceipt {
             "service/tracing/probabilistic/ProbabilisticLatticeAdmission.java",
             "service/tracing/probabilistic/ProbabilisticContinuationProposals.java",
             "service/tracing/probabilistic/ProbabilisticInference.java",
+            "service/tracing/probabilistic/TransitionAdmissionMemo.java",
+            "service/tracing/probabilistic/IndexedGeometryAdmissions.java",
             "service/tracing/probabilistic/InferenceProfile.java",
             "service/tracing/probabilistic/ProbabilisticTraceEngine.java",
             "service/tracing/probabilistic/EvidenceModelParameters.java",

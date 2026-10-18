@@ -19,6 +19,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
@@ -88,13 +89,17 @@ public final class ProbabilisticInference {
                 "state budget exceeded", profiles, resultOwner);
         }
         AttemptMemoryLedger.Owner workOwner = resultOwner.child("b-exact-inference");
+        TransitionAdmission admissions = null;
         try (workOwner) {
             workCounter = allocated(workOwner, AttemptMemoryLedger.objectBytes(80),
                     "execution accounting", () -> new WorkCounter(mode, budgets.maximumTransitions()));
             long inferenceStarted = System.nanoTime();
             AttemptMemoryLedger.Owner admissionOwner = workOwner.child("transition-admission-memo");
-            TransitionAdmissionMemo admissions = new TransitionAdmissionMemo(
-                    ADMISSION_MEMO_CAPACITY, admissionOwner);
+            admissions = IndexedGeometryAdmissions.createIfEligible(profiles, decisionRegion,
+                    budgets.maximumPairVisits(), admissionOwner);
+            if (admissions == null) {
+                admissions = new TransitionAdmissionMemo(ADMISSION_MEMO_CAPACITY, admissionOwner);
+            }
             AttemptMemoryLedger.Owner messagesOwner = workOwner.child("forward-backward");
             GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion,
                     cancellation, admissions, messagesOwner, workCounter);
@@ -221,6 +226,7 @@ public final class ProbabilisticInference {
                     workCounter == null ? 0 : workCounter.transitions, "numeric failure", profiles,
                     resultOwner, workCounter);
         } finally {
+            if (admissions != null) admissions.finish();
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
                 "inference.extensionDescriptors", workCounter == null ? 0 : workCounter.extensionDescriptors);
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -230,7 +236,7 @@ public final class ProbabilisticInference {
 
     private static GraphMessages forwardBackward(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
-        CancellationProbe cancellation, TransitionAdmissionMemo admissions,
+        CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
         if (profiles.size() == 1) {
@@ -288,6 +294,12 @@ public final class ProbabilisticInference {
             double[][] current = matrix(previousStates, currentStates, LOG_ZERO, owner,
                     "forward/backward");
             double[][] previous = forward.get(profileIndex - 2);
+            AttemptMemoryLedger.Owner scalarOwner = previousPreviousStates >= 4
+                    && (parameters.orientationWeight() != 0.0 || parameters.turnWeight() != 0.0)
+                    ? owner.child("forward-backward-scalar-cache") : null;
+            ScalarReuseTable scalarCache = null;
+            boolean scalarCacheAttempted = false;
+            try {
             for (int before = 0; before < previousPreviousStates; before++) {
                 for (int prior = 0; prior < previousStates; prior++) {
                     double prefix = previous[before][prior];
@@ -318,10 +330,28 @@ public final class ProbabilisticInference {
                             InferenceProfile end = profiles.get(profileIndex);
                             MetricPoint firstPoint = start.point(prior);
                             MetricPoint secondPoint = end.point(state);
-                            secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
-                                    secondPoint.xMeters() - firstPoint.xMeters());
+                            if (scalarOwner != null && !scalarCacheAttempted) {
+                                scalarCacheAttempted = true;
+                                scalarCache = ScalarReuseTable.create(scalarOwner,
+                                        previousStates, currentStates, false);
+                            }
+                            int scalarIndex = prior * currentStates + state;
+                            if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {
+                                secondHeading = scalarCache.secondary[scalarIndex];
+                                pair = scalarCache.values[scalarIndex];
+                                scalarCache.reuses++;
+                            } else {
+                                secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
+                                        secondPoint.xMeters() - firstPoint.xMeters());
+                                pair = pairEnergyAtHeading(start, end, prior, state, parameters, secondHeading);
+                                if (scalarCache != null) {
+                                    scalarCache.ready[scalarIndex] = 1;
+                                    scalarCache.values[scalarIndex] = pair;
+                                    scalarCache.secondary[scalarIndex] = secondHeading;
+                                    scalarCache.calculations++;
+                                }
+                            }
                             secondHeadingReady = true;
-                            pair = pairEnergyAtHeading(start, end, prior, state, parameters, secondHeading);
                         }
                         double triple = 0.0;
                         if (parameters.turnWeight() != 0.0) {
@@ -329,14 +359,30 @@ public final class ProbabilisticInference {
                             MetricPoint beforePoint = profiles.get(profileIndex - 2).point(before);
                             MetricPoint priorPoint = profiles.get(profileIndex - 1).point(prior);
                             MetricPoint currentPoint = profiles.get(profileIndex).point(state);
+                            if (scalarOwner != null && !scalarCacheAttempted) {
+                                scalarCacheAttempted = true;
+                                scalarCache = ScalarReuseTable.create(scalarOwner,
+                                        previousStates, currentStates, false);
+                            }
                             if (!firstHeadingReady) {
                                 firstHeading = StrictMath.atan2(priorPoint.yMeters() - beforePoint.yMeters(),
                                         priorPoint.xMeters() - beforePoint.xMeters());
                                 firstHeadingReady = true;
                             }
                             if (!secondHeadingReady) {
-                                secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
-                                        currentPoint.xMeters() - priorPoint.xMeters());
+                                int scalarIndex = prior * currentStates + state;
+                                if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {
+                                    secondHeading = scalarCache.secondary[scalarIndex];
+                                    scalarCache.reuses++;
+                                } else {
+                                    secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
+                                            currentPoint.xMeters() - priorPoint.xMeters());
+                                    if (scalarCache != null) {
+                                        scalarCache.ready[scalarIndex] = 1;
+                                        scalarCache.secondary[scalarIndex] = secondHeading;
+                                        scalarCache.calculations++;
+                                    }
+                                }
                             }
                             triple = tripleEnergyAtHeadings(profiles, profileIndex, parameters,
                                     firstHeading, secondHeading);
@@ -347,6 +393,10 @@ public final class ProbabilisticInference {
                         current[prior][state] = logAdd(current[prior][state], term);
                     }
                 }
+            }
+            } finally {
+                if (scalarCache != null) scalarCache.close();
+                if (scalarOwner != null) scalarOwner.close();
             }
             forward.add(current);
         }
@@ -369,6 +419,12 @@ public final class ProbabilisticInference {
             double[][] values = matrix(beforeStates, currentStates, LOG_ZERO, owner,
                     "forward/backward");
             double[][] nextBackward = backward.get(stage + 1);
+            AttemptMemoryLedger.Owner scalarOwner = beforeStates >= 4
+                    && (parameters.orientationWeight() != 0.0 || parameters.turnWeight() != 0.0)
+                    ? owner.child("forward-backward-scalar-cache") : null;
+            ScalarReuseTable scalarCache = null;
+            boolean scalarCacheAttempted = false;
+            try {
             for (int before = 0; before < beforeStates; before++) {
                 for (int currentState = 0; currentState < currentStates; currentState++) {
                     double accumulated = LOG_ZERO;
@@ -396,10 +452,29 @@ public final class ProbabilisticInference {
                             InferenceProfile end = profiles.get(nextProfile);
                             MetricPoint firstPoint = start.point(currentState);
                             MetricPoint secondPoint = end.point(next);
-                            secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
-                                    secondPoint.xMeters() - firstPoint.xMeters());
+                            if (scalarOwner != null && !scalarCacheAttempted) {
+                                scalarCacheAttempted = true;
+                                scalarCache = ScalarReuseTable.create(scalarOwner,
+                                        currentStates, nextStates, false);
+                            }
+                            int scalarIndex = currentState * nextStates + next;
+                            if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {
+                                secondHeading = scalarCache.secondary[scalarIndex];
+                                pair = scalarCache.values[scalarIndex];
+                                scalarCache.reuses++;
+                            } else {
+                                secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
+                                        secondPoint.xMeters() - firstPoint.xMeters());
+                                pair = pairEnergyAtHeading(start, end, currentState, next, parameters,
+                                        secondHeading);
+                                if (scalarCache != null) {
+                                    scalarCache.ready[scalarIndex] = 1;
+                                    scalarCache.values[scalarIndex] = pair;
+                                    scalarCache.secondary[scalarIndex] = secondHeading;
+                                    scalarCache.calculations++;
+                                }
+                            }
                             secondHeadingReady = true;
-                            pair = pairEnergyAtHeading(start, end, currentState, next, parameters, secondHeading);
                         }
                         double triple = 0.0;
                         if (parameters.turnWeight() != 0.0) {
@@ -407,14 +482,30 @@ public final class ProbabilisticInference {
                             MetricPoint beforePoint = profiles.get(currentProfile - 1).point(before);
                             MetricPoint priorPoint = profiles.get(currentProfile).point(currentState);
                             MetricPoint currentPoint = profiles.get(nextProfile).point(next);
+                            if (scalarOwner != null && !scalarCacheAttempted) {
+                                scalarCacheAttempted = true;
+                                scalarCache = ScalarReuseTable.create(scalarOwner,
+                                        currentStates, nextStates, false);
+                            }
                             if (!firstHeadingReady) {
                                 firstHeading = StrictMath.atan2(priorPoint.yMeters() - beforePoint.yMeters(),
                                         priorPoint.xMeters() - beforePoint.xMeters());
                                 firstHeadingReady = true;
                             }
                             if (!secondHeadingReady) {
-                                secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
-                                        currentPoint.xMeters() - priorPoint.xMeters());
+                                int scalarIndex = currentState * nextStates + next;
+                                if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {
+                                    secondHeading = scalarCache.secondary[scalarIndex];
+                                    scalarCache.reuses++;
+                                } else {
+                                    secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
+                                            currentPoint.xMeters() - priorPoint.xMeters());
+                                    if (scalarCache != null) {
+                                        scalarCache.ready[scalarIndex] = 1;
+                                        scalarCache.secondary[scalarIndex] = secondHeading;
+                                        scalarCache.calculations++;
+                                    }
+                                }
                             }
                             triple = tripleEnergyAtHeadings(profiles, nextProfile, parameters,
                                     firstHeading, secondHeading);
@@ -427,6 +518,10 @@ public final class ProbabilisticInference {
                     }
                     values[before][currentState] = accumulated;
                 }
+            }
+            } finally {
+                if (scalarCache != null) scalarCache.close();
+                if (scalarOwner != null) scalarOwner.close();
             }
             backward.set(stage, values);
         }
@@ -443,7 +538,7 @@ public final class ProbabilisticInference {
     private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
         EvidenceModelParameters parameters, TraceBudgets budgets,
         MetricRegion decisionRegion,
-        CancellationProbe cancellation, TransitionAdmissionMemo admissions,
+        CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
@@ -503,6 +598,8 @@ public final class ProbabilisticInference {
             int streamCapacity = Math.multiplyExact(beforeStates, cap);
             AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
             boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+            ScalarReuseTable scalarCache = null;
+            boolean scalarCacheAttempted = false;
             DescriptorHeap descriptors = exact ? allocated(scratchOwner, AttemptMemoryLedger.objectBytes(48),
                     "k-best descriptors", () -> new DescriptorHeap(cap, cancellation, scratchOwner)) : null;
             double[] extensionEnergy = exact ? null : allocated(scratchOwner,
@@ -520,6 +617,7 @@ public final class ProbabilisticInference {
             int[] heapPosition = exact ? null : allocated(scratchOwner,
                 AttemptMemoryLedger.arrayBytes(beforeStates, Integer.BYTES), "k-best descriptors",
                 () -> new int[beforeStates]);
+            try {
             for (int prior = 0; prior < previousStates; prior++) {
                 for (int state = 0; state < nextStates; state++) {
                     if (exact) {
@@ -561,9 +659,27 @@ public final class ProbabilisticInference {
                                 MetricPoint beforePoint = profiles.get(profileIndex - 2).point(before);
                                 MetricPoint priorPoint = profiles.get(profileIndex - 1).point(prior);
                                 MetricPoint currentPoint = profiles.get(profileIndex).point(state);
-                                double firstHeading = StrictMath.atan2(
-                                        priorPoint.yMeters() - beforePoint.yMeters(),
-                                        priorPoint.xMeters() - beforePoint.xMeters());
+                                if (parameters.turnWeight() != 0.0 && nextStates >= 4
+                                        && !scalarCacheAttempted) {
+                                    scalarCacheAttempted = true;
+                                    scalarCache = ScalarReuseTable.create(scratchOwner,
+                                            beforeStates, previousStates, true);
+                                }
+                                int scalarIndex = before * previousStates + prior;
+                                double firstHeading;
+                                if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {
+                                    firstHeading = scalarCache.values[scalarIndex];
+                                    scalarCache.reuses++;
+                                } else {
+                                    firstHeading = StrictMath.atan2(
+                                            priorPoint.yMeters() - beforePoint.yMeters(),
+                                            priorPoint.xMeters() - beforePoint.xMeters());
+                                    if (scalarCache != null) {
+                                        scalarCache.values[scalarIndex] = firstHeading;
+                                        scalarCache.ready[scalarIndex] = 1;
+                                        scalarCache.calculations++;
+                                    }
+                                }
                                 if (!headingReady) {
                                     secondHeading = StrictMath.atan2(
                                             currentPoint.yMeters() - priorPoint.yMeters(),
@@ -698,6 +814,9 @@ public final class ProbabilisticInference {
                     }
                     next[prior][state] = selected;
                 }
+            }
+            } finally {
+                if (scalarCache != null) scalarCache.close();
             }
             scratchOwner.close();
             assignLexicalRanks(next, nextOwner);
@@ -1146,7 +1265,7 @@ public final class ProbabilisticInference {
     }
 
     private static boolean transitionAllowed(List<InferenceProfile> profiles, int startProfile,
-        int startState, int endState, MetricRegion decisionRegion, TransitionAdmissionMemo admissions) {
+        int startState, int endState, MetricRegion decisionRegion, TransitionAdmission admissions) {
         return admissions.allowed(startProfile, startState, endState, profiles, decisionRegion);
     }
 
@@ -1669,6 +1788,63 @@ public final class ProbabilisticInference {
 
         void recordLogicalKBestExtensions(long count) {
             logicalKBestExtensions = Math.addExact(logicalKBestExtensions, count);
+        }
+    }
+
+    /** One inference stage's lazy scalar table. Its arrays are reserved before allocation. */
+    private static final class ScalarReuseTable {
+        private final double[] values;
+        private final double[] secondary;
+        private final byte[] ready;
+        private long calculations;
+        private long reuses;
+
+        private ScalarReuseTable(double[] values, double[] secondary, byte[] ready) {
+            this.values = values;
+            this.secondary = secondary;
+            this.ready = ready;
+        }
+
+        static ScalarReuseTable create(AttemptMemoryLedger.Owner owner, int rows, int columns,
+                boolean kBest) {
+            long cellCount = (long) rows * columns;
+            if (cellCount <= 0L || cellCount > Integer.MAX_VALUE) return null;
+            int cells = (int) cellCount;
+            long bytes = AttemptMemoryLedger.objectBytes(40)
+                    + AttemptMemoryLedger.arrayBytes(cells, Double.BYTES)
+                    + AttemptMemoryLedger.arrayBytes(cells, Byte.BYTES);
+            if (!kBest) {
+                bytes = Math.addExact(bytes, AttemptMemoryLedger.arrayBytes(cells, Double.BYTES));
+            }
+            AttemptMemoryLedger.Reservation reservation;
+            try {
+                reservation = owner.reserve(bytes);
+            } catch (AttemptMemoryLedger.ResourceLimitException refused) {
+                return null;
+            }
+            try {
+                double[] values = new double[cells];
+                double[] secondary = kBest ? null : new double[cells];
+                byte[] ready = new byte[cells];
+                ScalarReuseTable table = new ScalarReuseTable(values, secondary, ready);
+                reservation.adopt(table);
+                return table;
+            } catch (RuntimeException | Error failure) {
+                reservation.close();
+                throw failure;
+            }
+        }
+
+        void close() {
+            if (secondary == null) {
+                ModernDiagnosticCounters.add("optimization.scalarCache.kBestFirstHeadingCalculations",
+                        calculations);
+                ModernDiagnosticCounters.add("optimization.scalarCache.kBestFirstHeadingReuses", reuses);
+            } else {
+                ModernDiagnosticCounters.add("optimization.scalarCache.forwardBackwardPairCalculations",
+                        calculations);
+                ModernDiagnosticCounters.add("optimization.scalarCache.forwardBackwardPairReuses", reuses);
+            }
         }
     }
 

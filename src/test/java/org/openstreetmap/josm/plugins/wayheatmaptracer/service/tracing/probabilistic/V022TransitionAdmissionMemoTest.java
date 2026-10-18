@@ -37,8 +37,8 @@ class V022TransitionAdmissionMemoTest {
 
         assertEquals(0, calls[0], "allocation refusal must precede predicate evaluation");
         assertEquals(0, memo.size());
-        assertEquals(128L, ledger.currentBytes(),
-                "only the two empty map objects remain after refused table admission");
+        assertEquals(160L, ledger.currentBytes(),
+                "the empty maps and reusable lookup key remain after refused table admission");
         owner.close();
         assertEquals(0L, ledger.currentBytes());
     }
@@ -51,13 +51,13 @@ class V022TransitionAdmissionMemoTest {
 
         assertTrue(memo.allowed(0, 0, 0, 0, () -> true));
         long oneEntry = ledger.currentBytes();
-        assertEquals(720L, oneEntry,
-                "two maps, two tables, one key, two nodes and lease bookkeeping are charged");
+        assertEquals(752L, oneEntry,
+                "two maps, the reusable lookup key, two tables, one key, two nodes and lease bookkeeping are charged");
         assertFalse(memo.allowed(0, 0, 0, 1, () -> false));
 
         assertEquals(oneEntry, ledger.currentBytes(),
                 "successful eviction leaves one fully charged map entry");
-        assertEquals(1_024L, ledger.peakBytes(),
+        assertEquals(1_056L, ledger.peakBytes(),
                 "old and replacement entries coexist until insertion succeeds");
         owner.close();
         assertEquals(0L, ledger.currentBytes());
@@ -72,14 +72,69 @@ class V022TransitionAdmissionMemoTest {
             int discriminator = index;
             assertTrue(memo.allowed(0, 0, 0, discriminator, () -> true));
         }
-        assertEquals(4_064L, ledger.currentBytes());
+        assertEquals(4_096L, ledger.currentBytes());
 
         assertTrue(memo.allowed(0, 0, 0, 12, () -> true));
 
-        assertEquals(4_624L, ledger.currentBytes());
-        assertEquals(4_912L, ledger.peakBytes(),
+        assertEquals(4_656L, ledger.currentBytes());
+        assertEquals(4_944L, ledger.peakBytes(),
                 "both old 16-slot and new 32-slot tables coexist during insertion 13");
         owner.close();
         assertEquals(0L, ledger.currentBytes());
+    }
+
+    @Test
+    void cachedHitNeedsNoAdditionalBytesAtTheExactRetainedMemoryCap() {
+        AttemptMemoryLedger ledger = new AttemptMemoryLedger(752);
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+        TransitionAdmissionMemo memo = new TransitionAdmissionMemo(1, owner);
+
+        try {
+            assertTrue(memo.allowed(0, 0, 0, 0, () -> true));
+            assertEquals(752L, ledger.currentBytes());
+            long peakAfterFirstUse = ledger.peakBytes();
+
+            assertTrue(memo.allowed(0, 0, 0, 0, () -> {
+                throw new AssertionError("cached admission must not evaluate the predicate");
+            }));
+
+            assertEquals(752L, ledger.currentBytes());
+            assertEquals(peakAfterFirstUse, ledger.peakBytes(),
+                    "a cache hit must not reserve or allocate a temporary key");
+            assertEquals(1, memo.size());
+        } finally {
+            owner.close();
+        }
+        assertEquals(0L, ledger.currentBytes());
+    }
+
+    @Test
+    void closedParentOwnerRejectsCachedTrueAndFalseWithoutCallingPredicates() {
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+        TransitionAdmissionMemo memo = new TransitionAdmissionMemo(2, owner);
+        assertTrue(memo.allowed(0, 0, 0, 0, () -> true));
+        assertFalse(memo.allowed(0, 0, 0, 1, () -> false));
+
+        owner.close();
+        assertEquals(0L, ledger.currentBytes());
+        assertThrows(IllegalStateException.class,
+                () -> memo.allowed(0, 0, 0, 0, () -> { throw new AssertionError("closed owner"); }));
+        assertThrows(IllegalStateException.class,
+                () -> memo.allowed(0, 0, 0, 1, () -> { throw new AssertionError("closed owner"); }));
+        assertEquals(0L, ledger.currentBytes());
+    }
+
+    @Test
+    void hashCollisionsAndReentrantMissesKeepFourPartKeysDistinct() {
+        TransitionAdmissionMemo memo = new TransitionAdmissionMemo(4);
+
+        assertTrue(memo.allowed(0, 0, 0, 31, () ->
+                !memo.allowed(0, 0, 1, 0, () -> false)));
+        assertEquals(2, memo.size());
+        assertTrue(memo.allowed(0, 0, 0, 31,
+                () -> { throw new AssertionError("first colliding key must hit"); }));
+        assertFalse(memo.allowed(0, 0, 1, 0,
+                () -> { throw new AssertionError("second colliding key must hit"); }));
     }
 }

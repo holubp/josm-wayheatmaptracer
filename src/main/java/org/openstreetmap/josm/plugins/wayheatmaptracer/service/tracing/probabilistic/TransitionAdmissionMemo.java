@@ -15,12 +15,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
  * <p>The caller remains responsible for performing the check at its original traversal site.
  * Evicted entries are deliberately recomputed rather than changing the inference state space.</p>
  */
-final class TransitionAdmissionMemo {
+final class TransitionAdmissionMemo implements TransitionAdmission {
     private static final long KEY_BYTES = AttemptMemoryLedger.objectBytes(16);
+    private static final long PROBE_BYTES = AttemptMemoryLedger.objectBytes(16);
     private static final long ENTRY_BYTES = 2L * AttemptMemoryLedger.objectBytes(48)
             + AttemptMemoryLedger.objectBytes(16) + 2L * AttemptMemoryLedger.objectBytes(40);
     private final int capacity;
     private final Map<Key, Boolean> values;
+    private final Key lookupKey;
     private final AttemptMemoryLedger.Owner memoryOwner;
     private final Map<Key, EntryOwnership> ownerships;
     private AttemptMemoryLedger.MemoryLease valuesTableLease;
@@ -40,6 +42,7 @@ final class TransitionAdmissionMemo {
             this.memoryOwner = null;
             this.values = new LinkedHashMap<>(capacity + 1, 0.75f, true);
             this.ownerships = null;
+            this.lookupKey = new Key();
         } else {
             AttemptMemoryLedger.Owner storage = memoryOwner.child("memo-storage");
             this.memoryOwner = storage;
@@ -50,6 +53,8 @@ final class TransitionAdmissionMemo {
                 this.ownerships = ProbabilisticInference.allocated(storage,
                         AttemptMemoryLedger.objectBytes(48), "transition admission memo",
                         () -> new LinkedHashMap<>(16, 0.75f, true));
+                this.lookupKey = ProbabilisticInference.allocated(storage, PROBE_BYTES,
+                        "transition admission memo", Key::new);
             } catch (RuntimeException | Error exception) {
                 storage.close();
                 throw exception;
@@ -57,7 +62,8 @@ final class TransitionAdmissionMemo {
         }
     }
 
-    boolean allowed(int startProfile, int startState, int endState,
+    @Override
+    public boolean allowed(int startProfile, int startState, int endState,
         List<InferenceProfile> profiles, MetricRegion decisionRegion) {
         if (decisionRegion == null) {
             return true;
@@ -72,25 +78,27 @@ final class TransitionAdmissionMemo {
 
     boolean allowed(int startProfile, int startState, int endState, int discriminator,
         BooleanSupplier predicate) {
+        if (memoryOwner != null && memoryOwner.isClosed()) {
+            throw new IllegalStateException("memory owner is closed: memo-storage");
+        }
+        lookupKey.set(startProfile, startState, endState, discriminator);
         if (memoryOwner == null) {
-            Key key = new Key(startProfile, startState, endState, discriminator);
-            Boolean cached = values.get(key);
+            Boolean cached = values.get(lookupKey);
             if (cached != null) return cached;
             boolean value = predicate.getAsBoolean();
-            rememberUnaccounted(key, value);
+            rememberUnaccounted(new Key(startProfile, startState, endState, discriminator), value);
             return value;
         }
-        AttemptMemoryLedger.Reservation keyReservation = reserve(KEY_BYTES);
-        Key key = new Key(startProfile, startState, endState, discriminator);
-        Boolean cached = values.get(key);
+        Boolean cached = values.get(lookupKey);
         if (cached != null) {
-            ownerships.get(key);
-            keyReservation.close();
+            ownerships.get(lookupKey);
             return cached;
         }
+        AttemptMemoryLedger.Reservation keyReservation = reserve(KEY_BYTES);
         AttemptMemoryLedger.Reservation entryReservation = null;
         TableGrowth tableGrowth = null;
         try {
+            Key key = new Key(startProfile, startState, endState, discriminator);
             entryReservation = reserve(ENTRY_BYTES);
             tableGrowth = reserveTableGrowth();
             boolean value = predicate.getAsBoolean();
@@ -207,5 +215,48 @@ final class TransitionAdmissionMemo {
         return values.size();
     }
 
-    private record Key(int profile, int startState, int endState, int discriminator) { }
+    private static final class Key {
+        private int profile;
+        private int startState;
+        private int endState;
+        private int discriminator;
+
+        private Key() { }
+
+        private Key(int profile, int startState, int endState, int discriminator) {
+            set(profile, startState, endState, discriminator);
+        }
+
+        private void set(int profile, int startState, int endState, int discriminator) {
+            this.profile = profile;
+            this.startState = startState;
+            this.endState = endState;
+            this.discriminator = discriminator;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = Integer.hashCode(profile);
+            result = 31 * result + Integer.hashCode(startState);
+            result = 31 * result + Integer.hashCode(endState);
+            return 31 * result + Integer.hashCode(discriminator);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof Key key)) return false;
+            return profile == key.profile && startState == key.startState
+                    && endState == key.endState && discriminator == key.discriminator;
+        }
+    }
+}
+
+/** Shared first-use decision contract for adjacent-profile geometry authorities. */
+interface TransitionAdmission {
+    boolean allowed(int startProfile, int startState, int endState,
+            List<InferenceProfile> profiles, MetricRegion decisionRegion);
+
+    /** Publishes bounded aggregate diagnostics after this inference attempt finishes. */
+    default void finish() { }
 }

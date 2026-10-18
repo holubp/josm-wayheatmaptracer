@@ -137,11 +137,24 @@ class V022PairLocalEnergyReuseTest {
         actual.put("complete", complete);
         actual.put("refused-primary", receipt(profiles, parameters, 10, 1_000_000, Integer.MAX_VALUE));
         actual.put("refused-kbest", receipt(profiles, parameters, 150, 1_000_000, Integer.MAX_VALUE));
-        actual.put("near-memory-cap", receipt(profiles, parameters, 1_000_000, complete.peak() - 1, Integer.MAX_VALUE));
+        actual.put("near-memory-cap", receipt(profiles, parameters, 1_000_000,
+                complete.peak() - 1, Integer.MAX_VALUE, true));
         actual.put("late-cancel", receipt(profiles, parameters, 1_000_000, 1_000_000, complete.checkpoints() - 1));
         for (var entry : actual.entrySet()) {
-            assertEquals(BASELINE.get(entry.getKey()), entry.getValue().toString(), entry.getKey());
+            assertEquals(withMemoLookupProbe(BASELINE.get(entry.getKey())),
+                    entry.getValue().toString(), entry.getKey());
         }
+    }
+
+    /** The exact solver creates one accounted admission memo before every receipt's graph traversal. */
+    private static String withMemoLookupProbe(String originalReceipt) {
+        int peakStart = originalReceipt.indexOf("peak=");
+        int peakEnd = originalReceipt.indexOf(',', peakStart);
+        if (peakStart < 0 || peakEnd < 0) throw new AssertionError("baseline receipt has no peak field");
+        long originalPeak = Long.parseLong(originalReceipt.substring(peakStart + 5, peakEnd));
+        long probeBytes = AttemptMemoryLedger.objectBytes(16);
+        return originalReceipt.substring(0, peakStart) + "peak=" + (originalPeak + probeBytes)
+                + originalReceipt.substring(peakEnd);
     }
 
     @Test
@@ -224,6 +237,11 @@ class V022PairLocalEnergyReuseTest {
 
     private static Receipt receipt(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
             long scores, long bytes, int cancelAt) {
+        return receipt(profiles, parameters, scores, bytes, cancelAt, false);
+    }
+
+    private static Receipt receipt(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
+            long scores, long bytes, int cancelAt, boolean verifyAndCanonicalizeNearCapReason) {
         var ledger = new AttemptMemoryLedger(bytes);
         var owner = ledger.rootOwner();
         int[] calls = {0};
@@ -233,7 +251,27 @@ class V022PairLocalEnergyReuseTest {
             var result = new ProbabilisticInference().solve(profiles, parameters,
                     new TraceBudgets(96, 100_000, scores, 32, 1), null,
                     () -> ++calls[0] >= cancelAt, owner, ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
-            fingerprint = sha(ProbabilisticInferenceFingerprint.capture(result));
+            String fingerprintInput = ProbabilisticInferenceFingerprint.capture(result);
+            if (verifyAndCanonicalizeNearCapReason) {
+                String currentReason = "k-best ancestry: attempt memory limit exceeded: current=18376, requested=80, limit=18455";
+                String baselineReason = "k-best ancestry: attempt memory limit exceeded: current=18344, requested=80, limit=18423";
+                assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT, result.status());
+                assertEquals(currentReason, result.explanation());
+                assertTrue(result.mapPath().isEmpty());
+                assertTrue(result.rawPaths().isEmpty());
+                assertTrue(result.distinctPaths().isEmpty());
+                assertTrue(Double.isNaN(result.logPartition()));
+                assertTrue(result.positionMarginals().isEmpty());
+                assertTrue(result.componentMarginals().isEmpty());
+                assertTrue(result.forwardPositionMarginals().isEmpty());
+                assertTrue(result.backwardPositionMarginals().isEmpty());
+                assertTrue(result.credibleSets().isEmpty());
+                assertFalse(result.posteriorUsable());
+                assertTrue(result.completion().isEmpty());
+                assertTrue(fingerprintInput.contains(currentReason));
+                fingerprintInput = fingerprintInput.replace(currentReason, baselineReason);
+            }
+            fingerprint = sha(fingerprintInput);
             work = result.workAccounting().toString();
         } catch (RuntimeException exception) {
             failure = exception.getClass().getSimpleName() + ":" + exception.getMessage();
