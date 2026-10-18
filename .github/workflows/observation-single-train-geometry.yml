@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      SINGLE_TRAIN_FREEZE_SHA256: b59737e2b2c9d5a802bd3e272cad19fa20a0ae174b2a67bf11e9a5412e3bd717
+      SINGLE_TRAIN_FREEZE_SHA256: 16c9fbcddc89fa53283a704c1f4ba2b25c33b6914409ce06a580827779eb40a9
     steps:
       - uses: actions/checkout@v4
         with:

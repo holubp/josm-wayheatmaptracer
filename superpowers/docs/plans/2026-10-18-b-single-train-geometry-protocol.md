@@ -1,6 +1,6 @@
 # Fixed single original TRAIN geometry diagnostic
 
-Candidate source approval is PENDING independent review and controller ruling. User approval of this fixed diagnostic permits a later controller signing/dispatch step after review; this source packet does not self-approve execution. No FIT, SELECT, HOLDOUT, private-data, production or release authority is granted.
+Independent source review, scoped F1 rereview and controller ruling approve only this fixed original TRAIN geometry diagnostic. The user's explicit diagnostic approval covers this postreview metadata signing and the later single controller-owned public-CI dispatch. No FIT, SELECT, HOLDOUT, private-data, production or release authority is granted.
 
 Only sparse-crossing-noisy-strands-vs-persistent-parallel/train/v0/right may be materialized once. Decode the two exact archived public FIT39165449231 MAP-index receipts; perform no new MAP solve, likelihood scoring, family ranking or retuning. Reconstructed input/facts/lattice/renderer identities must match both archived receipts exactly. Coordinate carriers contain inert unused rows, are never inference inputs and call the unchanged InferenceProfile.point implementation.
 
