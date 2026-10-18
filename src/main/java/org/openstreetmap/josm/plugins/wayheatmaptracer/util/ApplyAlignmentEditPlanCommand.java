@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
@@ -166,6 +167,8 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
      *
      * @return {@code true} after the exact proposed after-state was established
      * @throws IllegalStateException if called off the EDT, state is stale, or mutation fails
+     * @throws CancellationException if interrupted on entry; interruption after snapshotting
+     *         is rolled back and reported as an {@code IllegalStateException}
      */
     @Override
     public boolean executeCommand() {
@@ -174,6 +177,12 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
         }
         if (applied) {
             throw new IllegalStateException("Alignment edit plan is already applied");
+        }
+        try {
+            requireNotInterrupted();
+        } catch (CancellationException failure) {
+            reportRejectedRedo(failure);
+            throw failure;
         }
         if (lockedValidator != null
                 && !lockedValidator.returnsNormallyAfterCompletedTransaction()) {
@@ -217,6 +226,7 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
                         applyMutationPhases();
                         validateAfterState();
                         preparedSourceReceipt.run();
+                        requireNotInterrupted();
                         // JOSM can throw later while notifying listeners at endUpdate.
                         // The complete mutation must already own its Undo/Redo state.
                         applied = true;
@@ -593,7 +603,16 @@ public final class ApplyAlignmentEditPlanCommand extends Command {
     }
 
     private void checkpoint(MutationPoint point) {
+        requireNotInterrupted();
         mutationProbe.reached(point);
+        requireNotInterrupted();
+    }
+
+    private static void requireNotInterrupted() {
+        if (Thread.currentThread().isInterrupted()) {
+            // Never clear the flag or interrupt rollback/Undo: exact restoration must finish.
+            throw new CancellationException("Alignment Apply or Redo was interrupted");
+        }
     }
 
     private static Map<PrimitiveKey, Node> allocatePlanLocalNodes(AlignmentEditPlan plan) {

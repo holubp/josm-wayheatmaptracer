@@ -14,6 +14,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.data.APIDataSet;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.osm.Node;
@@ -24,6 +26,8 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.spi.preferences.Config;
@@ -31,6 +35,54 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 /** Successful apply/undo/redo cases T108-T114 for the v0.22 atomic command. */
 class V022AtomicApplyLifecycleTest {
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void disconnectedProductionPlansHaveOneExactUndoAndIdentityStableRedo(AlignmentMode mode) {
+        for (boolean partialBoundary : List.of(false, true)) {
+            UndoRedoHandler.getInstance().clean();
+            var fixture = DisconnectionTransactionFixture.create(mode, partialBoundary);
+            var before = V022AtomicApplyTest.LiveState.capture(fixture.data());
+            var command = fixture.command(point -> { });
+            V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+            assertEquals(List.of(command), UndoRedoHandler.getInstance().getUndoCommands());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+            var proposed = (DetachedWay) fixture.plan().after().primitives().get(fixture.plan().selectedWayKey());
+            assertEquals(proposed.nodeKeys().size(), fixture.selected().getNodesCount());
+            var created = fixture.selected().getNodes().stream().filter(Node::isNew).toList();
+            assertEquals(fixture.plan().createdPrimitives().size(), created.size());
+            for (int occurrence : List.of(1, 2)) {
+                Node original = fixture.originals().get(occurrence);
+                PrimitiveKey replacementKey = fixture.plan().disconnectedOccurrenceReplacements().get(occurrence);
+                Node replacement = fixture.selected().getNode(proposed.nodeKeys().indexOf(replacementKey));
+                assertTrue(replacement.isNew());
+                assertTrue(replacement != original);
+                var expected = ((DetachedNode) fixture.plan().after().primitives().get(replacementKey)).coordinate();
+                assertEquals(Double.doubleToLongBits(expected.latitudeDegrees()),
+                        Double.doubleToLongBits(replacement.lat()));
+                assertEquals(Double.doubleToLongBits(expected.longitudeDegrees()),
+                        Double.doubleToLongBits(replacement.lon()));
+                assertEquals(Set.of(fixture.receivers().get(occurrence - 1)), Set.copyOf(original.getReferrers()));
+                assertFalse(original.isDeleted());
+                assertFalse(original.isModified());
+                assertFalse(new APIDataSet(fixture.data()).getPrimitivesToDelete().contains(original));
+                assertSame(fixture.data(), original.getDataSet());
+                if (partialBoundary) assertEquals(original.getCoor(), replacement.getCoor());
+                else assertTrue(replacement.lat() > original.lat(), "the recomputed slide must move the clone");
+            }
+            assertSame(fixture.originals().get(0), fixture.selected().firstNode());
+            assertSame(fixture.originals().get(3), fixture.selected().lastNode());
+            var after = V022AtomicApplyTest.LiveState.capture(fixture.data());
+            for (int cycle = 0; cycle < 3; cycle++) {
+                V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+                before.assertMatches(fixture.data());
+                created.forEach(fixture::assertDetachedWithoutLiveReferences);
+                V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+                after.assertMatches(fixture.data());
+                assertEquals(created, fixture.selected().getNodes().stream().filter(Node::isNew).toList());
+            }
+        }
+    }
+
     @BeforeAll
     static void configureJosm() {
         Config.setPreferencesInstance(new MemoryPreferences());
