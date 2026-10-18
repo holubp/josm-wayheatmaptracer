@@ -257,7 +257,7 @@ class V022DetailedScalarProfileExtractorTest {
         // Independent retained-object inventory for this fixture: raw peak objects; each
         // suppression plus its Mode, singleton peak-offset list/value, and three-center list/values;
         // each flank receipt and raw-core receipt (each referring to an already-counted exact Mode);
-        // then the five-reference result wrapper and all four immutable list/reference-array pairs.
+        // original measurements/stages, six-reference wrapper and five immutable result lists.
         long rawRows = rawCount * AttemptMemoryLedger.objectBytes(24);
         long suppressedRows = suppressedCount * (AttemptMemoryLedger.objectBytes(80)
                 + AttemptMemoryLedger.objectBytes(64)
@@ -267,12 +267,17 @@ class V022DetailedScalarProfileExtractorTest {
                 + 3 * AttemptMemoryLedger.objectBytes(8));
         long flankRows = flankCount * AttemptMemoryLedger.objectBytes(18);
         long rawCoreRows = rawCoreCount * AttemptMemoryLedger.objectBytes(40);
-        long immutableLists = AttemptMemoryLedger.objectBytes(40)
+        long observationCount = result.modeObservationReceipts().size();
+        long observationRows = observationCount * (AttemptMemoryLedger.objectBytes(104)
+                + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(3)
+                + 3 * AttemptMemoryLedger.objectBytes(48));
+        long immutableLists = AttemptMemoryLedger.objectBytes(48)
                 + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(suppressedCount)
                 + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(rawCount)
                 + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(flankCount)
-                + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(rawCoreCount);
-        assertEquals(rawRows + suppressedRows + flankRows + rawCoreRows + immutableLists,
+                + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(rawCoreCount)
+                + AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(observationCount);
+        assertEquals(rawRows + suppressedRows + flankRows + rawCoreRows + observationRows + immutableLists,
                 detailedLedger.currentBytes() - strictRetained,
                 "detailed retained graph must be fully charged in addition to baseline ownership");
         strictOwner.close();

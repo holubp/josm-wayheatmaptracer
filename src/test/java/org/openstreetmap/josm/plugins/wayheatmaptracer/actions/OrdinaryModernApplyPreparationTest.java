@@ -58,6 +58,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoverySettings;
@@ -213,17 +214,82 @@ class OrdinaryModernApplyPreparationTest {
 
     @Test
     void aggregatePixelBudgetRefusalKeepsNativePreviewAndVisibleTypedWarning() throws Exception {
+        ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
+        ManagedHeatmapConfig requested = aggregateBudgetConfig(base, true);
+        AggregateBudgetRun run = aggregateBudgetRun(diagonalBudgetFixture(), requested,
+                "aggregate-budget-gaussian", true);
+        assertEquals(ManagedModernPreviewSource.AggregateAvailability.BUDGET_UNAVAILABLE,
+                run.sources().aggregateAvailability());
+        assertNull(run.sources().aggregateFailure());
+        assertEquals(1, run.computed().productionRuns().size());
+        assertEquals("selected-visible", run.computed().productionRuns().get(0).options().sourceTier());
+        assertFalse(run.computed().pipeline().routes().isEmpty(),
+                run.computed().pipeline().inference().explanation());
+        assertEquals(LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE,
+                run.computed().detectorAttempts().get(1).status());
+        assertTrue(AlignWayAction.aggregateSourceWarning(run.computed())
+                .contains("budget"), "ordinary preview must disclose optional budget refusal");
+    }
+
+    @Test
+    void noisyAggregateBudgetRefusalMatchesTheSameNativeOnlyAssociationLimit() throws Exception {
         Fixture fixture = diagonalBudgetFixture();
         ManagedHeatmapConfig base = config(TrackerMode.PROBABILISTIC).heatmap();
-        ManagedHeatmapConfig requested = new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
-                base.signature(), base.sessionToken(), base.activity(), base.color(),
-                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
-                base.verbose(), base.debug(), false, true, base.showAggregateIntensityLayer(),
-                base.candidateRatingEnabled(), base.parallelWayAwareness(),
-                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
-                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
-                base.inferenceMode(), 16, 16, base.searchHalfWidthMeters(), 10.0,
-                base.intensitySamplingMode(), base.cacheBuster());
+        ManagedHeatmapConfig aggregateConfig = aggregateBudgetConfig(base, true);
+        ManagedHeatmapConfig nativeOnlyConfig = aggregateBudgetConfig(base, false);
+        AggregateBudgetRun aggregate = aggregateBudgetRun(fixture, aggregateConfig,
+                "aggregate-budget-noisy", false);
+        AggregateBudgetRun nativeOnly = aggregateBudgetRun(fixture, nativeOnlyConfig,
+                "aggregate-budget-noisy-native-control", false);
+
+        assertEquals(aggregate.seed().sourceMetric(), nativeOnly.seed().sourceMetric());
+        assertEquals(aggregate.seed().sourceGeographic(), nativeOnly.seed().sourceGeographic());
+        var aggregatePixels = aggregate.sources().selectedRaster();
+        var nativeOnlyPixels = nativeOnly.sources().selectedRaster();
+        assertEquals(aggregatePixels.transform(), nativeOnlyPixels.transform());
+        assertEquals(aggregatePixels.zoom(), nativeOnlyPixels.zoom());
+        assertEquals(aggregatePixels.palette(), nativeOnlyPixels.palette());
+        assertEquals(aggregatePixels.sourceIdentity(), nativeOnlyPixels.sourceIdentity());
+        assertEquals(aggregatePixels.image().getWidth(), nativeOnlyPixels.image().getWidth());
+        assertEquals(aggregatePixels.image().getHeight(), nativeOnlyPixels.image().getHeight());
+        assertEquals(10.0, aggregateConfig.sampleStepMeters());
+        assertEquals(aggregateConfig.sampleStepMeters(), nativeOnlyConfig.sampleStepMeters());
+        assertTrue(Arrays.equals(aggregatePixels.validity(), nativeOnlyPixels.validity()),
+                "selected native support masks must match for aggregate and native-only acquisition");
+        assertRasterPixelsEqual(aggregatePixels.image(), nativeOnlyPixels.image());
+
+        assertEquals(ManagedModernPreviewSource.AggregateAvailability.BUDGET_UNAVAILABLE,
+                aggregate.sources().aggregateAvailability());
+        assertNull(aggregate.sources().aggregateFailure());
+        assertEquals(1, aggregate.computed().productionRuns().size());
+        assertEquals("selected-visible", aggregate.computed().productionRuns().get(0).options().sourceTier());
+        assertTrue(aggregate.computed().pipeline().routes().isEmpty());
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                aggregate.computed().pipeline().inference().status());
+        assertEquals("weak-signal association work limit",
+                aggregate.computed().pipeline().inference().explanation());
+        assertEquals(LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE,
+                aggregate.computed().detectorAttempts().get(1).status());
+        assertTrue(AlignWayAction.aggregateSourceWarning(aggregate.computed()).contains("budget"));
+
+        assertEquals(ManagedModernPreviewSource.AggregateAvailability.NOT_REQUESTED,
+                nativeOnly.sources().aggregateAvailability());
+        assertEquals(Set.of("hot"), nativeOnly.sources().palettes().keySet());
+        assertEquals(1, nativeOnly.computed().productionRuns().size());
+        assertEquals("selected-visible", nativeOnly.computed().productionRuns().get(0).options().sourceTier());
+        assertTrue(nativeOnly.computed().pipeline().routes().isEmpty());
+        assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                nativeOnly.computed().pipeline().inference().status());
+        assertEquals("weak-signal association work limit",
+                nativeOnly.computed().pipeline().inference().explanation());
+        assertEquals(aggregate.computed().pipeline().inference().evaluatedStates(),
+                nativeOnly.computed().pipeline().inference().evaluatedStates());
+        assertEquals(aggregate.computed().pipeline().inference().evaluatedTransitions(),
+                nativeOnly.computed().pipeline().inference().evaluatedTransitions());
+    }
+
+    private AggregateBudgetRun aggregateBudgetRun(Fixture fixture, ManagedHeatmapConfig requested,
+            String cacheName, boolean gaussianOnly) throws Exception {
         LiveBPreviewService service = new LiveBPreviewService();
         var seed = edt(() -> service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
                 new AlignmentConfig(requested, GeometryCleanupConfig.disabled()),
@@ -232,29 +298,47 @@ class OrdinaryModernApplyPreparationTest {
         try (TileFetchCoordinator coordinator = new TileFetchCoordinator((request, credentials) ->
                 new TransportResponse(TileFetchStatus.SUCCESS_NETWORK, 200, "image/png",
                         managedDiagonalPng(request.address().zoom(), request.address().x(),
-                                request.address().y()),
+                                request.address().y(), gaussianOnly),
                         null, Duration.ZERO, ""),
-                new ManagedTileCache(cacheDirectory.resolve("aggregate-budget"), decoder), decoder,
+                new ManagedTileCache(cacheDirectory.resolve(cacheName), decoder), decoder,
                 TileReliabilityPolicy.defaults())) {
             coordinator.updateActiveGeneration(new ManagedTileGeneration(0L));
             var sources = new ManagedModernPreviewSource(coordinator).acquireSources(
                     seed.sourceGeographic(), requested, seed.sourceIdentity(),
                     CredentialSnapshot.fromConfig(null), () -> false);
-            assertEquals(ManagedModernPreviewSource.AggregateAvailability.BUDGET_UNAVAILABLE,
-                    sources.aggregateAvailability());
-            assertNull(sources.aggregateFailure());
             var computed = service.compute(service.attachManagedSources(seed, sources, coordinator),
                     () -> false);
-            assertEquals(1, computed.productionRuns().size());
-            assertEquals("selected-visible", computed.productionRuns().get(0).options().sourceTier());
-            assertFalse(computed.pipeline().routes().isEmpty(),
-                    computed.pipeline().inference().explanation());
-            assertEquals(LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE,
-                    computed.detectorAttempts().get(1).status());
-            assertTrue(AlignWayAction.aggregateSourceWarning(computed)
-                    .contains("budget"), "ordinary preview must disclose optional budget refusal");
+            return new AggregateBudgetRun(seed, sources, computed);
         }
     }
+
+    private static ManagedHeatmapConfig aggregateBudgetConfig(ManagedHeatmapConfig base,
+            boolean aggregateRequested) {
+        return new ManagedHeatmapConfig(base.keyPairId(), base.policy(),
+                base.signature(), base.sessionToken(), base.activity(), base.color(),
+                base.manualLayerName(), base.layerRegex(), base.alignmentMode(), base.trackerMode(),
+                base.verbose(), base.debug(), false, aggregateRequested, base.showAggregateIntensityLayer(),
+                base.candidateRatingEnabled(), base.parallelWayAwareness(),
+                base.allowUndownloadedAlignment(), base.adjustJunctionNodes(), base.simplifyEnabled(),
+                base.crossSectionHalfWidthPx(), base.crossSectionStepPx(), base.simplifyTolerancePx(),
+                base.inferenceMode(), 16, 16, base.searchHalfWidthMeters(), 10.0,
+                base.intensitySamplingMode(), base.cacheBuster());
+    }
+
+    private static void assertRasterPixelsEqual(BufferedImage expected, BufferedImage actual) {
+        int width = expected.getWidth();
+        int[] expectedRow = new int[width];
+        int[] actualRow = new int[width];
+        for (int row = 0; row < expected.getHeight(); row++) {
+            expected.getRGB(0, row, width, 1, expectedRow, 0, width);
+            actual.getRGB(0, row, width, 1, actualRow, 0, width);
+            assertTrue(Arrays.equals(expectedRow, actualRow),
+                    "selected native pixels must be identical for aggregate and native-only acquisition");
+        }
+    }
+
+    private record AggregateBudgetRun(LiveBPreviewService.ManagedCaptureSeed seed,
+            ManagedModernPreviewSource.SourceRasters sources, LiveBPreviewService.Computed computed) { }
 
     @Test
     void ordinaryManagedAggregateOwnsConfirmedTwoIslandApplyAndIntervalArchive() throws Exception {
@@ -407,6 +491,11 @@ class OrdinaryModernApplyPreparationTest {
     }
 
     private static byte[] managedDiagonalPng(int zoom, int tileX, int tileY) {
+        return managedDiagonalPng(zoom, tileX, tileY, false);
+    }
+
+    private static byte[] managedDiagonalPng(int zoom, int tileX, int tileY,
+            boolean gaussianOnlyBackground) {
         try {
             BufferedImage image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
             double equator = Math.scalb(512.0, zoom - 1);
@@ -417,7 +506,8 @@ class OrdinaryModernApplyPreparationTest {
                     double distance = (worldX + worldY - 2.0 * equator - 1.0)
                             / Math.sqrt(2.0);
                     double strength = Math.exp(-0.5 * distance * distance / 1.44);
-                    int background = 3 + (column * 7 + row * 3) % 29;
+                    int background = gaussianOnlyBackground
+                            ? 3 : 3 + (column * 7 + row * 3) % 29;
                     int channel = (int) Math.round(background + strength * (255 - background));
                     image.setRGB(column, row, 0xff000000 | channel << 16
                             | channel << 8 | channel);

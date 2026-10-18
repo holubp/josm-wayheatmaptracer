@@ -463,6 +463,8 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(32);
         assertEquals(2_440L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
         assertEquals(2_440L, ledger.currentBytes());
+        assertEquals(0L, traceCounters.get("trace.latticeBudgetCoarsened").longValue(),
+                "this native fixture retains an admission plan without a coarsened floor array");
         assertEquals(29L, maximumStates);
         assertEquals(11L, traceCounters.get("trace.profiles").longValue());
         assertEquals(2L + 9L * 29L, traceCounters.get("trace.states").longValue());
@@ -500,7 +502,8 @@ class V022LocalizationCorrectionTest {
                 + ProbabilisticInference.deepArrayBytes(29, 29, Integer.BYTES)
                 + 29L * 29L * ProbabilisticInference.listBytes(32));
         // 6786 admission keys require capacity16384 at the ordinary .75 load.
-        long admissionMemo = 2L * AttemptMemoryLedger.objectBytes(48)
+        // Preserved old-LRU baseline: two memo maps and their retained keys/values.
+        long oldLruAdmissionMemo = 2L * AttemptMemoryLedger.objectBytes(48)
                 + 2L * AttemptMemoryLedger.referenceArrayBytes(16_384)
                 + 6_786L * (AttemptMemoryLedger.objectBytes(16)
                     + 2L * AttemptMemoryLedger.objectBytes(48)
@@ -508,11 +511,18 @@ class V022LocalizationCorrectionTest {
                     + 2L * AttemptMemoryLedger.objectBytes(40));
         long lexicalOrder = ProbabilisticInference.listBytes(frontierRoots);
         assertTrue(lexicalOrder > descriptorScratch);
-        long expectedPeak = localizationFixtureFrontendBytes() + messages + admissionMemo
+        long oldLruPeak = localizationFixtureFrontendBytes() + messages + oldLruAdmissionMemo
                 + AttemptMemoryLedger.objectBytes(80) + AttemptMemoryLedger.objectBytes(40)
                 + liveAncestry * AttemptMemoryLedger.objectBytes(64) + frontiers + lexicalOrder;
-        assertEquals(expectedPeak, ledger.peakBytes(),
-                "the complete solve peaks with stage9 lexical roots and both live frontiers");
+        // Independent table census: helper object (56-byte payload), profile offsets,
+        // and one byte per adjacent mode pair. Do not call production retainedBytes().
+        long indexedAdmissionTableBytes = AttemptMemoryLedger.objectBytes(56)
+                + AttemptMemoryLedger.arrayBytes(11, Integer.BYTES)
+                + AttemptMemoryLedger.arrayBytes(6_786, Byte.BYTES);
+        assertEquals(6_944L, indexedAdmissionTableBytes);
+        long expectedIndexedPeak = oldLruPeak - oldLruAdmissionMemo + indexedAdmissionTableBytes;
+        assertEquals(expectedIndexedPeak, ledger.peakBytes(),
+                "the complete solve peaks with stage9 lexical roots, both live frontiers, and the indexed admission table");
         assertEquals(6_786L, accounted.value().usage().pairVisits());
         var work = accounted.value().result().workAccounting().orElseThrow().bStages().get(0);
         assertEquals(5_006_473L, work.forwardBackwardScores() + work.logicalKBestExtensions());
@@ -545,6 +555,7 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(24) + ProbabilisticInference.listBytes(11)
                 + ProbabilisticInference.listBytes(11) // evaluated-profile list
                 + AttemptMemoryLedger.arrayBytes(11, Double.BYTES) // continuation offsets
+                + AttemptMemoryLedger.objectBytes(48) // retained native-lattice admission plan
                 + 2L * AttemptMemoryLedger.objectBytes(16); // exact-anchor optionals
         return sampled + 9L * (localizationFixtureLatticeBytes(29)
                 + localizationFixtureObservationBytes(29))

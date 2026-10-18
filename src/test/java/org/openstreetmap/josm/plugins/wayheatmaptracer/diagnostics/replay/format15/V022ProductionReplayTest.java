@@ -151,10 +151,10 @@ class V022ProductionReplayTest {
 
     @Test
     void scoredWorkRefusalKeepsReceiptButPublishesNoPartialGeometry() {
-        FrozenReplayInput original = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
+        FrozenReplayInput original = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE, RasterFixture.FINE_DENSE);
         TraceRequest source = original.request();
         var request = new TraceRequest(source.selectedWayKey(), source.selectedRange(), source.engine(),
-                source.geometryMode(), source.permissions(), new TraceBudgets(96, 8_000_000L, 1L, 32, 8),
+                source.geometryMode(), source.permissions(), new TraceBudgets(96, 8_000_000L, 25_000L, 32, 8),
                 source.evidenceSnapshotId(), source.evidenceContentHash(), source.networkSnapshotId(),
                 source.networkContentHash(), source.settingsHash(), source.parameterHash(), source.samplerId(),
                 source.configuredSampleStepMeters(), source.profileChainage(), source.evidenceResolution(), source.corridorInput());
@@ -163,7 +163,7 @@ class V022ProductionReplayTest {
         assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT, actual.status());
         assertTrue(actual.hypotheses().isEmpty());
         var work = actual.workAccounting().orElseThrow();
-        assertEquals(1L, work.computedTransitions());
+        assertEquals(25_000L, work.computedTransitions());
         assertEquals(1L, work.bStages().get(0).refusedScoreAttempts());
         assertTrue(work.hasPolicy("terminal-path-count-scored-work-v2"));
     }

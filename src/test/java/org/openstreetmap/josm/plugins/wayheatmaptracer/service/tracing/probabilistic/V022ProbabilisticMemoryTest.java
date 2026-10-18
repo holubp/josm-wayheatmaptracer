@@ -174,7 +174,9 @@ class V022ProbabilisticMemoryTest {
         long ancestry = (2 * 9L + 27 + 81 + 243) * AttemptMemoryLedger.objectBytes(64);
         long arena = AttemptMemoryLedger.objectBytes(40);
         long accounting = AttemptMemoryLedger.objectBytes(80);
-        long memoObjects = 2 * AttemptMemoryLedger.objectBytes(48);
+        // Two memo maps plus the retained reusable lookup Key probe.
+        long memoObjects = 2 * AttemptMemoryLedger.objectBytes(48)
+                + AttemptMemoryLedger.objectBytes(16);
         long matrix = AttemptMemoryLedger.referenceArrayBytes(3)
                 + 3 * AttemptMemoryLedger.arrayBytes(3, Double.BYTES);
         long list4 = AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(4);
@@ -205,8 +207,9 @@ class V022ProbabilisticMemoryTest {
 
     @Test
     void kBestFrontierAllocationRefusalIsTypedAndKeepsActualWork() {
-        // The concrete next allocation is a 136-byte frontier bucket at 2,304 live bytes.
-        ProbabilisticInferenceResult result = solveWithLimit(profiles(5, 3), 2_400);
+        // Preserve the old frontier boundary after the memo adds its 32-byte lookup probe.
+        long lookupProbeBytes = AttemptMemoryLedger.objectBytes(16);
+        ProbabilisticInferenceResult result = solveWithLimit(profiles(5, 3), 2_400 + lookupProbeBytes);
 
         assertLimitedAt(result, "k-best frontier");
         assertTrue(result.evaluatedPairVisits() > 0L);
@@ -267,7 +270,7 @@ class V022ProbabilisticMemoryTest {
         assertEquals(3L, abort.pairVisits());
         assertEquals(0L, abort.transitions());
         assertEquals(0L, abort.currentBytes());
-        assertEquals(128L + 96L, abort.peakBytes());
+        assertEquals(128L + AttemptMemoryLedger.objectBytes(16) + 96L, abort.peakBytes());
         assertEquals(160L + 96L, abort.limitBytes());
         assertEquals(0L, ledger.currentBytes());
         owner.close();
@@ -282,7 +285,7 @@ class V022ProbabilisticMemoryTest {
         assertEquals("forward/backward", nested.stage());
         assertEquals(3L, nested.pairVisits());
         assertEquals(840L, nested.currentBytes());
-        assertEquals(968L + 96L, nested.peakBytes());
+        assertEquals(968L + AttemptMemoryLedger.objectBytes(16) + 96L, nested.peakBytes());
         assertEquals(840L, precharged.currentBytes());
         prechargedOwner.close();
         assertEquals(0L, precharged.currentBytes());
@@ -291,24 +294,25 @@ class V022ProbabilisticMemoryTest {
     @Test
     void nativeInferenceFailureGraphAndAccountingHaveAnExactAtomicBoundary() {
         List<InferenceProfile> profiles = profiles(1, 3);
-        // Historical graph 200 + new result field 8 + immutable witness 80 = 288.
+        // The failure graph is 288 bytes. Its 287/288 atomic boundary is unchanged;
+        // the 32-byte memo probe now makes the refusal happen earlier in forward/backward.
         AttemptMemoryLedger refused = new AttemptMemoryLedger(287);
         AttemptMemoryLedger.Owner refusedOwner = refused.rootOwner();
         var abort = assertThrows(
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException.class,
                 () -> new ProbabilisticInference().solve(profiles, PARAMETERS,
                     TraceBudgets.defaults(), null, CancellationProbe.NONE, refusedOwner));
-        assertEquals("k-best ancestry", abort.stage());
+        assertEquals("forward/backward", abort.stage());
         assertEquals(3L, abort.pairVisits());
         assertEquals(0L, abort.currentBytes());
-        assertEquals(168L + 96L, abort.peakBytes());
+        assertEquals(256L, abort.peakBytes());
         refusedOwner.close();
 
         AttemptMemoryLedger admitted = new AttemptMemoryLedger(288);
         AttemptMemoryLedger.Owner admittedOwner = admitted.rootOwner();
         ProbabilisticInferenceResult result = new ProbabilisticInference().solve(profiles,
                 PARAMETERS, TraceBudgets.defaults(), null, CancellationProbe.NONE, admittedOwner);
-        assertLimitedAt(result, "k-best ancestry");
+        assertLimitedAt(result, "forward/backward");
         assertTrue(result.workAccounting().isPresent());
         assertEquals(288L, admitted.currentBytes());
         assertEquals(288L, admitted.peakBytes());
