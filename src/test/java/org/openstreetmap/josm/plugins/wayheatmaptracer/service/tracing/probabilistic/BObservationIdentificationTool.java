@@ -279,9 +279,13 @@ public final class BObservationIdentificationTool {
         }
         return List.copyOf(result);
     }
-    enum TrainFixtureFault { NONE, EXPECTED_FACTS_MISMATCH, MISSING_PAIR_INDEX }
+    enum TrainFixtureFault { NONE, EXPECTED_FACTS_MISMATCH, MISSING_PAIR_INDEX, RETURNED_RESOURCE_LIMIT, RETURNED_NUMERIC_FAILURE, ABANDON_BEFORE_GEOMETRY }
     static RunReceipt runTrainFixture(Path output,Controls controls,TrainFixtureFault fault,
             BObservationRuntimeTelemetry telemetry) throws Exception {
+        return runTrainFixture(output,controls,fault,telemetry,()->{});
+    }
+    static RunReceipt runTrainFixture(Path output,Controls controls,TrainFixtureFault fault,
+            BObservationRuntimeTelemetry telemetry,Runnable callerIdle) throws Exception {
         if(output==null||controls==null||fault==null)throw new IllegalArgumentException("Complete fixed TRAIN fixture inputs required");
         long started=controls.clock().getAsLong();var cancellation=guarded(controls,started);cancellation.checkpoint();
         var definitions=fixtureDefinitions().stream().filter(d->d.key().split()==Split.TRAIN).toList();
@@ -304,6 +308,8 @@ public final class BObservationIdentificationTool {
         try(var writer=new Writer(output,controls.memoryBytes())) {
             writer.telemetry=telemetry;
             var driver=realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability(),writer,0,0,telemetry);
+            driver.fixtureReturnedStatus=fault==TrainFixtureFault.RETURNED_RESOURCE_LIMIT?ProbabilisticInferenceResult.Status.RESOURCE_LIMIT:
+                    fault==TrainFixtureFault.RETURNED_NUMERIC_FAILURE?ProbabilisticInferenceResult.Status.NUMERIC_FAILURE:null;
             try {
                 var initial=new LinkedHashMap<String,TrainSceneScore>();var cheap=new CheckTotals();var geometry=new CheckTotals();
                 for(var definition:definitions) {
@@ -318,7 +324,10 @@ public final class BObservationIdentificationTool {
                                 frozen.source(),facts,frozen.latticeHash());
                     }
                     try(var reconstructed=driver.reconstruct(definition,parameter,frozen)) {
+                        callerIdle.run();
+                        if(fault==TrainFixtureFault.ABANDON_BEFORE_GEOMETRY)throw new CancellationException("DUMMY_ABANDONED");
                         geometry.add(reconstructed.geometry());
+                        callerIdle.run();
                     }
                 }
                 if(fault==TrainFixtureFault.MISSING_PAIR_INDEX)driver.cache.remove(required.get(0).first().key().id());
@@ -398,16 +407,31 @@ public final class BObservationIdentificationTool {
         result.put("trainScoredScenes",driver.sceneCount);result.put("trainReconstructionReads",driver.reconstructionCount);
         result.put("trainMapSolves",driver.mapSolves);result.put("trainPairChecks",driver.pairChecks);result.put("peakSceneBytes",driver.peak);
         result.put("rasterReads",access.rasterReads());result.put("labelReads",access.labelReads());result.put("selectReads",0);result.put("holdoutReads",0);
-        result.put("elapsedNanos",controls.clock().getAsLong()-started);result.put("ordinaryAndTelemetryBytesBeforeStatus",aggregate.writer.bytes);
-        result.put("telemetryPublicationsBeforeStatus",aggregate.publications);result.put("telemetryBytesBeforeStatus",aggregate.bytes);
+        result.put("elapsedNanos",controls.clock().getAsLong()-started);result.put("chargedOrdinaryAndTelemetryBytesBeforeStatus",aggregate.writer.bytes);
+        result.put("telemetryPublicationsBeforeStatus",aggregate.publications);result.put("chargedTelemetryBytesBeforeStatus",aggregate.bytes);
         result.put("telemetryPublicationNanosBeforeStatus",aggregate.publicationNanos);
         result.put("coupledAvailability",driver.pairChecks==2?"MEASURED_FIXED_SUBSET":"UNAVAILABLE_OR_INCOMPLETE");
         result.put("timing",telemetry.snapshot());return result;
     }
+    interface AggregateIO {
+        default void write(Path path,java.nio.channels.FileChannel channel,byte[] encoded) throws java.io.IOException {
+            var buffer=java.nio.ByteBuffer.wrap(encoded);while(buffer.hasRemaining())channel.write(buffer);
+        }
+        default void restoreProgress(Path path,long length,boolean created) throws java.io.IOException {
+            if(created)Files.delete(path);
+            else try(var channel=java.nio.channels.FileChannel.open(path,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)){channel.truncate(length);}
+        }
+        default void deleteOwned(Path path) throws java.io.IOException {Files.deleteIfExists(path);}
+        default void moveOwned(Path source,Path destination) throws java.io.IOException {Files.move(source,destination,StandardCopyOption.ATOMIC_MOVE);}
+    }
     /** Shares the unchanged global disk envelope; telemetry never profiles its own publication. */
     static final class DiagnosticAggregateWriter {
-        final Path directory;final Writer writer;int publications,snapshots;long bytes,publicationNanos;
-        DiagnosticAggregateWriter(Path directory,Writer writer){this.directory=directory;this.writer=writer;}
+        private static final AggregateIO NIO=new AggregateIO() { };
+        final Path directory;final Writer writer;int publications,snapshots;long bytes,publicationNanos,retainedReservationBytes,progressLength;
+        private boolean progressOwned;
+        final AggregateIO io;
+        DiagnosticAggregateWriter(Path directory,Writer writer){this(directory,writer,NIO);}
+        DiagnosticAggregateWriter(Path directory,Writer writer,AggregateIO io){this.directory=directory;this.writer=writer;this.io=Objects.requireNonNull(io);}
         void progress(Map<String,Object> fields) throws Exception {
             if(snapshots>=BObservationTrainRuntimeDiagnosticTool.MAX_SNAPSHOTS)throw new RunLimitException("TELEMETRY_SNAPSHOT_LIMIT");
             write(directory.resolve("progress.jsonl"),fields,true);snapshots++;
@@ -416,8 +440,13 @@ public final class BObservationIdentificationTool {
             if(!Set.of("binding.json","status.json").contains(name))throw new IllegalArgumentException("Aggregate file allowlist");
             if(name.equals("status.json")) {
                 var totals=new LinkedHashMap<>(fields);int length=0;
+                boolean exact=retainedReservationBytes==0&&writer.retainedOrdinaryReservationBytes==0;
+                totals.put("byteAccounting",exact?"EXACT_OWNED_PAYLOAD_BYTES":"CONSERVATIVE_RESERVED_BYTES");
+                totals.put("retainedTelemetryReservationBytes",retainedReservationBytes);
+                totals.put("retainedOrdinaryReservationBytes",writer.retainedOrdinaryReservationBytes);
                 for(int i=0;i<16;i++) {
-                    totals.put("totalOrdinaryAndTelemetryBytes",writer.bytes+length);totals.put("totalTelemetryBytes",bytes+length);
+                    totals.put(exact?"totalOrdinaryAndTelemetryBytes":"totalChargedOrdinaryAndTelemetryBytes",writer.bytes+length);
+                    totals.put(exact?"totalTelemetryBytes":"totalChargedTelemetryBytes",bytes+length);
                     totals.put("totalTelemetryPublications",publications+1);
                     int next=(BIdentificationReceipt.canonical(totals)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                     if(next==length){fields=totals;break;}
@@ -433,10 +462,53 @@ public final class BObservationIdentificationTool {
             long telemetryLimit=BObservationTrainRuntimeDiagnosticTool.MAX_TELEMETRY_BYTES-(path.getFileName().toString().equals("status.json")?0:65_536);
             if(encoded.length>telemetryLimit-bytes||encoded.length>MAX_DISK_BYTES-writer.bytes)
                 throw new RunLimitException("TELEMETRY_DISK_LIMIT");
-            if(append)Files.write(path,encoded,StandardOpenOption.CREATE,StandardOpenOption.APPEND,LinkOption.NOFOLLOW_LINKS);
-            else BIdentificationReceipt.publish(path,fields);
-            bytes+=encoded.length;writer.bytes+=encoded.length;publications++;
+            try(var reservation=new AggregateReservation(encoded.length)) {
+                if(append)writeProgress(path,encoded,reservation);else writeAtomic(path,encoded,reservation);
+                reservation.committed=true;publications++;
+            }
             } finally {publicationNanos+=System.nanoTime()-started;}
+        }
+        /** Reserve the complete payload before I/O; failed cleanup retains a bounded upper charge. */
+        private final class AggregateReservation implements AutoCloseable {
+            final long length;boolean committed,retained;
+            AggregateReservation(long length){this.length=length;bytes+=length;writer.bytes+=length;}
+            void retain(){if(!retained){retained=true;retainedReservationBytes+=length;}}
+            public void close(){if(!committed&&!retained){bytes-=length;writer.bytes-=length;}}
+        }
+        private void writeProgress(Path path,byte[] encoded,AggregateReservation reservation) throws Exception {
+            if(retainedReservationBytes!=0)throw new RunLimitException("TELEMETRY_PARTIAL_RETAINED");
+            boolean created=false,touched=false;
+            try {
+                try(var channel=progressOwned
+                        ?java.nio.channels.FileChannel.open(path,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)
+                        :java.nio.channels.FileChannel.open(path,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)) {
+                    created=!progressOwned;
+                    if(channel.size()!=progressLength)throw new java.io.IOException("Owned progress length changed");
+                    channel.position(progressLength);touched=true;io.write(path,channel,encoded);
+                }
+                progressOwned=true;progressLength+=encoded.length;
+            } catch(Exception|Error failure) {
+                if(created||touched)try{io.restoreProgress(path,progressLength,created);}
+                    catch(Exception|Error cleanup){reservation.retain();failure.addSuppressed(cleanup);}
+                throw failure;
+            }
+        }
+        private void writeAtomic(Path path,byte[] encoded,AggregateReservation reservation) throws Exception {
+            if(Files.exists(path,LinkOption.NOFOLLOW_LINKS))throw new FileAlreadyExistsException(path.toString());
+            var partial=path.resolveSibling(path.getFileName()+".partial");boolean owned=false;
+            try {
+                try(var channel=java.nio.channels.FileChannel.open(partial,StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)) {
+                    owned=true;io.write(partial,channel,encoded);
+                }
+                io.moveOwned(partial,path);owned=false;
+            } catch(Exception|Error failure) {
+                if(owned) {
+                    // A failed atomic move may have completed. Preserve ownership uncertainty and its full reservation.
+                    if(!Files.exists(partial,LinkOption.NOFOLLOW_LINKS)&&Files.exists(path,LinkOption.NOFOLLOW_LINKS))reservation.retain();
+                    try{io.deleteOwned(partial);}catch(Exception|Error cleanup){reservation.retain();failure.addSuppressed(cleanup);}
+                }
+                throw failure;
+            }
         }
     }
     private static LinkedHashMap<String,Object> trainFixtureFields(RealTrainEvaluator driver,int[] reads) {
@@ -731,6 +803,7 @@ public final class BObservationIdentificationTool {
         final Map<String,TrainInputBinding> initialBindings=new LinkedHashMap<>();
         final Map<String,BIdentificationPairCache.Index> cache=new TreeMap<>();final Set<String> pairCases=new HashSet<>();
         private BIdentifiedObservationKernel.Parameters current;
+        private ProbabilisticInferenceResult.Status fixtureReturnedStatus;
         int sceneCount,reconstructionCount,mapSolves,pairChecks;long peak;
         RealTrainEvaluator(List<RequiredPair> required,SourceGuard guard,InputProvider provider,InputIdentity identity,Controls controls,
                 CancellationProbe cancellation,Map<String,Object> availability,Writer writer,int sceneCount,long peak,BObservationRuntimeTelemetry telemetry) {
@@ -755,25 +828,30 @@ public final class BObservationIdentificationTool {
                 throw new IllegalArgumentException("TRAIN reconstruction requires its original scored scene");
             if(!parameter.equals(current)){cache.clear();current=parameter;}
             SceneInputs loaded;
-            try(var phase=telemetry.begin(RECONSTRUCTION)) {
-                loaded=openScene(definition,identity,guard,provider,controls,cancellation,telemetry);reconstructionCount++;phase.succeeded();
-            }
+            var computation=telemetry.begin(RECONSTRUCTION);
+            try {
+                loaded=openScene(definition,identity,guard,provider,controls,cancellation,telemetry);reconstructionCount++;
+            } catch(Exception|Error failure){computation.close();throw failure;}
+            try{computation.pause();}catch(Exception|Error failure){try{loaded.close();}finally{computation.close();}throw failure;}
             return new TrainReconstruction() {
                 public TrainInputBinding input(){return loaded.input;}
                 public Checks geometry() throws Exception {
+                    try(computation) {
+                    computation.resume();
                     guard.verify();cancellation.checkpoint();
                     if(!frozenInput.equals(loaded.input)||!frozenInput.equals(initialBindings.get(definition.key().id())))
                         throw new IllegalArgumentException("TRAIN input changed before geometry");
+                    Checks checks;
                     try(var work=loaded.owner.child("train-geometry")) {
                         var kernel=new BIdentifiedObservationKernel(parameter);mapSolves++;
                         BObservationGeometry.MapResult outcome;
                         try(var phase=telemetry.begin(MAP_SOLVE)) {
-                            outcome=BObservationGeometry.solve(loaded.facts,loaded.admitted.lattices(),loaded.scene.evidence().decisionRegion(),
-                                    TraceBudgets.defaults(),kernel,BObservationGeometry.Enumeration.MAP_ONLY,cancellation,work);
-                            telemetry.count(MAP_TRANSITIONS,outcome.path().transitions());phase.succeeded();
+                            outcome=fixtureReturnedStatus==null?BObservationGeometry.solve(loaded.facts,loaded.admitted.lattices(),loaded.scene.evidence().decisionRegion(),
+                                    TraceBudgets.defaults(),kernel,BObservationGeometry.Enumeration.MAP_ONLY,cancellation,work):
+                                    new BObservationGeometry.MapResult(new BObservationGeometry.PathOutcome(fixtureReturnedStatus,List.of(),17,false,kernel.identityHash()),
+                                            List.of(),OptionalDouble.empty(),TraceBudgets.defaults(),BObservationGeometry.Enumeration.MAP_ONLY);
+                            telemetry.count(MAP_TRANSITIONS,outcome.path().transitions());requireCompletedEvaluation(outcome);phase.succeeded();
                         }
-                        requireCompletedEvaluation(outcome);
-                        Checks checks;
                         try(var phase=telemetry.begin(ROUTE_CHECK)) {checks=routeChecks(definition,loaded.scene,loaded.profiles,outcome.path(),cancellation,work);phase.succeeded();}
                         String suffix="s%03d-%s".formatted(initialOrdinals.get(definition.key().id()),parameterId(parameter));
                         if(checks.passed()&&pairCases.contains(definition.key().id())) {
@@ -794,10 +872,12 @@ public final class BObservationIdentificationTool {
                         }
                         writer.publish("train-geometry-"+suffix+".json",Map.of("case",definition.key().id(),"parameters",parameterFields(parameter),
                                 "input",inputFields(loaded.input),"rawGeometry",routeFields(outcome,checks),"checks",checkFields(checks)));
-                        guard.verify();cancellation.checkpoint();return checks;
+                        guard.verify();cancellation.checkpoint();
+                    }
+                    computation.succeeded();return checks;
                     }
                 }
-                public void close(){peak=Math.max(peak,loaded.ledger.peakBytes()+Writer.METADATA_BYTES);loaded.close();}
+                public void close(){try{peak=Math.max(peak,loaded.ledger.peakBytes()+Writer.METADATA_BYTES);loaded.close();}finally{computation.close();}}
             };
         }
         public Checks coupled(BIdentifiedObservationKernel.Parameters parameter,List<RequiredPair> required) throws Exception {
@@ -1309,11 +1389,18 @@ public final class BObservationIdentificationTool {
                 "available",aggregate.available,"ambiguous",aggregate.ambiguous,"unavailable",aggregate.unavailable);
     }
     static final class Writer implements AutoCloseable {
+        @FunctionalInterface interface Publication {void publish(Path path,Map<String,Object> fields) throws Exception;}
+        private static final Publication ORDINARY_PUBLICATION=BIdentificationReceipt::publish;
         static final long METADATA_BYTES=1024L*1024;
-        final Path directory;long bytes;String chain="0".repeat(64);
+        final Path directory;long bytes,retainedOrdinaryReservationBytes;String chain="0".repeat(64);
         final AttemptMemoryLedger.Owner metadata;
+        final Publication publication;
         BObservationRuntimeTelemetry telemetry=BObservationRuntimeTelemetry.NONE;
         Writer(Path directory,long limit) {
+            this(directory,limit,ORDINARY_PUBLICATION);
+        }
+        Writer(Path directory,long limit,Publication publication) {
+            this.publication=Objects.requireNonNull(publication);
             this.directory=directory;metadata=new AttemptMemoryLedger(limit).rootOwner();
             try{metadata.reserve(METADATA_BYTES);}catch(RuntimeException failure){metadata.close();throw failure;}
             // Current sealed catalog's indices, definitions, score/control totals and receipt-name lists.
@@ -1325,7 +1412,9 @@ public final class BObservationIdentificationTool {
             byte[] encoded=(BIdentificationReceipt.canonical(fields)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
             long length=encoded.length;
             if(length>MAX_DISK_BYTES-bytes)throw new RunLimitException("DISK_LIMIT");
-            BIdentificationReceipt.publish(directory.resolve(file),fields);bytes+=length;
+            bytes+=length;
+            try{publication.publish(directory.resolve(file),fields);}
+            catch(Exception|Error failure){retainedOrdinaryReservationBytes+=length;throw failure;}
             chain=BIdentificationReceipt.hash((chain+"\n"+file+"\n"+BIdentificationReceipt.hash(encoded)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             telemetry.count(ORDINARY_RECEIPTS,1);telemetry.count(ORDINARY_BYTES,length);measured.succeeded();
             }

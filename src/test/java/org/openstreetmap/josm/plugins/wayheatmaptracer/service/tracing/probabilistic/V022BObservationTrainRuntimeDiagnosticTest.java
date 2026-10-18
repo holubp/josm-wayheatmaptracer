@@ -10,6 +10,174 @@ import java.nio.file.*;
 
 class V022BObservationTrainRuntimeDiagnosticTest {
     @TempDir Path temp;
+    @Test void ordinaryPartialPublicationRemainsChargedAndMakesTerminalTotalsConservative() throws Exception {
+        for(boolean nearCap:List.of(false,true)) {
+            var directory=Files.createDirectory(temp.resolve("ordinary-terminal-"+nearCap));var scratch=Files.createDirectory(temp.resolve("ordinary-partial-"+nearCap));
+            var fields=Map.<String,Object>of("status","DUMMY_ORDINARY_RECEIPT");
+            int length=(BIdentificationReceipt.canonical(fields)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            var owner=new BObservationIdentificationTool.Writer[1];
+            try(var writer=new BObservationIdentificationTool.Writer(scratch,64L*1024*1024,(path,payload)->{
+                assertEquals(nearCap?BObservationTrainRuntimeDiagnosticTool.DISK_BYTES:length,owner[0].bytes,"ordinary reservation precedes I/O");
+                byte[] encoded=(BIdentificationReceipt.canonical(payload)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                Files.write(path.resolveSibling(path.getFileName()+".partial"),Arrays.copyOf(encoded,5),StandardOpenOption.CREATE_NEW);
+                throw new java.io.IOException("INJECTED_ORDINARY_PARTIAL");
+            })) {
+                owner[0]=writer;
+                if(nearCap)writer.bytes=BObservationTrainRuntimeDiagnosticTool.DISK_BYTES-length;
+                long before=writer.bytes;assertThrows(java.io.IOException.class,()->writer.publish("ordinary.json",fields));
+                assertEquals(before+length,writer.bytes,"full ordinary payload reserved despite partial failure");
+                assertEquals(5,Files.size(scratch.resolve("ordinary.json.partial")));
+                var aggregate=new BObservationIdentificationTool.DiagnosticAggregateWriter(directory,writer);
+                if(nearCap) {
+                    assertThrows(BObservationIdentificationTool.RunLimitException.class,()->aggregate.publish("status.json",Map.of("status","FAILED_NONQUALIFYING")));
+                    assertFalse(Files.exists(directory.resolve("status.json")));assertFalse(Files.exists(directory.resolve("status.json.partial")));
+                } else {
+                    aggregate.publish("status.json",Map.of("status","FAILED_NONQUALIFYING"));
+                    var status=BIdentificationReceipt.read(directory.resolve("status.json"));
+                    assertEquals("CONSERVATIVE_RESERVED_BYTES",status.get("byteAccounting"));assertFalse(status.containsKey("totalOrdinaryAndTelemetryBytes"));
+                    assertEquals(length,((Number)status.get("retainedOrdinaryReservationBytes")).intValue());
+                    assertEquals(writer.bytes,((Number)status.get("totalChargedOrdinaryAndTelemetryBytes")).longValue());
+                    assertTrue(Files.size(scratch.resolve("ordinary.json.partial"))+Files.size(directory.resolve("status.json"))<=writer.bytes);
+                }
+            }
+        }
+    }
+    @Test void actualLazyReconstructionIncludesExecutedChildrenAndExcludesBothCallerIdleGaps() throws Exception {
+        var clock=new AtomicLong();var telemetry=new BObservationRuntimeTelemetry(clock::incrementAndGet,s->{
+            for(String phase:List.of("MAP_SOLVE","ROUTE_CHECK","PAIR_PROFILES","PAIR_CACHE_WRITE"))
+                if(((Number)row(s,phase).get("active")).longValue()>0)clock.addAndGet(10_000);
+        });
+        BObservationIdentificationTool.runTrainFixture(temp.resolve("idle-fixture"),BObservationIdentificationTool.Controls.defaults(),
+                BObservationIdentificationTool.TrainFixtureFault.NONE,telemetry,()->clock.addAndGet(1_000_000));
+        var parent=row(telemetry.snapshot(),"RECONSTRUCTION");assertEquals(2L,parent.get("attempted"));assertEquals(2L,parent.get("succeeded"));
+        assertEquals(0L,parent.get("failed"));assertEquals(0L,parent.get("active"));long children=0;
+        for(String phase:List.of("MAP_SOLVE","ROUTE_CHECK","PAIR_PROFILES","PAIR_CACHE_WRITE"))children+=((Number)row(telemetry.snapshot(),phase).get("elapsedNanos")).longValue();
+        assertTrue(((Number)parent.get("elapsedNanos")).longValue()>=children,"reconstruction includes geometry/cache children");
+        assertTrue(((Number)parent.get("elapsedNanos")).longValue()<1_000_000,"caller idle excluded");
+    }
+    @Test void abandonedLazyReconstructionClosesFailedWithoutMapOrIdleTime() throws Exception {
+        var clock=new AtomicLong();var telemetry=new BObservationRuntimeTelemetry(clock::incrementAndGet,s->{});
+        assertThrows(CancellationException.class,()->BObservationIdentificationTool.runTrainFixture(temp.resolve("abandon-fixture"),
+                BObservationIdentificationTool.Controls.defaults(),BObservationIdentificationTool.TrainFixtureFault.ABANDON_BEFORE_GEOMETRY,
+                telemetry,()->clock.addAndGet(1_000_000)));
+        var parent=row(telemetry.snapshot(),"RECONSTRUCTION");assertEquals(1L,parent.get("attempted"));assertEquals(0L,parent.get("succeeded"));
+        assertEquals(1L,parent.get("failed"));assertEquals(0L,parent.get("active"));assertEquals(0L,row(telemetry.snapshot(),"MAP_SOLVE").get("attempted"));
+        assertTrue(((Number)parent.get("elapsedNanos")).longValue()<1_000_000);
+    }
+    @Test void failedProgressPrefixIsRolledBackBeforeTruthfulTerminalPublication() throws Exception {
+        var directory=Files.createDirectory(temp.resolve("partial-progress"));var scratch=Files.createDirectory(temp.resolve("partial-progress-scratch"));
+        var io=new PartialAggregateIO("progress.jsonl",false);
+        try(var writer=new BObservationIdentificationTool.Writer(scratch,64L*1024*1024)) {
+            var aggregate=new BObservationIdentificationTool.DiagnosticAggregateWriter(directory,writer,io);
+            aggregate.progress(Map.of("active",1));byte[] original=Files.readAllBytes(directory.resolve("progress.jsonl"));
+            long before=writer.bytes;io.armed=true;
+            io.duringFailure=n->{assertEquals(before+n,writer.bytes);assertEquals(before+n,aggregate.bytes);};
+            assertThrows(java.io.IOException.class,()->aggregate.progress(Map.of("active",2)));
+            assertArrayEquals(original,Files.readAllBytes(directory.resolve("progress.jsonl")));
+            assertEquals(before,writer.bytes);assertEquals(before,aggregate.bytes);assertEquals(1,aggregate.snapshots);
+            aggregate.publish("status.json",Map.of("status","FAILED_NONQUALIFYING"));
+            var status=BIdentificationReceipt.read(directory.resolve("status.json"));
+            assertEquals("EXACT_OWNED_PAYLOAD_BYTES",status.get("byteAccounting"));
+            assertEquals(writer.bytes,Files.size(directory.resolve("progress.jsonl"))+Files.size(directory.resolve("status.json")));
+            assertEquals(writer.bytes,((Number)status.get("totalOrdinaryAndTelemetryBytes")).longValue());
+        }
+    }
+    @Test void failedBindingAndStatusPrefixesRemoveOnlyTheirOwnedPartialFiles() throws Exception {
+        for(String name:List.of("binding.json","status.json")) {
+            var directory=Files.createDirectory(temp.resolve(name));var scratch=Files.createDirectory(temp.resolve(name+"-scratch"));
+            var io=new PartialAggregateIO(name+".partial",false);io.armed=true;
+            try(var writer=new BObservationIdentificationTool.Writer(scratch,64L*1024*1024)) {
+                var aggregate=new BObservationIdentificationTool.DiagnosticAggregateWriter(directory,writer,io);
+                io.duringFailure=n->{assertEquals(n,writer.bytes,"global reservation precedes partial I/O");assertEquals(n,aggregate.bytes,"aggregate reservation precedes partial I/O");};
+                assertThrows(java.io.IOException.class,()->aggregate.publish(name,Map.of("status","DUMMY")));
+                assertFalse(Files.exists(directory.resolve(name)));assertFalse(Files.exists(directory.resolve(name+".partial")));
+                assertEquals(0L,writer.bytes);assertEquals(0L,aggregate.bytes);assertEquals(0,aggregate.publications);
+                aggregate.publish("status.json",Map.of("status","FAILED_NONQUALIFYING"));
+                assertEquals(writer.bytes,Files.size(directory.resolve("status.json")));
+            }
+        }
+        var directory=Files.createDirectory(temp.resolve("unowned"));var scratch=Files.createDirectory(temp.resolve("unowned-scratch"));
+        var unowned=directory.resolve("binding.json.partial");Files.writeString(unowned,"UNRELATED");
+        try(var writer=new BObservationIdentificationTool.Writer(scratch,64L*1024*1024)) {
+            var aggregate=new BObservationIdentificationTool.DiagnosticAggregateWriter(directory,writer);
+            assertThrows(FileAlreadyExistsException.class,()->aggregate.publish("binding.json",Map.of()));
+            assertEquals("UNRELATED",Files.readString(unowned));assertEquals(0L,writer.bytes);
+        }
+    }
+    @Test void retainedRollbackFailureStaysChargedAndNeverClaimsExactStoredTotalsOrBypassesCaps() throws Exception {
+        for(String fault:List.of("progress.jsonl","binding.json.partial")) {
+            var directory=Files.createDirectory(temp.resolve("retained-"+fault));var scratch=Files.createDirectory(temp.resolve("retained-scratch-"+fault));
+            var io=new PartialAggregateIO(fault,true);io.armed=true;
+            try(var writer=new BObservationIdentificationTool.Writer(scratch,64L*1024*1024)) {
+                var aggregate=new BObservationIdentificationTool.DiagnosticAggregateWriter(directory,writer,io);
+                assertThrows(java.io.IOException.class,()->{if(fault.startsWith("progress"))aggregate.progress(Map.of("active",1));
+                    else aggregate.publish("binding.json",Map.of("schema",1));});
+                assertTrue(writer.bytes>=5);assertEquals(writer.bytes,aggregate.bytes);assertEquals(0,aggregate.publications);
+                aggregate.publish("status.json",Map.of("status","FAILED_NONQUALIFYING"));
+                var status=BIdentificationReceipt.read(directory.resolve("status.json"));
+                assertEquals("CONSERVATIVE_RESERVED_BYTES",status.get("byteAccounting"));
+                assertFalse(status.containsKey("totalOrdinaryAndTelemetryBytes"));assertFalse(status.containsKey("totalTelemetryBytes"));
+                assertEquals(writer.bytes,((Number)status.get("totalChargedOrdinaryAndTelemetryBytes")).longValue());
+                long stored;try(var paths=Files.list(directory)){stored=0;for(var p:paths.toList())stored+=Files.size(p);}
+                assertTrue(stored<=writer.bytes);assertTrue(((Number)status.get("retainedTelemetryReservationBytes")).longValue()>=5);
+                long statusSize=Files.size(directory.resolve("status.json"));writer.bytes=BObservationTrainRuntimeDiagnosticTool.DISK_BYTES;
+                assertThrows(BObservationIdentificationTool.RunLimitException.class,()->aggregate.publish("binding.json",Map.of()));
+                aggregate.bytes=BObservationTrainRuntimeDiagnosticTool.MAX_TELEMETRY_BYTES;writer.bytes=0;
+                assertThrows(BObservationIdentificationTool.RunLimitException.class,()->aggregate.progress(Map.of()));
+                assertEquals(statusSize,Files.size(directory.resolve("status.json")));
+            }
+        }
+    }
+    private static final class PartialAggregateIO implements BObservationIdentificationTool.AggregateIO {
+        final String name;final boolean rollbackFails;boolean armed;java.util.function.IntConsumer duringFailure=n->{};
+        PartialAggregateIO(String name,boolean rollbackFails){this.name=name;this.rollbackFails=rollbackFails;}
+        public void write(Path path,java.nio.channels.FileChannel channel,byte[] bytes) throws java.io.IOException {
+            if(armed&&path.getFileName().toString().equals(name)) {
+                armed=false;duringFailure.accept(bytes.length);channel.write(java.nio.ByteBuffer.wrap(bytes,0,5));throw new java.io.IOException("INJECTED_PARTIAL_WRITE");
+            }
+            BObservationIdentificationTool.AggregateIO.super.write(path,channel,bytes);
+        }
+        public void restoreProgress(Path path,long length,boolean created) throws java.io.IOException {
+            if(rollbackFails)throw new java.io.IOException("INJECTED_ROLLBACK_FAILURE");
+            BObservationIdentificationTool.AggregateIO.super.restoreProgress(path,length,created);
+        }
+        public void deleteOwned(Path path) throws java.io.IOException {
+            if(rollbackFails&&path.getFileName().toString().equals(name))throw new java.io.IOException("INJECTED_DELETE_FAILURE");
+            BObservationIdentificationTool.AggregateIO.super.deleteOwned(path);
+        }
+    }
+    @Test void returnedResourceLimitFailsItsOwnAndReconstructionPhasesWithoutRouteOrCacheWork() throws Exception {
+        assertReturnedIncompleteMap(BObservationIdentificationTool.TrainFixtureFault.RETURNED_RESOURCE_LIMIT);
+    }
+    @Test void returnedNumericFailureFailsItsOwnAndReconstructionPhasesWithoutRouteOrCacheWork() throws Exception {
+        assertReturnedIncompleteMap(BObservationIdentificationTool.TrainFixtureFault.RETURNED_NUMERIC_FAILURE);
+    }
+    private void assertReturnedIncompleteMap(BObservationIdentificationTool.TrainFixtureFault fault) throws Exception {
+            var telemetry=new BObservationRuntimeTelemetry(new AtomicLong()::incrementAndGet,s->{});
+            var output=temp.resolve(fault.name());
+            assertThrows(BObservationIdentificationTool.RunLimitException.class,()->BObservationIdentificationTool.runTrainFixture(output,
+                    BObservationIdentificationTool.Controls.defaults(),fault,telemetry));
+            for(String phase:List.of("MAP_SOLVE","RECONSTRUCTION")) {
+                var r=row(telemetry.snapshot(),phase);assertEquals(1L,r.get("attempted"));assertEquals(0L,r.get("succeeded"),phase);
+                assertEquals(1L,r.get("failed"),phase);assertEquals(0L,r.get("active"));
+            }
+            assertEquals(17L,((Map<?,?>)telemetry.snapshot().get("work")).get("MAP_TRANSITIONS"));
+            for(String phase:List.of("ROUTE_CHECK","PAIR_PROFILES","PAIR_CACHE_WRITE","COUPLED"))assertEquals(0L,row(telemetry.snapshot(),phase).get("attempted"));
+            var failure=BIdentificationReceipt.read(output.resolve("failure.json"));assertEquals("NONE",failure.get("selectionAuthority"));
+            assertEquals(false,failure.get("holdoutAuthority"));assertFalse(Files.exists(output.resolve("summary.json")));
+    }
+    @Test void pausedComputationIncludesItsChildrenButExcludesCallerIdleAndLaterClose() throws Exception {
+        var clock=new AtomicLong();var telemetry=new BObservationRuntimeTelemetry(clock::get,s->{});
+        var computation=telemetry.begin(BObservationRuntimeTelemetry.Phase.RECONSTRUCTION);
+        clock.set(5);computation.pause();clock.set(1005);computation.resume();
+        try(var child=telemetry.begin(BObservationRuntimeTelemetry.Phase.MAP_SOLVE)){clock.set(1012);child.succeeded();}
+        clock.set(1015);computation.succeeded();computation.close();clock.set(9999);computation.close();
+        assertEquals(15L,row(telemetry.snapshot(),"RECONSTRUCTION").get("elapsedNanos"));
+        assertEquals(7L,row(telemetry.snapshot(),"MAP_SOLVE").get("elapsedNanos"));
+        assertEquals(1L,row(telemetry.snapshot(),"RECONSTRUCTION").get("attempted"));
+        assertEquals(1L,row(telemetry.snapshot(),"RECONSTRUCTION").get("succeeded"));
+        assertEquals(0L,row(telemetry.snapshot(),"RECONSTRUCTION").get("active"));
+    }
     @Test void clockStartsBeforeInitialSourceVerificationAndItsTimeCannotBeReset() {
         var clock=new AtomicLong();var controls=new BObservationIdentificationTool.Controls(null,64L*1024*1024,
                 BObservationTrainRuntimeDiagnosticTool.WATCHDOG_NANOS,clock::get,
@@ -249,7 +417,7 @@ class V022BObservationTrainRuntimeDiagnosticTest {
     @Test void disabledTelemetryUsesOneTokenAndNeverReadsAClockOrCreatesSnapshots() throws Exception {
         var first=BObservationRuntimeTelemetry.NONE.begin(BObservationRuntimeTelemetry.Phase.RENDER);
         var second=BObservationRuntimeTelemetry.NONE.begin(BObservationRuntimeTelemetry.Phase.MAP_SOLVE);
-        assertSame(first,second);first.succeeded();first.close();second.close();
+        assertSame(first,second);first.pause();first.resume();first.succeeded();first.close();second.close();second.pause();second.resume();
         assertFalse(BObservationRuntimeTelemetry.NONE.enabled());
         assertEquals(Map.of(),BObservationRuntimeTelemetry.NONE.snapshot());
     }

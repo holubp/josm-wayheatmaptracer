@@ -48,15 +48,27 @@ final class BObservationRuntimeTelemetry {
         work[name.ordinal()]=Math.addExact(work[name.ordinal()],amount);
     }
     static final class Token implements AutoCloseable {
-        private final BObservationRuntimeTelemetry telemetry;private final Phase phase;private final long started;
-        private boolean succeeded,closed;
+        private final BObservationRuntimeTelemetry telemetry;private final Phase phase;private long started,accumulated;
+        private boolean succeeded,closed,running=true;
         private Token(){telemetry=null;phase=null;started=0;}
         private Token(BObservationRuntimeTelemetry telemetry,Phase phase,long started){this.telemetry=telemetry;this.phase=phase;this.started=started;}
         void succeeded() {if(telemetry!=null){if(closed)throw new IllegalStateException("Closed phase");succeeded=true;}}
+        void pause() {
+            if(telemetry==null)return;
+            if(closed||!running)throw new IllegalStateException("Phase is not running");
+            long duration=telemetry.clock.getAsLong()-started;
+            if(duration<0)throw new IllegalStateException("Nonmonotonic diagnostic clock");
+            accumulated=Math.addExact(accumulated,duration);running=false;
+        }
+        void resume() {
+            if(telemetry==null)return;
+            if(closed||running)throw new IllegalStateException("Phase is not paused");
+            started=telemetry.clock.getAsLong();running=true;
+        }
         public void close() {
             if(telemetry==null||closed)return;closed=true;
             var row=telemetry.values[phase.ordinal()];row[3]--;
-            long duration=telemetry.clock.getAsLong()-started;
+            long duration=accumulated+(running?telemetry.clock.getAsLong()-started:0);
             if(duration<0){row[2]++;throw new IllegalStateException("Nonmonotonic diagnostic clock");}
             row[4]=Math.addExact(row[4],duration);row[succeeded?1:2]++;
         }

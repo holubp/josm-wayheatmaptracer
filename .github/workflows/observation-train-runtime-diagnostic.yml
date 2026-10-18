@@ -24,7 +24,7 @@ jobs:
           set -eu
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           protocol=superpowers/docs/plans/2026-10-18-b-observation-runtime-diagnostic-freeze.json
-          printf '%s  %s\n' 6fcf5c74aa09ad6a1e418dec770b68adbcc37dc3f04faa0417be0af102d4b33b "$protocol" | sha256sum --check --status
+          printf '%s  %s\n' 3c9e872713736d1f475e3c9983bdf5be01e71dc88e89f24133a8cff241fd171d "$protocol" | sha256sum --check --status
       - name: Compile before starting the probe timer
         run: sh ./gradlew compileJava compileObservationIdentifyJava observationIdentifyClasses --console=plain
       - name: Run the fixed TRAIN diagnostic once
