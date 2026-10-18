@@ -117,7 +117,7 @@ public record AlignmentEditPlan(
                 .field(Double.toHexString(metricFrame.distortionCertificate().northMetersPerRadian()));
         }
         encoder.field(settingsHash).field(evidenceHash).field(parameterHash).field(routeIdentity)
-            .field(permissions.toString()).field(validation.disposition().name());
+            .field(permissions.canonicalIdentity()).field(validation.disposition().name());
         if (before.semanticWitness() != null) {
             encoder.field("semantic-witness").field(before.semanticWitness().canonicalHash());
         }

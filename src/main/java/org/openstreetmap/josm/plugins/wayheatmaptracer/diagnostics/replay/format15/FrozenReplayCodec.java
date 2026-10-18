@@ -199,6 +199,7 @@ public final class FrozenReplayCodec {
 
     /** Original partition authority; complete numerical frames have their own explicit header. */
     static byte[] encodeAuthority(NetworkSnapshotCapture.Specification s) {
+        requireLegacyPermissionSchema(s.permissions());
         if (s.fixedReceiverGeometry() && !s.metricFrame().hasCompleteNumericalIdentity()) {
             throw new IllegalArgumentException("Fixed receiver authority requires a complete metric frame");
         }
@@ -397,6 +398,7 @@ public final class FrozenReplayCodec {
         if (plan == null) {
             throw new IllegalArgumentException("Edit plan is required");
         }
+        requireLegacyPermissionSchema(plan.permissions());
         try {
             BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
                 Format15Safety.MAX_ARTIFACT_BYTES);
@@ -494,7 +496,16 @@ public final class FrozenReplayCodec {
         }
     }
 
+    /** Prevents legacy replay schemas from silently dropping new edit authority. */
+    private static void requireLegacyPermissionSchema(RecoveryPermissions permissions) {
+        if (!permissions.sharedNodeDisconnectionIntent().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Frozen replay schema does not encode shared-node disconnection intent");
+        }
+    }
+
     private static void request(DataOutputStream out, TraceRequest r) throws IOException {
+        requireLegacyPermissionSchema(r.permissions());
         key(out, r.selectedWayKey());
         range(out, r.selectedRange());
         en(out, r.engine());

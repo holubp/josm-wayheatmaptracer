@@ -58,7 +58,7 @@ public record PreviewReviewState(
         if (plan == null) {
             throw new IllegalArgumentException("Edit plan must not be null");
         }
-        String permissions = sha256("permissions-v1", plan.permissions().toString());
+        String permissions = sha256("permissions-v1", plan.permissions().canonicalIdentity());
         String source = sha256("source-v1", plan.before().datasetIdentity(),
             Long.toString(plan.before().sourceGeneration()), plan.evidenceHash(), plan.settingsHash(),
             plan.parameterHash());

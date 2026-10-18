@@ -354,10 +354,38 @@ public final class NetworkSnapshotCapture {
         Map<PrimitiveKey, Set<PrimitiveKey>> watches = materializer.watches();
         NetworkSnapshot core = new NetworkSnapshot(specification.snapshotId(), SnapshotRole.CAPTURED_BEFORE,
             specification.datasetIdentity(), specification.sourceGeneration(), closure, primitives, watches);
+        validateDisconnectionIntent(core, specification);
         NonTransportSemanticWitness witness = materializer.semanticWitness(core);
         return new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
                 core.sourceGeneration(), core.closure(), core.primitives(),
                 core.incomingReferrerWatches(), witness);
+    }
+
+    /** Binds explicit occurrence permission to this exact factual source capture. */
+    private static void validateDisconnectionIntent(NetworkSnapshot source,
+            Specification specification) {
+        var intent = specification.permissions().sharedNodeDisconnectionIntent();
+        if (intent.isEmpty()) {
+            return;
+        }
+        if (!intent.selectedWayKey().equals(specification.selectedWayKey())
+                || !intent.selectedRange().equals(specification.selectedRange())
+                || !intent.sourceNetworkIdentity().equals(source.canonicalHash())) {
+            throw new IllegalStateException("Disconnection intent is not bound to this factual source capture");
+        }
+        DetachedPrimitive selected = source.primitives().get(specification.selectedWayKey());
+        if (!(selected instanceof DetachedWay way)) {
+            throw new IllegalStateException("Disconnection intent selected way is absent from source capture");
+        }
+        for (Map.Entry<Integer, PrimitiveKey> request : intent.originalNodeKeys().entrySet()) {
+            int occurrence = request.getKey();
+            if (occurrence < specification.selectedRange().firstIndex()
+                    || occurrence > specification.selectedRange().lastIndex()
+                    || occurrence >= way.nodeKeys().size()
+                    || !way.nodeKeys().get(occurrence).equals(request.getValue())) {
+                throw new IllegalStateException("Disconnection intent occurrence differs from source capture");
+            }
+        }
     }
 
     private static void validateAuthority(DataSet dataSet, Specification specification,
