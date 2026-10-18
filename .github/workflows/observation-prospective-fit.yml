@@ -52,14 +52,45 @@ jobs:
       - name: Require a complete candidate receipt
         run: |
           python3 - <<'PY'
-          import json, os
+          import json, math, os, re
           from pathlib import Path
           root=Path(os.environ["RUNNER_TEMP"])/"josm-observation-prospective"/"fit-select"
           summary=json.loads((root/"summary.json").read_bytes())
-          assert summary["status"] == "FROZEN_PENDING_REGRESSION"
-          assert summary["protocolPurpose"] == "PROSPECTIVE_FIT"
-          assert summary["controllerApproval"] == "APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING"
-          assert (root/"frozen-candidate.json").is_file() and not (root/"failure.json").exists()
+          candidate=json.loads((root/"frozen-candidate.json").read_bytes())
+          def require(condition):
+              if not condition:
+                  raise SystemExit("Complete matching prospective candidate receipts required")
+          def finite(value):
+              return type(value) in (int,float) and math.isfinite(value)
+          fixed={"schema":1,"phase":"FIT_SELECT","scope":"FULL_PUBLIC_PROTOCOL",
+                 "status":"FROZEN_PENDING_REGRESSION","protocolPurpose":"PROSPECTIVE_FIT",
+                 "controllerApproval":"APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING"}
+          hashes=("manifestHash","sourceHash","catalogHash","sourceRegistryHash","executionPinsHash",
+                  "baseFamilyManifestHash","acceptanceConventionsHash")
+          shared=hashes+("featureVersion","rendererCancellation","selectionProtocol","trainingControlOrder","skippedErrors","launchContext")
+          for receipt in (summary,candidate):
+              require(isinstance(receipt,dict) and type(receipt.get("schema")) is int)
+              require(all(receipt.get(key)==value for key,value in fixed.items()))
+              require(all(isinstance(receipt.get(key),str) and re.fullmatch("[0-9a-f]{64}",receipt[key]) for key in hashes))
+              require(all(isinstance(receipt.get(key),str) and receipt[key] for key in shared if key!="launchContext"))
+              require(isinstance(receipt.get("launchContext"),dict) and bool(receipt["launchContext"]))
+          require(all(summary[key]==candidate[key] for key in shared))
+          require(summary.get("frozenArtifact")=="frozen-candidate.json" and summary.get("trainCoverage")=="ALL_ORIGINAL_TRAIN")
+          require(summary.get("selectionAuthority")=="FULL_PUBLIC_PROTOCOL" and summary.get("initialTrainScenes")==112)
+          require(not (root/"failure.json").exists() and not (root/"failure.json").is_symlink())
+          parameters=candidate.get("parameters")
+          require(isinstance(parameters,dict) and set(parameters)=={"G","lambda","B"} and all(finite(v) for v in parameters.values()))
+          require(parameters in summary.get("shortlist",[]))
+          require(all(isinstance(candidate.get(key),str) and re.fullmatch("[0-9a-f]{64}",candidate[key]) for key in ("modelHash","receiptSetHash")))
+          require(finite(candidate.get("selectScore")) and finite(candidate.get("baselineSelect")))
+          selections=[item for item in summary.get("selectConfigurations",[]) if isinstance(item,dict) and item.get("parameters")==parameters]
+          require(len(selections)==1 and selections[0].get("rankableFinite") is True and selections[0].get("meanLogLoss")==candidate["selectScore"])
+          require(isinstance(summary.get("baselineSelect"),dict) and summary["baselineSelect"].get("meanLogLoss")==candidate["baselineSelect"])
+          cases=candidate.get("selectCases")
+          require(isinstance(cases,list) and len(cases)==112 and all(isinstance(case,str) and case for case in cases) and len(set(cases))==112)
+          reports=candidate.get("acceptanceReports")
+          require(isinstance(reports,list) and bool(reports) and all(isinstance(report,str) and report for report in reports) and reports==summary.get("acceptanceReports"))
+          require(candidate.get("holdoutAuthority") is False and candidate.get("regressionPolicy")=="once-after-this-freeze-failure-rejects-no-reselection")
           PY
       - name: Upload public synthetic protocol receipts
         uses: actions/upload-artifact@v4

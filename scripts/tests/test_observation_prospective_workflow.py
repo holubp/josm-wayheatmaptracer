@@ -6,8 +6,10 @@ import json
 import os
 import re
 import subprocess
+import copy
 
 import yaml
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PINS = Path("superpowers/docs/plans/2026-10-18-b-observation-prospective-pins.json")
@@ -175,3 +177,65 @@ def test_precompile_pending_refusal_survives_python_optimization_with_controlled
             target.write_text(json.dumps({"approval": approval}))
             result = subprocess.run(["python3", "-O", "-c", body], cwd=tmp_path, capture_output=True)
             assert (result.returncode == 0) == expected_success
+
+
+def _complete_candidate_fixture():
+    header = {"schema": 1, "phase": "FIT_SELECT", "scope": "FULL_PUBLIC_PROTOCOL",
+              "protocolPurpose": "PROSPECTIVE_FIT", "controllerApproval": "APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING",
+              "featureVersion": "b-identification-facts-3", "rendererCancellation": "checkpoints-before-and-after-bounded-render-not-mid-pixel",
+              "selectionProtocol": "train-feasible-fixed-prefix-top4-score-order-v3",
+              "trainingControlOrder": "fixed-v0-right-v4-right-then-selector-first-pitch-desc-variant-contrast-side-v1",
+              "skippedErrors": "UNVISITED_UNKNOWN_NOT_PROVED_ABSENT",
+              "launchContext": {"repository": "fixture/repository", "runId": "1", "commit": "a" * 40,
+                                "workflowRef": "fixture/repository/.github/workflows/build.yml@refs/heads/fixture", "runAttempt": "1"}}
+    for field in ("manifestHash", "sourceHash", "catalogHash", "sourceRegistryHash", "executionPinsHash",
+                  "baseFamilyManifestHash", "acceptanceConventionsHash"):
+        header[field] = "a" * 64
+    header["status"] = "FROZEN_PENDING_REGRESSION"
+    parameters = {"G": 1.0, "lambda": 1.0, "B": 0.0}
+    summary = {**header, "frozenArtifact": "frozen-candidate.json", "trainCoverage": "ALL_ORIGINAL_TRAIN",
+               "selectionAuthority": "FULL_PUBLIC_PROTOCOL", "initialTrainScenes": 112, "shortlist": [parameters],
+               "selectConfigurations": [{"parameters": parameters, "meanLogLoss": 0.2, "rankableFinite": True}],
+               "baselineSelect": {"meanLogLoss": 0.3}, "acceptanceReports": ["fixture-check.json"]}
+    candidate = {**header, "parameters": parameters, "modelHash": "b" * 64, "receiptSetHash": "c" * 64,
+                 "selectScore": 0.2, "baselineSelect": 0.3, "selectCases": [f"FIXTURE_ONLY_SELECT_{i}" for i in range(112)],
+                 "acceptanceReports": ["fixture-check.json"], "holdoutAuthority": False,
+                 "regressionPolicy": "once-after-this-freeze-failure-rejects-no-reselection"}
+    return summary, candidate, header
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_actual_final_receipt_gate_refuses_invalid_candidates_normally_and_under_optimization(tmp_path, optimized):
+    workflow = _load(NEW["prospective-fit"][1])
+    job = workflow["jobs"][NEW["prospective-fit"][0]]
+    step = next(s for s in job["steps"] if s.get("name") == "Require a complete candidate receipt")
+    body = step["run"].split("python3 - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
+    summary, candidate, header = _complete_candidate_fixture()
+    cases = [("valid", summary, candidate, False, True)]
+    for status in ("FAMILY_REJECTED_NO_FEASIBLE_TRAIN_CANDIDATE", "FIT_SCORED_PENDING_GEOMETRY"):
+        cases.append((status, {**summary, "status": status}, candidate, False, False))
+    for field in ("protocolPurpose", "controllerApproval", "trainCoverage", "selectionAuthority", "frozenArtifact"):
+        cases.append(("summary-" + field, {**summary, field: "WRONG"}, candidate, False, False))
+    for field in header:
+        bad = copy.deepcopy(candidate)
+        bad[field] = "WRONG"
+        cases.append(("candidate-binding-" + field, summary, bad, False, False))
+    for field in ("parameters", "modelHash", "receiptSetHash", "selectScore", "baselineSelect", "selectCases",
+                  "acceptanceReports", "regressionPolicy", "holdoutAuthority"):
+        bad = copy.deepcopy(candidate)
+        del bad[field]
+        cases.append(("candidate-missing-" + field, summary, bad, False, False))
+    cases += [("missing-candidate", summary, None, False, False), ("malformed-candidate", summary, "{", False, False),
+              ("candidate-object-required", summary, [], False, False), ("failure", summary, candidate, True, False),
+              ("missing-summary", None, candidate, False, False), ("malformed-summary", "{", candidate, False, False)]
+    for name, summary_value, candidate_value, failure, success in cases:
+        root = tmp_path / (str(optimized) + "-" + name) / "josm-observation-prospective" / "fit-select"
+        root.mkdir(parents=True)
+        for filename, value in (("summary.json", summary_value), ("frozen-candidate.json", candidate_value)):
+            if value is not None:
+                (root / filename).write_text(value if isinstance(value, str) else json.dumps(value))
+        if failure:
+            (root / "failure.json").write_text("{}")
+        command = ["python3", *(["-O"] if optimized else []), "-c", body]
+        result = subprocess.run(command, env={**os.environ, "RUNNER_TEMP": str(root.parents[1])}, capture_output=True)
+        assert (result.returncode == 0) == success, (optimized, name, result.stderr.decode())
