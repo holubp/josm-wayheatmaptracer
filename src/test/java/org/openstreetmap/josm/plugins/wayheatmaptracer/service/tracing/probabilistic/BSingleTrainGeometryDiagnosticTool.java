@@ -4,6 +4,8 @@ import java.util.*;
 import java.nio.file.*;
 import java.util.function.LongSupplier;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BIdentificationCatalog.*;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BIdentificationAcceptance.*;
@@ -62,6 +64,23 @@ public final class BSingleTrainGeometryDiagnosticTool {
         for(int i=0;i<11;i++)files.add("states-%02d.json".formatted(i));
         for(int i=0;i<5;i++)files.add("progress-%02d.json".formatted(i));return List.copyOf(files);
     }
+    static Optional<Map<String,Object>> segmentFields(String path,int endProfile,MetricPoint a,MetricPoint b,
+            BSingleTrainGeometryReachability.Oracle oracle,MetricRegion originalRegion,
+            AttemptMemoryLedger.Owner owner,CancellationProbe cancellation) throws Exception {
+        cancellation.checkpoint();var clipped=BSingleTrainDiagnosticBridge.clip(a,b);boolean supported=oracle.allowed(a,b);
+        if(clipped.isEmpty())return Optional.empty();
+        var fields=new LinkedHashMap<String,Object>(Map.of("path",path,"endProfile",endProfile,"clipped",points(clipped.get()),
+                "wholeSegmentContained",supported,"startContained",oracle.union.contains(clipped.get().get(0)),
+                "endContained",oracle.union.contains(clipped.get().get(1)),"maximumDistanceMeters","UNAVAILABLE"));
+        boolean start=originalRegion==null||originalRegion.contains(a),end=originalRegion==null||originalRegion.contains(b);
+        fields.put("originalEdge",points(List.of(a,b)));
+        fields.put("originalDecisionStartContained",start);fields.put("originalDecisionEndContained",end);
+        fields.put("originalDecisionWholeEdgeAdmitted",start&&end&&(originalRegion==null
+                ||originalRegion.containsSegment(a,b,cancellation,ignored->{},owner)));
+        fields.put("originalDecisionScope","FULL_ORIGINAL_CONSECUTIVE_EDGE");
+        fields.put("unionContainmentScope","SELECTOR_CLIP_X40_80");
+        return Optional.of(Collections.unmodifiableMap(fields));
+    }
     private static void directory(Path output) throws Exception {
         var path=output.toAbsolutePath().normalize();
         for(Path p=path;p!=null;p=p.getParent())if(Files.isSymbolicLink(p))throw new SecurityException("Output symlinks forbidden");
@@ -115,10 +134,8 @@ public final class BSingleTrainGeometryDiagnosticTool {
                         boolean cachedPass=true;
                         for(int i=1;i<entry.getValue().size();i++) {
                             cancellation.checkpoint();var a=entry.getValue().get(i-1);var b=entry.getValue().get(i);
-                            var clipped=BSingleTrainDiagnosticBridge.clip(a,b);boolean allowed=oracle.allowed(a,b);cachedPass&=allowed;
-                            if(clipped.isPresent())segments.add(Map.of("path",entry.getKey(),"endProfile",i,"clipped",points(clipped.get()),
-                                    "wholeSegmentContained",allowed,"startContained",oracle.union.contains(clipped.get().get(0)),
-                                    "endContained",oracle.union.contains(clipped.get().get(1)),"maximumDistanceMeters","UNAVAILABLE"));
+                            var fields=segmentFields(entry.getKey(),i,a,b,oracle,loaded.scene.evidence().decisionRegion(),loaded.owner,cancellation);
+                            if(fields.isPresent()){cachedPass&=(Boolean)fields.get().get("wholeSegmentContained");segments.add(fields.get());}
                         }
                         if(cachedPass)throw new SecurityException("Cached segment oracle disagrees with actual failed route");
                     }

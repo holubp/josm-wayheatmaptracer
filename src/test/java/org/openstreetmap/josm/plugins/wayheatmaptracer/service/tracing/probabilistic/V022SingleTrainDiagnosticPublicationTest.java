@@ -48,4 +48,47 @@ class V022SingleTrainDiagnosticPublicationTest {
         }
         assertEquals(0,writer.metadata.currentBytes());
     }
+    @Test void segmentExportSeparatesFullOriginalAdmissionFromSelectorClipSupport() throws Exception {
+        var ledger=new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger(100_000);
+        var owner=ledger.rootOwner();
+        var a=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(0,0);
+        var b=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(120,0);
+        var left=org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.rectangle(-1,-1,30,1);
+        var right=org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.rectangle(40,-1,121,1);
+        var disconnected=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion(List.of(left.polygons().get(0),right.polygons().get(0)));
+        try {
+            var cancellation=org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE;
+            var oracle=new BSingleTrainGeometryReachability.Oracle(List.of(List.of(a,b)),.5,owner,cancellation);
+            var clipped=BSingleTrainDiagnosticBridge.clip(a,b).orElseThrow();
+            assertTrue(disconnected.contains(a));assertTrue(disconnected.contains(b));
+            assertFalse(disconnected.containsSegment(a,b));
+            assertTrue(disconnected.containsSegment(clipped.get(0),clipped.get(1)),"gap lies outside the selector clip");
+            assertTrue(oracle.allowed(a,b),"whole selector clip is supported");
+            var fields=BSingleTrainGeometryDiagnosticTool.segmentFields("synthetic",1,a,b,oracle,disconnected,owner,cancellation).orElseThrow();
+            assertEquals(true,fields.get("wholeSegmentContained"));
+            assertEquals(false,fields.get("originalDecisionWholeEdgeAdmitted"));
+            var cell=List.of(new LateralStateCell(0,1,true,true,"fixed"));
+            var normal=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint(0,1);
+            var profiles=List.of(new InferenceProfile(0,a,normal,cell,new double[]{0},List.of(),0,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership.NO_RASTER,true),
+                    new InferenceProfile(120,b,normal,cell,new double[]{0},List.of(),0,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership.NO_RASTER,true));
+            assertEquals(new TransitionAdmissionMemo(8,owner).allowed(0,0,0,profiles,disconnected),
+                    fields.get("originalDecisionWholeEdgeAdmitted"),"same original production admission contract");
+            assertEquals(true,fields.get("originalDecisionStartContained"));assertEquals(true,fields.get("originalDecisionEndContained"));
+            assertEquals("FULL_ORIGINAL_CONSECUTIVE_EDGE",fields.get("originalDecisionScope"));
+            assertEquals("SELECTOR_CLIP_X40_80",fields.get("unionContainmentScope"));
+            assertEquals(List.of(Map.of("xMeters",0.0,"yMeters",0.0),Map.of("xMeters",120.0,"yMeters",0.0)),fields.get("originalEdge"));
+            BIdentificationReceipt.publish(directory.resolve("segments-contract.json"),Map.of("segments",Collections.nCopies(56,fields)));
+            assertTrue(Files.size(directory.resolve("segments-contract.json"))<=65_536,"unchanged per-receipt bound covers the fixed56 clips");
+            var published=BIdentificationReceipt.parse(Files.readAllBytes(directory.resolve("segments-contract.json")));
+            var first=(Map<?,?>)((List<?>)published.get("segments")).get(0);
+            assertEquals(false,first.get("originalDecisionWholeEdgeAdmitted"));
+            assertEquals("FULL_ORIGINAL_CONSECUTIVE_EDGE",first.get("originalDecisionScope"));
+            var connected=org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.rectangle(-1,-1,121,1);
+            assertEquals(true,BSingleTrainGeometryDiagnosticTool.segmentFields("synthetic",1,a,b,oracle,connected,owner,cancellation)
+                    .orElseThrow().get("originalDecisionWholeEdgeAdmitted"));
+        } finally {owner.close();}
+        assertEquals(0,ledger.currentBytes());
+    }
 }
