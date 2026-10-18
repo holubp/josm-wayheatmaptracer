@@ -1,0 +1,119 @@
+name: Fixed original TRAIN geometry diagnostic
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  observation-single-train-geometry:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SINGLE_TRAIN_FREEZE_SHA256: 5b16da5b312cbd22d1f5aca9ac08ca3a5d6823b838c9924c0a58ff706d3f1169
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify reviewed external freeze and every source before compilation
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+          freeze=Path("superpowers/docs/plans/2026-10-18-b-single-train-geometry-freeze.json").read_bytes()
+          expected=os.environ["SINGLE_TRAIN_FREEZE_SHA256"]
+          if not re.fullmatch("[0-9a-f]{64}",expected) or hashlib.sha256(freeze).hexdigest()!=expected:
+              raise SystemExit("External fixed freeze mismatch")
+          fields=json.loads(freeze)
+          if fields.get("schema")!=1 or fields.get("purpose")!="SINGLE_ORIGINAL_TRAIN_GEOMETRY_DIAGNOSTIC" or fields.get("approval")!="APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING":
+              raise SystemExit("Fixed diagnostic pending review or wrong purpose")
+          members=fields.get("members")
+          if not isinstance(members,dict) or not members:
+              raise SystemExit("Fixed source inventory required")
+          for path,digest in members.items():
+              member=Path(path)
+              if member.is_absolute() or ".." in member.parts or not re.fullmatch("[0-9a-f]{64}",digest) or hashlib.sha256(member.read_bytes()).hexdigest()!=digest:
+                  raise SystemExit("Fixed diagnostic source mismatch")
+          PY
+      - name: Compile outside the one diagnostic clock
+        run: sh ./gradlew compileJava compileObservationIdentifyJava observationIdentifyClasses --console=plain
+      - name: Run only the fixed original TRAIN geometry diagnostic once
+        run: |
+          set -eu
+          timeout 360s sh ./gradlew v022SingleTrainGeometryDiagnostic \
+            -PsingleTrainFreezeSha256="$SINGLE_TRAIN_FREEZE_SHA256" \
+            -PsingleTrainOutput="$RUNNER_TEMP/josm-single-train-geometry" --console=plain
+      - name: Require complete nonqualifying geometry evidence
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ["RUNNER_TEMP"])/"josm-single-train-geometry"
+          status=json.loads((root/"status.json").read_bytes())
+          binding=json.loads((root/"binding.json").read_bytes())
+          paths=json.loads((root/"paths.json").read_bytes())
+          search=json.loads((root/"search.json").read_bytes())
+          witness=json.loads((root/"witness.json").read_bytes())
+          def require(condition):
+              if not condition:
+                  raise SystemExit("Complete fixed nonqualifying geometry evidence required")
+          purpose="SINGLE_ORIGINAL_TRAIN_GEOMETRY_DIAGNOSTIC"
+          require(status.get("purpose")==binding.get("purpose")==purpose)
+          require(binding.get("freezeSha256")==os.environ["SINGLE_TRAIN_FREEZE_SHA256"])
+          require(binding.get("case")=="sparse-crossing-noisy-strands-vs-persistent-parallel/train/v0/right")
+          require(binding.get("sourceProofOnly")=="94d7ea9a03134cab331b317a1764b0d517bd2dc1dea6d2a78482bcf8313dc6de")
+          require(status.get("status") in ("WITNESS","EXHAUSTIVE_ABSENCE") and search.get("status")==status["status"])
+          require(status.get("rasterReads")==status.get("labelReads")==1 and status.get("selectReads")==status.get("holdoutReads")==0)
+          require(status.get("ownerBytesAfterClose")==0 and status.get("selectionAuthority")==binding.get("selectionAuthority")=="NONE")
+          require(paths.get("newMapSolves")==paths.get("newLikelihoodScores")==0)
+          require(set(paths.get("paths",{}))=={"G1-L1-B0","G1-L1-B1"})
+          phases=status.get("phases",{})
+          require(set(phases)=={"ACQUISITION","DECODE","GEOMETRY","SEARCH","EXPORT"})
+          require(all(row=={"attempted":1,"succeeded":1,"failed":0,"active":0} for row in phases.values()))
+          require(status.get("uncertainOrdinaryReservationBytes")==0 and isinstance(status.get("peakAccountedBytes"),int) and status["peakAccountedBytes"]<=67108864)
+          require(status.get("diskChargeBeforeStatusUpperBound",2147483649)<=2147483648)
+          if status["status"]=="WITNESS":
+              require(witness.get("actualWholeOraclePassed") is True and len(witness.get("states",[]))==len(witness.get("points",[]))==81 and search.get("exhaustive") is False)
+          else:
+              require(search.get("exhaustive") is True and witness.get("states")==witness.get("points")==[] and witness.get("actualWholeOraclePassed") is False)
+          PY
+      - name: Upload only fixed public geometry evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-single-train-geometry
+          path: |
+            ${{ runner.temp }}/josm-single-train-geometry/binding.json
+            ${{ runner.temp }}/josm-single-train-geometry/paths.json
+            ${{ runner.temp }}/josm-single-train-geometry/segments.json
+            ${{ runner.temp }}/josm-single-train-geometry/search.json
+            ${{ runner.temp }}/josm-single-train-geometry/witness.json
+            ${{ runner.temp }}/josm-single-train-geometry/status.json
+            ${{ runner.temp }}/josm-single-train-geometry/oracle-00.json
+            ${{ runner.temp }}/josm-single-train-geometry/oracle-01.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-00.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-01.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-02.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-03.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-04.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-05.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-06.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-07.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-08.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-09.json
+            ${{ runner.temp }}/josm-single-train-geometry/states-10.json
+            ${{ runner.temp }}/josm-single-train-geometry/progress-00.json
+            ${{ runner.temp }}/josm-single-train-geometry/progress-01.json
+            ${{ runner.temp }}/josm-single-train-geometry/progress-02.json
+            ${{ runner.temp }}/josm-single-train-geometry/progress-03.json
+            ${{ runner.temp }}/josm-single-train-geometry/progress-04.json
+          if-no-files-found: warn
+          retention-days: 5

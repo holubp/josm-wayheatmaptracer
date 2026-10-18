@@ -208,7 +208,7 @@ def test_registered_build_workflow_can_call_experiment_without_building_a_jar():
     build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
     assert "workflow_dispatch" in build["on"]
     call = build["jobs"]["observation-identification"]
-    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'"
+    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'"
     assert call["uses"] == "./.github/workflows/observation-identification.yml"
     assert build["jobs"]["public-validation"]["if"] == "github.event_name != 'workflow_dispatch'"
 
@@ -219,7 +219,7 @@ def test_renderer_diagnostic_dispatch_is_bounded_and_synthetic_only():
     assert option["type"] == "boolean"
     assert option["default"] == "false"
     job = build["jobs"]["observation-public-diagnostics"]
-    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'"
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'"
     assert job["timeout-minutes"] == "15"
     assert build["permissions"] == {"contents": "read"}
     commands = "\n".join(step.get("run", "") for step in job["steps"])

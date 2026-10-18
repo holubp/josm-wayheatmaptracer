@@ -37,7 +37,7 @@ def test_explicit_choice_keeps_existing_default_and_new_protocols_default_off():
     option = _load(".github/workflows/build.yml")["on"]["workflow_dispatch"]["inputs"].get("observation_protocol")
     assert option == {
         "description": "Choose a separate prospective protocol only after controller approval",
-        "type": "choice", "default": "legacy", "options": ["legacy", "optimized-train-runtime", "prospective-fit"],
+        "type": "choice", "default": "legacy", "options": ["legacy", "optimized-train-runtime", "prospective-fit", "single-train-geometry"],
     }
 
 

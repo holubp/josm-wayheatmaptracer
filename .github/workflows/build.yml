@@ -23,17 +23,18 @@ on:
           - legacy
           - optimized-train-runtime
           - prospective-fit
+          - single-train-geometry
 
 permissions:
   contents: read
 
 jobs:
   observation-identification:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'
     uses: ./.github/workflows/observation-identification.yml
 
   observation-public-diagnostics:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -62,16 +63,20 @@ jobs:
           retention-days: 5
 
   observation-train-runtime:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_train_runtime == true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_train_runtime == true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'
     uses: ./.github/workflows/observation-train-runtime-diagnostic.yml
 
   observation-train-runtime-optimized:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_protocol == 'optimized-train-runtime'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_protocol == 'optimized-train-runtime' && inputs.observation_protocol != 'single-train-geometry'
     uses: ./.github/workflows/observation-train-runtime-optimized.yml
 
   observation-prospective-fit:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_protocol == 'prospective-fit'
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_protocol == 'prospective-fit' && inputs.observation_protocol != 'single-train-geometry'
     uses: ./.github/workflows/observation-prospective-fit.yml
+
+  observation-single-train-geometry:
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_protocol == 'single-train-geometry'
+    uses: ./.github/workflows/observation-single-train-geometry.yml
 
   public-validation:
     if: github.event_name != 'workflow_dispatch'

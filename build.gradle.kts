@@ -27,6 +27,7 @@ sourceSets {
     create("observationIdentify") {
         resources.setSrcDirs(listOf("src/test/resources"))
         resources.include("b-observation-identification/holdout-index.json")
+        resources.include("b-single-train-geometry/*.json")
         java.setSrcDirs(listOf("src/test/java"))
         java.include(
             "org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/ObservationManifestJson.java",
@@ -50,7 +51,11 @@ sourceSets {
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationTrainRuntimeDiagnosticTool.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BProspectiveIdentificationManifest.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationOptimizedTrainRuntimeDiagnosticTool.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BProspectiveObservationIdentificationTool.java"
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BProspectiveObservationIdentificationTool.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BSingleTrainDiagnosticManifest.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BSingleTrainDiagnosticBridge.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BSingleTrainGeometryReachability.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BSingleTrainGeometryDiagnosticTool.java"
         )
         compileClasspath += sourceSets["main"].output + configurations["testCompileClasspath"]
         runtimeClasspath += output + compileClasspath + configurations["testRuntimeClasspath"]
@@ -252,6 +257,22 @@ tasks.register<JavaExec>("v022ObservationOptimizedTrainRuntimeDiagnostic") {
         }
     }
     args("--output", output.orNull ?: "", "--pins-sha256", pins.orNull ?: "")
+}
+
+tasks.register<JavaExec>("v022SingleTrainGeometryDiagnostic") {
+    group = "verification"
+    description = "Runs only the separately reviewed single original TRAIN geometry diagnostic"
+    dependsOn(tasks.named("observationIdentifyClasses"))
+    classpath = sourceSets["observationIdentify"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BSingleTrainGeometryDiagnosticTool")
+    val output = providers.gradleProperty("singleTrainOutput")
+    val freeze = providers.gradleProperty("singleTrainFreezeSha256")
+    doFirst {
+        if (!output.isPresent || output.get().isBlank() || !freeze.isPresent || !freeze.get().matches(Regex("[0-9a-f]{64}"))) {
+            throw GradleException("Requires singleTrainOutput and independent literal singleTrainFreezeSha256")
+        }
+    }
+    args("--output", output.orNull ?: "", "--freeze-sha256", freeze.orNull ?: "")
 }
 
 tasks.register<JavaExec>("v022ObservationProspectiveIdentify") {
