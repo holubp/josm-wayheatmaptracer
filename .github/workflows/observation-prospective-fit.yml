@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      PROSPECTIVE_PINS_SHA256: 3301d6aefdc9b9a73f282b0e79ca2049266f9122e9828d703e58c9dc3706e10d
+      PROSPECTIVE_PINS_SHA256: 7013cf2b3d170c1c8d472f99d0da209ee5eb9e5811703f9407267cb32664d334
     steps:
       - uses: actions/checkout@v4
         with:
