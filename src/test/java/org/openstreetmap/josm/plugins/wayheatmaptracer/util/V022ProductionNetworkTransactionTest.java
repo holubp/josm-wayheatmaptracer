@@ -87,6 +87,29 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 class V022ProductionNetworkTransactionTest {
     @ParameterizedTest
     @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void explicitMultiwayDisconnectionPreservesEveryOtherReferrerAcrossApplyUndoRedo(AlignmentMode mode) {
+        var fixture = DisconnectionTransactionFixture.create(mode, false, true);
+        var original = V022AtomicApplyTest.LiveState.capture(fixture.data());
+        var receiverNodes = fixture.receivers().stream().map(Way::getNodes).toList();
+        var coordinates = fixture.originals().stream().map(Node::getCoor).toList();
+        var command = fixture.command(point -> { });
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().add(command));
+        var applied = V022AtomicApplyTest.LiveState.capture(fixture.data());
+        for (int i = 0; i < fixture.receivers().size(); i++) {
+            assertEquals(receiverNodes.get(i), fixture.receivers().get(i).getNodes());
+            assertFalse(fixture.receivers().get(i).isModified());
+        }
+        assertEquals(coordinates, fixture.originals().stream().map(Node::getCoor).toList());
+        assertFalse(fixture.selected().getNodes().contains(fixture.originals().get(1)));
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        original.assertMatches(fixture.data());
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().redo());
+        applied.assertMatches(fixture.data());
+        V022AtomicApplyTest.onEdt(() -> UndoRedoHandler.getInstance().undo());
+        original.assertMatches(fixture.data());
+    }
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
     void disconnectedProductionPlansRollBackEveryMutationWithoutOrphanOrSharedDeletion(AlignmentMode mode) {
         for (boolean partialBoundary : List.of(false, true)) {
             var fixture = DisconnectionTransactionFixture.create(mode, partialBoundary);

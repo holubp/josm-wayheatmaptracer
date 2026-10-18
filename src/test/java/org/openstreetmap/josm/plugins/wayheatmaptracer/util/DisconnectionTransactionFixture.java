@@ -41,6 +41,9 @@ record DisconnectionTransactionFixture(DataSet data, Way selected, List<Node> or
         LiveBPreviewService.Captured captured, LiveBPreviewService.VisibleRaster raster,
         VisibleSourceEpoch epoch) {
     static DisconnectionTransactionFixture create(AlignmentMode mode, boolean partialBoundary) {
+        return create(mode, partialBoundary, false);
+    }
+    static DisconnectionTransactionFixture create(AlignmentMode mode, boolean partialBoundary, boolean multiway) {
         DataSet data = new DataSet();
         List<Node> nodes = new ArrayList<>();
         double[] east = {-20, -12, 12, 20};
@@ -61,6 +64,10 @@ record DisconnectionTransactionFixture(DataSet data, Way selected, List<Node> or
             Way receiver = way(20 + occurrence, List.of(nodes.get(occurrence), end));
             data.addPrimitive(receiver);
             receivers.add(receiver);
+        }
+        if (multiway) {
+            Node end = node(39, -12, -12); data.addPrimitive(end);
+            Way receiver = way(29, List.of(nodes.get(1), end)); data.addPrimitive(receiver); receivers.add(receiver);
         }
         int first = partialBoundary ? 1 : 0, last = partialBoundary ? 2 : 3;
         SelectionContext selection = new SelectionContext(selected, first, last,

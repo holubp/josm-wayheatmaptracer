@@ -9,13 +9,20 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 
 /** Complete detached input required for strict offline scalar and final-geometry replay. */
 public record FrozenReplayInput(TraceRequest request, EvidenceSnapshot evidence,
-        NetworkSnapshot network, ModernTracePipeline.Options options) {
+        NetworkSnapshot network, ModernTracePipeline.Options options, double planSearchRadiusMeters) {
+    public FrozenReplayInput(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot network, ModernTracePipeline.Options options) {
+        this(request, evidence, network, options, request.permissions().ordinaryRadiusMeters());
+    }
     /** Rejects mixed-attempt values before they reach a production engine. */
     public FrozenReplayInput {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(evidence, "evidence");
         Objects.requireNonNull(network, "network");
         Objects.requireNonNull(options, "options");
+        if (!Double.isFinite(planSearchRadiusMeters) || planSearchRadiusMeters <= 0
+                || planSearchRadiusMeters < request.permissions().ordinaryRadiusMeters())
+            throw new IllegalArgumentException("Frozen plan search radius is invalid");
         if (!request.evidenceSnapshotId().equals(evidence.snapshotId())
                 || !request.evidenceContentHash().equals(evidence.canonicalHash())
                 || !request.networkSnapshotId().equals(network.snapshotId())

@@ -865,12 +865,17 @@ needs an actual retained production route with positive finite direct support an
 no hard quality finding, even if its disposition claims review. Frozen/no-route,
 cancelled, resource-limited or inconsistent results cannot supply clone authority.
 
-This is backend planning, not a completed disconnection chooser or transaction UI.
-`FrozenReplayCodec` deliberately refuses nonempty disconnection permissions pending
-replay-schema versioning that preserves source, mode, occurrence/replacement and
-port fields. Empty constructors and hashes retain their historical behavior;
-never strip intent or source to bypass that refusal. The live contracts are enforced
-by `IntervalTraceBatch`, `SharedNodeDisconnectionPlanner` and `AlignmentEditPlan`.
+The modeless chooser keeps occurrence choices session-local and recomputes through
+a fresh owned capture; clearing a previous choice restores empty authority.
+Versioned `FrozenReplayCodec` envelopes preserve initial source, mode, occurrence
+replacements and proposed ports. Empty constructors and historical hashes retain
+their native behavior; absent fields never grant disconnection authority.
+New ordinary and interval contact receipts bind actual contacts, plan and exact
+confirmation identity to production replay. Non-FIXED contact-only captures retain
+factual diagnostics but explicitly refuse unsupported contact/edit-plan replay;
+supported disconnection capture keeps the existing FIXED selected-way-only policy.
+The live contracts remain enforced by `IntervalTraceBatch`,
+`SharedNodeDisconnectionPlanner` and `AlignmentEditPlan`.
 
 ### Modern source freshness in the current development build
 

@@ -395,12 +395,8 @@ public class AlignWayAction extends JosmAction {
         }
 
         private String choiceIdentity() {
-            return "intervals:" + batch.options().sourceTier() + ":"
-                    + batch.fullRequest().evidenceContentHash() + ":" + batch.runs().size() + ":"
-                    + java.util.stream.IntStream
-                    .range(0, batch.runs().size())
-                    .mapToObj(index -> index + "=" + routeChoices.getOrDefault(index, 0))
-                    .reduce((left, right) -> left + "," + right).orElse("");
+            return org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernPlanReview
+                    .intervalCandidateIdentity(batch, routeChoices);
         }
     }
 
@@ -991,6 +987,10 @@ public class AlignWayAction extends JosmAction {
         JButton close = new JButton(tr("Close preview"));
         boolean[] applying = {false};
         boolean[] completed = {false};
+        JButton disconnect = new JButton(tr("Disconnect selected way at shared nodes…"));
+        disconnect.addActionListener(event -> showDisconnectionChooser(owner, dialog, dataSet,
+                selection, imageryLayer, mapView, slideConfig, persistedSlideConfig, tracingAtCapture,
+                computed, diagnosticAttemptIdentity, previewSourceOwner, () -> completed[0] = true));
         JScrollPane intervalScroll = new JScrollPane(intervalControls);
         intervalScroll.setPreferredSize(new Dimension(680, 180));
         String settingsNotice = modernSettingsNotice(persistedSlideConfig, slideConfig);
@@ -1000,6 +1000,7 @@ public class AlignWayAction extends JosmAction {
         if (sourceChoices.getItemCount() > 1) panel.add(sourceChoices);
         panel.add(intervalScroll);
         panel.add(qualityScroll);
+        panel.add(disconnect);
         panel.add(confirm);
         panel.add(apply);
         panel.add(close);
@@ -1035,6 +1036,7 @@ public class AlignWayAction extends JosmAction {
             ValidationReport.Disposition disposition = assessment.plan().isPresent()
                     ? assessment.plan().orElseThrow().validation().disposition()
                     : ValidationReport.Disposition.HARD_BLOCKED;
+            overlay.setDisconnectionLocations(disconnectionLocations(assessment.plan().orElse(null)));
             overlay.show(selection, display, carrier, switch (disposition) {
                 case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
                 case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
@@ -1044,6 +1046,12 @@ public class AlignWayAction extends JosmAction {
             ModernApplyPreflight preflight = modernApplyPreflight(computed.captured(), slideConfig);
             boolean sourceApply = intervalApplySourceAvailable(computed.captured());
             quality.setText(intervalPreviewSummary(state)
+                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernPlanReview.summary(
+                            assessment.plan().orElse(null), state.batch().evidence(),
+                            state.batch().fullRequest().permissions().ordinaryRadiusMeters())
+                    + (assessment.unownedDisconnectionOccurrences().isEmpty() ? ""
+                            : "\nChosen disconnections have no safe production route: "
+                                    + assessment.unownedDisconnectionOccurrences())
                     + "\nApply: " + (preflight == ModernApplyPreflight.READY && sourceApply
                             && state.applyAvailable() ? "available" : "unavailable")
                     + (preflight == ModernApplyPreflight.READY ? ""
@@ -1219,6 +1227,136 @@ public class AlignWayAction extends JosmAction {
         }
     }
 
+    private static List<EastNorth> disconnectionLocations(AlignmentEditPlan plan) {
+        if (plan == null || plan.disconnectionSource() == null) return List.of();
+        return plan.permissions().sharedNodeDisconnectionIntent().originalNodeKeys().values().stream()
+                .map(key -> (org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode)
+                        plan.disconnectionSource().primitives().get(key))
+                .map(node -> projectGeographic(node.coordinate())).toList();
+    }
+
+    /** Keeps choices local to this window and recomputes through a fresh owned live capture. */
+    private void showDisconnectionChooser(PreviewSessionController.Owner owner, JDialog preview,
+            DataSet dataSet, SelectionContext selection, ImageryLayer imageryLayer, MapView mapView,
+            AlignmentConfig config, AlignmentConfig persisted, TracingSettings tracing,
+            LiveBPreviewService.Computed computed, String attemptIdentity,
+            TileFetchCoordinator sourceOwner, Runnable beforeRestart) {
+        try {
+            if (!livePreviewSession.isCurrentWindow(owner, preview, activePreviewDialog, preview.isDisplayable()))
+                throw new IllegalStateException("This preview no longer owns the current attempt");
+            requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, config, persisted, tracing,
+                    computed.captured(), sourceOwner);
+            RecoveryPermissions current = computed.captured().specification().permissions();
+            if (current.junctionPolicy() != JunctionPolicy.FIXED || current.reconstructIncidentWays())
+                throw new IllegalArgumentException("Use fixed junctions before explicitly disconnecting selected-way occurrences.");
+            var source = computed.captured().disconnectionSource();
+            if (source == null) throw new IllegalStateException("The original pre-island source is unavailable; run a new slide.");
+            JDialog chooser = new JDialog(preview, tr("Disconnect selected way at shared nodes"), false);
+            var buttons = disconnectionChooserControls(source, computed.request().selectedWayKey(),
+                    computed.request().selectedRange(), current, () -> {
+                        if (!livePreviewSession.isCurrentWindow(owner, preview, activePreviewDialog,
+                                preview.isDisplayable())) throw new IllegalStateException("The disconnection choice is stale");
+                        requireLiveBCurrent(dataSet, selection, imageryLayer, mapView, config, persisted,
+                                tracing, computed.captured(), sourceOwner);
+                    }, chooser::dispose, permissions -> {
+                        beforeRestart.run();
+                        if (!livePreviewSession.close(owner)) throw new IllegalStateException("The preview was superseded");
+                        chooser.dispose(); preview.dispose();
+                        boolean managed = computed.captured().managedRaster() != null;
+                        startLiveBPreview(dataSet, selection, imageryLayer, mapView, config, config,
+                                persisted, tracing, permissions, null, !managed, managed,
+                                attemptIdentity + "-disconnect");
+                    }, failure -> {
+                        chooser.dispose();
+                        failDisconnectionPreview(owner, preview, computed, attemptIdentity,
+                                tr("Disconnection preview was not started: {0}", failure.getMessage()));
+                    });
+            var choice = buttons.choices();
+            JButton all = new JButton(tr("Select all eligible"));
+            JLabel count = new JLabel(tr("Connections removed: {0}", choice.affectedConnectionCount()));
+            Runnable recount = () -> count.setText(tr("Connections removed: {0}", choice.affectedConnectionCount()));
+            for (java.awt.Component component : choice.getComponents())
+                if (component instanceof javax.swing.JCheckBox check) check.addItemListener(event -> recount.run());
+            JPanel controls = new JPanel(); controls.add(all); controls.add(count);
+            controls.add(buttons.recompute()); controls.add(buttons.cancel());
+            JPanel content = new JPanel(new BorderLayout(0, 6));
+            content.add(new JScrollPane(choice), BorderLayout.CENTER); content.add(controls, BorderLayout.SOUTH);
+            chooser.setContentPane(content); chooser.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+            chooser.addWindowListener(new WindowAdapter() {
+                @Override public void windowClosed(WindowEvent event) {
+                    if (livePreviewSession.isCurrent(owner) && preview.isDisplayable()) preview.setEnabled(true);
+                }
+            });
+            all.addActionListener(event -> choice.selectAllEligible());
+            chooser.setPreferredSize(new Dimension(800, 300)); chooser.pack();
+            chooser.setLocationRelativeTo(preview); preview.setEnabled(false); chooser.setVisible(true);
+        } catch (IllegalArgumentException unavailable) {
+            if (livePreviewSession.isCurrent(owner))
+                showWorkerFailure(tr("Disconnection is unavailable: {0}", unavailable.getMessage()));
+        } catch (RuntimeException failure) {
+            failDisconnectionPreview(owner, preview, computed, attemptIdentity,
+                    tr("Disconnection is unavailable: {0}", failure.getMessage()));
+        }
+    }
+
+    record DisconnectionChooserControls(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.ui.SharedNodeDisconnectionPanel choices,
+            JButton recompute, JButton cancel) { }
+
+    /** The same button handlers used by the modeless dialog and its orchestration regression. */
+    static DisconnectionChooserControls disconnectionChooserControls(
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot source,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey way,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange range,
+            RecoveryPermissions current, Runnable requireCurrent, Runnable closeChooser,
+            java.util.function.Consumer<RecoveryPermissions> restart,
+            java.util.function.Consumer<RuntimeException> failed) {
+        var choices = new org.openstreetmap.josm.plugins.wayheatmaptracer.ui.SharedNodeDisconnectionPanel(
+                source, way, range, current.sharedNodeDisconnectionIntent());
+        JButton recompute = new JButton(tr("Recompute preview"));
+        JButton cancel = new JButton(tr("Cancel"));
+        cancel.addActionListener(event -> closeChooser.run());
+        recompute.addActionListener(event -> {
+            try {
+                requireCurrent.run();
+                var intent = choices.selectedIntent();
+                if (intent.isEmpty() && current.sharedNodeDisconnectionIntent().isEmpty()) {
+                    closeChooser.run(); return;
+                }
+                if (!intent.isEmpty() && org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                        .SharedNodeDisconnectionEligibility.evaluate(source, intent).decisions().values()
+                        .stream().anyMatch(decision -> !decision.eligible()))
+                    throw new IllegalStateException("A chosen occurrence requires manual handling");
+                restart.accept(new RecoveryPermissions(current.widerDiscovery(), current.ordinaryRadiusMeters(),
+                        current.maximumDiscoveryRadiusMeters(), JunctionPolicy.FIXED, false, intent));
+            } catch (RuntimeException failure) { failed.accept(failure); }
+        });
+        return new DisconnectionChooserControls(choices, recompute, cancel);
+    }
+
+    private void failDisconnectionPreview(PreviewSessionController.Owner owner, JDialog preview,
+            LiveBPreviewService.Computed computed, String attemptIdentity, String message) {
+        boolean closed = closeAndPublishIfCurrent(livePreviewSession, owner, () -> {
+            try {
+                if (computed.partitioned()) {
+                    recordIntervalDiagnostics(computed, new IntervalPreviewState(computed),
+                            IntervalArtifactStatus.FAILED, attemptIdentity);
+                } else {
+                    recordModernDiagnostics(computed, "failed", 0, null, false, false, attemptIdentity);
+                }
+            } catch (RuntimeException failure) {
+                var fallback = Format15ProductionBundleFactory.createUnavailableLive(
+                        LastSlideDebugBundle.buildIdentity(), "failed",
+                        computed.captured().managedRaster() == null ? "visible-layer" : "managed-tiles", attemptIdentity);
+                DiagnosticsRegistry.setLastModernBundle(withFailureSummary(fallback,
+                        "PREVIEW", "DISCONNECTION_RECOMPUTE_REJECTED", computed));
+            }
+        });
+        if (closed) {
+            preview.dispose(); overlay.hide(); PluginLog.endSlideSession(); showWorkerFailure(message);
+        }
+    }
+
     private static EastNorth projectGeographic(
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint point) {
         return ProjectionRegistry.getProjection().latlon2eastNorth(
@@ -1354,6 +1492,7 @@ public class AlignWayAction extends JosmAction {
         JButton confirm = new JButton(tr("Confirm review"));
         JButton apply = new JButton(tr("Apply"));
         JButton preciseRerun = new JButton(tr("Rerun once with Precise Shape"));
+        JButton disconnect = new JButton(tr("Disconnect selected way at shared nodes…"));
         confirm.setEnabled(false);
         apply.setEnabled(false);
         preciseRerun.setVisible(false);
@@ -1373,6 +1512,7 @@ public class AlignWayAction extends JosmAction {
         buttons.add(confirm);
         buttons.add(apply);
         buttons.add(preciseRerun);
+        buttons.add(disconnect);
         buttons.add(close);
         JPanel panel = modernReviewContent(quality, buttons);
         panel.add(header, BorderLayout.NORTH);
@@ -1385,6 +1525,10 @@ public class AlignWayAction extends JosmAction {
         dialog.setLocationRelativeTo(MainApplication.getMainFrame());
         activePreviewDialog = dialog;
         livePreviewSession.replaceWindow(previewOwner, dialog::dispose);
+        disconnect.addActionListener(event -> showDisconnectionChooser(previewOwner, dialog,
+                dataSet, selection, imageryLayer, mapView, slideConfig, persistedSlideConfig,
+                tracingAtCapture, computed, diagnosticAttemptIdentity, previewSourceOwner,
+                () -> completed[0] = true));
         Runnable refresh = () -> {
             benchmarkDisplayedIndex[0] = -1;
             benchmarkDisplayedPlan[0] = null;
@@ -1429,6 +1573,7 @@ public class AlignWayAction extends JosmAction {
                         : assessment[0].projectFinalPreviewWays(point -> ProjectionRegistry.getProjection()
                                 .latlon2eastNorth(new LatLon(point.latitudeDegrees(),
                                         point.longitudeDegrees())));
+            overlay.setDisconnectionLocations(disconnectionLocations(plan[0]));
             overlay.show(selection, display, candidate, switch (displayedDisposition) {
                 case APPLICABLE -> CandidateAssessment.Disposition.APPLICABLE;
                 case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
@@ -1463,7 +1608,9 @@ public class AlignWayAction extends JosmAction {
                         ? "\n" + tr("Recovery: a one-shot Precise Shape rerun is available")
                         : "\n" + tr("Precise Shape recovery unavailable: {0}", preciseRecovery);
             }
-            quality.setText(liveBQualitySummary(run, routeIndex) + "\n\n"
+            quality.setText(org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernPlanReview.summary(
+                    plan[0], run.evidence(), computed.captured().searchRadiusMeters())
+                    + liveBQualitySummary(run, routeIndex) + "\n\n"
                     + modernPreviewSummary(livePreviewEngineLabel(run.request().engine()),
                             sourceLabel + " / " + choice.sourceLabel(), finalDisposition,
                             plan[0] == null ? null : plan[0].affectedWayKeys().size(), reasons,
@@ -1559,7 +1706,9 @@ public class AlignWayAction extends JosmAction {
                 overlay.show(selection, display, candidate,
                         CandidateAssessment.Disposition.REVIEW_REQUIRED, true,
                         PluginPreferences.isDebugEnabled(), projectedPreview);
-                quality.setText(liveBQualitySummary(run, routeIndex) + "\n\n"
+                quality.setText(org.openstreetmap.josm.plugins.wayheatmaptracer.service.ModernPlanReview.summary(
+                        plan[0], run.evidence(), computed.captured().searchRadiusMeters())
+                        + liveBQualitySummary(run, routeIndex) + "\n\n"
                         + modernPreviewSummary(livePreviewEngineLabel(run.request().engine()),
                                 computed.captured().managedRaster() == null
                                         ? tr("visible layer") : tr("managed tiles / ")
@@ -2689,7 +2838,8 @@ public class AlignWayAction extends JosmAction {
             ModernSingleWayEditPlanAdapter.Assessment assessment,
             NetworkSnapshot currentNoChangeNetwork) {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
-                computed.evidence(), computed.captured().network(), computed.options());
+                computed.evidence(), computed.captured().network(), computed.options(),
+                computed.captured().searchRadiusMeters());
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
         ManualJunctionEligibility.Decision junction = computed.request().permissions()
                 .junctionPolicy() == JunctionPolicy.FIXED ? null

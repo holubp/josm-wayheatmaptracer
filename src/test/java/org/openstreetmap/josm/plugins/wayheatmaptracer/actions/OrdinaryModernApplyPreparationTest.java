@@ -1027,7 +1027,7 @@ class OrdinaryModernApplyPreparationTest {
     }
 
     @Test
-    void fullPreviewCrossingTouchOverlapAndPrefixContinuationStillBlockActualPreparation() throws Exception {
+    void independentContactsRequireConfirmationWhilePrefixContinuationStillBlocksActualPreparation() throws Exception {
         Fixture fixture = fixture(false, true);
         try (Attempt attempt = publish(fixture)) {
             var route = attempt.computed.pipeline().routes().get(0);
@@ -1057,10 +1057,17 @@ class OrdinaryModernApplyPreparationTest {
                         attempt.computed.captured().specification()));
                 var changed = withNetwork(attempt.computed, current);
                 var assessment = new ModernSingleWayEditPlanAdapter().assess(changed, 0);
-                assertFalse(assessment.applyAvailable());
-                assertTrue(assessment.plan().orElseThrow().validation().findingCodes().contains("final-topology:" + defect),
+                assertTrue(assessment.applyAvailable());
+                assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
+                        assessment.plan().orElseThrow().validation().disposition());
+                assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
+                                .contains("independent-context-contact-review-required"),
                         assessment.detail());
-                refuse(attempt, changed, null, "final preview is blocked");
+                refuse(attempt, changed, null, "reviewed candidate plan is stale");
+                List<String> before = state(fixture.dataSet());
+                var prepared = edt(() -> attempt.prepare(changed, review(assessment.plan().orElseThrow())));
+                assertEquals(assessment.plan().orElseThrow().canonicalHash(), prepared.plan().canonicalHash());
+                assertEquals(before, state(fixture.dataSet()));
                 Set<PrimitiveKey> editable = new LinkedHashSet<>(current.closure().editableExistingKeys());
                 editable.add(PrimitiveKey.existing(PrimitiveKey.Type.WAY, 32));
                 assertAuthorityRefused(attempt, network(current, closure(current.closure(), editable,

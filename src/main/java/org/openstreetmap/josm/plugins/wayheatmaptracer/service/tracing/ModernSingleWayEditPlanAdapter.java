@@ -519,7 +519,7 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     /** Validated proposal before the edit plan's deliberately nonempty write invariant. */
-    private record SingleWayDraft(LiveBPreviewService.Computed computed,
+    private record SingleWayDraft(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot before, NetworkSnapshot after,
             Map<PrimitiveKey, List<GeographicPoint>> preview,
             ValidationReport validation, String routeIdentity) {
@@ -529,12 +529,9 @@ public final class ModernSingleWayEditPlanAdapter {
         }
 
         AlignmentEditPlan toPlan() {
-            TraceRequest request = computed.request();
-            LiveBPreviewService.Captured captured = computed.captured();
-            EvidenceSnapshot evidence = computed.evidence();
             return new AlignmentEditPlan(request.selectedWayKey(), request.selectedRange(),
                     before, after, evidence.coordinateFrame(), request.permissions(),
-                    captured.settingsHash(), evidence.canonicalHash(), captured.parameterHash(),
+                    request.settingsHash(), evidence.canonicalHash(), request.parameterHash(),
                     routeIdentity, preview, validation, request.disconnectionSource(),
                     disconnections(request, before), disconnectionMode(request));
         }
@@ -553,8 +550,6 @@ public final class ModernSingleWayEditPlanAdapter {
         EvidenceSnapshot evidence = computed.evidence();
         NetworkSnapshot before = captured.network();
         requireInputs(route, request, evidence, captured);
-        var disconnectionAuthority = SharedNodeDisconnectionPlanner.forRequest(request, before);
-        var disconnected = disconnectionAuthority.replacements();
         ManualJunctionEligibility.Decision junction = request.permissions().junctionPolicy()
                 != JunctionPolicy.FIXED ? junctionDecision(captured) : null;
         boolean manual = junction != null && junction.manualOnly();
@@ -565,6 +560,44 @@ public final class ModernSingleWayEditPlanAdapter {
         if (manual) {
             route = retainFrozenManualArm(route, computed, junction);
         }
+        return draftPrepared(request, evidence, before, computed.options(), computed.pipeline(),
+                captured.searchRadiusMeters(), route, selected, junction);
+    }
+
+    /**
+     * Replays fixed selected-way planning through the ordinary production planner.
+     * The frozen request retains the original authority; this boundary never fabricates live capture.
+     */
+    public AlignmentEditPlan adaptFrozen(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot before, ModernTracePipeline.Options options,
+            ModernTracePipeline.Result actual, int routeIndex, double searchRadiusMeters) {
+        if (request == null || evidence == null || before == null || options == null || actual == null
+                || request.permissions().junctionPolicy() != JunctionPolicy.FIXED
+                || request.permissions().reconstructIncidentWays()
+                || routeIndex < 0 || routeIndex >= actual.routes().size()
+                || actual.inference().engine() != request.engine()
+                || !request.evidenceSnapshotId().equals(evidence.snapshotId())
+                || !request.evidenceContentHash().equals(evidence.canonicalHash())
+                || !request.networkSnapshotId().equals(before.snapshotId())
+                || !request.networkContentHash().equals(before.canonicalHash())
+                || !Double.isFinite(searchRadiusMeters) || searchRadiusMeters <= 0
+                || searchRadiusMeters < request.permissions().ordinaryRadiusMeters()) {
+            throw new IllegalArgumentException("Frozen disconnection plan source or selection differs");
+        }
+        ModernTracePipeline.Route route = actual.routes().get(routeIndex);
+        requireConsistentFinalQuality(route);
+        DetachedWay selected = requireSupportedBoundary(request, before, options.cleanup());
+        return draftPrepared(request, evidence, before, options, actual, searchRadiusMeters,
+                route, selected, null).toPlan();
+    }
+
+    private static SingleWayDraft draftPrepared(TraceRequest request, EvidenceSnapshot evidence,
+            NetworkSnapshot before, ModernTracePipeline.Options options, ModernTracePipeline.Result pipeline,
+            double searchRadiusMeters, ModernTracePipeline.Route route, DetachedWay selected,
+            ManualJunctionEligibility.Decision junction) {
+        var disconnectionAuthority = SharedNodeDisconnectionPlanner.forRequest(request, before);
+        var disconnected = disconnectionAuthority.replacements();
+        boolean manual = junction != null && junction.manualOnly();
         List<PrimitiveKey> replacement = replacementNodes(route, request, evidence, before, selected);
 
         Map<PrimitiveKey, DetachedPrimitive> afterValues = new LinkedHashMap<>(before.primitives());
@@ -609,7 +642,7 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         if (manual) {
             requireSafeManualOutside(before, afterValues, selected, junction, evidence,
-                    computed.options().fieldName());
+                    options.fieldName());
         }
         NetworkSnapshot after = new NetworkSnapshot(
             before.snapshotId() + ":proposed:" + route.hypothesis().id(),
@@ -619,21 +652,22 @@ public final class ModernSingleWayEditPlanAdapter {
         Map<PrimitiveKey, List<GeographicPoint>> preview = finalPreviewWays(before, afterValues);
         FinalTopologyAssessment topology = assessFinalTopology(before, afterValues,
                 request.selectedWayKey(), request.selectedRange(), evidence,
-                captured.searchRadiusMeters(), disconnected, disconnectionAuthority.proposedPortReplacements());
+                searchRadiusMeters, disconnected, disconnectionAuthority.proposedPortReplacements());
         List<String> topologyFindings = new ArrayList<>(topology.findingCodes());
         if (!disconnected.isEmpty()
-                && !SharedNodeDisconnectionPlanner.retainedProductionOwner(computed.pipeline(), route)) {
+                && !SharedNodeDisconnectionPlanner.retainedProductionOwner(pipeline, route)) {
             topologyFindings.add("disconnection-route-support-unavailable");
         }
         if (!sharedJunctions.isEmpty()
                 && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
             topologyFindings.addAll(unsupportedSelectedExtensions(before, afterValues, route,
-                    request, evidence, computed.options().fieldName(), sharedJunctions));
+                    request, evidence, options.fieldName(), sharedJunctions));
         }
         ValidationReport validation = validation(route.quality(),
                 request.permissions().junctionPolicy(),
                 new FinalTopologyAssessment(topologyFindings, topology.contacts()));
-        return new SingleWayDraft(computed, before, after, preview, validation,
+        validation = withDisconnectionReview(validation, request);
+        return new SingleWayDraft(request, evidence, before, after, preview, validation,
                 route.hypothesis().id());
     }
 
@@ -734,8 +768,16 @@ public final class ModernSingleWayEditPlanAdapter {
                 before, after, evidence.coordinateFrame(), request.permissions(),
                 request.settingsHash(), evidence.canonicalHash(), request.parameterHash(),
                 identity, finalPreviewWays(before, afterValues),
-                new ValidationReport(disposition, findings), request.disconnectionSource(),
+                withDisconnectionReview(new ValidationReport(disposition, findings), request), request.disconnectionSource(),
                 disconnected, disconnectionMode(request));
+    }
+
+    private static ValidationReport withDisconnectionReview(ValidationReport validation, TraceRequest request) {
+        if (request.permissions().sharedNodeDisconnectionIntent().isEmpty()
+                || validation.disposition() == ValidationReport.Disposition.HARD_BLOCKED) return validation;
+        List<String> findings = new ArrayList<>(validation.findingCodes());
+        findings.add("shared-node-disconnection-review-required");
+        return new ValidationReport(ValidationReport.Disposition.REVIEW_REQUIRED, findings);
     }
 
     static List<String> compositeBacktrackFindings(NetworkSnapshot before,
@@ -875,6 +917,10 @@ public final class ModernSingleWayEditPlanAdapter {
             throw new IllegalArgumentException(
                 "Final route, snapshots, and effective identities do not match");
         }
+        requireConsistentFinalQuality(route);
+    }
+
+    private static void requireConsistentFinalQuality(ModernTracePipeline.Route route) {
         if (route.quality().disposition() == FinalGeometryEvaluator.Disposition.APPLICABLE
                     && !route.quality().findings().isEmpty()) {
             throw new IllegalArgumentException("Inconsistent final route cannot form a plan");

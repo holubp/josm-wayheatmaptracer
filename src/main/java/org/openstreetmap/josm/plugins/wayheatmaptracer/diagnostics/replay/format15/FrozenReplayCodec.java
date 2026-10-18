@@ -56,6 +56,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SharedNodeDisconnectionIntent;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.DetachedProfileSamplingLocation;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
@@ -66,7 +67,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
+    private static final int REQUEST_MAGIC = 0x57544452;
     private static final int AUTHORITY_MAGIC = 0x57544155;
     private static final int AUTHORITY_VERSION = 2;
     private static final int MAX_BYTES = 64 * 1024 * 1024;
@@ -95,7 +97,7 @@ public final class FrozenReplayCodec {
             throw new IllegalArgumentException("Unsupported frozen replay codec version");
         }
         int version = in.readInt();
-        if (version != 1 && version != 2 && version != 3 && version != VERSION) {
+        if (version < 1 || version > VERSION) {
             throw new IllegalArgumentException("Unsupported frozen replay codec version");
         }
         return version;
@@ -115,14 +117,18 @@ public final class FrozenReplayCodec {
                 Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57545250);
-                boolean semantic = input.network().semanticWitness() != null;
-                out.writeInt(semantic ? VERSION
+                boolean explicit = !input.request().permissions().sharedNodeDisconnectionIntent().isEmpty();
+                boolean extended = explicit || input.planSearchRadiusMeters()
+                        != input.request().permissions().ordinaryRadiusMeters();
+                boolean semantic = extended || input.network().semanticWitness() != null;
+                out.writeInt(extended ? VERSION : semantic ? 4
                         : input.evidence().coordinateFrame().hasCompleteNumericalIdentity() ? 3 : 2);
                 if (semantic) out.writeBoolean(input.evidence().coordinateFrame().hasCompleteNumericalIdentity());
                 evidence(out, input.evidence());
                 request(out, input.request());
-                network(out, input.network(), semantic);
+                network(out, input.network(), semantic, extended);
                 options(out, input.options());
+                if (extended) out.writeDouble(input.planSearchRadiusMeters());
             }
             return bytes.toByteArray();
         } catch (IOException exception) {
@@ -146,12 +152,15 @@ public final class FrozenReplayCodec {
             int evidenceVersion = version >= 4 ? in.readBoolean() ? 3 : 2 : version;
             EvidenceSnapshot evidence = evidence(in, evidenceVersion);
             TraceRequest request = request(in, evidence.coordinateFrame(), evidence.transform());
-            NetworkSnapshot network = network(in, version >= 4);
+            if (version < 5 && !request.permissions().sharedNodeDisconnectionIntent().isEmpty())
+                throw new IllegalArgumentException("Legacy frozen schema cannot carry disconnection authority");
+            NetworkSnapshot network = network(in, version >= 4, version >= 5);
             ModernTracePipeline.Options options = options(in);
+            double planRadius = version >= 5 ? in.readDouble() : request.permissions().ordinaryRadiusMeters();
             if (in.read() != -1) {
                 throw new IllegalArgumentException("Frozen replay input has trailing data");
             }
-            FrozenReplayInput decoded = new FrozenReplayInput(request, evidence, network, options);
+            FrozenReplayInput decoded = new FrozenReplayInput(request, evidence, network, options, planRadius);
             admit(decoded, new Admission());
             return decoded;
         } catch (IOException | RuntimeException exception) {
@@ -199,7 +208,7 @@ public final class FrozenReplayCodec {
 
     /** Original partition authority; complete numerical frames have their own explicit header. */
     static byte[] encodeAuthority(NetworkSnapshotCapture.Specification s) {
-        requireLegacyPermissionSchema(s.permissions());
+        boolean explicit = !s.permissions().sharedNodeDisconnectionIntent().isEmpty();
         if (s.fixedReceiverGeometry() && !s.metricFrame().hasCompleteNumericalIdentity()) {
             throw new IllegalArgumentException("Fixed receiver authority requires a complete metric frame");
         }
@@ -207,9 +216,10 @@ public final class FrozenReplayCodec {
             BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
                     Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
-                if (s.metricFrame().hasCompleteNumericalIdentity()) {
+                if (explicit || s.metricFrame().hasCompleteNumericalIdentity()) {
                     out.writeInt(AUTHORITY_MAGIC);
-                    out.writeInt(s.fixedReceiverGeometry() ? AUTHORITY_VERSION : 1);
+                    out.writeInt(explicit ? 3 : s.fixedReceiverGeometry() ? AUTHORITY_VERSION : 1);
+                    if (explicit) out.writeBoolean(s.metricFrame().hasCompleteNumericalIdentity());
                 }
                 str(out, s.snapshotId());
                 str(out, s.datasetIdentity());
@@ -238,7 +248,11 @@ public final class FrozenReplayCodec {
                 out.writeBoolean(s.permissions().reconstructIncidentWays());
                 count(out, s.readOnlyPorts().size());
                 for (ExternalPort port : s.readOnlyPorts()) port(out, port);
-                if (s.fixedReceiverGeometry()) out.writeBoolean(true);
+                if (explicit || s.fixedReceiverGeometry()) out.writeBoolean(s.fixedReceiverGeometry());
+                if (explicit) {
+                    intent(out, s.permissions().sharedNodeDisconnectionIntent());
+                    network(out, s.disconnectionSource(), true, true);
+                }
             }
             return bytes.toByteArray();
         } catch (IOException failure) {
@@ -257,9 +271,10 @@ public final class FrozenReplayCodec {
             int authorityVersion = 0;
             if (completeFrame) {
                 authorityVersion = in.readInt();
-                if (authorityVersion != 1 && authorityVersion != AUTHORITY_VERSION) {
+                if (authorityVersion < 1 || authorityVersion > 3) {
                     throw new IllegalArgumentException("Unsupported partition authority codec version");
                 }
+                if (authorityVersion >= 3) completeFrame = in.readBoolean();
             } else {
                 in.reset();
             }
@@ -289,10 +304,16 @@ public final class FrozenReplayCodec {
             List<ExternalPort> ports = new ArrayList<>(n);
             for (int index = 0; index < n; index++) ports.add(port(in));
             boolean fixedReceiverGeometry = authorityVersion >= 2 && in.readBoolean();
+            NetworkSnapshot source = null;
+            if (authorityVersion >= 3) {
+                permissions = withIntent(permissions, intent(in));
+                source = network(in, true, true);
+            }
             if (in.read() != -1) throw new IllegalArgumentException("Partition authority has trailing bytes");
             return new NetworkSnapshotCapture.Specification(id, dataset, generation, selected,
                     selection, metric, collision, edit, occurrences, editable, movable,
-                    removable, protectedKeys, create, permissions, ports, fixedReceiverGeometry);
+                    removable, protectedKeys, create, permissions, ports, fixedReceiverGeometry)
+                    .withDisconnectionSource(source);
         } catch (IOException failure) {
             throw new IllegalArgumentException("Malformed partition authority", failure);
         } finally {
@@ -398,19 +419,19 @@ public final class FrozenReplayCodec {
         if (plan == null) {
             throw new IllegalArgumentException("Edit plan is required");
         }
-        requireLegacyPermissionSchema(plan.permissions());
+        boolean explicit = !plan.permissions().sharedNodeDisconnectionIntent().isEmpty();
         try {
             BoundedByteArrayOutputStream bytes = new BoundedByteArrayOutputStream(
                 Format15Safety.MAX_ARTIFACT_BYTES);
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57544550);
-                boolean semantic = plan.before().semanticWitness() != null;
-                out.writeInt(semantic ? 3 : plan.metricFrame().hasCompleteNumericalIdentity() ? 2 : 1);
+                boolean semantic = explicit || plan.before().semanticWitness() != null;
+                out.writeInt(explicit ? 4 : semantic ? 3 : plan.metricFrame().hasCompleteNumericalIdentity() ? 2 : 1);
                 if (semantic) out.writeBoolean(plan.metricFrame().hasCompleteNumericalIdentity());
                 key(out, plan.selectedWayKey());
                 range(out, plan.selectedRange());
-                network(out, plan.before(), semantic);
-                network(out, plan.after(), semantic);
+                network(out, plan.before(), semantic, explicit);
+                network(out, plan.after(), semantic, explicit);
                 frame(out, plan.metricFrame());
                 RecoveryPermissions permissions = plan.permissions();
                 out.writeBoolean(permissions.widerDiscovery());
@@ -431,6 +452,12 @@ public final class FrozenReplayCodec {
                 }
                 en(out, plan.validation().disposition());
                 strings(out, plan.validation().findingCodes());
+                if (explicit) {
+                    intent(out, permissions.sharedNodeDisconnectionIntent());
+                    network(out, plan.disconnectionSource(), true, true);
+                    en(out, plan.disconnectionGeometryMode());
+                    occurrenceMap(out, plan.disconnectedOccurrenceReplacements());
+                }
                 str(out, plan.canonicalHash());
             }
             return bytes.toByteArray();
@@ -451,14 +478,14 @@ public final class FrozenReplayCodec {
                 throw new IllegalArgumentException("Unsupported edit plan codec version");
             }
             int version = in.readInt();
-            if (version != 1 && version != 2 && version != 3) {
+            if (version < 1 || version > 4) {
                 throw new IllegalArgumentException("Unsupported edit plan codec version");
             }
             boolean completeFrame = version >= 3 ? in.readBoolean() : version >= 2;
             PrimitiveKey selectedWay = key(in);
             OccurrenceRange selectedRange = range(in);
-            NetworkSnapshot before = network(in, version >= 3);
-            NetworkSnapshot after = network(in, version >= 3);
+            NetworkSnapshot before = network(in, version >= 3, version >= 4);
+            NetworkSnapshot after = network(in, version >= 3, version >= 4);
             LocalMetricFrame metricFrame = frame(in, completeFrame);
             RecoveryPermissions permissions = new RecoveryPermissions(in.readBoolean(),
                 in.readDouble(), in.readDouble(), en(in, JunctionPolicy.class), in.readBoolean());
@@ -478,13 +505,22 @@ public final class FrozenReplayCodec {
             }
             ValidationReport validation = new ValidationReport(
                 en(in, ValidationReport.Disposition.class), strings(in));
+            NetworkSnapshot source = null;
+            AlignmentMode mode = null;
+            Map<Integer, PrimitiveKey> replacements = Map.of();
+            if (version >= 4) {
+                permissions = withIntent(permissions, intent(in));
+                source = network(in, true, true);
+                mode = en(in, AlignmentMode.class);
+                replacements = occurrenceMap(in);
+            }
             String expectedHash = Format15Safety.requiredHash(str(in), "planHash");
             if (in.read() != -1) {
                 throw new IllegalArgumentException("Edit plan artifact has trailing data");
             }
             AlignmentEditPlan plan = new AlignmentEditPlan(selectedWay, selectedRange,
                 before, after, metricFrame, permissions, settings, evidence,
-                parameters, route, previews, validation);
+                parameters, route, previews, validation, source, replacements, mode);
             if (!expectedHash.equals(plan.canonicalHash())) {
                 throw new IllegalArgumentException("Edit plan artifact identity mismatch");
             }
@@ -496,16 +532,9 @@ public final class FrozenReplayCodec {
         }
     }
 
-    /** Prevents legacy replay schemas from silently dropping new edit authority. */
-    private static void requireLegacyPermissionSchema(RecoveryPermissions permissions) {
-        if (!permissions.sharedNodeDisconnectionIntent().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Frozen replay schema does not encode shared-node disconnection intent");
-        }
-    }
-
     private static void request(DataOutputStream out, TraceRequest r) throws IOException {
-        requireLegacyPermissionSchema(r.permissions());
+        boolean explicit = !r.permissions().sharedNodeDisconnectionIntent().isEmpty();
+        if (explicit) { out.writeInt(REQUEST_MAGIC); out.writeInt(1); }
         key(out, r.selectedWayKey());
         range(out, r.selectedRange());
         en(out, r.engine());
@@ -540,9 +569,18 @@ public final class FrozenReplayCodec {
                 out.writeDouble(l.cumulativeGroundDistanceMeters());
             }
         }
+        if (explicit) {
+            intent(out, r.permissions().sharedNodeDisconnectionIntent());
+            network(out, r.disconnectionSource(), true, true);
+        }
     }
     private static TraceRequest request(DataInputStream in, LocalMetricFrame frame,
             RasterMetricTransform transform) throws IOException {
+        in.mark(8);
+        boolean explicit = in.readInt() == REQUEST_MAGIC;
+        if (explicit) {
+            if (in.readInt() != 1) throw new IllegalArgumentException("Unsupported disconnection request schema");
+        } else in.reset();
         PrimitiveKey way = key(in);
         OccurrenceRange range = range(in);
         TrackerMode engine = en(in, TrackerMode.class);
@@ -567,9 +605,42 @@ public final class FrozenReplayCodec {
             }
             corridor = Optional.of(new CorridorTraceInput(locations, lateral));
         }
+        NetworkSnapshot source = null;
+        if (explicit) {
+            permissions = withIntent(permissions, intent(in));
+            source = network(in, true, true);
+        }
         return new TraceRequest(way, range, engine, mode, permissions, budgets, evidenceId,
                 evidenceHash, networkId, networkHash, settings, parameters, sampler, step, chainage,
-                resolution, corridor);
+                resolution, corridor, source);
+    }
+
+    private static RecoveryPermissions withIntent(RecoveryPermissions p, SharedNodeDisconnectionIntent intent) {
+        if (intent.isEmpty()) throw new IllegalArgumentException("Explicit schema requires nonempty authority");
+        return new RecoveryPermissions(p.widerDiscovery(), p.ordinaryRadiusMeters(),
+                p.maximumDiscoveryRadiusMeters(), p.junctionPolicy(), p.reconstructIncidentWays(), intent);
+    }
+
+    private static void intent(DataOutputStream out, SharedNodeDisconnectionIntent intent) throws IOException {
+        key(out, intent.selectedWayKey()); range(out, intent.selectedRange());
+        str(out, intent.sourceNetworkIdentity()); occurrenceMap(out, intent.originalNodeKeys());
+    }
+
+    private static SharedNodeDisconnectionIntent intent(DataInputStream in) throws IOException {
+        PrimitiveKey way = key(in); OccurrenceRange range = range(in); String source = str(in);
+        return new SharedNodeDisconnectionIntent(way, range, occurrenceMap(in), source);
+    }
+
+    private static void occurrenceMap(DataOutputStream out, Map<Integer, PrimitiveKey> values) throws IOException {
+        count(out, values.size());
+        for (var entry : new TreeMap<>(values).entrySet()) { out.writeInt(entry.getKey()); key(out, entry.getValue()); }
+    }
+
+    private static Map<Integer, PrimitiveKey> occurrenceMap(DataInputStream in) throws IOException {
+        int n = count(in); Map<Integer, PrimitiveKey> values = new LinkedHashMap<>();
+        for (int i = 0; i < n; i++) if (values.put(in.readInt(), key(in)) != null)
+            throw new IllegalArgumentException("Duplicate occurrence authority");
+        return values;
     }
 
     // The remaining sections intentionally serialize concrete values rather than
@@ -684,6 +755,9 @@ public final class FrozenReplayCodec {
     }
 
     private static void network(DataOutputStream out, NetworkSnapshot n, boolean semantic) throws IOException {
+        network(out, n, semantic, false);
+    }
+    private static void network(DataOutputStream out, NetworkSnapshot n, boolean semantic, boolean explicit) throws IOException {
         str(out, n.snapshotId());
         en(out, n.role());
         str(out, n.datasetIdentity());
@@ -700,8 +774,19 @@ public final class FrozenReplayCodec {
             keys(out, n.incomingReferrerWatches().get(watched));
         }
         if (semantic) semanticWitness(out, n.semanticWitness());
+        if (explicit) {
+            count(out, n.proposedPortReplacements().size());
+            for (var entry : n.proposedPortReplacements().entrySet().stream().sorted(Comparator
+                    .comparing((Map.Entry<ExternalPort, PrimitiveKey> e) -> e.getKey().wayKey())
+                    .thenComparingInt(e -> e.getKey().boundaryOccurrenceIndex()).thenComparing(e -> e.getKey().side())).toList()) {
+                port(out, entry.getKey()); key(out, entry.getValue());
+            }
+        }
     }
     private static NetworkSnapshot network(DataInputStream in, boolean semantic) throws IOException {
+        return network(in, semantic, false);
+    }
+    private static NetworkSnapshot network(DataInputStream in, boolean semantic, boolean explicit) throws IOException {
         String id = str(in);
         SnapshotRole role = en(in, SnapshotRole.class);
         String dataset = str(in);
@@ -721,8 +806,14 @@ public final class FrozenReplayCodec {
             if (watch.put(key, keys(in)) != null)
                 throw new IllegalArgumentException("Duplicate referrer watch");
         }
-        return new NetworkSnapshot(id, role, dataset, generation, closure, primitives, watch,
-                semantic ? semanticWitness(in) : null);
+        var witness = semantic ? semanticWitness(in) : null;
+        Map<ExternalPort, PrimitiveKey> ports = new LinkedHashMap<>();
+        if (explicit) {
+            int size = count(in);
+            for (int i = 0; i < size; i++) if (ports.put(port(in), key(in)) != null)
+                throw new IllegalArgumentException("Duplicate proposed external port");
+        }
+        return new NetworkSnapshot(id, role, dataset, generation, closure, primitives, watch, witness, ports);
     }
 
     private static void semanticWitness(DataOutputStream out, NonTransportSemanticWitness witness) throws IOException {
@@ -1267,7 +1358,15 @@ public final class FrozenReplayCodec {
         admitRegion(evidence.evidenceRegion(), admission);
         admitMetadata(input.options().fieldName(), admission);
         admitMetadata(input.options().sourceTier(), admission);
-        NetworkSnapshot network = input.network();
+        admitNetwork(input.network(), admission);
+        if (request.disconnectionSource() != null) {
+            admission.entries(request.permissions().sharedNodeDisconnectionIntent().originalNodeKeys().size());
+            admitMetadata(request.permissions().sharedNodeDisconnectionIntent().sourceNetworkIdentity(), admission);
+            admitNetwork(request.disconnectionSource(), admission);
+        }
+    }
+
+    private static void admitNetwork(NetworkSnapshot network, Admission admission) {
         admitMetadata(network.snapshotId(), admission);
         admitMetadata(network.datasetIdentity(), admission);
         admitMetadata(network.closure().queryVersion(), admission);
@@ -1314,6 +1413,7 @@ public final class FrozenReplayCodec {
         closure.editableWayOccurrences().values().forEach(
                 ranges -> admission.entries(ranges.size()));
         admission.entries(closure.externalPorts().size());
+        admission.entries(network.proposedPortReplacements().size());
         admitRegion(closure.collisionEnvelope(), admission);
         admitRegion(closure.editRegion(), admission);
     }

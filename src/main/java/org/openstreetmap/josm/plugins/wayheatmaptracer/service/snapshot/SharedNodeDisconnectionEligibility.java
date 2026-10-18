@@ -85,23 +85,24 @@ public final class SharedNodeDisconnectionEligibility {
             return new Result(Map.of());
         }
         Map<Integer, Decision> decisions = new LinkedHashMap<>();
+        String sourceIdentity = snapshot == null ? null : snapshot.canonicalHash();
         for (Map.Entry<Integer, PrimitiveKey> request : intent.originalNodeKeys().entrySet()) {
             int index = request.getKey();
             PrimitiveKey nodeKey = request.getValue();
-            decisions.put(index, decide(snapshot, intent, index, nodeKey));
+            decisions.put(index, decide(snapshot, intent, index, nodeKey, sourceIdentity));
         }
         return new Result(decisions);
     }
 
     private static Decision decide(NetworkSnapshot snapshot, SharedNodeDisconnectionIntent intent,
-            int index, PrimitiveKey requestedNode) {
+            int index, PrimitiveKey requestedNode, String sourceIdentity) {
         if (snapshot == null || snapshot.role() != SnapshotRole.CAPTURED_BEFORE
                 || !snapshot.closure().wayReferrersComplete()
                 || !snapshot.closure().relationReferrersComplete()
                 || !snapshot.primitives().containsKey(intent.selectedWayKey())) {
             return decision(index, requestedNode, Reason.INCOMPLETE_SOURCE);
         }
-        if (!snapshot.canonicalHash().equals(intent.sourceNetworkIdentity())) {
+        if (!sourceIdentity.equals(intent.sourceNetworkIdentity())) {
             return decision(index, requestedNode, Reason.SOURCE_MISMATCH);
         }
         if (!(snapshot.primitives().get(intent.selectedWayKey()) instanceof DetachedWay selected)) {
@@ -134,9 +135,6 @@ public final class SharedNodeDisconnectionEligibility {
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         if (ways.size() < 2 || !ways.contains(intent.selectedWayKey())) {
             return decision(index, requestedNode, Reason.NOT_SHARED);
-        }
-        if (ways.size() > 2) {
-            return decision(index, requestedNode, Reason.AMBIGUOUS_SHARED_NODE);
         }
         if (!node.tags().isEmpty()) {
             return decision(index, requestedNode, Reason.TAGGED_NODE);

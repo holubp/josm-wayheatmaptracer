@@ -105,7 +105,7 @@ class V022SharedNodeDisconnectionEligibilityTest {
     }
 
     @Test
-    void unknownReferrerAndAmbiguousMultiwayNodeRequireManualHandling() {
+    void unknownReferrerRequiresManualHandlingButCompleteMultiwayNodeCanDisconnect() {
         NetworkSnapshot complete = source(false, false, false, false, false);
         Map<PrimitiveKey, Set<PrimitiveKey>> incompleteWatches = new LinkedHashMap<>(
                 complete.incomingReferrerWatches());
@@ -117,8 +117,11 @@ class V022SharedNodeDisconnectionEligibilityTest {
                 evaluate(incomplete, Map.of(1, node(2))).decisions().get(1).reason());
 
         NetworkSnapshot ambiguous = source(false, false, false, false, true);
-        assertEquals(SharedNodeDisconnectionEligibility.Reason.AMBIGUOUS_SHARED_NODE,
+        assertEquals(SharedNodeDisconnectionEligibility.Reason.ELIGIBLE,
                 evaluate(ambiguous, Map.of(1, node(2))).decisions().get(1).reason());
+        NetworkSnapshot relation = source(false, false, true, false, true);
+        assertEquals(SharedNodeDisconnectionEligibility.Reason.PARTICIPATING_WAY_RELATION,
+                evaluate(relation, Map.of(1, node(2))).decisions().get(1).reason());
     }
 
     @Test
@@ -222,7 +225,7 @@ class V022SharedNodeDisconnectionEligibilityTest {
         }
         if (nodeRelation || wayRelation) {
             PrimitiveKey relation = relation(20);
-            PrimitiveKey member = nodeRelation ? node(2) : receiverA;
+            PrimitiveKey member = nodeRelation ? node(2) : extraWay ? way(13) : receiverA;
             primitives.put(relation, new DetachedRelation(relation,
                     List.of(new DetachedRelationMember(member, "")), Map.of("type", "route"), false, false));
         }

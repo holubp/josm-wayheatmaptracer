@@ -67,7 +67,7 @@ final class FinalOutputComponentsCodec {
             Format15Safety.requiredHash(rootFingerprint, "rootFingerprint");
             if (capturedEngine == null || requestedEngine == null
                     || replayLevel != ReplayLevel.FINAL_GEOMETRY
-                    || fingerprintSchema != FinalReplayFingerprint.SCHEMA_VERSION) {
+                    || fingerprintSchema < 1 || fingerprintSchema > 2) {
                 throw new IllegalArgumentException("final-components-binding-invalid");
             }
         }
@@ -201,7 +201,7 @@ final class FinalOutputComponentsCodec {
 
     static void writeSnapshot(DataOutputStream data, Prepared prepared) throws IOException {
         data.writeInt(MAGIC);
-        data.writeInt(VERSION);
+        data.writeInt(FinalReplayFingerprint.schema(prepared.output()));
         writeBinding(data, prepared.binding());
         writeOutput(data, prepared.output());
         data.writeInt(Component.values().length);
@@ -246,9 +246,11 @@ final class FinalOutputComponentsCodec {
         Binding expectedBinding = admitted.binding;
         try (DataInputStream data = new DataInputStream(new ByteArrayInputStream(
                 admitted.payload, admitted.offset, admitted.length))) {
-            if (data.readInt() != MAGIC || data.readInt() != VERSION) {
+            if (data.readInt() != MAGIC) {
                 throw new IllegalArgumentException("header");
             }
+            int version = data.readInt();
+            if (version < 1 || version > 2) throw new IllegalArgumentException("header");
             Binding binding = readBinding(data);
             if (!sameNonRootBinding(binding, expectedBinding)) {
                 throw new IllegalArgumentException("binding");
@@ -256,7 +258,7 @@ final class FinalOutputComponentsCodec {
             if (!binding.rootFingerprint().equals(expectedBinding.rootFingerprint())) {
                 throw new ReplayMismatchException("final-output-mismatch");
             }
-            Format15ReplayRunner.Result output = readOutput(data);
+            Format15ReplayRunner.Result output = readOutput(data, version);
             int digestCount = readCount(data, Component.values().length, "digest-count");
             if (digestCount != Component.values().length) throw new IllegalArgumentException("digest-count");
             Map<Component, String> encodedDigests = new EnumMap<>(Component.class);
@@ -387,6 +389,8 @@ final class FinalOutputComponentsCodec {
                     writeString(data, route.sourceOwnership().get(id).name());
                 }
             }
+            if (!output.disconnectionPlanReviews().isEmpty())
+                ReplayOutputCanonical.writePlanReviews(data, output.disconnectionPlanReviews());
         }));
         result.put(Component.ROUTE_QUALITY, digest(Component.ROUTE_QUALITY, data -> {
             data.writeInt(output.routes().size());
@@ -549,7 +553,9 @@ final class FinalOutputComponentsCodec {
         }
         budget.result();
         try (DataInputStream data = new DataInputStream(new ByteArrayInputStream(sealed, offset, length))) {
-            if (data.readInt() != MAGIC || data.readInt() != VERSION) throw new IllegalArgumentException("header");
+            if (data.readInt() != MAGIC) throw new IllegalArgumentException("header");
+            int version = data.readInt();
+            if (version < 1 || version > 2) throw new IllegalArgumentException("header");
             Binding binding = new Binding(readString(data, budget), readHash(data), readHash(data),
                     enumValue(TrackerMode.class, readString(data, budget)),
                     enumValue(TrackerMode.class, readString(data, budget)),
@@ -573,6 +579,11 @@ final class FinalOutputComponentsCodec {
             for (int index = 0; index < hypotheses; index++) scanHypothesis(data, budget);
             int routes = readCount(data, MAX_ROUTES, "route-count");
             for (int index = 0; index < routes; index++) scanRoute(data, budget);
+            if (version >= 2) {
+                int reviews = readCount(data, MAX_ROUTES, "plan-review-count");
+                if (reviews != routes) throw new IllegalArgumentException("plan-review-count");
+                for (int index = 0; index < reviews; index++) readString(data, budget);
+            }
             int digests = readCount(data, Component.values().length, "digest-count");
             if (digests != Component.values().length) throw new IllegalArgumentException("digest-count");
             var seen = java.util.EnumSet.noneOf(Component.class);
@@ -699,9 +710,11 @@ final class FinalOutputComponentsCodec {
         writeHypotheses(data, inference.hypotheses());
         data.writeInt(output.routes().size());
         for (ModernTracePipeline.Route route : output.routes()) writeRoute(data, route);
+        if (!output.disconnectionPlanReviews().isEmpty())
+            ReplayOutputCanonical.writePlanReviews(data, output.disconnectionPlanReviews());
     }
 
-    private static Format15ReplayRunner.Result readOutput(DataInputStream data) throws IOException {
+    private static Format15ReplayRunner.Result readOutput(DataInputStream data, int version) throws IOException {
         ReplayLevel level = enumValue(ReplayLevel.class, readString(data));
         TrackerMode captured = enumValue(TrackerMode.class, readString(data));
         TrackerMode engine = enumValue(TrackerMode.class, readString(data));
@@ -718,7 +731,12 @@ final class FinalOutputComponentsCodec {
         int routeCount = readCount(data, MAX_ROUTES, "route-count");
         List<ModernTracePipeline.Route> routes = new ArrayList<>(routeCount);
         for (int index = 0; index < routeCount; index++) routes.add(readRoute(data));
-        return new Format15ReplayRunner.Result(level, captured, engine, inference, routes, inputHash);
+        List<String> reviews = new ArrayList<>();
+        if (version >= 2) {
+            int n = readCount(data, MAX_ROUTES, "plan-review-count");
+            for (int index = 0; index < n; index++) reviews.add(readString(data));
+        }
+        return new Format15ReplayRunner.Result(level, captured, engine, inference, routes, inputHash, reviews);
     }
 
     private static void writeHypotheses(DataOutputStream data, List<TraceHypothesis> hypotheses)

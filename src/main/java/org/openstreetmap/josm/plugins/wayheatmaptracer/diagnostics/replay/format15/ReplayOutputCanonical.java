@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Map;
+import java.util.List;
 import java.util.TreeMap;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
@@ -18,6 +19,11 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 /** Shared field writers for unchanged root fingerprints and output-component evidence. */
 final class ReplayOutputCanonical {
     private ReplayOutputCanonical() { }
+
+    static void writePlanReviews(DataOutputStream data, List<String> reviews) throws IOException {
+        data.writeInt(reviews.size());
+        for (String review : reviews) ScalarReplayFingerprint.writeString(data, review);
+    }
 
     static void writeHypothesis(DataOutputStream data, TraceHypothesis hypothesis)
             throws IOException {

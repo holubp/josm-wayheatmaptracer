@@ -47,6 +47,12 @@ final class ReplayOutputAdmission {
         void output(Format15ReplayRunner.Result output) {
             if (output == null) throw new IllegalArgumentException("final-output-invalid");
             output(output.inference(), output.routes());
+            items(output.disconnectionPlanReviews().size());
+            for (String review : output.disconnectionPlanReviews()) {
+                if (review == null || review.length() > Format15Safety.MAX_ARTIFACT_BYTES / 4)
+                    throw new IllegalArgumentException("final-output-invalid");
+                metadata(Math.multiplyExact(4, review.length()));
+            }
         }
 
         void output(org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet inference,

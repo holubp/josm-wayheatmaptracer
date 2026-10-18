@@ -32,7 +32,7 @@ class V022DisconnectionPermissionReplayGuardTest {
     }
 
     @Test
-    void oldRequestSchemaRejectsNonemptyDisconnectionAuthorityInsteadOfDroppingIt() {
+    void versionedRequestSchemaAcceptsSourceBoundNonemptyDisconnectionAuthority() {
         PrimitiveKey way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10);
         PrimitiveKey node = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 11);
         var source = source();
@@ -42,9 +42,7 @@ class V022DisconnectionPermissionReplayGuardTest {
                 JunctionPolicy.FIXED, false, intent);
 
         TraceRequest valid = request(explicit, source);
-        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
-                () -> FrozenReplayCodec.encodeRequestOnly(valid));
-        assertEquals("Frozen replay schema does not encode shared-node disconnection intent", rejected.getMessage());
+        assertDoesNotThrow(() -> FrozenReplayCodec.encodeRequestOnly(valid));
     }
 
     private static TraceRequest request(RecoveryPermissions permissions) {
