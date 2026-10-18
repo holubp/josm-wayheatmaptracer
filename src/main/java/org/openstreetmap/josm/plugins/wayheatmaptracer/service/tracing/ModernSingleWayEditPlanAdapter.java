@@ -501,7 +501,7 @@ public final class ModernSingleWayEditPlanAdapter {
                 SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
                 before.closure(), expected, proposedWatches(before, expected));
         ValidationReport actual = validation(route.quality(), request.permissions().junctionPolicy(),
-                finalTopologyFindings(before, expected, request.selectedWayKey(), request.selectedRange(),
+                assessFinalTopology(before, expected, request.selectedWayKey(), request.selectedRange(),
                         evidence, capturedHalfWidthMeters));
         if (!after.equals(plan.after()) || !finalPreviewWays(before, expected).equals(plan.finalPreviewWays())
                 || !actual.equals(plan.validation()) || inheritedOnly && (!actual.reviewRequired()
@@ -608,16 +608,18 @@ public final class ModernSingleWayEditPlanAdapter {
             SnapshotRole.PROPOSED_AFTER, before.datasetIdentity(), before.sourceGeneration(),
             before.closure(), afterValues, proposedWatches(before, afterValues));
         Map<PrimitiveKey, List<GeographicPoint>> preview = finalPreviewWays(before, afterValues);
-        List<String> topologyFindings = new ArrayList<>(finalTopologyFindings(before, afterValues,
+        FinalTopologyAssessment topology = assessFinalTopology(before, afterValues,
                 request.selectedWayKey(), request.selectedRange(), evidence,
-                captured.searchRadiusMeters()));
+                captured.searchRadiusMeters());
+        List<String> topologyFindings = new ArrayList<>(topology.findingCodes());
         if (!sharedJunctions.isEmpty()
                 && request.permissions().junctionPolicy() == JunctionPolicy.REATTACH) {
             topologyFindings.addAll(unsupportedSelectedExtensions(before, afterValues, route,
                     request, evidence, computed.options().fieldName(), sharedJunctions));
         }
         ValidationReport validation = validation(route.quality(),
-                request.permissions().junctionPolicy(), topologyFindings);
+                request.permissions().junctionPolicy(),
+                new FinalTopologyAssessment(topologyFindings, topology.contacts()));
         return new SingleWayDraft(computed, before, after, preview, validation,
                 route.hypothesis().id());
     }
@@ -1990,6 +1992,17 @@ public final class ModernSingleWayEditPlanAdapter {
 
     private enum TopologyDefect { NONE, CROSSING, VERTEX_TOUCH, COLLINEAR_OVERLAP }
 
+    /** Contact policy is explicit: old benchmark validation never borrows the current exception. */
+    private enum ContextContactPolicy { HISTORICAL_INHERITED_ONLY, CURRENT_INDEPENDENT_REVIEW }
+
+    /** Exact contact details accompany the stable validation codes for review and diagnostics. */
+    public record FinalTopologyAssessment(List<String> findingCodes, List<ContextContactAssessment> contacts) {
+        public FinalTopologyAssessment {
+            findingCodes = List.copyOf(findingCodes);
+            contacts = List.copyOf(contacts);
+        }
+    }
+
     private record Segment(PrimitiveKey wayKey, int index, PrimitiveKey firstKey,
             PrimitiveKey secondKey, MetricPoint first, MetricPoint second, boolean changed,
             boolean insideSelectedRange, boolean originalFirst, boolean originalSecond,
@@ -1998,12 +2011,29 @@ public final class ModernSingleWayEditPlanAdapter {
     private static List<String> finalTopologyFindings(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
             OccurrenceRange selectedRange, EvidenceSnapshot evidence) {
-        return finalTopologyFindings(before, after, selectedWay, selectedRange, evidence, Double.NaN);
+        return assessFinalTopology(before, after, selectedWay, selectedRange, evidence, Double.NaN,
+                ContextContactPolicy.HISTORICAL_INHERITED_ONLY).findingCodes();
     }
 
     static List<String> finalTopologyFindings(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
             OccurrenceRange selectedRange, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
+        return assessFinalTopology(before, after, selectedWay, selectedRange, evidence,
+                searchHalfWidthMeters).findingCodes();
+    }
+
+    /** Assesses the actual final graph using the current independent read-only contact policy. */
+    public static FinalTopologyAssessment assessFinalTopology(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
+            OccurrenceRange selectedRange, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
+        return assessFinalTopology(before, after, selectedWay, selectedRange, evidence,
+                searchHalfWidthMeters, ContextContactPolicy.CURRENT_INDEPENDENT_REVIEW);
+    }
+
+    private static FinalTopologyAssessment assessFinalTopology(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedWay,
+            OccurrenceRange selectedRange, EvidenceSnapshot evidence, double searchHalfWidthMeters,
+            ContextContactPolicy policy) {
         DetachedWay beforeSelected = (DetachedWay) before.primitives().get(selectedWay);
         PrimitiveKey selectedFirst = beforeSelected.nodeKeys().get(selectedRange.firstIndex());
         PrimitiveKey selectedLast = beforeSelected.nodeKeys().get(selectedRange.lastIndex());
@@ -2072,6 +2102,7 @@ public final class ModernSingleWayEditPlanAdapter {
             }
         }
         Set<String> findings = new LinkedHashSet<>();
+        List<ContextContactAssessment> contacts = new ArrayList<>();
         Set<PrimitiveKey> inherited = InheritedNonTransportContacts.prove(before, after,
                 selectedWay, selectedRange, evidence, searchHalfWidthMeters);
         var contactFrame = CertifiedContextSegmentClipper.prepareOriginalContactFrame(evidence.coordinateFrame());
@@ -2114,7 +2145,24 @@ public final class ModernSingleWayEditPlanAdapter {
                 PrimitiveKey context = first.wayKey().equals(selectedWay) ? second.wayKey()
                         : second.wayKey().equals(selectedWay) ? first.wayKey() : null;
                 Segment selectedSegment = first.wayKey().equals(selectedWay) ? first : second;
-                if (defect == TopologyDefect.CROSSING && context != null
+                Segment contextSegment = first.wayKey().equals(selectedWay) ? second : first;
+                if (policy == ContextContactPolicy.CURRENT_INDEPENDENT_REVIEW && context != null
+                        && selectedSegment.insideSelectedRange()) {
+                    ContextContactAssessment assessment = ContextContactAssessment.assess(before, after,
+                            selectedWay, selectedRange, selectedSegment.index(), context,
+                            contextSegment.index(), ContextContactAssessment.ContactType.valueOf(defect.name()),
+                            decision.contact(), evidence, searchHalfWidthMeters);
+                    contacts.add(assessment);
+                    if (assessment.disposition() == ContextContactAssessment.Disposition.REVIEW_REQUIRED) {
+                        findings.add(ContextContactAssessment.REVIEW_CODE);
+                        if (defect == TopologyDefect.CROSSING && inherited.contains(context)) {
+                            findings.add("inherited-nontransport-contact-review-required");
+                        }
+                        continue;
+                    }
+                }
+                if (policy == ContextContactPolicy.HISTORICAL_INHERITED_ONLY
+                        && defect == TopologyDefect.CROSSING && context != null
                         && selectedSegment.insideSelectedRange() && inherited.contains(context)) {
                     findings.add("inherited-nontransport-contact-review-required");
                     continue;
@@ -2122,7 +2170,7 @@ public final class ModernSingleWayEditPlanAdapter {
                 findings.add("final-topology:" + defect.name());
             }
         }
-        return List.copyOf(findings);
+        return new FinalTopologyAssessment(List.copyOf(findings), contacts);
     }
 
     private static MetricPoint metric(Map<PrimitiveKey, DetachedPrimitive> values,
@@ -2168,7 +2216,8 @@ public final class ModernSingleWayEditPlanAdapter {
                 earlier.originalChord(), later.originalChord());
     }
 
-    private record PairDecision(TopologyDefect defect, boolean soleSharedContact) { }
+    private record PairDecision(TopologyDefect defect, boolean soleSharedContact,
+            CertifiedContextSegmentClipper.ContactEvidence contact) { }
 
     private static PairDecision pairDecision(Segment first, Segment second,
             org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame frame,
@@ -2194,7 +2243,7 @@ public final class ModernSingleWayEditPlanAdapter {
                             || metric == TopologyDefect.VERTEX_TOUCH
                                 ? TopologyDefect.VERTEX_TOUCH : TopologyDefect.NONE;
         return new PairDecision(decision, original.soleOwnedContact()
-                && decision == TopologyDefect.VERTEX_TOUCH);
+                && decision == TopologyDefect.VERTEX_TOUCH, original);
     }
 
     static boolean continuationReverses(MetricPoint before, MetricPoint boundary,
@@ -2255,6 +2304,12 @@ public final class ModernSingleWayEditPlanAdapter {
     }
 
     private static ValidationReport validation(FinalGeometryEvaluator.Result quality,
+            JunctionPolicy junctionPolicy, FinalTopologyAssessment topology) {
+        return validation(FinalGeometryEvaluator.withContextContacts(quality, topology.contacts()),
+                junctionPolicy, topology.findingCodes());
+    }
+
+    private static ValidationReport validation(FinalGeometryEvaluator.Result quality,
             JunctionPolicy junctionPolicy, List<String> topologyFindings) {
         ValidationReport.Disposition disposition = switch (quality.disposition()) {
             case APPLICABLE -> ValidationReport.Disposition.APPLICABLE;
@@ -2265,7 +2320,7 @@ public final class ModernSingleWayEditPlanAdapter {
             .map(finding -> "modern-final:" + finding.code().name()).distinct().toList());
         findings.addAll(topologyFindings);
         if (topologyFindings.stream().anyMatch(finding -> !finding.equals(
-                "inherited-nontransport-contact-review-required"))) {
+                "inherited-nontransport-contact-review-required") && !finding.equals(ContextContactAssessment.REVIEW_CODE))) {
             disposition = ValidationReport.Disposition.HARD_BLOCKED;
         } else if (!topologyFindings.isEmpty() && disposition != ValidationReport.Disposition.HARD_BLOCKED) {
             disposition = ValidationReport.Disposition.REVIEW_REQUIRED;

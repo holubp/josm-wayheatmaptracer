@@ -259,10 +259,12 @@ final class InheritedNonTransportContacts {
         return false;
     }
 
-    private static boolean unchanged(DetachedWay way, NetworkSnapshot before,
+    static boolean unchanged(DetachedWay way, NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after) {
-        return way.equals(after.get(way.key())) && way.nodeKeys().stream().allMatch(node ->
-                before.primitives().get(node).equals(after.get(node)));
+        return way.equals(before.primitives().get(way.key())) && way.equals(after.get(way.key()))
+                && way.nodeKeys().stream().allMatch(node ->
+                before.primitives().get(node) instanceof DetachedNode
+                && before.primitives().get(node).equals(after.get(node)));
     }
 
     private static boolean onlyTags(Map<String, String> tags, Set<String> semantic) {
