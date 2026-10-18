@@ -360,6 +360,13 @@ class V022LiveBPreviewServiceTest {
     @Test
     void emptyPermissionsKeepHistoricalLiveAndManagedSettingsIdentity() throws Exception {
         Fixture fixture = fiveNodeFixture();
+        Node shared = fixture.selection().segmentNodes().get(0);
+        Node other = loadedNode(900, shared.lat() - 0.0001, shared.lon());
+        fixture.dataSet().addPrimitive(other);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(shared, other));
+        receiver.setOsmId(901, 1); receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
         AlignmentConfig visibleConfig = config();
         AlignmentConfig managedConfig = managedConfig();
         RecoveryPermissions empty = new RecoveryPermissions(false, 7.01, 7.01,
@@ -375,7 +382,7 @@ class V022LiveBPreviewServiceTest {
             visible[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
                     visibleConfig, true, empty);
             SharedNodeDisconnectionIntent visibleIntent = intentFor(
-                    visible[0].network(), visible[0].specification());
+                    visible[0].disconnectionSource(), visible[0].specification());
             RecoveryPermissions visiblePermissions = new RecoveryPermissions(false, 7.01, 7.01,
                     JunctionPolicy.FIXED, false, visibleIntent);
             visibleWithIntent[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
@@ -383,7 +390,7 @@ class V022LiveBPreviewServiceTest {
             managed[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
                     managedConfig, "empty-permission-identity", empty);
             SharedNodeDisconnectionIntent managedIntent = intentFor(
-                    managed[0].network(), managed[0].specification());
+                    managed[0].disconnectionSource(), managed[0].specification());
             RecoveryPermissions managedPermissions = new RecoveryPermissions(false, 7.01, 7.01,
                     JunctionPolicy.FIXED, false, managedIntent);
             managedWithIntent[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),

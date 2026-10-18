@@ -65,6 +65,7 @@ final class NativeInteriorSupportVerifier {
         Map<FinalRoutePointId, Integer> actualIndexes = new HashMap<>();
         for (int index = 0; index < ids.size(); index++) actualIndexes.put(ids.get(index), index);
         Set<Edge> result = new HashSet<>();
+        var disconnections = SharedNodeDisconnectionPlanner.forRequest(input.fullRequest(), input.network());
         for (int runIndex = 0; runIndex < input.runs().size(); runIndex++) {
             var run = input.runs().get(runIndex);
             int choice = choices.getOrDefault(runIndex, 0);
@@ -129,12 +130,14 @@ final class NativeInteriorSupportVerifier {
                             && source.nodeKeys().get(occurrence).equals(existing.nodeKey());
                     var old = (DetachedNode) input.network().primitives().get(existing.nodeKey());
                     if (points.get(index).equals(frame.toMetric(old.coordinate()))) expected = old.coordinate();
-                    protectedVertex[index] |= input.network().closure().protectedExistingNodeKeys().contains(existing.nodeKey())
-                            || !input.network().closure().movableExistingNodeKeys().contains(existing.nodeKey())
+                    boolean replacement = disconnections.mayPosition(occurrence);
+                    protectedVertex[index] |= !replacement && (input.network().closure().protectedExistingNodeKeys().contains(existing.nodeKey())
+                            || !input.network().closure().movableExistingNodeKeys().contains(existing.nodeKey()))
                             || route.sourceOwnership().get(rawId) == ObservationOwnership.FIXED_TOPOLOGY_ONLY;
                 }
                 exact[index] = nativeIdentity && actual != null && points.get(index).equals(assignments.get(id))
-                        && (rawId instanceof ExistingWayNodeOccurrence existing ? keys.get(actual).equals(existing.nodeKey())
+                        && (rawId instanceof ExistingWayNodeOccurrence existing ? keys.get(actual).equals(
+                                disconnections.destinationKey(existing))
                                 : keys.get(actual).type() == PrimitiveKey.Type.NODE
                                     && keys.get(actual).identityKind() == PrimitiveKey.IdentityKind.PLAN_LOCAL)
                         && after.get(keys.get(actual)) instanceof DetachedNode node && expected.equals(node.coordinate());

@@ -23,10 +23,24 @@ public record AlignmentEditPlan(
     String parameterHash,
     String routeIdentity,
     Map<PrimitiveKey, List<GeographicPoint>> finalPreviewWays,
-    ValidationReport validation
+    ValidationReport validation,
+    NetworkSnapshot disconnectionSource,
+    Map<Integer, PrimitiveKey> disconnectedOccurrenceReplacements,
+    AlignmentMode disconnectionGeometryMode
 ) {
     private static final double MAXIMUM_JUNCTION_RELOCATION_METERS = 20.0;
     private static final double MOVEMENT_DISTANCE_EPSILON_METERS = 1.0e-6;
+
+    /** Historical plans have no occurrence replacement authority. */
+    public AlignmentEditPlan(PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+            NetworkSnapshot before, NetworkSnapshot after, LocalMetricFrame metricFrame,
+            RecoveryPermissions permissions, String settingsHash, String evidenceHash,
+            String parameterHash, String routeIdentity,
+            Map<PrimitiveKey, List<GeographicPoint>> finalPreviewWays, ValidationReport validation) {
+        this(selectedWayKey, selectedRange, before, after, metricFrame, permissions, settingsHash,
+                evidenceHash, parameterHash, routeIdentity, finalPreviewWays, validation,
+                null, Map.of(), null);
+    }
 
     /** Copies state and proves identity, authority, geometry, preview, and permission invariants. */
     public AlignmentEditPlan {
@@ -45,6 +59,7 @@ public record AlignmentEditPlan(
         Map<PrimitiveKey, List<GeographicPoint>> previewCopy = new LinkedHashMap<>();
         finalPreviewWays.forEach((key, points) -> previewCopy.put(key, List.copyOf(points)));
         finalPreviewWays = Map.copyOf(previewCopy);
+        disconnectedOccurrenceReplacements = Map.copyOf(disconnectedOccurrenceReplacements);
         DetachedWay selected = requireWay(before, selectedWayKey);
         if (selectedRange.lastIndex() >= selected.nodeKeys().size()) {
             throw new IllegalArgumentException("Selected occurrence range exceeds source way");
@@ -55,7 +70,9 @@ public record AlignmentEditPlan(
         if (writeSet.isEmpty()) {
             throw new IllegalArgumentException("An edit plan must contain a material change");
         }
-        validateCreatedAndRemoved(before, after, writeSet);
+        validateDisconnectionAuthority(selectedWayKey, selectedRange, before, after, permissions,
+                disconnectionSource, disconnectedOccurrenceReplacements, disconnectionGeometryMode);
+        validateCreatedAndRemoved(before, after, writeSet, disconnectedOccurrenceReplacements);
         validateNodeMovementAuthority(before, after, selectedWayKey, selectedRange, permissions,
             metricFrame);
         Set<PrimitiveKey> changedExisting = writeSet.stream()
@@ -64,7 +81,8 @@ public record AlignmentEditPlan(
             throw new IllegalArgumentException("Structural diff exceeds explicit primitive edit authority");
         }
         validateSemanticChanges(before, after, writeSet, permissions, selectedWayKey);
-        validateOccurrenceAuthority(before, after, writeSet, permissions);
+        validateOccurrenceAuthority(before, after, writeSet, permissions, selectedWayKey,
+                disconnectedOccurrenceReplacements);
         validateMetricAuthority(before, after, writeSet, metricFrame);
         Set<PrimitiveKey> affectedWays = affectedWayKeys(before, after, writeSet);
         validateDecisionReferrerPayload(before, after, writeSet, affectedWays,
@@ -78,6 +96,75 @@ public record AlignmentEditPlan(
     /** Returns all changed, created, and removed typed primitive identities. */
     public Set<PrimitiveKey> writePrimitiveKeys() {
         return writeSet(before, after);
+    }
+
+    private static void validateDisconnectionAuthority(PrimitiveKey selectedKey, OccurrenceRange range,
+            NetworkSnapshot before, NetworkSnapshot after, RecoveryPermissions permissions,
+            NetworkSnapshot source, Map<Integer, PrimitiveKey> replacements, AlignmentMode mode) {
+        var intent = permissions.sharedNodeDisconnectionIntent();
+        if (intent.isEmpty()) {
+            if (source != null || !replacements.isEmpty() || mode != null
+                    || !after.proposedPortReplacements().isEmpty()) {
+                throw new IllegalArgumentException("Empty intent cannot carry disconnection plan authority");
+            }
+            return;
+        }
+        var planner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                .replacements(source, intent);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                .requireSourceParity(source, before, intent);
+        if (!planner.equals(replacements) || !intent.selectedWayKey().equals(selectedKey)
+                || !intent.selectedRange().equals(range)
+                || mode != AlignmentMode.PRECISE_SHAPE && mode != AlignmentMode.MOVE_EXISTING_NODES
+                || permissions.junctionPolicy() != JunctionPolicy.FIXED || permissions.reconstructIncidentWays()) {
+            throw new IllegalArgumentException("Disconnection plan lacks exact replacement authority");
+        }
+        Map<ExternalPort, PrimitiveKey> expectedPorts = new LinkedHashMap<>();
+        for (var port : before.closure().externalPorts()) {
+            if (port.wayKey().equals(selectedKey) && replacements.containsKey(port.boundaryOccurrenceIndex())) {
+                expectedPorts.put(port, replacements.get(port.boundaryOccurrenceIndex()));
+            }
+        }
+        if (!after.proposedPortReplacements().equals(expectedPorts)) {
+            throw new IllegalArgumentException("Disconnection proposed ports differ from exact chosen boundary authority");
+        }
+        DetachedWay original = requireWay(before, selectedKey);
+        DetachedWay proposed = requireWay(after, selectedKey);
+        Map<PrimitiveKey, PrimitiveKey> normalized = new LinkedHashMap<>();
+        replacements.forEach((index, replacement) -> {
+            PrimitiveKey originalKey = original.nodeKeys().get(index);
+            if (!Objects.equals(before.primitives().get(originalKey), after.primitives().get(originalKey))
+                    || before.primitives().containsKey(replacement)
+                    || !(after.primitives().get(replacement) instanceof DetachedNode newNode)
+                    || !newNode.tags().isEmpty() || newNode.deleted()
+                    || proposed.nodeKeys().stream().filter(replacement::equals).count() != 1
+                    || proposed.nodeKeys().contains(originalKey)
+                    || !after.incomingReferrerWatches().getOrDefault(replacement, Set.of()).equals(Set.of(selectedKey))) {
+                throw new IllegalArgumentException("Disconnection replacement is missing or changes its original/referrers");
+            }
+            if ((index == range.firstIndex() || index == range.lastIndex())
+                    && !newNode.coordinate().equals(((DetachedNode) before.primitives().get(originalKey)).coordinate())) {
+                throw new IllegalArgumentException("Disconnection cannot move a fixed selected endpoint");
+            }
+            normalized.put(replacement, originalKey);
+        });
+        before.primitives().forEach((key, primitive) -> {
+            boolean contextual = key.type() != PrimitiveKey.Type.NODE && !key.equals(selectedKey)
+                    || key.type() == PrimitiveKey.Type.NODE && before.incomingReferrerWatches().get(key)
+                            .stream().anyMatch(ref -> ref.type() == PrimitiveKey.Type.WAY && !ref.equals(selectedKey));
+            if (contextual && !Objects.equals(primitive, after.primitives().get(key))) {
+                throw new IllegalArgumentException("Disconnection must preserve every contextual primitive");
+            }
+        });
+        if (mode == AlignmentMode.MOVE_EXISTING_NODES) {
+            Set<PrimitiveKey> added = new LinkedHashSet<>(after.primitives().keySet());
+            added.removeAll(before.primitives().keySet());
+            if (!added.equals(Set.copyOf(replacements.values()))
+                    || !original.nodeKeys().equals(proposed.nodeKeys().stream()
+                            .map(key -> normalized.getOrDefault(key, key)).toList())) {
+                throw new IllegalArgumentException("Move Nodes creates only exact chosen occurrence replacements");
+            }
+        }
     }
 
     /** Returns every way whose visible geometry changes, including shared-node movement. */
@@ -118,6 +205,12 @@ public record AlignmentEditPlan(
         }
         encoder.field(settingsHash).field(evidenceHash).field(parameterHash).field(routeIdentity)
             .field(permissions.canonicalIdentity()).field(validation.disposition().name());
+        if (disconnectionSource != null) {
+            encoder.field("disconnection-plan-v1").field(disconnectionSource.canonicalHash())
+                    .field(disconnectionGeometryMode.name());
+            disconnectedOccurrenceReplacements.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .forEach(entry -> NetworkSnapshot.encodeKey(encoder.field(entry.getKey()), entry.getValue()));
+        }
         if (before.semanticWitness() != null) {
             encoder.field("semantic-witness").field(before.semanticWitness().canonicalHash());
         }
@@ -177,10 +270,10 @@ public record AlignmentEditPlan(
     }
 
     private static void validateCreatedAndRemoved(NetworkSnapshot before, NetworkSnapshot after,
-        Set<PrimitiveKey> writeSet) {
+        Set<PrimitiveKey> writeSet, Map<Integer, PrimitiveKey> replacements) {
         Set<PrimitiveKey> added = new LinkedHashSet<>(after.primitives().keySet());
         added.removeAll(before.primitives().keySet());
-        if (!added.isEmpty() && !before.closure().mayCreateNodes()) {
+        if (!before.closure().mayCreateNodes() && !replacements.values().containsAll(added)) {
             throw new IllegalArgumentException("Closure does not authorize new nodes");
         }
         for (PrimitiveKey key : added) {
@@ -358,14 +451,21 @@ public record AlignmentEditPlan(
     }
 
     private static void validateOccurrenceAuthority(NetworkSnapshot before, NetworkSnapshot after,
-        Set<PrimitiveKey> writes, RecoveryPermissions permissions) {
+        Set<PrimitiveKey> writes, RecoveryPermissions permissions, PrimitiveKey selectedWay,
+        Map<Integer, PrimitiveKey> replacements) {
         for (PrimitiveKey key : writes) {
             DetachedPrimitive oldValue = before.primitives().get(key);
             DetachedPrimitive newValue = after.primitives().get(key);
             if (oldValue instanceof DetachedWay oldWay && newValue instanceof DetachedWay newWay
                 && !oldWay.nodeKeys().equals(newWay.nodeKeys())) {
                 List<OccurrenceRange> ranges = before.closure().editableWayOccurrences().get(key);
-                if (ranges == null || !sequenceChangesAuthorized(oldWay.nodeKeys(), newWay.nodeKeys(), ranges,
+                List<PrimitiveKey> normalized = newWay.nodeKeys();
+                if (key.equals(selectedWay) && !replacements.isEmpty()) {
+                    Map<PrimitiveKey, PrimitiveKey> originals = new LinkedHashMap<>();
+                    replacements.forEach((index, replacement) -> originals.put(replacement, oldWay.nodeKeys().get(index)));
+                    normalized = newWay.nodeKeys().stream().map(node -> originals.getOrDefault(node, node)).toList();
+                }
+                if (ranges == null || !sequenceChangesAuthorized(oldWay.nodeKeys(), normalized, ranges,
                     before.closure().protectedExistingNodeKeys(),
                     before.closure().movableExistingNodeKeys(), permissions.junctionPolicy())) {
                     throw new IllegalArgumentException("Way node-list change exceeds editable occurrence ranges");
@@ -470,6 +570,11 @@ public record AlignmentEditPlan(
                 DetachedNode right = requireNode(after, rightKey);
                 if (segmentGeometryUnchanged(before, key, leftKey, rightKey,
                     left.coordinate(), right.coordinate())) {
+                    continue;
+                }
+                if (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                        .exactBoundaryIdentityChange(before, after.primitives(), key, index - 1,
+                                after.proposedPortReplacements()) != null) {
                     continue;
                 }
                 if (!editRegion.containsSegment(frame.toMetric(left.coordinate()), frame.toMetric(right.coordinate()))) {

@@ -189,9 +189,19 @@ public final class SelectedWayIntervalPartitioner {
         }
 
         List<Integer> junctionOccurrences = new ArrayList<>();
+        var intent = authoritySpecification.permissions().sharedNodeDisconnectionIntent();
+        if (!intent.isEmpty() && (!intent.selectedWayKey().equals(selected.key())
+                || !intent.selectedRange().equals(selection))) {
+            throw new IllegalArgumentException("Disconnection partition differs from frozen selection");
+        }
+        var disconnections = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .SharedNodeDisconnectionPlanner.replacements(
+                        authoritySpecification.disconnectionSource() == null ? authoritySnapshot
+                                : authoritySpecification.disconnectionSource(), intent);
         for (int index = selection.firstIndex(); index <= selection.lastIndex(); index++) {
             PrimitiveKey node = selected.nodeKeys().get(index);
-            if (wayReferrers(authoritySnapshot, node).size() > 1) junctionOccurrences.add(index);
+            if (!disconnections.containsKey(index)
+                    && wayReferrers(authoritySnapshot, node).size() > 1) junctionOccurrences.add(index);
         }
         boolean repeatedSelected = new LinkedHashSet<>(selected.nodeKeys()).size() != selected.nodeKeys().size();
         if (repeatedSelected) {

@@ -58,7 +58,32 @@ public final class NetworkSnapshotCapture {
         Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableExistingNodeKeys,
         Set<PrimitiveKey> removableExistingNodeKeys, Set<PrimitiveKey> explicitlyProtectedNodeKeys,
         boolean mayCreateNodes, RecoveryPermissions permissions,
-        List<ExternalPort> readOnlyPorts, boolean fixedReceiverGeometry) {
+        List<ExternalPort> readOnlyPorts, boolean fixedReceiverGeometry,
+        NetworkSnapshot disconnectionSource) {
+        /** Preserves callers without pre-island disconnection source evidence. */
+        public Specification(String snapshotId, String datasetIdentity, long sourceGeneration,
+                PrimitiveKey selectedWayKey, OccurrenceRange selectedRange, LocalMetricFrame metricFrame,
+                MetricRegion collisionEnvelope, MetricRegion editRegion,
+                Map<PrimitiveKey, List<OccurrenceRange>> editableWayOccurrences,
+                Set<PrimitiveKey> editableExistingKeys, Set<PrimitiveKey> movableExistingNodeKeys,
+                Set<PrimitiveKey> removableExistingNodeKeys, Set<PrimitiveKey> explicitlyProtectedNodeKeys,
+                boolean mayCreateNodes, RecoveryPermissions permissions,
+                List<ExternalPort> readOnlyPorts, boolean fixedReceiverGeometry) {
+            this(snapshotId, datasetIdentity, sourceGeneration, selectedWayKey, selectedRange,
+                    metricFrame, collisionEnvelope, editRegion, editableWayOccurrences,
+                    editableExistingKeys, movableExistingNodeKeys, removableExistingNodeKeys,
+                    explicitlyProtectedNodeKeys, mayCreateNodes, permissions, readOnlyPorts,
+                    fixedReceiverGeometry, null);
+        }
+
+        /** Carries the original conservative source for strict final/stale recapture validation. */
+        public Specification withDisconnectionSource(NetworkSnapshot source) {
+            return new Specification(snapshotId, datasetIdentity, sourceGeneration, selectedWayKey,
+                    selectedRange, metricFrame, collisionEnvelope, editRegion, editableWayOccurrences,
+                    editableExistingKeys, movableExistingNodeKeys, removableExistingNodeKeys,
+                    explicitlyProtectedNodeKeys, mayCreateNodes, permissions, readOnlyPorts,
+                    fixedReceiverGeometry, permissions.sharedNodeDisconnectionIntent().isEmpty() ? null : source);
+        }
         /** Preserves historical authority without extending its read-only boundary closure. */
         public Specification(String snapshotId, String datasetIdentity, long sourceGeneration,
                 PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
@@ -100,6 +125,9 @@ public final class NetworkSnapshotCapture {
                 || permissions == null || readOnlyPorts == null
                 || readOnlyPorts.stream().anyMatch(Objects::isNull)) {
                 throw new IllegalArgumentException("Network capture specification is incomplete");
+            }
+            if (disconnectionSource != null && permissions.sharedNodeDisconnectionIntent().isEmpty()) {
+                throw new IllegalArgumentException("Empty intent cannot carry a bound disconnection source");
             }
             long authorityIdentities = (long) editableWayOccurrences.size() + editableExistingKeys.size()
                 + movableExistingNodeKeys.size() + removableExistingNodeKeys.size()
@@ -144,7 +172,7 @@ public final class NetworkSnapshotCapture {
                     selectedWayKey, selectedRange, metricFrame, collisionEnvelope, editRegion,
                     editableWayOccurrences, editableExistingKeys, movableExistingNodeKeys,
                     removableExistingNodeKeys, explicitlyProtectedNodeKeys, mayCreateNodes,
-                    permissions, List.copyOf(provedPorts), fixedReceiverGeometry);
+                    permissions, List.copyOf(provedPorts), fixedReceiverGeometry, disconnectionSource);
         }
 
         /** Requests bounded read-only geometry for fixed B interval authority, never edit authority. */
@@ -153,7 +181,7 @@ public final class NetworkSnapshotCapture {
                     selectedWayKey, selectedRange, metricFrame, collisionEnvelope, editRegion,
                     editableWayOccurrences, editableExistingKeys, movableExistingNodeKeys,
                     removableExistingNodeKeys, explicitlyProtectedNodeKeys, mayCreateNodes,
-                    permissions, readOnlyPorts, true);
+                    permissions, readOnlyPorts, true, disconnectionSource);
         }
     }
 
@@ -354,11 +382,12 @@ public final class NetworkSnapshotCapture {
         Map<PrimitiveKey, Set<PrimitiveKey>> watches = materializer.watches();
         NetworkSnapshot core = new NetworkSnapshot(specification.snapshotId(), SnapshotRole.CAPTURED_BEFORE,
             specification.datasetIdentity(), specification.sourceGeneration(), closure, primitives, watches);
-        validateDisconnectionIntent(core, specification);
         NonTransportSemanticWitness witness = materializer.semanticWitness(core);
-        return new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
+        NetworkSnapshot captured = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
                 core.sourceGeneration(), core.closure(), core.primitives(),
                 core.incomingReferrerWatches(), witness);
+        validateDisconnectionIntent(captured, specification);
+        return captured;
     }
 
     /** Binds explicit occurrence permission to this exact factual source capture. */
@@ -367,6 +396,11 @@ public final class NetworkSnapshotCapture {
         var intent = specification.permissions().sharedNodeDisconnectionIntent();
         if (intent.isEmpty()) {
             return;
+        }
+        if (specification.disconnectionSource() != null) {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                    .requireSourceParity(specification.disconnectionSource(), source, intent);
+            source = specification.disconnectionSource();
         }
         if (!intent.selectedWayKey().equals(specification.selectedWayKey())
                 || !intent.selectedRange().equals(specification.selectedRange())

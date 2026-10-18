@@ -43,11 +43,24 @@ public record ContextContactAssessment(PrimitiveKey selectedWayKey, PrimitiveKey
             OccurrenceRange range, int selectedIndex, PrimitiveKey contextKey, int contextIndex,
             ContactType type, CertifiedContextSegmentClipper.ContactEvidence contact,
             EvidenceSnapshot evidence, double halfWidthMeters) {
+        return assess(before, after, selectedKey, range, selectedIndex, contextKey, contextIndex,
+                type, contact, evidence, halfWidthMeters, Map.of(), null);
+    }
+
+    /** Uses the exact validated plan destinations when a selected endpoint is disconnected. */
+    static ContextContactAssessment assess(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selectedKey,
+            OccurrenceRange range, int selectedIndex, PrimitiveKey contextKey, int contextIndex,
+            ContactType type, CertifiedContextSegmentClipper.ContactEvidence contact,
+            EvidenceSnapshot evidence, double halfWidthMeters, Map<Integer, PrimitiveKey> replacements,
+            SharedNodeDisconnectionPlanner.BoundaryIdentityProof boundaryProof) {
         DetachedWay source = (DetachedWay) before.primitives().get(selectedKey);
         DetachedWay selected = (DetachedWay) after.get(selectedKey);
         DetachedWay context = (DetachedWay) after.get(contextKey);
-        int first = selected.nodeKeys().indexOf(source.nodeKeys().get(range.firstIndex()));
-        int last = selected.nodeKeys().indexOf(source.nodeKeys().get(range.lastIndex()));
+        int first = selected.nodeKeys().indexOf(replacements.getOrDefault(range.firstIndex(),
+                source.nodeKeys().get(range.firstIndex())));
+        int last = selected.nodeKeys().indexOf(replacements.getOrDefault(range.lastIndex(),
+                source.nodeKeys().get(range.lastIndex())));
         int routeIndex = Math.max(0, selectedIndex - Math.max(0, first));
         List<MetricPoint> location = List.of();
         boolean inherited = false;
@@ -65,7 +78,8 @@ public record ContextContactAssessment(PrimitiveKey selectedWayKey, PrimitiveKey
             inherited = inheritedContact(before, source, range, contextKey, contextIndex, type, evidence);
             boolean authority = before.closure().editableExistingKeys().contains(selectedKey)
                     && before.closure().editableWayOccurrences().getOrDefault(selectedKey, List.of()).contains(range)
-                    && first >= 0 && last > first && selectedIndex >= first && selectedIndex < last
+                    && first >= 0 && last > first && (selectedIndex >= first && selectedIndex < last
+                            || boundaryProof != null && boundaryProof.matches(selectedKey, selectedIndex))
                     && Double.isFinite(halfWidthMeters) && halfWidthMeters > 0;
             if (selectedKey.equals(contextKey)) {
                 reason = "context-contact-self-intersection";

@@ -12,7 +12,17 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Detached
 public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
     long sourceGeneration, ClosureDescriptor closure, Map<PrimitiveKey, DetachedPrimitive> primitives,
     Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches,
-    NonTransportSemanticWitness semanticWitness) {
+    NonTransportSemanticWitness semanticWitness,
+    Map<ExternalPort, PrimitiveKey> proposedPortReplacements) {
+    /** Historical and factual snapshots carry no proposed port identity replacements. */
+    public NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
+            long sourceGeneration, ClosureDescriptor closure,
+            Map<PrimitiveKey, DetachedPrimitive> primitives,
+            Map<PrimitiveKey, Set<PrimitiveKey>> incomingReferrerWatches,
+            NonTransportSemanticWitness semanticWitness) {
+        this(snapshotId, role, datasetIdentity, sourceGeneration, closure, primitives,
+                incomingReferrerWatches, semanticWitness, Map.of());
+    }
     /** Historical snapshots carry no additive semantic proof. */
     public NetworkSnapshot(String snapshotId, SnapshotRole role, String datasetIdentity,
             long sourceGeneration, ClosureDescriptor closure,
@@ -30,7 +40,7 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         if (snapshotId == null || snapshotId.isBlank() || role == null
             || datasetIdentity == null || datasetIdentity.isBlank()
             || sourceGeneration < 0 || closure == null || primitives == null
-            || incomingReferrerWatches == null) {
+            || incomingReferrerWatches == null || proposedPortReplacements == null) {
             throw new IllegalArgumentException("Network snapshot is incomplete");
         }
         validateInventoryBounds(primitives, incomingReferrerWatches);
@@ -38,6 +48,22 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         Map<PrimitiveKey, Set<PrimitiveKey>> watchCopy = new LinkedHashMap<>();
         incomingReferrerWatches.forEach((key, value) -> watchCopy.put(key, Set.copyOf(value)));
         incomingReferrerWatches = Map.copyOf(watchCopy);
+        proposedPortReplacements = Map.copyOf(proposedPortReplacements);
+        if (!proposedPortReplacements.isEmpty() && role != SnapshotRole.PROPOSED_AFTER
+                || !closure.externalPorts().containsAll(proposedPortReplacements.keySet())) {
+            throw new IllegalArgumentException("Only exact proposed external ports may carry replacement identities");
+        }
+        for (var entry : proposedPortReplacements.entrySet()) {
+            var original = primitives.get(entry.getKey().boundaryNodeKey());
+            var destination = primitives.get(entry.getValue());
+            if (entry.getValue().identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL
+                    || !closure.protectedExistingNodeKeys().contains(entry.getKey().boundaryNodeKey())
+                    || !(original instanceof DetachedNode oldNode)
+                    || !(destination instanceof DetachedNode newNode)
+                    || !oldNode.coordinate().equals(newNode.coordinate())) {
+                throw new IllegalArgumentException("Proposed external port replacement must preserve its protected boundary coordinate");
+            }
+        }
         Set<PrimitiveKey> keys = primitives.keySet();
         Set<PrimitiveKey> existingKeys = keys.stream()
             .filter(key -> key.identityKind() == PrimitiveKey.IdentityKind.OSM_UNIQUE)
@@ -95,12 +121,13 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
         });
         for (ExternalPort port : closure.externalPorts()) {
             DetachedPrimitive primitive = primitives.get(port.wayKey());
-            if (!(primitive instanceof DetachedWay way) || !portMatches(port, way, role, primitives)) {
+            if (!(primitive instanceof DetachedWay way) || !portMatches(port, way, role, primitives,
+                    proposedPortReplacements.getOrDefault(port, port.boundaryNodeKey()))) {
                 throw new IllegalArgumentException("External port is inconsistent with its captured adjacency");
             }
         }
         DetachedValueVerifier.verify(java.util.Arrays.asList(role, closure, primitives,
-                incomingReferrerWatches, semanticWitness));
+                incomingReferrerWatches, semanticWitness, proposedPortReplacements));
     }
 
     private static void validateInventoryBounds(Map<PrimitiveKey, DetachedPrimitive> primitives,
@@ -130,7 +157,7 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
     }
 
     private static boolean portMatches(ExternalPort port, DetachedWay way, SnapshotRole role,
-        Map<PrimitiveKey, DetachedPrimitive> primitives) {
+        Map<PrimitiveKey, DetachedPrimitive> primitives, PrimitiveKey destinationBoundary) {
         DetachedPrimitive outsidePrimitive = primitives.get(port.outsideNeighborKey());
         if (!(outsidePrimitive instanceof DetachedNode outsideNode)
             || !outsideNode.coordinate().equals(port.outsideNeighborCoordinate())) {
@@ -141,14 +168,14 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
             int outside = port.side() == ExternalPort.Side.BEFORE ? boundary - 1 : boundary + 1;
             return boundary >= 0 && boundary < way.nodeKeys().size()
                 && outside >= 0 && outside < way.nodeKeys().size()
-                && way.nodeKeys().get(boundary).equals(port.boundaryNodeKey())
+                && way.nodeKeys().get(boundary).equals(destinationBoundary)
                 && way.nodeKeys().get(outside).equals(port.outsideNeighborKey());
         }
         int matches = 0;
         for (int boundary = 0; boundary < way.nodeKeys().size(); boundary++) {
             int outside = port.side() == ExternalPort.Side.BEFORE ? boundary - 1 : boundary + 1;
             if (outside >= 0 && outside < way.nodeKeys().size()
-                && way.nodeKeys().get(boundary).equals(port.boundaryNodeKey())
+                && way.nodeKeys().get(boundary).equals(destinationBoundary)
                 && way.nodeKeys().get(outside).equals(port.outsideNeighborKey())) {
                 matches++;
             }
@@ -207,6 +234,18 @@ public record NetworkSnapshot(String snapshotId, SnapshotRole role, String datas
             encodeKey(encoder.field("referrer-watch"), entry.getKey());
             entry.getValue().stream().sorted().forEach(key -> encodeKey(encoder, key));
         });
+        if (!proposedPortReplacements.isEmpty()) {
+            encoder.field("proposed-port-replacements-v1");
+            proposedPortReplacements.entrySet().stream().sorted(Map.Entry.comparingByKey(
+                    Comparator.comparing(ExternalPort::wayKey)
+                            .thenComparingInt(ExternalPort::boundaryOccurrenceIndex)
+                            .thenComparing(ExternalPort::side)
+                            .thenComparing(ExternalPort::boundaryNodeKey)
+                            .thenComparing(ExternalPort::outsideNeighborKey))).forEach(entry -> {
+                                encodePort(encoder, entry.getKey());
+                                encodeKey(encoder, entry.getValue());
+                            });
+        }
         return encoder.sha256();
     }
 
