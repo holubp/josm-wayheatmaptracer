@@ -91,8 +91,10 @@ bit for bit. Witness admission and the unchanged segment-union test are reported
 separately from energy; no new inference or parameter selection occurs. A cheaper
 feasible witness would require solver investigation. Higher witness costs prove
 preference over those witnesses only, not global optimality.
-Only the diagnostic log, binding JSON, bound geometry CSV, objective JSON and
-objective-costs CSV are uploaded, by exact filenames.
+Detailed state evidence uses bounded JSON Lines records, each subject to the
+unchanged receipt-size limit. The objective summary remains a separate receipt.
+Only the diagnostic log, binding JSON, bound geometry CSV, objective JSON,
+objective-costs CSV and objective-evidence JSONL are uploaded, by exact filenames.
 No HOLDOUT/private inputs, fitting retry, JAR, or release action is involved.
 
 ```sh

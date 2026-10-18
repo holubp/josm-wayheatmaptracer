@@ -45,6 +45,7 @@ jobs:
             build/reports/public-observation-renderer/receipt/bound-geometry.csv
             build/reports/public-observation-renderer/receipt/objective.json
             build/reports/public-observation-renderer/receipt/objective-costs.csv
+            build/reports/public-observation-renderer/receipt/objective-evidence.jsonl
           if-no-files-found: error
           retention-days: 5
 

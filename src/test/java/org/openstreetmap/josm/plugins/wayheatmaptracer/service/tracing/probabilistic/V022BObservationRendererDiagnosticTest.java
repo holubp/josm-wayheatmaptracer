@@ -132,6 +132,45 @@ class V022BObservationRendererDiagnosticTest {
         assertFalse((boolean) invokeStatic("modelIdentityMatches", signature, kernel, wrongGraph));
     }
 
+    @Test void objectiveEvidenceUsesBoundedJsonLinesBeyondTheSingleReceiptLimit() throws Exception {
+        Path output = Files.createDirectory(directory.resolve("evidence-ok"));
+        List<Map<String, Object>> rows = List.of(Map.of("path", "map", "payload", "a".repeat(36_000)),
+                Map.of("path", "lower-branch", "payload", "b".repeat(36_000)));
+        Object receipt = invokeStatic("writeObjectiveEvidence", new Class<?>[] {Path.class, List.class}, output, rows);
+        Path evidence = output.resolve("objective-evidence.jsonl");
+        byte[] bytes = Files.readAllBytes(evidence);
+        assertTrue(bytes.length > 64 * 1024, "combined rows should exceed the old single-object limit");
+        assertEquals(2, value(receipt, "rowCount"));
+        assertEquals((long) bytes.length, value(receipt, "byteCount"));
+        assertEquals(BIdentificationReceipt.hash(bytes), value(receipt, "sha256"));
+        assertEquals(2, Files.readAllLines(evidence).size());
+    }
+
+    @Test void objectiveEvidenceRejectsOversizeRowsAndInventoriesWithoutPublishingPartialFiles() throws Exception {
+        Path overlong = Files.createDirectory(directory.resolve("evidence-line-too-long"));
+        assertEvidenceWriteFails(overlong, List.of(Map.of("payload", "x".repeat(64 * 1024))));
+
+        Path tooMany = Files.createDirectory(directory.resolve("evidence-too-many-rows"));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int index = 0; index < 244; index++) rows.add(Map.of("index", index));
+        assertEvidenceWriteFails(tooMany, rows);
+
+        Path tooLarge = Files.createDirectory(directory.resolve("evidence-total-too-large"));
+        List<Map<String, Object>> largeRows = new ArrayList<>();
+        for (int index = 0; index < 243; index++)
+            largeRows.add(Map.of("index", index, "payload", "z".repeat(10_000)));
+        assertEvidenceWriteFails(tooLarge, largeRows);
+    }
+
+    private static void assertEvidenceWriteFails(Path output, List<Map<String, Object>> rows) throws Exception {
+        assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> invokeStatic("writeObjectiveEvidence", new Class<?>[] {Path.class, List.class}, output, rows));
+        assertFalse(Files.exists(output.resolve("objective-evidence.jsonl")));
+        try (var files = Files.list(output)) {
+            assertEquals(0, files.count(), "a rejected write must leave no partial or temporary artifact");
+        }
+    }
+
     private static Object invokeStatic(String name, Class<?>[] signature, Object... arguments) throws Exception {
         Method method = BObservationRendererDiagnosticTool.class.getDeclaredMethod(name, signature);
         method.setAccessible(true);

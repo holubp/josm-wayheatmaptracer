@@ -121,5 +121,6 @@ def test_renderer_diagnostic_dispatch_is_bounded_and_synthetic_only():
         "build/reports/public-observation-renderer/receipt/bound-geometry.csv",
         "build/reports/public-observation-renderer/receipt/objective.json",
         "build/reports/public-observation-renderer/receipt/objective-costs.csv",
+        "build/reports/public-observation-renderer/receipt/objective-evidence.jsonl",
     ]
     assert all(".jar" not in str(step) and "release" not in step.get("uses", "") for step in uploads)

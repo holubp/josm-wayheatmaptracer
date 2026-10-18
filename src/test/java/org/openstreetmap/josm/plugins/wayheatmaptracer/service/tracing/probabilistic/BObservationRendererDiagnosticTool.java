@@ -18,6 +18,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** One-shot public SELECT raster comparison for Math.exp versus StrictMath.exp. */
 public final class BObservationRendererDiagnosticTool {
     private static final String ID = "sparse-crossing-noisy-strands-vs-persistent-parallel/select/v4/right";
+    private static final int MAX_OBJECTIVE_EVIDENCE_ROWS = 3 * 81;
+    private static final int MAX_OBJECTIVE_EVIDENCE_LINE_BYTES = 64 * 1024;
+    private static final long MAX_OBJECTIVE_EVIDENCE_TOTAL_BYTES = 2L * 1024 * 1024;
+    private static final String OBJECTIVE_EVIDENCE_FILE = "objective-evidence.jsonl";
     private record MapCostRow(int index, int state, String branchLabel, boolean exactAnchor,
             boolean mandatory, double xMeters, double yMeters, double unaryEnergy, double guideEnergy,
             double pairOrientationEnergy, double tripleTurnEnergy, double orientationCertainty,
@@ -35,6 +39,7 @@ public final class BObservationRendererDiagnosticTool {
     }
     private record ObjectiveProfile(InferenceProfile inference, BIdentificationFacts.ProfileFacts facts,
             BObservationMixture mixture, BObservationMixture.ReducedRows reduced) { }
+    private record EvidenceFileReceipt(int rowCount, long byteCount, String sha256) { }
 
     private BObservationRendererDiagnosticTool() { }
 
@@ -228,15 +233,22 @@ public final class BObservationRendererDiagnosticTool {
                             .append('\n');
                 }
                 java.nio.file.Files.writeString(directory.resolve("bound-geometry.csv"), csv);
-                report.put("status", "BOUND_GEOMETRY_DECODED");
+                report.put("status", "ORIGINAL_NATIVE_AND_FACTS_MATCH_OBJECTIVE_PENDING");
                 report.put("pointCount", indices.size());
+                writeBinding(directory, report);
+                report.put("status", "BOUND_GEOMETRY_DECODED");
                 writeObjective(directory, scene, profiles, facts, lattices, indices,
                         receipt, geometry, cancellation, owner);
+                writeBinding(directory, report);
             }
         }
+        writeBinding(directory, report);
+        System.out.println("BOUND_RECEIPT " + BIdentificationReceipt.canonical(report));
+    }
+
+    private static void writeBinding(java.nio.file.Path directory, Map<String, Object> report) throws Exception {
         java.nio.file.Files.writeString(directory.resolve("binding.json"),
                 BIdentificationReceipt.canonical(report) + "\n");
-        System.out.println("BOUND_RECEIPT " + BIdentificationReceipt.canonical(report));
     }
 
     private static void writeObjective(java.nio.file.Path directory, BIdentificationCatalog.Scene scene,
@@ -272,16 +284,17 @@ public final class BObservationRendererDiagnosticTool {
                 .flatMap(region -> region.acceptableCurves().stream()).toList();
         var witnesses = buildBranchWitnesses(profiles, lattices, mapStates, branches);
         var pathRows = new ArrayList<Map<String, Object>>();
+        var evidenceRows = new ArrayList<Map<String, Object>>(MAX_OBJECTIVE_EVIDENCE_ROWS);
         var allRows = new StringBuilder("path,index,state,branch,exact_anchor,mandatory,x_m,y_m,unary_energy,guide_energy,pair_orientation_energy,triple_turn_energy,orientation_certainty,orientation_reliability\n");
         appendCostRows(allRows, "map", map);
-        pathRows.add(pathSummary("map", map, objectiveProfiles, sourceProfiles, null, scene,
-                cancellation, owner));
+        pathRows.add(pathSummary("map", map, objectiveProfiles, sourceProfiles, null, evidenceRows,
+                scene, cancellation, owner));
         for (var witness : witnesses) {
             var rescored = rescoreSavedMap(profiles, witness.stateIndices(), modelParameters);
             String pathId = witness.branchLabel();
             appendCostRows(allRows, pathId, rescored);
             pathRows.add(pathSummary(pathId, rescored, objectiveProfiles, sourceProfiles,
-                    witness, scene, cancellation, owner));
+                    witness, evidenceRows, scene, cancellation, owner));
         }
         if (witnesses.size() != 2) {
             pathRows.add(Map.of("status", "UNAVAILABLE", "reason", "TWO_SOURCE_BRANCHES_NOT_AVAILABLE"));
@@ -307,6 +320,11 @@ public final class BObservationRendererDiagnosticTool {
                 Object count = path.get("pointCount"); return count instanceof Number number ? number.intValue() : 0;
             }).sum());
         objective.put("paths", pathRows);
+        EvidenceFileReceipt evidenceReceipt = writeObjectiveEvidence(directory, evidenceRows);
+        objective.put("stateEvidenceFile", OBJECTIVE_EVIDENCE_FILE);
+        objective.put("stateEvidenceRecords", evidenceReceipt.rowCount());
+        objective.put("stateEvidenceBytes", evidenceReceipt.byteCount());
+        objective.put("stateEvidenceSHA256", evidenceReceipt.sha256());
         java.nio.file.Files.writeString(directory.resolve("objective.json"),
                 BIdentificationReceipt.canonical(objective) + "\n");
         java.nio.file.Files.writeString(directory.resolve("objective-costs.csv"), allRows.toString());
@@ -345,7 +363,7 @@ public final class BObservationRendererDiagnosticTool {
 
     private static Map<String, Object> pathSummary(String pathId, RescoreResult score,
             List<ObjectiveProfile> objectiveProfiles, List<ProbabilisticProfile> sourceProfiles,
-            BranchWitness witness,
+            BranchWitness witness, List<Map<String, Object>> evidenceRows,
             BIdentificationCatalog.Scene scene, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner owner) {
         List<MetricPoint> points = witness == null
@@ -390,8 +408,57 @@ public final class BObservationRendererDiagnosticTool {
         result.put("status", witness == null ? "RECORDED_MAP" : routePassed && anchorsPassed
                 && unionPassed && branchPassed ? "AVAILABLE" : "UNAVAILABLE_GEOMETRY_GATE");
         result.put("acceptanceChecks", checksAsMaps(anchorChecks, branchChecks, unionChecks));
-        result.put("stateEvidence", stateEvidenceRows(objectiveProfiles, score.rows()));
+        for (var stateRow : stateEvidenceRows(objectiveProfiles, score.rows())) {
+            var evidenceRow = new LinkedHashMap<String, Object>(stateRow);
+            evidenceRow.put("path", pathId);
+            evidenceRows.add(evidenceRow);
+        }
         return result;
+    }
+
+    private static EvidenceFileReceipt writeObjectiveEvidence(java.nio.file.Path directory,
+            List<Map<String, Object>> rows) throws Exception {
+        if (directory == null || rows == null || rows.isEmpty() || rows.size() > MAX_OBJECTIVE_EVIDENCE_ROWS)
+            throw new IllegalArgumentException("Objective evidence row count is outside its fixed bound");
+        var encodedRows = new ArrayList<byte[]>(rows.size());
+        long totalBytes = 0;
+        for (Map<String, Object> row : rows) {
+            if (row == null) throw new IllegalArgumentException("Objective evidence rows cannot be null");
+            byte[] canonical = BIdentificationReceipt.canonical(row).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            long lineBytes = Math.addExact(canonical.length, 1L);
+            if (lineBytes > MAX_OBJECTIVE_EVIDENCE_LINE_BYTES)
+                throw new IllegalArgumentException("Objective evidence line exceeds 64 KiB");
+            totalBytes = Math.addExact(totalBytes, lineBytes);
+            if (totalBytes > MAX_OBJECTIVE_EVIDENCE_TOTAL_BYTES)
+                throw new IllegalArgumentException("Objective evidence exceeds its 2 MiB total bound");
+            encodedRows.add(canonical);
+        }
+
+        java.nio.file.Path temporary = null;
+        try {
+            temporary = java.nio.file.Files.createTempFile(directory, "objective-evidence-", ".tmp");
+            var digest = MessageDigest.getInstance("SHA-256");
+            long writtenBytes = 0;
+            try (var output = java.nio.file.Files.newOutputStream(temporary)) {
+                for (byte[] row : encodedRows) {
+                    writtenBytes = Math.addExact(writtenBytes, row.length + 1L);
+                    if (writtenBytes > MAX_OBJECTIVE_EVIDENCE_TOTAL_BYTES)
+                        throw new IllegalArgumentException("Objective evidence exceeded its 2 MiB write bound");
+                    output.write(row);
+                    output.write('\n');
+                    digest.update(row);
+                    digest.update((byte) '\n');
+                }
+            }
+            if (writtenBytes != totalBytes)
+                throw new IllegalStateException("Objective evidence byte census changed during serialization");
+            java.nio.file.Files.move(temporary, directory.resolve(OBJECTIVE_EVIDENCE_FILE),
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            temporary = null;
+            return new EvidenceFileReceipt(rows.size(), writtenBytes, hex(digest.digest()));
+        } finally {
+            if (temporary != null) java.nio.file.Files.deleteIfExists(temporary);
+        }
     }
 
     private static boolean routeAdmitted(List<MetricPoint> points, MetricRegion region) {
