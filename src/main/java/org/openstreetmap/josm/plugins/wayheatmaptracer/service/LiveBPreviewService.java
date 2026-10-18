@@ -483,7 +483,7 @@ public final class LiveBPreviewService {
                 decision, permissions, config);
         TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
-                permissions.toString());
+                permissions.canonicalIdentity());
         String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT)
                 + "-v2", parameterIdentity(engine));
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
@@ -1034,7 +1034,7 @@ public final class LiveBPreviewService {
         CaptureAuthority authority = captureAuthority(dataSet, selection, way, range, frame,
                 decision, permissions, config);
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
-                permissions.toString());
+                permissions.canonicalIdentity());
         String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
