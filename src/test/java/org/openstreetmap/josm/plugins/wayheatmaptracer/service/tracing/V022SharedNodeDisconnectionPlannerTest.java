@@ -23,6 +23,7 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
@@ -200,6 +201,151 @@ class V022SharedNodeDisconnectionPlannerTest {
                 plan.after().incomingReferrerWatches());
         assertThrows(IllegalArgumentException.class, () -> copyPlan(plan, movedOriginal, plan.disconnectionSource(),
                 plan.disconnectedOccurrenceReplacements()));
+    }
+
+    @Test void intervalRequestsAndCaptureAuthorityMustMatchTheFullDisconnectionAttempt() throws Exception {
+        Fixture fixture = separatedJunctionFixture();
+        var computed = compute(fixture, AlignmentMode.PRECISE_SHAPE,
+                Map.of(10, key(fixture.nodes().get(10)))).computed();
+        var batch = computed.intervalBatch();
+        var run = batch.runs().get(0);
+        var request = run.request();
+        var source = request.disconnectionSource();
+        var differentIntent = new SharedNodeDisconnectionIntent(batch.fullRequest().selectedWayKey(),
+                batch.fullRequest().selectedRange(), Map.of(30, key(fixture.nodes().get(30))), source.canonicalHash());
+        var differentPermissions = new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED,
+                false, differentIntent);
+        var changedValues = new LinkedHashMap<>(source.primitives());
+        var ordinary = (DetachedNode) changedValues.get(key(fixture.nodes().get(0)));
+        changedValues.put(ordinary.key(), new DetachedNode(ordinary.key(),
+                new GeographicPoint(ordinary.coordinate().latitudeDegrees() + 0.000001,
+                        ordinary.coordinate().longitudeDegrees()), ordinary.tags(), false, ordinary.modified()));
+        var differentSource = new NetworkSnapshot("different-initial-facts", source.role(), source.datasetIdentity(),
+                source.sourceGeneration(), source.closure(), changedValues, source.incomingReferrerWatches());
+        var changedIntent = new SharedNodeDisconnectionIntent(batch.fullRequest().selectedWayKey(),
+                batch.fullRequest().selectedRange(), request.permissions().sharedNodeDisconnectionIntent().originalNodeKeys(),
+                differentSource.canonicalHash());
+        var changedPermissions = new RecoveryPermissions(false, 7.01, 7.01, JunctionPolicy.FIXED, false, changedIntent);
+        List<TraceRequest> mismatches = List.of(
+                authorityCopy(request, request.engine(), request.geometryMode(), RecoveryPermissions.disabled(7.01), null),
+                authorityCopy(request, request.engine(), request.geometryMode(), differentPermissions, source),
+                authorityCopy(request, request.engine(), request.geometryMode(), changedPermissions, differentSource),
+                authorityCopy(request, request.engine(), AlignmentMode.MOVE_EXISTING_NODES, request.permissions(), source),
+                authorityCopy(request, TrackerMode.PROBABILISTIC, request.geometryMode(), request.permissions(), source));
+        var spec = batch.authoritySpecification();
+        var emptySpec = authorityCopy(spec, RecoveryPermissions.disabled(7.01), null, spec.selectedRange());
+        var missingSourceSpec = authorityCopy(spec, spec.permissions(), null, spec.selectedRange());
+        var wrongSelectionSpec = authorityCopy(spec, spec.permissions(), spec.disconnectionSource(),
+                new OccurrenceRange(spec.selectedRange().firstIndex() + 1, spec.selectedRange().lastIndex()));
+        var checks = new ArrayList<org.junit.jupiter.api.function.Executable>();
+        for (int index = 0; index < mismatches.size(); index++) {
+            var mismatch = mismatches.get(index);
+            var inference = run.result().inference();
+            var matchingEngine = new TraceHypothesisSet(mismatch.engine(), inference.hypotheses(), inference.status(),
+                    inference.alternativesTruncated(), inference.evaluatedStates(), inference.evaluatedTransitions(),
+                    inference.explanation());
+            var changedRun = new IntervalTraceBatch.IntervalRun(run.interval(), mismatch,
+                    new ModernTracePipeline.Result(matchingEngine, run.routes()), run.usage());
+            var changedRuns = new ArrayList<>(batch.runs()); changedRuns.set(0, changedRun);
+            int mutation = index;
+            checks.add(() -> assertThrows(IllegalArgumentException.class, () -> batchCopy(batch, changedRuns, spec),
+                    "Mismatched interval authority " + mutation));
+        }
+        for (var mismatchedSpec : List.of(emptySpec, missingSourceSpec, wrongSelectionSpec)) {
+            checks.add(() -> assertThrows(IllegalArgumentException.class,
+                    () -> batchCopy(batch, batch.runs(), mismatchedSpec), "Mismatched capture authority"));
+        }
+        assertAll(checks);
+        var budgets = request.budgets();
+        var remaining = new TraceBudgets(budgets.maximumStatesPerProfile(), budgets.maximumPairVisits() - 1,
+                budgets.maximumTransitions() - 1, budgets.maximumRawAlternatives(), budgets.maximumDistinctAlternatives());
+        var legitimate = new IntervalTraceRequestFactory().createDetached(batch.fullRequest(), batch.evidence(),
+                batch.network(), run.interval(), remaining);
+        var legitimateRuns = new ArrayList<>(batch.runs());
+        legitimateRuns.set(0, new IntervalTraceBatch.IntervalRun(run.interval(), legitimate, run.result(), run.usage()));
+        assertDoesNotThrow(() -> batchCopy(batch, legitimateRuns, spec),
+                "Derived interval chainage and legitimate remaining budgets remain supported");
+    }
+
+    @Test void fullWayComputedResultMustMatchItsRequestedEngine() throws Exception {
+        Fixture fixture = fixture(false);
+        var computed = compute(fixture, AlignmentMode.PRECISE_SHAPE,
+                Map.of(1, key(fixture.nodes().get(1)), 2, key(fixture.nodes().get(2)))).computed();
+        var original = computed.pipeline().inference();
+        var foreign = new TraceHypothesisSet(TrackerMode.PROBABILISTIC, original.hypotheses(), original.status(),
+                original.alternativesTruncated(), original.evaluatedStates(), original.evaluatedTransitions(),
+                original.explanation());
+        var pipeline = new ModernTracePipeline.Result(foreign, computed.pipeline().routes());
+        assertThrows(IllegalArgumentException.class, () -> computedCopy(computed, pipeline));
+    }
+
+    @Test void hardFindingCannotOwnFullWayDisconnectionDespiteReviewDisposition() throws Exception {
+        Fixture fixture = fixture(false);
+        var computed = compute(fixture, AlignmentMode.PRECISE_SHAPE,
+                Map.of(1, key(fixture.nodes().get(1)), 2, key(fixture.nodes().get(2)))).computed();
+        var malformed = reviewWithHardFinding(computed.pipeline());
+        var retained = computedCopy(computed, malformed);
+        assertAll(
+                () -> assertFalse(SharedNodeDisconnectionPlanner.retainedProductionOwner(malformed, malformed.routes().get(0))),
+                () -> assertFalse(new ModernSingleWayEditPlanAdapter().assess(retained, 0).applyAvailable()));
+    }
+
+    @Test void hardFindingCannotOwnCompositeDisconnectionDespiteReviewDisposition() throws Exception {
+        Fixture fixture = separatedJunctionFixture();
+        var batch = compute(fixture, AlignmentMode.PRECISE_SHAPE,
+                Map.of(10, key(fixture.nodes().get(10)))).computed().intervalBatch();
+        var runs = batch.runs().stream().map(run -> new IntervalTraceBatch.IntervalRun(run.interval(), run.request(),
+                reviewWithHardFinding(run.result()), run.usage())).toList();
+        var malformed = batchCopy(batch, runs, batch.authoritySpecification());
+        var owner = runs.get(0).result();
+        assertAll(
+                () -> assertFalse(SharedNodeDisconnectionPlanner.retainedProductionOwner(owner, owner.routes().get(0))),
+                () -> assertFalse(new FixedIntervalEditPlanComposer().compose(malformed, Map.of()).applyAvailable()));
+    }
+
+    private static ModernTracePipeline.Result reviewWithHardFinding(ModernTracePipeline.Result result) {
+        var routes = result.routes().stream().map(route -> {
+            var quality = route.quality();
+            var findings = new ArrayList<>(quality.findings());
+            findings.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.PROTECTED_ASSIGNMENT_MISMATCH,
+                    FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, 0, 1));
+            var malformed = new FinalGeometryEvaluator.Result(quality.id(), FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED,
+                    findings, quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                    quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(), quality.bendPreservingRoughness());
+            return new ModernTracePipeline.Route(route.rawHypothesis(), route.hypothesis(), route.pointIds(),
+                    route.assignments(), route.sourceOwnership(), malformed, route.cleanupStatus(), route.geometryChanged());
+        }).toList();
+        return new ModernTracePipeline.Result(result.inference(), routes);
+    }
+
+    private static TraceRequest authorityCopy(TraceRequest request, TrackerMode engine, AlignmentMode mode,
+            RecoveryPermissions permissions, NetworkSnapshot source) {
+        return new TraceRequest(request.selectedWayKey(), request.selectedRange(), engine, mode, permissions,
+                request.budgets(), request.evidenceSnapshotId(), request.evidenceContentHash(), request.networkSnapshotId(),
+                request.networkContentHash(), request.settingsHash(), request.parameterHash(), request.samplerId(),
+                request.configuredSampleStepMeters(), request.profileChainage(), request.evidenceResolution(),
+                request.corridorInput(), source);
+    }
+
+    private static NetworkSnapshotCapture.Specification authorityCopy(NetworkSnapshotCapture.Specification spec,
+            RecoveryPermissions permissions, NetworkSnapshot source, OccurrenceRange range) {
+        return new NetworkSnapshotCapture.Specification(spec.snapshotId(), spec.datasetIdentity(), spec.sourceGeneration(),
+                spec.selectedWayKey(), range, spec.metricFrame(), spec.collisionEnvelope(), spec.editRegion(),
+                spec.editableWayOccurrences(), spec.editableExistingKeys(), spec.movableExistingNodeKeys(),
+                spec.removableExistingNodeKeys(), spec.explicitlyProtectedNodeKeys(), spec.mayCreateNodes(), permissions,
+                spec.readOnlyPorts(), spec.fixedReceiverGeometry(), source);
+    }
+
+    private static IntervalTraceBatch batchCopy(IntervalTraceBatch batch, List<IntervalTraceBatch.IntervalRun> runs,
+            NetworkSnapshotCapture.Specification spec) {
+        return new IntervalTraceBatch(batch.fullRequest(), batch.evidence(), batch.network(), batch.partition(), runs,
+                batch.options(), spec);
+    }
+
+    private static LiveBPreviewService.Computed computedCopy(LiveBPreviewService.Computed computed,
+            ModernTracePipeline.Result pipeline) {
+        return new LiveBPreviewService.Computed(computed.captured(), computed.evidence(), computed.request(), pipeline,
+                computed.options(), computed.counters(), null, computed.settingsResolutionJson());
     }
 
     @Test void entirelyFrozenAttemptCannotManufactureDisconnectedPlanWithoutProductionOwner() throws Exception {

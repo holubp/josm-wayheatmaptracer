@@ -18,7 +18,10 @@ public final class SharedNodeDisconnectionPlanner {
                         || result.inference().status() == TraceHypothesisSet.Status.AMBIGUOUS)
                 && result.routes().contains(route)
                 && result.inference().hypotheses().contains(route.rawHypothesis())
-                && route.quality().disposition() != FinalGeometryEvaluator.Disposition.HARD_BLOCKED
+                && (route.quality().disposition() == FinalGeometryEvaluator.Disposition.APPLICABLE
+                        || route.quality().disposition() == FinalGeometryEvaluator.Disposition.REVIEW_REQUIRED)
+                && route.quality().findings().stream().noneMatch(finding ->
+                        finding.severity() == FinalGeometryEvaluator.Severity.HARD_BLOCK)
                 && Double.isFinite(route.quality().directlySupportedLengthMeters())
                 && route.quality().directlySupportedLengthMeters() > 0.0;
     }

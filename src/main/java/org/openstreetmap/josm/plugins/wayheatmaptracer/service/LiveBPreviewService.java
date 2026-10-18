@@ -381,6 +381,9 @@ public final class LiveBPreviewService {
                     || (pipeline == null) == (intervalBatch == null)) {
                 throw new IllegalArgumentException("Exactly one live preview result variant is required");
             }
+            if (pipeline != null && pipeline.inference().engine() != request.engine()) {
+                throw new IllegalArgumentException("Full-way inference does not match its requested engine");
+            }
             if (intervalBatch != null && (intervalBatch.network() != captured.network()
                     || intervalBatch.evidence() != evidence
                     || intervalBatch.fullRequest() != request)) {

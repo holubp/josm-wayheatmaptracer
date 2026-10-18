@@ -81,6 +81,7 @@ the preview before applying.
 - Apply operations use JOSM undo/redo commands. Undoing a precise-shape slide restores its original topology, coordinates, and primitive modified flags, so a layer that was clean before the slide becomes clean again.
 - Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
+- In the modern alignment path, a crossing, touch or overlap with independently captured, unchanged contextual geometry requires review instead of being blocked solely by that contact. Inspect the exact preview before confirming; for waterways, verify whether a bridge, culvert, tunnel or ford is needed. No tags or connections are inferred, other geometry remains unchanged, and shared nodes stay protected by default. Self-intersections, unsafe geometry, missing authority and stale sources remain blocked.
 - Select the globally longest endpoint/junction-bounded segment, or select a node on an unambiguous way, or a way plus a node, to target the containing segment
 - Configure optional future-slide geometry cleanup, which can reduce heatmap-traced points and, in its combined mode, apply constrained smoothing before reduction while preserving fixed anchors
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
