@@ -239,6 +239,9 @@ public final class ProbabilisticInference {
         CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
+        // The fallback memo grows mandatory payload during admission; optional tables
+        // must not occupy bytes needed by that later growth.
+        boolean reusableProfileTerms = decisionRegion == null || admissions instanceof IndexedGeometryAdmissions;
         if (profiles.size() == 1) {
             InferenceProfile profile = profiles.get(0);
             if (profile.cells().size() > budgets.maximumPairVisits()) {
@@ -299,6 +302,9 @@ public final class ProbabilisticInference {
                     ? owner.child("forward-backward-scalar-cache") : null;
             ScalarReuseTable scalarCache = null;
             boolean scalarCacheAttempted = false;
+            AttemptMemoryLedger.Owner termsOwner = reusableProfileTerms ? owner.child("profile-terms") : null;
+            ProfileTerms terms = null;
+            boolean termsAttempted = false;
             try {
             for (int before = 0; before < previousPreviousStates; before++) {
                 for (int prior = 0; prior < previousStates; prior++) {
@@ -321,7 +327,12 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded");
                         }
-                        double unary = profileEnergy(profiles, profileIndex, state, parameters);
+                        if (termsOwner != null && !termsAttempted) {
+                            termsAttempted = true;
+                            terms = ProfileTerms.create(termsOwner, currentStates);
+                        }
+                        double unary = terms == null ? profileEnergy(profiles, profileIndex, state, parameters)
+                                : terms.unary(profiles, profileIndex, state, parameters);
                         double pair = 0.0;
                         boolean secondHeadingReady = false;
                         double secondHeading = 0.0;
@@ -389,12 +400,14 @@ public final class ProbabilisticInference {
                         }
                         double increment = unary + pair + triple;
                         double term = prefix - increment / parameters.temperature()
-                            + logMeasure(profiles.get(profileIndex).cells().get(state));
+                            + (terms == null ? logMeasure(profiles.get(profileIndex).cells().get(state))
+                                : terms.measure(profiles.get(profileIndex).cells().get(state), state));
                         current[prior][state] = logAdd(current[prior][state], term);
                     }
                 }
             }
             } finally {
+                if (termsOwner != null) termsOwner.close();
                 if (scalarCache != null) scalarCache.close();
                 if (scalarOwner != null) scalarOwner.close();
             }
@@ -424,6 +437,9 @@ public final class ProbabilisticInference {
                     ? owner.child("forward-backward-scalar-cache") : null;
             ScalarReuseTable scalarCache = null;
             boolean scalarCacheAttempted = false;
+            AttemptMemoryLedger.Owner termsOwner = reusableProfileTerms ? owner.child("profile-terms") : null;
+            ProfileTerms terms = null;
+            boolean termsAttempted = false;
             try {
             for (int before = 0; before < beforeStates; before++) {
                 for (int currentState = 0; currentState < currentStates; currentState++) {
@@ -443,7 +459,12 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded during backward inference");
                         }
-                        double unary = profileEnergy(profiles, nextProfile, next, parameters);
+                        if (termsOwner != null && !termsAttempted) {
+                            termsAttempted = true;
+                            terms = ProfileTerms.create(termsOwner, nextStates);
+                        }
+                        double unary = terms == null ? profileEnergy(profiles, nextProfile, next, parameters)
+                                : terms.unary(profiles, nextProfile, next, parameters);
                         double pair = 0.0;
                         boolean secondHeadingReady = false;
                         double secondHeading = 0.0;
@@ -512,7 +533,8 @@ public final class ProbabilisticInference {
                         }
                         double increment = unary + pair + triple;
                         double term = -increment / parameters.temperature()
-                            + logMeasure(profiles.get(nextProfile).cells().get(next))
+                            + (terms == null ? logMeasure(profiles.get(nextProfile).cells().get(next))
+                                : terms.measure(profiles.get(nextProfile).cells().get(next), next))
                             + nextBackward[currentState][next];
                         accumulated = logAdd(accumulated, term);
                     }
@@ -520,6 +542,7 @@ public final class ProbabilisticInference {
                 }
             }
             } finally {
+                if (termsOwner != null) termsOwner.close();
                 if (scalarCache != null) scalarCache.close();
                 if (scalarOwner != null) scalarOwner.close();
             }
@@ -1788,6 +1811,61 @@ public final class ProbabilisticInference {
 
         void recordLogicalKBestExtensions(long count) {
             logicalKBestExtensions = Math.addExact(logicalKBestExtensions, count);
+        }
+    }
+
+    /** One stage's immutable per-state terms, first evaluated at their original use sites. */
+    private static final class ProfileTerms {
+        private final double[] energies;
+        private final double[] measures;
+        private final byte[] ready;
+        private long energyCalculations;
+        private long energyReuses;
+        private long measureCalculations;
+        private long measureReuses;
+
+        private ProfileTerms(double[] energies, double[] measures, byte[] ready) {
+            this.energies = energies; this.measures = measures; this.ready = ready;
+        }
+
+        static ProfileTerms create(AttemptMemoryLedger.Owner owner, int states) {
+            long bytes = AttemptMemoryLedger.objectBytes(56)
+                    + 2L * AttemptMemoryLedger.arrayBytes(states, Double.BYTES)
+                    + AttemptMemoryLedger.arrayBytes(states, Byte.BYTES);
+            AttemptMemoryLedger.Reservation reservation;
+            try {
+                reservation = owner.reserve(bytes);
+            } catch (AttemptMemoryLedger.ResourceLimitException refused) {
+                return null;
+            }
+            try {
+                ProfileTerms terms = new ProfileTerms(new double[states], new double[states], new byte[states]);
+                reservation.adopt(terms);
+                return terms;
+            } catch (RuntimeException | Error failure) {
+                reservation.close();
+                throw failure;
+            }
+        }
+
+        double unary(List<InferenceProfile> profiles, int profile, int state, EvidenceModelParameters parameters) {
+            if ((ready[state] & 1) != 0) {
+                energyReuses++;
+                return energies[state];
+            }
+            double value = profileEnergy(profiles, profile, state, parameters);
+            energies[state] = value; ready[state] |= 1; energyCalculations++;
+            return value;
+        }
+
+        double measure(LateralStateCell cell, int state) {
+            if ((ready[state] & 2) != 0) {
+                measureReuses++;
+                return measures[state];
+            }
+            double value = logMeasure(cell);
+            measures[state] = value; ready[state] |= 2; measureCalculations++;
+            return value;
         }
     }
 
