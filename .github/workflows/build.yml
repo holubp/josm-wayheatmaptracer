@@ -11,17 +11,21 @@ on:
         description: Run the fixed public renderer diagnostic instead of model fitting
         type: boolean
         default: false
+      observation_train_runtime:
+        description: Run only the fixed TRAIN runtime diagnostic
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   observation-identification:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true
     uses: ./.github/workflows/observation-identification.yml
 
   observation-public-diagnostics:
-    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -48,6 +52,10 @@ jobs:
             build/reports/public-observation-renderer/receipt/objective-evidence.jsonl
           if-no-files-found: error
           retention-days: 5
+
+  observation-train-runtime:
+    if: github.event_name == 'workflow_dispatch' && inputs.observation_train_runtime == true
+    uses: ./.github/workflows/observation-train-runtime-diagnostic.yml
 
   public-validation:
     if: github.event_name != 'workflow_dispatch'

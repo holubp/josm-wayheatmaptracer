@@ -1,0 +1,45 @@
+name: Fixed TRAIN runtime diagnostic
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  train-runtime-diagnostic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify externally reviewed diagnostic freeze
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          protocol=superpowers/docs/plans/2026-10-18-b-observation-runtime-diagnostic-freeze.json
+          printf '%s  %s\n' 6fcf5c74aa09ad6a1e418dec770b68adbcc37dc3f04faa0417be0af102d4b33b "$protocol" | sha256sum --check --status
+      - name: Compile before starting the probe timer
+        run: sh ./gradlew compileJava compileObservationIdentifyJava observationIdentifyClasses --console=plain
+      - name: Run the fixed TRAIN diagnostic once
+        run: |
+          set -eu
+          timeout 360s sh ./gradlew v022ObservationTrainRuntimeDiagnostic \
+            -PobservationRuntimeOutput="$RUNNER_TEMP/josm-train-runtime" --console=plain
+      - name: Upload aggregate evidence only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-train-runtime-aggregate
+          path: |
+            ${{ runner.temp }}/josm-train-runtime/aggregate/binding.json
+            ${{ runner.temp }}/josm-train-runtime/aggregate/progress.jsonl
+            ${{ runner.temp }}/josm-train-runtime/aggregate/status.json
+          if-no-files-found: warn
+          retention-days: 5

@@ -45,7 +45,9 @@ sourceSets {
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationPairCache.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationManifest.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationReceipt.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationIdentificationTool.java"
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationIdentificationTool.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationRuntimeTelemetry.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationTrainRuntimeDiagnosticTool.java"
         )
         compileClasspath += sourceSets["main"].output + configurations["testCompileClasspath"]
         runtimeClasspath += output + compileClasspath + configurations["testRuntimeClasspath"]
@@ -218,4 +220,17 @@ tasks.register<JavaExec>("v022ObservationRendererDiagnostics") {
     dependsOn(tasks.named("observationIdentifyClasses"))
     classpath = sourceSets["observationIdentify"].runtimeClasspath
     mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationRendererDiagnosticTool")
+}
+
+tasks.register<JavaExec>("v022ObservationTrainRuntimeDiagnostic") {
+    group = "verification"
+    description = "Profiles four fixed original TRAIN cases without selection or qualification authority"
+    dependsOn(tasks.named("observationIdentifyClasses"))
+    classpath = sourceSets["observationIdentify"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationTrainRuntimeDiagnosticTool")
+    val output = providers.gradleProperty("observationRuntimeOutput")
+    doFirst {
+        if (!output.isPresent || output.get().isBlank()) throw GradleException("Requires observationRuntimeOutput=<new directory>")
+    }
+    args("--output", output.orNull ?: "")
 }

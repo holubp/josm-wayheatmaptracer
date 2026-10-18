@@ -9,6 +9,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BIdentificationCatalog.*;
 import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BIdentificationAcceptance.*;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationRuntimeTelemetry.Phase.*;
+import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationRuntimeTelemetry.Work.*;
 
 /** Explicit offline identification; a frozen score/SELECT artifact still requires unchanged regression. */
 public final class BObservationIdentificationTool {
@@ -278,8 +280,8 @@ public final class BObservationIdentificationTool {
         return List.copyOf(result);
     }
     enum TrainFixtureFault { NONE, EXPECTED_FACTS_MISMATCH, MISSING_PAIR_INDEX }
-    /** Fixed one-configuration diagnostic of the actual TRAIN driver; no ranking or FEASIBLE claim is made. */
-    static RunReceipt runTrainFixture(Path output,Controls controls,TrainFixtureFault fault) throws Exception {
+    static RunReceipt runTrainFixture(Path output,Controls controls,TrainFixtureFault fault,
+            BObservationRuntimeTelemetry telemetry) throws Exception {
         if(output==null||controls==null||fault==null)throw new IllegalArgumentException("Complete fixed TRAIN fixture inputs required");
         long started=controls.clock().getAsLong();var cancellation=guarded(controls,started);cancellation.checkpoint();
         var definitions=fixtureDefinitions().stream().filter(d->d.key().split()==Split.TRAIN).toList();
@@ -300,7 +302,8 @@ public final class BObservationIdentificationTool {
         var required=requiredPairs(definitions,Split.TRAIN,cancellation);var parameter=fixtureParameters().get(0);
         guard.verify();newDirectory(output);
         try(var writer=new Writer(output,controls.memoryBytes())) {
-            var driver=realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability(),writer,0,0);
+            writer.telemetry=telemetry;
+            var driver=realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability(),writer,0,0,telemetry);
             try {
                 var initial=new LinkedHashMap<String,TrainSceneScore>();var cheap=new CheckTotals();var geometry=new CheckTotals();
                 for(var definition:definitions) {
@@ -331,6 +334,109 @@ public final class BObservationIdentificationTool {
                 fields.put("reason",failure instanceof CancellationException?"CANCELLED":failure instanceof RunLimitException limit?limit.reason:"TRAIN_FIXTURE_EVALUATION_FAILED");
                 try {writer.publish("failure.json",fields);}catch(Exception publication){failure.addSuppressed(publication);}throw failure;
             }
+        }
+    }
+    /** Fixed one-configuration diagnostic of the actual TRAIN driver; no ranking or FEASIBLE claim is made. */
+    static RunReceipt runTrainFixture(Path output,Controls controls,TrainFixtureFault fault) throws Exception {
+        return runTrainFixture(output,controls,fault,BObservationRuntimeTelemetry.NONE);
+    }
+    /** Fixed TRAIN-only timing probe. This path cannot rank, select, freeze or obtain HOLDOUT access. */
+    @FunctionalInterface interface DiagnosticVerification<T> {T verify() throws Exception;}
+    record DiagnosticStart<T>(T value,long started,CancellationProbe cancellation) { }
+    static <T> DiagnosticStart<T> diagnosticPreflight(Controls controls,DiagnosticVerification<T> verification) throws Exception {
+        long started=controls.clock().getAsLong();var cancellation=guarded(controls,started);cancellation.checkpoint();
+        T value=verification.verify();cancellation.checkpoint();return new DiagnosticStart<>(value,started,cancellation);
+    }
+    static void runTrainRuntimeDiagnostic(Path output) throws Exception {
+        if(output==null)throw new IllegalArgumentException("New diagnostic output required");
+        var controls=new Controls(null,BObservationTrainRuntimeDiagnosticTool.MEMORY_BYTES,
+                BObservationTrainRuntimeDiagnosticTool.WATCHDOG_NANOS,System::nanoTime,CancellationProbe.NONE,()->{});
+        var preflight=diagnosticPreflight(controls,BObservationTrainRuntimeDiagnosticTool::verifyFreeze);
+        long started=preflight.started();var cancellation=preflight.cancellation();var freeze=preflight.value();
+        freeze.verifyUnchanged();cancellation.checkpoint();
+        var catalog=trainDiagnosticCatalog();var definitions=new ArrayList<CaseDefinition>();
+        for(String id:BObservationTrainRuntimeDiagnosticTool.CASES) {
+            var definition=catalog.definitions().stream().filter(d->d.key().id().equals(id)).findFirst().orElseThrow();
+            BObservationTrainRuntimeDiagnosticTool.requireCase(definition);definitions.add(definition);
+        }
+        var access=EvaluationAccess.preselection(Phase.EXTRACT);
+        SourceGuard guard=()->{cancellation.checkpoint();freeze.verifyUnchanged();cancellation.checkpoint();};
+        InputProvider provider=d->{BObservationTrainRuntimeDiagnosticTool.requireCase(d);return BIdentificationScenes.render(d.key(),access);};
+        var manifest=BIdentificationManifest.read(BObservationTrainRuntimeDiagnosticTool.readBounded(BObservationTrainRuntimeDiagnosticTool.MANIFEST,65_536));
+        var parameter=parameters(manifest).get(0);var required=requiredPairs(definitions,Split.TRAIN,cancellation);
+        if(required.size()!=2)throw new IllegalArgumentException("Fixed TRAIN diagnostic pair inventory changed");
+        newDirectory(output);newDirectory(output.resolve("aggregate"));newDirectory(output.resolve("scratch"));
+        try(var writer=new Writer(output.resolve("scratch"),controls.memoryBytes())) {
+            var aggregate=new DiagnosticAggregateWriter(output.resolve("aggregate"),writer);
+            aggregate.publish("binding.json",Map.of("schema",1,"purpose","NONQUALIFYING_TRAIN_RUNTIME",
+                    "protocolSha256",freeze.protocolHash,"sourceSha256",freeze.sourceHash,"baselineSourceSha256",BObservationTrainRuntimeDiagnosticTool.OLD_SOURCE,
+                    "selectionAuthority","NONE","holdoutAuthority",false));
+            var telemetry=new BObservationRuntimeTelemetry(controls.clock(),aggregate::progress);writer.telemetry=telemetry;
+            var identity=new InputIdentity(freeze.sourceHash,BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java"),freeze.catalogHash);
+            var driver=realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability(),writer,0,0,telemetry);
+            try {
+                var initial=new LinkedHashMap<String,TrainInputBinding>();
+                for(var definition:definitions)initial.put(definition.key().id(),driver.score(definition,List.of(parameter)).input().orElseThrow());
+                for(var definition:definitions)try(var reconstructed=driver.reconstruct(definition,parameter,initial.get(definition.key().id()))) {
+                    if(!initial.get(definition.key().id()).equals(reconstructed.input()))throw new IllegalArgumentException("Diagnostic input changed");
+                    reconstructed.geometry();
+                }
+                driver.coupled(parameter,required);guard.verify();cancellation.checkpoint();
+                aggregate.publish("status.json",diagnosticStatus("DIAGNOSTIC_COMPLETED_NONQUALIFYING","NONE",driver,access,telemetry,aggregate,started,controls));
+            } catch(Exception|Error failure) {
+                String reason=failure instanceof CancellationException?"CANCELLED":failure instanceof RunLimitException limit?limit.reason:
+                        failure instanceof AttemptMemoryLedger.ResourceLimitException||failure instanceof ProbabilisticInference.MemoryLimit?"MEMORY_OR_WORK_LIMIT":"DIAGNOSTIC_ERROR_NO_AUTHORITY";
+                try {aggregate.publish("status.json",diagnosticStatus("DIAGNOSTIC_FAILED_NONQUALIFYING",reason,driver,access,telemetry,aggregate,started,controls));}
+                catch(Exception publication){failure.addSuppressed(publication);}throw failure;
+            }
+        }
+    }
+    private static Map<String,Object> diagnosticStatus(String status,String reason,RealTrainEvaluator driver,EvaluationAccess access,
+            BObservationRuntimeTelemetry telemetry,DiagnosticAggregateWriter aggregate,long started,Controls controls) {
+        var result=new LinkedHashMap<String,Object>();result.put("schema",1);result.put("status",status);result.put("reason",reason);
+        result.put("selectionAuthority","NONE");result.put("holdoutAuthority",false);result.put("coupledScope","FIXED_SUBSET_NOT_WHOLE_TRAIN_GATE");
+        result.put("trainScoredScenes",driver.sceneCount);result.put("trainReconstructionReads",driver.reconstructionCount);
+        result.put("trainMapSolves",driver.mapSolves);result.put("trainPairChecks",driver.pairChecks);result.put("peakSceneBytes",driver.peak);
+        result.put("rasterReads",access.rasterReads());result.put("labelReads",access.labelReads());result.put("selectReads",0);result.put("holdoutReads",0);
+        result.put("elapsedNanos",controls.clock().getAsLong()-started);result.put("ordinaryAndTelemetryBytesBeforeStatus",aggregate.writer.bytes);
+        result.put("telemetryPublicationsBeforeStatus",aggregate.publications);result.put("telemetryBytesBeforeStatus",aggregate.bytes);
+        result.put("telemetryPublicationNanosBeforeStatus",aggregate.publicationNanos);
+        result.put("coupledAvailability",driver.pairChecks==2?"MEASURED_FIXED_SUBSET":"UNAVAILABLE_OR_INCOMPLETE");
+        result.put("timing",telemetry.snapshot());return result;
+    }
+    /** Shares the unchanged global disk envelope; telemetry never profiles its own publication. */
+    static final class DiagnosticAggregateWriter {
+        final Path directory;final Writer writer;int publications,snapshots;long bytes,publicationNanos;
+        DiagnosticAggregateWriter(Path directory,Writer writer){this.directory=directory;this.writer=writer;}
+        void progress(Map<String,Object> fields) throws Exception {
+            if(snapshots>=BObservationTrainRuntimeDiagnosticTool.MAX_SNAPSHOTS)throw new RunLimitException("TELEMETRY_SNAPSHOT_LIMIT");
+            write(directory.resolve("progress.jsonl"),fields,true);snapshots++;
+        }
+        void publish(String name,Map<String,Object> fields) throws Exception {
+            if(!Set.of("binding.json","status.json").contains(name))throw new IllegalArgumentException("Aggregate file allowlist");
+            if(name.equals("status.json")) {
+                var totals=new LinkedHashMap<>(fields);int length=0;
+                for(int i=0;i<16;i++) {
+                    totals.put("totalOrdinaryAndTelemetryBytes",writer.bytes+length);totals.put("totalTelemetryBytes",bytes+length);
+                    totals.put("totalTelemetryPublications",publications+1);
+                    int next=(BIdentificationReceipt.canonical(totals)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                    if(next==length){fields=totals;break;}
+                    length=next;if(i==15)throw new IllegalStateException("Bounded terminal byte accounting did not converge");
+                }
+            }
+            write(directory.resolve(name),fields,false);
+        }
+        private void write(Path path,Map<String,Object> fields,boolean append) throws Exception {
+            long started=System.nanoTime();
+            try {
+            var encoded=(BIdentificationReceipt.canonical(fields)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            long telemetryLimit=BObservationTrainRuntimeDiagnosticTool.MAX_TELEMETRY_BYTES-(path.getFileName().toString().equals("status.json")?0:65_536);
+            if(encoded.length>telemetryLimit-bytes||encoded.length>MAX_DISK_BYTES-writer.bytes)
+                throw new RunLimitException("TELEMETRY_DISK_LIMIT");
+            if(append)Files.write(path,encoded,StandardOpenOption.CREATE,StandardOpenOption.APPEND,LinkOption.NOFOLLOW_LINKS);
+            else BIdentificationReceipt.publish(path,fields);
+            bytes+=encoded.length;writer.bytes+=encoded.length;publications++;
+            } finally {publicationNanos+=System.nanoTime()-started;}
         }
     }
     private static LinkedHashMap<String,Object> trainFixtureFields(RealTrainEvaluator driver,int[] reads) {
@@ -607,36 +713,51 @@ public final class BObservationIdentificationTool {
     private static RealTrainEvaluator realTrainEvaluator(List<RequiredPair> required,SourceGuard guard,InputProvider provider,
             InputIdentity identity,Controls controls,CancellationProbe cancellation,Map<String,Object> availability,
             Writer writer,int sceneCount,long peak) {
-        return new RealTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability,writer,sceneCount,peak);
+        return realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability,writer,sceneCount,peak,BObservationRuntimeTelemetry.NONE);
+    }
+    private static RealTrainEvaluator realTrainEvaluator(List<RequiredPair> required,SourceGuard guard,InputProvider provider,
+            InputIdentity identity,Controls controls,CancellationProbe cancellation,Map<String,Object> availability,
+            Writer writer,int sceneCount,long peak,BObservationRuntimeTelemetry telemetry) {
+        SourceGuard measured=guard;
+        if(telemetry.enabled())measured=()->{try(var phase=telemetry.begin(SOURCE_VERIFY)){guard.verify();phase.succeeded();}};
+        return new RealTrainEvaluator(required,measured,provider,identity,controls,cancellation,availability,writer,sceneCount,peak,telemetry);
     }
     /** One actual driver assembly for the registered run and the explicitly nonqualifying TRAIN diagnostic. */
     private static final class RealTrainEvaluator implements TrainEvaluator {
         final SourceGuard guard;final InputProvider provider;final InputIdentity identity;final Controls controls;
         final CancellationProbe cancellation;final Map<String,Object> availability;final Writer writer;
+        final BObservationRuntimeTelemetry telemetry;
         final Map<String,Integer> initialOrdinals=new LinkedHashMap<>();
         final Map<String,TrainInputBinding> initialBindings=new LinkedHashMap<>();
         final Map<String,BIdentificationPairCache.Index> cache=new TreeMap<>();final Set<String> pairCases=new HashSet<>();
         private BIdentifiedObservationKernel.Parameters current;
         int sceneCount,reconstructionCount,mapSolves,pairChecks;long peak;
         RealTrainEvaluator(List<RequiredPair> required,SourceGuard guard,InputProvider provider,InputIdentity identity,Controls controls,
-                CancellationProbe cancellation,Map<String,Object> availability,Writer writer,int sceneCount,long peak) {
+                CancellationProbe cancellation,Map<String,Object> availability,Writer writer,int sceneCount,long peak,BObservationRuntimeTelemetry telemetry) {
             this.guard=guard;this.provider=provider;this.identity=identity;this.controls=controls;this.cancellation=cancellation;
             this.availability=availability;this.writer=writer;this.sceneCount=sceneCount;this.peak=peak;
+            this.telemetry=telemetry;
             for(var pair:required){pairCases.add(pair.first().key().id());pairCases.add(pair.second().key().id());}
         }
         public TrainSceneScore score(CaseDefinition definition,List<BIdentifiedObservationKernel.Parameters> requested) throws Exception {
             if(definition.key().split()!=Split.TRAIN)throw new IllegalArgumentException("Actual TRAIN driver rejects other splits");
-            var report=scene(definition,requested,Phase.FIT_SELECT,guard,provider,identity,controls,cancellation,availability,writer,sceneCount);
+            try(var phase=telemetry.begin(SCENE_SCORE)) {
+            var report=scene(definition,requested,Phase.FIT_SELECT,guard,provider,identity,controls,cancellation,availability,writer,sceneCount,telemetry);
             initialOrdinals.put(definition.key().id(),sceneCount);initialBindings.put(definition.key().id(),report.input());
             writer.publish("scene-%03d.json".formatted(sceneCount++),report.fields());peak=Math.max(peak,report.peakBytes());
-            return new TrainSceneScore(report.baseline(),report.scores(),report.checks(),Optional.of(report.input()));
+            var result=new TrainSceneScore(report.baseline(),report.scores(),report.checks(),Optional.of(report.input()));
+            phase.succeeded();return result;
+            }
         }
         public TrainReconstruction reconstruct(CaseDefinition definition,BIdentifiedObservationKernel.Parameters parameter,
                 TrainInputBinding frozenInput) throws Exception {
             if(definition.key().split()!=Split.TRAIN||!initialBindings.containsKey(definition.key().id()))
                 throw new IllegalArgumentException("TRAIN reconstruction requires its original scored scene");
             if(!parameter.equals(current)){cache.clear();current=parameter;}
-            var loaded=openScene(definition,identity,guard,provider,controls,cancellation);reconstructionCount++;
+            SceneInputs loaded;
+            try(var phase=telemetry.begin(RECONSTRUCTION)) {
+                loaded=openScene(definition,identity,guard,provider,controls,cancellation,telemetry);reconstructionCount++;phase.succeeded();
+            }
             return new TrainReconstruction() {
                 public TrainInputBinding input(){return loaded.input;}
                 public Checks geometry() throws Exception {
@@ -645,21 +766,31 @@ public final class BObservationIdentificationTool {
                         throw new IllegalArgumentException("TRAIN input changed before geometry");
                     try(var work=loaded.owner.child("train-geometry")) {
                         var kernel=new BIdentifiedObservationKernel(parameter);mapSolves++;
-                        var outcome=BObservationGeometry.solve(loaded.facts,loaded.admitted.lattices(),loaded.scene.evidence().decisionRegion(),
-                                TraceBudgets.defaults(),kernel,BObservationGeometry.Enumeration.MAP_ONLY,cancellation,work);
+                        BObservationGeometry.MapResult outcome;
+                        try(var phase=telemetry.begin(MAP_SOLVE)) {
+                            outcome=BObservationGeometry.solve(loaded.facts,loaded.admitted.lattices(),loaded.scene.evidence().decisionRegion(),
+                                    TraceBudgets.defaults(),kernel,BObservationGeometry.Enumeration.MAP_ONLY,cancellation,work);
+                            telemetry.count(MAP_TRANSITIONS,outcome.path().transitions());phase.succeeded();
+                        }
                         requireCompletedEvaluation(outcome);
-                        var checks=routeChecks(definition,loaded.scene,loaded.profiles,outcome.path(),cancellation,work);
+                        Checks checks;
+                        try(var phase=telemetry.begin(ROUTE_CHECK)) {checks=routeChecks(definition,loaded.scene,loaded.profiles,outcome.path(),cancellation,work);phase.succeeded();}
                         String suffix="s%03d-%s".formatted(initialOrdinals.get(definition.key().id()),parameterId(parameter));
                         if(checks.passed()&&pairCases.contains(definition.key().id())) {
                             var summaries=ProbabilisticInference.allocated(work,ProbabilisticInference.listBytes(loaded.profiles.size()),
                                     "TRAIN pair profiles",()->new ArrayList<ProfileSummary>(loaded.profiles.size()));
+                            try(var phase=telemetry.begin(PAIR_PROFILES)) {
                             for(int i=0;i<loaded.profiles.size();i++)try(var scratch=work.child("train-pair-profile")) {
                                 cancellation.checkpoint();var mixture=kernel.evaluate(loaded.facts.get(i),loaded.admitted.lattices().get(i),cancellation,scratch);
                                 summaries.add(inspectProfile(loaded.facts.get(i),loaded.admitted.lattices().get(i),mixture,parameter,cancellation,work).summary());
+                                telemetry.count(PAIR_PROFILE_EVALUATIONS,1);
                             }
+                            phase.succeeded();}
+                            try(var phase=telemetry.begin(PAIR_CACHE_WRITE)) {
                             var handle=BIdentificationPairCache.write(writer.directory,"train-pair-"+suffix,
                                     new SceneSummary(definition,loaded.input.source(),summaries),loaded.input.factsHash(),kernel.identityHash(),writer::publish,cancellation);
                             cache.put(definition.key().id(),BIdentificationPairCache.index("train-pair-"+suffix,handle,writer::publish,cancellation));
+                            phase.succeeded();}
                         }
                         writer.publish("train-geometry-"+suffix+".json",Map.of("case",definition.key().id(),"parameters",parameterFields(parameter),
                                 "input",inputFields(loaded.input),"rawGeometry",routeFields(outcome,checks),"checks",checkFields(checks)));
@@ -670,6 +801,7 @@ public final class BObservationIdentificationTool {
             };
         }
         public Checks coupled(BIdentifiedObservationKernel.Parameters parameter,List<RequiredPair> required) throws Exception {
+            try(var phase=telemetry.begin(COUPLED)) {
             guard.verify();cancellation.checkpoint();
             if(!parameter.equals(current))throw new IllegalStateException("TRAIN pair cache belongs to another configuration");
             for(var pair:required)for(var definition:List.of(pair.first(),pair.second())) {
@@ -678,8 +810,9 @@ public final class BObservationIdentificationTool {
                 if(index!=null&&(initial==null||!initial.source().equals(index.source())||!initial.factsHash().equals(index.factsHash())))
                     throw new IllegalArgumentException("TRAIN pair cache disagrees with its original input snapshot");
             }
-            var result=pairs(required,cache,parameter,writer,controls,cancellation,Split.TRAIN,guard);
-            pairChecks+=result.reports().size();peak=Math.max(peak,result.peakBytes());guard.verify();return result.checks();
+            var result=pairs(required,cache,parameter,writer,controls,cancellation,Split.TRAIN,guard,telemetry);
+            pairChecks+=result.reports().size();peak=Math.max(peak,result.peakBytes());guard.verify();phase.succeeded();return result.checks();
+            }
         }
     }
     /** One live scene graph; its wrapper/hash scratch is included in the reserved 1MiB scratch. */
@@ -696,12 +829,19 @@ public final class BObservationIdentificationTool {
     }
     private static SceneInputs openScene(CaseDefinition definition,InputIdentity identity,SourceGuard guard,
             InputProvider provider,Controls controls,CancellationProbe cancellation) throws Exception {
+        return openScene(definition,identity,guard,provider,controls,cancellation,BObservationRuntimeTelemetry.NONE);
+    }
+    private static SceneInputs openScene(CaseDefinition definition,InputIdentity identity,SourceGuard guard,
+            InputProvider provider,Controls controls,CancellationProbe cancellation,BObservationRuntimeTelemetry telemetry) throws Exception {
+        try(var phase=telemetry.begin(OPEN_SCENE)) {
         guard.verify();cancellation.checkpoint();admitRender(definition);
         var ledger=new AttemptMemoryLedger(controls.memoryBytes()-Writer.METADATA_BYTES);var owner=ledger.rootOwner();
         try {
             owner.reserve(RENDER_BYTES);owner.reserve(1024L*1024);
             cancellation.checkpoint();controls.beforeRender().run();cancellation.checkpoint();guard.verify();
-            var scene=provider.render(definition);cancellation.checkpoint();guard.verify();
+            Scene scene;
+            try(var render=telemetry.begin(RENDER)) {scene=provider.render(definition);telemetry.count(RASTER_READS,1);telemetry.count(LABEL_READS,1);render.succeeded();}
+            cancellation.checkpoint();guard.verify();
             long outputBytes=0;
             for(var field:scene.evidence().fields().values()) {
                 long pixels=Math.multiplyExact((long)field.width(),field.height());
@@ -710,19 +850,33 @@ public final class BObservationIdentificationTool {
             }
             if(outputBytes>RENDER_BYTES)throw new RunLimitException("RENDER_MEMORY");
             var factory=new ProbabilisticProfileFactory();var policy=EvidenceModelParameters.defaults();
-            var chainage=factory.profileChainage(scene.source(),1.5);
-            var profiles=factory.create(scene.source(),chainage,25,true,scene.evidence(),scene.evidence().fields().get("scalar"),policy,cancellation,true,owner);
+            List<ProbabilisticProfile> profiles;
+            try(var measured=telemetry.begin(PROFILE_BUILD)) {
+                var chainage=factory.profileChainage(scene.source(),1.5);
+                profiles=factory.create(scene.source(),chainage,25,true,scene.evidence(),scene.evidence().fields().get("scalar"),policy,cancellation,true,owner);
+                telemetry.count(PROFILES,profiles.size());measured.succeeded();
+            }
             if(profiles.size()>4096)throw new RunLimitException("PROFILE_COUNT");
-            var facts=new BIdentificationFactsExtractor().extract(scene.evidence(),profiles,cancellation,owner);
-            var admitted=admitLattices(profiles,policy,cancellation,owner);long modeCells=0;
+            List<BIdentificationFacts.ProfileFacts> facts;
+            try(var measured=telemetry.begin(FACT_EXTRACTION)){facts=new BIdentificationFactsExtractor().extract(scene.evidence(),profiles,cancellation,owner);measured.succeeded();}
+            AdmittedLattices admitted;
+            try(var measured=telemetry.begin(LATTICE_ADMISSION)){admitted=admitLattices(profiles,policy,cancellation,owner);measured.succeeded();}
+            long modeCells=0;
             for(var lattice:admitted.lattices()) {
                 cancellation.checkpoint();modeCells=Math.addExact(modeCells,Math.multiplyExact((long)lattice.cells().size(),lattice.components().size()));
                 if(modeCells>MAX_MODE_CELLS)throw new RunLimitException("MODE_CELL_WORK");
+                telemetry.count(ADMITTED_STATES,lattice.cells().size());
             }
-            var input=new TrainInputBinding(identity.sourceHash(),identity.rendererHash(),identity.catalogHash(),BIdentificationCatalog.recipeHash(definition),
-                    sourceKey(definition,scene),BIdentificationReceipt.factsHash(facts,admitted.lattices(),cancellation),latticeHash(admitted.lattices(),cancellation));
-            guard.verify();cancellation.checkpoint();return new SceneInputs(ledger,owner,scene,profiles,facts,admitted,input,modeCells);
+            telemetry.count(MODE_CELLS,modeCells);TrainInputBinding input;
+            try(var measured=telemetry.begin(INPUT_FINGERPRINT)) {
+                input=new TrainInputBinding(identity.sourceHash(),identity.rendererHash(),identity.catalogHash(),BIdentificationCatalog.recipeHash(definition),
+                        sourceKey(definition,scene),BIdentificationReceipt.factsHash(facts,admitted.lattices(),cancellation),latticeHash(admitted.lattices(),cancellation));
+                measured.succeeded();
+            }
+            guard.verify();cancellation.checkpoint();var result=new SceneInputs(ledger,owner,scene,profiles,facts,admitted,input,modeCells);
+            phase.succeeded();return result;
         } catch(Exception|Error failure) {owner.close();throw failure;}
+        }
     }
     private static String latticeHash(List<ProbabilisticStateLattice> lattices,CancellationProbe cancellation) throws Exception {
         var digest=java.security.MessageDigest.getInstance("SHA-256");
@@ -795,8 +949,13 @@ public final class BObservationIdentificationTool {
     private static SceneReport scene(CaseDefinition definition,List<BIdentifiedObservationKernel.Parameters> parameters,
             Phase phase,SourceGuard guard,InputProvider provider,InputIdentity identity,Controls controls,CancellationProbe cancellation,
             Map<String,Object> availability,Writer writer,int sceneIndex) throws Exception {
+        return scene(definition,parameters,phase,guard,provider,identity,controls,cancellation,availability,writer,sceneIndex,BObservationRuntimeTelemetry.NONE);
+    }
+    private static SceneReport scene(CaseDefinition definition,List<BIdentifiedObservationKernel.Parameters> parameters,
+            Phase phase,SourceGuard guard,InputProvider provider,InputIdentity identity,Controls controls,CancellationProbe cancellation,
+            Map<String,Object> availability,Writer writer,int sceneIndex,BObservationRuntimeTelemetry telemetry) throws Exception {
         SceneReport report;
-        try(var loaded=openScene(definition,identity,guard,provider,controls,cancellation)) {
+        try(var loaded=openScene(definition,identity,guard,provider,controls,cancellation,telemetry)) {
             var owner=loaded.owner;var ledger=loaded.ledger;var scene=loaded.scene;var profiles=loaded.profiles;
             var facts=loaded.facts;var admitted=loaded.admitted;var lattices=admitted.lattices();var policy=EvidenceModelParameters.defaults();
             countAvailability(facts,availability,cancellation);
@@ -819,13 +978,14 @@ public final class BObservationIdentificationTool {
             var pairs=new LinkedHashMap<BIdentifiedObservationKernel.Parameters,BIdentificationPairCache.Index>();
             var acceptanceReports=new ArrayList<String>();boolean assess=phase==Phase.FIT_SELECT&&definition.key().split()==Split.SELECT;
             if(phase==Phase.FIT_SELECT) {
-                try(var baselineOwner=owner.child("baseline-score")) {
+                try(var measured=telemetry.begin(BASELINE_SCORE);var baselineOwner=owner.child("baseline-score")) {
                     var baselineRows=ProbabilisticInference.allocated(baselineOwner,ProbabilisticInference.listBytes(profiles.size()),"baseline rows",
                             ()->new ArrayList<InferenceProfile>(profiles.size()));
                     for(int i=0;i<profiles.size();i++) {
                         cancellation.checkpoint();baselineRows.add(new ProbabilisticObservationModel().evaluate(profiles.get(i),lattices.get(i),policy,true,baselineOwner));
                     }
                     baseline=BIdentificationScore.scoreBaseline(scene,profiles,lattices,baselineRows,cancellation);
+                    measured.succeeded();
                 }
                 if(assess)try(var geometryOwner=owner.child("baseline-raw-geometry")) {
                     var outcome=BObservationGeometry.solve(facts,lattices,scene.evidence().decisionRegion(),TraceBudgets.defaults(),null,
@@ -841,6 +1001,7 @@ public final class BObservationIdentificationTool {
                     var structural=new CheckTotals();
                     var rows=ProbabilisticInference.allocated(candidateOwner,ProbabilisticInference.listBytes(profiles.size()),"candidate rows",
                             ()->new ArrayList<BObservationMixture.ReducedRows>(profiles.size()));
+                    try(var measured=telemetry.begin(CANDIDATE_PROFILES)) {
                     for(int i=0;i<profiles.size();i++) {
                         cancellation.checkpoint();
                         try(var profileOwner=candidateOwner.child("profile-mixture-scratch")) {
@@ -850,8 +1011,12 @@ public final class BObservationIdentificationTool {
                                 rows.add(inspected.rows());if(assess)profileSummaries.add(inspected.summary());structural.add(inspected.checks());
                             } else rows.add(mixture.reduce(lattices.get(i),cancellation,candidateOwner));
                         }
+                        telemetry.count(CANDIDATE_PROFILE_EVALUATIONS,1);
                     }
-                    var score=BIdentificationScore.score(scene,profiles,lattices,rows,cancellation);scores.put(parameter,score);
+                    measured.succeeded();}
+                    BIdentificationScore.SceneScore score;
+                    try(var measured=telemetry.begin(PROPER_SCORE)){score=BIdentificationScore.score(scene,profiles,lattices,rows,cancellation);measured.succeeded();}
+                    scores.put(parameter,score);
                     checks.put(parameter,structural.finish());
                     configurationScores.add(Map.of("parameters",parameterFields(parameter),"modelHash",kernel.identityHash(),"score",scoreFields(score),
                             "profileChecks",checkFields(structural.finish())));
@@ -1022,6 +1187,11 @@ public final class BObservationIdentificationTool {
     private static PairReport pairs(List<RequiredPair> required,Map<String,BIdentificationPairCache.Index> cache,
             BIdentifiedObservationKernel.Parameters parameter,Writer writer,Controls controls,CancellationProbe cancellation,
             Split expected,SourceGuard guard) throws Exception {
+        return pairs(required,cache,parameter,writer,controls,cancellation,expected,guard,BObservationRuntimeTelemetry.NONE);
+    }
+    private static PairReport pairs(List<RequiredPair> required,Map<String,BIdentificationPairCache.Index> cache,
+            BIdentifiedObservationKernel.Parameters parameter,Writer writer,Controls controls,CancellationProbe cancellation,
+            Split expected,SourceGuard guard,BObservationRuntimeTelemetry telemetry) throws Exception {
         if(expected!=Split.TRAIN&&expected!=Split.SELECT)throw new IllegalArgumentException("Explicit pair cohort required");
         var totals=new CheckTotals();var files=new ArrayList<String>();long peak=0,work=0;int pairCount=0;
         for(var pair:required) {
@@ -1032,11 +1202,14 @@ public final class BObservationIdentificationTool {
             try(var owner=ledger.rootOwner()) {
                 var binding=pairBindingForEvaluation(pair,first,second,parameter,expected);
                 {
-                    var ah=BIdentificationPairCache.readIndex(writer.directory,first,cancellation,owner);
-                    var bh=BIdentificationPairCache.readIndex(writer.directory,second,cancellation,owner);
-                    var left=BIdentificationPairCache.read(writer.directory,ah,cancellation,owner);
-                    var right=BIdentificationPairCache.read(writer.directory,bh,cancellation,owner);
-                    checks=comparePair(binding,left,right,cancellation);
+                    SceneSummary left,right;
+                    try(var measured=telemetry.begin(PAIR_CACHE_READ)) {
+                        var ah=BIdentificationPairCache.readIndex(writer.directory,first,cancellation,owner);
+                        var bh=BIdentificationPairCache.readIndex(writer.directory,second,cancellation,owner);
+                        left=BIdentificationPairCache.read(writer.directory,ah,cancellation,owner);
+                        right=BIdentificationPairCache.read(writer.directory,bh,cancellation,owner);measured.succeeded();
+                    }
+                    try(var measured=telemetry.begin(PAIR_COMPARE)){checks=comparePair(binding,left,right,cancellation);telemetry.count(PAIR_CHECKS,1);measured.succeeded();}
                 }
                 peak=Math.max(peak,ledger.peakBytes()+Writer.METADATA_BYTES);
             }
@@ -1135,10 +1308,11 @@ public final class BObservationIdentificationTool {
         return Map.of("parameters",parameterFields(parameter),"meanLogLoss",scoreValue(aggregate.mean()),"rankableFinite",aggregate.finite(),"report",file,
                 "available",aggregate.available,"ambiguous",aggregate.ambiguous,"unavailable",aggregate.unavailable);
     }
-    private static final class Writer implements AutoCloseable {
+    static final class Writer implements AutoCloseable {
         static final long METADATA_BYTES=1024L*1024;
         final Path directory;long bytes;String chain="0".repeat(64);
         final AttemptMemoryLedger.Owner metadata;
+        BObservationRuntimeTelemetry telemetry=BObservationRuntimeTelemetry.NONE;
         Writer(Path directory,long limit) {
             this.directory=directory;metadata=new AttemptMemoryLedger(limit).rootOwner();
             try{metadata.reserve(METADATA_BYTES);}catch(RuntimeException failure){metadata.close();throw failure;}
@@ -1147,11 +1321,14 @@ public final class BObservationIdentificationTool {
         }
         String receiptSetHash(){return chain;}
         void publish(String file,Map<String,Object> fields) throws Exception {
+            try(var measured=telemetry.begin(RECEIPT_WRITE)) {
             byte[] encoded=(BIdentificationReceipt.canonical(fields)+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8);
             long length=encoded.length;
             if(length>MAX_DISK_BYTES-bytes)throw new RunLimitException("DISK_LIMIT");
             BIdentificationReceipt.publish(directory.resolve(file),fields);bytes+=length;
             chain=BIdentificationReceipt.hash((chain+"\n"+file+"\n"+BIdentificationReceipt.hash(encoded)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            telemetry.count(ORDINARY_RECEIPTS,1);telemetry.count(ORDINARY_BYTES,length);measured.succeeded();
+            }
         }
         public void close(){metadata.close();}
     }

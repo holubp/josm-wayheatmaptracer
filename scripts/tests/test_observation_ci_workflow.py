@@ -10,6 +10,92 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 
+def test_train_runtime_diagnostic_is_manual_only_fixed_and_cannot_dispatch_fitting():
+    text = (ROOT / ".github/workflows/observation-train-runtime-diagnostic.yml").read_text()
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    assert set(workflow["on"]) == {"workflow_call"}
+    job = workflow["jobs"]["train-runtime-diagnostic"]
+    assert job["if"] == "github.event_name == 'workflow_dispatch'"
+    assert job["timeout-minutes"] == "15"
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "timeout 360s" in runs
+    assert "v022ObservationTrainRuntimeDiagnostic" in runs
+    assert "v022ObservationIdentify" not in runs
+    assert "v022ObservationRendererDiagnostics" not in runs
+    assert "FIT_SELECT" not in runs
+    assert "sealed-observation" not in runs
+    assert "sha256sum --check --status" in runs
+    assert "git rev-parse HEAD" in runs
+    assert "compileObservationIdentifyJava" in runs
+
+
+def test_train_runtime_upload_is_a_fixed_aggregate_allowlist_without_scratch_globs():
+    text = (ROOT / ".github/workflows/observation-train-runtime-diagnostic.yml").read_text()
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["train-runtime-diagnostic"]
+    upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/josm-train-runtime/aggregate/binding.json",
+        "${{ runner.temp }}/josm-train-runtime/aggregate/progress.jsonl",
+        "${{ runner.temp }}/josm-train-runtime/aggregate/status.json",
+    ]
+
+
+def test_train_runtime_freeze_binds_current_sources_and_manual_workflow_digest():
+    protocol_path = ROOT / "superpowers/docs/plans/2026-10-18-b-observation-runtime-diagnostic-freeze.json"
+    protocol_bytes = protocol_path.read_bytes()
+    protocol = json.loads(protocol_bytes)
+    old = json.loads((ROOT / "superpowers/docs/plans/2026-10-18-b-observation-reviewed-source.json").read_bytes())
+    current = protocol["sourceMembers"]
+    assert set(current) == set(old["sourceMembers"])
+    assert len(current) == 27
+    for member, digest in current.items():
+        locations = [ROOT / source / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member
+                     for source in ("src/main/java", "src/test/java")]
+        path, = [path for path in locations if path.is_file()]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        if member != "service/tracing/probabilistic/BObservationIdentificationTool.java":
+            assert digest == old["sourceMembers"][member]
+    assert hashlib.sha256(json.dumps(current, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == protocol["sourceSha256"]
+    assert len(protocol["diagnosticMembers"]) == 2
+    for path, digest in protocol["diagnosticMembers"].items():
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
+    workflow = (ROOT / ".github/workflows/observation-train-runtime-diagnostic.yml").read_text()
+    assert hashlib.sha256(protocol_bytes).hexdigest() in workflow
+    assert "REVIEW_PENDING" not in workflow
+
+
+def test_registered_build_routes_train_runtime_exclusively_including_both_flags():
+    build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
+    names = ("observation-identification", "observation-public-diagnostics", "observation-train-runtime")
+
+    def enabled(expression, event, inputs):
+        if expression == "false":
+            return False
+        for term in expression.split(" && "):
+            left, operator, right = term.split()
+            actual = event if left == "github.event_name" else inputs.get(left.removeprefix("inputs."), False)
+            expected = right.strip("'") if left == "github.event_name" else right == "true"
+            if (actual == expected) != (operator == "=="):
+                return False
+        return True
+
+    for event, inputs, expected in (
+        ("workflow_dispatch", {"observation_train_runtime": True}, ["observation-train-runtime"]),
+        ("workflow_dispatch", {"observation_train_runtime": True, "observation_diagnostics": True}, ["observation-train-runtime"]),
+        ("workflow_dispatch", {}, ["observation-identification"]),
+        ("workflow_dispatch", {"observation_train_runtime": False, "observation_diagnostics": False}, ["observation-identification"]),
+        ("workflow_dispatch", {"observation_diagnostics": True}, ["observation-public-diagnostics"]),
+        ("push", {"observation_train_runtime": True}, []),
+        ("pull_request", {"observation_train_runtime": True}, []),
+    ):
+        actual = [name for name in names if enabled(build["jobs"].get(name, {}).get("if", "false"), event, inputs)]
+        assert actual == expected
+    option = build["on"]["workflow_dispatch"]["inputs"]["observation_train_runtime"]
+    assert option == {"description": "Run only the fixed TRAIN runtime diagnostic", "type": "boolean", "default": "false"}
+    assert build["jobs"]["observation-train-runtime"]["uses"] == "./.github/workflows/observation-train-runtime-diagnostic.yml"
+
 
 def _workflow():
     return yaml.load(
@@ -109,7 +195,7 @@ def test_registered_build_workflow_can_call_experiment_without_building_a_jar():
     build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
     assert "workflow_dispatch" in build["on"]
     call = build["jobs"]["observation-identification"]
-    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true"
+    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true"
     assert call["uses"] == "./.github/workflows/observation-identification.yml"
     assert build["jobs"]["public-validation"]["if"] == "github.event_name != 'workflow_dispatch'"
 
@@ -120,7 +206,7 @@ def test_renderer_diagnostic_dispatch_is_bounded_and_synthetic_only():
     assert option["type"] == "boolean"
     assert option["default"] == "false"
     job = build["jobs"]["observation-public-diagnostics"]
-    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true"
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true"
     assert job["timeout-minutes"] == "15"
     assert build["permissions"] == {"contents": "read"}
     commands = "\n".join(step.get("run", "") for step in job["steps"])
