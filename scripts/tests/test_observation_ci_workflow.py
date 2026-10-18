@@ -18,6 +18,20 @@ def _workflow():
     )
 
 
+def test_fitting_checks_external_reviewed_registry_before_compilation_and_catalog():
+    steps = _workflow()["jobs"]["observation-identification"]["steps"]
+    checkout = next(s for s in steps if s.get("uses") == "actions/checkout@v4")
+    assert checkout.get("with", {}).get("ref") == "${{ github.sha }}"
+    verify = next((s for s in steps if s.get("name") == "Verify reviewed fitting inputs"), None)
+    assert verify is not None, "Fitting requires the externally reviewed source registry"
+    assert "2026-10-18-b-observation-reviewed-source.json" in verify["run"]
+    assert "sha256sum --check --status" in verify["run"]
+    assert steps.index(verify) < next(i for i, s in enumerate(steps)
+                                    if "compileObservationIdentifyJava" in s.get("run", ""))
+    compile_step = next(s for s in steps if "compileObservationIdentifyJava" in s.get("run", ""))
+    assert "observationIdentifyClasses" in compile_step["run"], "Standalone runtime needs the public index"
+
+
 def test_manual_fixed_experiment_has_no_inputs_or_release_permissions():
     workflow = _workflow()
     assert set(workflow["on"]) == {"workflow_dispatch", "workflow_call"}
@@ -38,8 +52,11 @@ def test_manual_fixed_experiment_has_no_inputs_or_release_permissions():
     assert "-PobservationPhase=FIT_SELECT" in text
     assert "-PobservationBinding=" in text
     assert "timeout 3500s" in text
-    assert "6e44cdc2b75d6d960861bea90f0916a809ff10145341c7431dc52fcdedc16003" in text
-    assert "f71a908b223b43ce49c3e88abae0bd7dad0ad5aa91ac3fe1626e3bacee307917" in text
+    manifest = ROOT / "superpowers/docs/plans/2026-10-18-b-observation-feasibility-manifest.json"
+    assert hashlib.sha256(manifest.read_bytes()).hexdigest() in text
+    registry = ROOT / "superpowers/docs/plans/2026-10-18-b-observation-reviewed-source.json"
+    assert hashlib.sha256(registry.read_bytes()).hexdigest() in text
+    assert json.loads(registry.read_text())["sourceSha256"] in text
     assert "HOLDOUT" not in text
     assert "gh release" not in text
     assert "test-data" not in text

@@ -15,23 +15,31 @@ jobs:
       - name: Set synthetic output location
         run: echo "OBSERVATION_OUTPUT=$RUNNER_TEMP/josm-observation-identification" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+      - name: Verify reviewed fitting inputs
+        run: |
+          set -eu
+          registry=superpowers/docs/plans/2026-10-18-b-observation-reviewed-source.json
+          printf '%s  %s\n' 61246d9c65582c990ad52ed581a8de2c13b3a4671c4a3e70a0b1fd38289e17a6 "$registry" | sha256sum --check --status
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - name: Compile only the sealed observation tool sources
-        run: sh ./gradlew compileJava compileObservationIdentifyJava --console=plain
+        run: sh ./gradlew compileJava compileObservationIdentifyJava observationIdentifyClasses --console=plain
       - name: Register the fixed public catalog
         run: |
           set -eu
-          manifest=superpowers/docs/plans/2026-10-16-b-observation-identification-manifest.json
-          printf '%s  %s\n' 6e44cdc2b75d6d960861bea90f0916a809ff10145341c7431dc52fcdedc16003 "$manifest" | sha256sum --check --status
+          manifest=superpowers/docs/plans/2026-10-18-b-observation-feasibility-manifest.json
+          printf '%s  %s\n' 8fb47902e402bded101cd239d52b1f67655616f12ba6d0d7a35918b203a0aa77 "$manifest" | sha256sum --check --status
           sh ./gradlew v022ObservationIdentify \
             -PobservationPhase=CATALOG \
             -PobservationManifest="$manifest" \
             -PobservationOutput="$OBSERVATION_OUTPUT/catalog" \
             --console=plain
-          grep -Fq '"sourceHash":"f71a908b223b43ce49c3e88abae0bd7dad0ad5aa91ac3fe1626e3bacee307917"' \
+          grep -Fq '"sourceHash":"cf7b048bf8483f888cb497e1a795935a262aeb601b09cd432adb4a5c612436b4"' \
             "$OBSERVATION_OUTPUT/catalog/summary.json"
       - name: Run the bounded public FIT_SELECT pass
         id: fit
@@ -39,7 +47,7 @@ jobs:
           set -eu
           timeout 3500s sh ./gradlew v022ObservationIdentify \
             -PobservationPhase=FIT_SELECT \
-            -PobservationManifest=superpowers/docs/plans/2026-10-16-b-observation-identification-manifest.json \
+            -PobservationManifest=superpowers/docs/plans/2026-10-18-b-observation-feasibility-manifest.json \
             -PobservationBinding="$OBSERVATION_OUTPUT/catalog/binding.json" \
             -PobservationOutput="$OBSERVATION_OUTPUT/fit-select" \
             --console=plain

@@ -25,6 +25,8 @@ sourceSets {
         runtimeClasspath += output + compileClasspath + configurations["runtimeClasspath"]
     }
     create("observationIdentify") {
+        resources.setSrcDirs(listOf("src/test/resources"))
+        resources.include("b-observation-identification/holdout-index.json")
         java.setSrcDirs(listOf("src/test/java"))
         java.include(
             "org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/ObservationManifestJson.java",

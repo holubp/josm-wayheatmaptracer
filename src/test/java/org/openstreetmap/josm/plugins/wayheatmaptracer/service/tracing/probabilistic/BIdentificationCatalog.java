@@ -568,8 +568,8 @@ final class BIdentificationCatalog {
             boolean permitted = phase == Phase.HOLDOUT
                     ? key.split() == Split.HOLDOUT && !blank(candidateHash) && !blank(manifestHash)
                     : (phase == Phase.EXTRACT || phase == Phase.FIT_SELECT)
-                            && (key.split() == Split.TRAIN || key.split() == Split.SELECT
-                                    || key.split() == Split.REGRESSION);
+                            && (key.split() == Split.TRAIN || key.split() == Split.REGRESSION
+                                    || phase == Phase.FIT_SELECT && key.split() == Split.SELECT);
             if (!permitted) throw new SecurityException("Scene values are unavailable in this evaluation phase");
         }
 

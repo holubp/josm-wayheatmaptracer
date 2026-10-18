@@ -129,8 +129,13 @@ final class BIdentificationAcceptance {
     }
     static Optional<PairBinding> bindPair(CaseDefinition first,SourceKey firstSource,
             CaseDefinition second,SourceKey secondSource) {
+        return bindPair(first,firstSource,second,secondSource,Split.SELECT);
+    }
+    static Optional<PairBinding> bindPair(CaseDefinition first,SourceKey firstSource,
+            CaseDefinition second,SourceKey secondSource,Split expected) {
+        if(expected!=Split.TRAIN&&expected!=Split.SELECT)throw new IllegalArgumentException("Explicit TRAIN or SELECT required");
         if(first==null||second==null||firstSource==null||secondSource==null||!firstSource.equals(secondSource)
-                ||first.key().split()!=Split.SELECT||second.key().split()!=Split.SELECT
+                ||first.key().split()!=expected||second.key().split()!=expected
                 ||!first.key().sourceGroupId().equals(firstSource.sourceGroup())
                 ||!first.key().sourceGroupId().equals(second.key().sourceGroupId())
                 ||!first.key().geometryGroupId().equals(second.key().geometryGroupId())

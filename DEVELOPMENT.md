@@ -692,6 +692,21 @@ availability, and all-NO_TILE results are spatially inconclusive. JOSM's visual
 TMS path treats a confirmed spatial HTTP 404 as transparent, without changing
 plugin-direct source availability semantics.
 
+## Observation identification preflight
+
+The prospective area-presence observation experiment uses the reviewed
+[feasibility amendment](superpowers/docs/plans/2026-10-18-b-observation-feasibility-amendment.md)
+and [prefit evidence](superpowers/docs/plans/2026-10-18-b-observation-prefit-evidence.md).
+Its fixed external registry binds all 27 source members, manifest, canonical public
+index and sealed metadata before any scene is opened. The standalone
+`observationIdentifyClasses` runtime packages only the public index. EXTRACT and
+subset routes cannot access fresh SELECT; unit pipeline checks use explicitly
+nonqualifying dummy scenes through the actual evaluator. Full frozen FIT_SELECT
+runs only in synthetic CI, with unchanged attempt, memory, disk and time caps.
+Record and verify the exact consuming Git revision and CI pins. No fitting result
+alone permits sealed HOLDOUT access, changes the ordinary Engine B default, or
+authorizes a release. Production, private and integration gates remain separate.
+
 ## Guardrails
 
 - JOSM downloaded-area validation must use geographic `Bounds` and `LatLon`, not projected `EastNorth` against `DataSourceArea`.

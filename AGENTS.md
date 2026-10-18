@@ -1,5 +1,13 @@
 # AGENTS
 
+- Observation fitting must bind the reviewed external 27-member source registry,
+  manifest and canonical public index before scene access. Fresh SELECT belongs
+  only to the frozen full fitting experiment; EXTRACT/subset/unit diagnostics
+  must not materialize it. Keep real TRAIN reconstruction/cache/coupled-control
+  coverage through the shared evaluator; encountered source/cache failures abort
+  the experiment rather than rejecting only one configuration. A fitting registry
+  never grants sealed HOLDOUT or production-promotion authority.
+
 - Modern capture/no-route/interval-preview failures must leave diagnostics export accessible through modeless UI. Publish failure evidence only for the current attempt owner; preserve fixed safe phase/cause and actual available work in export fallbacks without fabricating frozen inputs or full-way interval inference. An empty detector run does not imply that every alternative detector has no route.
 - Cookie paste initial focus belongs to the pane's `selectInitialValue()` contract. Keep actual-dialog keyboard regression coverage; a delayed window-open request alone can lose focus to the option pane. Use only synthetic cookie values in tests and documentation.
 
