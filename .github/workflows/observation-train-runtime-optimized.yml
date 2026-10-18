@@ -1,0 +1,54 @@
+name: Prospective optimized fixed TRAIN diagnostic
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  observation-train-runtime-optimized:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PROSPECTIVE_PINS_SHA256: 3301d6aefdc9b9a73f282b0e79ca2049266f9122e9828d703e58c9dc3706e10d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify fixed pins and independent execution approval
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf '%s  %s\n' "$PROSPECTIVE_PINS_SHA256" superpowers/docs/plans/2026-10-18-b-observation-prospective-pins.json | sha256sum --check --status
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          pins=json.loads(Path("superpowers/docs/plans/2026-10-18-b-observation-prospective-pins.json").read_bytes())
+          if pins["approval"] != "APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING":
+              raise SystemExit("Prospective execution is pending independent approval")
+          PY
+      - name: Compile outside the diagnostic clock
+        run: sh ./gradlew compileJava compileObservationIdentifyJava observationIdentifyClasses --console=plain
+      - name: Run the fixed optimized diagnostic once
+        run: |
+          set -eu
+          timeout 360s sh ./gradlew v022ObservationOptimizedTrainRuntimeDiagnostic \
+            -PprospectivePinsSha256="$PROSPECTIVE_PINS_SHA256" \
+            -PprospectiveOutput="$RUNNER_TEMP/josm-train-runtime-optimized" --console=plain
+      - name: Upload aggregate evidence only
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-train-runtime-optimized-aggregate
+          path: |
+            ${{ runner.temp }}/josm-train-runtime-optimized/aggregate/binding.json
+            ${{ runner.temp }}/josm-train-runtime-optimized/aggregate/progress.jsonl
+            ${{ runner.temp }}/josm-train-runtime-optimized/aggregate/status.json
+          if-no-files-found: warn
+          retention-days: 5

@@ -52,14 +52,23 @@ public final class BObservationIdentificationTool {
         @Override void close();
     }
     /** All scores keep scene order; only complete deterministic feasibility judgments enter the shortlist. */
+    static TrainPass trainPassProspective(List<CaseDefinition> definitions,List<BIdentifiedObservationKernel.Parameters> parameters,
+            TrainEvaluator evaluator,CancellationProbe cancellation,boolean complete) throws Exception {
+        return trainPass(definitions,parameters,evaluator,cancellation,true,complete);
+    }
     static TrainPass trainPass(List<CaseDefinition> definitions,List<BIdentifiedObservationKernel.Parameters> parameters,
             TrainEvaluator evaluator,CancellationProbe cancellation) throws Exception {
+        return trainPass(definitions,parameters,evaluator,cancellation,false,false);
+    }
+    private static TrainPass trainPass(List<CaseDefinition> definitions,List<BIdentifiedObservationKernel.Parameters> parameters,
+            TrainEvaluator evaluator,CancellationProbe cancellation,boolean prospective,boolean complete) throws Exception {
         if(definitions==null||definitions.size()>512||parameters==null||parameters.isEmpty()||parameters.size()>32
                 ||new HashSet<>(parameters).size()!=parameters.size()||evaluator==null||cancellation==null)
             throw new IllegalArgumentException("Bounded complete TRAIN inputs required");
         var originals=definitions.stream().filter(d->d.key().split()==Split.TRAIN).toList();
         if(originals.isEmpty()||originals.stream().map(d->d.key().id()).distinct().count()!=originals.size())
             throw new IllegalArgumentException("Unique original TRAIN cases required");
+        var prospectiveOrder=prospective?trainGeometryOrder(originals,true,complete):null;
         var scores=new LinkedHashMap<BIdentifiedObservationKernel.Parameters,Aggregate>();
         var cheap=new LinkedHashMap<BIdentifiedObservationKernel.Parameters,CheckTotals>();
         for(var parameter:parameters){scores.put(parameter,new Aggregate());cheap.put(parameter,new CheckTotals());}
@@ -81,8 +90,7 @@ public final class BObservationIdentificationTool {
                 .thenComparingDouble(BIdentifiedObservationKernel.Parameters::nuisanceMultiplier)
                 .thenComparingDouble(BIdentifiedObservationKernel.Parameters::directSpanSlope));
         var required=requiredPairs(originals,Split.TRAIN,cancellation);
-        var geometryOrder=new ArrayList<>(originals);
-        geometryOrder.sort(geometryComparator());
+        var geometryOrder=prospectiveOrder!=null?prospectiveOrder:trainGeometryOrder(originals,false,false);
         var evidence=new LinkedHashMap<BIdentifiedObservationKernel.Parameters,TrainEvidence>();
         for(var parameter:parameters) {
             boolean finite=scores.get(parameter).finite(),profilePass=cheap.get(parameter).finish().passed();
@@ -128,6 +136,28 @@ public final class BObservationIdentificationTool {
         return Comparator.comparing((CaseDefinition d)->selector(d).isEmpty())
                 .thenComparing(Comparator.comparingDouble(CaseDefinition::sourcePitchMeters).reversed())
                 .thenComparing(CaseDefinition::variantId).thenComparing(CaseDefinition::contrastId).thenComparing(CaseDefinition::side);
+    }
+    static List<CaseDefinition> trainGeometryOrder(List<CaseDefinition> definitions,boolean prospective,boolean complete) {
+        if(definitions==null)throw new IllegalArgumentException("TRAIN permutation required");
+        var originals=definitions.stream().filter(d->d.key().split()==Split.TRAIN).toList();
+        if(originals.isEmpty()||originals.stream().map(d->d.key().id()).distinct().count()!=originals.size())
+            throw new IllegalArgumentException("Unique TRAIN permutation required");
+        var result=new ArrayList<>(originals);result.sort(geometryComparator());
+        if(prospective) {
+            var registered=trainDiagnosticCatalog().definitions().stream().filter(d->d.key().split()==Split.TRAIN).toList();
+            if(complete&&!new HashSet<>(originals).equals(new HashSet<>(registered)))
+                throw new IllegalArgumentException("Complete exact original TRAIN definitions required");
+            var prefix=new ArrayList<CaseDefinition>();
+            for(String id:BProspectiveIdentificationManifest.PREFIX) {
+                var expected=registered.stream().filter(d->d.key().id().equals(id)).findFirst().orElseThrow();
+                var actual=originals.stream().filter(d->d.key().id().equals(id)).findFirst()
+                        .orElseThrow(()->new IllegalArgumentException("Missing fixed TRAIN prefix"));
+                if(!actual.equals(expected))throw new IllegalArgumentException("Fixed TRAIN prefix definition changed");
+                prefix.add(actual);result.remove(actual);
+            }
+            result.addAll(0,prefix);
+        }
+        return List.copyOf(result);
     }
     private static Map<String,Object> inputFields(TrainInputBinding input) {
         return Map.of("sourceHash",input.sourceHash(),"rendererHash",input.rendererHash(),"catalogHash",input.catalogHash(),
@@ -254,6 +284,7 @@ public final class BObservationIdentificationTool {
                 fields.put("sceneCount",phase==Phase.CATALOG?definitions.size():scenes);fields.put("rasterReads",reads[0]);fields.put("labelReads",reads[1]);fields.put("holdoutReads",0);
                 fields.put("selectScenes",selectScenes);fields.put("selectPipelineCount",pipelines);fields.put("rawGeometrySolves",rawSolves);
                 fields.put("pairChecks",pairChecks);fields.put("requiredPairCount",required.size());fields.put("peakSceneBytes",peak);
+                if(phase==Phase.EXTRACT)fields.put("featureAvailability",availability);
                 fields.put("trainingGeometry","NOT_RUN_FIXTURE_PIPELINE_ONLY");guard.verify();writer.publish("summary.json",fields);
                 return new RunReceipt("NONQUALIFYING_FIXTURE",output.resolve("summary.json"));
             } catch(Exception failure) {
@@ -363,13 +394,28 @@ public final class BObservationIdentificationTool {
         var preflight=diagnosticPreflight(controls,BObservationTrainRuntimeDiagnosticTool::verifyFreeze);
         long started=preflight.started();var cancellation=preflight.cancellation();var freeze=preflight.value();
         freeze.verifyUnchanged();cancellation.checkpoint();
+        runVerifiedTrainDiagnostic(output,controls,started,cancellation,freeze.protocolHash,freeze.sourceHash,
+                freeze.catalogHash,"NONQUALIFYING_TRAIN_RUNTIME",freeze::verifyUnchanged,Map.of());
+    }
+    static void runOptimizedTrainRuntimeDiagnostic(Path output,String expectedPinsHash) throws Exception {
+        if(output==null)throw new IllegalArgumentException("New diagnostic output required");
+        var controls=new Controls(null,BObservationTrainRuntimeDiagnosticTool.MEMORY_BYTES,
+                BObservationTrainRuntimeDiagnosticTool.WATCHDOG_NANOS,System::nanoTime,CancellationProbe.NONE,()->{});
+        var preflight=diagnosticPreflight(controls,()->BProspectiveIdentificationManifest.registerMetadata(
+                BProspectiveIdentificationManifest.Purpose.OPTIMIZED_TRAIN_DIAGNOSTIC,expectedPinsHash));
+        var seal=preflight.value();seal.requireExecutionApproved();preflight.cancellation().checkpoint();
+        runVerifiedTrainDiagnostic(output,controls,preflight.started(),preflight.cancellation(),seal.manifestHash(),seal.sourceHash(),
+                seal.catalogHash(),seal.purpose().name(),seal::verifyUnchanged,seal.provenance());
+    }
+    private static void runVerifiedTrainDiagnostic(Path output,Controls controls,long started,CancellationProbe cancellation,
+            String protocolHash,String sourceHash,String catalogHash,String purpose,SourceGuard verification,Map<String,Object> provenance) throws Exception {
         var catalog=trainDiagnosticCatalog();var definitions=new ArrayList<CaseDefinition>();
         for(String id:BObservationTrainRuntimeDiagnosticTool.CASES) {
             var definition=catalog.definitions().stream().filter(d->d.key().id().equals(id)).findFirst().orElseThrow();
             BObservationTrainRuntimeDiagnosticTool.requireCase(definition);definitions.add(definition);
         }
         var access=EvaluationAccess.preselection(Phase.EXTRACT);
-        SourceGuard guard=()->{cancellation.checkpoint();freeze.verifyUnchanged();cancellation.checkpoint();};
+        SourceGuard guard=()->{cancellation.checkpoint();verification.verify();cancellation.checkpoint();};
         InputProvider provider=d->{BObservationTrainRuntimeDiagnosticTool.requireCase(d);return BIdentificationScenes.render(d.key(),access);};
         var manifest=BIdentificationManifest.read(BObservationTrainRuntimeDiagnosticTool.readBounded(BObservationTrainRuntimeDiagnosticTool.MANIFEST,65_536));
         var parameter=parameters(manifest).get(0);var required=requiredPairs(definitions,Split.TRAIN,cancellation);
@@ -377,11 +423,12 @@ public final class BObservationIdentificationTool {
         newDirectory(output);newDirectory(output.resolve("aggregate"));newDirectory(output.resolve("scratch"));
         try(var writer=new Writer(output.resolve("scratch"),controls.memoryBytes())) {
             var aggregate=new DiagnosticAggregateWriter(output.resolve("aggregate"),writer);
-            aggregate.publish("binding.json",Map.of("schema",1,"purpose","NONQUALIFYING_TRAIN_RUNTIME",
-                    "protocolSha256",freeze.protocolHash,"sourceSha256",freeze.sourceHash,"baselineSourceSha256",BObservationTrainRuntimeDiagnosticTool.OLD_SOURCE,
+            var diagnosticBinding=new LinkedHashMap<String,Object>(Map.of("schema",1,"purpose",purpose,
+                    "protocolSha256",protocolHash,"sourceSha256",sourceHash,"baselineSourceSha256",BObservationTrainRuntimeDiagnosticTool.OLD_SOURCE,
                     "selectionAuthority","NONE","holdoutAuthority",false));
+            diagnosticBinding.putAll(provenance);aggregate.publish("binding.json",diagnosticBinding);
             var telemetry=new BObservationRuntimeTelemetry(controls.clock(),aggregate::progress);writer.telemetry=telemetry;
-            var identity=new InputIdentity(freeze.sourceHash,BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java"),freeze.catalogHash);
+            var identity=new InputIdentity(sourceHash,BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java"),catalogHash);
             var driver=realTrainEvaluator(required,guard,provider,identity,controls,cancellation,availability(),writer,0,0,telemetry);
             try {
                 var initial=new LinkedHashMap<String,TrainInputBinding>();
@@ -571,18 +618,43 @@ public final class BObservationIdentificationTool {
         CancellationProbe guarded=guarded(controls,started);
         guarded.checkpoint();
         var catalog=publicCatalog();
-        var seal=BIdentificationManifest.register(manifest,BIdentificationReceipt.sourceHash());
+        var old=BIdentificationManifest.register(manifest,BIdentificationReceipt.sourceHash());
+        var seal=new RunBinding(old.manifest(),old.manifestHash(),old.sourceHash(),old.catalogHash(),old::verifyUnchanged,
+                false,old.registryHash(),"",()->{},Map.of());
+        return runVerified(phase,output,binding,controls,started,guarded,catalog,seal);
+    }
+    static RunReceipt runProspective(Phase phase,Path output,Path binding,Controls controls,String expectedPinsHash) throws Exception {
+        if(phase==Phase.HOLDOUT)throw new SecurityException("Prospective fitting has no HOLDOUT authority");
+        if(phase==null||output==null||controls==null)throw new IllegalArgumentException("Complete prospective inputs required");
+        var launch=diagnosticPreflight(controls,()->BProspectiveIdentificationManifest.registerMetadata(
+                BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT,expectedPinsHash));
+        var current=launch.value();
+        var seal=new RunBinding(current.family(),current.manifestHash(),current.sourceHash(),current.catalogHash(),
+                current::verifyUnchanged,true,current.registryHash(),current.pinsHash(),current::requireExecutionApproved,current.provenance());
+        return runVerified(phase,output,binding,controls,launch.started(),launch.cancellation(),publicCatalog(),seal);
+    }
+    private record RunBinding(BIdentificationManifest manifest,String manifestHash,String sourceHash,String catalogHash,
+            SourceGuard verification,boolean prospective,String registryHash,String pinsHash,SourceGuard approval,Map<String,Object> provenance) {
+        void verifyUnchanged() throws Exception {verification.verify();}
+    }
+    private static RunReceipt runVerified(Phase phase,Path output,Path binding,Controls controls,long started,
+            CancellationProbe guarded,BIdentificationCatalog catalog,RunBinding seal) throws Exception {
         if(!BOUNDED_RENDERER_SHA256.equals(BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java")))
             throw new IllegalArgumentException("Renderer changed; its 32MiB accounting bound is unreviewed");
         if(phase==Phase.CATALOG) {
             if(binding!=null)throw new IllegalArgumentException("CATALOG creates its binding; it does not consume one");
         } else verifyBinding(binding,seal);
         List<CaseDefinition> definitions=definitions(catalog,phase,controls.caseIds());
+        if(seal.prospective()&&phase==Phase.FIT_SELECT) {
+            if(controls.caseIds()!=null)throw new SecurityException("Prospective FIT requires the complete original protocol");
+            trainGeometryOrder(definitions,true,true);
+        }
         if(catalog.caseCount()>((Number)seal.manifest().fields().get("maxScenes")).intValue())
             throw new IllegalArgumentException("Catalog exceeds the registered scene ceiling");
         var parameters=parameters(seal.manifest());
         var requiredPairs=requiredPairs(catalog.definitions().stream().filter(d->d.key().split()==Split.SELECT).toList(),guarded);
         seal.verifyUnchanged();guarded.checkpoint();
+        if(seal.prospective()&&phase!=Phase.CATALOG){seal.approval().verify();guarded.checkpoint();}
         newDirectory(output);
         var access=phase==Phase.CATALOG?EvaluationAccess.catalogView():EvaluationAccess.preselection(phase);
         Map<String,Object> header=header(phase,seal,controls.caseIds()!=null);
@@ -629,10 +701,17 @@ public final class BObservationIdentificationTool {
             }
             var trainingIdentity=new InputIdentity(seal.sourceHash(),BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java"),seal.catalogHash());
             var trainPairs=requiredPairs(definitions.stream().filter(d->d.key().split()==Split.TRAIN).toList(),Split.TRAIN,guarded);
-            writer.publish("preflight.json",preflight(catalog.caseCount(),definitions,parameters.size(),controls));
+            var resourcePreflight=new LinkedHashMap<>(preflight(catalog.caseCount(),definitions,parameters.size(),controls));
+            if(seal.prospective()) {
+                resourcePreflight.put("trainingControlOrder",BProspectiveIdentificationManifest.ORDER);
+                resourcePreflight.put("geometryPrefix",BProspectiveIdentificationManifest.PREFIX);
+                resourcePreflight.put("skippedErrors","UNVISITED_UNKNOWN_NOT_PROVED_ABSENT");
+            }
+            writer.publish("preflight.json",resourcePreflight);
             var driver=realTrainEvaluator(trainPairs,seal::verifyUnchanged,d->BIdentificationScenes.render(d.key(),access),trainingIdentity,
                     controls,guarded,availability,writer,count,peak);
-            var training=trainPass(definitions,parameters,driver,guarded);
+            var training=seal.prospective()?trainPassProspective(definitions,parameters,driver,guarded,true)
+                    :trainPass(definitions,parameters,driver,guarded);
             var initialOrdinals=driver.initialOrdinals;
             count=driver.sceneCount;peak=driver.peak;train.clear();train.putAll(training.scores());baselineTrain=training.baseline();
             List<BIdentifiedObservationKernel.Parameters> shortlist=training.shortlist();
@@ -667,13 +746,16 @@ public final class BObservationIdentificationTool {
             String status=full?(shortlist.isEmpty()?"FAMILY_REJECTED_NO_FEASIBLE_TRAIN_CANDIDATE":choice.isPresent()?
                     "FROZEN_PENDING_REGRESSION":"FAMILY_REJECTED_NO_PASSING_CANDIDATE"):"FIT_SCORED_PENDING_GEOMETRY";
             var trainFields=new ArrayList<Map<String,Object>>();var selectFields=new ArrayList<Map<String,Object>>();
-            var trainOrder=definitions.stream().filter(d->d.key().split()==Split.TRAIN).sorted(geometryComparator()).toList();
+            var trainOrder=trainGeometryOrder(definitions,seal.prospective(),controls.caseIds()==null);
             writer.publish("train-control-inventory.json",Map.of("geometryOrder",trainOrder.stream().map(d->Map.of("id",d.key().id(),"initialOrdinal",initialOrdinals.get(d.key().id()))).toList(),
                     "requiredPairs",trainPairs.stream().map(p->Map.of("first",p.first().key().id(),"second",p.second().key().id(),"kind",p.kind().name())).toList(),
-                    "caseCount",trainOrder.size(),"order","selector-first,pitch-desc,variant,contrast,side","scope",completeTrain?"ALL_ORIGINAL_TRAIN":"TEST_SUBSET_NOT_QUALIFIED"));
+                    "caseCount",trainOrder.size(),"order",seal.prospective()?BProspectiveIdentificationManifest.ORDER:"selector-first,pitch-desc,variant,contrast,side",
+                    "scope",completeTrain?"ALL_ORIGINAL_TRAIN":"TEST_SUBSET_NOT_QUALIFIED"));
             for(var parameter:parameters) {
                 var evidence=training.evidence().get(parameter);
-                writer.publish("train-controls-"+parameterId(parameter)+".json",trainEvidenceFields(evidence));
+                var evidenceFields=new LinkedHashMap<>(trainEvidenceFields(evidence));
+                if(seal.prospective())evidenceFields.put("skippedErrors","UNVISITED_UNKNOWN_NOT_PROVED_ABSENT");
+                writer.publish("train-controls-"+parameterId(parameter)+".json",evidenceFields);
                 var fields=new LinkedHashMap<>(configuration(parameter,train.get(parameter),"train",writer));
                 fields.put("trainState",evidence.state().name());fields.put("controlReport","train-controls-"+parameterId(parameter)+".json");trainFields.add(fields);
             }
@@ -723,20 +805,35 @@ public final class BObservationIdentificationTool {
     private static void reads(Map<String,Object> fields,EvaluationAccess access) {
         fields.put("rasterReads",access.rasterReads());fields.put("labelReads",access.labelReads());fields.put("holdoutReads",0);
     }
-    private static Map<String,Object> header(Phase phase,BIdentificationManifest.Seal seal,boolean subset) {
+    private static Map<String,Object> header(Phase phase,RunBinding seal,boolean subset) {
         var result=new LinkedHashMap<String,Object>();
         result.put("schema",1);result.put("phase",phase.name());result.put("manifestHash",seal.manifestHash());
         result.put("sourceHash",seal.sourceHash());result.put("catalogHash",seal.catalogHash());
         result.put("featureVersion",BIdentificationFacts.VERSION);result.put("scope",subset?"TEST_SUBSET":"FULL_PUBLIC_PROTOCOL");
         result.put("rendererCancellation","checkpoints-before-and-after-bounded-render-not-mid-pixel");
         result.put("acceptanceConventionsHash",acceptanceConventionsHash());
+        if(seal.prospective()) {
+            result.putAll(seal.provenance());
+            result.put("protocolPurpose",BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT.name());
+            result.put("sourceRegistryHash",seal.registryHash());result.put("executionPinsHash",seal.pinsHash());
+            result.put("baseFamilyManifestHash",BObservationTrainRuntimeDiagnosticTool.OLD_MANIFEST);
+            result.put("selectionProtocol","train-feasible-fixed-prefix-top4-score-order-v3");
+            result.put("trainingControlOrder",BProspectiveIdentificationManifest.ORDER);
+            result.put("skippedErrors","UNVISITED_UNKNOWN_NOT_PROVED_ABSENT");
+        }
         return result;
     }
-    private static Map<String,Object> bindingFields(BIdentificationManifest.Seal seal) {
-        return Map.of("schema",1,"phase","CATALOG","status","CATALOG_REGISTERED","manifestHash",seal.manifestHash(),
-                "sourceHash",seal.sourceHash(),"catalogHash",seal.catalogHash(),"rasterReads",0,"labelReads",0);
+    private static Map<String,Object> bindingFields(RunBinding seal) {
+        var result=new LinkedHashMap<String,Object>(Map.of("schema",1,"phase","CATALOG","status","CATALOG_REGISTERED","manifestHash",seal.manifestHash(),
+                "sourceHash",seal.sourceHash(),"catalogHash",seal.catalogHash(),"rasterReads",0,"labelReads",0));
+        if(seal.prospective()) {
+            result.putAll(seal.provenance());
+            result.put("protocolPurpose",BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT.name());
+            result.put("sourceRegistryHash",seal.registryHash());result.put("executionPinsHash",seal.pinsHash());
+        }
+        return result;
     }
-    private static void verifyBinding(Path path,BIdentificationManifest.Seal seal) throws Exception {
+    private static void verifyBinding(Path path,RunBinding seal) throws Exception {
         if(path==null)throw new IllegalArgumentException("A registered CATALOG binding file is required");
         var actual=BIdentificationReceipt.read(path);var expected=bindingFields(seal);
         if(!actual.keySet().equals(expected.keySet()))throw new IllegalArgumentException("Invalid CATALOG binding schema");
@@ -1020,7 +1117,7 @@ public final class BObservationIdentificationTool {
     }
 
     private static SceneReport scene(CaseDefinition definition,List<BIdentifiedObservationKernel.Parameters> parameters,
-            Phase phase,BIdentificationManifest.Seal seal,EvaluationAccess access,Controls controls,CancellationProbe cancellation,
+            Phase phase,RunBinding seal,EvaluationAccess access,Controls controls,CancellationProbe cancellation,
             Map<String,Object> availability,Writer writer,int sceneIndex) throws Exception {
         return scene(definition,parameters,phase,seal::verifyUnchanged,d->BIdentificationScenes.render(d.key(),access),
                 new InputIdentity(seal.sourceHash(),BIdentificationReceipt.sourceMemberHash("service/tracing/probabilistic/BIdentificationScenes.java"),seal.catalogHash()),

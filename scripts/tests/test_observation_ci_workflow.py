@@ -42,10 +42,12 @@ def test_train_runtime_upload_is_a_fixed_aggregate_allowlist_without_scratch_glo
     ]
 
 
-def test_train_runtime_freeze_binds_current_sources_and_manual_workflow_digest():
+def test_archived_train_runtime_freeze_and_manual_workflow_digest_stay_immutable():
     protocol_path = ROOT / "superpowers/docs/plans/2026-10-18-b-observation-runtime-diagnostic-freeze.json"
     protocol_bytes = protocol_path.read_bytes()
     protocol = json.loads(protocol_bytes)
+    assert hashlib.sha256(protocol_bytes).hexdigest() == "3c9e872713736d1f475e3c9983bdf5be01e71dc88e89f24133a8cff241fd171d"
+    assert protocol["sourceSha256"] == "477d160264ce7fb191f2b1f392b2d597fe85f5a94849c78335e5e4e176bbf8cd"
     old = json.loads((ROOT / "superpowers/docs/plans/2026-10-18-b-observation-reviewed-source.json").read_bytes())
     current = protocol["sourceMembers"]
     assert set(current) == set(old["sourceMembers"])
@@ -54,9 +56,18 @@ def test_train_runtime_freeze_binds_current_sources_and_manual_workflow_digest()
         locations = [ROOT / source / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member
                      for source in ("src/main/java", "src/test/java")]
         path, = [path for path in locations if path.is_file()]
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
         if member != "service/tracing/probabilistic/BObservationIdentificationTool.java":
             assert digest == old["sourceMembers"][member]
+    actual = {}
+    for member in current:
+        path, = [ROOT / parent / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member
+                 for parent in ("src/main/java", "src/test/java")
+                 if (ROOT / parent / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member).is_file()]
+        actual[member] = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert {member for member in current if current[member] != actual[member]} == {
+        "service/tracing/probabilistic/BObservationIdentificationTool.java",
+        "service/tracing/probabilistic/ProbabilisticInference.java",
+    }, "the archived verifier must reject these changed members; it must not be repinned"
     assert hashlib.sha256(json.dumps(current, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == protocol["sourceSha256"]
     assert len(protocol["diagnosticMembers"]) == 2
     for path, digest in protocol["diagnosticMembers"].items():
@@ -76,7 +87,7 @@ def test_registered_build_routes_train_runtime_exclusively_including_both_flags(
         for term in expression.split(" && "):
             left, operator, right = term.split()
             actual = event if left == "github.event_name" else inputs.get(left.removeprefix("inputs."), False)
-            expected = right.strip("'") if left == "github.event_name" else right == "true"
+            expected = right == "true" if right in ("true", "false") else right.strip("'")
             if (actual == expected) != (operator == "=="):
                 return False
         return True
@@ -188,14 +199,16 @@ def test_source_binding_covers_both_geometry_admission_implementations():
     canonical = json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()
     expected = hashlib.sha256(canonical).hexdigest()
     runs = "\n".join(step.get("run", "") for step in _workflow()["jobs"]["observation-identification"]["steps"])
-    assert f'"sourceHash":"{expected}"' in runs
+    old = json.loads((ROOT / "superpowers/docs/plans/2026-10-18-b-observation-reviewed-source.json").read_bytes())
+    assert f'"sourceHash":"{old["sourceSha256"]}"' in runs
+    assert expected != old["sourceSha256"], "old FIT authority must not be rebound to current source"
 
 
 def test_registered_build_workflow_can_call_experiment_without_building_a_jar():
     build = yaml.load((ROOT / ".github/workflows/build.yml").read_text(), Loader=yaml.BaseLoader)
     assert "workflow_dispatch" in build["on"]
     call = build["jobs"]["observation-identification"]
-    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true"
+    assert call["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics != true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'"
     assert call["uses"] == "./.github/workflows/observation-identification.yml"
     assert build["jobs"]["public-validation"]["if"] == "github.event_name != 'workflow_dispatch'"
 
@@ -206,7 +219,7 @@ def test_renderer_diagnostic_dispatch_is_bounded_and_synthetic_only():
     assert option["type"] == "boolean"
     assert option["default"] == "false"
     job = build["jobs"]["observation-public-diagnostics"]
-    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true"
+    assert job["if"] == "github.event_name == 'workflow_dispatch' && inputs.observation_diagnostics == true && inputs.observation_train_runtime != true && inputs.observation_protocol != 'optimized-train-runtime' && inputs.observation_protocol != 'prospective-fit'"
     assert job["timeout-minutes"] == "15"
     assert build["permissions"] == {"contents": "read"}
     commands = "\n".join(step.get("run", "") for step in job["steps"])

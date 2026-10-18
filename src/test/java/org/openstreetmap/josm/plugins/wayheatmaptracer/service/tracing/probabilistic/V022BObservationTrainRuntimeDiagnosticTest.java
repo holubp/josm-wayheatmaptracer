@@ -203,10 +203,11 @@ class V022BObservationTrainRuntimeDiagnosticTest {
             }
         }
     }
-    @Test void fixedRuntimeFreezeCanBeVerifiedAsMetadataWithoutAnyEvaluationAccess() throws Exception {
-        var freeze=BObservationTrainRuntimeDiagnosticTool.verifyFreeze();freeze.verifyUnchanged();
-        assertEquals(BIdentificationReceipt.sourceHash(),freeze.sourceHash);
-        assertEquals(BIdentificationReceipt.hash(Files.readAllBytes(BObservationTrainRuntimeDiagnosticTool.PROTOCOL)),freeze.protocolHash);
+    @Test void archivedRuntimeFreezeRefusesChangedNumericalSourceWithoutEvaluationAccess() throws Exception {
+        assertEquals("3c9e872713736d1f475e3c9983bdf5be01e71dc88e89f24133a8cff241fd171d",
+                BIdentificationReceipt.hash(Files.readAllBytes(BObservationTrainRuntimeDiagnosticTool.PROTOCOL)));
+        assertEquals("Numerical26 source changed",assertThrows(IllegalArgumentException.class,
+                BObservationTrainRuntimeDiagnosticTool::verifyFreeze).getMessage());
     }
     @Test void aggregatePublicationIsBoundedSharesDiskAndLeavesStatusRoomAfterProgressFailure() throws Exception {
         var directory=Files.createDirectory(temp.resolve("aggregate"));var scratch=Files.createDirectory(temp.resolve("scratch"));
@@ -244,12 +245,19 @@ class V022BObservationTrainRuntimeDiagnosticTest {
     }
     @Test void onlyReviewedDiagnosticMembersAndNumerical26CanValidateWithoutMaterializingAnything() throws Exception {
         var current=new TreeMap<String,String>();for(String path:BIdentificationReceipt.SOURCE_FILES)current.put(path,BIdentificationReceipt.sourceMemberHash(path));
+        @SuppressWarnings("unchecked") var original=(Map<String,String>)(Map<?,?>)BIdentificationReceipt.read(
+                BIdentificationManifest.REVIEWED_SOURCE_REGISTRY_PATH).get("sourceMembers");
+        // Pure law control: restore the archived numerical26 in the supplied map only.
+        // This does not mint a Seal and the actual current numerical source must refuse.
+        var actual=new TreeMap<>(current);
+        for(String member:current.keySet())if(!member.equals(BObservationTrainRuntimeDiagnosticTool.TOOL))current.put(member,original.get(member));
         var helpers=new TreeMap<String,String>();for(String path:BObservationTrainRuntimeDiagnosticTool.HELPERS)helpers.put(path,BIdentificationReceipt.hash(Files.readAllBytes(Path.of(path))));
         var fields=new LinkedHashMap<String,Object>();fields.put("contract",BObservationTrainRuntimeDiagnosticTool.fixedContract());
         fields.put("sourceMembers",current);fields.put("sourceSha256",BIdentificationReceipt.hash(BIdentificationReceipt.canonical(current).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         fields.put("diagnosticMembers",helpers);fields.put("trainCatalogSha256",BIdentificationCatalog.trainDiagnosticCatalog().canonicalHash());
         byte[] registry=Files.readAllBytes(BIdentificationManifest.REVIEWED_SOURCE_REGISTRY_PATH),manifest=Files.readAllBytes(BObservationTrainRuntimeDiagnosticTool.MANIFEST);
         BObservationTrainRuntimeDiagnosticTool.validateFreeze(fields,current,helpers,registry,manifest);
+        assertThrows(IllegalArgumentException.class,()->BObservationTrainRuntimeDiagnosticTool.validateFreeze(fields,actual,helpers,registry,manifest));
         for(String key:fields.keySet()) {var changed=new LinkedHashMap<>(fields);changed.remove(key);
             assertThrows(IllegalArgumentException.class,()->BObservationTrainRuntimeDiagnosticTool.validateFreeze(changed,current,helpers,registry,manifest));}
         var changed=new TreeMap<>(current);changed.put("service/tracing/probabilistic/BIdentificationScenes.java","0".repeat(64));

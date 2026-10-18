@@ -47,7 +47,10 @@ sourceSets {
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationReceipt.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationIdentificationTool.java",
             "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationRuntimeTelemetry.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationTrainRuntimeDiagnosticTool.java"
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationTrainRuntimeDiagnosticTool.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BProspectiveIdentificationManifest.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationOptimizedTrainRuntimeDiagnosticTool.java",
+            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BProspectiveObservationIdentificationTool.java"
         )
         compileClasspath += sourceSets["main"].output + configurations["testCompileClasspath"]
         runtimeClasspath += output + compileClasspath + configurations["testRuntimeClasspath"]
@@ -233,4 +236,41 @@ tasks.register<JavaExec>("v022ObservationTrainRuntimeDiagnostic") {
         if (!output.isPresent || output.get().isBlank()) throw GradleException("Requires observationRuntimeOutput=<new directory>")
     }
     args("--output", output.orNull ?: "")
+}
+
+tasks.register<JavaExec>("v022ObservationOptimizedTrainRuntimeDiagnostic") {
+    group = "verification"
+    description = "Runs only the separately approved optimized fixed TRAIN diagnostic"
+    dependsOn(tasks.named("observationIdentifyClasses"))
+    classpath = sourceSets["observationIdentify"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationOptimizedTrainRuntimeDiagnosticTool")
+    val output = providers.gradleProperty("prospectiveOutput")
+    val pins = providers.gradleProperty("prospectivePinsSha256")
+    doFirst {
+        if (!output.isPresent || output.get().isBlank() || !pins.isPresent || !pins.get().matches(Regex("[0-9a-f]{64}"))) {
+            throw GradleException("Requires prospectiveOutput and independent literal prospectivePinsSha256")
+        }
+    }
+    args("--output", output.orNull ?: "", "--pins-sha256", pins.orNull ?: "")
+}
+
+tasks.register<JavaExec>("v022ObservationProspectiveIdentify") {
+    group = "verification"
+    description = "Runs a separately approved fixed prospective protocol; no HOLDOUT authority"
+    dependsOn(tasks.named("observationIdentifyClasses"))
+    classpath = sourceSets["observationIdentify"].runtimeClasspath
+    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BProspectiveObservationIdentificationTool")
+    val phase = providers.gradleProperty("prospectivePhase")
+    val output = providers.gradleProperty("prospectiveOutput")
+    val binding = providers.gradleProperty("prospectiveBinding")
+    val pins = providers.gradleProperty("prospectivePinsSha256")
+    doFirst {
+        if (!phase.isPresent || phase.get() !in setOf("CATALOG", "EXTRACT", "FIT_SELECT") ||
+            !output.isPresent || output.get().isBlank() || !pins.isPresent || !pins.get().matches(Regex("[0-9a-f]{64}")) ||
+            (phase.get() != "CATALOG" && (!binding.isPresent || binding.get().isBlank()))) {
+            throw GradleException("Requires fixed prospective phase/output, independent pins digest and non-CATALOG binding")
+        }
+    }
+    args("--phase", phase.orNull ?: "", "--output", output.orNull ?: "", "--pins-sha256", pins.orNull ?: "")
+    binding.orNull?.let { args("--binding", it) }
 }

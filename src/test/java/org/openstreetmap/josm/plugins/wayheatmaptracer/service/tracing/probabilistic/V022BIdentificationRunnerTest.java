@@ -24,7 +24,7 @@ class V022BIdentificationRunnerTest {
 
     @Test void catalogPublishesOnlyMetadataWithZeroRasterAndLabelReads() throws Exception {
         Path output=temp.resolve("catalog");
-        var receipt=BObservationIdentificationTool.run(MANIFEST,Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
+        var receipt=ProspectiveTestInputs.metadata(Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
         var fields=BIdentificationReceipt.read(receipt.summary());
         assertEquals("CATALOG_REGISTERED",receipt.status());
         assertEquals(0,((Number)fields.get("rasterReads")).intValue());
@@ -39,7 +39,7 @@ class V022BIdentificationRunnerTest {
         assertEquals(0,calls.get()); assertFalse(Files.exists(temp.resolve("holdout")));
         Path binding=catalog();
         var holdout=BIdentificationCatalog.publicCatalog().inventory(EvaluationAccess.catalogView()).stream().filter(k->k.split()==Split.HOLDOUT).findFirst().orElseThrow();
-        assertThrows(SecurityException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.FIT_SELECT,temp.resolve("forbidden"),binding,controls(List.of(holdout.id()),calls)));
+        assertThrows(SecurityException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("forbidden"),binding,controls(List.of(holdout.id()),calls)));
         assertEquals(0,calls.get());
     }
 
@@ -47,7 +47,7 @@ class V022BIdentificationRunnerTest {
         Path binding=catalog(); var calls=new AtomicInteger();
         var fields=new LinkedHashMap<>(BIdentificationReceipt.read(binding)); fields.put("sourceHash","0".repeat(64));
         Path changed=temp.resolve("changed-binding.json"); BIdentificationReceipt.publish(changed,fields);
-        assertThrows(IllegalArgumentException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.EXTRACT,temp.resolve("changed-source"),changed,controls(subset(),calls)));
+        assertThrows(IllegalArgumentException.class,()->ProspectiveTestInputs.metadata(Phase.EXTRACT,temp.resolve("changed-source"),changed,controls(subset(),calls)));
         assertEquals(0,calls.get());
         Path altered=temp.resolve("altered-manifest.json");
         Files.writeString(altered,Files.readString(MANIFEST).replace("area-presence-core-position-v2","unreviewed-family"));
@@ -55,22 +55,25 @@ class V022BIdentificationRunnerTest {
         assertEquals(0,calls.get());
     }
 
-    @Test void extractUsesOnlyGuardedPublicScenesAndReportsUnavailableFeatures() throws Exception {
+    @Test void dummyExtractReportsUnavailableFeaturesWithoutOriginalObservationAcquisition() throws Exception {
         var calls=new AtomicInteger();
-        var receipt=BObservationIdentificationTool.run(MANIFEST,Phase.EXTRACT,temp.resolve("extract"),catalog(),controls(subset(),calls));
+        var receipt=BObservationIdentificationTool.runFixture(Phase.EXTRACT,temp.resolve("extract"),fixtureCatalog(),controls(null,calls));
         var fields=BIdentificationReceipt.read(receipt.summary());
-        assertEquals("EXTRACTED_PUBLIC_FACTS",receipt.status()); assertEquals(2,calls.get());
+        assertEquals("NONQUALIFYING_FIXTURE",receipt.status()); assertEquals(4,calls.get());
         assertEquals(0,((Number)fields.get("holdoutReads")).intValue());
-        assertEquals(2,((Number)fields.get("sceneCount")).intValue());
-        assertTrue(Files.readString(receipt.summary()).contains("QUANTIZATION"));
-        assertTrue(Files.readString(receipt.summary()).contains("UNAVAILABLE"));
+        assertEquals(4,((Number)fields.get("sceneCount")).intValue());
+        @SuppressWarnings("unchecked") var availability=(Map<String,Object>)fields.get("featureAvailability");
+        assertNotNull(availability,"actual shared extractor availability must reach the dummy EXTRACT report");
+        @SuppressWarnings("unchecked") var quantization=(Map<String,Object>)availability.get("QUANTIZATION");
+        assertTrue(((Number)quantization.get("UNAVAILABLE")).longValue()>0);
+        assertEquals(0,((Number)quantization.get("MEASURED")).longValue());
     }
 
     @Test void realSubsetFitRefusesFreshSelectBeforeRenderingOrPublishing() throws Exception {
         var calls=new AtomicInteger();
         String fresh=BIdentificationCatalog.publicCatalog().definitions().stream()
                 .filter(d->d.key().split()==Split.SELECT).findFirst().orElseThrow().key().id();
-        assertThrows(SecurityException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.FIT_SELECT,
+        assertThrows(SecurityException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,
                 temp.resolve("scores"),catalog(),controls(List.of(fresh),calls)));
         assertEquals(0,calls.get());assertFalse(Files.exists(temp.resolve("scores")));
         // The all32 score/four-diagnostic production pipeline remains covered by
@@ -241,12 +244,12 @@ class V022BIdentificationRunnerTest {
     @Test void cancellationTimeoutAndMemoryRefusalNeverPublishACandidate() throws Exception {
         Path binding=catalog(); var calls=new AtomicInteger();
         var cancelled=new BObservationIdentificationTool.Controls(subset(),64L*1024*1024,3_600_000_000_000L,System::nanoTime,()->true,calls::incrementAndGet);
-        assertThrows(CancellationException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.FIT_SELECT,temp.resolve("cancelled"),binding,cancelled));
+        assertThrows(CancellationException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("cancelled"),binding,cancelled));
         var clock=new AtomicLong();
         var timed=new BObservationIdentificationTool.Controls(subset(),64L*1024*1024,1,clock::incrementAndGet,CancellationProbe.NONE,calls::incrementAndGet);
-        assertThrows(RuntimeException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.FIT_SELECT,temp.resolve("timed"),binding,timed));
-        var refused=new BObservationIdentificationTool.Controls(subset(),1,3_600_000_000_000L,System::nanoTime,CancellationProbe.NONE,calls::incrementAndGet);
-        assertThrows(RuntimeException.class,()->BObservationIdentificationTool.run(MANIFEST,Phase.FIT_SELECT,temp.resolve("refused"),binding,refused));
+        assertThrows(BObservationIdentificationTool.RunLimitException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("timed"),binding,timed));
+        var refused=new BObservationIdentificationTool.Controls(null,1,3_600_000_000_000L,System::nanoTime,CancellationProbe.NONE,calls::incrementAndGet);
+        assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->BObservationIdentificationTool.runFixture(Phase.FIT_SELECT,temp.resolve("refused"),fixtureCatalog(),refused));
         assertEquals(0,calls.get());
         assertNoCandidate(temp);
     }
@@ -509,7 +512,7 @@ class V022BIdentificationRunnerTest {
     }
 
     /** Nonqualifying dummy scenes; this driver enters the same trainPass invoked by run(). No render or labels. */
-    private static final class TrainFixture implements BObservationIdentificationTool.TrainEvaluator {
+    static final class TrainFixture implements BObservationIdentificationTool.TrainEvaluator {
         List<BIdentifiedObservationKernel.Parameters> parameters;
         List<CaseDefinition> cases=List.of(definition("a","palette-semantic-vs-rendered-source","v0",.5,1),
                 definition("b","palette-semantic-vs-rendered-source","v1",1.75,1),
@@ -810,7 +813,7 @@ class V022BIdentificationRunnerTest {
 
     private Path catalog() throws Exception {
         Path output=temp.resolve("catalog");
-        if(!Files.exists(output)) BObservationIdentificationTool.run(MANIFEST,Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
+        if(!Files.exists(output)) ProspectiveTestInputs.metadata(Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
         return output.resolve("binding.json");
     }
     private static BObservationIdentificationTool.Controls controls(List<String> cases,AtomicInteger calls) {

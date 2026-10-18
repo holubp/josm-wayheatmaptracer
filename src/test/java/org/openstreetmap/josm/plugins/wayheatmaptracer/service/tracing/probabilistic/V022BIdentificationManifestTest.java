@@ -287,12 +287,13 @@ class V022BIdentificationManifestTest {
         var changedFamily=temporary.resolve("changed-family.json");
         java.nio.file.Files.copy(altered,changedFamily);
         java.nio.file.Files.writeString(altered,current);
-        var frozen=BIdentificationManifest.register(altered,BIdentificationReceipt.sourceHash());
+        // Old authority remains immutable and cannot seal current optimized/instrumented source.
+        assertThrows(IllegalArgumentException.class,()->BIdentificationManifest.register(altered,BIdentificationReceipt.sourceHash()));
         java.nio.file.Files.writeString(altered,current+" ");
         assertAll(
                 ()->assertThrows(Exception.class,()->BIdentificationManifest.register(changedFamily,BIdentificationReceipt.sourceHash())),
                 ()->assertThrows(Exception.class,()->BIdentificationManifest.register(input,"0".repeat(64))),
-                ()->assertThrows(Exception.class,frozen::verifyUnchanged));
+                ()->assertThrows(Exception.class,()->BIdentificationManifest.register(altered,BIdentificationReceipt.sourceHash())));
     }
     private record RegistryFixture(java.util.Map<String,Object> registry, byte[] registryBytes,
             java.util.Map<String,String> sourceMembers, byte[] manifestBytes, String catalogHash,
