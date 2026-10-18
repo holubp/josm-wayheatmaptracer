@@ -344,8 +344,9 @@ def test_common_git_directory_maps_a_worktree_to_one_exact_primary_scope(tmp_pat
     common_git.mkdir(parents=True)
     worktree.mkdir()
     assert generator.primary_repository_from_common_git_dir(common_git) == primary.resolve()
+    assert generator.GENERATION_ID == "sealed-observation-v2-generation-v2"
     assert generator.generation_scope(primary) == (
-        primary / "build" / "sealed-observation-v2" / "generation-v1"
+        primary / "build" / "sealed-observation-v2" / "generation-v2"
     )
     with pytest.raises(generator.GenerationError):
         generator.primary_repository_from_common_git_dir(common_git, is_bare=True)
@@ -353,7 +354,7 @@ def test_common_git_directory_maps_a_worktree_to_one_exact_primary_scope(tmp_pat
 
 def test_existing_fixed_scope_refuses_before_entropy_and_preserves_prior_claim(tmp_path):
     primary = tmp_path / "primary"
-    scope = primary / "build" / "sealed-observation-v2" / "generation-v1"
+    scope = primary / "build" / "sealed-observation-v2" / "generation-v2"
     scope.mkdir(parents=True)
     marker = scope / "prior-attempt.txt"
     marker.write_text("preserve")
@@ -406,6 +407,114 @@ def test_cli_refuses_seed_or_path_arguments_and_ci_without_entropy_or_scope(monk
         generator.main([])
     assert entropy_calls == []
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("entrypoint", ("runner-default", "cli-default"))
+def test_real_default_entropy_callback_claims_first_and_reads_exactly_once(
+    monkeypatch, tmp_path, entrypoint,
+):
+    primary = tmp_path / "dummy-primary"
+    (primary / ".git").mkdir(parents=True)
+    failed_v1 = primary / "build" / "sealed-observation-v2" / "generation-v1"
+    failed_v1.mkdir(parents=True)
+    prior_failure = b'{"cause":"MASTER_SEED_UNAVAILABLE","status":"FAILED"}\n'
+    (failed_v1 / "failure.json").write_bytes(prior_failure)
+    scope = generator.generation_scope(primary)
+    assert scope == primary / "build" / "sealed-observation-v2" / "generation-v2"
+    entropy_calls = []
+    construction_calls = []
+
+    class StopBeforeDummyRecipeConstruction(Exception):
+        pass
+
+    def dummy_os_entropy(size):
+        assert scope.is_dir()
+        assert list(scope.iterdir()) == []
+        entropy_calls.append(size)
+        return DUMMY_SEED
+
+    def stop_before_construction(seed, *, generator_hash, protocol_hash):
+        construction_calls.append((seed, generator_hash, protocol_hash))
+        raise StopBeforeDummyRecipeConstruction()
+
+    # Keep the actual draw_master_seed callback, including the runner's bound
+    # default. Only the OS boundary is mocked; no random data or recipes exist.
+    monkeypatch.setattr(generator.os, "urandom", dummy_os_entropy)
+    monkeypatch.setattr(generator, "_repository_hashes", lambda root: (GENERATOR_HASH, PROTOCOL_HASH))
+    monkeypatch.setattr(generator, "build_generation_documents", stop_before_construction)
+    monkeypatch.setattr(generator, "_git_primary_repository", lambda cwd: primary)
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(StopBeforeDummyRecipeConstruction):
+        if entrypoint == "runner-default":
+            generator.run_production_once(primary=primary)
+        else:
+            generator.main([])
+    assert entropy_calls == [32]
+    assert construction_calls == [(DUMMY_SEED, GENERATOR_HASH, PROTOCOL_HASH)]
+    assert {path.name for path in scope.iterdir()} == {"failure.json"}
+    assert json.loads((scope / "failure.json").read_bytes())["cause"] == "GENERATION_FAILED"
+    failure_bytes = (scope / "failure.json").read_bytes()
+    with pytest.raises(generator.GenerationError, match="GENERATION_SCOPE_ALREADY_CLAIMED"):
+        if entrypoint == "runner-default":
+            generator.run_production_once(primary=primary)
+        else:
+            generator.main([])
+    assert entropy_calls == [32]
+    assert construction_calls == [(DUMMY_SEED, GENERATOR_HASH, PROTOCOL_HASH)]
+    assert (scope / "failure.json").read_bytes() == failure_bytes
+    assert {p.name for p in failed_v1.iterdir()} == {"failure.json"}
+    assert (failed_v1 / "failure.json").read_bytes() == prior_failure
+    assert {p.name for p in scope.parent.iterdir()} == {"generation-v1", "generation-v2"}
+
+
+def test_old_zero_argument_callback_binding_never_enters_os_body(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(generator.os, "urandom", lambda count: calls.append(count) or DUMMY_SEED)
+
+    # The exact old callback signature/body, using only the mocked OS boundary.
+    def old_draw_master_seed():
+        return generator.os.urandom(32)
+
+    primary = tmp_path / "dummy-old-binding"
+    primary.mkdir()
+    with pytest.raises(generator.GenerationError, match="MASTER_SEED_UNAVAILABLE") as caught:
+        generator.claim_generation_scope(primary, entropy_source=old_draw_master_seed)
+    assert isinstance(caught.value.__cause__, TypeError)
+    assert calls == []
+    assert {p.name for p in generator.generation_scope(primary).iterdir()} == {"failure.json"}
+
+
+def test_v2_entropy_failure_is_terminal_without_second_os_request(monkeypatch, tmp_path):
+    primary = tmp_path / "dummy-os-failure"
+    (primary / ".git").mkdir(parents=True)
+    calls = []
+
+    def unavailable_dummy_entropy(size):
+        calls.append(size)
+        raise OSError("dummy entropy refusal")
+
+    monkeypatch.setattr(generator.os, "urandom", unavailable_dummy_entropy)
+    monkeypatch.setattr(generator, "_repository_hashes", lambda root: (GENERATOR_HASH, PROTOCOL_HASH))
+    with pytest.raises(generator.GenerationError, match="MASTER_SEED_UNAVAILABLE"):
+        generator.run_production_once(primary=primary)
+    scope = generator.generation_scope(primary)
+    assert scope == primary / "build" / "sealed-observation-v2" / "generation-v2"
+    failure_bytes = (scope / "failure.json").read_bytes()
+    with pytest.raises(generator.GenerationError, match="GENERATION_SCOPE_ALREADY_CLAIMED"):
+        generator.run_production_once(primary=primary)
+    assert calls == [32]
+    assert {p.name for p in scope.iterdir()} == {"failure.json"}
+    assert (scope / "failure.json").read_bytes() == failure_bytes
+    assert {p.name for p in scope.parent.iterdir()} == {"generation-v2"}
+
+
+@pytest.mark.parametrize("size", (-1, 0, 31, 33))
+def test_default_entropy_callback_refuses_non_master_seed_sizes_without_os_read(monkeypatch, size):
+    calls = []
+    monkeypatch.setattr(generator.os, "urandom", lambda count: calls.append(count) or DUMMY_SEED)
+    with pytest.raises(generator.GenerationError, match="INVALID_MASTER_SEED_SIZE"):
+        generator.draw_master_seed(size)
+    assert calls == []
 
 
 def test_dummy_package_hashes_publish_index_last_and_failure_never_mints_success(tmp_path):

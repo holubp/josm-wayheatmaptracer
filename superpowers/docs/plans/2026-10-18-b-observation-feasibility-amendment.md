@@ -6,6 +6,17 @@
 
 **Architecture:** Preserve the equations, all 32 parameter configurations, V3 admission, exact inference, weights, thresholds and attempt caps. Reject geometrically failing configurations on TRAIN before ranking their unchanged proper scores. Use genuinely new grouped SELECT geometry and a new sealed concrete HOLDOUT payload physically absent from fitting checkouts.
 
+**Reviewed numerical-family correction:** The original joint-core-excess family
+was rejected by the bound original-TRAIN all32 screen. This protocol now applies
+to the exact area-presence/core-position-v2 law in
+`2026-10-18-b-area-presence-core-position-candidate.md` (proposal SHA
+`c1548dea84c3a0f6ef8c8a9675a04d85ec1d29a3cb0bf10f735f2336a4dfaccf`).
+Independent review of prototype88fe311,54 analytic/regression tests and the bound
+single-TRAIN screen permits implementing these prospective prerequisites, not
+running a full FIT before actual runner/catalog/manifest review and source freeze.
+The one screen configuration passed;31 remain untested. No parameter was selected.
+All32 grid choices, original controls, caps and later Tasks5–6 remain required.
+
 **Tech stack:** Existing Java 17 identification runner, JUnit, Python workflow-boundary tests, synthetic-only GitHub Actions.
 
 **Spec:** `2026-10-16-b-observation-contract-specification.md`, approved original plan, and unchanged equations in `2026-10-17-b-joint-observation-candidate.md`.
@@ -68,36 +79,57 @@ The null/invalid/censored controls and all fixed REGRESSION cases remain unchang
 
 **Files:** Create `scripts/generate-observation-holdout.py` and `scripts/tests/test_observation_holdout_generator.py`. No Java/model changes in this task.
 
-- [ ] Write dummy-fixture REDs for HMAC stream/byte rejection, quintic endpoints/C2 joins, geometric validity and duplicate/reversed proposal rejection within original bounded draws/bytes.
-- [ ] Write REDs for112 index entries/seven distinct registered groups/correlated variants, deterministic dummy byte hashes, public-index redaction and size bounds.
-- [ ] Write REDs for exact fixed production scope derived from common Git directory, refusal before entropy on an existing claim, failed terminal invocation, no alternate output CLI/seed, and no accepted index on partial publication.
-- [ ] Implement the generic producer under the exact reviewed contract; importing/testing it must not draw production entropy or generate evaluation recipes. Dummy outputs are explicitly nonqualifying.
-- [ ] Run Python unit/compile checks and independent actual source/test audit. Freeze generator and generic contract hashes before production invocation.
-- [ ] Invoke once locally, with no configurable seed/path. Keep concrete payload and seed/private metadata outside FIT worktree; return only safe status/hash/count metadata. Do not inspect concrete recipes or print seeds/coefficients.
-- [ ] Copy ONLY the validated public index into FIT source control. Freeze its hash, payload hash and claim identifier for TaskC. A failed invocation remains terminal; no alternate path or automatic regeneration.
+- [x] Write dummy-fixture REDs for HMAC stream/byte rejection, quintic endpoints/C2 joins, geometric validity and duplicate/reversed proposal rejection within original bounded draws/bytes.
+- [x] Write REDs for112 index entries/seven distinct registered groups/correlated variants, deterministic dummy byte hashes, public-index redaction and size bounds.
+- [x] Write REDs for exact fixed production scope derived from common Git directory, refusal before entropy on an existing claim, failed terminal invocation, no alternate output CLI/seed, and no accepted index on partial publication.
+- [x] Implement the generic producer under the exact reviewed contract; importing/testing it must not draw production entropy or generate evaluation recipes. Dummy outputs are explicitly nonqualifying.
+- [x] Run Python unit/compile checks and independent actual source/test audit. Freeze generator and generic contract hashes before production invocation.
+- [x] Invoke once locally, with no configurable seed/path. Keep concrete payload and seed/private metadata outside FIT worktree; return only safe status/hash/count metadata. Do not inspect concrete recipes or print seeds/coefficients. The v1 pre-entropy callback defect and single reviewed fixed-v2 correction are recorded in the amended producer contract; v1 remains terminal and preserved. Integrated30 dummy tests and independent review preceded successful v2 generation.
+- [x] Copy ONLY the validated public index into FIT source control. Public index SHA `97b134e7c983b698679258f244ee8431696bb34257615ce27675e19c21f6b092`, payload SHA `5d6b14c5f35fa6266d05bc11b508d3e0f675ed11b95a5c8b1e533d88f8d5aacd`, fixed claim `sealed-observation-v2-generation-v2`. TaskC must bind these unchanged. The failed v1 remains preserved and terminal; the reviewed pre-entropy exception is recorded in the producer contract. No general retry is authorized.
 
 ## Task A — Reproducible registered renderer and cohort
 
 **Files:** `T/BIdentificationCatalog.java`, `T/BIdentificationScenes.java`, `T/V022BIdentificationCatalogTest.java`, existing scene/manifest tests. `T` is the existing test package `org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic`.
 
-- [ ] Add metadata-only REDs for468 catalog/356 active rows,112 fresh SELECT,112 sealed new HOLDOUT entries, retired original HOLDOUT exclusion and disjoint group/alias identities. No concrete HOLDOUT recipe or fresh SELECT raster/label access.
-- [ ] Register the explicit cohorts above. `definition(key,access)` resolves old diagnostic/fresh registered keys, but retired SELECT cannot enter scoring/coverage/pairs. Sealed HOLDOUT definitions carry only indexed markers/recipe hashes. Unknown/modified keys and private-payload access before qualified Task5 fail closed.
-- [ ] Prospectively replace analytic transcendental calls with `StrictMath`, preserve operation grouping, and increment renderer identity. Preserve the original Math renderer/receipts through immutable commit56936cc; never rewrite their hashes as new results.
+- [x] Add metadata-only REDs for468 catalog/356 active rows,112 fresh SELECT,112 sealed new HOLDOUT entries, retired original HOLDOUT exclusion and disjoint group/alias identities. No concrete HOLDOUT recipe or fresh SELECT raster/label access.
+- [x] Register the explicit cohorts above. `definition(key,access)` resolves old diagnostic/fresh registered keys, but retired SELECT cannot enter scoring/coverage/pairs. Sealed HOLDOUT definitions carry only indexed markers/recipe hashes. Unknown/modified keys and private-payload access before qualified Task5 fail closed.
+- [x] Prospectively replace analytic transcendental calls with `StrictMath`, preserve operation grouping, and increment renderer identity. Preserve the original Math renderer/receipts through immutable commit56936cc; never rewrite their hashes as new results.
 - [ ] Add cold/warm ARM64/AMD64 renderer verification using ONLY one original TRAIN case. Require identical native scalar/mask/frame hashes, then complete facts hashes, across hosts. A source-math fix is not a model pass.
-- [ ] Validate recipe/label construction through code and metadata. Defer fresh SELECT raster/label assertions to the single frozen experiment so tests cannot consume selection data before the freeze.
+- [x] Validate recipe/label construction through code and metadata. Defer fresh SELECT raster/label assertions to the single frozen experiment so tests cannot consume selection data before the freeze. Independent review closed original TRAIN identity/reversal, apex sampling, fleck labels and fixed-regression access findings;112 TRAIN metadata rows match immutable88fe311 exactly.
 - [ ] Run focused catalog/scene/source ownership suites and retain actual RED/GREEN evidence. Commit this coherent prerequisite after independent review.
 
 ## Task B — TRAIN geometry feasibility before ranking
 
 **Files:** `T/BObservationIdentificationTool.java`, `T/V022BIdentificationRunnerTest.java`; reuse existing `BIdentificationAcceptance`, `BObservationGeometry` and adapter without equation/threshold changes.
 
+**Reviewed scheduling amendment (before prospective scores):** Finish all32 TRAIN
+proper scores and cheap controls first, preserving their existing accumulation
+order. Visit finite eligible configurations in exact `(score,G,lambda,B)` order.
+For each, use the geometry-case order below and require every original TRAIN case
+and applicable coupled control before declaring FEASIBLE. Stop after four fully
+feasible configurations only when all higher-ranked eligible configurations are
+resolved; remaining lower-ranked geometry is explicitly UNTESTED and cannot enter
+the shortlist. If fewer than four qualify, exhaust the eligible list. This is
+shortlist-equivalent for completed deterministic feasibility judgments, not an
+exhaustive family-feasibility or error-free-execution claim: an unvisited lower
+configuration might have encountered an error. Any encountered resource/numeric,
+cancellation, source or cache failure still aborts the entire experiment, without
+a candidate or watchdog reset. Validate every reloaded/reconstructed TRAIN input,
+fact and lattice against its initial frozen source/renderer/catalog/native/facts
+bindings; do not invent or mutate a cache. Repeated reads of identical TRAIN
+recipes are counted truthfully and add no registered cases to the512-case ceiling.
+All existing memory/disk/work bounds and the single3600s clock remain. Favorable
+448 and worst-case3584 TRAIN MAP solves are workload counts, not runtime promises.
+Independent Sol review accepted these conditions; actual runner/receipts/bindings
+still require source review before evaluation.
+
 **Interface:** Add explicit immutable per-configuration TRAIN state `UNTESTED`, `FAILED` or `FEASIBLE`, with tested/skipped scene/control counts and reason receipts. The runner's shortlist function consumes TRAIN scores plus these states, rejecting absent/incomplete state. Add per-scene geometry eligibility input to `scene(...)` so a previously failed parameter is still scored but is not solved again unnecessarily.
 
 - [ ] RED: a lower-loss TRAIN failure loses to a higher-loss feasible configuration; all failed or incomplete configurations produce no shortlist. Existing score and `(G,lambda,B)` tie order remains.
 - [ ] RED: early TRAIN failure skips later geometry only, retains all32 proper-score reports, records untested controls and never freezes a partial candidate. Cancellation/time/memory refusal preserves failure and cannot resume with a reset clock.
-- [ ] TRAIN processing uses deterministic order: registered geometry-selector cases first, then descending native pitch, variant ID, contrast ID and side. Configurations retain lexicographic `(G,lambda,B)` order. This ordering manages bounded work; it changes no acceptance condition.
+- [ ] TRAIN scores retain their original deterministic accumulation order and all32 lexicographic configurations. Expensive geometry visits configurations in exact score/G/lambda/B order under the scheduling amendment; within each, registered geometry-selector cases first, then descending native pitch, variant ID, contrast ID and side. This changes no acceptance threshold.
 - [ ] For every TRAIN configuration, run existing applicable profile normalization/null/censor/component controls. While it has no failed control, execute actual existing raw geometry plus exact anchors and the applicable registered selector. Once failed, never evaluate its later expensive geometry; record skips, not PASS. Scores still cover every original TRAIN case.
-- [ ] A configuration becomes FEASIBLE only after all original TRAIN cases and required applicable controls finish. Rank only FEASIBLE finite-score configurations; shortlist at most4. Zero feasible configurations is an explicit preserved family rejection before fresh SELECT is opened.
+- [ ] A configuration becomes FEASIBLE only after all original TRAIN cases and required applicable controls finish. Rank only FEASIBLE finite-score configurations; shortlist at most4 under the reviewed cutoff. Zero feasible configurations after exhausting eligible configurations is an explicit preserved family rejection before fresh SELECT is opened. Authorized lower-rank skips remain UNTESTED.
 - [ ] Restrict new SELECT evaluation, `expectedSelect`, required-pair inventory and cache comparisons to the fresh cohort. All existing SELECT profile/source/reversal/oversampling/geometry checks remain required, with unchanged tolerances.
 - [ ] Add deterministic small TRAIN-only behavioral fixtures for each runner branch. Do not use real fresh SELECT outcomes as unit-test expectations or tune the parameter grid.
 - [ ] Produce a metadata/resource preflight under the original caps: native/coarsened policy, per-attempt bounds, at most32 configurations, bounded live owners/output and one continuous3600-second watchdog. Report worst-case work and any uncertainty; do not promise the experiment will finish or raise limits.

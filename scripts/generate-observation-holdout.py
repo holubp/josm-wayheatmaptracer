@@ -21,8 +21,8 @@ from typing import Callable, Mapping, Sequence
 
 
 PROTOCOL_VERSION = "sealed-observation-v2"
-GENERATION_ID = "sealed-observation-v2-generation-v1"
-GENERATION_RELATIVE_SCOPE = Path("build/sealed-observation-v2/generation-v1")
+GENERATION_ID = "sealed-observation-v2-generation-v2"
+GENERATION_RELATIVE_SCOPE = Path("build/sealed-observation-v2/generation-v2")
 STREAM_DOMAIN = b"b-observation-holdout-v2"
 MAX_STREAM_BYTES = 8192
 MAX_PROPOSALS_PER_GROUP = 64
@@ -537,9 +537,11 @@ def claim_generation_scope(primary_root, *, entropy_source: Callable[[int], byte
         raise GenerationError("MASTER_SEED_UNAVAILABLE") from failure
 
 
-def draw_master_seed() -> bytes:
+def draw_master_seed(size: int) -> bytes:
     """Read one 32-byte master seed from the OS entropy source."""
-    return os.urandom(32)
+    if size != 32:
+        raise GenerationError("INVALID_MASTER_SEED_SIZE")
+    return os.urandom(size)
 
 
 def _canonical_document(data: bytes, limit: int, code: str) -> dict:
