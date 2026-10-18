@@ -84,7 +84,15 @@ The current diagnostic source hash stays separate from the original generating
 hash. Neither successful execution nor a decoded route qualifies a model.
 The tool atomically claims a fresh `receipt` subdirectory before rendering. An
 existing scope is rejected and its earlier JSON/CSV files remain untouched.
-Only the diagnostic log and the two explicitly named receipt files are uploaded.
+After a successful original-input binding, the diagnostic also rescores the
+saved MAP and two deterministic branch-following witnesses using existing
+admitted cells and the original uncached objective. The saved energy must match
+bit for bit. Witness admission and the unchanged segment-union test are reported
+separately from energy; no new inference or parameter selection occurs. A cheaper
+feasible witness would require solver investigation. Higher witness costs prove
+preference over those witnesses only, not global optimality.
+Only the diagnostic log, binding JSON, bound geometry CSV, objective JSON and
+objective-costs CSV are uploaded, by exact filenames.
 No HOLDOUT/private inputs, fitting retry, JAR, or release action is involved.
 
 ```sh
