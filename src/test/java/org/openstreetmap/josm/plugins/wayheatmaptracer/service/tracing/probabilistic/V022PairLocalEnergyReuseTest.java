@@ -131,6 +131,8 @@ class V022PairLocalEnergyReuseTest {
     @Test
     void executionCheckpointsRefusalsAndBytesMatchFrozenPrechangeReceipts() {
         var profiles = fixture(0, false);
+        assertEquals(4, profiles.size(), "the independent memory census assumes four profiles");
+        profiles.forEach(profile -> assertEquals(3, profile.cells().size()));
         var parameters = parameters(1, 1, 1, 1);
         Receipt complete = receipt(profiles, parameters, 1_000_000, 1_000_000, Integer.MAX_VALUE);
         Map<String, Receipt> actual = new TreeMap<>();
@@ -141,20 +143,96 @@ class V022PairLocalEnergyReuseTest {
                 complete.peak() - 1, Integer.MAX_VALUE, true));
         actual.put("late-cancel", receipt(profiles, parameters, 1_000_000, 1_000_000, complete.checkpoints() - 1));
         for (var entry : actual.entrySet()) {
-            assertEquals(withMemoLookupProbe(BASELINE.get(entry.getKey())),
+            assertEquals(withProfileTermPeak(entry.getKey(), BASELINE.get(entry.getKey())),
                     entry.getValue().toString(), entry.getKey());
         }
     }
 
-    /** The exact solver creates one accounted admission memo before every receipt's graph traversal. */
-    private static String withMemoLookupProbe(String originalReceipt) {
+    /** Frozen receipts predate both the admission lookup probe and optional stage-local profile terms. */
+    private static String withProfileTermPeak(String scenario, String originalReceipt) {
+        long stagePeak = switch (scenario) {
+            case "refused-primary" -> forwardBackwardBytes(1, 2) + threeStateProfileTermsBytes();
+            case "complete", "late-cancel", "near-memory-cap", "refused-kbest" ->
+                    forwardBackwardBytes(2, 6) + threeStateProfileTermsBytes();
+            default -> throw new AssertionError("no independent lifetime census for " + scenario);
+        };
+        return withPeak(originalReceipt, Math.max(frozenPeak(originalReceipt) + memoProbeBytes(), stagePeak));
+    }
+
+    private static long frozenPeak(String originalReceipt) {
         int peakStart = originalReceipt.indexOf("peak=");
         int peakEnd = originalReceipt.indexOf(',', peakStart);
         if (peakStart < 0 || peakEnd < 0) throw new AssertionError("baseline receipt has no peak field");
-        long originalPeak = Long.parseLong(originalReceipt.substring(peakStart + 5, peakEnd));
-        long probeBytes = AttemptMemoryLedger.objectBytes(16);
-        return originalReceipt.substring(0, peakStart) + "peak=" + (originalPeak + probeBytes)
+        return Long.parseLong(originalReceipt.substring(peakStart + 5, peakEnd));
+    }
+
+    private static String withPeak(String originalReceipt, long peak) {
+        frozenPeak(originalReceipt); // Validate the only field this oracle may replace.
+        int peakStart = originalReceipt.indexOf("peak=");
+        int peakEnd = originalReceipt.indexOf(',', peakStart);
+        return originalReceipt.substring(0, peakStart) + "peak=" + peak
                 + originalReceipt.substring(peakEnd);
+    }
+
+    private static long memoProbeBytes() {
+        return AttemptMemoryLedger.objectBytes(16);
+    }
+
+    /** Caller-owned mandatory payload: work counter, empty admission maps/probe, message lists/matrices. */
+    private static long forwardBackwardBytes(int liveLists, int liveMatrices) {
+        long workCounter = AttemptMemoryLedger.objectBytes(80);
+        long emptyMemoMaps = 2 * AttemptMemoryLedger.objectBytes(48);
+        long messageList = AttemptMemoryLedger.objectBytes(16) + AttemptMemoryLedger.referenceArrayBytes(3);
+        long matrix = AttemptMemoryLedger.referenceArrayBytes(3) + 3 * AttemptMemoryLedger.arrayBytes(3, Double.BYTES);
+        return workCounter + emptyMemoMaps + memoProbeBytes() + liveLists * messageList + liveMatrices * matrix;
+    }
+
+    /** Independently declared layout: three references, four long counters, two double arrays and byte readiness. */
+    private static long threeStateProfileTermsBytes() {
+        long object = AttemptMemoryLedger.objectBytes(3 * Long.BYTES + 4 * Long.BYTES);
+        long energies = AttemptMemoryLedger.arrayBytes(3, Double.BYTES);
+        long measures = AttemptMemoryLedger.arrayBytes(3, Double.BYTES);
+        long readiness = AttemptMemoryLedger.arrayBytes(3, Byte.BYTES);
+        return object + energies + measures + readiness;
+    }
+
+    @Test
+    void threeStateOptionalTableOwnsExactlyItsDeclaredLayoutOrFallsBack() throws Exception {
+        Class<?> type = Class.forName(ProbabilisticInference.class.getName() + "$ProfileTerms");
+        assertEquals(7, type.getDeclaredFields().length);
+        assertEquals(4, java.util.Arrays.stream(type.getDeclaredFields()).filter(field -> field.getType() == long.class).count());
+        assertEquals(2, java.util.Arrays.stream(type.getDeclaredFields()).filter(field -> field.getType() == double[].class).count());
+        assertEquals(1, java.util.Arrays.stream(type.getDeclaredFields()).filter(field -> field.getType() == byte[].class).count());
+        assertEquals(72, AttemptMemoryLedger.objectBytes(3 * Long.BYTES + 4 * Long.BYTES));
+        assertEquals(40, AttemptMemoryLedger.arrayBytes(3, Double.BYTES));
+        assertEquals(24, AttemptMemoryLedger.arrayBytes(3, Byte.BYTES));
+        Method create = type.getDeclaredMethod("create", AttemptMemoryLedger.Owner.class, int.class);
+        create.setAccessible(true);
+        long payload = threeStateProfileTermsBytes();
+        for (long cap : new long[] {payload - 1, payload}) {
+            var ledger = new AttemptMemoryLedger(cap);
+            var owner = ledger.rootOwner();
+            try {
+                Object table = create.invoke(null, owner, 3);
+                if (cap < payload) assertNull(table);
+                else assertNotNull(table);
+                assertEquals(cap < payload ? 0 : payload, ledger.currentBytes());
+                assertEquals(cap < payload ? 0 : payload, ledger.peakBytes());
+            } finally { owner.close(); }
+            assertEquals(0, ledger.currentBytes());
+        }
+    }
+
+    @Test
+    void primaryScoreRefusalIsIdenticalWithByteShortAndExactOptionalHeadroom() {
+        long mandatory = forwardBackwardBytes(1, 2);
+        long optional = threeStateProfileTermsBytes();
+        assertEquals(frozenPeak(BASELINE.get("refused-primary")) + memoProbeBytes(), mandatory);
+        for (long cap : new long[] {mandatory, mandatory + optional - 1, mandatory + optional}) {
+            Receipt actual = receipt(fixture(0, false), parameters(1, 1, 1, 1), 10, cap, Integer.MAX_VALUE);
+            long peak = cap < mandatory + optional ? mandatory : mandatory + optional;
+            assertEquals(withPeak(BASELINE.get("refused-primary"), peak), actual.toString(), "cap=" + cap);
+        }
     }
 
     @Test
