@@ -40,15 +40,29 @@ final class BGapField implements AutoCloseable {
             work.numeric(8);
         }
     }
-    static long buildBound(int n,int m,int rowModes,long c,long q,long k,long entries,int pieces,int words,long pairs,long slabs) {
+    /** Includes zero-duration and exterior candidates, not just positive SLAB events. */
+    static long attemptedColumnBound(int width,long pairs) {
+        if(width<2||pairs<0)throw new IllegalArgumentException("Gap column-bound dimensions");
+        return Math.multiplyExact(pairs,Math.addExact((long)width,1));
+    }
+    static long buildBound(int n,int m,int rowModes,long c,long q,long k,long entries,int pieces,int words,long pairs,long attempts) {
+        if(n<0||m<0||rowModes<0||c<0||q<0||k<0||entries<0||pieces<0||words<1||pairs<0||attempts<0)
+            throw new IllegalArgumentException("Gap work-bound dimensions");
         long overlap=Math.multiplyExact(entries,Math.max(0,pieces-1))/2;
-        long calls=Math.addExact(Math.multiplyExact(8192,Math.addExact(entries,overlap)),
-                Math.addExact(8*entries+16*c,Math.addExact(32*pairs,256*slabs)));
-        long block=Math.multiplyExact(2L*words+2,2L*words+2);
+        long geometry=Math.addExact(Math.multiplyExact(8192,Math.addExact(entries,overlap)),
+                Math.addExact(Math.multiplyExact(8,entries),Math.multiplyExact(16,c)));
+        // Both sourceMaximum's sourceCoordinates and the pair integrator use
+        // BGapExact(512), independently of the field geometry's derived words.
+        long fixed512=Math.addExact(Math.multiplyExact(128,c),
+                Math.addExact(Math.multiplyExact(128,pairs),Math.multiplyExact(256,attempts)));
+        long side=Math.addExact(Math.multiplyExact(2L,words),2),block=Math.multiplyExact(side,side);
         int log=rowModes==0?0:32-Integer.numberOfLeadingZeros(rowModes);
-        return Math.addExact(Math.multiplyExact(calls,block),
-                Math.addExact(2*(2*191401L+190404L)+1024L*m+128L*n*m*log,
-                        Math.addExact(256*(c+q+k+entries),4096*slabs+128*pairs)));
+        long scalar=Math.addExact(2*(2*191401L+190404L),Math.addExact(Math.multiplyExact(1024L,m),
+                Math.multiplyExact(Math.multiplyExact(Math.multiplyExact(128L,n),m),log)));
+        scalar=Math.addExact(scalar,Math.addExact(Math.multiplyExact(256,Math.addExact(Math.addExact(c,q),Math.addExact(k,entries))),
+                Math.addExact(Math.multiplyExact(4096,attempts),Math.multiplyExact(128,pairs))));
+        return Math.addExact(scalar,Math.addExact(Math.multiplyExact(geometry,Math.addExact(block,8)),
+                Math.multiplyExact(fixed512,1_052_684L)));
     }
     static BGapField build(BGapEvidence.Input input,CancellationProbe cancellation,AttemptMemoryLedger.Owner parent) {
         Objects.requireNonNull(input);Objects.requireNonNull(cancellation);Objects.requireNonNull(parent);
@@ -93,8 +107,8 @@ final class BGapField implements AutoCloseable {
                 long pairs=0;
                 for(int row=1;row<input.profiles().size();row++){poll(work,cancellation);pairs=Math.addExact(pairs,
                         Math.multiplyExact((long)input.profiles().get(row-1).cells().size(),input.profiles().get(row).cells().size()));work.numeric(8);}
-                long slabs=Math.multiplyExact(pairs,5);
-                work.reserveUpper(buildBound(n,m,maxRow,c,(long)(grid.width-1)*grid.height,data.k,entries,maximum,words,pairs,slabs));
+                long attempts=attemptedColumnBound(grid.width,pairs);
+                work.reserveUpper(buildBound(n,m,maxRow,c,(long)(grid.width-1)*grid.height,data.k,entries,maximum,words,pairs,attempts));
                 long scratchBytes=Math.addExact(BGapExact.bytes(words),Math.addExact(array((long)c+1,4),array(entries,4)));
                 long fieldBytes=Math.addExact(WRAPPERS,Math.addExact(array(c,8),array(c,1)));
                 long sourceBytes=BGapEvidence.sourceCloneBytes(input.evidence().fields().get(input.fieldKey()));

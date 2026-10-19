@@ -68,7 +68,10 @@ class V022BGapPairTableTest {
         }
     }
     @Test void publicBoundAndSmallPayloadLayoutAreIndependentCheckedCensus() {
-        assertEquals(78_320_919_079_993_196L,BGapField.buildBound(81,8192,401,47601,47970,8192,5062656,3,482,719040,3595200));
+        assertEquals(78_320_919_079_993_196L,BGapEvidence.BUILD_UNITS,"global cap is unchanged");
+        long correctedLooseTuple=BGapField.buildBound(81,8192,401,47601,47970,8192,5062656,3,482,719040,3595200);
+        assertEquals(78_513_421_795_098_092L,correctedLooseTuple);
+        assertTrue(correctedLooseTuple>BGapEvidence.BUILD_UNITS,"an oversized corrected preflight must refuse, never raise the cap");
         try(var f=BGapTestFixture.standard()) {
             long original=f.owner.currentBytes();
             try(var field=BGapField.build(f.input,CancellationProbe.NONE,f.owner)) {
