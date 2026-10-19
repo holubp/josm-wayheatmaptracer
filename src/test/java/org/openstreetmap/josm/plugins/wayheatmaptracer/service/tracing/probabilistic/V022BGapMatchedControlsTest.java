@@ -26,9 +26,26 @@ class V022BGapMatchedControlsTest {
     private static final BObservationKernel B0=new BIdentifiedObservationKernel(new BIdentifiedObservationKernel.Parameters(1,1,0));
     private static final Map<String,CaseResult> RESULTS=new LinkedHashMap<>();
     private static final Map<String,Map<String,Object>> CONTROL_EVIDENCE=new LinkedHashMap<>();
+    private static final Map<String,Map<String,Object>> ADMISSION_EVIDENCE=new LinkedHashMap<>();
     private static final Path OUTPUT=Path.of("build/gap-task5-matrix");
     static Stream<String> cases(){return CASES.stream();}
     static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
+    private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
+
+    @Test void newComparisonIncrementallyRefusesBeyond64MiBBeforePublication() throws Exception {
+        boolean[] published={false};var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner()) {
+            var tree=BGapTestFixture.ownerTree(owner);
+            assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->{
+                try(var reservation=owner.reserve(64L*1024*1024+1)){published[0]=true;}
+            });
+            assertFalse(published[0]);assertEquals(0,owner.currentBytes());assertEquals(tree,BGapTestFixture.ownerTree(owner));
+        }
+        var original=AttemptMemoryLedger.production();
+        try(var owner=original.rootOwner();var reservation=owner.reserve(64L*1024*1024+1)) {
+            assertEquals(64L*1024*1024+1,owner.currentBytes(),"ordinary global production limit remains unchanged");
+        }
+    }
 
     @Test void admissionRefusalIsPublishedAndCachedBeforeOriginalAssertionPropagates() throws Exception {
         String id="controlled-admission-refusal";Path path=OUTPUT.resolve(id+".json");
@@ -125,6 +142,36 @@ class V022BGapMatchedControlsTest {
     }
 
     @Test void connectedStraightPipelineSmoke() throws Exception {verify(result("connected-straight"));}
+
+    @Test void optionalAdmissionReceiptRetainsDeclineIdentityAndActualPrivateWork() {
+        var proposals=V022OptionalOverflowAdmissionTest.proposals(5);proposals[2]=-0.0;
+        var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner();var selection=ProbabilisticOptionalOverflowAdmission.select(
+                V022OptionalOverflowAdmissionTest.profiles(5,0),proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner)) {
+            var receipt=admissionReceipt(selection,5);
+            assertEquals(ProbabilisticOptionalOverflowAdmission.POLICY_ID,receipt.get("policy"));assertEquals(1,receipt.get("declinedOptionalCount"));
+            var decisions=(List<?>)receipt.get("rows");var declined=(Map<?,?>)decisions.get(2);
+            assertEquals("DECLINED_NATIVE_FULL",declined.get("decision"));assertEquals("8000000000000000",declined.get("originalProposalRawBits"));
+            assertEquals("7ff8000000000000",declined.get("effectiveProposalRawBits"));
+            assertEquals(0L,receipt.get("materializationBuilderInvocations"));
+            selection.buildProfile(2,owner,CancellationProbe.NONE);updateAdmissionWork(receipt,selection.work());
+            assertEquals(1L,receipt.get("materializationBuilderInvocations"));
+            assertTrue(((Number)receipt.get("preflightAndMaterializationUnits")).longValue()<=((Number)receipt.get("privateWorkUpper")).longValue());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+
+    /** Exact four previously refused synthetic recipes; one shared newly admitted graph per case, eight solves. */
+    @ParameterizedTest(name="optional-policy-{0}") @MethodSource("refusedAdmissionCases")
+    void previouslyRefusedCasesUseExplicitOptionalPolicy(String id) throws Exception {
+        var result=result(id);verify(result);
+        var policy=ADMISSION_EVIDENCE.get(id);assertNotNull(policy);
+        assertEquals(ProbabilisticOptionalOverflowAdmission.POLICY_ID,policy.get("policy"));
+        assertTrue(((Number)policy.get("declinedOptionalCount")).intValue()>0);
+        assertEquals(false,policy.get("coarsened"));assertEquals(8,result.rows.size());
+        assertTrue(result.rows.stream().allMatch(r->r.actualSolve),"all eight fixed settings actually execute");
+        assertTrue(result.rows.stream().allMatch(V022BGapMatchedControlsTest::completed),"each returned a completed path");
+    }
 
     @Test void unavailableSlotsAreReportedWithoutPretendingTheyWereSolved() {
         var rows=new ArrayList<Row>();
@@ -363,13 +410,15 @@ class V022BGapMatchedControlsTest {
     }
     private static void publish(CaseResult result) throws Exception {
         String id=result.id;RESULTS.put(id,result);
-        var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-result-v1");output.put("case",id);
+        var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-optional-overflow-result-v2");output.put("case",id);
+        output.put("comparisonPolicy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
+        output.put("admissionEvidence",ADMISSION_EVIDENCE.getOrDefault(id,Map.of("availability","UNAVAILABLE")));
         output.put("source",result.source.stream().map(p->List.of(p.xMeters(),p.yMeters())).toList());output.put("snapshotHash",result.sourceHash);
         boolean factual=!result.factsHash.equals("unavailable");
         boolean captured=!result.sourceHash.equals("unavailable");
         output.put("factsAndLatticeHash",factual?result.factsHash:null);output.put("profiles",captured?result.profileCount:null);output.put("modes",captured?result.modeCount:null);
         output.put("censoredModes",captured?result.censoredModes:null);output.put("originalPairInventory",factual?result.pairs:null);output.put("tableBytes",factual?result.tableBytes:null);
-        output.put("peakAttemptBytes",captured?result.peakBytes:null);output.put("originalAdmissionCoarsened",captured?result.coarsened:null);
+        output.put("peakAttemptBytes",captured?result.peakBytes:null);output.put("selectedAdmissionCoarsened",captured?result.coarsened:null);
         output.put("fullTwentyFiveMetreDomain",factual?result.fullDomain:null);output.put("coldBuildCounters",result.buildCounters);
         output.put("sourceControlEvidence",CONTROL_EVIDENCE.getOrDefault(id,Map.of("availability","UNAVAILABLE")));
         output.put("postSolveCounters",result.postSolveCounters);output.put("rows",result.rows.stream().map(r->receiptForCase(id,r)).toList());
@@ -378,7 +427,7 @@ class V022BGapMatchedControlsTest {
     }
 
     private static CaseResult run(String id) throws Exception {
-        var ledger=AttemptMemoryLedger.production();var rows=new ArrayList<Row>();var source=source(id);
+        var ledger=newComparisonLedger();var rows=new ArrayList<Row>();var source=source(id);
         try(var owner=ledger.rootOwner();var render=owner.reserve(32L*1024*1024);var metadata=owner.reserve(1024L*1024)) {
             var evidence=capture(id,source);var factory=new ProbabilisticProfileFactory();
             var raw=factory.create(source,factory.profileChainage(source,1.5),25,true,evidence,evidence.fields().get("scalar"),
@@ -387,38 +436,33 @@ class V022BGapMatchedControlsTest {
             assertEquals(17,raw.size());for(int i=0;i<raw.size();i++)assertSame(raw.get(i),facts.get(i).baseline());
             int modes=raw.stream().mapToInt(p->p.modes().size()).sum(),censored=raw.stream().mapToInt(p->p.censoredModes().size()).sum();
             var proposals=ProbabilisticContinuationProposals.build(raw,CancellationProbe.NONE,owner,PARAMETERS.localization());
-            var admission=ProbabilisticLatticeAdmission.select(raw,proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner);
+            try(var admission=ProbabilisticOptionalOverflowAdmission.select(raw,proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner)) {
+            ADMISSION_EVIDENCE.put(id,admissionReceipt(admission,raw.size()));
+            var admissionWork=admission.work();try {
             if(!admission.admitted()) {
                 var details=new LinkedHashMap<String,Object>();details.put("availability","ADMISSION_REFUSED");details.put("admitted",false);
-                details.put("coarsened",admission.coarsened());details.put("maximumStates",admission.maximumStates());
+                details.put("coarsened",admission.coarsened());details.put("policy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
                 details.put("nativeForwardBackwardBound",admission.nativeForwardBackwardBound());details.put("pairBound",admission.pairBound());
                 details.put("completeScoreBound",admission.completeScoreBound());
                 details.put("boundSemantics","NEGATIVE_IS_UNAVAILABLE; THESE_ARE_INVENTORY_BOUNDS_NOT_EXECUTED_SOLVER_WORK");
                 details.put("inferenceCalls",0);details.put("adapterEvaluations",0);details.put("tableBuilds",0);
-                details.put("builderReason","UNAVAILABLE_NO_NATIVE_PROPOSAL_FAILURE");
-                for(int row=0;row<raw.size();row++)try(var query=owner.child("refusal-reason-inventory")) {
-                    var built=new ProbabilisticStateBuilder().buildWithProposal(raw.get(row),96,proposals[row],query);
-                    if(built.status()!=StateSpaceBuildResult.Status.COMPLETE) {
-                        details.put("firstNativeProposalFailureRow",row);details.put("builderStatus",built.status().name());
-                        details.put("builderReason",built.explanation());break;
-                    }
-                }
+                details.put("builderReason",admission.refusalReason());
                 var unvisited=new ArrayList<Row>();for(int eta:ETAS)unvisited.add(unavailable(eta,eta==0?"ADMISSION_REFUSED":"UNVISITED_AFTER_ADMISSION_REFUSAL"));
                 publishAdmissionRefusal(new CaseResult(id,source,List.copyOf(unvisited),raw.size(),modes,censored,0,0,owner.peakBytes(),admission.coarsened(),false,
                         evidence.canonicalHash(),"unavailable","unavailable","unavailable"),details);
             }
-            assertTrue(admission.admitted(),"unchanged original graph refused "+id);
-            var profiles=new ArrayList<InferenceProfile>();var lattices=new ArrayList<ProbabilisticStateLattice>();var builder=new ProbabilisticStateBuilder();
+            assertTrue(admission.admitted(),"explicit optional-overflow graph refused "+id);
+            var profiles=new ArrayList<InferenceProfile>();var lattices=new ArrayList<ProbabilisticStateLattice>();
             long pairs=0;boolean fullDomain=true;
             for(int i=0;i<raw.size();i++) {
-                var built=admission.coarsened()?builder.buildWithReservedProposal(raw.get(i),admission.maximumStates(i),proposals[i],owner):
-                        builder.buildWithProposal(raw.get(i),admission.maximumStates(),proposals[i],owner);
+                var built=admission.buildProfile(i,owner,CancellationProbe.NONE);
                 var lattice=built.lattice().orElseThrow();lattices.add(lattice);
                 if(i>0)pairs+=((long)lattices.get(i-1).cells().size())*lattice.cells().size();
                 if(i>0&&i+1<raw.size())fullDomain&=lattice.cells().stream().mapToDouble(LateralStateCell::offsetMeters).min().orElseThrow()==-25
                         &&lattice.cells().stream().mapToDouble(LateralStateCell::offsetMeters).max().orElseThrow()==25;
                 profiles.add(BObservationAdapter.evaluate(facts.get(i),lattice,PARAMETERS,true,B0,CancellationProbe.NONE,owner));
             }
+            ADMISSION_EVIDENCE.put(id,admissionReceipt(admission,raw.size()));
             var factsHash=BIdentificationReceipt.factsHash(facts,lattices,CancellationProbe.NONE);
             // Eta0 executes first, without constructing a source copy, field, prefix, table or views.
             rows.add(solve(id,0,source,profiles,evidence,null,owner,fullDomain,censored));
@@ -476,7 +520,33 @@ class V022BGapMatchedControlsTest {
             } finally {if(field!=null)field.close();}
             return new CaseResult(id,source,List.copyOf(rows),raw.size(),modes,censored,pairs,tableBytes,owner.peakBytes(),admission.coarsened(),fullDomain,
                     evidence.canonicalHash(),factsHash,cold,hot);
+            } finally {updateAdmissionWork(ADMISSION_EVIDENCE.get(id),admissionWork);}
+            }
         } finally {assertEquals(0,ledger.currentBytes());}
+    }
+
+    private static Map<String,Object> admissionReceipt(ProbabilisticOptionalOverflowAdmission.Selection selection,int rows) {
+        var output=new LinkedHashMap<String,Object>();output.put("policy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
+        output.put("strictBaselineIdentity","UNCHANGED_STRICT_API; FORMER_REFUSALS_HAVE_NO_OLD_SUCCESSFUL_OUTPUT");
+        output.put("admitted",selection.admitted());output.put("coarsened",selection.coarsened());output.put("refusalReason",selection.refusalReason());
+        output.put("declinedOptionalCount",selection.declinedCount());
+        var decisions=new ArrayList<Map<String,Object>>();
+        for(int i=0;i<rows;i++)decisions.add(Map.of("row",i,"declinedOptional",selection.declined(i),
+                "decision",selection.declined(i)?"DECLINED_NATIVE_FULL":"UNCHANGED_STRICT_PROPOSAL",
+                "originalProposalRawBits",Long.toHexString(Double.doubleToRawLongBits(selection.originalProposal(i))),
+                "effectiveProposalRawBits",Long.toHexString(Double.doubleToRawLongBits(selection.effectiveProposal(i)))));
+        output.put("rows",decisions);output.put("retainedCapabilityBytes",ProbabilisticOptionalOverflowAdmission.retainedBytes(rows));
+        output.put("nativeForwardBackwardBound",selection.nativeForwardBackwardBound());output.put("selectedForwardBackwardUpperBeforePossibleStrictCoarsening",selection.selectedForwardBackwardBound());
+        output.put("pairBound",selection.pairBound());output.put("completeScoreBound",selection.completeScoreBound());
+        output.put("boundSemantics","INVENTORY_UPPER_BOUNDS_NOT_EXECUTED_SOLVER_WORK");
+        updateAdmissionWork(output,selection.work());return output;
+    }
+    private static void updateAdmissionWork(Map<String,Object> output,ProbabilisticOptionalOverflowAdmission.Work work) {
+        output.put("preflightAndMaterializationUnits",work.units);output.put("privateWorkUpper",work.upper);
+        output.put("nativeBuilderInvocations",work.nativeBuilds);output.put("cellComparisons",work.cellComparisons);
+        output.put("checkpoints",work.checkpoints);output.put("strictSelectionInvocations",work.strictSelections);
+        output.put("materializationBuilderInvocations",work.materializations);output.put("copiedElements",work.copiedElements);
+        output.put("workSemantics","DEFINED_COPY_ROW_CELL_AND_CHECKPOINT_UNITS; BUILDER_AND_STRICT_INTERNAL_WORK_NOT_MEASURED_HERE");
     }
     private static Row solve(String id,int eta,List<MetricPoint> source,List<InferenceProfile> profiles,EvidenceSnapshot evidence,
             AdjacentStatePotential potential,AttemptMemoryLedger.Owner owner,boolean fullDomain,int censored) {
