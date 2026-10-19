@@ -28,6 +28,85 @@ class V022BGapMatchedControlsTest {
     private static final Map<String,Map<String,Object>> CONTROL_EVIDENCE=new LinkedHashMap<>();
     private static final Path OUTPUT=Path.of("build/gap-task5-matrix");
     static Stream<String> cases(){return CASES.stream();}
+    static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
+
+    @Test void admissionRefusalIsPublishedAndCachedBeforeOriginalAssertionPropagates() throws Exception {
+        String id="controlled-admission-refusal";Path path=OUTPUT.resolve(id+".json");
+        var priorResult=RESULTS.remove(id);var priorEvidence=CONTROL_EVIDENCE.remove(id);
+        byte[] priorBytes=Files.exists(path)?Files.readAllBytes(path):null;
+        var rows=new ArrayList<Row>();for(int eta:ETAS)rows.add(unavailable(eta,eta==0?"ADMISSION_REFUSED":"UNVISITED_AFTER_ADMISSION_REFUSAL"));
+        var refusal=new CaseResult(id,SOURCE,rows,17,19,0,0,0,35_043_632,false,false,"1".repeat(64),"unavailable","unavailable","unavailable");
+        var details=Map.<String,Object>of("availability","ADMISSION_REFUSED","admitted",false,"maximumStates",96,
+                "nativeForwardBackwardBound",22_491_347L,"pairBound",127_112L,"completeScoreBound",-1,
+                "builderReason","continuation cannot retain every baseline state","inferenceCalls",0);
+        try {
+            var failure=assertThrows(AssertionError.class,()->{
+                publishAdmissionRefusal(refusal,details);
+                assertTrue(false,"unchanged original graph refused "+id);
+            });
+            assertTrue(failure.getMessage().contains("unchanged original graph refused "+id));
+            assertSame(refusal,RESULTS.get(id),"refusal must be cached before the original assertion");
+            assertTrue(Files.exists(path),"refusal must be published before the original assertion");
+            var receipt=BIdentificationReceipt.parse(Files.readAllBytes(path));
+            assertEquals("1".repeat(64),receipt.get("snapshotHash"));assertEquals(17,((Number)receipt.get("profiles")).intValue());
+            assertEquals(19,((Number)receipt.get("modes")).intValue());assertNull(receipt.get("factsAndLatticeHash"));
+            assertNull(receipt.get("originalPairInventory"));assertNull(receipt.get("fullTwentyFiveMetreDomain"));
+            assertEquals(details,CONTROL_EVIDENCE.get(id));
+            var slots=(List<?>)receipt.get("rows");assertEquals(8,slots.size());
+            for(int i=0;i<slots.size();i++) {
+                var slot=(Map<?,?>)slots.get(i);assertEquals(false,slot.get("actualSolve"));assertNull(slot.get("status"));
+                assertNull(slot.get("wholeRouteGeometryPassed"));assertNull(slot.get("sourceFullyObserved"));assertEquals(false,slot.get("requiredControlPassed"));
+                assertEquals(i==0?"UNAVAILABLE_BEFORE_SOLVE":"UNVISITED",slot.get("executionOutcome"));
+            }
+            assertFalse(matrixComplete(Map.of(id,refusal),1));
+            assertThrows(AssertionError.class,()->result(id),"cached refusal must not become a green repeated case");
+        } finally {
+            if(priorResult==null)RESULTS.remove(id);else RESULTS.put(id,priorResult);
+            if(priorEvidence==null)CONTROL_EVIDENCE.remove(id);else CONTROL_EVIDENCE.put(id,priorEvidence);
+            if(priorBytes==null)Files.deleteIfExists(path);else Files.write(path,priorBytes);
+        }
+    }
+
+    /** Diagnosis only: stops at unchanged original admission; no adapter, table or inference. */
+    @ParameterizedTest(name="admission-only-{0}") @MethodSource("refusedAdmissionCases")
+    void retainedCiAdmissionRefusalsHaveExactOriginalInventory(String id) throws Exception {
+        var ledger=AttemptMemoryLedger.production();var output=new LinkedHashMap<String,Object>();
+        try(var owner=ledger.rootOwner();var render=owner.reserve(32L*1024*1024);var metadata=owner.reserve(1024L*1024)) {
+            var evidence=capture(id,source(id));var factory=new ProbabilisticProfileFactory();
+            var raw=factory.create(source(id),factory.profileChainage(source(id),1.5),25,true,evidence,evidence.fields().get("scalar"),
+                    PARAMETERS,CancellationProbe.NONE,true,owner);
+            var facts=new BIdentificationFactsExtractor().extract(evidence,raw,CancellationProbe.NONE,owner);
+            var proposals=ProbabilisticContinuationProposals.build(raw,CancellationProbe.NONE,owner,PARAMETERS.localization());
+            var plan=ProbabilisticLatticeAdmission.select(raw,proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner);
+            var rows=new ArrayList<Map<String,Object>>();long[] counts=new long[raw.size()];
+            for(int i=0;i<raw.size();i++)try(var scratch=owner.child("diagnostic-admission-row")) {
+                double proposal=proposals[i];
+                var baseline=new ProbabilisticStateBuilder().build(raw.get(i),96,scratch);
+                var proposed=new ProbabilisticStateBuilder().buildWithProposal(raw.get(i),96,proposals[i],scratch);
+                var row=new LinkedHashMap<String,Object>();row.put("row",i);row.put("modes",raw.get(i).modes().size());
+                row.put("censoredModes",raw.get(i).censoredModes().size());row.put("proposal",Double.isFinite(proposals[i])?proposals[i]:null);
+                row.put("baselineStatus",baseline.status().name());row.put("baselineExplanation",baseline.explanation());
+                counts[i]=baseline.lattice().map(l->(long)l.cells().size()).orElse(-1L);row.put("baselineCount",counts[i]);
+                row.put("mandatoryCount",baseline.retainedMandatoryOffsets().size());row.put("proposedStatus",proposed.status().name());
+                row.put("proposedExplanation",proposed.explanation());row.put("proposedCount",proposed.lattice().map(l->l.cells().size()).orElse(-1));
+                row.put("nearestNativeProposalDistance",Double.isFinite(proposals[i])&&baseline.lattice().isPresent()?
+                        baseline.lattice().orElseThrow().cells().stream().mapToDouble(c->Math.abs(c.offsetMeters()-proposal)).min().orElseThrow():null);
+                rows.add(row);
+            }
+            long pairs=0,triples=0;for(int i=1;i<counts.length;i++)pairs+=counts[i-1]*counts[i];
+            for(int i=2;i<counts.length;i++)triples+=counts[i-2]*counts[i-1]*counts[i];
+            long fb=counts[0]*counts[1]+2*triples;
+            output.put("case",id);output.put("snapshotHash",evidence.canonicalHash());output.put("profiles",raw.size());output.put("facts",facts.size());
+            output.put("admitted",plan.admitted());output.put("coarsened",plan.coarsened());output.put("maximumStates",plan.maximumStates());
+            output.put("nativeForwardBackwardBound",plan.nativeForwardBackwardBound());output.put("completeScoreBound",plan.completeScoreBound());
+            output.put("pairBound",plan.pairBound());output.put("independentNativeForwardBackwardBound",fb);output.put("independentNativePairBound",pairs);
+            output.put("rows",rows);output.put("currentOwnedBytes",owner.currentBytes());output.put("peakOwnedBytes",owner.peakBytes());
+            output.put("adapterEvaluations",0);output.put("tableBuilds",0);output.put("inferenceCalls",0);
+            byte[] bytes=BIdentificationReceipt.canonical(output).getBytes(java.nio.charset.StandardCharsets.UTF_8);assertTrue(bytes.length<=65536);
+            Path path=Path.of("build/gap-task5-admission-diagnosis",id+".json");Files.createDirectories(path.getParent());Files.write(path,bytes);
+            assertFalse(plan.admitted(),"retained CI refusal must reproduce unchanged");
+        } finally {assertEquals(0,ledger.currentBytes());}
+    }
 
     @Test void declaredManifestAndIndependentWholeRouteOracleAreNonvacuous() throws Exception {
         Map<String,Object> manifest;
@@ -266,26 +345,36 @@ class V022BGapMatchedControlsTest {
     private record CaseResult(String id,List<MetricPoint> source,List<Row> rows,int profileCount,int modeCount,int censoredModes,
             long pairs,long tableBytes,long peakBytes,boolean coarsened,boolean fullDomain,String sourceHash,String factsHash,
             String buildCounters,String postSolveCounters) { }
+    private static void publishAdmissionRefusal(CaseResult refusal,Map<String,Object> details) throws Exception {
+        CONTROL_EVIDENCE.put(refusal.id,details);publish(refusal);
+    }
     private static CaseResult result(String id) throws Exception {
-        if(RESULTS.containsKey(id))return RESULTS.get(id);
+        if(RESULTS.containsKey(id)) {
+            assertTrue(!"ADMISSION_REFUSED".equals(CONTROL_EVIDENCE.getOrDefault(id,Map.of()).get("availability")),
+                    "unchanged original graph refused "+id);
+            return RESULTS.get(id);
+        }
         CaseResult result;
         try {result=run(id);}catch(RuntimeException failure) {
             var rows=new ArrayList<Row>();for(int eta:ETAS)rows.add(unavailable(eta,eta==0?"PIPELINE_BEFORE_SOLVE_FAILURE_"+safeFailure(failure):"UNVISITED_AFTER_WHOLE_CASE_FAILURE"));
             result=new CaseResult(id,source(id),rows,0,0,0,0,0,0,false,false,"unavailable","unavailable","unavailable","unavailable");
         }
-        RESULTS.put(id,result);
+        publish(result);return result;
+    }
+    private static void publish(CaseResult result) throws Exception {
+        String id=result.id;RESULTS.put(id,result);
         var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-result-v1");output.put("case",id);
         output.put("source",result.source.stream().map(p->List.of(p.xMeters(),p.yMeters())).toList());output.put("snapshotHash",result.sourceHash);
         boolean factual=!result.factsHash.equals("unavailable");
-        output.put("factsAndLatticeHash",result.factsHash);output.put("profiles",factual?result.profileCount:null);output.put("modes",factual?result.modeCount:null);
-        output.put("censoredModes",factual?result.censoredModes:null);output.put("originalPairInventory",factual?result.pairs:null);output.put("tableBytes",factual?result.tableBytes:null);
-        output.put("peakAttemptBytes",factual?result.peakBytes:null);output.put("originalAdmissionCoarsened",factual?result.coarsened:null);
+        boolean captured=!result.sourceHash.equals("unavailable");
+        output.put("factsAndLatticeHash",factual?result.factsHash:null);output.put("profiles",captured?result.profileCount:null);output.put("modes",captured?result.modeCount:null);
+        output.put("censoredModes",captured?result.censoredModes:null);output.put("originalPairInventory",factual?result.pairs:null);output.put("tableBytes",factual?result.tableBytes:null);
+        output.put("peakAttemptBytes",captured?result.peakBytes:null);output.put("originalAdmissionCoarsened",captured?result.coarsened:null);
         output.put("fullTwentyFiveMetreDomain",factual?result.fullDomain:null);output.put("coldBuildCounters",result.buildCounters);
         output.put("sourceControlEvidence",CONTROL_EVIDENCE.getOrDefault(id,Map.of("availability","UNAVAILABLE")));
         output.put("postSolveCounters",result.postSolveCounters);output.put("rows",result.rows.stream().map(r->receiptForCase(id,r)).toList());
         write(id+".json",output);System.out.println("MATCHED "+id+" controlByEta="+result.rows.stream().map(r->r.eta+":"+r.controlPassed).toList()
                 +" modes="+result.modeCount+" censored="+result.censoredModes+" pairs="+result.pairs+" peak="+result.peakBytes);
-        return result;
     }
 
     private static CaseResult run(String id) throws Exception {
@@ -299,6 +388,25 @@ class V022BGapMatchedControlsTest {
             int modes=raw.stream().mapToInt(p->p.modes().size()).sum(),censored=raw.stream().mapToInt(p->p.censoredModes().size()).sum();
             var proposals=ProbabilisticContinuationProposals.build(raw,CancellationProbe.NONE,owner,PARAMETERS.localization());
             var admission=ProbabilisticLatticeAdmission.select(raw,proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner);
+            if(!admission.admitted()) {
+                var details=new LinkedHashMap<String,Object>();details.put("availability","ADMISSION_REFUSED");details.put("admitted",false);
+                details.put("coarsened",admission.coarsened());details.put("maximumStates",admission.maximumStates());
+                details.put("nativeForwardBackwardBound",admission.nativeForwardBackwardBound());details.put("pairBound",admission.pairBound());
+                details.put("completeScoreBound",admission.completeScoreBound());
+                details.put("boundSemantics","NEGATIVE_IS_UNAVAILABLE; THESE_ARE_INVENTORY_BOUNDS_NOT_EXECUTED_SOLVER_WORK");
+                details.put("inferenceCalls",0);details.put("adapterEvaluations",0);details.put("tableBuilds",0);
+                details.put("builderReason","UNAVAILABLE_NO_NATIVE_PROPOSAL_FAILURE");
+                for(int row=0;row<raw.size();row++)try(var query=owner.child("refusal-reason-inventory")) {
+                    var built=new ProbabilisticStateBuilder().buildWithProposal(raw.get(row),96,proposals[row],query);
+                    if(built.status()!=StateSpaceBuildResult.Status.COMPLETE) {
+                        details.put("firstNativeProposalFailureRow",row);details.put("builderStatus",built.status().name());
+                        details.put("builderReason",built.explanation());break;
+                    }
+                }
+                var unvisited=new ArrayList<Row>();for(int eta:ETAS)unvisited.add(unavailable(eta,eta==0?"ADMISSION_REFUSED":"UNVISITED_AFTER_ADMISSION_REFUSAL"));
+                publishAdmissionRefusal(new CaseResult(id,source,List.copyOf(unvisited),raw.size(),modes,censored,0,0,owner.peakBytes(),admission.coarsened(),false,
+                        evidence.canonicalHash(),"unavailable","unavailable","unavailable"),details);
+            }
             assertTrue(admission.admitted(),"unchanged original graph refused "+id);
             var profiles=new ArrayList<InferenceProfile>();var lattices=new ArrayList<ProbabilisticStateLattice>();var builder=new ProbabilisticStateBuilder();
             long pairs=0;boolean fullDomain=true;
