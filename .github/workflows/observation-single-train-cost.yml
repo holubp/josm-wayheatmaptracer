@@ -54,8 +54,8 @@ jobs:
       - name: Account only the two archived paths and stored witness once
         run: |
           set -eu
-          timeout 360s sh ./gradlew -I scripts/single-train-cost.init.gradle.kts v022SingleTrainCostDiagnostic \\
-            -PsingleTrainCostFreezeSha256="$COST_FREEZE_SHA256" \\
+          timeout 360s sh ./gradlew -I scripts/single-train-cost.init.gradle.kts v022SingleTrainCostDiagnostic \
+            -PsingleTrainCostFreezeSha256="$COST_FREEZE_SHA256" \
             -PsingleTrainCostOutput="$RUNNER_TEMP/josm-single-train-cost" --console=plain
       - name: Require complete nonqualifying exact cost evidence
         run: |

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import pytest
@@ -60,6 +61,37 @@ def test_fixed_push_route_init_and_exact_uploads_preserve_old_authority():
     assert len(old['members']) == 48
     for path, digest in old['members'].items():
         assert hashlib.sha256((ROOT/path).read_bytes()).hexdigest() == digest, path
+
+def test_actual_runtime_shell_invokes_one_fixed_gradle_command_with_complete_argv(tmp_path):
+    """Execute the actual run block with dummy executables, never Gradle or Java."""
+    steps=workflow()['jobs']['cost-accounting']['steps']
+    script=next(s['run'] for s in steps if s.get('name')=='Account only the two archived paths and stored witness once')
+    shell=shutil.which('sh')
+    assert shell, 'outer test shell required'
+    binaries=tmp_path/'bin';binaries.mkdir()
+    capture=tmp_path/'argv.jsonl'
+    recorder=('import json, os, sys\nfrom pathlib import Path\n'
+              'with Path(os.environ["ARGV_CAPTURE"]).open("a") as stream:\n'
+              '    stream.write(json.dumps({"program":PROGRAM,"argv":sys.argv[1:]})+"\\n")\n')
+    programs={
+        binaries/'timeout': ('timeout', 'os.execvp(sys.argv[2],sys.argv[2:])\n'),
+        binaries/'sh': ('sh', 'os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n'),
+        tmp_path/'gradlew': ('gradlew', ''),
+    }
+    for path,(name,tail) in programs.items():
+        path.write_text(f'#!{sys.executable}\nPROGRAM={name!r}\n'+recorder+tail)
+        path.chmod(0o755)
+    digest='d'*64;runner=tmp_path/'runner with spaces'
+    result=subprocess.run([shell,'-c',script],cwd=tmp_path,env={**os.environ,
+            'PATH':str(binaries)+os.pathsep+os.environ.get('PATH',''),'ARGV_CAPTURE':str(capture),
+            'COST_FREEZE_SHA256':digest,'RUNNER_TEMP':str(runner)},capture_output=True,text=True)
+    invocations=[json.loads(row) for row in capture.read_text().splitlines()]
+    expected=['-I','scripts/single-train-cost.init.gradle.kts','v022SingleTrainCostDiagnostic',
+              '-PsingleTrainCostFreezeSha256='+digest,'-PsingleTrainCostOutput='+str(runner/'josm-single-train-cost'),'--console=plain']
+    assert invocations==[{'program':'timeout','argv':['360s','sh','./gradlew',*expected]},
+                         {'program':'sh','argv':['./gradlew',*expected]},
+                         {'program':'gradlew','argv':expected}],(invocations,result.returncode,result.stderr)
+    assert result.returncode==0,result.stderr
 
 @pytest.mark.parametrize('optimized',[False, True])
 def test_actual_precompile_guard_rejects_pending_source_context_and_joint_tamper(tmp_path, optimized):
