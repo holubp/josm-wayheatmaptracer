@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      COMPARATOR_FREEZE_SHA256: fec619c1a268a5331ebd826f3279b66b861bca88fd75f222c90f1d8f4eb28938
+      COMPARATOR_FREEZE_SHA256: 5aad59b456a8c3970074e93f876febda698e6285a0cce0bcf6e7b5ed60c38ed7
     steps:
       - uses: actions/checkout@v4
         with:
