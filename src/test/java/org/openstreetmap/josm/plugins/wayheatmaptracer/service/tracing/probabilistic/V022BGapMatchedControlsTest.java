@@ -20,17 +20,195 @@ class V022BGapMatchedControlsTest {
             "faint-six-metre-bend","faint-twelve-metre-bend","genuine-junction","positive-twenty-five-representation","negative-twenty-five-representation",
             "flecks-versus-faint-coherent","valid-sparse-gap","invalid-unknown-gap","censored-flank","strong-modulated-versus-quiet-faint",
             "unknown-detour","uniform-null","alternating-null","half-pitch-alias","quarter-phase-alias","reverse-original-mesh");
+    private static final List<String> THIN_CASES=List.of("thin-three-strands","thin-three-strands-intermittent","thin-strands-merge-separate",
+            "drifting-strong-with-faint-original","thin-strong-sharp-bend","thin-faint-coherent-sharp-bend","thin-local-overlap-noise");
+    private static final List<String> ALL_CASES=Stream.concat(CASES.stream(),THIN_CASES.stream()).toList();
     private static final List<MetricPoint> SOURCE=List.of(new MetricPoint(8,37),new MetricPoint(32,37));
+    private static final List<MetricPoint> THIN_SOURCE=List.of(new MetricPoint(-8,37),new MetricPoint(52,37));
     private static final EvidenceModelParameters PARAMETERS=EvidenceModelParameters.defaults();
     private static final TraceBudgets SOLVE_BUDGETS=new TraceBudgets(96,8_000_000,128_000_000,1,1);
     private static final BObservationKernel B0=new BIdentifiedObservationKernel(new BIdentifiedObservationKernel.Parameters(1,1,0));
     private static final Map<String,CaseResult> RESULTS=new LinkedHashMap<>();
     private static final Map<String,Map<String,Object>> CONTROL_EVIDENCE=new LinkedHashMap<>();
     private static final Map<String,Map<String,Object>> ADMISSION_EVIDENCE=new LinkedHashMap<>();
+    private static final Map<String,Map<Integer,ThinProof>> THIN_ORACLE_EVIDENCE=new LinkedHashMap<>();
+    private record ThinProof(Row row,Map<String,Object> receipt) { }
     private static final Path OUTPUT=Path.of("build/gap-task5-matrix");
     static Stream<String> cases(){return CASES.stream();}
+    static Stream<String> thinCases(){return THIN_CASES.stream();}
+    static Stream<String> allCases(){return ALL_CASES.stream();}
     static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
     private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
+
+    /** This is the entire new acquisition handoff; truth descriptors are deliberately absent. */
+    private record ScalarInput(int width,int height,MetricPoint origin,double pitchMeters,double[] scalar,boolean[] validity,List<MetricPoint> source) {
+        ScalarInput {
+            if(width<2||height<2||origin==null||!Double.isFinite(pitchMeters)||pitchMeters<=0||scalar==null||validity==null
+                    ||scalar.length!=Math.multiplyExact(width,height)||validity.length!=scalar.length||source==null||source.size()!=2)
+                throw new IllegalArgumentException("Declared scalar acquisition is incomplete");
+            scalar=scalar.clone();validity=validity.clone();source=List.copyOf(source);
+        }
+        @Override public double[] scalar(){return scalar.clone();}
+        @Override public boolean[] validity(){return validity.clone();}
+    }
+    private static ScalarInput thinInput(String id) {
+        var fixture=BThinStrandFixtures.byId(id);
+        return new ScalarInput(fixture.width(),fixture.height(),fixture.origin(),fixture.pitchMeters(),fixture.intensities(),fixture.validity(),fixture.source());
+    }
+
+    @Test void additionalThinInventoryPreservesOriginalTwentyAndFrozenRecipeBytes() throws Exception {
+        assertEquals(20,CASES.size());assertEquals(7,THIN_CASES.size());assertEquals(27,allCases().distinct().count());
+        assertEquals(THIN_CASES,BThinStrandFixtures.all().stream().map(BThinStrandFixtures.Fixture::id).toList());
+        for(var item:Map.of("matched-controls.json","543fb7add12d3afab901dc31930820c3a7012cd2ca44ee1047094b4ff369026e",
+                "thin-strand-controls.json","072ce1b0aed7e3d61c7da1d40ac4bda70e3b682c2ba872f9c8496aaab5660d2c").entrySet())
+            try(var resource=V022BGapMatchedControlsTest.class.getResourceAsStream("/b-observed-gap/"+item.getKey())) {
+                assertNotNull(resource);assertEquals(item.getValue(),HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(resource.readAllBytes())));
+            }
+    }
+
+    @ParameterizedTest(name="thin-metadata-{0}") @MethodSource("thinCases")
+    void thinHandoffContainsOnlyNativeScalarValidityFrameAndSource(String id) {
+        var input=thinInput(id);var fixture=BThinStrandFixtures.byId(id);
+        assertEquals(81,input.width);assertEquals(81,input.height);assertEquals(p(-20,0),input.origin);assertEquals(1,input.pitchMeters);
+        assertEquals(List.of(p(-8,37),p(52,37)),input.source);assertEquals(60,input.source.get(0).distanceTo(input.source.get(1)));
+        assertEquals(input.source,source(id));
+        assertEquals(41,expectedProfiles(id));
+        assertEquals(-25,fixture.lateralMinMeters());assertEquals(25,fixture.lateralMaxMeters());
+        assertEquals(List.of("width","height","origin","pitchMeters","scalar","validity","source"),
+                Arrays.stream(ScalarInput.class.getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
+        var values=input.scalar();var validity=input.validity();assertEquals(6561,values.length);assertEquals(6561,validity.length);
+        for(int y=0;y<81;y++)for(int x=0;x<81;x++) {
+            assertEquals(Double.doubleToRawLongBits(fixture.intensity(x,y)),Double.doubleToRawLongBits(values[y*81+x]));
+            assertEquals(fixture.valid(x,y),validity[y*81+x]);assertTrue(validity[y*81+x],"intermittent contributions never become invalid source");
+        }
+    }
+
+    @Test void scalarHandoffOwnsDefensiveValuesWithoutRetainingTruthContainers() {
+        var values=new double[]{.02,.04,.06,.08};var valid=new boolean[]{true,true,true,true};var source=new ArrayList<>(List.of(p(-8,37),p(52,37)));
+        var input=new ScalarInput(2,2,p(-20,0),1,values,valid,source);
+        values[0]=1;valid[0]=false;source.set(0,p(0,0));
+        assertEquals(.02,input.scalar()[0]);assertTrue(input.validity()[0]);assertEquals(p(-8,37),input.source().get(0));
+        input.scalar()[0]=1;input.validity()[0]=false;assertEquals(.02,input.scalar()[0]);assertTrue(input.validity()[0]);
+        assertThrows(UnsupportedOperationException.class,()->input.source().set(0,p(0,0)));
+        assertThrows(IllegalArgumentException.class,()->thinInput("not-a-frozen-control"));
+    }
+
+    @Test void thinFortyOneRowPayloadCensusIsExplicitWithoutPromisingSolverSuccess() {
+        // Worst native layout:39 interior96-state rows and two exact single-state anchors.
+        int n=41;int[] counts=new int[n];Arrays.fill(counts,96);counts[0]=counts[n-1]=1;
+        long pairs=0,fbMatrices=0;
+        for(int i=1;i<n;i++) {
+            pairs+=(long)counts[i-1]*counts[i];
+            fbMatrices+=2*(AttemptMemoryLedger.referenceArrayBytes(counts[i-1])
+                    +counts[i-1]*AttemptMemoryLedger.arrayBytes(counts[i],8));
+        }
+        long table=784+2*AttemptMemoryLedger.arrayBytes(pairs,8)+AttemptMemoryLedger.arrayBytes(pairs,4)
+                +2*AttemptMemoryLedger.arrayBytes(n-1,8)+2*AttemptMemoryLedger.arrayBytes(n,4)+AttemptMemoryLedger.arrayBytes(n,8);
+        assertEquals(350400,pairs);assertEquals(7010216,table);assertEquals(5787440,fbMatrices);
+        long partialLive=33L*1024*1024+table+fbMatrices;assertEquals(47400664,partialLive);
+        assertTrue(partialLive<BGapEvidence.BYTES);
+        // NOT a whole-attempt fit proof: actual profiles/facts/Kbest/cache/result still coexist.
+        // Existing reservations must refuse the whole setting if remaining ownership cannot fit.
+    }
+
+    @Test void thinReturnedPathUsesReviewedOracleAndPreservesReturnedSolverFacts() {
+        String id="thin-strong-sharp-bend";var prior=THIN_ORACLE_EVIDENCE.remove(id);var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner();var metadata=owner.reserve(1024L*1024)) {
+            var path=List.of(p(-8,37),p(19,37),p(22,40),p(25,37),p(52,37));var raw=controlledThinRow(0,path);
+            var checked=assessThinReturnedPath(id,raw,1,CancellationProbe.NONE,owner);
+            assertTrue(checked.geometryPassed);assertTrue(checked.controlPassed);assertEquals(raw.status,checked.status);
+            assertEquals(raw.points,checked.points);assertEquals(raw.states,checked.states);assertEquals(raw.work,checked.work);
+            assertEquals(raw.completion,checked.completion);assertEquals(raw.transitions,checked.transitions);
+            assertEquals(Double.doubleToRawLongBits(raw.energy),Double.doubleToRawLongBits(checked.energy));
+            var flat=assessThinReturnedPath(id,controlledThinRow(1,List.of(p(-8,37),p(52,37))),1,CancellationProbe.NONE,owner);
+            assertFalse(flat.geometryPassed);assertFalse(flat.controlPassed);assertFalse(stopsCase(flat));
+            var receipt=receiptForCase(id,flat);assertEquals("FAIL",receipt.get("wholeRouteGeometryVerdict"));
+            var oracle=(Map<?,?>)receipt.get("truthOracle");assertEquals(BThinStrandAcceptance.ORACLE_ID,oracle.get("oracle"));
+            assertEquals("sharp-course",oracle.get("expectedRouteKind"));assertEquals(5,((List<?>)oracle.get("checks")).size());
+            assertTrue(((Number)oracle.get("cancellationChecks")).longValue()>0);
+        } finally {if(prior==null)THIN_ORACLE_EVIDENCE.remove(id);else THIN_ORACLE_EVIDENCE.put(id,prior);}
+        assertEquals(0,ledger.currentBytes());
+    }
+
+    @Test void thinMissingReturnedPathCannotInvokeOracleOrInventGeometry() {
+        String id="thin-three-strands";var prior=THIN_ORACLE_EVIDENCE.remove(id);var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner();var metadata=owner.reserve(1024L*1024)) {
+            for(var status:List.of(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,ProbabilisticInferenceResult.Status.NUMERIC_FAILURE,ProbabilisticInferenceResult.Status.NO_ROUTE)) {
+                var raw=new Row(0,true,status,List.of(),List.of(),Double.NaN,7,"actual-failure-work","actual-completion","ACTUAL_RETURNED_FAILURE",false,false,false);
+                var checked=assessThinReturnedPath(id,raw,1,()->{throw new AssertionError("No path must not query truth");},owner);
+                assertEquals(status,checked.status);assertEquals(raw.work,checked.work);assertFalse(checked.controlPassed);
+                assertEquals("UNAVAILABLE_NO_RETURNED_PATH",receiptForCase(id,checked).get("wholeRouteGeometryVerdict"));
+            }
+            assessThinReturnedPath(id,unavailable(1,"UNVISITED"),1,()->{throw new AssertionError("Unvisited must not query truth");},owner);
+            THIN_ORACLE_EVIDENCE.remove(id);
+            var missing=receiptForCase(id,controlledThinRow(0,List.of(p(-8,37),p(52,37))));
+            assertNull(missing.get("wholeRouteGeometryPassed"));assertEquals("UNAVAILABLE_THIN_ORACLE",missing.get("wholeRouteGeometryVerdict"));
+            assertEquals(false,missing.get("requiredControlPassed"));
+        } finally {if(prior==null)THIN_ORACLE_EVIDENCE.remove(id);else THIN_ORACLE_EVIDENCE.put(id,prior);}
+    }
+
+    @Test void thinOracleCancellationAndResourceRefusalPreserveActualSolveAndCloseOwners() throws Exception {
+        String id="thin-strong-sharp-bend";var prior=THIN_ORACLE_EVIDENCE.remove(id);var ledger=newComparisonLedger();
+        var raw=controlledThinRow(0,List.of(p(-8,37),p(52,37)));
+        try(var owner=ledger.rootOwner();var metadata=owner.reserve(1024L*1024)) {
+            var tree=BGapTestFixture.ownerTree(owner);long bytes=owner.currentBytes();
+            var cancelled=assessThinReturnedPath(id,raw,1,()->true,owner);
+            assertTrue(stopsCase(cancelled));assertTrue(cancelled.actualSolve);assertEquals(raw.status,cancelled.status);
+            assertEquals(raw.work,cancelled.work);assertEquals(raw.points,cancelled.points);
+            assertNull(receiptForCase(id,cancelled).get("wholeRouteGeometryPassed"));assertEquals(bytes,owner.currentBytes());assertEquals(tree,BGapTestFixture.ownerTree(owner));
+            var unavailable=assessThinReturnedPath(id,raw,.5,CancellationProbe.NONE,owner);
+            assertTrue(stopsCase(unavailable));assertEquals(raw.status,unavailable.status);
+            assertNull(receiptForCase(id,unavailable).get("wholeRouteGeometryPassed"));
+            assertEquals("UNAVAILABLE",((Map<?,?>)receiptForCase(id,unavailable).get("truthOracle")).get("failure"));
+            try(var blocker=owner.reserve(ledger.limitBytes()-bytes-1000)) {
+                var refused=assessThinReturnedPath(id,raw,1,CancellationProbe.NONE,owner);
+                assertTrue(stopsCase(refused));assertEquals(raw.status,refused.status);assertEquals(raw.transitions,refused.transitions);
+                var receipt=receiptForCase(id,refused);assertNull(receipt.get("wholeRouteGeometryPassed"));
+                assertEquals("RESOURCE_LIMIT",((Map<?,?>)receipt.get("truthOracle")).get("failure"));
+            }
+            assertEquals(bytes,owner.currentBytes());assertEquals(tree,BGapTestFixture.ownerTree(owner));
+        } finally {if(prior==null)THIN_ORACLE_EVIDENCE.remove(id);else THIN_ORACLE_EVIDENCE.put(id,prior);}
+    }
+
+    private static Row controlledThinRow(int eta,List<MetricPoint> path) {
+        return new Row(eta,true,ProbabilisticInferenceResult.Status.REVIEW_REQUIRED,path,List.of(0,1),.5,100,
+                "controlled-returned-work","controlled-completion","CONTROLLED_RETURNED_PATH",false,true,false);
+    }
+    private static Row assessThinReturnedPath(String id,Row row,double pitch,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        if(!isThin(id)||Arrays.binarySearch(ETAS,row.eta)<0)throw new IllegalArgumentException("Unknown thin source-control slot");
+        Objects.requireNonNull(cancellation);Objects.requireNonNull(owner);
+        // Counter/receipt payloads belong to the existing bounded1MiB harness metadata reserve.
+        // The actual oracle independently reserves its result and complete path/track workspace.
+        var receipt=new LinkedHashMap<String,Object>();receipt.put("oracle",BThinStrandAcceptance.ORACLE_ID);
+        receipt.put("fixture",id);receipt.put("invoked",completed(row));receipt.put("checks",List.of());
+        receipt.put("branchIdentity","UNAVAILABLE_ORACLE_REPORTS_CONTINUITY_NOT_STRAND_ID");
+        receipt.put("workUnits","UNAVAILABLE_PRIVATE_ORACLE_COUNTER_NOT_EXPORTED");
+        long[] calls={0};boolean passed=false,terminal=false;String failure="NONE";
+        if(!completed(row))receipt.put("availability","UNAVAILABLE_NO_RETURNED_PATH");
+        else {
+            try(var oracleOwner=owner.child("matched-thin-truth-oracle")) {
+                var result=BThinStrandAcceptance.evaluate(BThinStrandFixtures.byId(id),row.points,pitch,
+                        ()->{calls[0]++;return cancellation.cancelled();},oracleOwner);
+                receipt.put("expectedRouteKind",result.expectedRouteKind());
+                receipt.put("checks",result.checks().stream().map(check->Map.of("reason",check.reason().name(),
+                        "verdict",check.verdict().name(),"count",check.count())).toList());
+                terminal=result.checks().stream().anyMatch(check->check.verdict()==BThinStrandAcceptance.Verdict.UNAVAILABLE);
+                passed=result.passed();receipt.put("availability",terminal?"UNAVAILABLE":"AVAILABLE");
+                receipt.put("verdict",terminal?"UNAVAILABLE":passed?"PASS":"FAIL");
+                if(terminal)failure="UNAVAILABLE";
+            } catch(RuntimeException stopped) {
+                terminal=true;failure=stopped instanceof java.util.concurrent.CancellationException?"CANCELLED":
+                        stopped instanceof AttemptMemoryLedger.ResourceLimitException?"RESOURCE_LIMIT":safeFailure(stopped);
+                receipt.put("availability","UNAVAILABLE");receipt.put("verdict","UNAVAILABLE");
+            }
+        }
+        receipt.put("failure",failure);receipt.put("terminal",terminal);receipt.put("cancellationChecks",calls[0]);
+        Row checked=!completed(row)?row:new Row(row.eta,row.actualSolve,row.status,List.copyOf(row.points),List.copyOf(row.states),
+                row.energy,row.transitions,row.work,row.completion,terminal?"THIN_ORACLE_TERMINAL_"+failure:row.explanation,
+                passed,row.sourceObserved,passed&&row.sourceObserved);
+        THIN_ORACLE_EVIDENCE.computeIfAbsent(id,key->new LinkedHashMap<>()).put(row.eta,new ThinProof(checked,Map.copyOf(receipt)));
+        return checked;
+    }
 
     @Test void newComparisonIncrementallyRefusesBeyond64MiBBeforePublication() throws Exception {
         boolean[] published={false};var ledger=newComparisonLedger();
@@ -307,7 +485,7 @@ class V022BGapMatchedControlsTest {
         if(id.equals("reverse-original-mesh"))assertEquals(SOURCE.get(1),source(id).get(0));
     }
 
-    @ParameterizedTest(name="{0}") @MethodSource("cases")
+    @ParameterizedTest(name="{0}") @MethodSource("allCases")
     void actualSourcePipelineProducesCompleteDeclaredEightSettingMatrix(String id) throws Exception {verify(result(id));}
 
     private static void verify(CaseResult result) {
@@ -356,7 +534,8 @@ class V022BGapMatchedControlsTest {
                 &&row.status!=ProbabilisticInferenceResult.Status.NUMERIC_FAILURE&&row.status!=ProbabilisticInferenceResult.Status.NO_ROUTE;
     }
     private static boolean stopsCase(Row row) {
-        return !row.actualSolve||row.status==ProbabilisticInferenceResult.Status.RESOURCE_LIMIT||row.status==ProbabilisticInferenceResult.Status.NUMERIC_FAILURE;
+        return !row.actualSolve||row.status==ProbabilisticInferenceResult.Status.RESOURCE_LIMIT||row.status==ProbabilisticInferenceResult.Status.NUMERIC_FAILURE
+                ||row.explanation.startsWith("THIN_ORACLE_TERMINAL_");
     }
     private static Map<String,Object> receiptForCase(String id,Row row) {
         var receipt=row.receipt();receipt.put("requiredPredicate",id.equals("censored-flank")?"CENSORED_UNAVAILABLE_ZERO_NO_NEW_BARRIER":
@@ -365,6 +544,18 @@ class V022BGapMatchedControlsTest {
         receipt.put("wholeRouteGeometryVerdict",!completed(row)?"UNAVAILABLE_NO_RETURNED_PATH":id.equals("censored-flank")?"UNAVAILABLE_CENSORED_POSITION":
                 id.contains("twenty-five-representation")?"UNAVAILABLE_REPRESENTATION_ONLY":row.geometryPassed?"PASS":"FAIL");
         if(id.equals("censored-flank")||id.contains("twenty-five-representation"))receipt.put("wholeRouteGeometryPassed",null);
+        if(isThin(id)) {
+            receipt.put("requiredPredicate",BThinStrandAcceptance.ORACLE_ID+"_AND_OBSERVED_SUPPORT");
+            var proof=THIN_ORACLE_EVIDENCE.getOrDefault(id,Map.of()).get(row.eta);
+            boolean bound=proof!=null&&proof.row==row;
+            var oracle=bound?proof.receipt:Map.<String,Object>of("oracle",BThinStrandAcceptance.ORACLE_ID,"invoked",false,"availability",
+                    completed(row)?"UNAVAILABLE_NOT_BOUND_TO_RETURNED_ROW":"UNAVAILABLE_NO_RETURNED_PATH");
+            receipt.put("truthOracle",oracle);
+            if(completed(row)&&(!bound||!"AVAILABLE".equals(oracle.get("availability")))) {
+                receipt.put("wholeRouteGeometryPassed",null);receipt.put("wholeRouteGeometryVerdict","UNAVAILABLE_THIN_ORACLE");
+                receipt.put("requiredControlPassed",false);
+            }
+        }
         return receipt;
     }
     private static Row unavailable(int eta,String reason) {
@@ -411,6 +602,7 @@ class V022BGapMatchedControlsTest {
     private static void publish(CaseResult result) throws Exception {
         String id=result.id;RESULTS.put(id,result);
         var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-optional-overflow-result-v2");output.put("case",id);
+        output.put("sourceCohort",isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
         output.put("comparisonPolicy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
         output.put("admissionEvidence",ADMISSION_EVIDENCE.getOrDefault(id,Map.of("availability","UNAVAILABLE")));
         output.put("source",result.source.stream().map(p->List.of(p.xMeters(),p.yMeters())).toList());output.put("snapshotHash",result.sourceHash);
@@ -433,7 +625,7 @@ class V022BGapMatchedControlsTest {
             var raw=factory.create(source,factory.profileChainage(source,1.5),25,true,evidence,evidence.fields().get("scalar"),
                     PARAMETERS,CancellationProbe.NONE,true,owner);
             var facts=new BIdentificationFactsExtractor().extract(evidence,raw,CancellationProbe.NONE,owner);
-            assertEquals(17,raw.size());for(int i=0;i<raw.size();i++)assertSame(raw.get(i),facts.get(i).baseline());
+            assertEquals(expectedProfiles(id),raw.size());for(int i=0;i<raw.size();i++)assertSame(raw.get(i),facts.get(i).baseline());
             int modes=raw.stream().mapToInt(p->p.modes().size()).sum(),censored=raw.stream().mapToInt(p->p.censoredModes().size()).sum();
             var proposals=ProbabilisticContinuationProposals.build(raw,CancellationProbe.NONE,owner,PARAMETERS.localization());
             try(var admission=ProbabilisticOptionalOverflowAdmission.select(raw,proposals,TraceBudgets.defaults(),CancellationProbe.NONE,owner)) {
@@ -564,6 +756,12 @@ class V022BGapMatchedControlsTest {
             var path=result.mapPath();var points=path.map(ProbabilisticPath::points).orElse(List.of());
             var states=new ArrayList<Integer>();if(path.isPresent())for(int s:path.orElseThrow().stateIndices())states.add(s);
             boolean anchors=!points.isEmpty()&&points.get(0).equals(source.get(0))&&points.get(points.size()-1).equals(source.get(1));
+            if(isThin(id)) {
+                var returned=new Row(eta,true,result.status(),List.copyOf(points),List.copyOf(states),path.map(ProbabilisticPath::energy).orElse(Double.NaN),
+                        result.evaluatedTransitions(),result.workAccounting().toString(),result.completion().toString(),result.explanation(),
+                        false,anchors&&fullyObserved(evidence,points),false);
+                return assessThinReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner);
+            }
             boolean geometry=anchors&&!id.equals("censored-flank")&&inTruth(id,points),observed=anchors&&fullyObserved(evidence,points);
             boolean passed=geometry&&observed;
             if(id.contains("twenty-five-representation"))passed=anchors&&fullDomain;
@@ -613,6 +811,11 @@ class V022BGapMatchedControlsTest {
         return true;
     }
     private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {
+        if(isThin(id)) {
+            var input=thinInput(id);
+            if(!input.source.equals(source))throw new IllegalArgumentException("Declared thin source identity changed");
+            return captureScalar(id,input);
+        }
         int w=81,h=81;double[] scalar=new double[w*h];boolean[] valid=new boolean[w*h];Arrays.fill(valid,true);
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
             double worldX=x-20;scalar[y*w+x]=Math.max(0,Math.min(1,intensity(id,worldX,y)));
@@ -627,6 +830,20 @@ class V022BGapMatchedControlsTest {
         return new RasterEvidenceCapture().captureWithMetricScalarSource("matched-"+id,new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB),valid,scalar,
                 source.stream().map(frame::toGeographic).toList(),source,inverse,grid,EvidenceResolution.nativeSource(1,1),25,"matched-public-declared-"+id,
                 EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,"scalar",lineage,CancellationProbe.NONE);
+    }
+    /** No truth centerline, observed-strand mask or expected route kind can cross this typed boundary. */
+    private static EvidenceSnapshot captureScalar(String id,ScalarInput input) {
+        var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-1,-1),new GeographicPoint(1,1));
+        double pitch=input.pitchMeters;
+        var inverse=SupportedInputRasterTransform.localMetricAffine(frame,new RasterPoint(-input.origin.xMeters()/pitch,-input.origin.yMeters()/pitch),
+                1/pitch,0,0,1/pitch);
+        var grid=new MetricRasterGrid(frame,input.origin,1,0,0,1,pitch,input.width,input.height);
+        var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
+                "matched-declared-scalar",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false);
+        return new RasterEvidenceCapture().captureWithMetricScalarSource("matched-"+id,new BufferedImage(input.width,input.height,BufferedImage.TYPE_INT_ARGB),
+                input.validity(),input.scalar(),input.source.stream().map(frame::toGeographic).toList(),input.source,inverse,grid,
+                EvidenceResolution.nativeSource(pitch,pitch),25,"matched-public-declared-"+id,EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
+                "scalar",lineage,CancellationProbe.NONE);
     }
     private static double intensity(String id,double x,double y) {
         if(id.equals("uniform-null"))return .25;
@@ -651,7 +868,10 @@ class V022BGapMatchedControlsTest {
         if(id.equals("faint-twelve-metre-bend")){center=center(x,12,3);amplitude=.08;}
         return .02+amplitude*gauss(y-center,1);
     }
-    private static List<MetricPoint> source(String id){return id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
+    private static boolean isThin(String id){return THIN_CASES.contains(id);}
+    private static int expectedProfiles(String id){return isThin(id)?41:17;}
+    // Source lookup must not initialize any raster/truth fixture before the attempt's render reservation.
+    private static List<MetricPoint> source(String id){return isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
     private static double center(double x,double width,double height){return 37+height*Math.max(0,1-Math.abs(x-20)/(width/2));}
     private static double gauss(double distance,double sigma){return StrictMath.exp(-.5*(distance/sigma)*(distance/sigma));}
     private static MetricPoint p(double x,double y){return new MetricPoint(x,y);}
@@ -665,11 +885,11 @@ class V022BGapMatchedControlsTest {
     }
     @AfterAll static void report() throws Exception {
         var summary=new LinkedHashMap<String,Object>();summary.put("status","SOURCE_CONTROL_MATRIX_NOT_MODEL_QUALIFICATION");
-        summary.put("expectedCases",CASES);summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));
-        summary.put("complete",matrixComplete(RESULTS,CASES.size()));
+        summary.put("expectedCases",ALL_CASES);summary.put("originalTwenty",CASES);summary.put("additionalThinSeven",THIN_CASES);
+        summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));summary.put("complete",matrixComplete(RESULTS,ALL_CASES.size()));
         var settings=new ArrayList<Map<String,Object>>();
         for(int eta:ETAS) {
-            var failed=new ArrayList<String>();for(var id:CASES) {
+            var failed=new ArrayList<String>();for(var id:ALL_CASES) {
                 var result=RESULTS.get(id);
                 if(result==null||result.rows.stream().noneMatch(r->r.eta==eta&&r.controlPassed))failed.add(id);
             }

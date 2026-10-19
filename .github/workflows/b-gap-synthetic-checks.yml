@@ -63,5 +63,12 @@ jobs:
             build/gap-task5-matrix/half-pitch-alias.json
             build/gap-task5-matrix/quarter-phase-alias.json
             build/gap-task5-matrix/reverse-original-mesh.json
+            build/gap-task5-matrix/thin-three-strands.json
+            build/gap-task5-matrix/thin-three-strands-intermittent.json
+            build/gap-task5-matrix/thin-strands-merge-separate.json
+            build/gap-task5-matrix/drifting-strong-with-faint-original.json
+            build/gap-task5-matrix/thin-strong-sharp-bend.json
+            build/gap-task5-matrix/thin-faint-coherent-sharp-bend.json
+            build/gap-task5-matrix/thin-local-overlap-noise.json
           if-no-files-found: ignore
           retention-days: 5

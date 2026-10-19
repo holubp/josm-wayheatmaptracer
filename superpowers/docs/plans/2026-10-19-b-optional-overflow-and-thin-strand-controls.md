@@ -53,6 +53,23 @@
 
 ## TaskC: Actual-engine weak-strand controls and continuation
 
+Frozen oracle contract BEFORE model outcomes: declared native pitch1m; exact
+source(-8,37)/(52,37); full x[-8,52], nondecreasing x; every complete path edge
+must stay inside closed vertical +/-1m tubes around the frozen piecewise-linear
+native-column centerlines. Split at every truth/merge boundary, not only path
+vertices. Continuous/intermittent cases require one whole strand; contribution
+masks never remove truth geometry. Merge/separate permits one branch on[-8,21],
+the common course on[21,23], and one branch on[23,52]; handoff only inside the
+actual merge. Pixel aliasing adds no hidden semantic-identity requirement.
+Drift uses only the strong-course tube. Both3m sharp cases additionally require
+apex(22,40)-to-polyline distance<=1m and interpolated x22 crossing height>=39.
+Local overlap requires the whole route inside y[36,38]. Existing different4m/
+12m apex and original OBS16/other controls remain separately required unchanged.
+The independent oracle needs adversarial full-edge, anchor, reverse, branch,
+merge-boundary, faint-drift shortcut, flattened-apex and noisy-excursion tests;
+refusal/unavailable/incomplete cannot PASS. Count/fund all oracle work and owned
+allocations; cancel cleanly. Known truth/masks must never enter scoring.
+
 - [ ] Integrate the frozen fixtures through the common actual capture/profile/facts/new admission/B0+gap/full solver route, preserving one implementation rather than a duplicate recurrence. Truth and strand masks remain outside field/table/scorer construction.
 - [ ] Define independent full-geometry oracles before evaluating: coherent elementary strands when separated; handoff allowed only at the declared actual merge; known strong course for drift; matched sharp-course bounds. Preserve original OBS16 three-strand1m, bend/apex, displacement, noisy/fleck and whole-route gates separately. Do not force hidden semantic track identity through a real merge.
 - [ ] Record raw/final geometry, actual support/availability, selected branch, status, work and hard ownership. Unvisited/failure is unavailable and never a pass. Each eligible setting must pass every applicable unchanged old and added gate; resource/source/protocol failures retain abort rules.
