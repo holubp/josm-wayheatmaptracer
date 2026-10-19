@@ -100,12 +100,61 @@ class V022SingleTrainComparatorRegionTest {
         }
         assertEquals(0,ledger.currentBytes());
     }
-    @Test void fixedGraphGateAcceptsOnlyExactDeclaredCoordinateInventory() {
+    private record FixedGraph(ArrayList<InferenceProfile> profiles,ArrayList<List<MetricPoint>> rows) { }
+    private static FixedGraph fixedGraph() {
+        // Metadata resampling only: no renderer, raster, facts, observation kernel or solver.
+        var geometry=new ProbabilisticProfileFactory().sourceSamplingGeometry(
+                List.of(new MetricPoint(0,30),new MetricPoint(120,30)),1.5);
         var profiles=new ArrayList<InferenceProfile>();var rows=new ArrayList<List<MetricPoint>>();
         for(int i=0;i<81;i++){var cells=new ArrayList<LateralStateCell>();for(int s=0;s<(i==0||i==80?1:36);s++)cells.add(new LateralStateCell(s,1,i==0||i==80,true,"s"+s));
-            var p=new InferenceProfile(1.5*i,new MetricPoint(1.5*i,0),new MetricPoint(0,1),cells,new double[cells.size()],List.of(),0,ObservationOwnership.NO_RASTER,true);profiles.add(p);
+            var p=coordinateProfile(geometry.chainageMeters().get(i),geometry.points().get(i),cells);profiles.add(p);
             var points=new ArrayList<MetricPoint>();for(int s=0;s<cells.size();s++)points.add(p.point(s));rows.add(points);}
-        assertDoesNotThrow(()->BSingleTrainComparatorRegion.requireFixedGraph(profiles,rows));rows.get(20).set(3,new MetricPoint(40,3));
-        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(profiles,rows));
+        return new FixedGraph(profiles,rows);
+    }
+    private static InferenceProfile coordinateProfile(double chainage,MetricPoint anchor,List<LateralStateCell> cells) {
+        return new InferenceProfile(chainage,anchor,new MetricPoint(0,1),cells,new double[cells.size()],List.of(),0,ObservationOwnership.NO_RASTER,true);
+    }
+    private static void replaceProfile(FixedGraph graph,int index,double chainage,MetricPoint anchor,List<LateralStateCell> cells) {
+        var profile=coordinateProfile(chainage,anchor,cells);graph.profiles().set(index,profile);
+        var row=new ArrayList<MetricPoint>();for(int s=0;s<cells.size();s++)row.add(profile.point(s));graph.rows().set(index,row);
+    }
+    @Test void fixedGraphGateAcceptsExactFactoryResamplingRatherThanIdealizedChainage() {
+        var graph=fixedGraph();assertEquals(81,graph.profiles().size());
+        assertEquals(0x404ebfffffffffffL,Double.doubleToRawLongBits(graph.rows().get(41).get(0).xMeters()));
+        assertEquals(0x404ec00000000000L,Double.doubleToRawLongBits(1.5*41));
+        long cells=0,pairs=0;
+        for(int i=0;i<81;i++) {
+            var row=graph.rows().get(i);cells+=row.size();if(i>0)pairs+=(long)graph.rows().get(i-1).size()*row.size();
+            for(int s=0;s<row.size();s++)assertEquals(graph.profiles().get(i).point(s),row.get(s));
+        }
+        assertEquals(2846,cells);assertEquals(101_160,pairs);
+        assertDoesNotThrow(()->BSingleTrainComparatorRegion.requireFixedGraph(graph.profiles(),graph.rows()));
+    }
+    @Test void fixedGraphGateRejectsBitTamperingEvenWhenProfileAndRowsAgree() {
+        var graph=fixedGraph();var point=graph.rows().get(41).get(0);
+        graph.rows().get(41).set(0,new MetricPoint(Math.nextUp(point.xMeters()),point.yMeters()));
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(graph.profiles(),graph.rows()));
+        // Updating BOTH carriers to the idealized value must not evade exact factual-x binding.
+        var profile=graph.profiles().get(41);
+        replaceProfile(graph,41,profile.chainageMeters(),new MetricPoint(61.5,30),profile.cells());
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(graph.profiles(),graph.rows()));
+        for(double boundary:List.of(40d,80d)) {
+            var boundaryGraph=fixedGraph();var original=boundaryGraph.profiles().get(41);
+            replaceProfile(boundaryGraph,41,original.chainageMeters(),new MetricPoint(boundary,30),original.cells());
+            assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(boundaryGraph.profiles(),boundaryGraph.rows()));
+        }
+    }
+    @Test void fixedGraphGateStillRejectsInventoryAnchorAndOrderChanges() {
+        var rowCount=fixedGraph();rowCount.rows().remove(80);
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(rowCount.profiles(),rowCount.rows()));
+        var inventory=fixedGraph();var original=inventory.profiles().get(41);
+        replaceProfile(inventory,41,original.chainageMeters(),original.anchor(),original.cells().subList(0,35));
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(inventory.profiles(),inventory.rows()));
+        var anchor=fixedGraph();var endpoint=anchor.profiles().get(0);
+        replaceProfile(anchor,0,endpoint.chainageMeters(),endpoint.anchor(),List.of(new LateralStateCell(0,1,false,true,"s0")));
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(anchor.profiles(),anchor.rows()));
+        var order=fixedGraph();var reordered=order.profiles().get(41);
+        replaceProfile(order,41,order.profiles().get(40).chainageMeters(),reordered.anchor(),reordered.cells());
+        assertThrows(SecurityException.class,()->BSingleTrainComparatorRegion.requireFixedGraph(order.profiles(),order.rows()));
     }
 }

@@ -101,8 +101,12 @@ final class BSingleTrainComparatorRegion {
         for(int i=0;i<81;i++) {
             var profile=profiles.get(i);if(profile.chainageMeters()<=previous||rows.get(i).size()!=profile.cells().size())throw new SecurityException("Original profile order changed");previous=profile.chainageMeters();
             cells+=rows.get(i).size();maximum=Math.max(maximum,rows.get(i).size());
+            // Preserve the frozen two-point resampler's operation order, not idealized 1.5*i.
+            // Row41 is one ULP below61.5 after target/length followed by fraction*length.
+            double target=i==80?120.0:i*120.0/80;
+            double expectedX=(target/120.0)*120.0;
             for(int s=0;s<rows.get(i).size();s++) {
-                var p=rows.get(i).get(s);if(!p.equals(profile.point(s))||Double.doubleToRawLongBits(p.xMeters())!=Double.doubleToRawLongBits(1.5*i)||p.xMeters()==40||p.xMeters()==80)
+                var p=rows.get(i).get(s);if(!p.equals(profile.point(s))||Double.doubleToRawLongBits(p.xMeters())!=Double.doubleToRawLongBits(expectedX)||p.xMeters()==40||p.xMeters()==80)
                     throw new SecurityException("Fixed x graph or exact coordinate identity changed");
             }
         }
