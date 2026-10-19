@@ -1,0 +1,170 @@
+name: Fixed original TRAIN accepted B0 comparator
+
+on:
+  push:
+    branches: [codex/b-observation-comparator-20261019]
+
+permissions:
+  contents: read
+
+jobs:
+  accepted-comparator:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/codex/b-observation-comparator-20261019' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      COMPARATOR_FREEZE_SHA256: c2c269049328c491f31362d80cab794b514e067deedb4254503fc71fe07f11f6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify external source and explicit empirical approval before compilation
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import hashlib,json,os,re
+          from pathlib import Path
+          freeze=Path("superpowers/docs/plans/2026-10-19-b-single-train-comparator-freeze.json").read_bytes()
+          expected=os.environ["COMPARATOR_FREEZE_SHA256"]
+          if not re.fullmatch("[0-9a-f]{64}",expected) or hashlib.sha256(freeze).hexdigest()!=expected:
+              raise SystemExit("External comparator freeze mismatch")
+          fields=json.loads(freeze)
+          branch="refs/heads/codex/b-observation-comparator-20261019"
+          repo="holubp/josm-wayheatmaptracer"
+          e=os.environ
+          if fields.get("schema")!=1 or fields.get("purpose")!="SINGLE_ORIGINAL_TRAIN_B0_ACCEPTED_COMPARATOR" or fields.get("approval")!="APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING" or fields.get("branch")!=branch:
+              raise SystemExit("Comparator pending empirical authorization or source review")
+          if e.get("GITHUB_ACTIONS")!="true" or e.get("GITHUB_EVENT_NAME")!="push" or e.get("GITHUB_RUN_ATTEMPT")!="1" or e.get("GITHUB_REF")!=branch or e.get("GITHUB_REPOSITORY")!=repo or not re.fullmatch("[0-9]{1,20}",e.get("GITHUB_RUN_ID","")) or not re.fullmatch("[0-9a-f]{40}",e.get("GITHUB_SHA","")) or e.get("GITHUB_WORKFLOW_REF")!=repo+"/.github/workflows/observation-single-train-comparator.yml@"+branch:
+              raise SystemExit("Exact first authorized comparator push required")
+          members=fields.get("members")
+          if not isinstance(members,dict) or not members:
+              raise SystemExit("Fixed comparator source inventory required")
+          for path,digest in members.items():
+              member=Path(path)
+              if member.is_absolute() or ".." in member.parts or member.is_symlink() or not re.fullmatch("[0-9a-f]{64}",digest) or hashlib.sha256(member.read_bytes()).hexdigest()!=digest:
+                  raise SystemExit("Comparator source mismatch")
+          PY
+      - name: Compile outside the fixed comparator clock
+        run: sh ./gradlew -I scripts/single-train-cost.init.gradle.kts -I scripts/single-train-comparator.init.gradle.kts compileJava compileObservationIdentifyJava observationIdentifyClasses --rerun-tasks --console=plain
+      - name: Run the fixed accepted B0 comparator once
+        run: |
+          set -eu
+          timeout 360s sh ./gradlew -I scripts/single-train-cost.init.gradle.kts -I scripts/single-train-comparator.init.gradle.kts v022SingleTrainAcceptedComparator \
+            -PsingleTrainComparatorFreezeSha256="$COMPARATOR_FREEZE_SHA256" \
+            -PsingleTrainComparatorOutput="$RUNNER_TEMP/josm-single-train-comparator" --console=plain
+      - name: Require complete nonqualifying accepted-comparator evidence
+        run: |
+          python3 - <<'PY'
+          import json,os,math,struct,re
+          from pathlib import Path
+          root=Path(os.environ["RUNNER_TEMP"])/"josm-single-train-comparator"
+          def require(condition):
+              if not condition:
+                  raise SystemExit("Complete fixed truth-conditioned comparator evidence required")
+          def read(name):
+              raw=(root/name).read_bytes();require(len(raw)<=65536)
+              return json.loads(raw)
+          def bits(value):
+              require(isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value))
+              return struct.pack(">d",value)
+          freeze=json.loads(Path("superpowers/docs/plans/2026-10-19-b-single-train-comparator-freeze.json").read_bytes())
+          require(set(p.name for p in root.iterdir())==set(freeze["outputFiles"]))
+          status=read("status.json");binding=read("binding.json");proof=read("proof.json");solver=read("solver.json");summary=read("summary.json")
+          require(status.get("schema")==1 and status.get("status")=="COMPLETE_TRUTH_CONDITIONED_COMPARISON_NOT_QUALIFIED")
+          require(status.get("purpose")==binding.get("purpose")==summary.get("purpose")=="SINGLE_ORIGINAL_TRAIN_B0_ACCEPTED_COMPARATOR")
+          require(binding.get("freezeSha256")==summary.get("freezeSha256")==os.environ["COMPARATOR_FREEZE_SHA256"])
+          require(binding.get("sourceProofOnly")=="94d7ea9a03134cab331b317a1764b0d517bd2dc1dea6d2a78482bcf8313dc6de")
+          require(binding.get("case")=="sparse-crossing-noisy-strands-vs-persistent-parallel/train/v0/right" and binding.get("parameter")==summary.get("parameter")=="G1-L1-B0")
+          require(status.get("selectionAuthority")==binding.get("selectionAuthority")==summary.get("selectionAuthority")=="NONE")
+          require(status.get("rasterReads")==status.get("labelReads")==1 and status.get("selectReads")==status.get("holdoutReads")==0)
+          require(status.get("actualSolverEntries")==1 and status.get("completedPathAccounts")==2 and status.get("proofComplete") is True and status.get("proofPairs")==101160)
+          require(status.get("ownerBytesAfterClose")==0 and status.get("uncertainOrdinaryReservationBytes")==0)
+          require(isinstance(status.get("peakAccountedBytes"),int) and 0<status["peakAccountedBytes"]<=67108864 and isinstance(status.get("diskChargeBeforeStatusUpperBound"),int) and 0<status["diskChargeBeforeStatusUpperBound"]<=2147483648)
+          counts=status.get("counts",{})
+          require(counts.get("adapterEvaluations")==81 and counts.get("profileTerms")==162 and counts.get("pairTerms")==160 and counts.get("tripleTerms")==158 and counts.get("primitiveCalls")==962 and counts.get("selectedCellComponentRecords")==0)
+          phases=status.get("phases",{});require(set(phases)=={"ACQUISITION","ADAPT","PROOF","SOLVE","ACCOUNT"})
+          require(all(c=={"attempted":1,"succeeded":1,"failed":0,"active":0} for c in phases.values()))
+          require(proof.get("schema")==1 and proof.get("complete") is True and proof.get("pairs")==proof.get("finishedPairs")==101160 and proof.get("firstMismatch")=={} and proof.get("refusedCallbackCharges")==0)
+          require(proof.get("maximumPairs")==101160 and proof.get("maximumCallbackUnits")==1000000000 and isinstance(proof.get("admittedCallbackUnits"),int) and 0<proof["admittedCallbackUnits"]<=1000000000)
+          require(isinstance(proof.get("noHookSegmentQueries"),int) and proof["noHookSegmentQueries"]>0)
+          require(all(isinstance(proof.get(k),str) and re.fullmatch("[0-9a-f]{64}",proof[k]) for k in ("orderedAnswerSha256","coordinateSha256")))
+          require(solver.get("schema")==1 and solver.get("status") in ("COMPLETE","AMBIGUOUS","REVIEW_REQUIRED") and solver.get("route")=="ACTUAL_PUBLIC_FULL_FB_KBEST_MATERIALIZATION_DIAGNOSTICS")
+          require(solver.get("rawPathCount")==solver.get("distinctPathCount")==1 and solver.get("posteriorUsable") is True)
+          bits(solver.get("logPartition"));bits(solver.get("mapEnergy"))
+          work=solver.get("workAccounting",{});require(isinstance(work,dict) and work.get("executionPolicy")=="terminal-path-count-scored-work-v2")
+          require(isinstance(work.get("forwardBackwardScores"),int) and work["forwardBackwardScores"]>0 and isinstance(work.get("kBestScores"),int) and work["kBestScores"]>0 and work.get("refusedScoreAttempts")==0)
+          require(work.get("logicalKBestExtensions", -1)>=work["kBestScores"] and solver.get("evaluatedTransitions")==work["forwardBackwardScores"]+work["kBestScores"]<=128000000)
+          require(isinstance(solver.get("evaluatedPairVisits"),int) and 0<solver["evaluatedPairVisits"]<=8000000)
+          completion=solver.get("completion",{});require(isinstance(completion,dict) and completion.get("effectiveRawLimit")==completion.get("effectiveDistinctLimit")==1)
+          require(completion.get("completePathsAtSaturation") in (1,2) and completion.get("terminalCountSaturated")==completion.get("rawEnumerationCapped")==(completion["completePathsAtSaturation"]==2) and completion.get("requestedDiversityReached") is True)
+          require(solver.get("alternativeSearchTruncated")== (completion["rawEnumerationCapped"] and not completion["requestedDiversityReached"]))
+          require(solver.get("alternativeAuthority")=="CAP1_MAP_ONLY_NOT_ALL_ALTERNATIVES_COMPLETE")
+          classes=binding.get("runtimeClassSha256",{});require(len(classes)==15 and all(isinstance(v,str) and re.fullmatch("[0-9a-f]{64}",v) for v in classes.values()))
+          archive=json.loads(Path("src/test/resources/b-single-train-geometry/G1-L1-B0.json").read_bytes())
+          require(summary.get("input")==archive["input"] and summary.get("modelHash")==archive["rawGeometry"]["modelHash"])
+          require(summary.get("archivedReceiptSha256")=="05a3daf825e5dad3f8b3a563dcdf2c215b4a72ffedef8a912115371fd60f22f1")
+          require(summary.get("energyBitEquality") is True and summary.get("actualOriginalWholeOraclePassed") is True and summary.get("originalHardRoutePassed") is True and summary.get("exactAnchorsPassed") is True)
+          require(summary.get("comparisonAuthority")=="BEST_UNDER_ORIGINAL_SELECTOR_X40_80_ONLY" and summary.get("exteriorImageSupport")=="UNAVAILABLE_NOT_ENFORCED_BY_SELECTOR")
+          checks=summary.get("checks",[]);require(any(c.get("code")=="PARALLEL_SEGMENT_UNION" and c.get("verdict")=="PASS" and c.get("count")==28 for c in checks))
+          require(bits(summary.get("archivedEnergy"))==bits(archive["rawGeometry"]["mapEnergy"])==bits(141.19791473890345))
+          require(bits(summary.get("comparatorEnergy"))==bits(solver["mapEnergy"]))
+          require(bits(summary.get("gapComparatorMinusArchived"))==bits(summary["comparatorEnergy"]-summary["archivedEnergy"]))
+          for path in ("archived","comparator"):
+              rows=[]
+              for c in range(11):
+                  detail=read(f"detail-{path}-{c:02d}.json")
+                  require(detail.get("schema")==1 and detail.get("path")==("ARCHIVED_B0" if path=="archived" else "TRUTH_CONDITIONED_COMPARATOR_B0") and len(detail.get("profiles",[]))==(8 if c<10 else 1))
+                  rows.extend(detail["profiles"])
+              require([r.get("profile") for r in rows]==list(range(81)))
+              expected=archive["rawGeometry"]["mapStateIndices"] if path=="archived" else solver.get("mapStateIndices")
+              require(isinstance(expected,list) and len(expected)==81 and [r.get("state") for r in rows]==expected)
+              require(all(r.get("componentDensities")=="UNAVAILABLE_NO_SECOND_KERNEL_PASS" for r in rows))
+              require(bits(rows[-1].get("prefixEnergy"))==bits(summary["archivedEnergy" if path=="archived" else "comparatorEnergy"]))
+          for p in range(5):
+              progress=read(f"progress-{p:02d}.json");require(progress.get("schema")==1 and sum(c.get("active",0) for c in progress.get("phases",{}).values())==1)
+          PY
+      - name: Upload only fixed public comparator leaves
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-single-train-comparator
+          path: |
+            ${{ runner.temp }}/josm-single-train-comparator/binding.json
+            ${{ runner.temp }}/josm-single-train-comparator/status.json
+            ${{ runner.temp }}/josm-single-train-comparator/proof.json
+            ${{ runner.temp }}/josm-single-train-comparator/solver.json
+            ${{ runner.temp }}/josm-single-train-comparator/summary.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-00.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-01.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-02.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-03.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-04.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-05.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-06.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-07.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-08.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-09.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-archived-10.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-00.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-01.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-02.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-03.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-04.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-05.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-06.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-07.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-08.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-09.json
+            ${{ runner.temp }}/josm-single-train-comparator/detail-comparator-10.json
+            ${{ runner.temp }}/josm-single-train-comparator/progress-00.json
+            ${{ runner.temp }}/josm-single-train-comparator/progress-01.json
+            ${{ runner.temp }}/josm-single-train-comparator/progress-02.json
+            ${{ runner.temp }}/josm-single-train-comparator/progress-03.json
+            ${{ runner.temp }}/josm-single-train-comparator/progress-04.json
+          if-no-files-found: warn
+          retention-days: 30
