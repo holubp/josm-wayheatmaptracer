@@ -1,0 +1,67 @@
+name: Observed-gap synthetic unit checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/b-observation-ci-20261018]
+    paths:
+      - .github/workflows/b-gap-synthetic-checks.yml
+      - build.gradle.kts
+      - settings.gradle.kts
+      - gradle.properties
+      - buildSrc/**
+      - gradle/wrapper/**
+      - gradle/**
+      - gradlew
+      - src/main/java/**
+      - src/test/java/**
+      - src/test/resources/b-observed-gap/**
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-unit-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Run fixed synthetic resource and matched-control tests
+        run: sh ./gradlew test --tests '*V022BGapResourceBoundTest' --tests '*V022BGapMatchedControlsTest' --no-daemon --no-build-cache --rerun-tasks --console=plain
+      - name: Upload only selected JUnit XML reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: observed-gap-synthetic-unit-junit
+          path: |
+            build/test-results/test/*V022BGapResourceBoundTest.xml
+            build/test-results/test/*V022BGapMatchedControlsTest.xml
+            build/gap-task5-matrix/summary.json
+            build/gap-task5-matrix/strong-parallel-gap.json
+            build/gap-task5-matrix/connected-straight.json
+            build/gap-task5-matrix/connected-short-bend.json
+            build/gap-task5-matrix/connected-sharp-apex.json
+            build/gap-task5-matrix/faint-six-metre-bend.json
+            build/gap-task5-matrix/faint-twelve-metre-bend.json
+            build/gap-task5-matrix/genuine-junction.json
+            build/gap-task5-matrix/positive-twenty-five-representation.json
+            build/gap-task5-matrix/negative-twenty-five-representation.json
+            build/gap-task5-matrix/flecks-versus-faint-coherent.json
+            build/gap-task5-matrix/valid-sparse-gap.json
+            build/gap-task5-matrix/invalid-unknown-gap.json
+            build/gap-task5-matrix/censored-flank.json
+            build/gap-task5-matrix/strong-modulated-versus-quiet-faint.json
+            build/gap-task5-matrix/unknown-detour.json
+            build/gap-task5-matrix/uniform-null.json
+            build/gap-task5-matrix/alternating-null.json
+            build/gap-task5-matrix/half-pitch-alias.json
+            build/gap-task5-matrix/quarter-phase-alias.json
+            build/gap-task5-matrix/reverse-original-mesh.json
+          if-no-files-found: ignore
+          retention-days: 5

@@ -1,0 +1,36 @@
+{
+  "schema": "observed-gap-matched-toys-v1",
+  "status": "PREREGISTERED_BEFORE_RESULTS_NOT_MODEL_QUALIFICATION",
+  "source": "manually declared scalar vertices -> actual RasterEvidenceCapture.captureWithMetricScalarSource -> owned ProbabilisticProfileFactory -> BIdentificationFactsExtractor -> unchanged admission -> G1/L1/B0 adapter -> actual full-FB/K-best solver",
+  "domain": {"inputWidth":81,"inputHeight":81,"inputOrigin":[-20,0],"nativePitchMeters":1,"source":[[8,37],[32,37]],"stepMeters":1.5,"searchHalfWidthMeters":25,"fixedEndpoints":true},
+  "etas": [0,1,2,4,8,16,32,64],
+  "budgets": "original defaults for admission; MAP_ONLY raw/distinct1 for actual solver, all FB retained; 64MiB attempt including original32MiB render and1MiB metadata reservations",
+  "intensity": "background .02; Gaussian cross-section sigma1; strong .8; faint .08; deterministic formula values clamped only to [0,1]",
+  "geometry": "independent closed vertical +/-1m piecewise-linear truth tubes, exact stored anchors and whole-segment containment; parallel control stays on original lower branch through ENTIRE route, no selector window or endpoint escape",
+  "recipes": [
+    "strong-parallel-gap", "connected-straight", "connected-short-bend", "connected-sharp-apex",
+    "faint-six-metre-bend", "faint-twelve-metre-bend", "genuine-junction",
+    "positive-twenty-five-representation", "negative-twenty-five-representation",
+    "flecks-versus-faint-coherent", "valid-sparse-gap", "invalid-unknown-gap",
+    "censored-flank", "strong-modulated-versus-quiet-faint", "unknown-detour",
+    "uniform-null", "alternating-null", "half-pitch-alias", "quarter-phase-alias", "reverse-original-mesh"
+  ],
+  "shapeDefinitions": {
+    "parallel": "lower37 amplitude(.8 if x<20 else .55); upper43 amplitude(.55 if x<20 else .8); BOTH continuous, never noise",
+    "shortBend": "37+2*max(0,1-abs(x-20)/6)",
+    "sharpApex": "37+3*max(0,1-abs(x-20)/3)",
+    "faintSix": "37+3*max(0,1-abs(x-20)/3)",
+    "faintTwelve": "37+3*max(0,1-abs(x-20)/6)",
+    "junction": "max(horizontal strong y37, vertical strong x20)",
+    "displacement": "strong centers61 and13; exact original +/-25m state representation is the required gate, with actual returned geometry retained",
+    "flecks": "faint continuous y37 plus strong sigma.45 spots centered(11,43),(17,43),(23,43),(29,43)",
+    "validGap": "background only for18<=x<=22, strong y37 elsewhere; valid low is not invalid",
+    "invalidGap": "strong y37; invalid acquired vertices18<=x<=22 and34<=y<=40",
+    "censored": "strong center61.75, original upper search bound62; no fake complete flank",
+    "modulated": "lower37 amplitude .7+.25*sin(pi*(x-8)/6), upper43 amplitude .15",
+    "unknownDetour": "same invalid gap plus faint y43; an escape from known correct branch cannot qualify",
+    "aliases": "same straight native scalar plane, output pitch.5; phase0 or.25; no recovered native values/bitwise alias claim",
+    "reverse": "same straight scalar plane, actual source order reversed BEFORE actual factory resampling; own receipts retained"
+  },
+  "interpretation": "Record all8 settings independently including failures/unavailable. No winner, fit, production qualification, threshold/eta tuning or private-data authority. Gate progression remains controller-owned. Invalid-unknown controls pass their negative test only when they remain explicitly NOT_QUALIFIED."
+}
