@@ -50,6 +50,8 @@ final class BGapEvidence {
             long maskReads,long prefixOperations,long enclosureOperations,long pairWrites,
             long slabEvaluations,long solverLookups,long cancellationChecks,long buildUnits,
             long currentOwnedBytes,long peakOwnedBytes) { }
+    record WorkDetails(long bigIntegerApiCalls,long complexityUpperUnits,long reservedUpperUnits,
+            long hypotCalls,long primitiveUpperUnits) { }
     enum Work { SOURCE_ELEMENT, MODE_COMPARISON, STRIP_PREDICATE, CACHE_READ, MASK_READ,
         PREFIX_OPERATION, ENCLOSURE_OPERATION, PAIR_WRITE, SLAB_EVALUATION, SOLVER_LOOKUP, CANCELLATION_CHECK,
         VALIDATION_OPERATION }
@@ -57,11 +59,13 @@ final class BGapEvidence {
         private long sourceElements,modeComparisons,stripPredicates,cacheReads,maskReads,prefixOperations,
                 enclosureOperations,pairWrites,slabEvaluations,solverLookups,cancellationChecks,buildUnits,
                 currentOwnedBytes,peakOwnedBytes;
+        private long bigIntegerApiCalls,complexityUpperUnits,reservedUpperUnits,hypotCalls,primitiveUpperUnits;
         void add(Work work,long units) {
             Objects.requireNonNull(work);
             if(units<0)throw new IllegalArgumentException("Negative executed work");
             long nextBuild=work==Work.SOLVER_LOOKUP?buildUnits:Math.addExact(buildUnits,units);
-            if(nextBuild>BUILD_UNITS || work==Work.SLAB_EVALUATION && units>SLABS-slabEvaluations)
+            if(nextBuild>BUILD_UNITS || reservedUpperUnits!=0&&nextBuild>reservedUpperUnits
+                    || work==Work.SLAB_EVALUATION && units>SLABS-slabEvaluations)
                 throw new IllegalArgumentException("Gap build work limit");
             switch(work) {
                 case SOURCE_ELEMENT -> sourceElements=Math.addExact(sourceElements,units);
@@ -84,6 +88,31 @@ final class BGapEvidence {
             return new Counters(sourceElements,modeComparisons,stripPredicates,cacheReads,maskReads,
                     prefixOperations,enclosureOperations,pairWrites,slabEvaluations,solverLookups,
                     cancellationChecks,buildUnits,currentOwnedBytes,peakOwnedBytes);
+        }
+        WorkDetails details() {return new WorkDetails(bigIntegerApiCalls,complexityUpperUnits,reservedUpperUnits,hypotCalls,primitiveUpperUnits);}
+        void reserveUpper(long units) {
+            if(units<buildUnits||units>BUILD_UNITS)throw new IllegalArgumentException("Gap preflight work bound");
+            reservedUpperUnits=units;
+        }
+        void integerCall(long complexity) {
+            long next=Math.addExact(complexityUpperUnits,complexity);
+            add(Work.VALIDATION_OPERATION,Math.addExact(1,complexity));
+            bigIntegerApiCalls=Math.addExact(bigIntegerApiCalls,1);complexityUpperUnits=next;
+        }
+        /** Statically enumerated conservative scalar/index blocks, not measured JVM instructions. */
+        void numeric(long operations) {add(Work.VALIDATION_OPERATION,operations);primitiveUpperUnits=Math.addExact(primitiveUpperUnits,operations);}
+        void hypot() {numeric(1);hypotCalls=Math.addExact(hypotCalls,1);}
+        void own(long bytes) {currentOwnedBytes=Math.addExact(currentOwnedBytes,bytes);peakOwnedBytes=Math.max(peakOwnedBytes,currentOwnedBytes);}
+        void release(long bytes) {if(bytes>currentOwnedBytes)throw new IllegalStateException("Gap ownership underflow");currentOwnedBytes-=bytes;}
+        void absorb(Counters c) {
+            add(Work.SOURCE_ELEMENT,c.sourceElements());add(Work.MODE_COMPARISON,c.modeComparisons());
+            add(Work.STRIP_PREDICATE,c.stripPredicates());add(Work.CACHE_READ,c.cacheReads());add(Work.MASK_READ,c.maskReads());
+            add(Work.PREFIX_OPERATION,c.prefixOperations());add(Work.ENCLOSURE_OPERATION,c.enclosureOperations());
+            add(Work.PAIR_WRITE,c.pairWrites());add(Work.SLAB_EVALUATION,c.slabEvaluations());
+            add(Work.SOLVER_LOOKUP,c.solverLookups());add(Work.CANCELLATION_CHECK,c.cancellationChecks());
+            long categorized=c.sourceElements()+c.modeComparisons()+c.stripPredicates()+c.cacheReads()+c.maskReads()
+                    +c.prefixOperations()+c.enclosureOperations()+c.pairWrites()+c.slabEvaluations()+c.cancellationChecks();
+            add(Work.VALIDATION_OPERATION,Math.subtractExact(c.buildUnits(),categorized));
         }
     }
     /** Conservative alias capability: only a shared immutable snapshot and selected field are proven here.
@@ -168,7 +197,7 @@ final class BGapEvidence {
      * string comparison checkpoints every64 characters (well below1024 primitive operations).
      * Cache/mode counters are actual visits/reads; buildUnits also includes labelled
      * conservative fixed-body primitive charges, not inferred graph work. */
-    private static void validateAndRetain(Input input,AttemptMemoryLedger.Owner owner,
+    static void validateAndRetain(Input input,AttemptMemoryLedger.Owner owner,
             CancellationProbe cancellation,WorkCounter work) {
         long modeCount=0;
         for(int row=0;row<input.facts().size();row++) {
