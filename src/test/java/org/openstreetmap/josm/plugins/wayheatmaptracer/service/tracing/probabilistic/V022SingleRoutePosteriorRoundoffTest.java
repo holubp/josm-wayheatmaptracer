@@ -6,7 +6,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.lang.reflect.InvocationTargetException;
-import java.util.Arrays;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -211,16 +210,26 @@ class V022SingleRoutePosteriorRoundoffTest {
     private static double mass(ProbabilisticInference.PathRecord record, int[] states,
             List<InferenceProfile> profiles, EvidenceModelParameters parameters, Object messages,
             CancellationProbe cancellation) throws Exception {
-        return (Double) invoke(ProbabilisticInference.class, "materializedPosteriorMass",
-                record, states, profiles, parameters, messages, cancellation);
+        Class<?> messagesType = Class.forName(ProbabilisticInference.class.getName() + "$GraphMessages");
+        return (Double) invokeDeclared(ProbabilisticInference.class, "materializedPosteriorMass",
+                new Class<?>[] {ProbabilisticInference.PathRecord.class, int[].class, List.class,
+                    EvidenceModelParameters.class, messagesType, CancellationProbe.class},
+                null, record, states, profiles, parameters, messages, cancellation);
     }
 
     private static Object invoke(Object receiver, String name, Object... arguments) throws Exception {
         Class<?> type = receiver instanceof Class<?> cls ? cls : receiver.getClass();
-        var method = Arrays.stream(type.getDeclaredMethods()).filter(m -> m.getName().equals(name))
-                .findFirst().orElseThrow();
+        if (arguments.length != 0) {
+            throw new IllegalArgumentException("Explicit parameter types are required for reflective arguments");
+        }
+        return invokeDeclared(type, name, new Class<?>[0], receiver instanceof Class<?> ? null : receiver);
+    }
+
+    private static Object invokeDeclared(Class<?> type, String name, Class<?>[] parameterTypes,
+            Object receiver, Object... arguments) throws Exception {
+        var method = type.getDeclaredMethod(name, parameterTypes);
         method.setAccessible(true);
-        try { return method.invoke(receiver instanceof Class<?> ? null : receiver, arguments); }
+        try { return method.invoke(receiver, arguments); }
         catch (InvocationTargetException failure) {
             if (failure.getCause() instanceof Exception exception) throw exception;
             if (failure.getCause() instanceof Error error) throw error;
@@ -258,10 +267,16 @@ class V022SingleRoutePosteriorRoundoffTest {
                     BUDGETS.maximumTransitions());
             var admissions = new TransitionAdmissionMemo(32768, owner.child("admissions"));
             var region = MetricRegion.rectangle(-1, 0.5, 5, 2);
-            messages = invoke(ProbabilisticInference.class, "forwardBackward", profiles, ORIGINAL,
-                    BUDGETS, region, CancellationProbe.NONE, admissions, owner.child("messages"), counter);
-            kbest = invoke(ProbabilisticInference.class, "enumerateKBest", profiles, ORIGINAL,
-                    BUDGETS, region, CancellationProbe.NONE, admissions, owner.child("kbest"), counter);
+            Class<?> counterType = Class.forName(ProbabilisticInference.class.getName() + "$WorkCounter");
+            Class<?>[] stageTypes = {List.class, EvidenceModelParameters.class, TraceBudgets.class,
+                MetricRegion.class, CancellationProbe.class, TransitionAdmission.class,
+                AttemptMemoryLedger.Owner.class, counterType};
+            messages = invokeDeclared(ProbabilisticInference.class, "forwardBackward", stageTypes, null,
+                    profiles, ORIGINAL, BUDGETS, region, CancellationProbe.NONE, admissions,
+                    owner.child("messages"), counter);
+            kbest = invokeDeclared(ProbabilisticInference.class, "enumerateKBest", stageTypes, null,
+                    profiles, ORIGINAL, BUDGETS, region, CancellationProbe.NONE, admissions,
+                    owner.child("kbest"), counter);
             invoke(kbest, "releaseFrontier");
             record = (ProbabilisticInference.PathRecord) ((List<?>) invoke(kbest, "paths")).get(0);
             arena = new ProbabilisticInference.PathArena(owner.child("synthetic-old-records"));

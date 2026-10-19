@@ -69,6 +69,14 @@ public final class ProbabilisticInference {
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
         ProbabilisticExecutionPolicy.Mode mode) {
+        return solve(profiles, parameters, budgets, decisionRegion, cancellation, resultOwner, mode, null);
+    }
+
+    /** Explicit optional additive adjacent-state energy capability. */
+    public ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode, AdjacentStatePotential potential) {
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
@@ -102,7 +110,7 @@ public final class ProbabilisticInference {
             }
             AttemptMemoryLedger.Owner messagesOwner = workOwner.child("forward-backward");
             GraphMessages messages = forwardBackward(profiles, parameters, budgets, decisionRegion,
-                    cancellation, admissions, messagesOwner, workCounter);
+                    cancellation, admissions, messagesOwner, workCounter, potential);
             long forwardBackwardNanos = System.nanoTime() - inferenceStarted;
             if (messages.resourceLimited()) {
                 return failureOwnedAfterClose(workOwner, ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,
@@ -121,7 +129,7 @@ public final class ProbabilisticInference {
             long kBestStarted = System.nanoTime();
             AttemptMemoryLedger.Owner kBestOwner = workOwner.child("k-best");
             KBestResult kBest = enumerateKBest(profiles, parameters, budgets,
-                decisionRegion, cancellation, admissions, kBestOwner, workCounter);
+                decisionRegion, cancellation, admissions, kBestOwner, workCounter, potential);
             long kBestNanos = System.nanoTime() - kBestStarted;
             long allTransitions = messages.transitions() + kBest.transitions();
             if (kBest.resourceLimited()) {
@@ -131,8 +139,8 @@ public final class ProbabilisticInference {
             kBest.releaseFrontier();
             long alternativesStarted = System.nanoTime();
             AttemptMemoryLedger.Owner retainedOwner = workOwner.child("inference-result");
-            List<ProbabilisticPath> rawPaths = materialize(kBest.paths(), profiles, parameters,
-                messages, cancellation, retainedOwner);
+            List<ProbabilisticPath> rawPaths = materializeWithPotential(kBest.paths(), profiles, parameters,
+                messages, cancellation, retainedOwner, potential);
             kBest.close();
             double pitch = representativePitch(profiles);
             int distinctCap = Math.min(8, budgets.maximumDistinctAlternatives());
@@ -238,6 +246,14 @@ public final class ProbabilisticInference {
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
+        return forwardBackward(profiles, parameters, budgets, decisionRegion, cancellation,
+                admissions, owner, workCounter, null);
+    }
+
+    private static GraphMessages forwardBackward(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, TransitionAdmission admissions,
+        AttemptMemoryLedger.Owner owner, WorkCounter workCounter, AdjacentStatePotential potential) {
         cancellation.checkpoint();
         // The fallback memo grows mandatory payload during admission; optional tables
         // must not occupy bytes needed by that later growth.
@@ -276,7 +292,7 @@ public final class ProbabilisticInference {
                 }
                 double energy = profileEnergy(profiles, 0, first, parameters)
                     + profileEnergy(profiles, 1, second, parameters)
-                    + pairEnergy(profiles, 0, first, second, parameters);
+                    + pairEnergyWithPotential(profiles, 0, first, second, parameters, potential);
                 initial[first][second] = -energy / parameters.temperature()
                     + logMeasure(profiles.get(0).cells().get(first))
                     + logMeasure(profiles.get(1).cells().get(second));
@@ -364,6 +380,7 @@ public final class ProbabilisticInference {
                             }
                             secondHeadingReady = true;
                         }
+                        pair = addPotential(potential, profileIndex - 1, prior, state, pair);
                         double triple = 0.0;
                         if (parameters.turnWeight() != 0.0) {
                             // Validate every point in the original order, after score admission.
@@ -497,6 +514,7 @@ public final class ProbabilisticInference {
                             }
                             secondHeadingReady = true;
                         }
+                        pair = addPotential(potential, currentProfile, currentState, next, pair);
                         double triple = 0.0;
                         if (parameters.turnWeight() != 0.0) {
                             // Keep deferred validation even when the fixed first heading is reusable.
@@ -563,6 +581,15 @@ public final class ProbabilisticInference {
         MetricRegion decisionRegion,
         CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
+        return enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation,
+                admissions, owner, workCounter, null);
+    }
+
+    private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets,
+        MetricRegion decisionRegion,
+        CancellationProbe cancellation, TransitionAdmission admissions,
+        AttemptMemoryLedger.Owner owner, WorkCounter workCounter, AdjacentStatePotential potential) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
         PathArena arena = new PathArena(owner.child("reachable-ancestry"), workCounter);
@@ -599,7 +626,7 @@ public final class ProbabilisticInference {
                 }
                 double energy = profileEnergy(profiles, 0, first, parameters)
                     + profileEnergy(profiles, 1, second, parameters)
-                    + pairEnergy(profiles, 0, first, second, parameters);
+                    + pairEnergyWithPotential(profiles, 0, first, second, parameters, potential);
                 PathRecord record = arena.initial(first, second, energy,
                         logMeasure(profiles.get(0).cells().get(first))
                             + logMeasure(profiles.get(1).cells().get(second)));
@@ -672,6 +699,7 @@ public final class ProbabilisticInference {
                                     headingReady = true;
                                     pair = pairEnergyAtHeading(start, end, prior, state, parameters, secondHeading);
                                 }
+                                pair = addPotential(potential, profileIndex - 1, prior, state, pair);
                                 unaryPair = unary + pair;
                                 pairReady = true;
                             }
@@ -754,9 +782,10 @@ public final class ProbabilisticInference {
                             continue;
                         }
                         workCounter.recordLogicalKBestExtensions(prefixes.size());
+                        double pair = pairEnergyWithPotential(profiles, profileIndex - 1, prior,
+                                state, parameters, potential);
                         double increment = profileEnergy(profiles, profileIndex, state, parameters)
-                            + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
-                            + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
+                            + pair + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
                         int base = before * cap;
                         for (int index = 0; index < prefixes.size(); index++) {
                             boolean scored = workCounter.score(false);
@@ -888,6 +917,12 @@ public final class ProbabilisticInference {
     private static List<ProbabilisticPath> materialize(List<PathRecord> paths,
         List<InferenceProfile> profiles, EvidenceModelParameters parameters, GraphMessages messages,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        return materializeWithPotential(paths, profiles, parameters, messages, cancellation, owner, null);
+    }
+
+    private static List<ProbabilisticPath> materializeWithPotential(List<PathRecord> paths,
+        List<InferenceProfile> profiles, EvidenceModelParameters parameters, GraphMessages messages,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AdjacentStatePotential potential) {
         AttemptMemoryLedger.Owner builder = owner.child("path-list-builder");
         try {
             List<ProbabilisticPath> result = allocated(builder, listBytes(paths.size()),
@@ -918,8 +953,8 @@ public final class ProbabilisticInference {
                             "materialization",
                             () -> profiles.get(profileIndex).point(states[profileIndex])));
                 }
-                double mass = materializedPosteriorMass(record, states, profiles, parameters,
-                        messages, cancellation);
+                double mass = materializedPosteriorMassWithPotential(record, states, profiles, parameters,
+                        messages, cancellation, potential);
                 ProbabilisticPath path = new ProbabilisticPath(states, points,
                         branchSignature(states, profiles, temporary), record.energy(),
                         record.logMeasure(), mass);
@@ -946,6 +981,13 @@ public final class ProbabilisticInference {
     private static double materializedPosteriorMass(PathRecord record, int[] states,
             List<InferenceProfile> profiles, EvidenceModelParameters parameters,
             GraphMessages messages, CancellationProbe cancellation) {
+        return materializedPosteriorMassWithPotential(record, states, profiles, parameters,
+                messages, cancellation, null);
+    }
+
+    private static double materializedPosteriorMassWithPotential(PathRecord record, int[] states,
+            List<InferenceProfile> profiles, EvidenceModelParameters parameters,
+            GraphMessages messages, CancellationProbe cancellation, AdjacentStatePotential potential) {
         double mass = StrictMath.exp(-record.energy() / parameters.temperature()
                 + record.logMeasure() - messages.logPartition());
         if (!Double.isFinite(mass) || mass <= 1.0) return mass;
@@ -967,7 +1009,7 @@ public final class ProbabilisticInference {
         } else {
             energy = profileEnergy(profiles, 0, states[0], parameters)
                     + profileEnergy(profiles, 1, states[1], parameters)
-                    + pairEnergy(profiles, 0, states[0], states[1], parameters);
+                    + pairEnergyWithPotential(profiles, 0, states[0], states[1], parameters, potential);
             double firstMeasure = logMeasure(profiles.get(0).cells().get(states[0]));
             double secondMeasure = logMeasure(profiles.get(1).cells().get(states[1]));
             measure = firstMeasure + secondMeasure;
@@ -977,8 +1019,10 @@ public final class ProbabilisticInference {
         if (!Double.isFinite(logWeight) || !Double.isFinite(bound) || logWeight > bound) return mass;
         for (int index = 2; index < states.length; index++) {
             cancellation.checkpoint();
+            double pair = pairEnergyWithPotential(profiles, index - 1, states[index - 1],
+                    states[index], parameters, potential);
             double increment = profileEnergy(profiles, index, states[index], parameters)
-                    + pairEnergy(profiles, index - 1, states[index - 1], states[index], parameters)
+                    + pair
                     + tripleEnergy(profiles, index, states[index - 2], states[index - 1], states[index], parameters);
             double nextMeasure = logMeasure(profiles.get(index).cells().get(states[index]));
             energy = energy + increment;
@@ -1208,6 +1252,27 @@ public final class ProbabilisticInference {
         return parameters.orientationWeight() * span * 0.5
             * (orientationMismatch(start, startState, heading)
                 + orientationMismatch(end, endState, heading));
+    }
+
+    private static double pairEnergyWithPotential(List<InferenceProfile> profiles, int stage,
+            int leftState, int rightState, EvidenceModelParameters parameters,
+            AdjacentStatePotential potential) {
+        double original = pairEnergy(profiles, stage, leftState, rightState, parameters);
+        return addPotential(potential, stage, leftState, rightState, original);
+    }
+
+    private static double addPotential(AdjacentStatePotential potential, int stage,
+            int leftState, int rightState, double originalPairEnergy) {
+        if (potential == null) return originalPairEnergy;
+        double additional = potential.energy(stage, leftState, rightState);
+        if (!Double.isFinite(additional) || additional < 0.0) {
+            throw new ArithmeticException("invalid adjacent-state potential");
+        }
+        double combined = originalPairEnergy + additional;
+        if (!Double.isFinite(combined)) {
+            throw new ArithmeticException("non-finite adjacent-state energy");
+        }
+        return combined;
     }
 
     private static double orientationMismatch(InferenceProfile profile, int state, double heading) {
