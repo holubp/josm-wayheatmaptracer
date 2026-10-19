@@ -79,3 +79,56 @@ allocations; cancel cleanly. Known truth/masks must never enter scoring.
 ## Current disposition
 
 User-approved bounded correction; TaskA TDD in progress. TaskB fixture-only construction may run independently in its isolated worktree. TaskC waits for frozen fixtures, admission correctness and independent review. The original SDD ledger remains the sole progress record; this document records the specific correction and required checks.
+
+## TaskC capture-enclosure correction after CI39332892023
+
+The retained CI run executed all original20×8 source settings but none of the
+additional seven thin cases reached a solver. Its green JUnit result was not
+TaskC completion: the actual producer refused the too-small output footprint,
+and the receipt validator accepted truthful unavailable rows without requiring
+the source schedule to execute. Original receipts and CI evidence are immutable.
+
+The deterministic capture-only regression identifies
+`RasterEvidenceCapture.captureInternal:237`: the exact square-ended ±25m
+decision corridor for source(-8,37)..(52,37) extends to x[-33,77], whereas the
+81×81 output copied from the native input covered only x[-20.5,60.5]. This was
+an output enclosure defect, not evidence of an affine-origin or model failure.
+
+The independently reviewed correction changes only the thin adapter's OUTPUT:
+111×81 first-center(-33,0), pitch1m, on the original integer phase. Native
+INPUT81×81, first-center(-20,0), scalar/validity bits, inverse affine transform,
+source endpoints, ±25m hard decision region, and all seven recipes are unchanged.
+The existing producer supplies missing/NaN support outside the acquired input;
+no background padding is invented. Original strict four-corner source support
+still invalidates the native last row/column. Overlap is compared against the
+SAME production resampler on its original output frame, not against an assumed
+bitwise geographic roundtrip to raw input samples. `BGapGrid` must still recover
+the original81×81 physical analysis partition from retained input provenance.
+
+Output vertices8991/cells8800 remain below the existing191401/190404 bounds;
+41 source profiles remain below the separate81-profile bound. The direct scalar
+producer estimate for input6561/output8991 is
+`logical=16*6561+36*8991`,
+`logical+floor(logical/8)+16MiB+8*6561 < 32MiB`.
+The attempt reserves the existing32MiB render and1MiB metadata BEFORE capture;
+the thin producer also enforces32MiB. No total64MiB limit or work cap is raised.
+Later construction/solver refusal remains terminal and cannot qualify a model.
+
+Receipt validation and required execution are now distinct. Actual matrix tests
+must publish/cache their truthful evidence, then require all eight actual solver
+returns with available work and no resource/numeric/source/oracle terminal
+failure. Returned `NO_ROUTE` may lack a completion witness and is an honest
+nonqualifying model outcome; completed geometry FAIL is also reported normally.
+Neither permits skipped source work to make the unit workflow green.
+Case-level terminal failure also invalidates execution completeness and every
+setting's eligibility when all eight rows had already returned. Preserve those
+actual row facts; an exhausted slot list must not hide a later pipeline failure.
+
+Coarse bounded diagnostics record failed phase, fixed safe cause, actual capture
+dimensions/frame, returned profile/mode counts, solver invocation/return counts,
+and actual peak/closed ownership. Exception messages are never exported. Earlier
+returned rows survive a later pipeline exception; later slots remain UNVISITED.
+Declared native input metadata is explicitly labelled as a frozen recipe claim,
+separate from factual capture output. Fixed workflow selectors/artifact allowlist
+remain unchanged. Only focused checks and one thin-case source smoke are allowed
+locally; no full27 repeat, fitting, selection or release authority is implied.
