@@ -6,6 +6,22 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
 
 class V022BGapPairTableTest {
+    @Test void etaIntegrationUpperDeltaIsExplicitAndRefusesBeforeArenaClaim() throws Exception {
+        assertEquals(1_440_507,BGapPairTable.integrationUpperDelta(81,719040));
+        try(var f=BGapTestFixture.standard();var field=BGapField.build(f.input,CancellationProbe.NONE,f.owner)) {
+            long upper=field.work.details().reservedUpperUnits();
+            try(var table=BGapPairTable.build(field,f.input.profiles(),CancellationProbe.NONE,f.owner)) {
+                // N2/P1:64 view setup+2 finite checks+7*(2+3*2) bindings+8*2 dimension pass.
+                assertEquals(upper+138,field.work.details().reservedUpperUnits());
+            }
+        }
+        try(var f=BGapTestFixture.standard();var field=BGapField.build(f.input,CancellationProbe.NONE,f.owner)) {
+            field.work.reserveUpper(BGapEvidence.BUILD_UNITS);
+            long before=f.owner.currentBytes();var owners=BGapTestFixture.ownerTree(f.owner);
+            assertThrows(IllegalArgumentException.class,()->BGapPairTable.build(field,f.input.profiles(),CancellationProbe.NONE,f.owner));
+            assertEquals(before,f.owner.currentBytes());assertEquals(owners,BGapTestFixture.ownerTree(f.owner));
+        }
+    }
     @Test void exteriorAndOuterContactReasonsAreExactForPositiveLengthOnly() {
         try(var f=BGapTestFixture.standard();var field=BGapField.build(f.input,CancellationProbe.NONE,f.owner);
                 var integral=BGapPairTable.prefix(field,CancellationProbe.NONE,f.owner)) {
@@ -57,11 +73,12 @@ class V022BGapPairTableTest {
             long original=f.owner.currentBytes();
             try(var field=BGapField.build(f.input,CancellationProbe.NONE,f.owner)) {
                 // align8(16+1*8)=24; two stage arrays48, two row-int arrays48,
-                // two row references32, J/observed/reasons72, wrappers512.
-                assertEquals(712,BGapPairTable.tableBytes(f.input.profiles()));
+                // two row references32, J/observed/reasons72, wrappers784:
+                // table112+arena16+counter168+report128+owner64+7*view32+array72.
+                assertEquals(984,BGapPairTable.tableBytes(f.input.profiles()));
                 //20 cell doubles176 +20 status bytes40 + wrappers512.
                 assertEquals(728,field.retainedBytes);
-                assertEquals(1440,field.counters().currentOwnedBytes());
+                assertEquals(1712,field.counters().currentOwnedBytes());
                 assertEquals(f.owner.peakBytes()-original,field.counters().peakOwnedBytes());
                 System.out.println("gap-toy-field "+field.counters()+" "+field.workDetails());
             }

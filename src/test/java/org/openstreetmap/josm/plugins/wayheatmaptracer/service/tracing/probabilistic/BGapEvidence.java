@@ -90,6 +90,7 @@ final class BGapEvidence {
                     cancellationChecks,buildUnits,currentOwnedBytes,peakOwnedBytes);
         }
         WorkDetails details() {return new WorkDetails(bigIntegerApiCalls,complexityUpperUnits,reservedUpperUnits,hypotCalls,primitiveUpperUnits);}
+        long reservedUpperUnits(){return reservedUpperUnits;}
         void reserveUpper(long units) {
             if(units<buildUnits||units>BUILD_UNITS)throw new IllegalArgumentException("Gap preflight work bound");
             reservedUpperUnits=units;

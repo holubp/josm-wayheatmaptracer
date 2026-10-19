@@ -15,8 +15,25 @@ final class BObservationGeometry {
             Enumeration enumeration,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
         return solveAdmitted(profiles,region,originalBudgets,enumeration,cancellation,owner,"admitted-profile-rows");
     }
+    static MapResult solveAdmitted(List<InferenceProfile> profiles,MetricRegion region,TraceBudgets originalBudgets,
+            Enumeration enumeration,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,AdjacentStatePotential potential) {
+        if(potential==null)return solveAdmitted(profiles,region,originalBudgets,enumeration,cancellation,owner);
+        var tableView=potential instanceof BGapPairTable.View view?view:null;
+        boolean completed=false;
+        try {
+            if(tableView!=null)tableView.requireProfiles(profiles);
+            var result=solveAdmitted(profiles,region,originalBudgets,enumeration,cancellation,owner,"admitted-profile-rows",potential);
+            completed=result.path().status()!=ProbabilisticInferenceResult.Status.RESOURCE_LIMIT
+                    &&result.path().status()!=ProbabilisticInferenceResult.Status.NUMERIC_FAILURE;
+            return result;
+        } finally {if(!completed&&tableView!=null)tableView.discard();}
+    }
     private static MapResult solveAdmitted(List<InferenceProfile> profiles,MetricRegion region,TraceBudgets originalBudgets,
             Enumeration enumeration,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,String modelHash) {
+        return solveAdmitted(profiles,region,originalBudgets,enumeration,cancellation,owner,modelHash,null);
+    }
+    private static MapResult solveAdmitted(List<InferenceProfile> profiles,MetricRegion region,TraceBudgets originalBudgets,
+            Enumeration enumeration,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,String modelHash,AdjacentStatePotential potential) {
         java.util.Objects.requireNonNull(owner);java.util.Objects.requireNonNull(cancellation).checkpoint();
         if(profiles==null||profiles.isEmpty()||profiles.size()>4096||region==null||originalBudgets==null||enumeration==null)
             throw new IllegalArgumentException("Complete already-admitted graph inputs required");
@@ -25,8 +42,11 @@ final class BObservationGeometry {
             var requested=enumeration==Enumeration.MAP_ONLY?new TraceBudgets(originalBudgets.maximumStatesPerProfile(),
                     originalBudgets.maximumPairVisits(),originalBudgets.maximumTransitions(),1,1):originalBudgets;
             // This method neither builds nor admits a lattice. Only retained alternatives change.
-            var result=new ProbabilisticInference().solve(profiles,EvidenceModelParameters.defaults(),requested,region,cancellation,
-                    work,ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+            var inference=new ProbabilisticInference();
+            var result=potential==null?inference.solve(profiles,EvidenceModelParameters.defaults(),requested,region,cancellation,
+                    work,ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2):
+                    inference.solve(profiles,EvidenceModelParameters.defaults(),requested,region,cancellation,
+                    work,ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2,potential);
             var path=result.mapPath();var points=path.map(ProbabilisticPath::points).orElse(List.of());
             long bytes=AttemptMemoryLedger.objectBytes(40)+2*(AttemptMemoryLedger.objectBytes(24)
                     +AttemptMemoryLedger.arrayBytes(points.size(),8))+points.size()*AttemptMemoryLedger.objectBytes(16)

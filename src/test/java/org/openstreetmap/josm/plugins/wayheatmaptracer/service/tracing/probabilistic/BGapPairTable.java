@@ -13,21 +13,32 @@ final class BGapPairTable implements AutoCloseable {
     private final BGapEvidence.WorkCounter work;
     private final AttemptMemoryLedger.Owner owner;
     private final long bytes;
+    private final View[] views;
     private BGapPairTable(double[] values,double[] observed,int[] reasons,double[] errors,double[] lengthErrors,
             int[] offsets,int[] widths,List<InferenceProfile> profiles,BGapEvidence.WorkCounter work,
             AttemptMemoryLedger.Owner owner,long bytes) {
         this.values=values;this.observed=observed;this.reasons=reasons;this.errors=errors;this.lengthErrors=lengthErrors;
         this.offsets=offsets;this.widths=widths;this.profiles=profiles;this.work=work;this.owner=owner;this.bytes=bytes;
+        // All seven immutable capabilities are prepaid by the table arena. No
+        // new wrapper or scaled array is allocated during coefficient reuse.
+        work.numeric(64);
+        views=new View[7];for(int i=0;i<views.length;i++)views[i]=new View(this,1<<i);
     }
     static long tableBytes(List<InferenceProfile> profiles) {
         long p=0;int n=profiles.size();
         for(int i=1;i<n;i++)p=Math.addExact(p,Math.multiplyExact((long)profiles.get(i-1).cells().size(),profiles.get(i).cells().size()));
-        return Math.addExact(512,Math.addExact(2*BGapField.array(p,8)+BGapField.array(p,4),
+        // Integration addendum: table112+arena16+counter168+report128+owner64
+        // +seven32B views+72B reference array =784 (old one-view allowance512).
+        return Math.addExact(784,Math.addExact(2*BGapField.array(p,8)+BGapField.array(p,4),
                 2*BGapField.array(Math.max(0,n-1),8)+2*BGapField.array(n,4)+BGapField.array(n,8)));
     }
     static long coordinateBytes(List<InferenceProfile> profiles) {
         long states=0;for(var profile:profiles)states=Math.addExact(states,profile.cells().size());
         return Math.addExact(2*BGapField.array(states,8),BGapField.array((long)profiles.size()+1,4));
+    }
+    static long integrationUpperDelta(int rows,long pairs) {
+        return Math.addExact(64,Math.addExact(Math.multiplyExact(2,pairs),
+                Math.addExact(Math.multiplyExact(7,2+3L*rows),8L*rows)));
     }
     static long prefixBytes(BGapGrid grid) {
         long q=Math.multiplyExact((long)grid.width-1,grid.height);
@@ -42,6 +53,12 @@ final class BGapPairTable implements AutoCloseable {
     static BGapPairTable build(BGapField field,List<InferenceProfile> profiles,CancellationProbe cancellation,AttemptMemoryLedger.Owner parent) {
         field.ensureOpen();if(profiles.size()!=field.profiles.size())throw new IllegalArgumentException("Different gap profile inventory");
         for(int i=0;i<profiles.size();i++){BGapField.poll(field.work,cancellation);if(profiles.get(i)!=field.profiles.get(i))throw new IllegalArgumentException("Different original gap profile identity");}
+        // Charged bounded metadata pass; no array/arena is claimed until the
+        // full integration upper bound fits the unchanged global work cap.
+        field.work.numeric(8L*profiles.size());long pairs=0;
+        for(int i=1;i<profiles.size();i++)pairs=Math.addExact(pairs,
+                Math.multiplyExact((long)profiles.get(i-1).cells().size(),profiles.get(i).cells().size()));
+        field.work.reserveUpper(Math.addExact(field.work.reservedUpperUnits(),integrationUpperDelta(profiles.size(),pairs)));
         long bytes=tableBytes(profiles),coordsBytes=coordinateBytes(profiles);
         if(Math.addExact(parent.currentBytes(),Math.addExact(coordsBytes,prefixBytes(field.grid)))>BGapEvidence.BYTES)
             throw new IllegalArgumentException("Gap complete-table preflight memory limit");
@@ -67,8 +84,9 @@ final class BGapPairTable implements AutoCloseable {
                 BGapField.poll(field.work,cancellation);int a=pointOffsets[stage]+left,b=pointOffsets[stage+1]+right;
                 integral.compute(xs[a],ys[a],xs[b],ys[b]);int at=offsets[stage]+left*widths[stage+1]+right;
                 values[at]=integral.value;observed[at]=integral.observed;reasons[at]=integral.reasons;
+                if(!Double.isFinite(values[at]*64))throw new IllegalArgumentException("Scaled gap energy is not finite");
                 errors[stage]=Math.max(errors[stage],integral.error);lengthErrors[stage]=Math.max(lengthErrors[stage],integral.lengthError);
-                field.work.add(BGapEvidence.Work.PAIR_WRITE,1);field.work.numeric(14);
+                field.work.add(BGapEvidence.Work.PAIR_WRITE,1);field.work.numeric(16);
             }
             BGapField.poll(field.work,cancellation);
             var result=new BGapPairTable(values,observed,reasons,errors,lengthErrors,offsets,widths,field.profiles,field.work,owner,bytes);
@@ -215,6 +233,29 @@ final class BGapPairTable implements AutoCloseable {
         return new Integral(values[at],errors[stage],observed[at],unknown,reasons[at]);
     }
     double value(int stage,int left,int right){int at=index(stage,left,right);work.add(BGapEvidence.Work.SOLVER_LOOKUP,1);return values[at];}
+    /** Eta zero must select the original route before constructing any gap state. */
+    AdjacentStatePotential forEta(int eta) {
+        if(owner.isClosed())throw new IllegalStateException("Gap table is closed");
+        if(eta<=0||eta>64||(eta&(eta-1))!=0)throw new IllegalArgumentException("Fixed positive gap eta required");
+        return views[Integer.numberOfTrailingZeros(eta)];
+    }
+    static final class View implements AdjacentStatePotential {
+        private final BGapPairTable table;private final int eta;
+        private View(BGapPairTable table,int eta){this.table=table;this.eta=eta;}
+        void requireProfiles(List<InferenceProfile> actual) {
+            if(table.owner.isClosed())throw new IllegalStateException("Gap table is closed");
+            table.work.numeric(2);
+            if(actual==null||actual.size()!=table.profiles.size())throw new IllegalArgumentException("Different gap profile identity");
+            // The owned fixed experiment inventory is <=81 rows. Exact immutable
+            // profile identities also bind its original cells and point(state).
+            for(int i=0;i<actual.size();i++) {
+                table.work.numeric(3);
+                if(actual.get(i)!=table.profiles.get(i))throw new IllegalArgumentException("Different gap profile identity");
+            }
+        }
+        public double energy(int stage,int left,int right){return eta*table.value(stage,left,right);}
+        void discard(){table.close();}
+    }
     BGapEvidence.Counters counters(){return work.snapshot();}
     public void close(){if(!owner.isClosed()){owner.close();work.release(bytes);}}
 }
