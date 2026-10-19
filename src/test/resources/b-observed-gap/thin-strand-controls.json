@@ -1,0 +1,81 @@
+{
+  "schema": "b-thin-strand-controls-v1",
+  "status": "FROZEN_BEFORE_ANY_ENGINE_CALL",
+  "purpose": "synthetic-fixture-recipes-only",
+  "input": {
+    "width": 81,
+    "height": 81,
+    "originMeters": [-20, 0],
+    "pitchMeters": 1,
+    "source": [[-8, 37], [52, 37]],
+    "selectedSpanMeters": 60,
+    "fullLateralRangeMeters": [-25, 25],
+    "validity": "all-input-vertices-valid"
+  },
+  "recipes": [
+    "thin-three-strands",
+    "thin-three-strands-intermittent",
+    "thin-strands-merge-separate",
+    "drifting-strong-with-faint-original",
+    "thin-strong-sharp-bend",
+    "thin-faint-coherent-sharp-bend",
+    "thin-local-overlap-noise"
+  ],
+  "rendering": {
+    "background": 0.02,
+    "nativeColumnWorldX": "originX + columnIndex",
+    "normalizedLongitudinalPosition": "clamp((x + 8) / 60, 0, 1)",
+    "bendEnvelope": "sin(pi * t)",
+    "pixelSupport": "nearest native row floor(y + 0.5), exactly one pixel per observed strand-column",
+    "combination": "additive scalar intensity on the common background",
+    "filtering": "none; no blur, convolution, antialiasing, or normalization",
+    "validityIsIndependentOfObservedStrandMask": true
+  },
+  "thinThreeStrands": {
+    "centerline": "37 + 2*e + 4*j*e + 0.6*sin(4*pi*t + j*pi/3)*e",
+    "indices": [-1, 0, 1],
+    "amplitudes": {"-1": 0.06, "0": 0.08, "1": 0.06},
+    "amplitudeModulation": "0.75 + 0.25*sin(2*pi*t + (j+1)*2*pi/3)"
+  },
+  "intermittentMask": "(columnIndex + 2*strandIndex) % 7 < 5",
+  "mergeSeparate": {
+    "separationFactor": "clamp((abs(x - 22) - 1) / 4, 0, 1)",
+    "separationAndWiggleAreBothMultipliedByFactor": true,
+    "mergeWindowMeters": [21, 23],
+    "identityAcrossMergeRequired": false
+  },
+  "driftingStrongWithFaintOriginal": {
+    "strongCenterline": "37 + 18*e",
+    "strongAmplitude": 0.70,
+    "strongNativePixelWidth": 3,
+    "faintCenterline": "37 + 2*j*e + 0.4*sin(6*pi*t + j*pi/3)*e",
+    "faintAmplitudeEach": 0.04,
+    "faintNativePixelWidth": 1
+  },
+  "sharpBend": {
+    "centerline": "37 + 3*max(0, 1 - abs(x - 22)/3)",
+    "amplitudes": {"strong": 0.70, "faint": 0.08},
+    "strongAndFaintGeometryIdentical": true,
+    "nativePixelWidth": 1
+  },
+  "thinLocalOverlapNoise": {
+    "latentReferenceY": 37,
+    "centerline": "37 + e*(1.5*j + 0.6*sin(11*pi*t + (j+1)*2*pi/3) + 0.3*sin(17*pi*t + (j+1)*2*pi/3))",
+    "indices": [-1, 0, 1],
+    "amplitudeEach": 0.06,
+    "observedEveryColumn": true,
+    "nativePixelWidth": 1,
+    "expectedRouteKind": "LATENT_REFERENCE_ONE_METRE",
+    "middleTrackMaximumDeclaredDeviationMeters": 0.9
+  },
+  "routeKinds": {
+    "thin-three-strands": "single-coherent-strand",
+    "thin-three-strands-intermittent": "single-coherent-strand",
+    "thin-strands-merge-separate": "allowed-actual-merge",
+    "drifting-strong-with-faint-original": "strong-course",
+    "thin-strong-sharp-bend": "sharp-course",
+    "thin-faint-coherent-sharp-bend": "sharp-course",
+    "thin-local-overlap-noise": "LATENT_REFERENCE_ONE_METRE"
+  },
+  "scope": "No engine outcome, acceptance threshold, label inference, or model qualification is defined by these recipes."
+}
