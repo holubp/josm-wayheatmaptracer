@@ -19,12 +19,67 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CrossStreamWorkAccounting;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 
 /** Exact second-order pair-state MAP, posterior and bounded k-best inference. */
 public final class ProbabilisticInference {
     private static final double LOG_ZERO = Double.NEGATIVE_INFINITY;
     private static final int ADMISSION_MEMO_CAPACITY = 32_768;
+
+    /**
+     * Runs the explicit funded comparison without changing production entry points.
+     *
+     * @param profiles unchanged admitted physical profiles
+     * @param parameters unchanged numerical objective
+     * @param budgets original hard graph and scored-work limits
+     * @param region optional unchanged decision region
+     * @param probe same cooperative probe through final publication admission
+     * @param resultOwner caller scope retaining the result and 208-byte sidecar
+     * @param potential optional unchanged adjacent-state capability
+     * @return original result plus separately labelled bound/K-best calculation work
+     * @throws TraceMemoryLimitException when metadata or a native failure cannot fit
+     * @throws AttemptMemoryLedger.ResourceLimitException for an unchanged capability's own refusal
+     */
+    public CrossStreamInferenceResult solveCrossStreamRaw1(List<InferenceProfile> profiles,
+            EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion region,
+            CancellationProbe probe, AttemptMemoryLedger.Owner resultOwner,
+            AdjacentStatePotential potential) {
+        if (parameters == null || budgets == null || probe == null || resultOwner == null) {
+            throw new IllegalArgumentException("Cross-stream parameters, budgets, probe and owner are required");
+        }
+        probe.checkpoint();
+        boolean eligible = Math.min(32, budgets.maximumRawAlternatives()) == 1 && parameters.turnWeight() > 0.0;
+        boolean metadataSetupComplete = false;
+        try (var transaction = resultOwner.child("cross-stream-result");
+                var temporary = transaction.child("cross-stream-temporary");
+                var snapshotBytes = transaction.reserve(CrossStreamDominance.SNAPSHOT_BYTES);
+                var wrapperBytes = transaction.reserve(CrossStreamDominance.WRAPPER_BYTES)) {
+            CrossStreamDominance.State state = null;
+            if (eligible) state = CrossStreamDominance.State.allocate(temporary);
+            else temporary.reserve(CrossStreamDominance.STATE_BYTES); // Owned until temporary.close().
+            metadataSetupComplete = true;
+            var actualMode = eligible ? ProbabilisticExecutionPolicy.Mode.EXACT_CROSS_STREAM_RAW1_V3
+                    : ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+            var result = solve(profiles, parameters, budgets, region, probe, transaction, actualMode, potential, state);
+            CrossStreamWorkAccounting accounting;
+            if (state == null) {
+                accounting = new CrossStreamWorkAccounting(0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                snapshotBytes.adopt(accounting);
+            } else accounting = state.snapshot(snapshotBytes);
+            var publication = new CrossStreamInferenceResult(result, accounting);
+            wrapperBytes.adopt(publication);
+            probe.checkpoint(); // All metadata is complete; refusal still rolls back the entire transaction.
+            temporary.close();
+            transaction.transferTo(resultOwner);
+            return publication;
+        } catch (AttemptMemoryLedger.ResourceLimitException refusal) {
+            if (metadataSetupComplete) throw refusal;
+            throw new TraceMemoryLimitException("cross-stream metadata", 0, 0,
+                    resultOwner.currentBytes(), resultOwner.peakBytes(), refusal.limitBytes(), refusal);
+        }
+    }
 
     /**
      * Solves one complete admitted state graph without score-based beam pruning.
@@ -77,6 +132,20 @@ public final class ProbabilisticInference {
         EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
         ProbabilisticExecutionPolicy.Mode mode, AdjacentStatePotential potential) {
+        if (mode == ProbabilisticExecutionPolicy.Mode.EXACT_CROSS_STREAM_RAW1_V3) {
+            throw new IllegalArgumentException("Cross-stream execution requires solveCrossStreamRaw1 funding");
+        }
+        return solve(profiles, parameters, budgets, decisionRegion, cancellation, resultOwner, mode, potential, null);
+    }
+
+    private ProbabilisticInferenceResult solve(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets, MetricRegion decisionRegion,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner resultOwner,
+        ProbabilisticExecutionPolicy.Mode mode, AdjacentStatePotential potential,
+        CrossStreamDominance.State boundState) {
+        if ((mode == ProbabilisticExecutionPolicy.Mode.EXACT_CROSS_STREAM_RAW1_V3) != (boundState != null)) {
+            throw new IllegalArgumentException("Cross-stream execution and funded state must agree");
+        }
         if (cancellation == null) {
             throw new IllegalArgumentException("Cancellation probe is required");
         }
@@ -128,8 +197,11 @@ public final class ProbabilisticInference {
             }
             long kBestStarted = System.nanoTime();
             AttemptMemoryLedger.Owner kBestOwner = workOwner.child("k-best");
-            KBestResult kBest = enumerateKBest(profiles, parameters, budgets,
-                decisionRegion, cancellation, admissions, kBestOwner, workCounter, potential);
+            KBestResult kBest = boundState == null
+                    ? enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation,
+                            admissions, kBestOwner, workCounter, potential)
+                    : enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation,
+                            admissions, kBestOwner, workCounter, potential, boundState);
             long kBestNanos = System.nanoTime() - kBestStarted;
             long allTransitions = messages.transitions() + kBest.transitions();
             if (kBest.resourceLimited()) {
@@ -590,6 +662,16 @@ public final class ProbabilisticInference {
         MetricRegion decisionRegion,
         CancellationProbe cancellation, TransitionAdmission admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter, AdjacentStatePotential potential) {
+        return enumerateKBest(profiles, parameters, budgets, decisionRegion, cancellation,
+                admissions, owner, workCounter, potential, null);
+    }
+
+    private static KBestResult enumerateKBest(List<InferenceProfile> profiles,
+        EvidenceModelParameters parameters, TraceBudgets budgets,
+        MetricRegion decisionRegion,
+        CancellationProbe cancellation, TransitionAdmission admissions,
+        AttemptMemoryLedger.Owner owner, WorkCounter workCounter, AdjacentStatePotential potential,
+        CrossStreamDominance.State boundState) {
         cancellation.checkpoint();
         int cap = Math.min(32, budgets.maximumRawAlternatives());
         PathArena arena = new PathArena(owner.child("reachable-ancestry"), workCounter);
@@ -647,7 +729,8 @@ public final class ProbabilisticInference {
             int beforeStates = current.length;
             int streamCapacity = Math.multiplyExact(beforeStates, cap);
             AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
-            boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
+            boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2
+                    || workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_CROSS_STREAM_RAW1_V3;
             ScalarReuseTable scalarCache = null;
             boolean scalarCacheAttempted = false;
             DescriptorHeap descriptors = exact ? allocated(scratchOwner, AttemptMemoryLedger.objectBytes(48),
@@ -694,6 +777,7 @@ public final class ProbabilisticInference {
                                     InferenceProfile end = profiles.get(profileIndex);
                                     MetricPoint first = start.point(prior);
                                     MetricPoint second = end.point(state);
+                                    if (boundState != null) boundState.secondHeadingEvaluations = Math.addExact(boundState.secondHeadingEvaluations, 1);
                                     secondHeading = StrictMath.atan2(second.yMeters() - first.yMeters(),
                                             second.xMeters() - first.xMeters());
                                     headingReady = true;
@@ -722,6 +806,7 @@ public final class ProbabilisticInference {
                                     firstHeading = scalarCache.values[scalarIndex];
                                     scalarCache.reuses++;
                                 } else {
+                                    if (boundState != null) boundState.firstHeadingEvaluations = Math.addExact(boundState.firstHeadingEvaluations, 1);
                                     firstHeading = StrictMath.atan2(
                                             priorPoint.yMeters() - beforePoint.yMeters(),
                                             priorPoint.xMeters() - beforePoint.xMeters());
@@ -732,10 +817,16 @@ public final class ProbabilisticInference {
                                     }
                                 }
                                 if (!headingReady) {
+                                    if (boundState != null) boundState.secondHeadingEvaluations = Math.addExact(boundState.secondHeadingEvaluations, 1);
                                     secondHeading = StrictMath.atan2(
                                             currentPoint.yMeters() - priorPoint.yMeters(),
                                             currentPoint.xMeters() - priorPoint.xMeters());
                                     headingReady = true;
+                                }
+                                if (boundState != null) {
+                                    boundState.wrapEvaluations = Math.addExact(boundState.wrapEvaluations, 1);
+                                    boundState.huberEvaluations = Math.addExact(boundState.huberEvaluations, 1);
+                                    boundState.tripleEvaluations = Math.addExact(boundState.tripleEvaluations, 1);
                                 }
                                 triple = tripleEnergyAtHeadings(profiles, profileIndex, parameters,
                                         firstHeading, secondHeading);
@@ -1870,7 +1961,8 @@ public final class ProbabilisticInference {
             }
             if (forwardBackward) forwardBackwardScores = Math.addExact(forwardBackwardScores, 1L);
             else kBestScores = Math.addExact(kBestScores, 1L);
-            if (mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2) transitions = Math.addExact(transitions, 1L);
+            if (mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2
+                    || mode == ProbabilisticExecutionPolicy.Mode.EXACT_CROSS_STREAM_RAW1_V3) transitions = Math.addExact(transitions, 1L);
             return true;
         }
 
