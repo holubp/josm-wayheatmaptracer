@@ -1,0 +1,74 @@
+name: Historical benchmark context (not current qualification)
+
+on:
+  push:
+    branches: [codex/b-frozen-authority-test-repair-20261020]
+    paths:
+      - .github/workflows/b-historical-benchmark-context.yml
+      - scripts/verify-historical-benchmark-receipts.py
+      - scripts/tests/test_historical_benchmark_receipts.py
+
+permissions:
+  contents: read
+
+jobs:
+  historical-context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+      - name: Check receipt verifier without numerical work
+        working-directory: driver
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_historical_benchmark_receipts.py
+          python3 -O -m unittest discover -s scripts/tests -p test_historical_benchmark_receipts.py
+      - uses: actions/checkout@v4
+        with:
+          ref: 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          path: historical
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify literal clean source and compile its own tests
+        working-directory: historical
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          test -z "$(git status --porcelain --untracked-files=all)"
+          sh ./gradlew testClasses -PvalidationProfile=public --no-daemon --console=plain
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Run the two unchanged historical positives exactly once
+        working-directory: historical
+        run: |
+          mkdir "$RUNNER_TEMP/historical-benchmark-retained"
+          export JAVA_TOOL_OPTIONS="-Djunit.jupiter.tempdir.cleanup.mode.default=NEVER -Djava.io.tmpdir=$RUNNER_TEMP/historical-benchmark-retained"
+          timeout 600s sh ./gradlew test -PvalidationProfile=public \
+            --tests '*BenchmarkDecisionComparatorIntegrationTest.approvedContractKeepsEachNativeEnvelopeAndOriginalPin' \
+            --tests '*BenchmarkDecisionComparatorIntegrationTest.approvedMainAdmitsIndependentSingleAndFactualIntervalCompatibilityOutputs' \
+            --no-daemon --no-build-cache --console=plain
+      - name: Validate only genuine retained historical receipts
+        working-directory: historical
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 ../driver/scripts/verify-historical-benchmark-receipts.py \
+            "$RUNNER_TEMP/historical-benchmark-retained" \
+            build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml \
+            "$RUNNER_TEMP/historical-benchmark-verified"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: historical-context-only-${{ github.sha }}
+          path: ${{ runner.temp }}/historical-benchmark-verified/*
+          if-no-files-found: error
+          retention-days: 5
+      - name: Preserve actual test failures without fabricating success receipts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-context-failure-xml-${{ github.sha }}
+          path: historical/build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml
+          if-no-files-found: warn
+          retention-days: 5
