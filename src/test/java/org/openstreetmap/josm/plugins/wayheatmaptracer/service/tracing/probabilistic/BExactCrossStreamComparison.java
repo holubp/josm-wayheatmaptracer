@@ -104,7 +104,7 @@ final class BExactCrossStreamComparison {
         var state = new Run(id, controls);
         // CREATE_NEW is the no-retry claim. The phase file is ours only after successful creation.
         Path phase = output.resolve("phase.json");
-        try (var stream = Files.newOutputStream(phase, StandardOpenOption.CREATE_NEW)) { stream.write(encode(state.phase())); }
+        writeInitialPhase(phase, state.phase());
         long started = clock.getAsLong();
         CancellationProbe probe = () -> {
             if (state.expectEntry && !state.entryObserved) state.entryObserved = StackWalker.getInstance().walk(frames -> frames.anyMatch(
@@ -252,8 +252,13 @@ final class BExactCrossStreamComparison {
         Map<String, Object> phase() {
             var result = new LinkedHashMap<String, Object>(); result.put("case", id); result.put("phase", phase);
             result.put("terminal", terminal); result.put("protocolSha256", controls.protocolSha256());
-            result.put("invocationAttempted", invocationAttempted); result.put("actualSolverEntries", entryObserved ? 1 : terminal ? 0 : null);
-            result.put("normalReturns", normalReturns > 0 ? normalReturns : terminal ? 0 : null);
+            Integer observedEntries = null, observedReturns = null;
+            if (entryObserved) observedEntries = 1;
+            else if (terminal) observedEntries = 0;
+            if (normalReturns > 0) observedReturns = normalReturns;
+            else if (terminal) observedReturns = 0;
+            result.put("invocationAttempted", invocationAttempted); result.put("actualSolverEntries", observedEntries);
+            result.put("normalReturns", observedReturns);
             result.put("externalCutoffEntryCertainty", "UNKNOWN_UNLESS_SAME_PROBE_ENTRY_OR_NORMAL_RETURN_OBSERVED");
             return result;
         }
@@ -464,6 +469,10 @@ final class BExactCrossStreamComparison {
     private static void writeNew(Path file, byte[] bytes) throws IOException {
         if (bytes.length == 0 || bytes.length > LEAF_BYTES) throw new ExportOverflow();
         try (var out = Files.newOutputStream(file, StandardOpenOption.CREATE_NEW)) { out.write(bytes); }
+    }
+    /** Serialize a complete initial phase before claiming its final filename. */
+    static void writeInitialPhase(Path phase, Map<String, Object> value) throws IOException {
+        writeNew(phase, encode(value));
     }
     private static void updatePhase(Path phase, Run state) throws Exception {
         Path partial = phase.resolveSibling("phase.json.partial"); boolean owned = false;

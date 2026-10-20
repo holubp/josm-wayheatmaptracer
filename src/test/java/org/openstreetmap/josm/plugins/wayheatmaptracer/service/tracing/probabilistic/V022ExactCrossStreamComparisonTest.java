@@ -24,6 +24,49 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Only tiny/controlled receipt tests run by default; fixed-source execution is separately opted in. */
 class V022ExactCrossStreamComparisonTest {
     @TempDir Path temporary;
+
+    @Test
+    void initialPhasePreservesUnknownEntryAndReturnAsJsonNullWithoutAcquisition() throws Exception {
+        var type=Class.forName(BExactCrossStreamComparison.class.getName()+"$Run");
+        var constructor=type.getDeclaredConstructor(String.class,BExactCrossStreamComparison.Controls.class);constructor.setAccessible(true);
+        var run=constructor.newInstance(BExactCrossStreamComparison.IDS.get(0),controls(true));
+        var phase=type.getDeclaredMethod("phase");phase.setAccessible(true);
+        @SuppressWarnings("unchecked") var value=(Map<String,Object>)assertDoesNotThrow(()->phase.invoke(run));
+        var parsed=BIdentificationReceipt.parse(BIdentificationReceipt.canonical(value).getBytes(StandardCharsets.UTF_8));
+        assertTrue(parsed.containsKey("actualSolverEntries"));assertNull(parsed.get("actualSolverEntries"));
+        assertTrue(parsed.containsKey("normalReturns"));assertNull(parsed.get("normalReturns"));
+        assertEquals(false,parsed.get("terminal"));assertEquals(false,parsed.get("invocationAttempted"));
+        var terminal=type.getDeclaredField("terminal");terminal.setAccessible(true);terminal.setBoolean(run,true);
+        var terminalPhase=(Map<?,?>)phase.invoke(run);
+        assertEquals(0,terminalPhase.get("actualSolverEntries"));assertEquals(0,terminalPhase.get("normalReturns"));
+    }
+
+    @Test
+    void initialPhaseSerializationFailureCannotClaimAnEmptyFinalFile() throws Exception {
+        var phase=temporary.resolve("phase.json");
+        assertThrows(BExactCrossStreamComparison.ExportOverflow.class,()->BExactCrossStreamComparison.writeInitialPhase(phase,
+                Map.of("oversizedEscapedText","\n".repeat(12_000))));
+        assertFalse(Files.exists(phase));assertFalse(Files.exists(temporary.resolve("phase.json.partial")));
+        var value=new LinkedHashMap<String,Object>();value.put("actualSolverEntries",null);value.put("normalReturns",null);
+        BExactCrossStreamComparison.writeInitialPhase(phase,value);
+        assertTrue(Files.size(phase)>0);assertNull(BIdentificationReceipt.parse(Files.readAllBytes(phase)).get("actualSolverEntries"));
+        byte[] original=Files.readAllBytes(phase);
+        assertThrows(FileAlreadyExistsException.class,()->BExactCrossStreamComparison.writeInitialPhase(phase,Map.of("changed",true)));
+        assertArrayEquals(original,Files.readAllBytes(phase));
+    }
+
+    @Test
+    void firstCheckpointCancellationPublishesOnlyFailureBeforeAnySourceAcquisition() throws Exception {
+        var harness=new BExactCrossStreamComparison(controls(true));var output=temporary.resolve("cancelled-before-source");
+        var receipt=assertDoesNotThrow(()->harness.execute(BExactCrossStreamComparison.IDS.get(0),output,()->0,()->true));
+        assertEquals("CANCELLED_OR_DEADLINE",receipt.get("safeCause"));assertEquals(false,receipt.get("pipelineComplete"));
+        assertEquals(0,receipt.get("actualSolverEntries"));assertEquals(0,receipt.get("normalReturns"));
+        assertFalse(receipt.containsKey("capture"));assertFalse(receipt.containsKey("profiles"));assertFalse(receipt.containsKey("solver"));
+        assertEquals(0,harness.lastClosedBytes());
+        assertTrue(Files.size(output.resolve("phase.json"))>0);assertTrue(Files.size(output.resolve("phase.json"))<=65_536);
+        assertEquals(true,BIdentificationReceipt.parse(Files.readAllBytes(output.resolve("phase.json"))).get("terminal"));
+    }
+
     @Test
     void allAlternativesAndRawBitsAreRetained() {
         var first = new ProbabilisticPath(new int[] {1, 0},

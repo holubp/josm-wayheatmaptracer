@@ -1029,3 +1029,16 @@ term metrics retain long integers. Archived five baselines never completed, so
 no successful-baseline CPU speedup ratio is available. Feasibility, numerical
 parity, functional observation-model qualification and release are distinct
 gates; this protocol never reports modelQualified=true.
+
+The first fixed-five launch exposed an initial-phase reporting defect before
+source acquisition. Unknown entry/return counts now use explicit nullable
+Integer values; phase serialization finishes before CREATE_NEW claims its file.
+A zero-byte final/partial phase from an interrupted claim is retained as hash-only
+failure evidence by the collector, with feasibility unavailable. It never supplies
+JSON, invocation, return, ownership or quality facts. Other authoritative leaves
+remain nonempty; all size/path guards and the original caps still apply.
+Repair preparation disables approval and engineEligible. Its previous source
+commit/closure fields are intentionally stale until the controller commits the
+reviewed Java repair and binds the new actual commit plus support hashes. Source
+verification must refuse that intermediate context. Neither this repair nor the
+prior consumed single-run approval authorizes a numerical retry.

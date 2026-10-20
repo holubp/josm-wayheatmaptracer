@@ -342,7 +342,7 @@ def collect(root, expected, identity, exit_code, log, xml, output, branch=BRANCH
     allowed = {identity+".json", "summary.json", "phase.json", "phase.json.partial", "graph-manifest-"+identity+".json",
                "route-"+identity+"-0.json"} | {"posterior-"+identity+"-"+k+".bin" for k in ("position", "component", "forward", "backward")}
     allowed |= {"graph-"+identity+"-%05d.bin" % i for i in range(128)}
-    raw = {}; incomplete = False
+    raw = {}; incomplete = False; empty_phase = False
     if base.exists():
         require(base.is_dir() and not base.is_symlink(), "case directory type changed")
         for entry in base.iterdir():
@@ -355,7 +355,11 @@ def collect(root, expected, identity, exit_code, log, xml, output, branch=BRANCH
                     raw[name] = read(child, empty=True)
             else:
                 require(entry.name in allowed and len(raw) < 165, "unexpected case evidence path")
-                raw[entry.name] = read(entry)
+                # An interrupted initial claim can leave an empty phase. Keep
+                # its bytes/hash only; it cannot supply any authoritative fact.
+                raw[entry.name] = read(entry, empty=entry.name in {"phase.json", "phase.json.partial"})
+                if entry.name in {"phase.json", "phase.json.partial"} and not raw[entry.name]:
+                    empty_phase = True; incomplete = True
                 incomplete |= entry.name.endswith(".partial")
     leaves = dict(raw)
     leaves["console.log"] = read(log, empty=True)
@@ -372,6 +376,7 @@ def collect(root, expected, identity, exit_code, log, xml, output, branch=BRANCH
     facts = {"case": identity, "protocolSha256": expected, "actualCheckoutCommit": publication,
              "reviewedCodeCommit": protocol["reviewedCodeCommit"], "shellWaitExitCode": exit_code,
              "externalCutoffObserved": exit_code in (124, 137), "nativePolicy": "NOT_NATIVE_DEFAULT",
+             "emptyPhaseEvidence": empty_phase,
              "modelQualified": False, "feasibilityPassed": False, "entryReturnAndClosure": "UNKNOWN_WITHOUT_FACTUAL_RECEIPT_AND_HOST_XML",
              "rawInventory": [{"file": n, "bytes": len(b), "sha256": sha(b)} for n, b in sorted(raw.items())]}
     reason = "UNAVAILABLE_MISSING_OR_PARTIAL_OR_FAILED_EXECUTION"

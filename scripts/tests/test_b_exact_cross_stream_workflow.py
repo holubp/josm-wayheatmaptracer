@@ -44,10 +44,17 @@ def authentic_checkout(tmp_path_factory):
     subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--shared", "--no-hardlinks", str(ROOT), str(root)], check=True, capture_output=True)
     subprocess.run(["git", "config", "gc.auto", "0"], cwd=root, check=True)
     subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=root, check=True)
-    for path in v.SOURCE_FILES | {v.PROTOCOL}:
+    repaired_java={"src/test/java/"+v.PACKAGE+name+".java" for name in ("BExactCrossStreamComparison","V022ExactCrossStreamComparisonTest")}
+    for path in v.SOURCE_FILES | {v.PROTOCOL} | repaired_java:
         (root/path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT/path, root/path)
+    subprocess.run(["git", "add", "--", *sorted(v.SOURCE_FILES | repaired_java)], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.name=Unit fixture", "-c", "user.email=unit@example.invalid", "commit", "--allow-empty", "-m", "UNIT ONLY actual candidate source snapshot"], cwd=root, check=True, capture_output=True)
     p = v.document(v.read(root/v.PROTOCOL)); p["approval"] = p["engineEligible"] = True
+    p["reviewedCodeCommit"]=v.git(root,"rev-parse","HEAD")
+    p["sourceTrees"]=v.source_trees(root,p["reviewedCodeCommit"])
+    p["sourceFiles"]={path:v.sha(v.read(root/path)) for path in sorted(v.SOURCE_FILES)}
+    p["sourceClosureSha256"]=v.sha(v.canonical({"sourceTrees":p["sourceTrees"],"sourceFiles":p["sourceFiles"]}))
     (root/v.PROTOCOL).write_bytes(v.canonical(p))
     subprocess.run(["git", "add", "--", *sorted(v.SOURCE_FILES | {v.PROTOCOL})], cwd=root, check=True, capture_output=True)
     subprocess.run(["git", "-c", "user.name=Unit fixture", "-c", "user.email=unit@example.invalid", "commit", "-m", "UNIT ONLY approved metadata context"], cwd=root, check=True, capture_output=True)
@@ -208,6 +215,18 @@ def test_known_owned_staging_is_raw_only_and_unknown_paths_refuse(checkout, tmp_
     with pytest.raises(ValueError,match="unexpected"):
         v.collect(checkout,v.sha(v.read(checkout/v.PROTOCOL)),identity,137,log,tmp_path/"absent",tmp_path/"refused",
                   publication=v.git(checkout,"rev-parse","HEAD"))
+
+
+def test_empty_initial_phase_is_hash_only_failure_evidence_with_host_and_log(checkout,tmp_path):
+    identity=IDS[0];base=checkout/"build/exact-cross-stream"/identity;base.mkdir(parents=True)
+    (base/"phase.json").write_bytes(b"");log=tmp_path/"log";log.write_bytes(b"UNIT early phase failure")
+    xml=tmp_path/"host.xml";xml.write_bytes(xml_bytes(False));out=tmp_path/"out"
+    result=v.collect(checkout,v.sha(v.read(checkout/v.PROTOCOL)),identity,1,log,xml,out,publication=v.git(checkout,"rev-parse","HEAD"))
+    assert result["feasibilityPassed"] is False and result["emptyPhaseEvidence"] is True
+    assert "actualSolverEntries" not in result and "normalReturns" not in result and "geometryOracle" not in result
+    assert result["rawInventory"]==[{"file":"phase.json","bytes":0,"sha256":v.sha(b"")}]
+    assert (out/"phase.json").read_bytes()==b"" and (out/"console.log").read_bytes()==log.read_bytes()
+    assert (out/"host.xml").read_bytes()==xml.read_bytes()
 
 
 def test_only_exact_safe_workflow_route_and_single_forced_timed_test():
