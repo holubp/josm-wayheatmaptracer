@@ -95,6 +95,26 @@ Build and run the test suite from repo root:
 sh gradlew test build
 ```
 
+Ordinary tests, including public and RC validation, exclude methods tagged
+`dedicated-experiment`. Existing ordinary controls and profile-specific
+private-fixture filtering are unchanged; validation still rejects skipped
+testcases. Dedicated experiment jobs use
+`-PdedicatedExperiments=true` with their exact test selector and existing
+environment/case opt-ins. Missing or `false` excludes those methods; invalid
+property values, missing environment opt-ins and unmatched selectors fail.
+The property is a Test task input, so changing it invalidates prior test outputs.
+Use the dedicated native-comparison and gap-control
+[workflows](.github/workflows/) for their complete commands; their pure preflight
+commands deliberately omit the opt-in. Separating discovery does not satisfy or
+waive any experiment, qualification or release gate.
+
+The isolated historical comparison launcher documents its commands through
+`python3 scripts/run-b-historical-native-comparison.py --help`. Preparation exits
+before the historical JVM starts. Capture-only tuples cannot authorize inference;
+native execution requires a separately reviewed, externally pinned protocol.
+Keep the historical runtime separate from current main/test classes. Failed or
+cut-off attempts are retained and are never retried automatically.
+
 The built plugin jar is written to `build/libs/wayheatmaptracer.jar`.
 
 Debug calibration bundles can be summarized with:
