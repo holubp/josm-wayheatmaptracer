@@ -48,9 +48,9 @@ public record EvidenceModelParameters(
         return "adjacent-orientation-trapezoid-v1";
     }
 
-    /** Configured profile bounds require exact endpoint and contiguous region authority. */
+    /** Profile windows retain contiguous authority and copy exact source endpoint coordinate bits. */
     public static String profileSamplingPolicyVersion() {
-        return "profile-window-centered-v2";
+        return "profile-window-endpoint-preserving-v3";
     }
 
     /** Native profiles are retained or regular background grids are transition-budget coarsened. */

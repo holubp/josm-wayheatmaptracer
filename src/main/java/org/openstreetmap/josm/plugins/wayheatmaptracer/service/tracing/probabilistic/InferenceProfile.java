@@ -267,6 +267,9 @@ public final class InferenceProfile {
     /** Converts one lateral cell to a metric route point. */
     public MetricPoint point(int stateIndex) {
         double offset = cells.get(stateIndex).offsetMeters();
+        if (offset == 0.0) {
+            return new MetricPoint(anchor.xMeters(), anchor.yMeters());
+        }
         return new MetricPoint(anchor.xMeters() + normalUnit.xMeters() * offset,
             anchor.yMeters() + normalUnit.yMeters() * offset);
     }

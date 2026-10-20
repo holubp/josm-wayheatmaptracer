@@ -1134,7 +1134,13 @@ public final class ProbabilisticProfileFactory {
             double fraction = (target - startDistance) / (endDistance - startDistance);
             MetricPoint start = points.get(segment - 1);
             MetricPoint end = points.get(segment);
-            SupplierPoint allocation = () -> new MetricPoint(
+            MetricPoint endpoint = index == 0 ? points.get(0)
+                    : index == intervals ? points.get(points.size() - 1) : null;
+            // Interpolation can lose endpoint ULPs or signed zero. Still allocate a fresh,
+            // identically charged point; interior interpolation keeps its original grouping.
+            SupplierPoint allocation = endpoint != null
+                    ? () -> new MetricPoint(endpoint.xMeters(), endpoint.yMeters())
+                    : () -> new MetricPoint(
                     start.xMeters() + fraction * (end.xMeters() - start.xMeters()),
                     start.yMeters() + fraction * (end.yMeters() - start.yMeters()));
             sampled.add(owner == null ? allocation.get()
