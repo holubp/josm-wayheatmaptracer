@@ -67,6 +67,7 @@ class NativeComparisonWorkflowTest(unittest.TestCase):
         self.assertIn('V022_RUN_NATIVE_B_DEFAULT_COMPARISON: "true"',text);self.assertIn("timeout 360s",text)
         preflight=text.split("  native-comparison:",1)[0];self.assertNotIn("V022_RUN_NATIVE_B_DEFAULT_COMPARISON",preflight)
         actual=text.split("      - name: One fixed ordinary-default-native B attempt, no retry",1)[1].split("      - name:",1)[0]
+        self.assertEqual(1,actual.count("-PdedicatedExperiments=true"));self.assertNotIn("dedicatedExperiments",preflight)
         self.assertEqual(1,actual.count("--tests"));self.assertNotIn("V022BGapMatchedControlsTest",text)
         paths=text.split("          path: |\n",1)[1].split("          if-no-files-found",1)[0]
         lines=[x.strip() for x in paths.splitlines() if x.strip()]

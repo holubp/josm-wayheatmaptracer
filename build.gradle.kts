@@ -79,12 +79,21 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.test {
     val validationProfile = providers.gradleProperty("validationProfile")
+    val dedicatedExperiments = providers.gradleProperty("dedicatedExperiments").map {
+        when (it) {
+            "true" -> true
+            "false" -> false
+            else -> throw GradleException("dedicatedExperiments must be true or false")
+        }
+    }.getOrElse(false)
     val fixtureArchives = listOf(
         "fixtureRegressionArchive" to "wayheatmaptracer.fixtureRegressionArchive",
         "heatmapFixtureArchive" to "wayheatmaptracer.heatmapFixtureArchive",
         "sparseCorridorDebugArchive" to "wayheatmaptracer.sparseCorridorDebugArchive"
     )
     inputs.property("validationProfile", validationProfile.orNull ?: "default")
+    inputs.property("dedicatedExperiments", dedicatedExperiments)
+    filter.isFailOnNoMatchingTests = true
     fixtureArchives.forEach { (gradleName, _) ->
         inputs.property(gradleName, providers.gradleProperty(gradleName).orNull ?: "missing")
     }
@@ -105,10 +114,9 @@ tasks.test {
             else -> throw GradleException("validationProfile must be public or rc")
         }
     }
-    if (validationProfile.orNull == "public") {
-        useJUnitPlatform { excludeTags("private-fixture") }
-    } else {
-        useJUnitPlatform()
+    useJUnitPlatform {
+        if (validationProfile.orNull == "public") excludeTags("private-fixture")
+        if (!dedicatedExperiments) excludeTags("dedicated-experiment")
     }
     if (validationProfile.orNull == "rc") {
         fixtureArchives.forEach { (gradleName, systemName) ->

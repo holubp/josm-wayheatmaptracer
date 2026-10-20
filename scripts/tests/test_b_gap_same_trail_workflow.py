@@ -98,6 +98,8 @@ class SameTrailWorkflowTest(unittest.TestCase):
         self.assertNotIn("V022_RUN_SAME_TRAIL_CONTROLS", workflow[preflight:preserved])
         self.assertNotIn("sameTrailSourcePipelineProducesCompleteEightSettingMatrix", workflow[preflight:preserved])
         opt_in = workflow[actual:workflow.index("      - name: Verify both actual", actual)]
+        self.assertEqual(1,opt_in.count("-PdedicatedExperiments=true"))
+        self.assertNotIn("dedicatedExperiments",workflow[preflight:preserved])
         self.assertEqual(1, opt_in.count("--tests"))
         self.assertIn("sameTrailSourcePipelineProducesCompleteEightSettingMatrix", opt_in)
 

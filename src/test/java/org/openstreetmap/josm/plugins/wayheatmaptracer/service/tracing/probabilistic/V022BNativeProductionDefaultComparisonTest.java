@@ -77,8 +77,9 @@ class V022BNativeProductionDefaultComparisonTest {
   assertThrows(IllegalStateException.class,()->BNativeProductionDefaultComparison.execute("connected-straight",dir,()->0,()->true));
  }
  /** Only the fixed separate CI job opts in; no local32 native executions. */
- @org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named="V022_RUN_NATIVE_B_DEFAULT_COMPARISON",matches="true")
+ @org.junit.jupiter.api.Tag("dedicated-experiment")
  @Test void fixedOrdinaryNativeDefaultComparison()throws Exception{
+  assertEquals("true",System.getenv("V022_RUN_NATIVE_B_DEFAULT_COMPARISON"),"Explicit ordinary-native comparison opt-in is required before acquisition");
   assertEquals("true",System.getenv("GITHUB_ACTIONS"));assertTrue(System.getenv("GITHUB_SHA")!=null&&System.getenv("GITHUB_SHA").matches("[0-9a-f]{40}"));
   String id=System.getenv("V022_NATIVE_B_DEFAULT_CASE");BNativeProductionDefaultComparison.requireCase(id);
   var r=BNativeProductionDefaultComparison.execute(id,Path.of("build/b-native-production-default-comparison",id),System::nanoTime,CancellationProbe.NONE);

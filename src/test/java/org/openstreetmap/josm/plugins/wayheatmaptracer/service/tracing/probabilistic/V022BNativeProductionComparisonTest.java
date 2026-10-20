@@ -5,7 +5,7 @@ import java.nio.file.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.io.TempDir;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.*;
@@ -99,9 +99,10 @@ class V022BNativeProductionComparisonTest {
         var ownership=BIdentificationReceipt.read(directory.resolve("ownership.json"));assertEquals(0L,((Number)ownership.get("remainingNonReportBytes")).longValue());
         assertThrows(IllegalStateException.class,()->BNativeProductionComparison.execute(BNativeProductionComparison.IDS.get(0),directory,()->0,CancellationProbe.NONE));
     }
-    /** Five fixed sources are CI-only; ordinary full Build explicitly skips this expensive method. */
-    @EnabledIfEnvironmentVariable(named="V022_RUN_NATIVE_B_COMPARISON",matches="true")
+    /** Five fixed sources are explicitly discovered only in the dedicated opt-in job. */
+    @Tag("dedicated-experiment")
     @Test void fixedNativeProductionComparison()throws Exception {
+        assertEquals("true",System.getenv("V022_RUN_NATIVE_B_COMPARISON"),"Explicit native comparison opt-in is required before acquisition");
         assertEquals("true",System.getenv("GITHUB_ACTIONS"));assertTrue(System.getenv("GITHUB_SHA")!=null&&System.getenv("GITHUB_SHA").matches("[0-9a-f]{40}"));
         String id=System.getenv("V022_NATIVE_B_CASE");BNativeProductionComparison.requireCase(id);
         var r=BNativeProductionComparison.execute(id,Path.of("build/b-native-production-comparison",id),System::nanoTime,CancellationProbe.NONE);

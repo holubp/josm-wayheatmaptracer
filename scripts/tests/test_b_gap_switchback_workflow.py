@@ -76,6 +76,7 @@ class SwitchbackWorkflowTest(unittest.TestCase):
         workflow = WORKFLOW.read_text()
         self.assertIn("branches: [codex/b-gap-switchbacks-20261020]", workflow)
         self.assertIn('V022_RUN_SWITCHBACK_CONTROLS: "true"', workflow)
+        self.assertEqual(1,workflow.count("-PdedicatedExperiments=true"))
         self.assertIn("ref: ${{ github.sha }}", workflow)
         self.assertNotIn("workflow_dispatch", workflow)
         self.assertNotIn("--tests '*V022BGapMatchedControlsTest'", workflow)

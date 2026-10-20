@@ -37,6 +37,7 @@ jobs:
           V022_RUN_SAME_TRAIL_CONTROLS: "true"
         run: >-
           sh ./gradlew test
+          -PdedicatedExperiments=true
           --tests '*V022BGapMatchedControlsTest.sameTrailSourcePipelineProducesCompleteEightSettingMatrix'
           --no-daemon --no-build-cache --rerun-tasks --console=plain
       - name: Verify both actual eight-setting same-trail executions

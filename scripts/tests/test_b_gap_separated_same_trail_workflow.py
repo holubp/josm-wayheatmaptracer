@@ -98,6 +98,8 @@ class SameTrailWorkflowTest(unittest.TestCase):
         self.assertNotIn("V022_RUN_SEPARATED_SAME_TRAIL_CONTROL", workflow[preflight:preserved])
         self.assertNotIn("separatedSameTrailSourcePipelineProducesCompleteEightSettingMatrix", workflow[preflight:preserved])
         opt_in = workflow[actual:workflow.index("      - name: Verify one actual", actual)]
+        self.assertEqual(1,opt_in.count("-PdedicatedExperiments=true"))
+        self.assertNotIn("dedicatedExperiments",workflow[preflight:preserved])
         self.assertEqual(1, opt_in.count("--tests"))
         self.assertIn("separatedSameTrailSourcePipelineProducesCompleteEightSettingMatrix", opt_in)
 

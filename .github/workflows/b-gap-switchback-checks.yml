@@ -24,6 +24,7 @@ jobs:
           V022_RUN_SWITCHBACK_CONTROLS: "true"
         run: >-
           sh ./gradlew test
+          -PdedicatedExperiments=true
           --tests '*V022BThinSwitchbackTest'
           --tests '*V022BGapMatchedControlsTest.switchbackHandoffHasOnlyScalarSourceInputsAndOldDefaultRemainsTwentySeven'
           --tests '*V022BGapMatchedControlsTest.switchbackMetadataPreflightCoversOriginalWindowAndReportsConservativePayload'

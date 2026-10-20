@@ -8,7 +8,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
@@ -832,10 +832,11 @@ class V022BGapMatchedControlsTest {
     @ParameterizedTest(name="{0}") @MethodSource("allCases")
     void actualSourcePipelineProducesCompleteDeclaredEightSettingMatrix(String id) throws Exception {var result=result(id);verify(result);requireSourceExecution(result);}
 
-    /** Expensive source integration is explicitly skipped outside the dedicated opt-in CI job. */
-    @EnabledIfEnvironmentVariable(named="V022_RUN_SWITCHBACK_CONTROLS",matches="true")
+    /** Expensive source integration is discovered only by explicit dedicated opt-in. */
+    @Tag("dedicated-experiment")
     @ParameterizedTest(name="switchback-{0}") @MethodSource("switchbackCases")
     void switchbackSourcePipelineProducesCompleteEightSettingMatrix(String id) throws Exception {
+        assertEquals("true",System.getenv("V022_RUN_SWITCHBACK_CONTROLS"),"Explicit switchback opt-in is required before acquisition");
         if(RESULTS.keySet().stream().noneMatch(SWITCHBACK_CASES::contains))BThinSwitchbackFixtures.exportNative(Path.of("build/gap-switchback-matrix"));
         var result=result(id);verify(result);requireSourceExecution(result);
         assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);
@@ -843,17 +844,19 @@ class V022BGapMatchedControlsTest {
     }
 
     /** Separate additive opt-in; never reruns the previous two historical switchbacks. */
-    @EnabledIfEnvironmentVariable(named="V022_RUN_SAME_TRAIL_CONTROLS",matches="true")
+    @Tag("dedicated-experiment")
     @ParameterizedTest(name="same-trail-{0}") @MethodSource("sameTrailCases")
     void sameTrailSourcePipelineProducesCompleteEightSettingMatrix(String id) throws Exception {
+        assertEquals("true",System.getenv("V022_RUN_SAME_TRAIL_CONTROLS"),"Explicit same-trail opt-in is required before acquisition");
         if(RESULTS.keySet().stream().noneMatch(SAME_TRAIL_CASES::contains))BSameTrailRecordingFixtures.exportNative(Path.of("build/gap-same-trail-matrix"));
         var result=result(id);verify(result);requireSourceExecution(result);
         assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
     }
 
     /** One additive visualization case, opt-in only; prior suites remain untouched. */
-    @EnabledIfEnvironmentVariable(named="V022_RUN_SEPARATED_SAME_TRAIL_CONTROL",matches="true")
+    @Tag("dedicated-experiment")
     @Test void separatedSameTrailSourcePipelineProducesCompleteEightSettingMatrix() throws Exception {
+        assertEquals("true",System.getenv("V022_RUN_SEPARATED_SAME_TRAIL_CONTROL"),"Explicit separated-source opt-in is required before acquisition");
         String id=BSeparatedSameTrailFixtures.ID;BSeparatedSameTrailFixtures.exportNative(Path.of("build/gap-separated-same-trail-matrix"));
         var result=result(id);verify(result);requireSourceExecution(result);
         assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);assertEquals(0,PIPELINE_EVIDENCE.get(id).current);

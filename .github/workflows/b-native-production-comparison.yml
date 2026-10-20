@@ -55,6 +55,7 @@ jobs:
           V022_NATIVE_B_CASE: ${{ matrix.case }}
         run: >-
           timeout 360s sh ./gradlew test
+          -PdedicatedExperiments=true
           --tests '*V022BNativeProductionComparisonTest.fixedNativeProductionComparison'
           --no-daemon --no-build-cache --console=plain
       - name: Verify factual bounded native comparison

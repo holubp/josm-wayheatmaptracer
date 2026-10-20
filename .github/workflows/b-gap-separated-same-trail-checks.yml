@@ -35,6 +35,7 @@ jobs:
           V022_RUN_SEPARATED_SAME_TRAIL_CONTROL: "true"
         run: >-
           sh ./gradlew test
+          -PdedicatedExperiments=true
           --tests '*V022BGapMatchedControlsTest.separatedSameTrailSourcePipelineProducesCompleteEightSettingMatrix'
           --no-daemon --no-build-cache --rerun-tasks --console=plain
       - name: Verify one actual eight-setting separated execution
