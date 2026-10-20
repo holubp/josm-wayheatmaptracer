@@ -83,6 +83,41 @@ class V022BGapMatchedControlsTest {
         binding.put("width",input.width);binding.put("height",input.height);binding.put("origin",List.of(input.origin.xMeters(),input.origin.yMeters()));binding.put("pitchMeters",input.pitchMeters);
         var evidence=captureScalarOnGrid(id,input,switchbackOutputGrid(input));probe.checkpoint();return evidence;
     }
+
+    /** Fixed scalar-only seam. Neither truth descriptors nor G/identified admission enters native B. */
+    static List<String> nativeDefaultCases(){return Stream.concat(ALL_CASES.stream(),BNativeProductionComparison.IDS.stream()).toList();}
+    static List<MetricPoint> nativeDefaultSource(String id){BNativeProductionDefaultComparison.requireCase(id);return source(id);}
+    private static ScalarInput originalScalarInput(String id,List<MetricPoint> source){
+        int w=81,h=81;double[] scalar=new double[w*h];boolean[] valid=new boolean[w*h];Arrays.fill(valid,true);
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+            double worldX=x-20;scalar[y*w+x]=Math.max(0,Math.min(1,intensity(id,worldX,y)));
+            if((id.equals("invalid-unknown-gap")||id.equals("unknown-detour"))&&worldX>=18&&worldX<=22&&y>=34&&y<=40)valid[y*w+x]=false;
+        }
+        return new ScalarInput(w,h,p(-20,0),1,scalar,valid,source);
+    }
+    static EvidenceSnapshot captureNativeDefaultSource(String id,Map<String,Object> binding,CancellationProbe probe){
+        BNativeProductionDefaultComparison.requireCase(id);Objects.requireNonNull(binding);probe.checkpoint();
+        var source=source(id);var input=isCurvedControl(id)?(isSwitchback(id)?switchbackInput(id):sameTrailInput(id)):isThin(id)?thinInput(id):originalScalarInput(id,source);
+        if(input.width!=81||input.height!=81||input.pitchMeters!=1||source.size()>12)throw new SecurityException("Fixed native dimensions changed");
+        var bytes=java.nio.ByteBuffer.allocate(input.scalar.length*8).order(java.nio.ByteOrder.BIG_ENDIAN);
+        for(int i=0;i<input.scalar.length;i++){if((i&1023)==0)probe.checkpoint();bytes.putDouble(input.scalar[i]);}
+        byte[] mask=new byte[input.validity.length];for(int i=0;i<mask.length;i++){if((i&1023)==0)probe.checkpoint();mask[i]=(byte)(input.validity[i]?1:0);}
+        binding.put("rasterSha256",BIdentificationReceipt.hash(bytes.array()));binding.put("validitySha256",BIdentificationReceipt.hash(mask));
+        binding.put("width",input.width);binding.put("height",input.height);binding.put("origin",List.of(input.origin.xMeters(),input.origin.yMeters()));binding.put("pitchMeters",input.pitchMeters);
+        var evidence=capture(id,source,32L*1024*1024,probe);probe.checkpoint();
+        var field=evidence.fields().get("scalar");
+        BNativeProductionDefaultComparison.checkCaptureMetadata(id,evidence,source);
+        binding.put("snapshotHash",evidence.canonicalHash());binding.put("outputWidth",field.width());binding.put("outputHeight",field.height());
+        binding.put("captureUpperBytes",BNativeProductionDefaultComparison.captureUpperBytes(Math.multiplyExact(field.width(),field.height()),source.size()));
+        return evidence;
+    }
+    /** Differential capture witness only; no profiles, facts or inference. */
+    static EvidenceSnapshot nativeDefaultLegacyCapture(String id){BNativeProductionDefaultComparison.requireCase(id);return capture(id,source(id));}
+    static boolean nativePointTruth(String id,List<MetricPoint> path,List<MetricPoint> original,List<MetricPoint> nativeSource){
+        if(!CASES.contains(id))throw new IllegalArgumentException("Not an original point oracle");return inTruth(id,path);
+    }
+    static boolean nativePointObserved(EvidenceSnapshot evidence,List<MetricPoint> path){return fullyObserved(evidence,path);}
+
     private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
 
     /** This is the entire new acquisition handoff; truth descriptors are deliberately absent. */
@@ -1181,44 +1216,43 @@ class V022BGapMatchedControlsTest {
         }
         return true;
     }
-    private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {
+    private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {return capture(id,source,512L*1024*1024);}
+    private static EvidenceSnapshot capture(String id,List<MetricPoint> source,long captureBytes) {return capture(id,source,captureBytes,CancellationProbe.NONE);}
+    private static EvidenceSnapshot capture(String id,List<MetricPoint> source,long captureBytes,CancellationProbe probe) {
         if(isSameTrail(id)||isSeparatedSameTrail(id)) {
             var input=sameTrailInput(id);if(!input.source.equals(source))throw new IllegalArgumentException("Declared same-trail source changed");
-            return captureScalarOnGrid(id,input,switchbackOutputGrid(input));
+            return captureScalarOnGrid(id,input,switchbackOutputGrid(input),probe);
         }
         if(isSwitchback(id)) {
             var input=switchbackInput(id);
             if(!input.source.equals(source))throw new IllegalArgumentException("Declared switchback source identity changed");
-            return captureScalarOnGrid(id,input,switchbackOutputGrid(input));
+            return captureScalarOnGrid(id,input,switchbackOutputGrid(input),probe);
         }
         if(isThin(id)) {
             var input=thinInput(id);
             if(!input.source.equals(source))throw new IllegalArgumentException("Declared thin source identity changed");
-            return captureScalar(id,input);
+            return captureScalar(id,input,probe);
         }
-        int w=81,h=81;double[] scalar=new double[w*h];boolean[] valid=new boolean[w*h];Arrays.fill(valid,true);
-        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
-            double worldX=x-20;scalar[y*w+x]=Math.max(0,Math.min(1,intensity(id,worldX,y)));
-            if((id.equals("invalid-unknown-gap")||id.equals("unknown-detour"))&&worldX>=18&&worldX<=22&&y>=34&&y<=40)valid[y*w+x]=false;
-        }
+        var input=originalScalarInput(id,source);int w=input.width,h=input.height;double[] scalar=input.scalar;boolean[] valid=input.validity;
         var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-1,-1),new GeographicPoint(1,1));
         var inverse=SupportedInputRasterTransform.localMetricAffine(frame,new RasterPoint(20,0),1,0,0,1);
         boolean fine=id.equals("half-pitch-alias")||id.equals("quarter-phase-alias");double pitch=fine?.5:1,phase=id.equals("quarter-phase-alias")?.25:0;
         var grid=new MetricRasterGrid(frame,p(-20+phase,phase),1,0,0,1,pitch,fine?161:81,fine?161:81);
         var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,
                 "matched-declared-scalar",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false);
-        return new RasterEvidenceCapture().captureWithMetricScalarSource("matched-"+id,new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB),valid,scalar,
+        return new RasterEvidenceCapture(captureBytes).captureWithMetricScalarSource("matched-"+id,new BufferedImage(w,h,BufferedImage.TYPE_INT_ARGB),valid,scalar,
                 source.stream().map(frame::toGeographic).toList(),source,inverse,grid,EvidenceResolution.nativeSource(1,1),25,"matched-public-declared-"+id,
-                EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,"scalar",lineage,CancellationProbe.NONE);
+                EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,"scalar",lineage,probe);
     }
     /** No truth centerline, observed-strand mask or expected route kind can cross this typed boundary. */
-    private static EvidenceSnapshot captureScalar(String id,ScalarInput input) {
+    private static EvidenceSnapshot captureScalar(String id,ScalarInput input) {return captureScalar(id,input,CancellationProbe.NONE);}
+    private static EvidenceSnapshot captureScalar(String id,ScalarInput input,CancellationProbe probe) {
         var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-1,-1),new GeographicPoint(1,1));
         if(input.width!=81||input.height!=81||input.pitchMeters!=1||!input.origin.equals(p(-20,0))||!input.source.equals(THIN_SOURCE))
             throw new IllegalArgumentException("Fixed thin native input changed");
         // Square endcaps extend the hard decision corridor to x[-33,77]. Only the output
         // enclosure grows; the acquired input, inverse transform and native analysis mesh do not.
-        return captureScalarOnGrid(id,input,new MetricRasterGrid(frame,p(-33,0),1,0,0,1,1,111,81));
+        return captureScalarOnGrid(id,input,new MetricRasterGrid(frame,p(-33,0),1,0,0,1,1,111,81),probe);
     }
     /** Output enclosure only: original native grid/phase/values and unknown exterior stay intact. */
     private static MetricRasterGrid switchbackOutputGrid(ScalarInput input) {
@@ -1239,7 +1273,8 @@ class V022BGapMatchedControlsTest {
         return new MetricRasterGrid(frame,p(ox,oy),1,0,0,1,input.pitchMeters,width,height);
     }
 
-    private static EvidenceSnapshot captureScalarOnGrid(String id,ScalarInput input,MetricRasterGrid grid) {
+    private static EvidenceSnapshot captureScalarOnGrid(String id,ScalarInput input,MetricRasterGrid grid) {return captureScalarOnGrid(id,input,grid,CancellationProbe.NONE);}
+    private static EvidenceSnapshot captureScalarOnGrid(String id,ScalarInput input,MetricRasterGrid grid,CancellationProbe probe) {
         var frame=grid.coordinateFrame();
         double pitch=input.pitchMeters;
         var inverse=SupportedInputRasterTransform.localMetricAffine(frame,new RasterPoint(-input.origin.xMeters()/pitch,-input.origin.yMeters()/pitch),
@@ -1249,7 +1284,7 @@ class V022BGapMatchedControlsTest {
         return new RasterEvidenceCapture(32L*1024*1024).captureWithMetricScalarSource("matched-"+id,new BufferedImage(input.width,input.height,BufferedImage.TYPE_INT_ARGB),
                 input.validity(),input.scalar(),input.source.stream().map(frame::toGeographic).toList(),input.source,inverse,grid,
                 EvidenceResolution.nativeSource(pitch,pitch),25,"matched-public-declared-"+id,EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
-                "scalar",lineage,CancellationProbe.NONE);
+                "scalar",lineage,probe);
     }
     private static double intensity(String id,double x,double y) {
         if(id.equals("uniform-null"))return .25;

@@ -93,10 +93,10 @@ final class BNativeProductionComparison {
             for(String name:bytes.keySet()){var target=directory.resolve(name);Files.move(directory.resolve(name+".partial"),target,StandardCopyOption.ATOMIC_MOVE);published.add(target);}
         }catch(Exception failure){for(var path:staged)Files.deleteIfExists(path);for(var path:published)Files.deleteIfExists(path);throw failure;}
     }
-    private static void phase(Path directory,String id,String name,int calls,int returns)throws Exception {
+    private static void phase(Path directory,String id,String name,int calls,int returns,String contractSha)throws Exception {
         Files.createDirectories(directory);var temporary=directory.resolve("phase.json.partial");boolean owned=false;
-        byte[] bytes=BIdentificationReceipt.canonical(Map.of("case",id,"phase",name,"nativeInvocations",calls,"nativeReturns",returns,"status","IN_PROGRESS_OR_EXTERNALLY_CUT_OFF",
-                "comparisonContractSha256",CONTRACT_SHA)).getBytes(StandardCharsets.UTF_8);
+        byte[] bytes=BIdentificationReceipt.canonical(Map.of("case",id,"phase",name,"nativeInvocations",calls,"nativeReturns",returns,"status",name.startsWith("TERMINAL_")?"TERMINAL_BOUNDED_ATTEMPT_RECORDED":"IN_PROGRESS_OR_EXTERNALLY_CUT_OFF",
+                "comparisonContractSha256",contractSha)).getBytes(StandardCharsets.UTF_8);
         if(bytes.length>65536)throw new ExportLimit();
         try{Files.createFile(temporary);owned=true;Files.write(temporary,bytes,StandardOpenOption.TRUNCATE_EXISTING);Files.move(temporary,directory.resolve("phase.json"),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
         finally{if(owned)Files.deleteIfExists(temporary);}
@@ -109,20 +109,30 @@ final class BNativeProductionComparison {
     }
     }
     static Map<String,Object> execute(String id,Path directory,LongSupplier clock,CancellationProbe cancellation) throws Exception {
-        requireCase(id);if(Files.exists(directory.resolve("phase.json")))throw new IllegalStateException("Attempt already started; retry forbidden");var probe=deadline(clock,cancellation);var ledger=new AttemptMemoryLedger(BYTES);var outcome=new LinkedHashMap<String,Object>();var leaves=new LinkedHashMap<String,Object>();
+        requireCase(id);return executeFixed(id,directory,clock,cancellation,false);
+    }
+    static Map<String,Object> executeProductionDefaults(String id,Path directory,LongSupplier clock,CancellationProbe cancellation)throws Exception{
+        BNativeProductionDefaultComparison.requireCase(id);return executeFixed(id,directory,clock,cancellation,true);
+    }
+    private static Map<String,Object> executeFixed(String id,Path directory,LongSupplier clock,CancellationProbe cancellation,boolean productionDefaults)throws Exception{
+        final String contractSha=productionDefaults?BNativeProductionDefaultComparison.CONTRACT_SHA:CONTRACT_SHA;
+        final String identity=productionDefaults?BNativeProductionDefaultComparison.IDENTITY:IDENTITY;
+        final var selectedPolicy=productionDefaults?BNativeProductionDefaultComparison.policy():policy();
+        if(Files.exists(directory.resolve("phase.json")))throw new IllegalStateException("Attempt already started; retry forbidden");var probe=deadline(clock,cancellation);var ledger=productionDefaults?BNativeProductionDefaultComparison.ledger():new AttemptMemoryLedger(BYTES);var outcome=new LinkedHashMap<String,Object>();var leaves=new LinkedHashMap<String,Object>();
         int calls=0,returns=0;String phase="RESERVE",failure="NONE";boolean invoked=false;var captureBinding=new LinkedHashMap<String,Object>();
         try(var root=ledger.rootOwner();var report=root.reserve(REPORT_BYTES)) {
             //2MiB covers all bounded request/network/roundtrip metadata, <=8*65KiB encoded routes,
             //their maps, <=2 simultaneous131KiB UTF-16 serialization pages and publication bookkeeping.
-            phase(directory,id,"RESERVE",0,0);
+            phase(directory,id,"RESERVE",0,0,contractSha);
             try(var sourceOwner=root.child("native-comparison-source");var render=sourceOwner.reserve(32L*1024*1024)) {
-                phase="CONTRACT";probe.checkpoint();var contract=contract();
-                phase="CAPTURE";phase(directory,id,phase,calls,returns);var evidence=V022BGapMatchedControlsTest.captureNativeComparisonSource(id,captureBinding,probe);
+                phase="CONTRACT";probe.checkpoint();var contract=productionDefaults?BNativeProductionDefaultComparison.contract():contract();
+                phase="CAPTURE";phase(directory,id,phase,calls,returns,contractSha);var evidence=productionDefaults?V022BGapMatchedControlsTest.captureNativeDefaultSource(id,captureBinding,probe):V022BGapMatchedControlsTest.captureNativeComparisonSource(id,captureBinding,probe);
                 var expected=(Map<?,?>)((Map<?,?>)contract.get("nativeInputs")).get(id);
                 if(!expected.get("rasterSha256").equals(captureBinding.get("rasterSha256"))||!expected.get("validitySha256").equals(captureBinding.get("validitySha256")))throw new SecurityException("Frozen native input changed");
-                phase="REQUEST";probe.checkpoint();var bound=bind(evidence,V022BGapMatchedControlsTest.nativeComparisonSource(id));var binding=new LinkedHashMap<String,Object>(bound.binding());
-                binding.put("nativeInput",captureBinding);binding.put("case",id);binding.put("policy",policy());binding.put("comparisonContractSha256",CONTRACT_SHA);binding.put("sourceRevision",System.getenv("GITHUB_SHA"));publish(directory,Map.of("binding.json",binding));
-                phase="NATIVE_ENGINE";probe.checkpoint();phase(directory,id,phase,1,0);calls++;invoked=true;
+                if(productionDefaults&&!expected.get("snapshotHash").equals(evidence.canonicalHash()))throw new SecurityException("Frozen default snapshot changed");
+                phase="REQUEST";probe.checkpoint();var bound=bind(evidence,productionDefaults?V022BGapMatchedControlsTest.nativeDefaultSource(id):V022BGapMatchedControlsTest.nativeComparisonSource(id));var binding=new LinkedHashMap<String,Object>(bound.binding());
+                binding.put("nativeInput",captureBinding);binding.put("case",id);binding.put("policy",selectedPolicy);binding.put("comparisonContractSha256",contractSha);binding.put("sourceRevision",System.getenv("GITHUB_SHA"));publish(directory,Map.of("binding.json",binding));
+                phase="NATIVE_ENGINE";probe.checkpoint();phase(directory,id,phase,1,0,contractSha);calls++;invoked=true;
                 try(var resultOwner=root.child("native-comparison-result")) {
                     var accounted=new ProbabilisticTraceEngine("scalar").traceWithUsage(bound.request(),evidence,bound.network(),probe,resultOwner);
                     try{returns++;outcome.put("nativeStatus",accounted.value().result().status().name());phase="NATIVE_RESULT_COPY";outcome.putAll(result(accounted.value()));
@@ -130,7 +140,7 @@ final class BNativeProductionComparison {
                         for(var route:routes)route.put("geometry",Map.of("available",false,"reason","UNAVAILABLE_NOT_EVALUATED"));
                         var status=accounted.value().result().status();
                         if(status==TraceHypothesisSet.Status.COMPLETE||status==TraceHypothesisSet.Status.AMBIGUOUS){phase="NATIVE_GEOMETRY";
-                            for(int i=0;i<routes.size();i++)routes.get(i).put("geometry",nativeGeometry(bound.original(),bound.actual(),accounted.value().result().hypotheses().get(i).points(),probe,root));}
+                            for(int i=0;i<routes.size();i++)routes.get(i).put("geometry",productionDefaults?BNativePointAcceptance.evaluate(id,evidence,bound.original(),bound.actual(),accounted.value().result().hypotheses().get(i).points(),probe,root):nativeGeometry(bound.original(),bound.actual(),accounted.value().result().hypotheses().get(i).points(),probe,root));}
                     }finally{accounted.owner().close();}
                 }
                 phase="COMPLETE";
@@ -139,7 +149,7 @@ final class BNativeProductionComparison {
                         "currentBytes",memory.currentBytes(),"peakBytes",memory.peakBytes(),"limitBytes",memory.limitBytes(),"stage",List.of("sampled profiles","profile boundary authority","continuation proposals","orientation descriptor","attempt memory","forward-backward","k-best","materialization").contains(memory.stage())?memory.stage():"UNAVAILABLE_STAGE_TOKEN"));
                 if(stopped instanceof AttemptMemoryLedger.ResourceLimitException memory)outcome.put("allocationRefusal",Map.of("requestedBytes",memory.requestedBytes(),"currentBytes",memory.currentBytes(),"limitBytes",memory.limitBytes()));
             }
-            outcome.put("case",id);outcome.put("identity",IDENTITY);outcome.put("comparisonContractSha256",CONTRACT_SHA);outcome.put("policy",policy());
+            outcome.put("case",id);outcome.put("identity",identity);outcome.put("comparisonContractSha256",contractSha);outcome.put("policy",selectedPolicy);
             outcome.put("phase",phase);outcome.put("safeCause",failure);outcome.put("nativeInvocations",calls);outcome.put("nativeReturns",returns);
             outcome.put("attemptComplete",invoked);outcome.put("modelQualification",false);outcome.put("sourceRevision",System.getenv("GITHUB_SHA"));
             var rawRoutes=(List<?>)outcome.remove("routes");var names=new ArrayList<String>();if(rawRoutes!=null)for(int i=0;i<rawRoutes.size();i++){String name="route-"+i+".json";names.add(name);leaves.put(name,rawRoutes.get(i));}
@@ -151,7 +161,7 @@ final class BNativeProductionComparison {
             leaves.put("ownership.json",Map.of("engineAndSourceOwnersClosed",true,"remainingNonReportBytes",ledger.currentBytes()-REPORT_BYTES,"reportBytesStillFundedDuringPublication",REPORT_BYTES,
                     "outerJUnitFinallyRequiresWholeLedgerZero",true));
             publishOutcome(directory,outcome,leaves);
-            phase(directory,id,"TERMINAL_"+phase,calls,returns);
+            phase(directory,id,"TERMINAL_"+phase,calls,returns,contractSha);
         } finally {if(ledger.currentBytes()!=0)throw new IllegalStateException("Native comparison ownership leaked");}
         return outcome;
     }
