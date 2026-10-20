@@ -32,7 +32,9 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
     assert public.get("continue-on-error") in (None, "false")
     steps = public["steps"]
     assert isinstance(steps, list)
-    assert all(step.get("continue-on-error") in (None, "false") for step in steps)
+    collector = next(step for step in steps if step.get("name") == "Collect bounded public Python diagnostics")
+    assert collector["continue-on-error"] == "true"
+    assert all(step.get("continue-on-error") in (None, "false") for step in steps if step is not collector)
     python = next(step for step in steps if step.get("uses") == "actions/setup-python@v5")
     assert python["with"]["python-version"] == "3.11"
     install = next(step for step in steps if step.get("name") == "Install public validation dependencies")
@@ -43,10 +45,20 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
         "python3 scripts/run-validation.py --profile public "
         f"--output \"{PUBLIC_OUTPUT}\""
     )
+    collector = next(step for step in steps if step.get("name") == "Collect bounded public Python diagnostics")
+    assert collector["id"] == "collect-public-python-diagnostics"
+    assert collector["if"] == "always()"
+    assert collector["run"] == (
+        "python3 scripts/collect_public_python_diagnostics.py "
+        f"--validation-output \"{PUBLIC_OUTPUT}\" "
+        '--diagnostic-output "$RUNNER_TEMP/josm-public-python-diagnostics"'
+    )
 
     uploads = [step for step in steps if step.get("uses") == "actions/upload-artifact@v4"]
-    assert len(uploads) == 2
-    report_upload, jar_upload = uploads
+    assert len(uploads) == 3
+    report_upload = next(step for step in uploads if step.get("name") == "Upload public validation reports and status")
+    diagnostic_upload = next(step for step in uploads if step.get("name") == "Upload bounded public Python diagnostics")
+    jar_upload = next(step for step in uploads if step.get("name") == "Upload validated plugin jar")
     assert report_upload["if"] == "always()"
     assert report_upload["with"]["path"].splitlines() == [
         f"{ARTIFACT_OUTPUT}/reports/java/junit-xml/",
@@ -55,6 +67,12 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
         f"{ARTIFACT_OUTPUT}/status.json",
     ]
     assert report_upload["with"]["if-no-files-found"] == "ignore"
+    assert diagnostic_upload["if"] == "always() && steps.collect-public-python-diagnostics.outcome == 'success'"
+    assert diagnostic_upload["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/josm-public-python-diagnostics/status.json",
+        "${{ runner.temp }}/josm-public-python-diagnostics/python-tests.log",
+    ]
+    assert diagnostic_upload["with"]["if-no-files-found"] == "ignore"
 
     assert jar_upload["if"] == "steps.public-validation.outcome == 'success'"
     assert jar_upload["with"]["path"] == f"{ARTIFACT_OUTPUT}/artifacts/wayheatmaptracer.jar"

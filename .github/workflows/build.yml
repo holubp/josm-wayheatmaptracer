@@ -96,6 +96,11 @@ jobs:
       - name: Run public validation
         id: public-validation
         run: python3 scripts/run-validation.py --profile public --output "$RUNNER_TEMP/josm-public-validation"
+      - name: Collect bounded public Python diagnostics
+        id: collect-public-python-diagnostics
+        if: always()
+        continue-on-error: true
+        run: python3 scripts/collect_public_python_diagnostics.py --validation-output "$RUNNER_TEMP/josm-public-validation" --diagnostic-output "$RUNNER_TEMP/josm-public-python-diagnostics"
       - name: Upload public validation reports and status
         uses: actions/upload-artifact@v4
         if: always()
@@ -106,6 +111,16 @@ jobs:
             ${{ runner.temp }}/josm-public-validation/reports/java/html/
             ${{ runner.temp }}/josm-public-validation/summary.json
             ${{ runner.temp }}/josm-public-validation/status.json
+          if-no-files-found: ignore
+          retention-days: 5
+      - name: Upload bounded public Python diagnostics
+        uses: actions/upload-artifact@v4
+        if: always() && steps.collect-public-python-diagnostics.outcome == 'success'
+        with:
+          name: public-python-diagnostics-evidence
+          path: |
+            ${{ runner.temp }}/josm-public-python-diagnostics/status.json
+            ${{ runner.temp }}/josm-public-python-diagnostics/python-tests.log
           if-no-files-found: ignore
           retention-days: 5
       - name: Upload validated plugin jar

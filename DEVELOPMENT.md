@@ -41,6 +41,15 @@ checks that exact source before running tests. It is a bounded diagnostic for th
 Python failure at that source and does not qualify the Java/UI, JAR, model, or
 release gates of the regular public validation workflow.
 
+The regular public validation job separately retains only the failed public
+`python-tests` stage log when it is a regular file no larger than 64 KiB. The
+diagnostic status reports unavailable cases without changing validation status;
+private-profile logs and other stage logs are never collected. Source directories
+are opened without following symlinks, and diagnostics are written only after
+exclusively creating a fresh output directory. The separate upload runs only
+when that directory was successfully claimed, so an existing path cannot supply
+stale evidence.
+
 `MetricRegion.intersectsSegment` tests segment interiors, boundary contacts, and
 collinear overlaps against each polygon in the region union. It preserves gaps
 between polygons; endpoint containment alone cannot establish spatial exclusion.
