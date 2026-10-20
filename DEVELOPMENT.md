@@ -33,6 +33,11 @@ coordinate; requesting that coordinate from a detached profile fails explicitly.
 This input contract is a prerequisite for the modern A adapter, whose production
 capture and pipeline integration remain separate work.
 
+The `Public Python Diagnostics` workflow runs only the public synthetic Python
+suite under Python 3.11 with the pinned pytest, PyYAML, and Hypothesis versions.
+It is a bounded diagnostic for Python failures and does not qualify the Java/UI,
+JAR, model, or release gates of the regular public validation workflow.
+
 `MetricRegion.intersectsSegment` tests segment interiors, boundary contacts, and
 collinear overlaps against each polygon in the region union. It preserves gaps
 between polygons; endpoint containment alone cannot establish spatial exclusion.

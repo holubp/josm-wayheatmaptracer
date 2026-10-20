@@ -1,0 +1,35 @@
+name: Public Python Diagnostics
+
+on:
+  push:
+    branches: ["codex/public-python311-diagnostics-20261020"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-python-diagnostics:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned public Python validation dependencies
+        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"
+      - name: Report safe runtime and source identity
+        run: |
+          python3 --version
+          python3 -m pytest --version
+          python3 -c 'from importlib.metadata import version; print("PyYAML", version("PyYAML")); print("Hypothesis", version("hypothesis"))'
+          git rev-parse HEAD
+      - name: Run the public synthetic Python suite
+        run: python3 -m pytest -q scripts/tests
