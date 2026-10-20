@@ -50,6 +50,7 @@ MANIFEST_KEYS = {"schema","scope","approval","implementationCommit","historical"
 LEAVES = {"binding.json","result.json","ownership.json","phase.json"} | {"route-%d.json" % i for i in range(8)}
 RAW_LEAVES = LEAVES | {name + ".partial" for name in LEAVES}
 POINT_LEAVES = {"result.json","ownership.json"} | {"route-%d.json" % i for i in range(8)}
+CONSOLE_LOGS = {"native.log","historical-native-wrapper.log","historical-native-checker.log"}
 
 def demand(condition, reason):
     """Raise ValueError when a fixed, fail-closed contract is not met."""
@@ -244,6 +245,26 @@ def publish_batch(output, leaves):
             pass
         raise
 
+def console_bytes(path, name):
+    """Read an optional fixed console log, preserving a legitimate empty file.
+
+    Args:
+        path: Existing nonsymlink regular console file.
+        name: One exact published console name, never an authoritative JSON leaf.
+    Returns:
+        bytes: All original bytes, including empty output; never truncated.
+    Raises:
+        ValueError: Name, file type or the unchanged65,536-byte ceiling differs.
+        OSError: Reading the bounded console file fails.
+    """
+    path=Path(path)
+    demand(name in CONSOLE_LOGS and not path.is_symlink() and path.is_file() and
+           0 <= path.stat().st_size <= 65536,"bounded console log")
+    with path.open("rb") as stream:
+        data=stream.read(65537)
+    demand(len(data) <= 65536,"bounded console log")
+    return data
+
 def collect(root, case, raw_root, point_root, output, expected, code, checker_code, publication, attestation):
     """Stage only closed public outputs after both processes terminated.
 
@@ -287,14 +308,14 @@ def collect(root, case, raw_root, point_root, output, expected, code, checker_co
     for name,target in ((case+".log","native.log"),(case+"-external-cutoff.json","external-cutoff.json")):
         path = Path(raw_root)/name
         if path.exists() or path.is_symlink():
-            leaves[target] = driver.bounded(path,65536)
+            leaves[target] = console_bytes(path,target) if target == "native.log" else driver.bounded(path,65536)
     for name, path in (("manifest.json",root/MANIFEST),("protocol.json",root/PROTOCOL),("attestation.json",Path(attestation))):
         if path.exists():
             leaves[name] = driver.bounded(path,65536)
     for name in ("historical-native-wrapper.log","historical-native-checker.log","historical-point-current-code-sources.json"):
         path=root/"build"/name
         if path.exists() or path.is_symlink():
-            leaves[name] = driver.bounded(path,65536)
+            leaves[name] = console_bytes(path,name) if name in CONSOLE_LOGS else driver.bounded(path,65536)
     receipt = {"scope":"HISTORICAL_NATIVE_ENGINE_BOUNDARY_ONLY_NOT_MODEL_QUALIFICATION","case":case,
                "publicationCommit":publication,"implementationCommit":m["implementationCommit"],"manifestSha256":expected,
                "launcherWaitExitCode":code,"checkerWaitExitCode":checker_code,"missing":missing,

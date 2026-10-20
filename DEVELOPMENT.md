@@ -945,6 +945,14 @@ publication use a fresh owned sibling staging directory: every bounded leaf is
 written and closed before the single final directory rename. Failure removes
 only owned staging, preserves the primary exception and leaves any preexisting
 destination untouched. No partial upload directory is published.
+The three console leaves `native.log`, `historical-native-wrapper.log` and
+`historical-native-checker.log` may be empty: a successful checker writes its
+receipts without console output. Preserve empty logs with their factual zero
+length and digest. Their regular-file, nonsymlink and65,536B bounds still apply;
+authoritative JSON, source bindings, routes and ownership receipts remain
+nonempty. A missing or empty console never establishes engine entry, return,
+ownership or geometry success. Collector repairs require freshly reviewed source
+bindings before another numerical launch; they do not authorize attempt retries.
 The workflow preserves
 nonzero process failure after diagnostics upload. This comparison does not run
 FIT/SELECT/HOLDOUT/private data, confer final-preview/Apply permission or release

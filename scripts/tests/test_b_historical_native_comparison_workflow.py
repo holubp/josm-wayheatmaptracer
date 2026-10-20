@@ -21,15 +21,33 @@ def module():
     return value
 
 class HistoricalLaunchContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Controlled metadata fixtures bind the test's actual source bytes.
+        # They grant no authority to the unchanged published launch tuple.
+        v=module();cls.context=tempfile.TemporaryDirectory();cls.controlled_root=Path(cls.context.name)
+        m=json.loads((ROOT/v.MANIFEST).read_bytes())
+        for name in [*m["sourceFiles"],v.NATIVE,v.PROTOCOL]:
+            target=cls.controlled_root/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,target)
+        for tree in v.TREES:
+            shutil.copytree(ROOT/tree,cls.controlled_root/tree,dirs_exist_ok=True)
+        m["sourceFiles"]["scripts/verify-b-historical-launch.py"]=v.driver.sha((ROOT/"scripts/verify-b-historical-launch.py").read_bytes())
+        (cls.controlled_root/v.MANIFEST).write_bytes(v.driver.canonical(m))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.context.cleanup()
+
     def setUp(self):
         self.v = module()
-        self.raw = (ROOT / self.v.MANIFEST).read_bytes()
+        self.root=self.controlled_root
+        self.raw = (self.root / self.v.MANIFEST).read_bytes()
         self.pin = hashlib.sha256(self.raw).hexdigest()
         self.m = json.loads(self.raw)
-        self.p = json.loads((ROOT / self.v.PROTOCOL).read_bytes())
+        self.p = json.loads((self.root / self.v.PROTOCOL).read_bytes())
 
     def test_candidate_metadata_is_bound_without_granting_execution(self):
-        self.assertEqual(32, len(self.v.verify(ROOT, self.pin)["cases"]))
+        self.assertEqual(32, len(self.v.verify(self.root, self.pin)["cases"]))
 
     def test_pending_fixture_refuses_before_any_archive_or_engine(self):
         m, p = copy.deepcopy(self.m), copy.deepcopy(self.p)
@@ -61,7 +79,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
             for name in [self.v.MANIFEST, self.v.PROTOCOL, *self.m["sourceFiles"]]:
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / name, target)
+                shutil.copyfile(self.root / name, target)
             target = root / "scripts/run-b-historical-native-comparison.py"
             target.write_bytes(target.read_bytes() + b"\n# changed\n")
             with self.assertRaisesRegex(ValueError, "source"):
@@ -71,7 +89,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
         workflow = yaml.safe_load((ROOT / ".github/workflows/b-historical-native-comparison.yml").read_text())
         self.assertEqual({"push": {"branches": [self.v.BRANCH]}}, workflow.get("on", workflow.get(True)))
         self.assertEqual({"contents": "read"}, workflow["permissions"])
-        self.assertEqual(self.pin,workflow["env"]["HISTORICAL_MANIFEST_SHA"])
+        self.assertEqual(self.v.driver.sha((ROOT/self.v.MANIFEST).read_bytes()),workflow["env"]["HISTORICAL_MANIFEST_SHA"])
         jobs = workflow["jobs"]
         self.assertIn("native", jobs)
         native = jobs["native"]
@@ -122,7 +140,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
     def test_pending_execution_refuses_without_reading_archive(self):
         if self.m["approval"]==self.v.PENDING:
             with self.assertRaisesRegex(ValueError,"approval"):
-                self.v.verify(ROOT,self.pin,execution=True,archive=ROOT/"missing-archive",publication_commit=None)
+                self.v.verify(self.root,self.pin,execution=True,archive=ROOT/"missing-archive",publication_commit=None)
         else:
             # Explicit pending fixture above remains active after reviewed promotion.
             self.v.require_approval(self.m,self.p)
@@ -132,7 +150,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
             tmp=Path(tmp);raw=tmp/"raw";raw.mkdir();case=self.v.driver.IDS[0];folder=raw/case;folder.mkdir()
             original=b'{unfinished';(folder/"route-0.json.partial").write_bytes(original)
             points=tmp/"missing-points";output=tmp/"artifact"
-            r=self.v.collect(ROOT,case,raw,points,output,self.pin,None,None,"f"*40,tmp/"no-attestation")
+            r=self.v.collect(self.root,case,raw,points,output,self.pin,None,None,"f"*40,tmp/"no-attestation")
             self.assertFalse(r["modelQualified"]);self.assertFalse(r["launcherObserved"]);self.assertIsNone(r["launcherWaitExitCode"])
             self.assertEqual(original,(output/"raw-route-0.json.partial").read_bytes())
             self.assertIn("point-directory",r["missing"]);self.assertNotIn("nativeStatus",r)
@@ -141,7 +159,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
         for name,data in (("unknown-private.dat",b"x"),("result.json",b"x"*65537)):
             with tempfile.TemporaryDirectory() as tmp:
                 tmp=Path(tmp);raw=tmp/"raw";raw.mkdir();folder=raw/self.v.driver.IDS[0];folder.mkdir();(folder/name).write_bytes(data);output=tmp/"out"
-                with self.assertRaises(ValueError):self.v.collect(ROOT,self.v.driver.IDS[0],raw,tmp/"points",output,self.pin,1,None,"f"*40,tmp/"att")
+                with self.assertRaises(ValueError):self.v.collect(self.root,self.v.driver.IDS[0],raw,tmp/"points",output,self.pin,1,None,"f"*40,tmp/"att")
                 self.assertFalse(output.exists())
 
     @settings(max_examples=8,deadline=None)
@@ -279,7 +297,7 @@ Consider enabling configuration cache to speed up this build: https://docs.gradl
                     return FaultStream(stream) if path.name=="raw-result.json" and args and args[0]=="xb" else stream
                 with patch.object(Path,"open",opening),patch.object(self.v.os,"rename",side_effect=primary) if mode=="move" else patch.object(self.v.os,"getpid",wraps=self.v.os.getpid):
                     with self.assertRaises(OSError) as caught:
-                        self.v.collect(ROOT,self.v.driver.IDS[0],raw,tmp/"points",output,self.pin,0,0,"f"*40,tmp/"att")
+                        self.v.collect(self.root,self.v.driver.IDS[0],raw,tmp/"points",output,self.pin,0,0,"f"*40,tmp/"att")
                 self.assertIs(primary,caught.exception)
                 self.assertFalse(output.exists())
                 self.assertEqual({"raw"},{p.name for p in tmp.iterdir()})
@@ -288,5 +306,51 @@ Consider enabling configuration cache to speed up this build: https://docs.gradl
         with tempfile.TemporaryDirectory() as tmp:
             tmp=Path(tmp);out=tmp/"existing";out.mkdir();(out/"sentinel").write_bytes(b"user")
             with self.assertRaisesRegex(ValueError,"new artifact"):
-                self.v.collect(ROOT,self.v.driver.IDS[0],tmp/"raw",tmp/"points",out,self.pin,0,0,"f"*40,tmp/"att")
+                self.v.collect(self.root,self.v.driver.IDS[0],tmp/"raw",tmp/"points",out,self.pin,0,0,"f"*40,tmp/"att")
             self.assertEqual(b"user",(out/"sentinel").read_bytes())
+
+    def test_empty_successful_checker_console_is_retained_without_inventing_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root,pin,commit,_=self.checkout(Path(tmp))
+            build=root/"build";build.mkdir()
+            (build/"historical-native-checker.log").write_bytes(b"")
+            out=Path(tmp)/"upload"
+            receipt=self.v.collect(root,self.v.driver.IDS[0],Path(tmp)/"raw",Path(tmp)/"point",out,pin,None,0,commit,Path(tmp)/"att")
+            self.assertEqual(b"",(out/"historical-native-checker.log").read_bytes())
+            self.assertEqual({"bytes":0,"sha256":hashlib.sha256(b"").hexdigest()},receipt["files"]["historical-native-checker.log"])
+            self.assertFalse(receipt["launcherObserved"])
+            self.assertTrue(receipt["checkerObserved"])
+            self.assertEqual(["raw-directory","point-directory"],receipt["missing"])
+            self.assertNotIn("nativeStatus",receipt)
+            self.assertFalse(receipt["modelQualified"])
+
+    def test_empty_logs_do_not_relax_nonempty_json_or_console_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp=Path(tmp);path=tmp/"console";path.write_bytes(b"")
+            for name in self.v.CONSOLE_LOGS:
+                self.assertEqual(b"",self.v.console_bytes(path,name))
+            for name in ("result.json","binding.json","external-cutoff.json","historical-point-current-code-sources.json"):
+                with self.assertRaisesRegex(ValueError,"bounded console"):
+                    self.v.console_bytes(path,name)
+            with self.assertRaisesRegex(ValueError,"bounded input"):
+                self.v.driver.bounded(path,65536)
+            path.write_bytes(b"x"*65536)
+            self.assertEqual(b"x"*65536,self.v.console_bytes(path,"native.log"))
+            path.write_bytes(b"x"*65537)
+            with self.assertRaisesRegex(ValueError,"bounded console"):
+                self.v.console_bytes(path,"native.log")
+            link=tmp/"linked";link.symlink_to(path)
+            with self.assertRaisesRegex(ValueError,"bounded console"):
+                self.v.console_bytes(link,"native.log")
+            with self.assertRaisesRegex(ValueError,"bounded console"):
+                self.v.console_bytes(tmp,"native.log")
+
+    def test_published_tuple_never_accepts_unpinned_current_verifier(self):
+        raw=(ROOT/self.v.MANIFEST).read_bytes();published=json.loads(raw)
+        actual=self.v.driver.sha((ROOT/"scripts/verify-b-historical-launch.py").read_bytes())
+        if published["sourceFiles"]["scripts/verify-b-historical-launch.py"] != actual:
+            with self.assertRaisesRegex(ValueError,"source member changed"):
+                self.v.verify(ROOT,self.v.driver.sha(raw))
+        else:
+            # A later reviewed controller promotion is allowed, never performed here.
+            self.v.verify(ROOT,self.v.driver.sha(raw))

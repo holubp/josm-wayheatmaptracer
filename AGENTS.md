@@ -1,5 +1,11 @@
 # AGENTS
 
+- Historical comparison collectors must preserve legitimately empty console logs
+  only for their explicit console allowlist. Keep authoritative receipts nonempty
+  and retain file-type, link, size and atomic-publication guards. Empty or missing
+  logs never establish engine entry, normal return, released ownership or quality;
+  a collector repair does not authorize repeating a numerical attempt.
+
 - Observation fitting must bind the reviewed external 27-member source registry,
   manifest and canonical public index before scene access. Fresh SELECT belongs
   only to the frozen full fitting experiment; EXTRACT/subset/unit diagnostics
