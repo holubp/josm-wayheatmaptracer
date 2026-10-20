@@ -35,8 +35,11 @@ capture and pipeline integration remain separate work.
 
 The `Public Python Diagnostics` workflow runs only the public synthetic Python
 suite under Python 3.11 with the pinned pytest, PyYAML, and Hypothesis versions.
-It is a bounded diagnostic for Python failures and does not qualify the Java/UI,
-JAR, model, or release gates of the regular public validation workflow.
+The workflow event commit identifies the diagnostic workflow itself; checkout is
+fixed to source commit `bbc1f4904ff69801508fee74b6da368437141d47`, and the job
+checks that exact source before running tests. It is a bounded diagnostic for the
+Python failure at that source and does not qualify the Java/UI, JAR, model, or
+release gates of the regular public validation workflow.
 
 `MetricRegion.intersectsSegment` tests segment interiors, boundary contacts, and
 collinear overlaps against each polygon in the region union. It preserves gaps

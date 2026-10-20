@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: bbc1f4904ff69801508fee74b6da368437141d47
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -25,11 +26,14 @@ jobs:
           python-version: "3.11"
       - name: Install pinned public Python validation dependencies
         run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"
-      - name: Report safe runtime and source identity
+      - name: Verify diagnostic source and report runtime
         run: |
           python3 --version
           python3 -m pytest --version
           python3 -c 'from importlib.metadata import version; print("PyYAML", version("PyYAML")); print("Hypothesis", version("hypothesis"))'
-          git rev-parse HEAD
+          case "$GITHUB_SHA" in ''|*[!0-9a-f]*) exit 1;; esac
+          printf 'workflow_event_commit=%s\n' "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "bbc1f4904ff69801508fee74b6da368437141d47"
+          printf 'tested_source_commit=%s\n' "$(git rev-parse HEAD)"
       - name: Run the public synthetic Python suite
         run: python3 -m pytest -q scripts/tests
