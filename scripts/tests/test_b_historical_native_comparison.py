@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +24,92 @@ def module():
 
 
 class HistoricalNativeCaptureContracts(unittest.TestCase):
+    def test_capture_only_or_pending_protocol_never_grants_engine_eligibility(self):
+        capture = module()
+        for protocol in ({'scope': capture.SCOPE}, {'scope': capture.ENGINE_SCOPE, 'approval': 'PENDING'}):
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, 'engine protocol'):
+                capture.require_engine_protocol(protocol)
+
+    def test_engine_protocol_refuses_wrong_diagnostic_identity_or_changed_defaults(self):
+        capture = module()
+        control = {'scope': capture.ENGINE_SCOPE, 'approval': capture.APPROVAL, 'engineEligible': True,
+                   'historicalCommit': capture.HISTORICAL, 'diagnosticParameterSha256': capture.DIAGNOSTIC_SHA,
+                   'nativePolicy': [96, 8000000, 128000000, 32, 8], 'ledgerLimitBytes': 256 * 1024 * 1024}
+        for key, value in (('diagnosticParameterSha256', '0' * 64), ('nativePolicy', [96, 8000000, 128000000, 8, 4]),
+                           ('ledgerLimitBytes', 64 * 1024 * 1024)):
+            changed = dict(control)
+            changed[key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'engine protocol'):
+                capture.require_engine_protocol(changed)
+
+    def test_external_cutoff_carries_only_last_safe_phase_and_unknown_native_outcome(self):
+        phase = {'phase': 'NATIVE_ENGINE_CALL_PENDING', 'nativeInvocationsAtCheckpoint': 0,
+                 'nativeReturnsAtCheckpoint': 0, 'nativeCallMayBeInProgress': True}
+        result = module().external_cutoff(phase)
+        self.assertEqual('EXTERNALLY_CUT_OFF_NOT_A_NATIVE_RESULT', result.get('status'))
+        self.assertEqual(phase, result.get('lastSafePhase'))
+        for key in ('nativeStatus', 'engineReturned', 'finalRootBytes'):
+            self.assertIsNone(result.get(key))
+        self.assertEqual('UNKNOWN_AFTER_EXTERNAL_CUTOFF', result.get('nativeEntryCertainty'))
+        self.assertIn('nativeNormalReturns', result)
+        self.assertIsNone(result['nativeNormalReturns'])
+        self.assertIs(result.get('qualityComparisonAvailable'), False)
+
+    def test_process_log_overflow_is_terminal_with_explicit_bounded_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'attempt.log'
+            causes = []
+            with self.assertRaisesRegex(ValueError, 'log overflow'):
+                module().run_bounded([sys.executable, '-c', 'import os; os.write(1,b"x"*65537)'],
+                                     log, on_cutoff=causes.append)
+            self.assertEqual(65536, log.stat().st_size)
+            self.assertEqual(['PROCESS_LOG_EXPORT_OVERFLOW'], causes)
+
+    def test_external_kill_after_before_call_marker_does_not_prove_native_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            phase = Path(directory) / 'phase.json'
+            script = ('import json,sys; from pathlib import Path; '
+                      'Path(sys.argv[1]).write_text(json.dumps({"phase":"NATIVE_ENGINE_CALL_PENDING",'
+                      '"nativeInvocationsAtCheckpoint":0,"nativeReturnsAtCheckpoint":0})); '
+                      'print("READY",flush=True); sys.stdin.read()')
+            with subprocess.Popen([sys.executable, '-c', script, str(phase)], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True) as child:
+                self.assertEqual('READY\n', child.stdout.readline())
+                child.kill()
+                child.wait(timeout=10)
+            result = module().external_cutoff(json.loads(phase.read_text()))
+            self.assertEqual('UNKNOWN_AFTER_EXTERNAL_CUTOFF', result['nativeEntryCertainty'])
+            self.assertIsNone(result['nativeNormalReturns'])
+            self.assertIsNone(result['nativeStatus'])
+            self.assertIsNone(result['finalRootBytes'])
+
+    def test_normal_process_output_and_nonzero_exit_preserve_actual_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'attempt.log'
+            with self.assertRaises(subprocess.CalledProcessError):
+                module().run_bounded([sys.executable, '-c', 'print("factual"); raise SystemExit(7)'], log)
+            self.assertEqual(b'factual\n', log.read_bytes())
+
+    def test_failed_process_still_revalidates_old_source_and_classpath(self):
+        capture = module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attestation = {'source': {'commit': capture.HISTORICAL}, 'runtimeEntries': ['old-only'],
+                           'adapterClasses': 'external-adapter', 'adapterSha256': 'fixed-tree'}
+            raw = capture.canonical(attestation)
+            path = root / 'attestation.json'
+            path.write_bytes(raw)
+            with patch.dict(os.environ, {'JAVA_HOME': '/bounded-jdk'}), \
+                    patch.object(capture, 'verify_checkout', return_value=attestation['source']) as source, \
+                    patch.object(capture, 'verify_classpath', return_value={'runtimeEntries': ['old-only']}) as cp, \
+                    patch.object(capture, 'tree_sha', return_value='fixed-tree'), \
+                    patch.object(capture, 'run_bounded', side_effect=subprocess.CalledProcessError(7, ['controlled'])):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    capture.launch(root, path, capture.sha(raw), root / 'unused', '0' * 64, root,
+                                   root / 'unused', root / 'output', ['connected-straight'])
+                self.assertEqual(2, source.call_count)
+                self.assertEqual(2, cp.call_count)
+
     def test_wrong_source_refuses_before_compilation(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -95,10 +182,11 @@ class HistoricalNativeCaptureContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'archive'):
             capture.archive_entries(raw.getvalue())
 
-    def test_capture_only_source_has_no_engine_or_zip_implementation(self):
+    def test_capture_only_source_retains_no_numerical_entry_observer_and_separate_native_call(self):
         source = (ROOT / 'scripts/historical-b-native/HistoricalNativeB.java').read_text()
-        self.assertNotIn('traceWithUsage(', source)
-        self.assertNotIn('new Probabilistic', source)
+        self.assertEqual(1, source.count('.traceWithUsage('))
+        self.assertIn('if(forbidden&&!allowEngine)', source)
+        self.assertIn('Numerical entry in CAPTURE_ONLY', source)
         self.assertNotIn('ZipInputStream', source)
         self.assertIn('AttemptMemoryLedger.production()', source)
         self.assertIn('source.reserve(COLD);source.reserve(CAPTURE)', source)
@@ -144,7 +232,7 @@ def adapter_guards(attestation_path, protocol_path, prepared, native_contract, o
     classpath = os.pathsep.join([attestation['adapterClasses'], *attestation['runtimeEntries']])
     java = str(Path(os.environ['JAVA_HOME']) / 'bin/java')
     output.mkdir()
-    cases = ('index', 'scalar', 'mask', 'grid', 'joint-index-grid', 'protocol', 'classpath',
+    cases = ('index', 'scalar', 'mask', 'grid', 'joint-index-grid', 'protocol', 'classpath', 'unknown-case', 'native-purpose',
              'tree-directories', 'tree-files', 'tree-depth', 'tree-path')
     commands = []
     for mutation in cases:
@@ -158,7 +246,9 @@ def adapter_guards(attestation_path, protocol_path, prepared, native_contract, o
         selected_attestation_sha = expected_attestation
         case = 'connected-straight'
         target = files / case
-        if mutation == 'index':
+        if mutation == 'unknown-case':
+            case = 'not-a-public-case'
+        elif mutation == 'index':
             with (files / 'index.json').open('ab') as stream:
                 stream.write(b' ')
         elif mutation == 'scalar':
@@ -210,14 +300,18 @@ def adapter_guards(attestation_path, protocol_path, prepared, native_contract, o
         receipt_directory = directory / 'receipts'
         receipt_directory.mkdir()
         result_path = receipt_directory / 'result.json'
-        command = [java, '-Djava.awt.headless=true', '-cp', cp, 'HistoricalNativeB', 'CAPTURE_ONLY',
+        native = mutation == 'native-purpose'
+        destination = receipt_directory / 'native-attempt' if native else result_path
+        command = [java, '-Djava.awt.headless=true', '-cp', cp, 'HistoricalNativeB', 'NATIVE_ENGINE' if native else 'CAPTURE_ONLY',
                    str(selected_attestation.resolve()), selected_attestation_sha, str(protocol.resolve()), expected_protocol,
-                   str(files.resolve()), str(native_contract.resolve()), case, str(result_path.resolve())]
+                   str(files.resolve()), str(native_contract.resolve()), case, str(destination.resolve())]
         completed = subprocess.run(command, capture_output=True, text=True, timeout=360)
         (directory / 'process.log').write_text(completed.stdout + completed.stderr)
         check.assertNotEqual(0, completed.returncode, mutation)
+        if native:
+            result_path = destination / 'result.json'
         receipt = json.loads(result_path.read_text())
-        check.assertEqual('REFUSED_CAPTURE_ONLY', receipt['status'], mutation)
+        check.assertEqual('TERMINAL_PRODUCER_FAILURE' if native else 'REFUSED_CAPTURE_ONLY', receipt['status'], mutation)
         check.assertEqual(0, receipt['captureInvocations'], mutation)
         check.assertEqual(0, receipt['captureReturns'], mutation)
         check.assertEqual(0, receipt['engineInvocations'], mutation)

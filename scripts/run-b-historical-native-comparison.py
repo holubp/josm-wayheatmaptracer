@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare neutral public bytes and run isolated historical CAPTURE_ONLY recapture.
+"""Prepare neutral public bytes and run an isolated historical producer.
 
-This launcher has no engine mode. A separately invoked preparation process exits
-before the historical JVM starts. Protocol digests supplied locally are integrity
-bindings, not reviewed experiment authority. All generated tuples remain labelled
-preparation-only until separately reviewed and frozen.
+A separately invoked preparation process exits before the historical JVM starts.
+CAPTURE_ONLY never enters numerical code. Native entry requires a separately
+reviewed and externally pinned engine protocol; this launcher cannot issue one.
+Locally generated preparation tuples never become engine authority by hashing.
 
 Usage: run this file with --help. No command retries a failed capture.
 """
@@ -14,14 +14,19 @@ import json
 import math
 import os
 from pathlib import Path
+import selectors
 import struct
 import subprocess
 import sys
+import time
 import zipfile
 
 HISTORICAL = "117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a"
 NATIVE_SHA = "34c0c300332f3d1eb5701eecf9b980a64c94940188d8fc5e6c221b5e4609639c"
 SCOPE = "CAPTURE_ONLY_PREPARATION_NOT_ENGINE_ELIGIBLE"
+ENGINE_SCOPE = "HISTORICAL_NATIVE_ENGINE_BOUNDARY_ONLY"
+APPROVAL = "APPROVED_AFTER_INDEPENDENT_REVIEW_AND_CONTROLLER_RULING"
+DIAGNOSTIC_SHA = "4a6c463c009d9dc454741a8146de9f69c1e065b98f5026514a921c9b377a9d77"
 MAX_ZIP = 4 * 1024 * 1024
 # Actual old tree:946 entries/depth9/156 UTF8 bytes; adapter:4/1/29.
 # Rounded fixed metadata ceilings bound traversal before any retained path list.
@@ -40,6 +45,80 @@ IDS = ('strong-parallel-gap', 'connected-straight', 'connected-short-bend', 'con
        'switchback-thin-faint', 'same-trail-three-separated-strong')
 MEMBERS = frozenset({'index.json'} | {case + '/' + leaf for case in IDS
                     for leaf in ('scalar.f64', 'validity.bin', 'descriptor.json')})
+
+
+def require_engine_protocol(protocol):
+    """Refuse capture/PENDING tuples and policy/identity drift before a JVM launch.
+
+    This parser never issues approval: the complete protocol digest must come
+    from the separately reviewed launch boundary, not this local function.
+    """
+    if (protocol.get('scope') != ENGINE_SCOPE or protocol.get('approval') != APPROVAL
+            or protocol.get('engineEligible') is not True
+            or protocol.get('historicalCommit') != HISTORICAL
+            or protocol.get('diagnosticParameterSha256') != DIAGNOSTIC_SHA
+            or protocol.get('nativePolicy') != [96, 8000000, 128000000, 32, 8]
+            or protocol.get('ledgerLimitBytes') != 256 * 1024 * 1024):
+        raise ValueError('engine protocol purpose/approval/identity/policy')
+    return protocol
+
+
+def external_cutoff(phase):
+    """Describe a killed process without inventing a native terminal result."""
+    return {'scope': ENGINE_SCOPE, 'status': 'EXTERNALLY_CUT_OFF_NOT_A_NATIVE_RESULT',
+            'lastSafePhase': phase, 'nativeStatus': None, 'engineReturned': None,
+            'nativeEntryCertainty': 'UNKNOWN_AFTER_EXTERNAL_CUTOFF', 'nativeNormalReturns': None,
+            'finalRootBytes': None, 'qualityComparisonAvailable': False, 'attemptComplete': False}
+
+
+def run_bounded(command, log_path, seconds=360, on_cutoff=None):
+    """Run once with bounded merged output and an external cancellation ceiling.
+
+    Args:
+        command: Exact subprocess argument vector, without a shell.
+        log_path: New log leaf, retaining at most65536 actual output bytes.
+        seconds: Outer wall-clock ceiling; never changes native budgets.
+        on_cutoff: Optional callback after kill/wait, receiving a safe cause token.
+    Returns:
+        None after a normal zero exit.
+    Raises:
+        ValueError: Output exceeds its leaf bound; a prefix is retained explicitly.
+        subprocess.TimeoutExpired: The external ceiling expires.
+        subprocess.CalledProcessError: The process exits nonzero.
+    """
+    with Path(log_path).open('xb') as log, subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as child:
+        deadline = time.monotonic() + seconds
+        written = 0
+        try:
+            with selectors.DefaultSelector() as ready:
+                ready.register(child.stdout, selectors.EVENT_READ)
+                while ready.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(command, seconds)
+                    for key, unused in ready.select(remaining):
+                        raw = os.read(key.fileobj.fileno(), 4096)
+                        if not raw:
+                            ready.unregister(key.fileobj)
+                            continue
+                        log.write(raw[:max(0, 65536 - written)])
+                        written += len(raw)
+                        if written > 65536:
+                            raise ValueError('terminal process-log overflow; bounded prefix only')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, seconds)
+            code = child.wait(timeout=remaining)
+        except (subprocess.TimeoutExpired, ValueError) as failure:
+            child.kill()
+            child.wait()
+            if on_cutoff is not None:
+                on_cutoff('EXTERNAL_WATCHDOG' if isinstance(failure, subprocess.TimeoutExpired)
+                          else 'PROCESS_LOG_EXPORT_OVERFLOW')
+            raise
+        if code:
+            raise subprocess.CalledProcessError(code, command)
 
 
 def sha(raw):
@@ -336,7 +415,11 @@ def prepare(archive, expected_sha, destination, protocol, protocol_sha):
         raise ValueError('external archive digest')
     if sha(canonical(protocol)) != protocol_sha:
         raise ValueError('external protocol digest')
-    if protocol.get('scope') != SCOPE or protocol.get('historicalCommit') != HISTORICAL or protocol.get('archiveSha256') != expected_sha:
+    if protocol.get('scope') == ENGINE_SCOPE:
+        require_engine_protocol(protocol)
+    elif protocol.get('scope') != SCOPE:
+        raise ValueError('protocol purpose/source')
+    if protocol.get('historicalCommit') != HISTORICAL or protocol.get('archiveSha256') != expected_sha:
         raise ValueError('protocol purpose/source')
     entries, index = archive_entries(raw)
     if sha(entries['index.json']) != protocol.get('indexSha256') or index['members'] != protocol.get('members') or index['captures'] != protocol.get('captures'):
@@ -384,22 +467,23 @@ def compile_adapter(checkout, dependency, adapter_source, directory):
 
 
 def launch(checkout, attestation_path, attestation_sha, protocol_path, protocol_sha,
-           prepared, native_contract, output, cases, self_test=False):
-    """Launch one capture per fixed case; no engine, retry or current classpath.
+           prepared, native_contract, output, cases, self_test=False, engine=False):
+    """Launch one fixed attempt per case, without retry or current classpath.
 
     Args:
         checkout: Unmodified historical worktree.
         attestation_path: Bounded actual compilation attestation.
         attestation_sha: Independently supplied exact attestation digest.
-        protocol_path: Capture-only detached input protocol.
+        protocol_path: Detached capture protocol or separately approved engine tuple.
         protocol_sha: Independently supplied exact protocol digest.
         prepared: Flat raw inputs from the earlier exited preparation process.
         native_contract: Independently pinned factual native-source contract.
         output: New directory for bounded case receipts/logs.
         cases: Literal fixed IDs, each invoked at most once by this call.
         self_test: Controlled adapter checks instead of a scene capture.
+        engine: Separate reviewed native protocol; never a capture-only fallback.
     Returns:
-        Preparation-only source and invocation metadata.
+        Source and invocation metadata, without conferring reviewed authority.
     Raises:
         ValueError: Source/classpath/input bindings fail.
         subprocess.CalledProcessError: A capture refuses or fails; never retried.
@@ -410,6 +494,13 @@ def launch(checkout, attestation_path, attestation_sha, protocol_path, protocol_
     if sha(attestation_raw) != attestation_sha:
         raise ValueError('external classpath attestation')
     attestation = metadata(attestation_raw)
+    if engine:
+        raw = bounded(protocol_path, 65536)
+        if sha(raw) != protocol_sha:
+            raise ValueError('external engine protocol digest')
+        require_engine_protocol(metadata(raw))
+        if len(cases) != 1 or self_test:
+            raise ValueError('one fixed native attempt per launch')
     if attestation['source'] != identity:
         raise ValueError('historical source attestation changed')
     cp = verify_classpath(checkout, attestation['runtimeEntries'])
@@ -422,20 +513,36 @@ def launch(checkout, attestation_path, attestation_sha, protocol_path, protocol_
         if case not in IDS:
             raise ValueError('fixed public case')
         command = [java, '-Djava.awt.headless=true', '-cp', os.pathsep.join([attestation['adapterClasses'], *cp['runtimeEntries']]),
-                   'HistoricalNativeB', 'SELF_TEST' if self_test else 'CAPTURE_ONLY',
+                   'HistoricalNativeB', 'NATIVE_ENGINE' if engine else 'SELF_TEST' if self_test else 'CAPTURE_ONLY',
                    str(Path(attestation_path).resolve()), attestation_sha, str(Path(protocol_path).resolve()), protocol_sha,
-                   str(Path(prepared).resolve()), str(Path(native_contract).resolve()), case, str((output / (case + '.json')).resolve())]
-        with (output / (case + '.log')).open('xb') as log:
-            subprocess.run(command, check=True, timeout=360, stdout=log, stderr=subprocess.STDOUT)
-        verify_checkout(checkout)
+                   str(Path(prepared).resolve()), str(Path(native_contract).resolve()), case,
+                   str((output / (case if engine else case + '.json')).resolve())]
+        def cutoff(cause):
+            if engine:
+                phase_path = output / case / 'phase.json'
+                phase = metadata(bounded(phase_path, 65536)) if phase_path.is_file() else None
+                receipt = external_cutoff(phase)
+                receipt['externalCause'] = cause
+                with (output / (case + '-external-cutoff.json')).open('xb') as stream:
+                    stream.write(canonical(receipt))
+        try:
+            run_bounded(command, output / (case + '.log'), on_cutoff=cutoff)
+        finally:
+            verify_checkout(checkout)
+            after = verify_classpath(checkout, attestation['runtimeEntries'])
+            if after != cp or tree_sha(attestation['adapterClasses']) != attestation['adapterSha256']:
+                raise ValueError('historical classpath changed after attempt')
     after = verify_classpath(checkout, attestation['runtimeEntries'])
     if after != cp or tree_sha(attestation['adapterClasses']) != attestation['adapterSha256']:
         raise ValueError('historical classpath changed after capture')
-    return {'scope': SCOPE, 'attempted': len(cases), 'engineInvocations': 0, 'historicalSource': identity}
+    result = {'scope': ENGINE_SCOPE if engine else SCOPE, 'attempted': len(cases), 'historicalSource': identity}
+    if not engine:
+        result['engineInvocations'] = 0
+    return result
 
 
 def main(argv=None):
-    """Run explicit preparation, compilation or CAPTURE_ONLY, without an engine.
+    """Run explicit preparation, compilation or one source-isolated producer.
 
     Args:
         argv: Optional explicit argument list; otherwise command-line arguments.
@@ -465,6 +572,12 @@ def main(argv=None):
     run.add_argument('--protocol-sha', required=True)
     run.add_argument('--case', choices=(*IDS, 'ALL'), required=True)
     run.add_argument('--self-test', action='store_true')
+    native = sub.add_parser('native-engine', help='separately reviewed protocol, one fixed attempt, no retry')
+    for name in ('checkout', 'attestation', 'protocol', 'archive', 'prepared', 'native-contract', 'output'):
+        native.add_argument('--' + name, required=True, type=Path)
+    native.add_argument('--attestation-sha', required=True)
+    native.add_argument('--protocol-sha', required=True)
+    native.add_argument('--case', choices=IDS, required=True)
     args = parser.parse_args(argv)
     if args.mode == 'protocol':
         digest, unused = make_protocol(args.archive, args.native_contract, args.output)
@@ -482,12 +595,16 @@ def main(argv=None):
         if sha(protocol_raw) != args.protocol_sha:
             raise ValueError('external protocol digest')
         protocol = metadata(protocol_raw)
+        engine = args.mode == 'native-engine'
+        if engine:
+            require_engine_protocol(protocol)
         # This process waits for separate preparation to terminate before Java starts.
         subprocess.run([sys.executable, str(Path(__file__).resolve()), 'prepare', '--archive', str(args.archive),
                         '--archive-sha', protocol['archiveSha256'], '--protocol', str(args.protocol),
                         '--protocol-sha', args.protocol_sha, '--destination', str(args.prepared)], check=True, timeout=60)
         result = launch(args.checkout, args.attestation, args.attestation_sha, args.protocol, args.protocol_sha,
-                        args.prepared, args.native_contract, args.output, IDS if args.case == 'ALL' else [args.case], args.self_test)
+                        args.prepared, args.native_contract, args.output, IDS if args.case == 'ALL' else [args.case],
+                        getattr(args, 'self_test', False), engine)
         print(canonical(result).decode(), end='')
 
 
