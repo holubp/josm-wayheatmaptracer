@@ -87,6 +87,17 @@ class V022BGapMatchedControlsTest {
     /** Fixed scalar-only seam. Neither truth descriptors nor G/identified admission enters native B. */
     static List<String> nativeDefaultCases(){return Stream.concat(ALL_CASES.stream(),BNativeProductionComparison.IDS.stream()).toList();}
     static List<MetricPoint> nativeDefaultSource(String id){BNativeProductionDefaultComparison.requireCase(id);return source(id);}
+    /** Raw factual source/grid only; no truth, profile, observation or solver entry. */
+    static BNativeNeutralFixtureExporter.Input neutralNativeInput(String id,CancellationProbe probe){
+        BNativeProductionDefaultComparison.requireCase(id);probe.checkpoint();var source=source(id);
+        var input=isCurvedControl(id)?(isSwitchback(id)?switchbackInput(id):sameTrailInput(id)):isThin(id)?thinInput(id):originalScalarInput(id,source);
+        var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-1,-1),new GeographicPoint(1,1));
+        boolean fine=id.equals("half-pitch-alias")||id.equals("quarter-phase-alias");double phase=id.equals("quarter-phase-alias")?.25:0;
+        var grid=isCurvedControl(id)?switchbackOutputGrid(input):isThin(id)?new MetricRasterGrid(frame,p(-33,0),1,0,0,1,1,111,81)
+                :new MetricRasterGrid(frame,p(-20+phase,phase),1,0,0,1,fine?.5:1,fine?161:81,fine?161:81);
+        var rasterOrigin=isCurvedControl(id)||isThin(id)?new RasterPoint(-input.origin().xMeters()/input.pitchMeters(),-input.origin().yMeters()/input.pitchMeters()):new RasterPoint(20,0);
+        return new BNativeNeutralFixtureExporter.Input(input.scalar(),input.validity(),input.origin(),input.pitchMeters(),source,grid,rasterOrigin);
+    }
     private static ScalarInput originalScalarInput(String id,List<MetricPoint> source){
         int w=81,h=81;double[] scalar=new double[w*h];boolean[] valid=new boolean[w*h];Arrays.fill(valid,true);
         for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
