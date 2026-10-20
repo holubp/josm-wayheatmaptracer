@@ -727,6 +727,10 @@ public final class ProbabilisticInference {
             List<PathRecord>[][] next = pathGrid(previousStates, nextStates, nextOwner);
             int[][] nextCounts = intGrid(previousStates, nextStates, nextOwner);
             int beforeStates = current.length;
+            if (boundState != null) {
+                boundState.checkpoint(cancellation);
+                boundState.beginStage(profileIndex, beforeStates, previousStates, nextStates);
+            }
             int streamCapacity = Math.multiplyExact(beforeStates, cap);
             AttemptMemoryLedger.Owner scratchOwner = nextOwner.child("extension-merge-scratch");
             boolean exact = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2
@@ -800,6 +804,15 @@ public final class ProbabilisticInference {
                                     scalarCache = ScalarReuseTable.create(scratchOwner,
                                             beforeStates, previousStates, true);
                                 }
+                                // Preserve point validation and the optional allocation attempt before
+                                // deciding whether this raw-one stream can lose without evaluating T.
+                                if (boundState != null && CrossStreamDominance.strictlyDominatedRaw1(
+                                        prefixes.get(0).energy(), unaryPair,
+                                        descriptors.size == cap ? descriptors.energy[0] : Double.NaN,
+                                        descriptors.size == cap,
+                                        profiles.get(profileIndex - 2).chainageMeters(),
+                                        profiles.get(profileIndex).chainageMeters(), parameters.turnWeight(),
+                                        parameters.turnScaleRadians(), boundState, cancellation)) continue;
                                 int scalarIndex = before * previousStates + prior;
                                 double firstHeading;
                                 if (scalarCache != null && scalarCache.ready[scalarIndex] != 0) {

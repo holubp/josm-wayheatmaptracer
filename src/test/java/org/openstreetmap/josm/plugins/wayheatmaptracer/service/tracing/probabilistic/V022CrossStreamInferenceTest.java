@@ -76,8 +76,8 @@ class V022CrossStreamInferenceTest {
             assertEquivalent(old, actual.result());
             assertEquals(ProbabilisticExecutionPolicy.CROSS_STREAM_VERSION,
                     actual.result().workAccounting().orElseThrow().executionPolicy());
-            assertEquals(8, actual.boundWork().boundUnits(), "Task2 initializes accounting but does not prune");
-            assertEquals(0, actual.boundWork().boundQueries());
+            assertEquals(8 + 2 * 128 + 16 * 64, actual.boundWork().boundUnits());
+            assertEquals(16, actual.boundWork().boundQueries());
             assertEquals(retained + 208, owner.currentBytes());
             assertEquals(peak + 424, owner.peakBytes());
             assertThrows(IllegalArgumentException.class, () -> new CrossStreamInferenceResult(actual.result(), null));
@@ -86,18 +86,20 @@ class V022CrossStreamInferenceTest {
     }
 
     @Test
-    void newEntryReportsActualUnprunedKBestCalculations() {
+    void newEntryReportsActualKBestCalculationsWithStrictSkips() {
         var ledger = new AttemptMemoryLedger(1_000_000);
         try (var owner = ledger.rootOwner()) {
             var value = new ProbabilisticInference().solveCrossStreamRaw1(profiles(), PARAMETERS, budgets(1), null,
                     CancellationProbe.NONE, owner, null);
-            // Two extension stages * four target pairs * two before-states =16.
-            assertEquals(16, value.boundWork().firstHeadingEvaluations());
+            // Two extension stages * four target pairs * two before-states =16;
+            // Every stream either skips before the first heading/triple or executes
+            // those sites exactly once (no cache at two next-states).
+            assertEquals(16, value.boundWork().firstHeadingEvaluations() + value.boundWork().skippedStreams());
             assertEquals(8, value.boundWork().secondHeadingEvaluations());
-            assertEquals(16, value.boundWork().wrapEvaluations());
-            assertEquals(16, value.boundWork().huberEvaluations());
-            assertEquals(16, value.boundWork().tripleEvaluations());
-            assertEquals(0, value.boundWork().skippedStreams(), "Task2 has no pruning");
+            assertEquals(16, value.boundWork().tripleEvaluations() + value.boundWork().skippedStreams());
+            assertEquals(value.boundWork().tripleEvaluations(), value.boundWork().wrapEvaluations());
+            assertEquals(value.boundWork().tripleEvaluations(), value.boundWork().huberEvaluations());
+            assertEquals(16, value.result().workAccounting().orElseThrow().kBestScores() + value.boundWork().skippedStreams());
         }
         assertEquals(0, ledger.currentBytes());
     }
@@ -167,10 +169,10 @@ class V022CrossStreamInferenceTest {
         int[] originalPolls = {0};
         var baseline = new AttemptMemoryLedger(1_000_000);
         try (var owner = baseline.rootOwner()) {
-            new ProbabilisticInference().solve(profiles, PARAMETERS, budgets(1), null,
-                    () -> { originalPolls[0]++; return false; }, owner, ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+            new ProbabilisticInference().solveCrossStreamRaw1(profiles, PARAMETERS, budgets(1), null,
+                    () -> { originalPolls[0]++; return false; }, owner, null);
         }
-        for (int cancelAt : new int[] {1, originalPolls[0] + 2}) {
+        for (int cancelAt : new int[] {1, originalPolls[0]}) {
             int[] polls = {0};
             var ledger = new AttemptMemoryLedger(1_000_000);
             try (var owner = ledger.rootOwner(); var caller = owner.reserve(7)) {
@@ -197,7 +199,8 @@ class V022CrossStreamInferenceTest {
         assertEquals(expected.completion(), actual.completion());
         assertEquals(expected.alternativeSearchTruncated(), actual.alternativeSearchTruncated());
         assertEquals(expected.evaluatedPairVisits(), actual.evaluatedPairVisits());
-        assertEquals(expected.evaluatedTransitions(), actual.evaluatedTransitions());
+        assertEquals(expected.workAccounting().orElseThrow().forwardBackwardScores(), actual.workAccounting().orElseThrow().forwardBackwardScores());
+        assertEquals(expected.workAccounting().orElseThrow().logicalKBestExtensions(), actual.workAccounting().orElseThrow().logicalKBestExtensions());
         assertEquals(Double.doubleToRawLongBits(expected.logPartition()), Double.doubleToRawLongBits(actual.logPartition()));
         assertEquals(expected.rawPaths(), actual.rawPaths());
         assertEquals(expected.distinctPaths(), actual.distinctPaths());

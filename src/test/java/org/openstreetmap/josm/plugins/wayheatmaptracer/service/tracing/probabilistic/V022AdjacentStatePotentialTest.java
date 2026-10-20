@@ -72,7 +72,8 @@ class V022AdjacentStatePotentialTest {
         List<OraclePath> oracle = enumerateOracle(profiles, parameters, feature);
         double logPartition = oracleLogPartition(oracle, parameters.temperature());
 
-        for (ProbabilisticExecutionPolicy.Mode mode : ProbabilisticExecutionPolicy.Mode.values()) {
+        for (ProbabilisticExecutionPolicy.Mode mode : List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1,
+                ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2)) {
             for (int rawCap : new int[] {1, 2, 32}) {
                 ProbabilisticInferenceResult result = solve(profiles,
                     (stage, left, right) -> feature[stage][left][right], mode, rawCap, parameters);

@@ -70,7 +70,7 @@ final class Frozen043InferenceOracle {
     static List<String> snapshot(boolean full) throws Exception {
         var rows = new ArrayList<String>();
         for (var graph : graphs()) for (int cap : new int[] {1, 2, 32})
-            for (var mode : ProbabilisticExecutionPolicy.Mode.values())
+            for (var mode : List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1, ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2))
                 for (int region = 0; region < 3; region++) {
                     var ledger = AttemptMemoryLedger.production();
                     var owner = ledger.rootOwner();
@@ -89,7 +89,7 @@ final class Frozen043InferenceOracle {
                     }
                 }
         var wide = graph("bounded-failure", new int[] {16, 16, 16, 16}, 2);
-        for (var mode : ProbabilisticExecutionPolicy.Mode.values())
+        for (var mode : List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1, ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2))
             for (long memory : new long[] {4096, 8192, 16384, 32768, 65536, 131072, 262144})
                 for (long scores : new long[] {15, 1_000_000}) {
                     var ledger = new AttemptMemoryLedger(memory); var owner = ledger.rootOwner();

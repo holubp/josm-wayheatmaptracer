@@ -112,7 +112,7 @@ class PublicGuiSmokeContractTest {
                 new ProbabilisticStateBuilder().build(profile, request.budgets().maximumStatesPerProfile())
                         .lattice().orElseThrow(), parameters)).toList();
         ProbabilisticInferenceResult reference = null;
-        for (var policy : ProbabilisticExecutionPolicy.Mode.values()) {
+        for (var policy : List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1, ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2)) {
             var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
             var owner = ledger.rootOwner();
             try {

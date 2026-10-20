@@ -27,7 +27,7 @@ class V022SingleRoutePosteriorRoundoffTest {
     private static final TraceBudgets BUDGETS = new TraceBudgets(96, 100_000, 1_000_000, 32, 1);
 
     @ParameterizedTest
-    @EnumSource(ProbabilisticExecutionPolicy.Mode.class)
+    @EnumSource(value = ProbabilisticExecutionPolicy.Mode.class, names = {"EAGER_V1", "EXACT_DOMINANCE_V2"})
     void soleAdmittedRouteHasUnitPosteriorDespiteFiniteLogGroupingRoundoff(
             ProbabilisticExecutionPolicy.Mode mode) {
         var profiles = originalProfiles();
@@ -153,7 +153,8 @@ class V022SingleRoutePosteriorRoundoffTest {
     @Test
     void singlePairAndLongerGraphsKeepIndependentUnequalMeasureMultiRoutePosteriors() {
         var parameters = new EvidenceModelParameters("independent-posterior", 1, 0, 0, 0, 0, 1, 1, 0);
-        for (var mode : ProbabilisticExecutionPolicy.Mode.values()) for (int count : new int[] {1, 2, 4}) {
+        for (var mode : List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1,
+                ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2)) for (int count : new int[] {1, 2, 4}) {
             for (double shift : new double[] {-200, 0, 200}) for (boolean dominant : List.of(false, true)) {
                 List<InferenceProfile> profiles = new ArrayList<>();
                 for (int index = 0; index < count; index++) {

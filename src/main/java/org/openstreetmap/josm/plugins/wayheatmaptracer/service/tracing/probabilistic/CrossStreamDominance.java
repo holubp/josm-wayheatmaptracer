@@ -139,6 +139,24 @@ final class CrossStreamDominance {
         Objects.requireNonNull(probe);
         state.checkpoint(probe);
         state.beginQuery();
+        return strictlyDominatedAdmitted(prefix, unaryPair, upper, worst, state, probe);
+    }
+
+    /** Admits a query before any lazy certificate work; a non-full heap never builds it. */
+    static boolean strictlyDominatedRaw1(double prefix, double unaryPair, double worst,
+            boolean fullHeap, double leftChainage, double rightChainage, double weight,
+            double scale, State state, CancellationProbe probe) {
+        Objects.requireNonNull(state);
+        Objects.requireNonNull(probe);
+        state.checkpoint(probe);
+        state.beginQuery();
+        if (!fullHeap) return fallback(state);
+        double upper = upperTriple(leftChainage, rightChainage, weight, scale, state);
+        return strictlyDominatedAdmitted(prefix, unaryPair, upper, worst, state, probe);
+    }
+
+    private static boolean strictlyDominatedAdmitted(double prefix, double unaryPair, double upper,
+            double worst, State state, CancellationProbe probe) {
         if (state.certificateState != SAFE
                 || Double.doubleToRawLongBits(upper) != Double.doubleToRawLongBits(state.cachedUpper)
                 || !finite(prefix, state) || !finite(unaryPair, state) || !finite(worst, state)) return fallback(state);

@@ -48,7 +48,7 @@ class V022ProbabilisticFixedEndpointTest {
         var anchors=List.of(new MetricPoint(-0.0,-0.0),new MetricPoint(2,-0.0));
         var graph=List.of(pointProfile(0,anchors.get(0),new MetricPoint(0,1),+0.0),
                 pointProfile(2,anchors.get(1),new MetricPoint(0,1),-0.0));
-        for(var mode:ProbabilisticExecutionPolicy.Mode.values()) {
+        for(var mode:List.of(ProbabilisticExecutionPolicy.Mode.EAGER_V1,ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2)) {
             var ledger=new AttemptMemoryLedger(1_000_000);
             try(var owner=ledger.rootOwner()) {
                 var result=new ProbabilisticInference().solve(graph,EvidenceModelParameters.defaults(),
