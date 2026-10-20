@@ -10,6 +10,7 @@ import subprocess
 import sys
 import pytest
 import yaml
+from scripts.tests.historical_observation_metadata import historical_bytes, current_mismatches
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/observation-single-train-cost.yml'
@@ -60,7 +61,8 @@ def test_fixed_push_route_init_and_exact_uploads_preserve_old_authority():
     old = json.loads((ROOT/'superpowers/docs/plans/2026-10-18-b-single-train-geometry-freeze.json').read_bytes())
     assert len(old['members']) == 48
     for path, digest in old['members'].items():
-        assert hashlib.sha256((ROOT/path).read_bytes()).hexdigest() == digest, path
+        assert hashlib.sha256(historical_bytes(path)).hexdigest() == digest, path
+    assert current_mismatches(old['members'])
 
 def test_actual_runtime_shell_invokes_one_fixed_gradle_command_with_complete_argv(tmp_path):
     """Execute the actual run block with dummy executables, never Gradle or Java."""
@@ -123,8 +125,19 @@ def test_actual_candidate_is_pending_canonical_and_externally_pinned():
     assert data['jobs']['cost-accounting']['env']['COST_FREEZE_SHA256'] == hashlib.sha256(raw).hexdigest()
     assert len(fields['outputFiles']) == 32
     for path,digest in fields['members'].items():
-        assert hashlib.sha256((ROOT/path).read_bytes()).hexdigest() == digest,path
+        assert hashlib.sha256(historical_bytes(path)).hexdigest() == digest,path
+    assert current_mismatches(fields['members'])
     assert hashlib.sha256((ROOT/'src/test/resources/b-single-train-cost/witness.json').read_bytes()).hexdigest() == '306df0ebe59f052104883c8113823a127176c254510faebf10b32ff896fba5ad'
+
+@pytest.mark.parametrize('optimized',[False,True])
+def test_authentic_historical_context_passes_and_current_fails_actual_source_preflight(tmp_path,optimized):
+    raw=historical_bytes(FREEZE);fields=json.loads(raw)
+    for p in [FREEZE,*fields['members']]:
+        target=tmp_path/p;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(historical_bytes(p))
+    expected=workflow()['jobs']['cost-accounting']['env']['COST_FREEZE_SHA256']
+    assert execute(snippet('freeze=Path'),tmp_path,optimized,COST_FREEZE_SHA256=expected,**launch()).returncode==0
+    refused=execute(snippet('freeze=Path'),ROOT,optimized,COST_FREEZE_SHA256=expected,**launch())
+    assert refused.returncode!=0 and 'Fixed cost source mismatch' in refused.stderr
 
 def receipts(root):
     """Controlled producer-shaped receipts, with no raster/provider/Java invocation."""

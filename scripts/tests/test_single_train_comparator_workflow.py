@@ -9,6 +9,7 @@ import subprocess
 import sys
 import pytest
 import yaml
+from scripts.tests.historical_observation_metadata import historical_bytes, current_mismatches
 
 ROOT=Path(__file__).resolve().parents[2]
 WORKFLOW=ROOT/'.github/workflows/observation-single-train-comparator.yml'
@@ -46,7 +47,8 @@ def test_fixed_route_bounded_explicit_leaves_and_old63_unchanged():
     assert len(leaves)==32 and set(leaves)==set(expected)
     assert all('*' not in p and '..' not in p and 'scratch' not in p for p in paths)
     old=json.loads((ROOT/'superpowers/docs/plans/2026-10-19-b-single-train-cost-freeze.json').read_bytes());assert len(old['members'])==63
-    for p,h in old['members'].items():assert hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h,p
+    for p,h in old['members'].items():assert hashlib.sha256(historical_bytes(p)).hexdigest()==h,p
+    assert current_mismatches(old['members'])
 
 def test_actual_runtime_shell_one_dummy_invocation_with_both_bound_inits(tmp_path):
     script=next(s['run'] for s in workflow()['jobs']['accepted-comparator']['steps'] if s.get('name')=='Run the fixed accepted B0 comparator once')
@@ -83,10 +85,21 @@ def test_actual_candidate_canonical_binding_and_single_public_solver_seam():
     assert fields['purpose']==PURPOSE and fields['approval'] in ('PENDING_INDEPENDENT_APPROVAL',APPROVED)
     assert workflow()['jobs']['accepted-comparator']['env']['COMPARATOR_FREEZE_SHA256']==hashlib.sha256(raw).hexdigest()
     assert fields['maximumGeometryCallbackUnits']==1_000_000_000 and fields['maximumProofPairs']==101160
-    for p,h in fields['members'].items():assert hashlib.sha256((ROOT/p).read_bytes()).hexdigest()==h,p
+    for p,h in fields['members'].items():assert hashlib.sha256(historical_bytes(p)).hexdigest()==h,p
+    assert current_mismatches(fields['members'])
     tool=(ROOT/'src/test/java/org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BSingleTrainComparatorTool.java').read_text()
     assert tool.count('new ProbabilisticInference().solve(')==1 and 'enumerateKBest' not in tool and 'forwardBackward(' not in tool
     assert tool.index('long started=clock.getAsLong()')<tool.index('BSingleTrainComparatorManifest.register(digest)')
+
+@pytest.mark.parametrize('optimized',[False,True])
+def test_authentic_historical_context_passes_and_current_fails_actual_source_preflight(tmp_path,optimized):
+    raw=historical_bytes(FREEZE);fields=json.loads(raw)
+    for p in [FREEZE,*fields['members']]:
+        target=tmp_path/p;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(historical_bytes(p))
+    expected=workflow()['jobs']['accepted-comparator']['env']['COMPARATOR_FREEZE_SHA256']
+    assert execute(snippet('freeze=Path'),tmp_path,optimized,COMPARATOR_FREEZE_SHA256=expected,**launch()).returncode==0
+    refused=execute(snippet('freeze=Path'),ROOT,optimized,COMPARATOR_FREEZE_SHA256=expected,**launch())
+    assert refused.returncode!=0 and 'Comparator source mismatch' in refused.stderr
 
 def controlled_receipts(root):
     """Producer-shaped fixture only; no actual original-case input or invocation."""

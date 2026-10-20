@@ -9,6 +9,7 @@ import sys
 import copy
 import yaml
 import pytest
+from scripts.tests.historical_observation_metadata import historical_bytes, current_mismatches
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/observation-single-train-geometry.yml'
@@ -140,7 +141,19 @@ def test_actual_candidate_freeze_is_canonical_complete_and_externally_pinned():
     assert fields['purpose'] == 'SINGLE_ORIGINAL_TRAIN_GEOMETRY_DIAGNOSTIC'
     assert fields['mapSolves'] == 0 and fields['materializations'] == 1
     assert len(fields['members']) == 48
-    assert all(hashlib.sha256((ROOT / p).read_bytes()).hexdigest() == h for p, h in fields['members'].items())
+    assert all(hashlib.sha256(historical_bytes(p)).hexdigest() == h for p, h in fields['members'].items())
+    assert current_mismatches(fields['members'])
     assert '.github/workflows/observation-single-train-geometry.yml' not in fields['members'], 'external trust anchor cannot recursively hash its own literal'
     assert all('BSingleTrain' + suffix + '.java' in '\n'.join(fields['members']) for suffix in (
         'DiagnosticBridge', 'DiagnosticManifest', 'GeometryDiagnosticTool', 'GeometryReachability'))
+
+@pytest.mark.parametrize('optimized',[False,True])
+def test_authentic_historical_context_passes_and_current_fails_actual_source_preflight(tmp_path,optimized):
+    path='superpowers/docs/plans/2026-10-18-b-single-train-geometry-freeze.json'
+    raw=historical_bytes(path);fields=json.loads(raw)
+    for p in [path,*fields['members']]:
+        target=tmp_path/p;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(historical_bytes(p))
+    expected=yaml.load(WORKFLOW.read_text(),Loader=yaml.BaseLoader)['jobs']['observation-single-train-geometry']['env']['SINGLE_TRAIN_FREEZE_SHA256']
+    assert _run(_snippet('freeze=Path'),tmp_path,optimized,SINGLE_TRAIN_FREEZE_SHA256=expected).returncode==0
+    refused=_run(_snippet('freeze=Path'),ROOT,optimized,SINGLE_TRAIN_FREEZE_SHA256=expected)
+    assert refused.returncode!=0 and 'Fixed diagnostic source mismatch' in refused.stderr

@@ -6,6 +6,7 @@ import json
 import re
 
 import yaml
+from scripts.tests.historical_observation_metadata import historical_bytes, historical_source_path, current_mismatches
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,25 +54,22 @@ def test_archived_train_runtime_freeze_and_manual_workflow_digest_stay_immutable
     assert set(current) == set(old["sourceMembers"])
     assert len(current) == 27
     for member, digest in current.items():
-        locations = [ROOT / source / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member
-                     for source in ("src/main/java", "src/test/java")]
-        path, = [path for path in locations if path.is_file()]
+        historical_source_path(member)  # Unique authenticated historical ownership.
         if member != "service/tracing/probabilistic/BObservationIdentificationTool.java":
             assert digest == old["sourceMembers"][member]
     actual = {}
     for member in current:
-        path, = [ROOT / parent / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member
-                 for parent in ("src/main/java", "src/test/java")
-                 if (ROOT / parent / "org/openstreetmap/josm/plugins/wayheatmaptracer" / member).is_file()]
-        actual[member] = hashlib.sha256(path.read_bytes()).hexdigest()
+        actual[member] = hashlib.sha256(historical_bytes(historical_source_path(member))).hexdigest()
     assert {member for member in current if current[member] != actual[member]} == {
         "service/tracing/probabilistic/BObservationIdentificationTool.java",
         "service/tracing/probabilistic/ProbabilisticInference.java",
-    }, "the archived verifier must reject these changed members; it must not be repinned"
+    }, "the authentic bde context already had these two changes; the old verifier stays pinned"
+    assert current_mismatches({historical_source_path(p): h for p, h in current.items()}), \
+        "current source must remain ineligible for the old runtime authority"
     assert hashlib.sha256(json.dumps(current, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == protocol["sourceSha256"]
     assert len(protocol["diagnosticMembers"]) == 2
     for path, digest in protocol["diagnosticMembers"].items():
-        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest
+        assert hashlib.sha256(historical_bytes(path)).hexdigest() == digest
     workflow = (ROOT / ".github/workflows/observation-train-runtime-diagnostic.yml").read_text()
     assert hashlib.sha256(protocol_bytes).hexdigest() in workflow
     assert "REVIEW_PENDING" not in workflow

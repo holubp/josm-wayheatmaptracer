@@ -10,6 +10,7 @@ import copy
 
 import yaml
 import pytest
+from scripts.tests.historical_observation_metadata import historical_bytes, historical_source_path, current_mismatches
 
 ROOT = Path(__file__).resolve().parents[2]
 PINS = Path("superpowers/docs/plans/2026-10-18-b-observation-prospective-pins.json")
@@ -104,25 +105,29 @@ def test_joint_source_registry_pin_tampering_fails_the_actual_precompile_hash_li
     line = next(line for line in verify.splitlines() if "sha256sum --check --status" in line)
     target = tmp_path / PINS
     target.parent.mkdir(parents=True)
-    target.write_bytes((ROOT / PINS).read_bytes())
+    assert (ROOT / PINS).read_bytes() == historical_bytes(PINS.as_posix())
+    target.write_bytes(historical_bytes(PINS.as_posix()))
     env = {**os.environ, "PROSPECTIVE_PINS_SHA256": expected}
     assert subprocess.run(["sh", "-c", line], cwd=tmp_path, env=env, capture_output=True).returncode == 0
     pins = json.loads(target.read_bytes())
     registry_path = Path("superpowers/docs/plans/2026-10-18-b-observation-prospective-source.json")
-    registry = json.loads((ROOT / registry_path).read_bytes())
-    package = Path("org/openstreetmap/josm/plugins/wayheatmaptracer")
+    assert (ROOT / registry_path).read_bytes() == historical_bytes(registry_path.as_posix())
+    registry = json.loads(historical_bytes(registry_path.as_posix()))
     sources = {}
     for member in registry["core"]["sourceMembers"]:
-        original = next(ROOT / parent / package / member for parent in ("src/main/java", "src/test/java")
-                        if (ROOT / parent / package / member).is_file())
-        copied = tmp_path / original.relative_to(ROOT)
+        relative = historical_source_path(member)
+        copied = tmp_path / relative
         copied.parent.mkdir(parents=True, exist_ok=True)
-        copied.write_bytes(original.read_bytes())
+        copied.write_bytes(historical_bytes(relative))
         sources[member] = copied
     for relative in registry["protocolMembers"]:
         copied = tmp_path / relative
         copied.parent.mkdir(parents=True, exist_ok=True)
-        copied.write_bytes((ROOT / relative).read_bytes())
+        copied.write_bytes(historical_bytes(relative))
+    assert all(hashlib.sha256(sources[p].read_bytes()).hexdigest() == h
+               for p, h in registry["core"]["sourceMembers"].items()), "positive context must be valid before mutation"
+    assert all(hashlib.sha256((tmp_path / p).read_bytes()).hexdigest() == h
+               for p, h in registry["protocolMembers"].items())
     member = next(iter(registry["core"]["sourceMembers"]))
     sources[member].write_bytes(sources[member].read_bytes() + b"\n// changed\n")
     registry["core"]["sourceMembers"][member] = hashlib.sha256(sources[member].read_bytes()).hexdigest()
@@ -141,23 +146,24 @@ def test_joint_source_registry_pin_tampering_fails_the_actual_precompile_hash_li
 
 
 def test_candidate_registry_binds_actual_core_and_all_five_runtime_authority_helpers():
-    registry = json.loads((ROOT / "superpowers/docs/plans/2026-10-18-b-observation-prospective-source.json").read_bytes())
+    """Original approved metadata binds historical bytes, never the current tree."""
+    path = "superpowers/docs/plans/2026-10-18-b-observation-prospective-source.json"
+    assert (ROOT / path).read_bytes() == historical_bytes(path)
+    registry = json.loads(historical_bytes(path))
     canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    package = "org/openstreetmap/josm/plugins/wayheatmaptracer"
     core = registry["core"]["sourceMembers"]
     assert len(core) == 27
     for member, expected in core.items():
-        paths = [ROOT / parent / package / member for parent in ("src/main/java", "src/test/java")]
-        actual = [path for path in paths if path.is_file()]
-        assert len(actual) == 1
-        assert hashlib.sha256(actual[0].read_bytes()).hexdigest() == expected
+        assert hashlib.sha256(historical_bytes(historical_source_path(member))).hexdigest() == expected
     helpers = registry["protocolMembers"]
     names = {"BProspectiveIdentificationManifest.java", "BObservationOptimizedTrainRuntimeDiagnosticTool.java",
              "BProspectiveObservationIdentificationTool.java", "BObservationTrainRuntimeDiagnosticTool.java",
              "BObservationRuntimeTelemetry.java"}
     assert {Path(path).name for path in helpers} == names and len(helpers) == 5
     for path, expected in helpers.items():
-        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == expected
+        assert hashlib.sha256(historical_bytes(path)).hexdigest() == expected
+    assert current_mismatches({**{historical_source_path(p): h for p, h in core.items()}, **helpers}), \
+        "current source is refused by the original registry, not reapproved by this metadata test"
     assert registry["core"]["sourceSha256"] == hashlib.sha256(canonical(core)).hexdigest()
     assert registry["sourceSha256"] == hashlib.sha256(canonical({
         "coreSourceSha256": registry["core"]["sourceSha256"], "protocolMembers": helpers,
