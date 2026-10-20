@@ -54,6 +54,38 @@ class HistoricalReceiptsTest(unittest.TestCase):
             self.assertEqual(6, len(result["files"]))
             self.assertTrue(all(len(item["sha256"]) == 64 for item in result["files"]))
 
+    def test_gradle_cdata_output_is_not_mistaken_for_external_entities(self):
+        verify = self.verifier()
+        with tempfile.TemporaryDirectory() as folder:
+            temporary, xml = self.fixture(Path(folder))
+            xml.write_text(xml.read_text().replace('</testsuite>',
+                '<system-out><![CDATA[synthetic logging <value>]]></system-out>'
+                '<system-err><![CDATA[synthetic warning]]></system-err></testsuite>'))
+            try:
+                result = verify(temporary, xml)
+            except ValueError as failure:
+                self.fail("Ordinary Gradle CDATA was rejected: " + str(failure))
+            self.assertEqual(6, len(result["files"]))
+
+    def test_doctype_and_entity_declarations_remain_forbidden(self):
+        verify = self.verifier()
+        for declaration in ('<!DOCTYPE testsuite [<!ENTITY x "synthetic">]>',
+                            '<!ENTITY x SYSTEM "file:///synthetic-never-read">'):
+            with self.subTest(declaration=declaration), tempfile.TemporaryDirectory() as folder:
+                temporary, xml = self.fixture(Path(folder))
+                xml.write_text(declaration + xml.read_text())
+                with self.assertRaisesRegex(ValueError, "external content"):
+                    verify(temporary, xml)
+
+    def test_utf16_cannot_hide_doctype_from_the_utf8_receipt_contract(self):
+        verify = self.verifier()
+        with tempfile.TemporaryDirectory() as folder:
+            temporary, xml = self.fixture(Path(folder))
+            xml.write_bytes(('<!DOCTYPE testsuite [<!ENTITY x "synthetic">]>' +
+                             xml.read_text()).encode('utf-16'))
+            with self.assertRaises(ValueError):
+                verify(temporary, xml)
+
     def test_missing_extra_duplicate_symlink_or_oversized_receipts_are_rejected(self):
         verify = self.verifier()
         for mutation in ("missing", "extra", "duplicate", "symlink", "oversized"):

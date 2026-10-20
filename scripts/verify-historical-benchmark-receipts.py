@@ -65,7 +65,13 @@ def verify(temporary, xml):
     """
     temporary, xml = Path(temporary), Path(xml)
     raw = bounded(xml, 512 * 1024)
-    if b"<!" in raw:
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as failure:
+        raise ValueError("JUnit XML must be UTF-8") from failure
+    if b"\x00" in raw:
+        raise ValueError("JUnit XML must be UTF-8 without NUL bytes")
+    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
         raise ValueError("XML declarations with external content are forbidden")
     suite = ET.fromstring(raw)
     expected_counts = {"tests": "2", "failures": "0", "errors": "0", "skipped": "0"}
