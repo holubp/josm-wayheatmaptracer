@@ -1,0 +1,113 @@
+{
+  "schema": "same-trail-noisy-recordings-v1",
+  "status": "FROZEN_RECIPE_BEFORE_ENGINE_EXECUTION",
+  "ids": [
+    "same-trail-three-strong",
+    "same-trail-five-strong"
+  ],
+  "meaning": "three or five equal nominal noisy recordings of ONE trail; not distinct parallel trails; source=reference preservation only",
+  "input": {
+    "width": 81,
+    "height": 81,
+    "firstPixelCenterMeters": [
+      -25,
+      -20
+    ],
+    "pitchMeters": 1,
+    "background": 0.02,
+    "allVerticesValid": true,
+    "sourceStepMeters": 1.5,
+    "decisionRadiusMeters": 25
+  },
+  "sourceAndReference": [
+    [
+      0,
+      0
+    ],
+    [
+      9,
+      4
+    ],
+    [
+      19,
+      12
+    ],
+    [
+      24,
+      16
+    ],
+    [
+      25,
+      19
+    ],
+    [
+      20,
+      20
+    ],
+    [
+      11,
+      18
+    ],
+    [
+      4,
+      17
+    ],
+    [
+      1,
+      20
+    ],
+    [
+      5,
+      25
+    ],
+    [
+      14,
+      27
+    ],
+    [
+      23,
+      29
+    ]
+  ],
+  "stations": "union of nonnegative whole1m arclength stations, every source-vertex chainage and total length; reference interpolates exactly along frozen source",
+  "normal": "per-source-vertex normalized sum of incoming/outgoing unit tangents (endpoint single tangent), rotate90deg; interpolate adjacent vertex normals linearly along source segment and renormalize; refuse singular",
+  "noise": {
+    "u": "s / total source length",
+    "amplitude": "2+.4*sin(3*pi*u+.2)^2",
+    "endTaper": "min(1,s/4,(L-s)/4)",
+    "tipTaper": "min over source vertices4 and8 of min(1,.2+.8*abs(s-tipChainage)/3)",
+    "phi": "2*pi*j/N+.17+.13*sin(1.7*j+.6)",
+    "psi": "4*pi*j/N+.63+.19*cos(2.3*j+.2)",
+    "offset": "amplitude*endTaper*tipTaper*(.7*sin(8*pi*u+phi)+.3*sin(18*pi*u+psi))",
+    "recording": "referenceAt(s)+offset*unitNormalAt(s)",
+    "nominalEqualAcrossRecordings": true,
+    "allEndpointsExact": true,
+    "realArithmeticMeanOffsetUpperMeters": 0.3552,
+    "meanRole": "analytical truth-side witness only; never scorer/capture input or prescribed engine averaging"
+  },
+  "rendering": {
+    "occupancy": "count full recording polylines with native-point distance<=.5m, each at most once",
+    "scalar": ".02+.98*(1-.30^occupancy)",
+    "nominalRecordingResponse": 0.7,
+    "interpretation": "fixed bounded display response; no probability/independence/noise-SD claim",
+    "filter": "none; no blur/convolution/antialiasing/per-case normalization"
+  },
+  "oracle": {
+    "id": "thin-hairpin-ordered-frechet-one-metre-v1",
+    "truthOnly": true,
+    "wholeRouteTubeMeters": 1,
+    "orderedProgress": true,
+    "required": "reference/subdivided reference/analytical mean pass; every individual noisy recording fails; preserve both turntips and separated approach-return; shortcuts fail"
+  },
+  "etas": [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "scope": "Additive controls only, no old27/prior2 relabeling, no model/coefficients/caps/qualification change"
+}

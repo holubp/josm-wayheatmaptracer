@@ -1,0 +1,90 @@
+name: Fixed public same-trail recording controls
+
+on:
+  push:
+    branches: [codex/b-gap-same-trail-recordings-20261020]
+
+permissions:
+  contents: read
+
+jobs:
+  same-trail-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Run fixed pure geometry and source metadata preflight
+        run: >-
+          sh ./gradlew test
+          --tests '*V022BSameTrailRecordingTest'
+          --tests '*V022BGapMatchedControlsTest.sameTrailSourceBoundaryPreservesPriorInventoriesAndNeverPassesTraceLabels'
+          --tests '*V022BGapMatchedControlsTest.sameTrailMetadataPreflightUsesUnchangedWindowAndCaps'
+          --tests '*V022BGapMatchedControlsTest.sameTrailReturnedPathsUseRepresentativeOracleAndFailureStatesRemainHonest'
+          --no-daemon --no-build-cache --rerun-tasks --console=plain
+      - name: Preserve completed preflight reports
+        run: |
+          mkdir -p build/gap-same-trail-preflight
+          cp build/test-results/test/*V022BSameTrailRecordingTest.xml build/gap-same-trail-preflight/fixtures.xml
+          cp build/test-results/test/*V022BGapMatchedControlsTest.xml build/gap-same-trail-preflight/harness.xml
+      - name: Run only the two fixed actual same-trail source controls
+        env:
+          V022_RUN_SAME_TRAIL_CONTROLS: "true"
+        run: >-
+          sh ./gradlew test
+          --tests '*V022BGapMatchedControlsTest.sameTrailSourcePipelineProducesCompleteEightSettingMatrix'
+          --no-daemon --no-build-cache --rerun-tasks --console=plain
+      - name: Verify both actual eight-setting same-trail executions
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("build/gap-task5-matrix")
+          ids = ["same-trail-three-strong", "same-trail-five-strong"]
+          etas = [0, 1, 2, 4, 8, 16, 32, 64]
+          summary = json.loads((root / "same-trail-summary.json").read_text())
+          if summary.get("expectedCases") != ids or summary.get("complete") is not True or summary.get("sameTrailExecutionEnabled") is not True:
+              raise SystemExit("Fixed same-trail source schedule incomplete")
+          for identity in ids:
+              receipt = json.loads((root / (identity + ".json")).read_text())
+              if receipt.get("case") != identity or receipt.get("sourceCohort") != "ADDITIONAL_SAME_TRAIL_RECORDINGS_TWO":
+                  raise SystemExit("Fixed same-trail receipt binding changed")
+              rows = receipt.get("rows", [])
+              pipeline = receipt.get("sourcePipeline", {})
+              if receipt.get("sourceCaseExecutionComplete") is not True or pipeline.get("failedPhase") is not None:
+                  raise SystemExit("Fixed same-trail source pipeline failed")
+              if pipeline.get("solverInvocations") != 8 or pipeline.get("solverReturns") != 8:
+                  raise SystemExit("Expected eight actual solver calls and returns")
+              if [row.get("eta") for row in rows] != etas:
+                  raise SystemExit("Fixed same-trail setting inventory changed")
+              for row in rows:
+                  if row.get("actualSolve") is not True or row.get("work") in (None, "unavailable"):
+                      raise SystemExit("Same-trail source slot was never executed")
+                  if row.get("status") in (None, "RESOURCE_LIMIT", "NUMERIC_FAILURE"):
+                      raise SystemExit("Same-trail source execution failed")
+          print("16 actual fixed source solves verified; geometry outcomes are data, not model qualification")
+          PY
+      - name: Upload only fixed public synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-same-trail-recording-controls
+          path: |
+            build/gap-same-trail-preflight/fixtures.xml
+            build/gap-same-trail-preflight/harness.xml
+            build/test-results/test/*V022BGapMatchedControlsTest.xml
+            build/gap-task5-matrix/same-trail-summary.json
+            build/gap-task5-matrix/same-trail-three-strong.json
+            build/gap-task5-matrix/same-trail-five-strong.json
+            build/gap-same-trail-matrix/native-fixtures.json
+            build/gap-same-trail-matrix/same-trail-three-strong.f64
+            build/gap-same-trail-matrix/same-trail-three-strong.valid
+            build/gap-same-trail-matrix/same-trail-five-strong.f64
+            build/gap-same-trail-matrix/same-trail-five-strong.valid
+          if-no-files-found: error
+          retention-days: 5

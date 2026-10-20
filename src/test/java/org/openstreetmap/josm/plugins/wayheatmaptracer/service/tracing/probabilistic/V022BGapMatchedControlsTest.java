@@ -6,6 +6,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,6 +25,7 @@ class V022BGapMatchedControlsTest {
     private static final List<String> THIN_CASES=List.of("thin-three-strands","thin-three-strands-intermittent","thin-strands-merge-separate",
             "drifting-strong-with-faint-original","thin-strong-sharp-bend","thin-faint-coherent-sharp-bend","thin-local-overlap-noise");
     private static final List<String> SWITCHBACK_CASES=BThinSwitchbackFixtures.IDS;
+    private static final List<String> SAME_TRAIL_CASES=BSameTrailRecordingFixtures.IDS;
     private static final List<String> ALL_CASES=Stream.concat(CASES.stream(),THIN_CASES.stream()).toList();
     private static final List<MetricPoint> SOURCE=List.of(new MetricPoint(8,37),new MetricPoint(32,37));
     private static final List<MetricPoint> THIN_SOURCE=List.of(new MetricPoint(-8,37),new MetricPoint(52,37));
@@ -57,6 +59,12 @@ class V022BGapMatchedControlsTest {
     static Stream<String> thinCases(){return THIN_CASES.stream();}
     static Stream<String> allCases(){return ALL_CASES.stream();}
     static Stream<String> switchbackCases(){return SWITCHBACK_CASES.stream();}
+    static Stream<String> sameTrailCases(){return SAME_TRAIL_CASES.stream();}
+    @BeforeAll static void requireDistinctOptInSuites(){requiredCases("true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS")),"true".equals(System.getenv("V022_RUN_SAME_TRAIL_CONTROLS")));}
+    private static List<String> requiredCases(boolean switchbacks,boolean sameTrail) {
+        if(switchbacks&&sameTrail)throw new IllegalArgumentException("Exactly one dedicated synthetic suite may be opted in");
+        return sameTrail?SAME_TRAIL_CASES:switchbacks?SWITCHBACK_CASES:ALL_CASES;
+    }
     static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
     private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
 
@@ -79,6 +87,47 @@ class V022BGapMatchedControlsTest {
     private static ScalarInput switchbackInput(String id) {
         var fixture=BThinSwitchbackFixtures.byId(id);
         return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BThinSwitchbackFixtures.source());
+    }
+    private static ScalarInput sameTrailInput(String id) {
+        var fixture=BSameTrailRecordingFixtures.byId(id);
+        return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BSameTrailRecordingFixtures.source());
+    }
+    @Test void sameTrailSourceBoundaryPreservesPriorInventoriesAndNeverPassesTraceLabels() {
+        assertEquals(27,ALL_CASES.size());assertEquals(2,SWITCHBACK_CASES.size());assertEquals(2,SAME_TRAIL_CASES.size());
+        assertTrue(Collections.disjoint(ALL_CASES,SAME_TRAIL_CASES));assertTrue(Collections.disjoint(SWITCHBACK_CASES,SAME_TRAIL_CASES));
+        assertEquals(List.of("width","height","origin","pitchMeters","scalar","validity","source"),
+                Arrays.stream(ScalarInput.class.getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
+        for(String id:SAME_TRAIL_CASES){var input=sameTrailInput(id);assertEquals(input.source,source(id));assertEquals(57,expectedProfiles(id));
+            assertEquals(6561,input.scalar.length);assertEquals(p(-25,-20),input.origin);}
+        assertSame(ALL_CASES,requiredCases(false,false));assertSame(SWITCHBACK_CASES,requiredCases(true,false));assertSame(SAME_TRAIL_CASES,requiredCases(false,true));
+        assertThrows(IllegalArgumentException.class,()->requiredCases(true,true));
+    }
+    @Test void sameTrailMetadataPreflightUsesUnchangedWindowAndCaps() {
+        var input=sameTrailInput(BSameTrailRecordingFixtures.THREE);var grid=switchbackOutputGrid(input);
+        assertTrue(grid.footprint().containsRegion(MetricCorridorRegion.aroundPolyline(input.source,25)));
+        assertEquals(96,grid.width());assertEquals(95,grid.height());assertEquals(p(-35,-33),grid.firstPixelCenter());
+        assertEquals(57,expectedProfiles(BSameTrailRecordingFixtures.FIVE));
+        assertEquals(128_000_000,SOLVE_BUDGETS.maximumTransitions());assertEquals(8_000_000,SOLVE_BUDGETS.maximumPairVisits());assertEquals(96,SOLVE_BUDGETS.maximumStatesPerProfile());
+        var ledger=newComparisonLedger();assertEquals(64L*1024*1024,ledger.limitBytes());
+        System.out.println("SAME_TRAIL_METADATA profiles57 sourceLength="+BSameTrailRecordingFixtures.length()+" nativePairUpper497856 tableBytesUpper9959848; original sharedFB+K128M runtime refusal remains possible");
+    }
+    @Test void sameTrailReturnedPathsUseRepresentativeOracleAndFailureStatesRemainHonest() {
+        String id=BSameTrailRecordingFixtures.THREE;var prior=THIN_ORACLE_EVIDENCE.remove(id);var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner();var metadata=owner.reserve(1024L*1024)) {
+            var raw=controlledThinRow(0,BSameTrailRecordingFixtures.source());var checked=assessSwitchbackReturnedPath(id,raw,1,CancellationProbe.NONE,owner);
+            assertTrue(checked.geometryPassed);assertTrue(checked.controlPassed);assertEquals(raw.work,checked.work);assertEquals(raw.energy,checked.energy);
+            assertEquals(BThinSwitchbackAcceptance.ORACLE_ID,((Map<?,?>)receiptForCase(id,checked).get("truthOracle")).get("oracle"));
+            var oneRecording=BSameTrailRecordingFixtures.byId(id).traces().get(0);
+            var rejected=assessSwitchbackReturnedPath(id,controlledThinRow(1,oneRecording),1,CancellationProbe.NONE,owner);
+            assertFalse(rejected.geometryPassed);assertFalse(rejected.controlPassed);assertFalse(stopsCase(rejected));
+            assertEquals("FAIL",receiptForCase(id,rejected).get("wholeRouteGeometryVerdict"));
+            for(var row:List.of(unavailable(2,"UNVISITED"),new Row(4,true,ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,List.of(),List.of(),Double.NaN,128000000,
+                    "actual-resource-work","Optional.empty","RETURNED_RESOURCE_LIMIT",false,false,false))) {
+                var unavailable=assessSwitchbackReturnedPath(id,row,1,()->{throw new AssertionError("No path must not query truth");},owner);
+                assertSame(row,unavailable);assertNull(receiptForCase(id,unavailable).get("wholeRouteGeometryPassed"));assertFalse(unavailable.controlPassed);
+            }
+        }finally {if(prior==null)THIN_ORACLE_EVIDENCE.remove(id);else THIN_ORACLE_EVIDENCE.put(id,prior);}
+        assertEquals(0,ledger.currentBytes());
     }
 
     @Test void switchbackHandoffHasOnlyScalarSourceInputsAndOldDefaultRemainsTwentySeven() {
@@ -315,7 +364,7 @@ class V022BGapMatchedControlsTest {
 
     /** Independent truth-side geometry, invoked only after the actual solver returns. */
     private static Row assessSwitchbackReturnedPath(String id,Row row,double pitch,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
-        if(!isSwitchback(id)||Arrays.binarySearch(ETAS,row.eta)<0)throw new IllegalArgumentException("Unknown switchback slot");
+        if(!isCurvedControl(id)||Arrays.binarySearch(ETAS,row.eta)<0)throw new IllegalArgumentException("Unknown curved source-control slot");
         var receipt=new LinkedHashMap<String,Object>();receipt.put("oracle",BThinSwitchbackAcceptance.ORACLE_ID);
         receipt.put("invoked",completed(row));receipt.put("availability","UNAVAILABLE_NO_RETURNED_PATH");
         boolean passed=false,terminal=false;String failure="NONE";
@@ -716,6 +765,15 @@ class V022BGapMatchedControlsTest {
         assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
     }
 
+    /** Separate additive opt-in; never reruns the previous two historical switchbacks. */
+    @EnabledIfEnvironmentVariable(named="V022_RUN_SAME_TRAIL_CONTROLS",matches="true")
+    @ParameterizedTest(name="same-trail-{0}") @MethodSource("sameTrailCases")
+    void sameTrailSourcePipelineProducesCompleteEightSettingMatrix(String id) throws Exception {
+        if(RESULTS.keySet().stream().noneMatch(SAME_TRAIL_CASES::contains))BSameTrailRecordingFixtures.exportNative(Path.of("build/gap-same-trail-matrix"));
+        var result=result(id);verify(result);requireSourceExecution(result);
+        assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
+    }
+
     private static void verify(CaseResult result) {
         assertEquals(8,result.rows.size(),"all fixed settings must be recorded");
         assertArrayEquals(ETAS,result.rows.stream().mapToInt(Row::eta).toArray());
@@ -772,8 +830,8 @@ class V022BGapMatchedControlsTest {
         receipt.put("wholeRouteGeometryVerdict",!completed(row)?"UNAVAILABLE_NO_RETURNED_PATH":id.equals("censored-flank")?"UNAVAILABLE_CENSORED_POSITION":
                 id.contains("twenty-five-representation")?"UNAVAILABLE_REPRESENTATION_ONLY":row.geometryPassed?"PASS":"FAIL");
         if(id.equals("censored-flank")||id.contains("twenty-five-representation"))receipt.put("wholeRouteGeometryPassed",null);
-        if(isThin(id)||isSwitchback(id)) {
-            String oracleId=isSwitchback(id)?BThinSwitchbackAcceptance.ORACLE_ID:BThinStrandAcceptance.ORACLE_ID;
+        if(isThin(id)||isCurvedControl(id)) {
+            String oracleId=isCurvedControl(id)?BThinSwitchbackAcceptance.ORACLE_ID:BThinStrandAcceptance.ORACLE_ID;
             receipt.put("requiredPredicate",oracleId+"_AND_OBSERVED_SUPPORT");
             var proof=THIN_ORACLE_EVIDENCE.getOrDefault(id,Map.of()).get(row.eta);
             boolean bound=proof!=null&&proof.row==row;
@@ -841,7 +899,7 @@ class V022BGapMatchedControlsTest {
     private static void publish(CaseResult result) throws Exception {
         String id=result.id;RESULTS.put(id,result);
         var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-optional-overflow-result-v2");output.put("case",id);
-        output.put("sourceCohort",isSwitchback(id)?"ADDITIONAL_FROZEN_SWITCHBACK_TWO":isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
+        output.put("sourceCohort",isSameTrail(id)?"ADDITIONAL_SAME_TRAIL_RECORDINGS_TWO":isSwitchback(id)?"ADDITIONAL_FROZEN_SWITCHBACK_TWO":isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
         output.put("comparisonPolicy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
         var progress=PIPELINE_EVIDENCE.get(id);output.put("sourcePipeline",progress==null?Map.of("availability","UNAVAILABLE"):progress.receipt());
         output.put("sourceCaseExecutionComplete",sourceCaseComplete(result));
@@ -1027,11 +1085,11 @@ class V022BGapMatchedControlsTest {
             var path=result.mapPath();var points=path.map(ProbabilisticPath::points).orElse(List.of());
             var states=new ArrayList<Integer>();if(path.isPresent())for(int s:path.orElseThrow().stateIndices())states.add(s);
             boolean anchors=!points.isEmpty()&&points.get(0).equals(source.get(0))&&points.get(points.size()-1).equals(source.get(source.size()-1));
-            if(isThin(id)||isSwitchback(id)) {
+            if(isThin(id)||isCurvedControl(id)) {
                 var returned=new Row(eta,true,result.status(),List.copyOf(points),List.copyOf(states),path.map(ProbabilisticPath::energy).orElse(Double.NaN),
                         result.evaluatedTransitions(),result.workAccounting().toString(),result.completion().toString(),result.explanation(),
                         false,anchors&&fullyObserved(evidence,points),false);
-                var checked=isSwitchback(id)?assessSwitchbackReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner):
+                var checked=isCurvedControl(id)?assessSwitchbackReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner):
                         assessThinReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner);
                 if(progress!=null&&checked.explanation.startsWith("THIN_ORACLE_TERMINAL_")){progress.failedPhase=progress.phase;progress.cause="TRUTH_ORACLE_UNAVAILABLE";}
                 return checked;
@@ -1085,6 +1143,10 @@ class V022BGapMatchedControlsTest {
         return true;
     }
     private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {
+        if(isSameTrail(id)) {
+            var input=sameTrailInput(id);if(!input.source.equals(source))throw new IllegalArgumentException("Declared same-trail source changed");
+            return captureScalarOnGrid(id,input,switchbackOutputGrid(input));
+        }
         if(isSwitchback(id)) {
             var input=switchbackInput(id);
             if(!input.source.equals(source))throw new IllegalArgumentException("Declared switchback source identity changed");
@@ -1175,9 +1237,11 @@ class V022BGapMatchedControlsTest {
     }
     private static boolean isThin(String id){return THIN_CASES.contains(id);}
     private static boolean isSwitchback(String id){return SWITCHBACK_CASES.contains(id);}
-    private static int expectedProfiles(String id){return isSwitchback(id)?new ProbabilisticProfileFactory().sourceSamplingGeometry(BThinSwitchbackFixtures.source(),1.5).points().size():isThin(id)?41:17;}
+    private static boolean isSameTrail(String id){return SAME_TRAIL_CASES.contains(id);}
+    private static boolean isCurvedControl(String id){return isSwitchback(id)||isSameTrail(id);}
+    private static int expectedProfiles(String id){return isCurvedControl(id)?new ProbabilisticProfileFactory().sourceSamplingGeometry(BThinSwitchbackFixtures.source(),1.5).points().size():isThin(id)?41:17;}
     // Source lookup must not initialize any raster/truth fixture before the attempt's render reservation.
-    private static List<MetricPoint> source(String id){return isSwitchback(id)?BThinSwitchbackFixtures.source():isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
+    private static List<MetricPoint> source(String id){return isCurvedControl(id)?BThinSwitchbackFixtures.source():isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
     private static double center(double x,double width,double height){return 37+height*Math.max(0,1-Math.abs(x-20)/(width/2));}
     private static double gauss(double distance,double sigma){return StrictMath.exp(-.5*(distance/sigma)*(distance/sigma));}
     private static MetricPoint p(double x,double y){return new MetricPoint(x,y);}
@@ -1205,9 +1269,11 @@ class V022BGapMatchedControlsTest {
     @AfterAll static void report() throws Exception {
         var summary=new LinkedHashMap<String,Object>();summary.put("status","SOURCE_CONTROL_MATRIX_NOT_MODEL_QUALIFICATION");
         boolean switchbackRun="true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS"));
-        var expected=switchbackRun?SWITCHBACK_CASES:ALL_CASES;
+        boolean sameTrailRun="true".equals(System.getenv("V022_RUN_SAME_TRAIL_CONTROLS"));
+        var expected=requiredCases(switchbackRun,sameTrailRun);
         summary.put("expectedCases",expected);summary.put("originalTwenty",CASES);summary.put("additionalThinSeven",THIN_CASES);
         summary.put("additionalSwitchbacks",SWITCHBACK_CASES);summary.put("switchbackExecutionEnabled",switchbackRun);
+        summary.put("additionalSameTrailRecordings",SAME_TRAIL_CASES);summary.put("sameTrailExecutionEnabled",sameTrailRun);
         summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));summary.put("complete",matrixComplete(RESULTS,expected.size()));
         var settings=new ArrayList<Map<String,Object>>();
         for(int eta:ETAS) {
@@ -1217,6 +1283,6 @@ class V022BGapMatchedControlsTest {
             }
             settings.add(Map.of("eta",eta,"failedOrUnavailableRequiredControls",failed,"allControlsPassed",failed.isEmpty()));
         }
-        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write(switchbackRun?"switchback-summary.json":"summary.json",summary);
+        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write(sameTrailRun?"same-trail-summary.json":switchbackRun?"switchback-summary.json":"summary.json",summary);
     }
 }
