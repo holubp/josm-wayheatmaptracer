@@ -1,0 +1,49 @@
+{
+  "schema": "same-trail-separated-recordings-v1",
+  "status": "FROZEN_BEFORE_ENGINE_EXECUTION",
+  "id": "same-trail-three-separated-strong",
+  "inheritsGeometryAndRenderingResourceSha256": "5b1fa171a9c1084a77a217c42d1d1a817ae5b928ab3b743560bf706d312cf2a9",
+  "sourceMeaning": "source=reference preservation; three recordings of ONE trail, no privileged central input",
+  "biasMeters": [
+    -4,
+    0.3,
+    3.7
+  ],
+  "u": "s/L",
+  "noiseMeters": ".6*sin(2*pi*u+.35)+.6*sin(2*pi*u+2*pi*(j-1)/3+.35)+.1*sin(4*pi*u+1.3*j+.7)",
+  "offset": "same old endpoint and vertices4/8 tip taper times (bias[j]+noiseMeters)",
+  "samplingAndNormal": "same original source, station union and interpolated unit normal as bound old resource; no changes to old cases",
+  "physicalSeparation": {
+    "intervalMeters": [
+      8,
+      20
+    ],
+    "minimumAdjacentMetresAndNativePixels": 2.16,
+    "analyticLowerBound": "3.4-.6*sqrt(3)-.2 > 2.16 where taper=1"
+  },
+  "analyticalMeanUpperMeters": 0.7,
+  "meanRole": "truth-side witness only, never source/scorer input or prescribed averaging",
+  "oracle": "unchanged ordered continuous Frechet1m: reference/subdivision/mean and both tips pass; every recording and both tip shortcuts fail",
+  "scalar": ".02+.98*(1-.30^k); k full traces within .5m of native sample; no blur/normalization",
+  "input": {
+    "width": 81,
+    "height": 81,
+    "origin": [
+      -25,
+      -20
+    ],
+    "pitch": 1,
+    "allValid": true
+  },
+  "etas": [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "scope": "one additive case; old schedules/recipes/bytes and all model/resource/qualification gates unchanged"
+}

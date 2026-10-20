@@ -26,6 +26,7 @@ class V022BGapMatchedControlsTest {
             "drifting-strong-with-faint-original","thin-strong-sharp-bend","thin-faint-coherent-sharp-bend","thin-local-overlap-noise");
     private static final List<String> SWITCHBACK_CASES=BThinSwitchbackFixtures.IDS;
     private static final List<String> SAME_TRAIL_CASES=BSameTrailRecordingFixtures.IDS;
+    private static final List<String> SEPARATED_SAME_TRAIL_CASES=List.of(BSeparatedSameTrailFixtures.ID);
     private static final List<String> ALL_CASES=Stream.concat(CASES.stream(),THIN_CASES.stream()).toList();
     private static final List<MetricPoint> SOURCE=List.of(new MetricPoint(8,37),new MetricPoint(32,37));
     private static final List<MetricPoint> THIN_SOURCE=List.of(new MetricPoint(-8,37),new MetricPoint(52,37));
@@ -60,7 +61,11 @@ class V022BGapMatchedControlsTest {
     static Stream<String> allCases(){return ALL_CASES.stream();}
     static Stream<String> switchbackCases(){return SWITCHBACK_CASES.stream();}
     static Stream<String> sameTrailCases(){return SAME_TRAIL_CASES.stream();}
-    @BeforeAll static void requireDistinctOptInSuites(){requiredCases("true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS")),"true".equals(System.getenv("V022_RUN_SAME_TRAIL_CONTROLS")));}
+    @BeforeAll static void requireDistinctOptInSuites(){requiredCases("true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS")),"true".equals(System.getenv("V022_RUN_SAME_TRAIL_CONTROLS")),"true".equals(System.getenv("V022_RUN_SEPARATED_SAME_TRAIL_CONTROL")));}
+    private static List<String> requiredCases(boolean switchbacks,boolean sameTrail,boolean separated) {
+        if(separated&&(switchbacks||sameTrail))throw new IllegalArgumentException("Exactly one dedicated synthetic suite may be opted in");
+        return separated?SEPARATED_SAME_TRAIL_CASES:requiredCases(switchbacks,sameTrail);
+    }
     private static List<String> requiredCases(boolean switchbacks,boolean sameTrail) {
         if(switchbacks&&sameTrail)throw new IllegalArgumentException("Exactly one dedicated synthetic suite may be opted in");
         return sameTrail?SAME_TRAIL_CASES:switchbacks?SWITCHBACK_CASES:ALL_CASES;
@@ -89,7 +94,7 @@ class V022BGapMatchedControlsTest {
         return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BThinSwitchbackFixtures.source());
     }
     private static ScalarInput sameTrailInput(String id) {
-        var fixture=BSameTrailRecordingFixtures.byId(id);
+        var fixture=isSeparatedSameTrail(id)?BSeparatedSameTrailFixtures.fixture():BSameTrailRecordingFixtures.byId(id);
         return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BSameTrailRecordingFixtures.source());
     }
     @Test void sameTrailSourceBoundaryPreservesPriorInventoriesAndNeverPassesTraceLabels() {
@@ -101,6 +106,20 @@ class V022BGapMatchedControlsTest {
             assertEquals(6561,input.scalar.length);assertEquals(p(-25,-20),input.origin);}
         assertSame(ALL_CASES,requiredCases(false,false));assertSame(SWITCHBACK_CASES,requiredCases(true,false));assertSame(SAME_TRAIL_CASES,requiredCases(false,true));
         assertThrows(IllegalArgumentException.class,()->requiredCases(true,true));
+    }
+    @Test void separatedSameTrailMetadataBindsOneSourceWithoutChangingPriorSchedules() {
+        String id=BSeparatedSameTrailFixtures.ID;assertTrue(isCurvedControl(id),"additive curved case must bind its real source");
+        assertEquals(BSameTrailRecordingFixtures.source(),source(id));assertEquals(57,expectedProfiles(id));
+        assertEquals(27,ALL_CASES.size());assertEquals(2,SAME_TRAIL_CASES.size());assertEquals(2,SWITCHBACK_CASES.size());
+        assertSame(SEPARATED_SAME_TRAIL_CASES,requiredCases(false,false,true));assertEquals(List.of(id),SEPARATED_SAME_TRAIL_CASES);
+        assertThrows(IllegalArgumentException.class,()->requiredCases(true,false,true));assertThrows(IllegalArgumentException.class,()->requiredCases(false,true,true));
+        assertSame(ALL_CASES,requiredCases(false,false,false));assertSame(SAME_TRAIL_CASES,requiredCases(false,true,false));
+        var handed=sameTrailInput(id);assertArrayEquals(BSeparatedSameTrailFixtures.fixture().scalar(),handed.scalar);
+        assertEquals(List.of("width","height","origin","pitchMeters","scalar","validity","source"),
+                Arrays.stream(ScalarInput.class.getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
+        var f=BSeparatedSameTrailFixtures.fixture();var input=new ScalarInput(81,81,p(-25,-20),1,f.scalar(),f.validity(),BSameTrailRecordingFixtures.source());
+        assertTrue(switchbackOutputGrid(input).footprint().containsRegion(MetricCorridorRegion.aroundPolyline(input.source,25)));
+        assertEquals(128_000_000,SOLVE_BUDGETS.maximumTransitions());assertEquals(64L*1024*1024,newComparisonLedger().limitBytes());
     }
     @Test void sameTrailMetadataPreflightUsesUnchangedWindowAndCaps() {
         var input=sameTrailInput(BSameTrailRecordingFixtures.THREE);var grid=switchbackOutputGrid(input);
@@ -774,6 +793,14 @@ class V022BGapMatchedControlsTest {
         assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
     }
 
+    /** One additive visualization case, opt-in only; prior suites remain untouched. */
+    @EnabledIfEnvironmentVariable(named="V022_RUN_SEPARATED_SAME_TRAIL_CONTROL",matches="true")
+    @Test void separatedSameTrailSourcePipelineProducesCompleteEightSettingMatrix() throws Exception {
+        String id=BSeparatedSameTrailFixtures.ID;BSeparatedSameTrailFixtures.exportNative(Path.of("build/gap-separated-same-trail-matrix"));
+        var result=result(id);verify(result);requireSourceExecution(result);
+        assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
+    }
+
     private static void verify(CaseResult result) {
         assertEquals(8,result.rows.size(),"all fixed settings must be recorded");
         assertArrayEquals(ETAS,result.rows.stream().mapToInt(Row::eta).toArray());
@@ -899,7 +926,7 @@ class V022BGapMatchedControlsTest {
     private static void publish(CaseResult result) throws Exception {
         String id=result.id;RESULTS.put(id,result);
         var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-optional-overflow-result-v2");output.put("case",id);
-        output.put("sourceCohort",isSameTrail(id)?"ADDITIONAL_SAME_TRAIL_RECORDINGS_TWO":isSwitchback(id)?"ADDITIONAL_FROZEN_SWITCHBACK_TWO":isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
+        output.put("sourceCohort",isSeparatedSameTrail(id)?"ADDITIONAL_SEPARATED_SAME_TRAIL_ONE":isSameTrail(id)?"ADDITIONAL_SAME_TRAIL_RECORDINGS_TWO":isSwitchback(id)?"ADDITIONAL_FROZEN_SWITCHBACK_TWO":isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
         output.put("comparisonPolicy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
         var progress=PIPELINE_EVIDENCE.get(id);output.put("sourcePipeline",progress==null?Map.of("availability","UNAVAILABLE"):progress.receipt());
         output.put("sourceCaseExecutionComplete",sourceCaseComplete(result));
@@ -1143,7 +1170,7 @@ class V022BGapMatchedControlsTest {
         return true;
     }
     private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {
-        if(isSameTrail(id)) {
+        if(isSameTrail(id)||isSeparatedSameTrail(id)) {
             var input=sameTrailInput(id);if(!input.source.equals(source))throw new IllegalArgumentException("Declared same-trail source changed");
             return captureScalarOnGrid(id,input,switchbackOutputGrid(input));
         }
@@ -1238,7 +1265,8 @@ class V022BGapMatchedControlsTest {
     private static boolean isThin(String id){return THIN_CASES.contains(id);}
     private static boolean isSwitchback(String id){return SWITCHBACK_CASES.contains(id);}
     private static boolean isSameTrail(String id){return SAME_TRAIL_CASES.contains(id);}
-    private static boolean isCurvedControl(String id){return isSwitchback(id)||isSameTrail(id);}
+    private static boolean isSeparatedSameTrail(String id){return SEPARATED_SAME_TRAIL_CASES.contains(id);}
+    private static boolean isCurvedControl(String id){return isSwitchback(id)||isSameTrail(id)||isSeparatedSameTrail(id);}
     private static int expectedProfiles(String id){return isCurvedControl(id)?new ProbabilisticProfileFactory().sourceSamplingGeometry(BThinSwitchbackFixtures.source(),1.5).points().size():isThin(id)?41:17;}
     // Source lookup must not initialize any raster/truth fixture before the attempt's render reservation.
     private static List<MetricPoint> source(String id){return isCurvedControl(id)?BThinSwitchbackFixtures.source():isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
@@ -1270,10 +1298,12 @@ class V022BGapMatchedControlsTest {
         var summary=new LinkedHashMap<String,Object>();summary.put("status","SOURCE_CONTROL_MATRIX_NOT_MODEL_QUALIFICATION");
         boolean switchbackRun="true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS"));
         boolean sameTrailRun="true".equals(System.getenv("V022_RUN_SAME_TRAIL_CONTROLS"));
-        var expected=requiredCases(switchbackRun,sameTrailRun);
+        boolean separatedRun="true".equals(System.getenv("V022_RUN_SEPARATED_SAME_TRAIL_CONTROL"));
+        var expected=requiredCases(switchbackRun,sameTrailRun,separatedRun);
         summary.put("expectedCases",expected);summary.put("originalTwenty",CASES);summary.put("additionalThinSeven",THIN_CASES);
         summary.put("additionalSwitchbacks",SWITCHBACK_CASES);summary.put("switchbackExecutionEnabled",switchbackRun);
         summary.put("additionalSameTrailRecordings",SAME_TRAIL_CASES);summary.put("sameTrailExecutionEnabled",sameTrailRun);
+        summary.put("additionalSeparatedSameTrail",SEPARATED_SAME_TRAIL_CASES);summary.put("separatedSameTrailExecutionEnabled",separatedRun);
         summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));summary.put("complete",matrixComplete(RESULTS,expected.size()));
         var settings=new ArrayList<Map<String,Object>>();
         for(int eta:ETAS) {
@@ -1283,6 +1313,6 @@ class V022BGapMatchedControlsTest {
             }
             settings.add(Map.of("eta",eta,"failedOrUnavailableRequiredControls",failed,"allControlsPassed",failed.isEmpty()));
         }
-        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write(sameTrailRun?"same-trail-summary.json":switchbackRun?"switchback-summary.json":"summary.json",summary);
+        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write(separatedRun?"separated-same-trail-summary.json":sameTrailRun?"same-trail-summary.json":switchbackRun?"switchback-summary.json":"summary.json",summary);
     }
 }
