@@ -887,3 +887,66 @@ source checks do not paint or fetch tiles while the dataset write lock is held.
 Generic third-party visible imagery still lacks a provider-wide render lease;
 its separate Apply/Redo policy must be resolved before claiming full source
 freshness or release readiness.
+
+### Fixed historical native comparison (candidate only)
+
+`b-historical-native-comparison.yml` is restricted to the exact
+`codex/b-historical-native-comparison-20261020` push branch. Its candidate manifest
+and exact-schema protocol remain pending until independent source review and the
+controller's explicit freeze. `verify-b-historical-launch.py verify --execution`
+always refuses pending metadata; there is no allow-pending execution mode.
+Promotion changes only both approval fields and protocol `engineEligible`, then
+the dependent protocol/manifest digests and workflow literal. Sources,32 inputs,
+native defaults and all oracles remain fixed.
+
+The manifest pins implementation commit92eefbbb separately from the actual
+publication `GitHub.sha`. It binds the existing driver/adapter, verifier, all Java
+source trees, named exporter/checker/oracle helpers, neutral archive/index and
+old117 source/build/JOSM19555 identities. It excludes its own/workflow hash to
+avoid circular signing; the reviewed workflow contains the external manifest
+literal. Locally self-consistent hashes are not source approval or experiment
+authority. Diagnostic defaults-toString SHA and visible/managed live identity
+hashes are distinct metadata, not interchangeable request identities.
+
+Preflight runs only pure controls and scalar recapture/export. Each native job
+uses a separate clean literal117 checkout, its own Java17 wrapper and declared
+JOSM dependency, then compiles the external adapter only against old main classes
+and that JAR. A separate preparation process exits before the one historical
+native call. Compile time is outside the300s cooperative/360s external attempt
+timer. All32 cases run independently, maxparallel2/failfastfalse, with no retry.
+The actual old256MiB default is baseline context; it does not change the64MiB
+identified experiment or qualify a model.
+
+The neutral export directory comes from the validated neutral-test JUnit XML
+`system-out`, whose suite identity and zero-skip outcomes are checked first.
+Default Gradle console output does not expose passing-test standard output and
+cannot substitute for that marker. The test-only `neutral-native-public32.zip`
+is the exact previously frozen public97-member input archive (SHA2569c93ac93…);
+it permits full approved-admission tests in a real clean temporary Git checkout
+without another capture or native call. Its approval is controlled test metadata,
+never promotion of the pending launch resources.
+
+The current point checker runs in a different JVM after the launcher terminates,
+using `V022BNativeHistoricalClasspathTest.emitsActualCurrentClasspathWithoutFixtureAcquisition`
+for cheap current-only classpath emission. `--producer-exit-code` receives the
+actual launcher wait code: zero implies its old child was waited successfully;
+a nonzero wrapper code is conservative unavailable evidence, never a guessed
+native exit/status. Cutoff, partial, missing, resource or numeric results retain
+their actual leaves and unavailable point outcomes; no alternative is selected,
+normalized or truncated. Engine entry, complete ownership and geometry PASS are
+never inferred from a before-call phase marker. Strict original historical two
+benchmark positives run unchanged in their own separate job.
+
+Only the collector's closed public artifact directory is uploaded. Native and
+point leaves/logs are individually limited to65,536B, aggregate2GiB; the neutral
+input ZIP has its separate4MiB limit. Raw coordinates, bits, alternative order,
+work and failures remain separate from oracle verdicts. Preflight and collector
+publication use a fresh owned sibling staging directory: every bounded leaf is
+written and closed before the single final directory rename. Failure removes
+only owned staging, preserves the primary exception and leaves any preexisting
+destination untouched. No partial upload directory is published.
+The workflow preserves
+nonzero process failure after diagnostics upload. This comparison does not run
+FIT/SELECT/HOLDOUT/private data, confer final-preview/Apply permission or release
+the plugin. Actual fixed32 execution, artifact reproduction, full qualification
+and release gates remain separate controller-owned work.

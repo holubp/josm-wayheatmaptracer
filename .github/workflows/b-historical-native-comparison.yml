@@ -1,0 +1,207 @@
+name: Fixed historical native32 comparison (candidate, not qualification)
+
+on:
+  push:
+    branches: [codex/b-historical-native-comparison-20261020]
+
+permissions:
+  contents: read
+
+env:
+  HISTORICAL_MANIFEST_SHA: f26b37a02dd5473212850bbd5be6aa24dc77016cf1c0a2c48a4becb1c35516fa
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Pure workflow and tuple guards
+        working-directory: driver
+        run: |
+          python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"
+          python3 -m pytest scripts/tests/test_b_historical_native_comparison_workflow.py scripts/tests/test_b_historical_native_comparison.py -q
+          python3 -O -m pytest scripts/tests/test_b_historical_native_comparison_workflow.py scripts/tests/test_b_historical_native_comparison.py -q
+          python3 scripts/verify-b-historical-launch.py verify --manifest-sha "$HISTORICAL_MANIFEST_SHA" --branch "$GITHUB_REF_NAME" --publication-commit "$GITHUB_SHA"
+      - name: Pure current contracts and deterministic neutral export
+        working-directory: driver
+        run: |
+          sh ./gradlew test --tests '*V022BNativeNeutralFixtureTest' --tests '*V022BNativeHistoricalPointComparisonTest' --tests '*V022BNativeHistoricalClasspathTest' --no-daemon --no-build-cache --console=plain > build-preflight.log 2>&1
+          python3 scripts/verify-b-historical-launch.py preflight --manifest-sha "$HISTORICAL_MANIFEST_SHA" --publication-commit "$GITHUB_SHA" --log build-preflight.log --output build/historical-neutral-input
+      - uses: actions/upload-artifact@v4
+        with:
+          name: historical-neutral-input
+          path: driver/build/historical-neutral-input/
+          if-no-files-found: error
+          retention-days: 5
+  native:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case: [strong-parallel-gap, connected-straight, connected-short-bend, connected-sharp-apex, faint-six-metre-bend, faint-twelve-metre-bend, genuine-junction, positive-twenty-five-representation, negative-twenty-five-representation, flecks-versus-faint-coherent, valid-sparse-gap, invalid-unknown-gap, censored-flank, strong-modulated-versus-quiet-faint, unknown-detour, uniform-null, alternating-null, half-pitch-alias, quarter-phase-alias, reverse-original-mesh, thin-three-strands, thin-three-strands-intermittent, thin-strands-merge-separate, drifting-strong-with-faint-original, thin-strong-sharp-bend, thin-faint-coherent-sharp-bend, thin-local-overlap-noise, same-trail-three-strong, same-trail-five-strong, switchback-thin-strong, switchback-thin-faint, same-trail-three-separated-strong]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+      - uses: actions/download-artifact@v4
+        with:
+          name: historical-neutral-input
+          path: driver/build/historical-neutral-input
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Reviewed execution admission before old compilation or acquisition
+        working-directory: driver
+        run: python3 scripts/verify-b-historical-launch.py verify --execution --manifest-sha "$HISTORICAL_MANIFEST_SHA" --branch "$GITHUB_REF_NAME" --publication-commit "$GITHUB_SHA" --archive build/historical-neutral-input/neutral.zip
+      - uses: actions/checkout@v4
+        with:
+          ref: 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          path: historical
+      - name: Compile old main using only its own wrapper and source
+        working-directory: historical
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          test -z "$(git status --porcelain --untracked-files=all)"
+          sh ./gradlew classes --no-daemon --console=plain
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Compile current checker and emit cheap current-only classpath
+        working-directory: driver
+        run: |
+          sh ./gradlew testClasses --no-daemon --console=plain
+          sh ./gradlew test --tests '*V022BNativeHistoricalClasspathTest.emitsActualCurrentClasspathWithoutFixtureAcquisition' --no-daemon --no-build-cache --console=plain
+      - name: Compile and attest isolated adapter outside the attempt timer
+        working-directory: driver
+        run: |
+          JOSM_JAR=$(python3 scripts/verify-b-historical-launch.py jar --manifest-sha "$HISTORICAL_MANIFEST_SHA")
+          python3 scripts/run-b-historical-native-comparison.py compile-adapter --checkout ../historical --dependency "$JOSM_JAR" --adapter-source scripts/historical-b-native/HistoricalNativeB.java --classes build/historical-native-adapter --attestation build/historical-native-attestation.json
+          python3 scripts/verify-b-historical-launch.py attest --manifest-sha "$HISTORICAL_MANIFEST_SHA" --checkout ../historical --attestation build/historical-native-attestation.json
+      - name: One fixed native attempt, no retry
+        working-directory: driver
+        env:
+          FIXED_CASE: ${{ matrix.case }}
+        run: |
+          python3 scripts/verify-b-historical-launch.py verify --execution --manifest-sha "$HISTORICAL_MANIFEST_SHA" --branch "$GITHUB_REF_NAME" --publication-commit "$GITHUB_SHA" --archive build/historical-neutral-input/neutral.zip
+          PROTOCOL_SHA=$(python3 -c 'import json; print(json.load(open("src/test/resources/b-observed-gap/historical-native-production-comparison.json"))["protocolSha256"])')
+          ATTESTATION_SHA=$(sha256sum build/historical-native-attestation.json | cut -d ' ' -f1)
+          set +e
+          python3 scripts/run-b-historical-native-comparison.py native-engine --checkout ../historical --attestation build/historical-native-attestation.json --attestation-sha "$ATTESTATION_SHA" --protocol src/test/resources/b-observed-gap/historical-native-production-protocol.json --protocol-sha "$PROTOCOL_SHA" --archive build/historical-neutral-input/neutral.zip --prepared build/historical-native-prepared --native-contract src/test/resources/b-observed-gap/native-production-default-comparison.json --output build/historical-native-raw --case "$FIXED_CASE" > build/historical-native-wrapper.log 2>&1
+          LAUNCH_CODE=$?
+          set -e
+          printf '%s\n' "$LAUNCH_CODE" > build/historical-native-exit.txt
+      - name: Separate current point checker after producer termination
+        if: always()
+        working-directory: driver
+        env:
+          FIXED_CASE: ${{ matrix.case }}
+        run: |
+          if test ! -f build/historical-native-exit.txt || test ! -f build/historical-point-current-classpath.txt || test ! -d "build/historical-native-raw/$FIXED_CASE"; then
+            echo CHECKER_NOT_RUN_MISSING_INPUT
+            exit 0
+          fi
+          PROTOCOL_SHA=$(python3 -c 'import json; print(json.load(open("src/test/resources/b-observed-gap/historical-native-production-comparison.json"))["protocolSha256"])')
+          ARCHIVE_SHA=$(python3 -c 'import json; print(json.load(open("src/test/resources/b-observed-gap/historical-native-production-comparison.json"))["archiveSha256"])')
+          LAUNCH_CODE=$(cat build/historical-native-exit.txt)
+          CURRENT_CP=$(cat build/historical-point-current-classpath.txt)
+          set +e
+          java -Djava.awt.headless=true -cp "$CURRENT_CP" org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BNativeHistoricalPointComparison --case "$FIXED_CASE" --neutral-archive build/historical-neutral-input/neutral.zip --neutral-sha256 "$ARCHIVE_SHA" --protocol-sha256 "$PROTOCOL_SHA" --historical-receipts "build/historical-native-raw/$FIXED_CASE" --output build/historical-native-points --manifest-sha256 "$HISTORICAL_MANIFEST_SHA" --producer-exit-code "$LAUNCH_CODE" > build/historical-native-checker.log 2>&1
+          CHECK_CODE=$?
+          set -e
+          printf '%s\n' "$CHECK_CODE" > build/historical-native-checker-exit.txt
+      - name: Stage closed public diagnostics even after a failed attempt
+        if: always()
+        working-directory: driver
+        env:
+          FIXED_CASE: ${{ matrix.case }}
+        run: |
+          EXIT_ARGS=()
+          if test -f build/historical-native-exit.txt; then EXIT_ARGS+=(--launcher-exit "$(cat build/historical-native-exit.txt)"); fi
+          if test -f build/historical-native-checker-exit.txt; then EXIT_ARGS+=(--checker-exit "$(cat build/historical-native-checker-exit.txt)"); fi
+          python3 scripts/verify-b-historical-launch.py collect --manifest-sha "$HISTORICAL_MANIFEST_SHA" --publication-commit "$GITHUB_SHA" --case "$FIXED_CASE" --raw-root build/historical-native-raw --point-root build/historical-native-points --attestation build/historical-native-attestation.json --output build/historical-native-artifact "${EXIT_ARGS[@]}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: historical-native-${{ matrix.case }}
+          path: driver/build/historical-native-artifact/
+          if-no-files-found: error
+          retention-days: 5
+      - name: Retain the actual failed process outcome after diagnostics upload
+        if: always()
+        working-directory: driver
+        run: |
+          test -f build/historical-native-exit.txt
+          test -f build/historical-native-checker-exit.txt
+          test "$(cat build/historical-native-exit.txt)" = 0
+          test "$(cat build/historical-native-checker-exit.txt)" = 0
+  historical-context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: driver
+      - name: Check receipt verifier without numerical work
+        working-directory: driver
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_historical_benchmark_receipts.py
+          python3 -O -m unittest discover -s scripts/tests -p test_historical_benchmark_receipts.py
+      - uses: actions/checkout@v4
+        with:
+          ref: 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          path: historical
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Verify literal clean source and compile its own tests
+        working-directory: historical
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          test -z "$(git status --porcelain --untracked-files=all)"
+          sh ./gradlew testClasses -PvalidationProfile=public --no-daemon --console=plain
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Run the two unchanged historical positives exactly once
+        working-directory: historical
+        run: |
+          mkdir "$RUNNER_TEMP/historical-benchmark-retained"
+          export JAVA_TOOL_OPTIONS="-Djunit.jupiter.tempdir.cleanup.mode.default=NEVER -Djava.io.tmpdir=$RUNNER_TEMP/historical-benchmark-retained"
+          timeout 600s sh ./gradlew test -PvalidationProfile=public \
+            --tests '*BenchmarkDecisionComparatorIntegrationTest.approvedContractKeepsEachNativeEnvelopeAndOriginalPin' \
+            --tests '*BenchmarkDecisionComparatorIntegrationTest.approvedMainAdmitsIndependentSingleAndFactualIntervalCompatibilityOutputs' \
+            --no-daemon --no-build-cache --console=plain
+      - name: Validate only genuine retained historical receipts
+        working-directory: historical
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 ../driver/scripts/verify-historical-benchmark-receipts.py \
+            "$RUNNER_TEMP/historical-benchmark-retained" \
+            build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml \
+            "$RUNNER_TEMP/historical-benchmark-verified"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: historical-context-only-${{ github.sha }}
+          path: ${{ runner.temp }}/historical-benchmark-verified/*
+          if-no-files-found: error
+          retention-days: 5
+      - name: Preserve actual test failures without fabricating success receipts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-context-failure-xml-${{ github.sha }}
+          path: historical/build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.BenchmarkDecisionComparatorIntegrationTest.xml
+          if-no-files-found: warn
+          retention-days: 5
