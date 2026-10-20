@@ -4,8 +4,8 @@
     1,
     0
   ],
-  "approval": true,
-  "approvalScope": "ONE reviewed five-case CI run only; no retry/native/historical baseline rerun; never model qualification",
+  "approval": false,
+  "approvalScope": "REVIEWED_SOURCE_BOUND_REPAIR_ONLY; no new numerical execution authority; another five-case run requires approval",
   "archivedInputAuditSha256": "ae7784b8d2561f093630e59a5023350eae5f132115a90eff741500264a2011aa",
   "baselineInputs": [
     {
@@ -83,7 +83,7 @@
     "same-trail-three-separated-strong"
   ],
   "comparisonIdentity": "IDENTIFIED_B0_EXACT_CROSS_STREAM_RAW1_V3_NOT_NATIVE_DEFAULT_OR_MODEL_QUALIFICATION",
-  "engineEligible": true,
+  "engineEligible": false,
   "eta": 0,
   "executionPolicy": "terminal-path-count-cross-stream-raw1-v3",
   "limits": {
@@ -101,9 +101,9 @@
     "approval",
     "engineEligible"
   ],
-  "reviewedCodeCommit": "9e99ba072b55b9acd7fd9411627cf6ebc6a74dfe",
+  "reviewedCodeCommit": "00f2ee0ca1be0cc341ad4174b484876542bc865c",
   "schema": 1,
-  "sourceClosureSha256": "2814ff23e2e6f05116b2566aa14a6066234d916a30052bde27a75071c19ba01b",
+  "sourceClosureSha256": "29c786c8499b792805c62420b1e8600f604214cb9fa89931d8e233f772112e80",
   "sourceFiles": {
     "build.gradle.kts": "a4b7f05ba8f1218524513683ebdf842117d2f4e034eb76a24fa929e30a68d1db",
     "gradle.properties": "3627da912cd8622cb4dfb6147b57665b08718bbeb0934b1fe4e3742fa317dc86",
@@ -112,7 +112,7 @@
     "gradlew": "aed171fb114f82e6eaea4970a245a200e0582a7dcc8ec0891ca41b6e4a62b754",
     "gradlew.bat": "fedad02c18e266ec094995a5751b7fe1eb6e74f66bf75db64fae2e50eb22c234",
     "scripts/gradle/exact-cross-stream-test.gradle": "6aa9f6e9dd7b1106fdeea4add0a0383a0d724375d46359bde964746432a3c184",
-    "scripts/verify-b-exact-cross-stream.py": "d0560b2694545e7d67c32bb2b84b5575d22b92bbe0385b54e88fd538fede66ca",
+    "scripts/verify-b-exact-cross-stream.py": "2a38a10c80a2c1bbd0c4bc065bd4a83e33c86d23fa56c2c7e93ff77644e5a578",
     "settings.gradle.kts": "1ad8730653437eea207a98229a3239340bbfeed8e648e838d651a70847fdb4b9",
     "src/test/resources/b-observed-gap/matched-controls.json": "543fb7add12d3afab901dc31930820c3a7012cd2ca44ee1047094b4ff369026e",
     "src/test/resources/b-observed-gap/same-trail-recordings.json": "5b1fa171a9c1084a77a217c42d1d1a817ae5b928ab3b743560bf706d312cf2a9",
@@ -125,6 +125,6 @@
   "sourceTrees": {
     "src/main/java": "7905085267bc712aefbe2b96b838188a19ac7a7fd3b5a388abb482ff682c08b0",
     "src/main/resources": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
-    "src/test/java": "76c8e150e231b8a6f42a0b09e8fd6ca61cd0a36749e33ded0839e7271542f29c"
+    "src/test/java": "5ed17db530eb1fe638e1f6778992bcad946fed08f15f465e3e10fda907afcd3b"
   }
 }
