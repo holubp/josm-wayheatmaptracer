@@ -71,6 +71,18 @@ class V022BGapMatchedControlsTest {
         return sameTrail?SAME_TRAIL_CASES:switchbacks?SWITCHBACK_CASES:ALL_CASES;
     }
     static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
+    /** Restricted factual-source seam for the separate native-production comparison. */
+    static List<MetricPoint> nativeComparisonSource(String id){BNativeProductionComparison.requireCase(id);return source(id);}
+    /** Uses exactly the existing frozen scalar handoff and production resampler once. */
+    static EvidenceSnapshot captureNativeComparisonSource(String id,Map<String,Object> binding,CancellationProbe probe){
+        BNativeProductionComparison.requireCase(id);Objects.requireNonNull(binding);Objects.requireNonNull(probe).checkpoint();
+        var input=isSwitchback(id)?switchbackInput(id):sameTrailInput(id);
+        var scalar=input.scalar();var validity=input.validity();var raster=java.nio.ByteBuffer.allocate(scalar.length*8).order(java.nio.ByteOrder.BIG_ENDIAN);
+        for(double value:scalar)raster.putDouble(value);byte[] mask=new byte[validity.length];for(int i=0;i<mask.length;i++)mask[i]=(byte)(validity[i]?1:0);
+        binding.put("rasterSha256",BIdentificationReceipt.hash(raster.array()));binding.put("validitySha256",BIdentificationReceipt.hash(mask));
+        binding.put("width",input.width);binding.put("height",input.height);binding.put("origin",List.of(input.origin.xMeters(),input.origin.yMeters()));binding.put("pitchMeters",input.pitchMeters);
+        var evidence=captureScalarOnGrid(id,input,switchbackOutputGrid(input));probe.checkpoint();return evidence;
+    }
     private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
 
     /** This is the entire new acquisition handoff; truth descriptors are deliberately absent. */

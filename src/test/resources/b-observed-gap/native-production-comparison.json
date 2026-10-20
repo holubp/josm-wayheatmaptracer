@@ -1,0 +1,53 @@
+{
+  "schema": "current-native-production-b-comparison-v1",
+  "cases": [
+    "same-trail-three-strong",
+    "same-trail-five-strong",
+    "switchback-thin-strong",
+    "switchback-thin-faint",
+    "same-trail-three-separated-strong"
+  ],
+  "nativeInputs": {
+    "same-trail-three-strong": {
+      "rasterSha256": "772ac6ec0561d8d52ca1919acb01ce05dff03553fb9130e5302a1f8dacfafdaa",
+      "validitySha256": "219dbe6472eef8f8d53b4e0993c7ea5feb496410f0836c38a243f0ae12fbcdb6"
+    },
+    "same-trail-five-strong": {
+      "rasterSha256": "b5e169aeb92a53fd5e3a11788ca869d9c4e7fd15d6f53ef60dfd050ef8fb86a0",
+      "validitySha256": "219dbe6472eef8f8d53b4e0993c7ea5feb496410f0836c38a243f0ae12fbcdb6"
+    },
+    "switchback-thin-strong": {
+      "rasterSha256": "df5bb69b81bda7fcb8b927e74e7ac993bef77678c4f477b1d73ebfefa9aac3d2",
+      "validitySha256": "219dbe6472eef8f8d53b4e0993c7ea5feb496410f0836c38a243f0ae12fbcdb6"
+    },
+    "switchback-thin-faint": {
+      "rasterSha256": "517d013f399cce57864daf903395a6a45f9a4141dff9d17fe63fdb83cf1b62cb",
+      "validitySha256": "219dbe6472eef8f8d53b4e0993c7ea5feb496410f0836c38a243f0ae12fbcdb6"
+    },
+    "same-trail-three-separated-strong": {
+      "rasterSha256": "5edbb5b6e86b0eeab270d65eb8a10dda5dbf294dd82ba43d3cadcb71e7c7e602",
+      "validitySha256": "219dbe6472eef8f8d53b4e0993c7ea5feb496410f0836c38a243f0ae12fbcdb6"
+    }
+  },
+  "route": "ProbabilisticTraceEngine(scalar).traceWithUsage(request,evidence,network,probe,owner)",
+  "identity": "CURRENT_NATIVE_PRODUCTION_B_NOT_IDENTIFIED_B0_OR_HISTORICAL_RC12",
+  "budgets": [
+    96,
+    8000000,
+    128000000,
+    32,
+    8
+  ],
+  "attemptBytes": 67108864,
+  "captureReserveBytes": 33554432,
+  "metadataAndPublicationReserveBytes": 2097152,
+  "sourceStepMeters": 1.5,
+  "radiusMeters": 25,
+  "maximumAttemptsPerCase": 1,
+  "watchdogSeconds": 300,
+  "externalWatchdogSeconds": 360,
+  "maximumLeafBytes": 65536,
+  "aggregateDiskBytes": 2147483648,
+  "geometry": "Truth-only unchanged1m ordered oracle against NATIVE_SELECTED_SOURCE_AFTER_GEOGRAPHIC_ROUNDTRIP; original exact endpoint compatibility separate, raw original/geographic/native arrays and deltas retained; never modelqualification",
+  "scope": "Five fixed public synthetic inputs only; no G/eta/original27/FIT/SELECT/private; no current-native-vs-historical-RC12 equality claim"
+}

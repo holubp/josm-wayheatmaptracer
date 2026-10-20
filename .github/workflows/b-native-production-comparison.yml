@@ -1,0 +1,162 @@
+name: Fixed current-native production B comparison
+
+on:
+  push:
+    branches: [codex/b-native-production-comparison-20261020]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Pure binding contracts and tiny production-entry checks only
+        run: >-
+          sh ./gradlew test --tests '*V022BNativeProductionComparisonTest'
+          --no-daemon --no-build-cache --console=plain
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-production-preflight
+          path: build/test-results/test/*V022BNativeProductionComparisonTest.xml
+          if-no-files-found: error
+          retention-days: 5
+  native-comparison:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [same-trail-three-strong, same-trail-five-strong, switchback-thin-strong, switchback-thin-faint, same-trail-three-separated-strong]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile outside the comparison watchdog
+        run: sh ./gradlew testClasses --no-daemon --console=plain
+      - name: One fixed current-native B attempt, no retry
+        env:
+          V022_RUN_NATIVE_B_COMPARISON: "true"
+          V022_NATIVE_B_CASE: ${{ matrix.case }}
+        run: >-
+          timeout 360s sh ./gradlew test
+          --tests '*V022BNativeProductionComparisonTest.fixedNativeProductionComparison'
+          --no-daemon --no-build-cache --console=plain
+      - name: Verify factual bounded native comparison
+        env:
+          V022_NATIVE_B_CASE: ${{ matrix.case }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, math, os, re
+          from pathlib import Path
+          identity = os.environ["V022_NATIVE_B_CASE"]
+          commit = os.environ["GITHUB_SHA"]
+          contract_bytes = Path("src/test/resources/b-observed-gap/native-production-comparison.json").read_bytes()
+          contract = json.loads(contract_bytes)
+          if identity not in contract["cases"] or not re.fullmatch("[0-9a-f]{40}", commit):
+              raise SystemExit("Fixed native comparison launch binding invalid")
+          root = Path("build/b-native-production-comparison") / identity
+          result = json.loads((root / "result.json").read_text())
+          binding = json.loads((root / "binding.json").read_text())
+          ownership = json.loads((root / "ownership.json").read_text())
+          digest = hashlib.sha256(contract_bytes).hexdigest()
+          for value in (result, binding):
+              if value.get("case") != identity or value.get("sourceRevision") != commit or value.get("comparisonContractSha256") != digest:
+                  raise SystemExit("Native source/result binding changed")
+              policy = value.get("policy", {})
+              if policy.get("identity") != "CURRENT_NATIVE_PRODUCTION_B_NOT_IDENTIFIED_B0_OR_HISTORICAL_RC12" or policy.get("budgets") != [96, 8000000, 128000000, 32, 8]:
+                  raise SystemExit("Native policy/default budget changed")
+          if binding.get("nativeInput", {}).get("rasterSha256") != contract["nativeInputs"][identity]["rasterSha256"] or binding.get("nativeInput", {}).get("validitySha256") != contract["nativeInputs"][identity]["validitySha256"]:
+              raise SystemExit("Factual native input changed")
+          if result.get("nativeInvocations") != 1 or result.get("nativeReturns") not in (0, 1):
+              raise SystemExit("Exactly one actual native engine attempt required")
+          if result.get("comparisonBoundary") != "ENGINE_BOUNDARY_ONLY" or result.get("modelQualification") is not False or result.get("finalPreviewOrApplyQualification") is not False:
+              raise SystemExit("Comparison cannot authorize final preview or Apply")
+          if ownership.get("engineAndSourceOwnersClosed") is not True or ownership.get("remainingNonReportBytes") != 0 or ownership.get("outerJUnitFinallyRequiresWholeLedgerZero") is not True:
+              raise SystemExit("Native work/source ownership not closed")
+          if result.get("safeCause") not in ("NONE", "RESOURCE_LIMIT", "CANCELLED", "NUMERIC_FAILURE"):
+              raise SystemExit("Native integration failed before a valid bounded outcome")
+          status = result.get("nativeStatus")
+          normal = result["nativeReturns"] == 1
+          if normal and status not in ("COMPLETE", "AMBIGUOUS", "NO_ROUTE", "CANCELLED", "RESOURCE_LIMIT"):
+              raise SystemExit("Missing actual native returned status")
+          if not normal and (status is not None or result["safeCause"] == "NONE"):
+              raise SystemExit("Thrown outcome must not impersonate a returned TraceResult")
+          files = result.get("routeFiles", [])
+          if normal:
+              distinct = result.get("distinctAlternatives")
+              raw = result.get("rawAlternatives")
+              if not isinstance(distinct, int) or not isinstance(raw, int) or not 0 <= distinct <= 8 or not distinct <= raw <= 32:
+                  raise SystemExit("Native alternative inventory invalid")
+              if files != ["route-" + str(i) + ".json" for i in range(distinct)] or result.get("routeDataAvailable") is not True:
+                  raise SystemExit("Native alternatives missing or reordered")
+          else:
+              if files or result.get("routeDataAvailable") is not False:
+                  raise SystemExit("Unreturned native alternatives invented")
+          quality = normal and status in ("COMPLETE", "AMBIGUOUS") and result["safeCause"] == "NONE" and bool(files)
+          if result.get("qualityComparisonAvailable") is not quality:
+              raise SystemExit("Partial/refused native work cannot become completed quality")
+          ids_seen = set()
+          branches_seen = set()
+          for name in files:
+              route = json.loads((root / name).read_text())
+              if route.get("id") in ids_seen or route.get("branchSignature") in branches_seen:
+                  raise SystemExit("Native alternatives duplicated")
+              ids_seen.add(route.get("id")); branches_seen.add(route.get("branchSignature"))
+              points = route.get("points", [])
+              if len(points) < 2 or any(len(p) != 2 or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in p) for p in points):
+                  raise SystemExit("Native route coordinates unavailable/nonfinite")
+              if len(route.get("support", [])) != len(points):
+                  raise SystemExit("Native route ownership missing")
+              if status in ("COMPLETE", "AMBIGUOUS"):
+                  native = binding["nativeMetricSource"]
+                  if points[0] != native[0] or points[-1] != native[-1]:
+                      raise SystemExit("Native fixed endpoints changed")
+              if not quality and route.get("quality") == "QUALIFIED_PASS":
+                  raise SystemExit("Unavailable native alternative falsely qualified")
+          allowed = {"binding.json", "result.json", "ownership.json", "phase.json", *files}
+          total = 0
+          for path in root.iterdir():
+              if path.name not in allowed or path.stat().st_size > 65536:
+                  raise SystemExit("Unlisted or oversized public native output")
+              total += path.stat().st_size
+          if total > 2147483648:
+              raise SystemExit("Native output aggregate cap")
+          print("One bounded current-native EngineB attempt verified; quality outcomes remain data, no model/Apply qualification")
+          PY
+      - name: Upload only fixed public synthetic comparison leaves
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-production-${{ matrix.case }}
+          path: |
+            build/test-results/test/*V022BNativeProductionComparisonTest.xml
+            build/b-native-production-comparison/${{ matrix.case }}/binding.json
+            build/b-native-production-comparison/${{ matrix.case }}/result.json
+            build/b-native-production-comparison/${{ matrix.case }}/ownership.json
+            build/b-native-production-comparison/${{ matrix.case }}/phase.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-0.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-1.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-2.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-3.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-4.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-5.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-6.json
+            build/b-native-production-comparison/${{ matrix.case }}/route-7.json
+          if-no-files-found: error
+          retention-days: 5
