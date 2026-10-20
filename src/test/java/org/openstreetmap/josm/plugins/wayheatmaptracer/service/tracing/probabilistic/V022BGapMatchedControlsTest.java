@@ -7,6 +7,7 @@ import java.util.*;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
@@ -22,6 +23,7 @@ class V022BGapMatchedControlsTest {
             "unknown-detour","uniform-null","alternating-null","half-pitch-alias","quarter-phase-alias","reverse-original-mesh");
     private static final List<String> THIN_CASES=List.of("thin-three-strands","thin-three-strands-intermittent","thin-strands-merge-separate",
             "drifting-strong-with-faint-original","thin-strong-sharp-bend","thin-faint-coherent-sharp-bend","thin-local-overlap-noise");
+    private static final List<String> SWITCHBACK_CASES=BThinSwitchbackFixtures.IDS;
     private static final List<String> ALL_CASES=Stream.concat(CASES.stream(),THIN_CASES.stream()).toList();
     private static final List<MetricPoint> SOURCE=List.of(new MetricPoint(8,37),new MetricPoint(32,37));
     private static final List<MetricPoint> THIN_SOURCE=List.of(new MetricPoint(-8,37),new MetricPoint(52,37));
@@ -54,6 +56,7 @@ class V022BGapMatchedControlsTest {
     static Stream<String> cases(){return CASES.stream();}
     static Stream<String> thinCases(){return THIN_CASES.stream();}
     static Stream<String> allCases(){return ALL_CASES.stream();}
+    static Stream<String> switchbackCases(){return SWITCHBACK_CASES.stream();}
     static Stream<String> refusedAdmissionCases(){return Stream.of("connected-sharp-apex","faint-six-metre-bend","genuine-junction","valid-sparse-gap");}
     private static AttemptMemoryLedger newComparisonLedger(){return new AttemptMemoryLedger(BGapEvidence.BYTES);}
 
@@ -61,7 +64,7 @@ class V022BGapMatchedControlsTest {
     private record ScalarInput(int width,int height,MetricPoint origin,double pitchMeters,double[] scalar,boolean[] validity,List<MetricPoint> source) {
         ScalarInput {
             if(width<2||height<2||origin==null||!Double.isFinite(pitchMeters)||pitchMeters<=0||scalar==null||validity==null
-                    ||scalar.length!=Math.multiplyExact(width,height)||validity.length!=scalar.length||source==null||source.size()!=2)
+                    ||scalar.length!=Math.multiplyExact(width,height)||validity.length!=scalar.length||source==null||source.size()<2)
                 throw new IllegalArgumentException("Declared scalar acquisition is incomplete");
             scalar=scalar.clone();validity=validity.clone();source=List.copyOf(source);
         }
@@ -71,6 +74,54 @@ class V022BGapMatchedControlsTest {
     private static ScalarInput thinInput(String id) {
         var fixture=BThinStrandFixtures.byId(id);
         return new ScalarInput(fixture.width(),fixture.height(),fixture.origin(),fixture.pitchMeters(),fixture.intensities(),fixture.validity(),fixture.source());
+    }
+
+    private static ScalarInput switchbackInput(String id) {
+        var fixture=BThinSwitchbackFixtures.byId(id);
+        return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BThinSwitchbackFixtures.source());
+    }
+
+    @Test void switchbackHandoffHasOnlyScalarSourceInputsAndOldDefaultRemainsTwentySeven() {
+        assertEquals(27,ALL_CASES.size());assertEquals(2,SWITCHBACK_CASES.size());
+        assertTrue(Collections.disjoint(ALL_CASES,SWITCHBACK_CASES));
+        assertEquals(List.of("width","height","origin","pitchMeters","scalar","validity","source"),
+                Arrays.stream(ScalarInput.class.getRecordComponents()).map(java.lang.reflect.RecordComponent::getName).toList());
+        for(String id:SWITCHBACK_CASES){var input=switchbackInput(id);assertEquals(BThinSwitchbackFixtures.source(),input.source);
+            assertTrue(input.source.size()>2);assertEquals(6561,input.scalar.length);assertEquals(BThinSwitchbackFixtures.origin(),input.origin);
+            assertEquals(new ProbabilisticProfileFactory().sourceSamplingGeometry(input.source,1.5).points().size(),expectedProfiles(id));}
+    }
+
+    @Test void switchbackMetadataPreflightCoversOriginalWindowAndReportsConservativePayload() {
+        var input=switchbackInput(BThinSwitchbackFixtures.STRONG);var grid=switchbackOutputGrid(input);
+        assertTrue(grid.footprint().containsRegion(MetricCorridorRegion.aroundPolyline(input.source,25)));
+        int n=expectedProfiles(BThinSwitchbackFixtures.STRONG);assertTrue(n<=81);
+        assertEquals(p(-25,-20),input.origin);assertEquals(81,input.width);assertEquals(81,input.height);
+        // Native full96-state interiors, not evidence that these unread actual scenes fit/succeed.
+        long pairs=(n-3L)*96*96+2*96;
+        long table=784+2*AttemptMemoryLedger.arrayBytes(pairs,8)+AttemptMemoryLedger.arrayBytes(pairs,4)
+                +2*AttemptMemoryLedger.arrayBytes(n-1,8)+2*AttemptMemoryLedger.arrayBytes(n,4)+AttemptMemoryLedger.arrayBytes(n,8);
+        assertTrue(table<64L*1024*1024);assertEquals(6561,input.scalar.length);
+        System.out.println("SWITCHBACK_METADATA profiles="+n+" sourceLength="+BThinSwitchbackFixtures.length()+" nativePairUpper="+pairs+
+                " tableBytesUpper="+table+" output="+grid.width()+"x"+grid.height()+" first="+grid.firstPixelCenter());
+    }
+
+    @Test void switchbackTruthIsBoundOnlyAfterReturnedPathAndUnavailableNeverPasses() {
+        String id=BThinSwitchbackFixtures.STRONG;var prior=THIN_ORACLE_EVIDENCE.remove(id);var ledger=newComparisonLedger();
+        try(var owner=ledger.rootOwner();var metadata=owner.reserve(1024L*1024)) {
+            var raw=controlledThinRow(0,BThinSwitchbackFixtures.source());var checked=assessSwitchbackReturnedPath(id,raw,1,CancellationProbe.NONE,owner);
+            assertTrue(checked.geometryPassed);assertTrue(checked.controlPassed);assertEquals(raw.points,checked.points);assertEquals(raw.work,checked.work);
+            assertEquals(BThinSwitchbackAcceptance.ORACLE_ID,((Map<?,?>)receiptForCase(id,checked).get("truthOracle")).get("oracle"));
+            var wrong=assessSwitchbackReturnedPath(id,controlledThinRow(1,List.of(p(0,0),p(23,29))),1,CancellationProbe.NONE,owner);
+            assertFalse(wrong.geometryPassed);assertFalse(wrong.controlPassed);assertFalse(stopsCase(wrong));
+            assertEquals("FAIL",receiptForCase(id,wrong).get("wholeRouteGeometryVerdict"));
+            var notBound=receiptForCase(id,raw);assertNull(notBound.get("wholeRouteGeometryPassed"));assertEquals(false,notBound.get("requiredControlPassed"));
+            for(var row:List.of(unavailable(2,"UNVISITED"),new Row(4,true,ProbabilisticInferenceResult.Status.NO_ROUTE,List.of(),List.of(),Double.NaN,9,
+                    "actual-no-route","Optional.empty","NO_ROUTE",false,false,false))) {
+                var noPath=assessSwitchbackReturnedPath(id,row,1,()->{throw new AssertionError("No path must never read truth");},owner);
+                assertSame(row,noPath);assertNull(receiptForCase(id,noPath).get("wholeRouteGeometryPassed"));assertFalse(noPath.controlPassed);
+            }
+        }finally {if(prior==null)THIN_ORACLE_EVIDENCE.remove(id);else THIN_ORACLE_EVIDENCE.put(id,prior);}
+        assertEquals(0,ledger.currentBytes());
     }
 
     @Test void additionalThinInventoryPreservesOriginalTwentyAndFrozenRecipeBytes() throws Exception {
@@ -258,6 +309,27 @@ class V022BGapMatchedControlsTest {
         Row checked=!completed(row)?row:new Row(row.eta,row.actualSolve,row.status,List.copyOf(row.points),List.copyOf(row.states),
                 row.energy,row.transitions,row.work,row.completion,terminal?"THIN_ORACLE_TERMINAL_"+failure:row.explanation,
                 passed,row.sourceObserved,passed&&row.sourceObserved);
+        THIN_ORACLE_EVIDENCE.computeIfAbsent(id,key->new LinkedHashMap<>()).put(row.eta,new ThinProof(checked,Map.copyOf(receipt)));
+        return checked;
+    }
+
+    /** Independent truth-side geometry, invoked only after the actual solver returns. */
+    private static Row assessSwitchbackReturnedPath(String id,Row row,double pitch,CancellationProbe cancellation,AttemptMemoryLedger.Owner owner) {
+        if(!isSwitchback(id)||Arrays.binarySearch(ETAS,row.eta)<0)throw new IllegalArgumentException("Unknown switchback slot");
+        var receipt=new LinkedHashMap<String,Object>();receipt.put("oracle",BThinSwitchbackAcceptance.ORACLE_ID);
+        receipt.put("invoked",completed(row));receipt.put("availability","UNAVAILABLE_NO_RETURNED_PATH");
+        boolean passed=false,terminal=false;String failure="NONE";
+        if(completed(row))try(var oracleOwner=owner.child("matched-switchback-truth-oracle")) {
+            var result=BThinSwitchbackAcceptance.evaluate(BThinSwitchbackFixtures.source(),row.points,pitch,cancellation,oracleOwner);
+            receipt.putAll(result.receipt());terminal=!result.available();passed=result.passed();
+            receipt.put("availability",terminal?"UNAVAILABLE":"AVAILABLE");receipt.put("verdict",terminal?"UNAVAILABLE":passed?"PASS":"FAIL");
+            if(terminal)failure="UNAVAILABLE";
+        } catch(RuntimeException stopped) {
+            terminal=true;failure=safeFailure(stopped);receipt.put("availability","UNAVAILABLE");receipt.put("verdict","UNAVAILABLE");
+        }
+        receipt.put("failure",failure);receipt.put("terminal",terminal);
+        Row checked=!completed(row)?row:new Row(row.eta,row.actualSolve,row.status,row.points,row.states,row.energy,row.transitions,row.work,row.completion,
+                terminal?"THIN_ORACLE_TERMINAL_"+failure:row.explanation,passed,row.sourceObserved,passed&&row.sourceObserved);
         THIN_ORACLE_EVIDENCE.computeIfAbsent(id,key->new LinkedHashMap<>()).put(row.eta,new ThinProof(checked,Map.copyOf(receipt)));
         return checked;
     }
@@ -634,6 +706,16 @@ class V022BGapMatchedControlsTest {
     @ParameterizedTest(name="{0}") @MethodSource("allCases")
     void actualSourcePipelineProducesCompleteDeclaredEightSettingMatrix(String id) throws Exception {var result=result(id);verify(result);requireSourceExecution(result);}
 
+    /** Expensive source integration is explicitly skipped outside the dedicated opt-in CI job. */
+    @EnabledIfEnvironmentVariable(named="V022_RUN_SWITCHBACK_CONTROLS",matches="true")
+    @ParameterizedTest(name="switchback-{0}") @MethodSource("switchbackCases")
+    void switchbackSourcePipelineProducesCompleteEightSettingMatrix(String id) throws Exception {
+        if(RESULTS.keySet().stream().noneMatch(SWITCHBACK_CASES::contains))BThinSwitchbackFixtures.exportNative(Path.of("build/gap-switchback-matrix"));
+        var result=result(id);verify(result);requireSourceExecution(result);
+        assertEquals(8,PIPELINE_EVIDENCE.get(id).solverCalls);assertEquals(8,PIPELINE_EVIDENCE.get(id).solverReturns);
+        assertEquals(0,PIPELINE_EVIDENCE.get(id).current);
+    }
+
     private static void verify(CaseResult result) {
         assertEquals(8,result.rows.size(),"all fixed settings must be recorded");
         assertArrayEquals(ETAS,result.rows.stream().mapToInt(Row::eta).toArray());
@@ -643,7 +725,7 @@ class V022BGapMatchedControlsTest {
                 assertTrue(row.points.isEmpty());assertTrue(row.states.isEmpty());assertEquals(0,row.transitions);
                 assertEquals("unavailable",row.work);assertEquals("Optional.empty",row.completion);assertFalse(row.controlPassed);
             } else if(completed(row)) {
-                assertEquals(result.source.get(0),row.points.get(0));assertEquals(result.source.get(1),row.points.get(row.points.size()-1));
+                assertEquals(result.source.get(0),row.points.get(0));assertEquals(result.source.get(result.source.size()-1),row.points.get(row.points.size()-1));
                 assertEquals(result.profileCount,row.states.size());assertFalse(row.work.equals("unavailable"));
                 assertFalse(row.completion.equals("Optional.empty"));assertTrue(Double.isFinite(row.energy));
             } else assertFalse(row.controlPassed,"failed actual work is not a passing control");
@@ -690,11 +772,12 @@ class V022BGapMatchedControlsTest {
         receipt.put("wholeRouteGeometryVerdict",!completed(row)?"UNAVAILABLE_NO_RETURNED_PATH":id.equals("censored-flank")?"UNAVAILABLE_CENSORED_POSITION":
                 id.contains("twenty-five-representation")?"UNAVAILABLE_REPRESENTATION_ONLY":row.geometryPassed?"PASS":"FAIL");
         if(id.equals("censored-flank")||id.contains("twenty-five-representation"))receipt.put("wholeRouteGeometryPassed",null);
-        if(isThin(id)) {
-            receipt.put("requiredPredicate",BThinStrandAcceptance.ORACLE_ID+"_AND_OBSERVED_SUPPORT");
+        if(isThin(id)||isSwitchback(id)) {
+            String oracleId=isSwitchback(id)?BThinSwitchbackAcceptance.ORACLE_ID:BThinStrandAcceptance.ORACLE_ID;
+            receipt.put("requiredPredicate",oracleId+"_AND_OBSERVED_SUPPORT");
             var proof=THIN_ORACLE_EVIDENCE.getOrDefault(id,Map.of()).get(row.eta);
             boolean bound=proof!=null&&proof.row==row;
-            var oracle=bound?proof.receipt:Map.<String,Object>of("oracle",BThinStrandAcceptance.ORACLE_ID,"invoked",false,"availability",
+            var oracle=bound?proof.receipt:Map.<String,Object>of("oracle",oracleId,"invoked",false,"availability",
                     completed(row)?"UNAVAILABLE_NOT_BOUND_TO_RETURNED_ROW":"UNAVAILABLE_NO_RETURNED_PATH");
             receipt.put("truthOracle",oracle);
             if(completed(row)&&(!bound||!"AVAILABLE".equals(oracle.get("availability")))) {
@@ -758,7 +841,7 @@ class V022BGapMatchedControlsTest {
     private static void publish(CaseResult result) throws Exception {
         String id=result.id;RESULTS.put(id,result);
         var output=new LinkedHashMap<String,Object>();output.put("schema","observed-gap-matched-optional-overflow-result-v2");output.put("case",id);
-        output.put("sourceCohort",isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
+        output.put("sourceCohort",isSwitchback(id)?"ADDITIONAL_FROZEN_SWITCHBACK_TWO":isThin(id)?"ADDITIONAL_FROZEN_THIN_SEVEN":"ORIGINAL_FROZEN_TWENTY");
         output.put("comparisonPolicy",ProbabilisticOptionalOverflowAdmission.POLICY_ID);
         var progress=PIPELINE_EVIDENCE.get(id);output.put("sourcePipeline",progress==null?Map.of("availability","UNAVAILABLE"):progress.receipt());
         output.put("sourceCaseExecutionComplete",sourceCaseComplete(result));
@@ -943,12 +1026,13 @@ class V022BGapMatchedControlsTest {
             }
             var path=result.mapPath();var points=path.map(ProbabilisticPath::points).orElse(List.of());
             var states=new ArrayList<Integer>();if(path.isPresent())for(int s:path.orElseThrow().stateIndices())states.add(s);
-            boolean anchors=!points.isEmpty()&&points.get(0).equals(source.get(0))&&points.get(points.size()-1).equals(source.get(1));
-            if(isThin(id)) {
+            boolean anchors=!points.isEmpty()&&points.get(0).equals(source.get(0))&&points.get(points.size()-1).equals(source.get(source.size()-1));
+            if(isThin(id)||isSwitchback(id)) {
                 var returned=new Row(eta,true,result.status(),List.copyOf(points),List.copyOf(states),path.map(ProbabilisticPath::energy).orElse(Double.NaN),
                         result.evaluatedTransitions(),result.workAccounting().toString(),result.completion().toString(),result.explanation(),
                         false,anchors&&fullyObserved(evidence,points),false);
-                var checked=assessThinReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner);
+                var checked=isSwitchback(id)?assessSwitchbackReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner):
+                        assessThinReturnedPath(id,returned,evidence.resolution().nativePitchMeters().orElse(Double.NaN),CancellationProbe.NONE,resultOwner);
                 if(progress!=null&&checked.explanation.startsWith("THIN_ORACLE_TERMINAL_")){progress.failedPhase=progress.phase;progress.cause="TRUTH_ORACLE_UNAVAILABLE";}
                 return checked;
             }
@@ -1001,6 +1085,11 @@ class V022BGapMatchedControlsTest {
         return true;
     }
     private static EvidenceSnapshot capture(String id,List<MetricPoint> source) {
+        if(isSwitchback(id)) {
+            var input=switchbackInput(id);
+            if(!input.source.equals(source))throw new IllegalArgumentException("Declared switchback source identity changed");
+            return captureScalarOnGrid(id,input,switchbackOutputGrid(input));
+        }
         if(isThin(id)) {
             var input=thinInput(id);
             if(!input.source.equals(source))throw new IllegalArgumentException("Declared thin source identity changed");
@@ -1030,6 +1119,25 @@ class V022BGapMatchedControlsTest {
         // enclosure grows; the acquired input, inverse transform and native analysis mesh do not.
         return captureScalarOnGrid(id,input,new MetricRasterGrid(frame,p(-33,0),1,0,0,1,1,111,81));
     }
+    /** Output enclosure only: original native grid/phase/values and unknown exterior stay intact. */
+    private static MetricRasterGrid switchbackOutputGrid(ScalarInput input) {
+        var frame=LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0,0),new GeographicPoint(-1,-1),new GeographicPoint(1,1));
+        var region=MetricCorridorRegion.aroundPolyline(input.source,25);
+        double minX=Double.POSITIVE_INFINITY,minY=minX,maxX=Double.NEGATIVE_INFINITY,maxY=maxX;
+        for(var polygon:region.polygons())for(var point:polygon){minX=Math.min(minX,point.xMeters());maxX=Math.max(maxX,point.xMeters());
+            minY=Math.min(minY,point.yMeters());maxY=Math.max(maxY,point.yMeters());}
+        // Every production-resampled anchor lies on the source polyline; this also
+        // encloses its full +/-25m normal window, including bends between source vertices.
+        for(var point:input.source){minX=Math.min(minX,point.xMeters()-25);maxX=Math.max(maxX,point.xMeters()+25);
+            minY=Math.min(minY,point.yMeters()-25);maxY=Math.max(maxY,point.yMeters()+25);}
+        double ox=input.origin.xMeters()+StrictMath.floor((minX-input.origin.xMeters())/input.pitchMeters)*input.pitchMeters;
+        double oy=input.origin.yMeters()+StrictMath.floor((minY-input.origin.yMeters())/input.pitchMeters)*input.pitchMeters;
+        int width=Math.toIntExact((long)StrictMath.ceil((maxX-ox)/input.pitchMeters)+1);
+        int height=Math.toIntExact((long)StrictMath.ceil((maxY-oy)/input.pitchMeters)+1);
+        if((long)width*height>191401||(long)(width-1)*(height-1)>190404)throw new IllegalArgumentException("Switchback output exceeds unchanged source proof");
+        return new MetricRasterGrid(frame,p(ox,oy),1,0,0,1,input.pitchMeters,width,height);
+    }
+
     private static EvidenceSnapshot captureScalarOnGrid(String id,ScalarInput input,MetricRasterGrid grid) {
         var frame=grid.coordinateFrame();
         double pitch=input.pitchMeters;
@@ -1066,9 +1174,10 @@ class V022BGapMatchedControlsTest {
         return .02+amplitude*gauss(y-center,1);
     }
     private static boolean isThin(String id){return THIN_CASES.contains(id);}
-    private static int expectedProfiles(String id){return isThin(id)?41:17;}
+    private static boolean isSwitchback(String id){return SWITCHBACK_CASES.contains(id);}
+    private static int expectedProfiles(String id){return isSwitchback(id)?new ProbabilisticProfileFactory().sourceSamplingGeometry(BThinSwitchbackFixtures.source(),1.5).points().size():isThin(id)?41:17;}
     // Source lookup must not initialize any raster/truth fixture before the attempt's render reservation.
-    private static List<MetricPoint> source(String id){return isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
+    private static List<MetricPoint> source(String id){return isSwitchback(id)?BThinSwitchbackFixtures.source():isThin(id)?THIN_SOURCE:id.equals("reverse-original-mesh")?List.of(SOURCE.get(1),SOURCE.get(0)):SOURCE;}
     private static double center(double x,double width,double height){return 37+height*Math.max(0,1-Math.abs(x-20)/(width/2));}
     private static double gauss(double distance,double sigma){return StrictMath.exp(-.5*(distance/sigma)*(distance/sigma));}
     private static MetricPoint p(double x,double y){return new MetricPoint(x,y);}
@@ -1095,16 +1204,19 @@ class V022BGapMatchedControlsTest {
     }
     @AfterAll static void report() throws Exception {
         var summary=new LinkedHashMap<String,Object>();summary.put("status","SOURCE_CONTROL_MATRIX_NOT_MODEL_QUALIFICATION");
-        summary.put("expectedCases",ALL_CASES);summary.put("originalTwenty",CASES);summary.put("additionalThinSeven",THIN_CASES);
-        summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));summary.put("complete",matrixComplete(RESULTS,ALL_CASES.size()));
+        boolean switchbackRun="true".equals(System.getenv("V022_RUN_SWITCHBACK_CONTROLS"));
+        var expected=switchbackRun?SWITCHBACK_CASES:ALL_CASES;
+        summary.put("expectedCases",expected);summary.put("originalTwenty",CASES);summary.put("additionalThinSeven",THIN_CASES);
+        summary.put("additionalSwitchbacks",SWITCHBACK_CASES);summary.put("switchbackExecutionEnabled",switchbackRun);
+        summary.put("completedCases",new ArrayList<>(RESULTS.keySet()));summary.put("complete",matrixComplete(RESULTS,expected.size()));
         var settings=new ArrayList<Map<String,Object>>();
         for(int eta:ETAS) {
-            var failed=new ArrayList<String>();for(var id:ALL_CASES) {
+            var failed=new ArrayList<String>();for(var id:expected) {
                 var result=RESULTS.get(id);
                 if(!settingEligible(result,eta))failed.add(id);
             }
             settings.add(Map.of("eta",eta,"failedOrUnavailableRequiredControls",failed,"allControlsPassed",failed.isEmpty()));
         }
-        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write("summary.json",summary);
+        summary.put("settings",settings);summary.put("progressionAuthority","HOLD_CONTROLLER_GATE_UNRESOLVED_NO_SELECTION");write(switchbackRun?"switchback-summary.json":"summary.json",summary);
     }
 }

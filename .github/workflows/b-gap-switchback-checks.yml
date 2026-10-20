@@ -1,0 +1,80 @@
+name: Fixed public thin switchback controls
+
+on:
+  push:
+    branches: [codex/b-gap-switchbacks-20261020]
+
+permissions:
+  contents: read
+
+jobs:
+  switchback-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Run only the fixed switchback source controls and pure geometry tests
+        env:
+          V022_RUN_SWITCHBACK_CONTROLS: "true"
+        run: >-
+          sh ./gradlew test
+          --tests '*V022BThinSwitchbackTest'
+          --tests '*V022BGapMatchedControlsTest.switchbackHandoffHasOnlyScalarSourceInputsAndOldDefaultRemainsTwentySeven'
+          --tests '*V022BGapMatchedControlsTest.switchbackMetadataPreflightCoversOriginalWindowAndReportsConservativePayload'
+          --tests '*V022BGapMatchedControlsTest.switchbackTruthIsBoundOnlyAfterReturnedPathAndUnavailableNeverPasses'
+          --tests '*V022BGapMatchedControlsTest.switchbackSourcePipelineProducesCompleteEightSettingMatrix'
+          --no-daemon --no-build-cache --rerun-tasks --console=plain
+      - name: Verify both actual eight-setting source executions
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("build/gap-task5-matrix")
+          ids = ["switchback-thin-strong", "switchback-thin-faint"]
+          etas = [0, 1, 2, 4, 8, 16, 32, 64]
+          summary = json.loads((root / "switchback-summary.json").read_text())
+          if summary.get("expectedCases") != ids or summary.get("complete") is not True or summary.get("switchbackExecutionEnabled") is not True:
+              raise SystemExit("Fixed switchback source schedule incomplete")
+          for identity in ids:
+              receipt = json.loads((root / (identity + ".json")).read_text())
+              if receipt.get("case") != identity or receipt.get("sourceCohort") != "ADDITIONAL_FROZEN_SWITCHBACK_TWO":
+                  raise SystemExit("Fixed switchback receipt binding changed")
+              rows = receipt.get("rows", [])
+              pipeline = receipt.get("sourcePipeline", {})
+              if receipt.get("sourceCaseExecutionComplete") is not True or pipeline.get("failedPhase") is not None:
+                  raise SystemExit("Fixed switchback source pipeline failed")
+              if pipeline.get("solverInvocations") != 8 or pipeline.get("solverReturns") != 8:
+                  raise SystemExit("Expected eight actual solver calls and returns")
+              if [row.get("eta") for row in rows] != etas:
+                  raise SystemExit("Fixed switchback setting inventory changed")
+              for row in rows:
+                  if row.get("actualSolve") is not True or row.get("work") in (None, "unavailable"):
+                      raise SystemExit("Switchback source slot was never executed")
+                  if row.get("status") in (None, "RESOURCE_LIMIT", "NUMERIC_FAILURE"):
+                      raise SystemExit("Switchback source execution failed")
+          print("16 actual fixed source solves verified; geometry outcomes are data, not model qualification")
+          PY
+      - name: Upload only fixed public synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixed-thin-switchback-controls
+          path: |
+            build/test-results/test/*V022BThinSwitchbackTest.xml
+            build/test-results/test/*V022BGapMatchedControlsTest.xml
+            build/gap-task5-matrix/switchback-summary.json
+            build/gap-task5-matrix/switchback-thin-strong.json
+            build/gap-task5-matrix/switchback-thin-faint.json
+            build/gap-switchback-matrix/native-fixtures.json
+            build/gap-switchback-matrix/switchback-thin-strong.f64
+            build/gap-switchback-matrix/switchback-thin-strong.valid
+            build/gap-switchback-matrix/switchback-thin-faint.f64
+            build/gap-switchback-matrix/switchback-thin-faint.valid
+          if-no-files-found: error
+          retention-days: 5

@@ -1,0 +1,141 @@
+{
+  "schema": "b-thin-switchback-controls-v1",
+  "status": "FROZEN_BEFORE_FIRST_ENGINE_CALL",
+  "purpose": "Independent schematic preservation of an actually supported double turn; not large off-way recovery or private replay",
+  "ids": [
+    "switchback-thin-strong",
+    "switchback-thin-faint"
+  ],
+  "input": {
+    "width": 81,
+    "height": 81,
+    "firstPixelCenterMeters": [
+      -25,
+      -20
+    ],
+    "nativePitchMeters": 1,
+    "allVerticesValid": true,
+    "decisionRadiusMeters": 25,
+    "profileStepMeters": 1.5
+  },
+  "sourceAndExpected": [
+    [
+      0,
+      0
+    ],
+    [
+      9,
+      4
+    ],
+    [
+      19,
+      12
+    ],
+    [
+      24,
+      16
+    ],
+    [
+      25,
+      19
+    ],
+    [
+      20,
+      20
+    ],
+    [
+      11,
+      18
+    ],
+    [
+      4,
+      17
+    ],
+    [
+      1,
+      20
+    ],
+    [
+      5,
+      25
+    ],
+    [
+      14,
+      27
+    ],
+    [
+      23,
+      29
+    ]
+  ],
+  "disconnectedDistractorFragments": [
+    [
+      [
+        9,
+        1
+      ],
+      [
+        14,
+        4
+      ],
+      [
+        18,
+        7
+      ]
+    ],
+    [
+      [
+        8,
+        21
+      ],
+      [
+        13,
+        22
+      ],
+      [
+        17,
+        23
+      ]
+    ]
+  ],
+  "raster": {
+    "background": 0.02,
+    "mainAmplitudes": {
+      "strong": 0.7,
+      "faint": 0.08
+    },
+    "stroke": "native sample distance to discrete full polyline <=0.5m; add main amplitude once",
+    "apex": "main stroke only, distance to [25,19]<=2m: multiply main contribution by1.25",
+    "fragments": "add0.5*main amplitude once per fragment stroke; partial competitors, not three full connected alternatives",
+    "validRange": [
+      0,
+      1
+    ],
+    "filter": "none; no blur/convolution/antialiasing/per-case normalization"
+  },
+  "oracle": {
+    "id": "thin-hairpin-ordered-frechet-one-metre-v1",
+    "exactAnchors": true,
+    "wholeEdges": true,
+    "tubeMeters": 1,
+    "progress": "continuous monotone free-space reachability on path/reference parameters; subpixel jitter may pause progress",
+    "worldXMonotonicity": false,
+    "reject": [
+      "both turn shortcuts",
+      "wrong-leg-jump",
+      "backwards-progress",
+      "greater-than-one-metre apex loss"
+    ]
+  },
+  "etas": [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "scope": "No change to prior27 recipes, algorithm, graph, coefficients or qualification HOLD"
+}
