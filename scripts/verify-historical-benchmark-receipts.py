@@ -1,4 +1,13 @@
-"""Validate retained historical-only JUnit outputs; never run an engine."""
+"""Validate and copy retained historical-only JUnit outputs without running an engine.
+
+Usage:
+    python3 scripts/verify-historical-benchmark-receipts.py TEMP_ROOT XML NEW_OUTPUT
+
+The inputs must contain the two fixed passing historical methods and their six
+bounded synthetic receipts. NEW_OUTPUT must not exist; main creates it and copies
+only validated receipts, JUnit XML and a historical-context metadata receipt.
+This command neither executes inference nor qualifies the current model.
+"""
 import hashlib
 import json
 import os
@@ -16,6 +25,19 @@ MAX_FILE = 8 * 1024 * 1024
 
 
 def bounded(path, limit):
+    """Read a nonempty regular receipt within its byte limit.
+
+    Args:
+        path (Path): Receipt file; symbolic links are rejected.
+        limit (int): Maximum permitted byte count.
+
+    Returns:
+        bytes: The complete receipt contents.
+
+    Raises:
+        ValueError: The file is missing, linked, empty, oversized or changes size.
+        OSError: Filesystem inspection or reading fails.
+    """
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= limit:
         raise ValueError("Missing, linked, empty or oversized receipt")
     with path.open("rb") as stream:
@@ -26,7 +48,21 @@ def bounded(path, limit):
 
 
 def verify(temporary, xml):
-    """Require both unchanged historical methods and exactly six retained leaves."""
+    """Require both fixed historical methods and exactly six retained receipts.
+
+    Args:
+        temporary (str | Path): Root containing the retained JUnit temporary files.
+        xml (str | Path): Bounded JUnit result for the fixed historical test class.
+
+    Returns:
+        dict: Historical-only source/test identities, six file sizes and digests,
+        XML digest and an explicit false current-model qualification flag.
+
+    Raises:
+        ValueError: Test outcomes, selectors, inventory or receipt bounds fail.
+        ET.ParseError: The JUnit XML cannot be parsed.
+        OSError: Input inspection or reading fails.
+    """
     temporary, xml = Path(temporary), Path(xml)
     raw = bounded(xml, 512 * 1024)
     if b"<!" in raw:
@@ -75,6 +111,24 @@ def verify(temporary, xml):
 
 
 def main(arguments):
+    """Create a new limited artifact directory from validated historical receipts.
+
+    No engine is run. Inputs are rechecked while copying; failure may leave a
+    partial new directory, which must not be presented as a successful artifact.
+
+    Args:
+        arguments (Sequence[str | Path]): Retained temporary root, JUnit XML and
+            the new output directory, in that order.
+
+    Returns:
+        None: Writes the six validated leaves, results.xml and receipt.json.
+
+    Raises:
+        ValueError: Arguments, validation or copy-time digest checks fail.
+        ET.ParseError: The JUnit XML cannot be parsed.
+        FileExistsError: The output directory already exists.
+        OSError: Input reading, directory creation or artifact writing fails.
+    """
     if len(arguments) != 3:
         raise ValueError("Expected retained-temp-root, JUnit XML and new output directory")
     temporary, xml, output = map(Path, arguments)
