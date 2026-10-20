@@ -975,3 +975,57 @@ nonzero process failure after diagnostics upload. This comparison does not run
 FIT/SELECT/HOLDOUT/private data, confer final-preview/Apply permission or release
 the plugin. Actual fixed32 execution, artifact reproduction, full qualification
 and release gates remain separate controller-owned work.
+
+## Exact cross-stream raw-one feasibility protocol
+
+`b-exact-cross-stream-checks.yml` is push-only on
+`codex/b-exact-cross-stream-20261020`. It authorizes no model change or production
+default promotion. Its literal protocol digest binds the pending/approved
+`b-exact-cross-stream/protocol.json`; pending metadata always refuses execution.
+After independent review, only controller approval/engineEligible promotion and
+the dependent protocol/workflow digests may change without another source review.
+The protocol separates the reviewed numerical/harness commit from actual
+GitHub.sha and separately pins the new verifier/init bytes. Neither metadata nor
+self-consistent hashes issue execution authority.
+
+The single five-case schedule uses the existing factual scalar source, B0
+`(1,1,0)`, eta zero, no adjacent potential, full admitted graph and the funded V3
+entry. Caps remain 96 states, 8M pairs, 128M completed scores, 64MiB and raw/distinct
+1/1. Ordinary native raw32/distinct8, historical/default memory policies and all
+old workflows remain separate. No earlier refusal is retried. All five source
+assemblies and heavy solves are CI-only; pure bounded oracles are local-safe.
+
+Each job compiles `clean testClasses` outside its attempt timer, authenticates
+the actual source/protocol/clean publication, and seals exact compiled
+core/helper/test/resource trees. Only then does one `timeout 360s` invoke the
+exact dedicated test. The reviewed init script forces only Test execution;
+compileJava/compileTestJava/processResources/processTestResources are excluded
+inside the timer. No `--rerun-tasks` is used there. The Java same-probe deadline is
+300s. Missing opt-in is a hard assertion before acquisition, not a skip. No
+automatic repeat or old-baseline benchmark is authorized. Source drift, invalid
+property and unmatched selection refuse; compile integrity must precede task
+exclusions. The preflight's cheap metadata selector verifies forced execution
+without a factual source acquisition.
+
+Per-case namespace is newly claimed under `build/exact-cross-stream/<case>`;
+console/compiled host evidence lives outside it. CSG1 big-endian graph chunks
+retain every cell/orientation/responsibility, and four CSP1 leaves retain exact
+row marginals. Every leaf is at most65536B, without truncation. The collector
+accepts only fixed-ID final leaves and recognized owned staging; partial bytes
+are hash evidence only and never parsed as a successful result. Only the
+transactionally published, closed upload directory is eligible for the explicit
+artifact allowlist. Empty named console logs are legitimate zero-byte evidence.
+Unknown paths, symlinks, malformed counters or complete-data contradictions
+refuse. A raw-one route retains original order and coordinate bits; original
+post-return oracle FAIL remains data, never hidden or regraded.
+
+`execution.json` separates actual shell wait/cutoff, factual solver entries and
+returns, publication ownership, exact passing host post-close assertion and
+resource feasibility. Missing/partial/resource/numeric/cancelled or externally
+cut-off attempts cannot pass feasibility or geometry. No shell marker proves
+engine entry or whole-root zero. Publication still holds1MiB metadata; actual
+post-close zero is checked by the exact JUnit caller. All twenty added/avoided
+term metrics retain long integers. Archived five baselines never completed, so
+no successful-baseline CPU speedup ratio is available. Feasibility, numerical
+parity, functional observation-model qualification and release are distinct
+gates; this protocol never reports modelQualified=true.

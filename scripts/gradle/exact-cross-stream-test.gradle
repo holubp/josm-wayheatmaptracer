@@ -1,0 +1,6 @@
+// Force only the requested Test task; precompiled dependencies are excluded by CI.
+gradle.projectsEvaluated {
+    rootProject.tasks.named('test', org.gradle.api.tasks.testing.Test) {
+        outputs.upToDateWhen { false }
+    }
+}

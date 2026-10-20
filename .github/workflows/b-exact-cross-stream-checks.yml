@@ -1,0 +1,148 @@
+name: Exact cross-stream fixed-five feasibility
+on:
+  push:
+    branches: [codex/b-exact-cross-stream-20261020]
+permissions:
+  contents: read
+env:
+  V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256: db736f939a9c4bbfc62db967d2ad452f8d8a6276ba6035f0ed960f72d1753649
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install fixed pure test dependencies
+        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"
+      - name: Authenticate source and approved execution metadata
+        run: python3 scripts/verify-b-exact-cross-stream.py verify --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --execution
+      - name: Pure metadata and tiny arithmetic preflight
+        run: |
+          python3 -m pytest scripts/tests/test_b_exact_cross_stream_workflow.py -q
+          python3 -O -m pytest scripts/tests/test_b_exact_cross_stream_workflow.py -q
+          sh ./gradlew test --tests '*V022ExactCrossStreamComparisonTest' --tests '*V022CrossStreamFailureTest' --tests '*V022CrossStreamInferenceTest' --tests '*V022CrossStreamPruningTest' --tests '*V022CrossStreamBoundTest' --no-daemon --no-build-cache --console=plain
+      - name: Cheap forced-Test and hard-discovery controls without source acquisition
+        shell: bash
+        run: |
+          mkdir -p build/exact-cross-stream-proof
+          python3 scripts/verify-b-exact-cross-stream.py seal --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --seal build/exact-cross-stream-proof/compiled.json
+          for pass in first second; do
+            sh ./gradlew -I scripts/gradle/exact-cross-stream-test.gradle test -x compileJava -x compileTestJava -x processResources -x processTestResources --tests '*V022ExactCrossStreamComparisonTest.fixedInventoryAndPolicyCannotDrift' --no-daemon --no-build-cache --console=plain > "build/exact-cross-stream-proof/$pass.log" 2>&1
+            grep -qx '> Task :test' "build/exact-cross-stream-proof/$pass.log"
+            if grep -Eq '^> Task :(compileJava|compileTestJava|processResources|processTestResources)' "build/exact-cross-stream-proof/$pass.log"; then exit 1; fi
+            cp build/test-results/test/*V022ExactCrossStreamComparisonTest.xml "build/exact-cross-stream-proof/$pass.xml"
+            python3 scripts/verify-b-exact-cross-stream.py compiled --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --seal build/exact-cross-stream-proof/compiled.json
+          done
+          if env -u V022_RUN_EXACT_CROSS_STREAM sh ./gradlew -I scripts/gradle/exact-cross-stream-test.gradle test -PdedicatedExperiments=true -x compileJava -x compileTestJava -x processResources -x processTestResources --tests '*V022ExactCrossStreamComparisonTest.executesOneFrozenCase' --no-daemon --no-build-cache --console=plain > build/exact-cross-stream-proof/missing-optin.log 2>&1; then exit 1; fi
+          cp build/test-results/test/*V022ExactCrossStreamComparisonTest.xml build/exact-cross-stream-proof/missing-optin.xml
+          if sh ./gradlew -I scripts/gradle/exact-cross-stream-test.gradle test -x compileJava -x compileTestJava -x processResources -x processTestResources --tests '*V022ExactCrossStreamComparisonTest.NO_SUCH_METHOD' --no-daemon --no-build-cache --console=plain > build/exact-cross-stream-proof/unmatched.log 2>&1; then exit 1; fi
+          if sh ./gradlew -I scripts/gradle/exact-cross-stream-test.gradle test -PdedicatedExperiments=invalid -x compileJava -x compileTestJava -x processResources -x processTestResources --tests '*V022ExactCrossStreamComparisonTest.fixedInventoryAndPolicyCannotDrift' --no-daemon --no-build-cache --console=plain > build/exact-cross-stream-proof/invalid-property.log 2>&1; then exit 1; fi
+          grep -q 'No tests found for given includes' build/exact-cross-stream-proof/unmatched.log
+          grep -q 'dedicatedExperiments must be true or false' build/exact-cross-stream-proof/invalid-property.log
+          python3 - <<'PY'
+          import runpy,xml.etree.ElementTree as ET
+          from pathlib import Path
+          v=runpy.run_path('scripts/verify-b-exact-cross-stream.py');root=Path('build/exact-cross-stream-proof')
+          for name in ('first.log','second.log','first.xml','second.xml','missing-optin.log','missing-optin.xml','unmatched.log','invalid-property.log','compiled.json'):v['read'](root/name)
+          for name in ('first','second'):
+              x=ET.fromstring(v['read'](root/(name+'.xml')))
+              v['require']([x.get(k) for k in ('tests','failures','errors','skipped')]==['1','0','0','0'],'metadata control did not execute exactly once')
+          x=ET.fromstring(v['read'](root/'missing-optin.xml'))
+          v['require'](x.get('tests')=='1' and x.get('failures')=='1' and x.get('skipped')=='0' and b'Explicit fixed-source acquisition opt-in required' in v['read'](root/'missing-optin.xml'),'opt-in did not fail before acquisition')
+          PY
+      - name: Preserve exact cheap orchestration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-cross-stream-preflight
+          path: |
+            build/exact-cross-stream-proof/first.log
+            build/exact-cross-stream-proof/second.log
+            build/exact-cross-stream-proof/first.xml
+            build/exact-cross-stream-proof/second.xml
+            build/exact-cross-stream-proof/missing-optin.log
+            build/exact-cross-stream-proof/missing-optin.xml
+            build/exact-cross-stream-proof/unmatched.log
+            build/exact-cross-stream-proof/invalid-property.log
+            build/exact-cross-stream-proof/compiled.json
+          if-no-files-found: error
+          retention-days: 7
+
+  comparison:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [switchback-thin-strong, switchback-thin-faint, same-trail-three-strong, same-trail-five-strong, same-trail-three-separated-strong]
+    env:
+      CASE_ID: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Authenticate actual checkout before compilation
+        run: python3 scripts/verify-b-exact-cross-stream.py verify --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --execution
+      - name: Fresh precompile outside attempt timer
+        run: sh ./gradlew clean testClasses --no-daemon --no-build-cache --console=plain
+      - name: Seal fresh compiled core helper test and resource closure
+        run: |
+          mkdir -p build/exact-cross-stream-host
+          python3 scripts/verify-b-exact-cross-stream.py seal --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --seal build/exact-cross-stream-host/compiled.json
+          python3 scripts/verify-b-exact-cross-stream.py compiled --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --seal build/exact-cross-stream-host/compiled.json
+      - name: One fixed actual attempt and factual shell wait
+        id: attempt
+        shell: bash
+        run: |
+          mkdir -p build/exact-cross-stream-host
+          set +e
+          timeout 360s env V022_RUN_EXACT_CROSS_STREAM=true V022_EXACT_CROSS_STREAM_CASE="$CASE_ID" sh ./gradlew -I scripts/gradle/exact-cross-stream-test.gradle test -PdedicatedExperiments=true -x compileJava -x compileTestJava -x processResources -x processTestResources --tests '*V022ExactCrossStreamComparisonTest.executesOneFrozenCase' --no-daemon --no-build-cache --console=plain > build/exact-cross-stream-host/console.log 2>&1
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          python3 scripts/verify-b-exact-cross-stream.py collect --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --case "$CASE_ID" --exit-code "$code" --log build/exact-cross-stream-host/console.log --xml build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.V022ExactCrossStreamComparisonTest.xml --output "build/exact-cross-stream-upload/$CASE_ID"
+      - name: Upload only validated current-case public evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-cross-stream-${{ matrix.case }}
+          path: |
+            build/exact-cross-stream-upload/${{ matrix.case }}/execution.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/console.log
+            build/exact-cross-stream-upload/${{ matrix.case }}/protocol.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/compiled.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/host.xml
+            build/exact-cross-stream-upload/${{ matrix.case }}/summary.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/phase.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/phase.json.partial
+            build/exact-cross-stream-upload/${{ matrix.case }}/${{ matrix.case }}.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/route-${{ matrix.case }}-0.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/graph-manifest-${{ matrix.case }}.json
+            build/exact-cross-stream-upload/${{ matrix.case }}/graph-${{ matrix.case }}-?????.bin
+            build/exact-cross-stream-upload/${{ matrix.case }}/posterior-${{ matrix.case }}-position.bin
+            build/exact-cross-stream-upload/${{ matrix.case }}/posterior-${{ matrix.case }}-component.bin
+            build/exact-cross-stream-upload/${{ matrix.case }}/posterior-${{ matrix.case }}-forward.bin
+            build/exact-cross-stream-upload/${{ matrix.case }}/posterior-${{ matrix.case }}-backward.bin
+            build/exact-cross-stream-upload/${{ matrix.case }}/staged-*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Require actual complete feasibility without a geometry qualification claim
+        if: always()
+        run: python3 scripts/verify-b-exact-cross-stream.py gate --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --output "build/exact-cross-stream-upload/$CASE_ID"

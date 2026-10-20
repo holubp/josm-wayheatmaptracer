@@ -1,0 +1,130 @@
+{
+  "B0": [
+    1,
+    1,
+    0
+  ],
+  "approval": false,
+  "approvalScope": "ONE reviewed five-case CI run only; no retry/native/historical baseline rerun; never model qualification",
+  "archivedInputAuditSha256": "ae7784b8d2561f093630e59a5023350eae5f132115a90eff741500264a2011aa",
+  "baselineInputs": [
+    {
+      "archiveSha256": "2a17e154a7793ff459203061be65acb592e071970baebfbe8414ea7f07e2f6f2",
+      "case": "switchback-thin-strong",
+      "factsAndLatticeHash": "98ccbb0554a5917b792ee34c0b0609e57a163e9802fdb1283d8936cc10cfee99",
+      "fullTwentyFiveMetreDomain": true,
+      "memberSha256": "17e676632c1704d2150f9a6b5ae14b6b33cfe454e64087dfa2b591f30060324f",
+      "modes": 191,
+      "observedForwardBackwardScores": 92661118,
+      "originalPairInventory": 493829,
+      "profiles": 57,
+      "selectedAdmissionCoarsened": false,
+      "snapshotHash": "9715a4b15a32b3283d527c76f3c2e5924ae9d0e767e6af1352b2b054b5874e69"
+    },
+    {
+      "archiveSha256": "2a17e154a7793ff459203061be65acb592e071970baebfbe8414ea7f07e2f6f2",
+      "case": "switchback-thin-faint",
+      "factsAndLatticeHash": "1a65e325e7b37d7b8e47efa62a1ba6f9eb130ac4991ad3289ece021d498d2191",
+      "fullTwentyFiveMetreDomain": true,
+      "memberSha256": "e8d2fd0e606dc351e8c18085fe9a11c769e362362fcd14eccf111284d75890b3",
+      "modes": 191,
+      "observedForwardBackwardScores": 92661118,
+      "originalPairInventory": 493829,
+      "profiles": 57,
+      "selectedAdmissionCoarsened": false,
+      "snapshotHash": "f68b870ac52072666a3494674986c0e7fbf5c83925e0c35996a5cd7636573474"
+    },
+    {
+      "archiveSha256": "a594d699ead1829fa5a865c42597f8f39e7c99e4d7b5782faa03504ae7f7e674",
+      "case": "same-trail-three-strong",
+      "factsAndLatticeHash": "58746c67a1a0c986ba3e0f333d460bcb7503ff01d0153eb5e16b28d014a0c856",
+      "fullTwentyFiveMetreDomain": true,
+      "memberSha256": "54e50526fb122a47c3144ae2354559906fc143fc6b272e7ed6b2f238521b6498",
+      "modes": 209,
+      "observedForwardBackwardScores": 93173376,
+      "originalPairInventory": 495550,
+      "profiles": 57,
+      "selectedAdmissionCoarsened": false,
+      "snapshotHash": "d42a16e39eb62ef9ac12b4bb238c0c312d86baaab7d1cae9c1f4ebfb69d6970b"
+    },
+    {
+      "archiveSha256": "a594d699ead1829fa5a865c42597f8f39e7c99e4d7b5782faa03504ae7f7e674",
+      "case": "same-trail-five-strong",
+      "factsAndLatticeHash": "e1e049219d96abf1767ea4bc77e44cc018bf36bf3ee9df0b193ac5ffecac2ca6",
+      "fullTwentyFiveMetreDomain": true,
+      "memberSha256": "cf9aa8503ce7c68a0d99e532347c0d6aef7d8c4694bf01297bc41cc6708e6b43",
+      "modes": 189,
+      "observedForwardBackwardScores": 93266112,
+      "originalPairInventory": 495839,
+      "profiles": 57,
+      "selectedAdmissionCoarsened": false,
+      "snapshotHash": "87383c9fe36cf6004e037a2a97b338e99e1719b89b1783804451adf1e8b3963a"
+    },
+    {
+      "archiveSha256": "f20a3bcd917825e166774fe13c6a584649dd84c260e5873cb7cf3b6ef4c1abca",
+      "case": "same-trail-three-separated-strong",
+      "factsAndLatticeHash": "f98c6e30d9bfefd4ce1f8093816a40adeb4914c06926e5c0474545c85501fc6f",
+      "fullTwentyFiveMetreDomain": true,
+      "memberSha256": "10ea92f3decc54c22ffcd3c3efcb53353b6f9cb9f4ac70e0cb35a5ea84221bf4",
+      "modes": 336,
+      "observedForwardBackwardScores": 93378624,
+      "originalPairInventory": 496324,
+      "profiles": 57,
+      "selectedAdmissionCoarsened": false,
+      "snapshotHash": "e4961e5ce418eb28a05f82bf98c4fe7135185e8fa0f7e8b23b06dd347fb8152d"
+    }
+  ],
+  "branch": "codex/b-exact-cross-stream-20261020",
+  "cases": [
+    "switchback-thin-strong",
+    "switchback-thin-faint",
+    "same-trail-three-strong",
+    "same-trail-five-strong",
+    "same-trail-three-separated-strong"
+  ],
+  "comparisonIdentity": "IDENTIFIED_B0_EXACT_CROSS_STREAM_RAW1_V3_NOT_NATIVE_DEFAULT_OR_MODEL_QUALIFICATION",
+  "engineEligible": false,
+  "eta": 0,
+  "executionPolicy": "terminal-path-count-cross-stream-raw1-v3",
+  "limits": {
+    "bytes": 67108864,
+    "cooperativeSeconds": 300,
+    "distinct": 1,
+    "externalSeconds": 360,
+    "pairs": 8000000,
+    "raw": 1,
+    "states": 96,
+    "transitions": 128000000
+  },
+  "nullPotential": true,
+  "promotionFields": [
+    "approval",
+    "engineEligible"
+  ],
+  "reviewedCodeCommit": "9e99ba072b55b9acd7fd9411627cf6ebc6a74dfe",
+  "schema": 1,
+  "sourceClosureSha256": "2814ff23e2e6f05116b2566aa14a6066234d916a30052bde27a75071c19ba01b",
+  "sourceFiles": {
+    "build.gradle.kts": "a4b7f05ba8f1218524513683ebdf842117d2f4e034eb76a24fa929e30a68d1db",
+    "gradle.properties": "3627da912cd8622cb4dfb6147b57665b08718bbeb0934b1fe4e3742fa317dc86",
+    "gradle/wrapper/gradle-wrapper.jar": "55243ef57851f12b070ad14f7f5bb8302daceeebc5bce5ece5fa6edb23e1145c",
+    "gradle/wrapper/gradle-wrapper.properties": "70fa201501995e6f45c0c475def71093f8115849344c48322ca997cfddba8534",
+    "gradlew": "aed171fb114f82e6eaea4970a245a200e0582a7dcc8ec0891ca41b6e4a62b754",
+    "gradlew.bat": "fedad02c18e266ec094995a5751b7fe1eb6e74f66bf75db64fae2e50eb22c234",
+    "scripts/gradle/exact-cross-stream-test.gradle": "6aa9f6e9dd7b1106fdeea4add0a0383a0d724375d46359bde964746432a3c184",
+    "scripts/verify-b-exact-cross-stream.py": "d0560b2694545e7d67c32bb2b84b5575d22b92bbe0385b54e88fd538fede66ca",
+    "settings.gradle.kts": "1ad8730653437eea207a98229a3239340bbfeed8e648e838d651a70847fdb4b9",
+    "src/test/resources/b-observed-gap/matched-controls.json": "543fb7add12d3afab901dc31930820c3a7012cd2ca44ee1047094b4ff369026e",
+    "src/test/resources/b-observed-gap/same-trail-recordings.json": "5b1fa171a9c1084a77a217c42d1d1a817ae5b928ab3b743560bf706d312cf2a9",
+    "src/test/resources/b-observed-gap/same-trail-separated.json": "6934e4a5ffc18757bcdf4c4815e442f31c915e6ea339c9f144ebefd32242a86d",
+    "src/test/resources/b-observed-gap/source-contract.json": "9de2d8d06e403a8121c2a4a893cadfbcc1fa8509ee458f07ed0c00f94cd2dd7d",
+    "src/test/resources/b-observed-gap/thin-strand-controls.json": "072ce1b0aed7e3d61c7da1d40ac4bda70e3b682c2ba872f9c8496aaab5660d2c",
+    "src/test/resources/b-observed-gap/thin-switchback-controls.json": "b3cf926005e3203ae60f8f417f49e5eca79bff291a8cf8b4730df2634b29964f"
+  },
+  "sourceIdentityMeaning": "reviewedCodeCommit binds numerical/harness Java; support sourceFiles are separately reviewed publication bytes; actual GitHub.sha recorded independently",
+  "sourceTrees": {
+    "src/main/java": "7905085267bc712aefbe2b96b838188a19ac7a7fd3b5a388abb482ff682c08b0",
+    "src/main/resources": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "src/test/java": "76c8e150e231b8a6f42a0b09e8fd6ca61cd0a36749e33ded0839e7271542f29c"
+  }
+}
