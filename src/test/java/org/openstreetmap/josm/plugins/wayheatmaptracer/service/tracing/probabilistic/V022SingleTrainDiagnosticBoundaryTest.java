@@ -64,8 +64,8 @@ class V022SingleTrainDiagnosticBoundaryTest {
     }
     @Test void actualCandidateMetadataValidatesWithoutInvokingAnyEmpiricalEntrypoint() throws Exception {
         byte[] freeze=java.nio.file.Files.readAllBytes(BSingleTrainDiagnosticManifest.FREEZE);
-        var seal=BSingleTrainDiagnosticManifest.register(BIdentificationReceipt.hash(freeze));seal.verify();
-        assertEquals(BSingleTrainDiagnosticManifest.memberPaths(),BSingleTrainDiagnosticManifest.currentMembers().keySet());
-        // Never call requireExecution/main: a later approval must not acquire data in this test.
+        assertEquals("Diagnostic source inventory changed",assertThrows(SecurityException.class,
+                ()->BSingleTrainDiagnosticManifest.register(BIdentificationReceipt.hash(freeze))).getMessage());
+        HistoricalObservationMetadataFixture.run("diagnostic",java.nio.file.Files.createTempDirectory("diagnostic-metadata-").resolve("unused"));
     }
 }

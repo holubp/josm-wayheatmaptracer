@@ -343,6 +343,22 @@ class BenchmarkDecisionComparatorIntegrationTest {
     }
 
     @Test
+    void currentStrictComparisonKeepsAuthenticNativeEnvelopesWithoutHistoricalRelabeling(@TempDir Path directory)throws Exception {
+        var input=new FrozenReplayInput(computed.request(),computed.evidence(),computed.captured().network(),computed.options());
+        Path baseline=directory.resolve("current-baseline.zip"),candidate=directory.resolve("current-candidate.zip"),osm=directory.resolve("current-original.osm");
+        var source=computed.captured().managedRaster().sourceIdentity();
+        Format15BundleWriter.write(Format15ProductionBundleFactory.createLive("actual-current-strict-baseline",input,
+                computed.pipeline(),"review-required",source,0,plan,false,false),baseline);
+        Format15BundleWriter.write(Format15ProductionBundleFactory.createLive("actual-current-strict-candidate",input,
+                computed.pipeline(),"review-required",source,0,plan,false,false),candidate);
+        Files.writeString(osm,osm("none"));
+        byte[] a=Files.readAllBytes(baseline),b=Files.readAllBytes(candidate);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(()->BenchmarkDecisionComparatorMain.main(new String[]{
+                baseline.toString(),candidate.toString(),osm.toString(),sha256(osm)}));
+        assertTrue(Arrays.equals(a,Files.readAllBytes(baseline)));assertTrue(Arrays.equals(b,Files.readAllBytes(candidate)));
+    }
+
+    @Test
     void approvedContractKeepsEachNativeEnvelopeAndOriginalPin(@TempDir Path directory) throws Exception {
         Pair pair = archives(directory, "none");
         Files.writeString(pair.osm(), osm("none"));
@@ -421,10 +437,17 @@ class BenchmarkDecisionComparatorIntegrationTest {
     @Test
     void onlyPinnedNumericalChangeIsAcceptedAndStrictRequestsStillRejectIt() throws Exception {
         TraceRequest current = computed.request();
-        assertEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS, current.parameterHash());
-        TraceRequest old = recordWith(current, "parameterHash", BenchmarkComparisonContract.RC6_B_PARAMETERS);
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkComparisonContract.requireRequests(old, current));
-        assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.requireSameRequest(old, current));
+        // Request METADATA law only: never attach historical hashes to current engine output.
+        org.junit.jupiter.api.Assertions.assertNotEquals(BenchmarkComparisonContract.RC10_B_PARAMETERS,current.parameterHash());
+        TraceRequest rc6 = recordWith(current,"parameterHash",BenchmarkComparisonContract.RC6_B_PARAMETERS);
+        TraceRequest rc10 = recordWith(current,"parameterHash",BenchmarkComparisonContract.RC10_B_PARAMETERS);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(()->BenchmarkComparisonContract.requireRequests(rc6,rc10));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(()->BenchmarkComparisonContract.requireRequests(rc10,rc10));
+        for(TraceRequest rejected:List.of(current,recordWith(current,"parameterHash","f".repeat(64)),rc6))
+            assertEquals("Unapproved B numerical parameter identity",assertThrows(IllegalStateException.class,
+                    ()->BenchmarkComparisonContract.requireRequests(rc6,rejected)).getMessage());
+        assertThrows(IllegalStateException.class,()->BenchmarkDecisionComparatorMain.requireSameRequest(rc6,rc10));
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(()->BenchmarkDecisionComparatorMain.requireSameRequest(current,current));
     }
 
     @ParameterizedTest
@@ -606,11 +629,17 @@ class BenchmarkDecisionComparatorIntegrationTest {
         var seed = BenchmarkHostMain.onEventThread(() -> new LiveBPreviewService().captureManagedSeed(original,
                 SelectionResolver.resolve(original, false),
                 new AlignmentConfig(PluginPreferences.load(), GeometryCleanupConfig.disabled()), fixture.sourceIdentity()));
-        var input = new FrozenReplayInput(computed.request(), computed.evidence(), computed.captured().network(), computed.options());
-        BenchmarkHostMain.requireNativeBaselineCapture(input, seed);
-        var changed = recordWith(seed, "settingsHash", "unapproved-config");
-        assertEquals("Original capture frame or effective settings differ", assertThrows(IllegalStateException.class,
-                () -> BenchmarkHostMain.requireNativeBaselineCapture(input, changed)).getMessage());
+        var actual = new FrozenReplayInput(computed.request(),computed.evidence(),computed.captured().network(),computed.options());
+        assertEquals("Unapproved B numerical parameter identity",assertThrows(IllegalStateException.class,
+                ()->BenchmarkHostMain.requireNativeBaselineCapture(actual,seed)).getMessage());
+        // Accepted historical host-capture METADATA control, not a historical engine publication.
+        var historicalRequest=recordWith(computed.request(),"parameterHash",BenchmarkComparisonContract.RC6_B_PARAMETERS);
+        var input=new FrozenReplayInput(historicalRequest,computed.evidence(),computed.captured().network(),computed.options());
+        var historicalSeed=recordWith(seed,"parameterHash",BenchmarkComparisonContract.RC10_B_PARAMETERS);
+        BenchmarkHostMain.requireNativeBaselineCapture(input,historicalSeed);
+        var changed=recordWith(historicalSeed,"settingsHash","unapproved-config");
+        assertEquals("Original capture frame or effective settings differ",assertThrows(IllegalStateException.class,
+                ()->BenchmarkHostMain.requireNativeBaselineCapture(input,changed)).getMessage());
     }
 
     @ParameterizedTest

@@ -11,9 +11,9 @@ final class ProspectiveTestInputs {
         if(!matcher.find())throw new IllegalStateException("Fixed candidate workflow digest absent");
         return matcher.group(1);
     }
-    static BObservationIdentificationTool.RunReceipt metadata(BIdentificationCatalog.Phase phase,Path output,Path binding,
-            BObservationIdentificationTool.Controls controls) throws Exception {
-        return BObservationIdentificationTool.runProspective(phase,output,binding,controls,expectedPins());
+    static BObservationIdentificationTool.RunReceipt historicalCatalogMetadata(Path output) throws Exception {
+        HistoricalObservationMetadataFixture.run("catalog",output);
+        return new BObservationIdentificationTool.RunReceipt("CATALOG_REGISTERED",output.resolve("summary.json"));
     }
     private ProspectiveTestInputs() { }
 }

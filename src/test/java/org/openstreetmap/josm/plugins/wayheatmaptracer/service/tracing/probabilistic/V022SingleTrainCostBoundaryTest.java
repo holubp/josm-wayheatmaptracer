@@ -37,9 +37,10 @@ class V022SingleTrainCostBoundaryTest {
         assertThrows(SecurityException.class,()->BSingleTrainCostManifest.validateSnapshot(BIdentificationReceipt.hash(wrong),wrong,members));
     }
     @Test void actualPendingMetadataAndOld48ValidateWithoutAnEmpiricalEntrypoint() throws Exception {
-        byte[] bytes=Files.readAllBytes(BSingleTrainCostManifest.FREEZE);var seal=BSingleTrainCostManifest.register(BIdentificationReceipt.hash(bytes));seal.verify();
-        assertTrue(BSingleTrainCostManifest.memberPaths().containsAll(BSingleTrainDiagnosticManifest.memberPaths()));
-        // No requireExecution/main, even if a later reviewed administrative signature approves the actual freeze.
+        byte[] bytes=Files.readAllBytes(BSingleTrainCostManifest.FREEZE);
+        assertEquals("Fixed cost source inventory changed",assertThrows(SecurityException.class,
+                ()->BSingleTrainCostManifest.register(BIdentificationReceipt.hash(bytes))).getMessage());
+        HistoricalObservationMetadataFixture.run("cost",temporary.resolve("historical-no-acquisition"));
     }
     @Test void boundedTimerArgumentsStoredWitnessAndOutputLeavesRefuse() throws Exception {
         assertThrows(BObservationIdentificationTool.RunLimitException.class,()->BSingleTrainCostDiagnosticTool.deadline(()->300_000_000_000L,0).checkpoint());

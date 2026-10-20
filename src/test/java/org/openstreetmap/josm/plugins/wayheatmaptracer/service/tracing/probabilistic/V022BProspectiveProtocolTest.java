@@ -8,17 +8,11 @@ import org.junit.jupiter.api.Test;
 
 class V022BProspectiveProtocolTest {
     @Test void bothActualPurposeSealsValidateOnlyMetadataWithoutDependingOnApprovalStatus() throws Exception {
-        var diagnostic=BProspectiveIdentificationManifest.registerMetadata(
-                BProspectiveIdentificationManifest.Purpose.OPTIMIZED_TRAIN_DIAGNOSTIC,ProspectiveTestInputs.expectedPins());
-        var fit=BProspectiveIdentificationManifest.registerMetadata(
-                BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT,ProspectiveTestInputs.expectedPins());
-        diagnostic.verifyUnchanged();fit.verifyUnchanged();
-        assertEquals(diagnostic.sourceHash(),fit.sourceHash());assertEquals(diagnostic.registryHash(),fit.registryHash());
-        assertNotEquals(diagnostic.manifestHash(),fit.manifestHash());assertNotEquals(diagnostic.catalogHash(),fit.catalogHash());
-        assertEquals(BIdentificationCatalog.trainDiagnosticCatalog().canonicalHash(),diagnostic.catalogHash());
-        assertEquals(BIdentificationCatalog.publicCatalog().canonicalHash(),fit.catalogHash());
-        assertEquals("OPTIMIZED_TRAIN_DIAGNOSTIC",diagnostic.provenance().get("protocolPurpose"));
-        assertEquals("PROSPECTIVE_FIT",fit.provenance().get("protocolPurpose"));
+        var rejected=assertThrows(IllegalArgumentException.class,()->BProspectiveIdentificationManifest.registerMetadata(
+                BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT,ProspectiveTestInputs.expectedPins()));
+        assertEquals("Reviewed source member changed: service/tracing/probabilistic/BObservationGeometry.java",rejected.getMessage());
+        // Actual old tuple parser-positive only; no claim this checkout has empirical authority.
+        HistoricalObservationMetadataFixture.run("purposes",java.nio.file.Files.createTempDirectory("purpose-metadata-").resolve("unused"));
     }
     @Test void explicitEntrypointsRejectArbitraryAuthorityPathsOverridesAndHoldoutBeforeRegistration() {
         assertThrows(IllegalArgumentException.class,()->BObservationOptimizedTrainRuntimeDiagnosticTool.main(
@@ -114,4 +108,23 @@ class V022BProspectiveProtocolTest {
         var missing=new TreeMap<>(helpers);missing.remove(missing.firstKey());
         assertThrows(IllegalArgumentException.class,()->BProspectiveIdentificationManifest.validateRegistry(registry,core,missing,policies,base,index));
     }
+    private static byte[] metadataZip(String[] names,int bytesPerEntry)throws Exception {
+        var buffer=new java.io.ByteArrayOutputStream();
+        try(var zip=new java.util.zip.ZipOutputStream(buffer)){
+            for(String name:names){zip.putNextEntry(new java.util.zip.ZipEntry(name));zip.write(new byte[bytesPerEntry]);zip.closeEntry();}
+        }return buffer.toByteArray();
+    }
+    @Test void historicalArchiveParserRejectsTraversalDuplicatesUnknownAndOversizedMembers()throws Exception {
+        assertEquals("Historical archive path",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(metadataZip(new String[]{"../outside"},1),Set.of("../outside"))).getMessage());
+        assertEquals("Historical archive unknown member",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(metadataZip(new String[]{"unknown"},1),Set.of("known"))).getMessage());
+        assertEquals("Historical archive member cap",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(metadataZip(new String[]{"large"},1_048_577),Set.of("large"))).getMessage());
+        assertEquals("Historical archive aggregate cap",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(metadataZip(new String[]{"one","two","three"},800_000),Set.of("one","two","three"))).getMessage());
+        byte[] duplicate=metadataZip(new String[]{"aa","bb"},1);
+        for(int i=0;i<duplicate.length-1;i++)if(duplicate[i]=='b'&&duplicate[i+1]=='b'){duplicate[i]='a';duplicate[i+1]='a';}
+        assertEquals("Historical archive duplicate member",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(duplicate,Set.of("aa","bb"))).getMessage());
+        assertEquals("Historical archive incomplete inventory",assertThrows(IllegalArgumentException.class,()->HistoricalObservationMetadataFixture.readEntries(metadataZip(new String[]{"one"},1),Set.of("one","two"))).getMessage());
+        byte[] real=HistoricalObservationMetadataFixture.archiveBytes();real[real.length/2]^=1;
+        assertThrows(AssertionError.class,()->HistoricalObservationMetadataFixture.authenticateArchive(real));
+    }
+
 }

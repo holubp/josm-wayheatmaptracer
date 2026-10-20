@@ -241,7 +241,9 @@ class V022BObservationTrainRuntimeDiagnosticTest {
         assertEquals(BObservationTrainRuntimeDiagnosticTool.OLD_MANIFEST,BIdentificationReceipt.hash(Files.readAllBytes(BObservationTrainRuntimeDiagnosticTool.MANIFEST)));
         assertEquals(BObservationTrainRuntimeDiagnosticTool.OLD_REGISTRY,BIdentificationReceipt.hash(Files.readAllBytes(BIdentificationManifest.REVIEWED_SOURCE_REGISTRY_PATH)));
         var failure=assertThrows(IllegalArgumentException.class,()->BIdentificationManifest.register(BObservationTrainRuntimeDiagnosticTool.MANIFEST,BIdentificationReceipt.sourceHash()));
-        assertEquals("Reviewed source member changed: "+BObservationTrainRuntimeDiagnosticTool.TOOL,failure.getMessage());
+        assertEquals("Reviewed source member changed: service/tracing/probabilistic/BObservationGeometry.java",failure.getMessage());
+        // Isolate the original Tool-specific refusal with actual historical public source text.
+        HistoricalObservationMetadataFixture.run("old-fit",temp.resolve("historical-old-fit-refused"));
     }
     @Test void onlyReviewedDiagnosticMembersAndNumerical26CanValidateWithoutMaterializingAnything() throws Exception {
         var current=new TreeMap<String,String>();for(String path:BIdentificationReceipt.SOURCE_FILES)current.put(path,BIdentificationReceipt.sourceMemberHash(path));

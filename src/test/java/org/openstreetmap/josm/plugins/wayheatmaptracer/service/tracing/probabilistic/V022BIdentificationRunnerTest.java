@@ -23,8 +23,11 @@ class V022BIdentificationRunnerTest {
     private static final Path MANIFEST=Path.of("superpowers/docs/plans/2026-10-18-b-observation-feasibility-manifest.json");
 
     @Test void catalogPublishesOnlyMetadataWithZeroRasterAndLabelReads() throws Exception {
+        var current=assertThrows(IllegalArgumentException.class,()->BProspectiveIdentificationManifest.registerMetadata(
+                BProspectiveIdentificationManifest.Purpose.PROSPECTIVE_FIT,ProspectiveTestInputs.expectedPins()));
+        assertEquals("Reviewed source member changed: service/tracing/probabilistic/BObservationGeometry.java",current.getMessage());
         Path output=temp.resolve("catalog");
-        var receipt=ProspectiveTestInputs.metadata(Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
+        var receipt=ProspectiveTestInputs.historicalCatalogMetadata(output);
         var fields=BIdentificationReceipt.read(receipt.summary());
         assertEquals("CATALOG_REGISTERED",receipt.status());
         assertEquals(0,((Number)fields.get("rasterReads")).intValue());
@@ -39,15 +42,18 @@ class V022BIdentificationRunnerTest {
         assertEquals(0,calls.get()); assertFalse(Files.exists(temp.resolve("holdout")));
         Path binding=catalog();
         var holdout=BIdentificationCatalog.publicCatalog().inventory(EvaluationAccess.catalogView()).stream().filter(k->k.split()==Split.HOLDOUT).findFirst().orElseThrow();
-        assertThrows(SecurityException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("forbidden"),binding,controls(List.of(holdout.id()),calls)));
+        assertEquals("Test subset cannot open heldout or disallowed scene values",assertThrows(SecurityException.class,
+                ()->HistoricalObservationMetadataFixture.publicPlan(Phase.FIT_SELECT,List.of(holdout.id()))).getMessage());
         assertEquals(0,calls.get());
     }
 
     @Test void changedSourceOrManifestBindingsFailBeforeEvaluation() throws Exception {
-        Path binding=catalog(); var calls=new AtomicInteger();
+        HistoricalObservationMetadataFixture.run("binding",temp.resolve("historical-binding-check"));
+        Path binding=fixtureCatalog(); var calls=new AtomicInteger();
         var fields=new LinkedHashMap<>(BIdentificationReceipt.read(binding)); fields.put("sourceHash","0".repeat(64));
         Path changed=temp.resolve("changed-binding.json"); BIdentificationReceipt.publish(changed,fields);
-        assertThrows(IllegalArgumentException.class,()->ProspectiveTestInputs.metadata(Phase.EXTRACT,temp.resolve("changed-source"),changed,controls(subset(),calls)));
+        assertEquals("Fixture binding changed or belongs to another protocol",assertThrows(IllegalArgumentException.class,
+                ()->BObservationIdentificationTool.runFixture(Phase.EXTRACT,temp.resolve("changed-source"),changed,controls(null,calls))).getMessage());
         assertEquals(0,calls.get());
         Path altered=temp.resolve("altered-manifest.json");
         Files.writeString(altered,Files.readString(MANIFEST).replace("area-presence-core-position-v2","unreviewed-family"));
@@ -73,8 +79,10 @@ class V022BIdentificationRunnerTest {
         var calls=new AtomicInteger();
         String fresh=BIdentificationCatalog.publicCatalog().definitions().stream()
                 .filter(d->d.key().split()==Split.SELECT).findFirst().orElseThrow().key().id();
-        assertThrows(SecurityException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,
-                temp.resolve("scores"),catalog(),controls(List.of(fresh),calls)));
+        // Exercise the ACTUAL public-index planner, not an earlier local-CI/source refusal.
+        assertEquals(subset().size(),((List<?>)HistoricalObservationMetadataFixture.publicPlan(Phase.FIT_SELECT,subset())).size());
+        assertEquals("Test subset cannot open heldout or disallowed scene values",assertThrows(SecurityException.class,
+                ()->HistoricalObservationMetadataFixture.publicPlan(Phase.FIT_SELECT,List.of(fresh))).getMessage());
         assertEquals(0,calls.get());assertFalse(Files.exists(temp.resolve("scores")));
         // The all32 score/four-diagnostic production pipeline remains covered by
         // dummyFixtureExercisesActualAll32ScoresAndSelectFactoryKernelMapAndPairPipeline.
@@ -242,12 +250,13 @@ class V022BIdentificationRunnerTest {
     }
 
     @Test void cancellationTimeoutAndMemoryRefusalNeverPublishACandidate() throws Exception {
-        Path binding=catalog(); var calls=new AtomicInteger();
-        var cancelled=new BObservationIdentificationTool.Controls(subset(),64L*1024*1024,3_600_000_000_000L,System::nanoTime,()->true,calls::incrementAndGet);
-        assertThrows(CancellationException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("cancelled"),binding,cancelled));
+        // Explicitly NONQUALIFYING dummy lifecycle control.
+        Path binding=fixtureCatalog(); var calls=new AtomicInteger();
+        var cancelled=new BObservationIdentificationTool.Controls(null,64L*1024*1024,3_600_000_000_000L,System::nanoTime,()->true,calls::incrementAndGet);
+        assertThrows(CancellationException.class,()->BObservationIdentificationTool.runFixture(Phase.FIT_SELECT,temp.resolve("cancelled"),binding,cancelled));
         var clock=new AtomicLong();
-        var timed=new BObservationIdentificationTool.Controls(subset(),64L*1024*1024,1,clock::incrementAndGet,CancellationProbe.NONE,calls::incrementAndGet);
-        assertThrows(BObservationIdentificationTool.RunLimitException.class,()->ProspectiveTestInputs.metadata(Phase.FIT_SELECT,temp.resolve("timed"),binding,timed));
+        var timed=new BObservationIdentificationTool.Controls(null,64L*1024*1024,1,clock::incrementAndGet,CancellationProbe.NONE,calls::incrementAndGet);
+        assertThrows(BObservationIdentificationTool.RunLimitException.class,()->BObservationIdentificationTool.runFixture(Phase.FIT_SELECT,temp.resolve("timed"),binding,timed));
         var refused=new BObservationIdentificationTool.Controls(null,1,3_600_000_000_000L,System::nanoTime,CancellationProbe.NONE,calls::incrementAndGet);
         assertThrows(AttemptMemoryLedger.ResourceLimitException.class,()->BObservationIdentificationTool.runFixture(Phase.FIT_SELECT,temp.resolve("refused"),fixtureCatalog(),refused));
         assertEquals(0,calls.get());
@@ -813,7 +822,7 @@ class V022BIdentificationRunnerTest {
 
     private Path catalog() throws Exception {
         Path output=temp.resolve("catalog");
-        if(!Files.exists(output)) ProspectiveTestInputs.metadata(Phase.CATALOG,output,null,BObservationIdentificationTool.Controls.defaults());
+        if(!Files.exists(output)) ProspectiveTestInputs.historicalCatalogMetadata(output);
         return output.resolve("binding.json");
     }
     private static BObservationIdentificationTool.Controls controls(List<String> cases,AtomicInteger calls) {

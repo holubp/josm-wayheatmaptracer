@@ -74,25 +74,7 @@ class V022BRegistrationBoundaryTest {
     }
 
     Path copyReviewedInputs() throws Exception {
-        Path root=Files.createTempDirectory(temporary,"checkout-");
-        for(String member:BIdentificationReceipt.SOURCE_FILES) {
-            Path original=sourcePath(Path.of(""),member);
-            Path copy=root.resolve(original);
-            Files.createDirectories(copy.getParent());Files.copy(original,copy);
-        }
-        var paths=new java.util.LinkedHashSet<Path>();
-        for(String helper:BProspectiveIdentificationManifest.PROTOCOL_FILES)paths.add(Path.of(helper));
-        paths.addAll(List.of(MANIFEST,BIdentificationManifest.REVIEWED_SOURCE_REGISTRY_PATH,
-                BObservationTrainRuntimeDiagnosticTool.PROTOCOL,BProspectiveIdentificationManifest.REGISTRY,BProspectiveIdentificationManifest.PINS));
-        for(var purpose:BProspectiveIdentificationManifest.Purpose.values())paths.add(BProspectiveIdentificationManifest.policyPath(purpose));
-        for(Path path:paths) {
-            Path copy=root.resolve(path);Files.createDirectories(copy.getParent());Files.copy(path,copy);
-        }
-        Path resource=root.resolve("resources").resolve(INDEX);Files.createDirectories(resource.getParent());
-        try(var input=BIdentificationCatalog.class.getResourceAsStream("/"+INDEX)) {
-            assertNotNull(input);Files.copy(input,resource);
-        }
-        return root;
+        return HistoricalObservationMetadataFixture.install(Files.createTempDirectory(temporary,"historical-metadata-"));
     }
     static Path sourcePath(Path root,String member) {
         String relative=BIdentificationReceipt.PACKAGE+member;

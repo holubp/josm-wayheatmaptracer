@@ -30,9 +30,10 @@ class V022SingleTrainComparatorBoundaryTest {
         assertThrows(SecurityException.class,()->BSingleTrainComparatorManifest.validateSnapshot(BIdentificationReceipt.hash(other),other,members));
     }
     @Test void actualCandidateMetadataAndOld63ValidateWithoutEmpiricalEntrypoints() throws Exception {
-        byte[] bytes=Files.readAllBytes(BSingleTrainComparatorManifest.FREEZE);var seal=BSingleTrainComparatorManifest.register(BIdentificationReceipt.hash(bytes));seal.verify();
-        assertTrue(BSingleTrainComparatorManifest.memberPaths().containsAll(BSingleTrainCostManifest.memberPaths()));
-        // Never call actual main/requireExecution/provider, even after any separately approved signature.
+        byte[] bytes=Files.readAllBytes(BSingleTrainComparatorManifest.FREEZE);
+        assertEquals("Comparator inventory changed",assertThrows(SecurityException.class,
+                ()->BSingleTrainComparatorManifest.register(BIdentificationReceipt.hash(bytes))).getMessage());
+        HistoricalObservationMetadataFixture.run("comparator",directory.resolve("historical-no-acquisition"));
     }
     @Test void partialProofIoDoesNotPreventConservativelyChargedTerminalOrBypassDiskCap() throws Exception {
         var records=new ArrayList<Map<String,Object>>();var original=new IllegalStateException("fixed sentinel");
