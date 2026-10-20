@@ -358,13 +358,20 @@ class BenchmarkDecisionComparatorIntegrationTest {
         assertTrue(Arrays.equals(a,Files.readAllBytes(baseline)));assertTrue(Arrays.equals(b,Files.readAllBytes(candidate)));
     }
 
+    /** Original positive assertion executes unchanged at117baaf in historical CI39412619573. */
     @Test
-    void approvedContractKeepsEachNativeEnvelopeAndOriginalPin(@TempDir Path directory) throws Exception {
+    void currentNativeEnvelopesAreRefusedByHistoricalRc10NumericalAuthority(@TempDir Path directory) throws Exception {
         Pair pair = archives(directory, "none");
         Files.writeString(pair.osm(), osm("none"));
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkDecisionComparatorMain.main(new String[] {
+        byte[] baseline = Files.readAllBytes(pair.baseline()), candidate = Files.readAllBytes(pair.candidate());
+        byte[] originalOsm = Files.readAllBytes(pair.osm());
+        assertEquals("Unapproved B numerical parameter identity", assertThrows(IllegalStateException.class,
+                () -> BenchmarkDecisionComparatorMain.main(new String[] {
                 pair.baseline().toString(), pair.candidate().toString(), pair.osm().toString(),
-                sha256(pair.osm()), "rc10-approved-numerical-readonly-v1"}));
+                sha256(pair.osm()), "rc10-approved-numerical-readonly-v1"})).getMessage());
+        assertTrue(Arrays.equals(baseline, Files.readAllBytes(pair.baseline())));
+        assertTrue(Arrays.equals(candidate, Files.readAllBytes(pair.candidate())));
+        assertTrue(Arrays.equals(originalOsm, Files.readAllBytes(pair.osm())));
     }
 
     @Test
@@ -819,17 +826,24 @@ class BenchmarkDecisionComparatorIntegrationTest {
         }
     }
 
+    /** Historical CI39412619573 retains both independent native outputs and the unchanged old positive. */
     @Test
-    void approvedMainAdmitsIndependentSingleAndFactualIntervalCompatibilityOutputs(@TempDir Path directory) throws Exception {
+    void currentIndependentSingleAndIntervalOutputsAreRefusedByHistoricalRc10Authority(@TempDir Path directory) throws Exception {
         var fixture = produceNativeIntervalFixture();
         Path baseline = directory.resolve("single.zip"), candidate = directory.resolve("interval.zip"), osm = directory.resolve("original.osm");
         Format15BundleWriter.write(fixture.originalBundle(), baseline);
         Format15BundleWriter.write(fixture.bundle(), candidate);
         writeSyntheticOsm(fixture.dataSet(), osm);
-        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> BenchmarkDecisionComparatorMain.main(new String[] {
-                baseline.toString(), candidate.toString(), osm.toString(), sha256(osm), "rc10-approved-numerical-readonly-v1"}));
+        byte[] singleBytes = Files.readAllBytes(baseline), intervalBytes = Files.readAllBytes(candidate);
+        byte[] originalOsm = Files.readAllBytes(osm);
+        assertEquals("Unapproved B numerical parameter identity", assertThrows(IllegalStateException.class,
+                () -> BenchmarkDecisionComparatorMain.main(new String[] {
+                baseline.toString(), candidate.toString(), osm.toString(), sha256(osm), "rc10-approved-numerical-readonly-v1"})).getMessage());
         assertThrows(IllegalStateException.class, () -> BenchmarkDecisionComparatorMain.main(new String[] {
                 baseline.toString(), candidate.toString(), osm.toString(), sha256(osm)}));
+        assertTrue(Arrays.equals(singleBytes, Files.readAllBytes(baseline)));
+        assertTrue(Arrays.equals(intervalBytes, Files.readAllBytes(candidate)));
+        assertTrue(Arrays.equals(originalOsm, Files.readAllBytes(osm)));
     }
 
     @ParameterizedTest
