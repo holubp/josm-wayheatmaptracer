@@ -92,7 +92,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install public validation dependencies
-        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2"
+        run: python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"
       - name: Run public validation
         id: public-validation
         run: python3 scripts/run-validation.py --profile public --output "$RUNNER_TEMP/josm-public-validation"

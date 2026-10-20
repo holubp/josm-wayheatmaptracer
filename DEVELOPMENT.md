@@ -89,6 +89,11 @@ production refitting still requires frozen branch-owned fields and curvature tar
 
 ## Build And Test
 
+Public CI installs the pinned Python test dependencies explicitly:
+`python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"`.
+Hypothesis exercises bounded historical-metadata parser corruption and traversal
+cases. A developer machine's installed packages do not establish CI availability.
+
 Build and run the test suite from repo root:
 
 ```bash

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ast
+import shlex
 
 import yaml
 
@@ -34,7 +36,7 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
     python = next(step for step in steps if step.get("uses") == "actions/setup-python@v5")
     assert python["with"]["python-version"] == "3.11"
     install = next(step for step in steps if step.get("name") == "Install public validation dependencies")
-    assert install["run"] == 'python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2"'
+    assert install["run"] == 'python3 -m pip install "pytest==9.1.1" "PyYAML==6.0.2" "hypothesis==6.165.2"'
 
     runner = next(step for step in steps if step.get("id") == "public-validation")
     assert runner["run"] == (
@@ -57,6 +59,18 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
     assert jar_upload["if"] == "steps.public-validation.outcome == 'success'"
     assert jar_upload["with"]["path"] == f"{ARTIFACT_OUTPUT}/artifacts/wayheatmaptracer.jar"
     assert jar_upload["with"]["if-no-files-found"] == "error"
+
+
+def test_historical_parser_property_tests_have_an_explicit_ci_dependency() -> None:
+    source = ROOT / "scripts/tests/test_historical_observation_metadata.py"
+    imports = {node.module.split(".")[0] for node in ast.walk(ast.parse(source.read_text()))
+               if isinstance(node, ast.ImportFrom) and node.module}
+    assert "hypothesis" in imports
+    steps = _workflow()["jobs"]["public-validation"]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install public validation dependencies")
+    packages = shlex.split(install["run"])[4:]
+    assert "hypothesis==6.165.2" in packages, "Clean CI must install the parser property-test dependency"
+    assert steps.index(install) < next(i for i, step in enumerate(steps) if step.get("id") == "public-validation")
 
 
 def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> None:
