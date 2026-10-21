@@ -4,8 +4,8 @@
     1,
     0
   ],
-  "approval": true,
-  "approvalScope": "ONE approved admission-repaired five-case CI run only; no further retry/native/historical baseline rerun; never model qualification",
+  "approval": false,
+  "approvalScope": "REVIEWED_HOST_XML_REPAIR_ONLY; no new numerical execution authority; full-case retry requires approval",
   "archivedInputAuditSha256": "ae7784b8d2561f093630e59a5023350eae5f132115a90eff741500264a2011aa",
   "baselineInputs": [
     {
@@ -83,7 +83,7 @@
     "same-trail-three-separated-strong"
   ],
   "comparisonIdentity": "IDENTIFIED_B0_EXACT_CROSS_STREAM_RAW1_V3_NOT_NATIVE_DEFAULT_OR_MODEL_QUALIFICATION",
-  "engineEligible": true,
+  "engineEligible": false,
   "eta": 0,
   "executionPolicy": "terminal-path-count-cross-stream-raw1-v3",
   "limits": {
@@ -103,7 +103,7 @@
   ],
   "reviewedCodeCommit": "fdf4867912748ae6f229d83fd4a7ac27bb82595f",
   "schema": 1,
-  "sourceClosureSha256": "a71b526a29ab8344ea2974e31486a77682e9fe9ad408c78f067c881e5f327b42",
+  "sourceClosureSha256": "7fd5e01492d05ffd779f149f50c328f0c1077e549c474f06b82a7b3143517879",
   "sourceFiles": {
     "build.gradle.kts": "a4b7f05ba8f1218524513683ebdf842117d2f4e034eb76a24fa929e30a68d1db",
     "gradle.properties": "3627da912cd8622cb4dfb6147b57665b08718bbeb0934b1fe4e3742fa317dc86",
@@ -112,7 +112,7 @@
     "gradlew": "aed171fb114f82e6eaea4970a245a200e0582a7dcc8ec0891ca41b6e4a62b754",
     "gradlew.bat": "fedad02c18e266ec094995a5751b7fe1eb6e74f66bf75db64fae2e50eb22c234",
     "scripts/gradle/exact-cross-stream-test.gradle": "6aa9f6e9dd7b1106fdeea4add0a0383a0d724375d46359bde964746432a3c184",
-    "scripts/verify-b-exact-cross-stream.py": "2a38a10c80a2c1bbd0c4bc065bd4a83e33c86d23fa56c2c7e93ff77644e5a578",
+    "scripts/verify-b-exact-cross-stream.py": "17a74f74dea50812d59aeaa867db1eed5e99c7b43ecb4c679ab98d25ffcfe0d1",
     "settings.gradle.kts": "1ad8730653437eea207a98229a3239340bbfeed8e648e838d651a70847fdb4b9",
     "src/test/resources/b-observed-gap/matched-controls.json": "543fb7add12d3afab901dc31930820c3a7012cd2ca44ee1047094b4ff369026e",
     "src/test/resources/b-observed-gap/same-trail-recordings.json": "5b1fa171a9c1084a77a217c42d1d1a817ae5b928ab3b743560bf706d312cf2a9",
