@@ -286,6 +286,60 @@ def junit(data):
             and cases[0].get("name") == "executesOneFrozenCase()" and not list(cases[0]))
 
 
+def host_evidence(root, explicit=None):
+    """Read one bounded host report without guessing Gradle's shortened basename.
+
+    Args:
+        root: Current checkout; automatic discovery reads only its direct test
+            result directory, at most256 entries and512 UTF8 bytes per path.
+        explicit: Optional existing report path, preserving explicit CLI use.
+    Returns:
+        tuple: Optional bounded raw bytes, exact dedicated-test success, and a
+            fixed availability token. Invalid/missing host evidence cannot
+            discard the other case diagnostics or confer entry/root facts.
+    """
+    unavailable = "UNAVAILABLE_HOST_REPORT_"
+    try:
+        if explicit is None:
+            directory = Path(root)/"build/test-results/test"
+            if directory.is_symlink() or any(p.is_symlink() for p in directory.parents):
+                return None, False, unavailable+"UNSAFE_PATH"
+            if not directory.is_dir():
+                return None, False, unavailable+"MISSING"
+            path = None
+            with os.scandir(directory) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= 256 or len(entry.name.encode("utf-8")) > 255:
+                        return None, False, unavailable+"INVENTORY_BOUND"
+                    if not (entry.name.startswith("TEST-") and entry.name.endswith(".V022ExactCrossStreamComparisonTest.xml")):
+                        continue
+                    if len(str(Path(entry.path)).encode("utf-8")) > 512:
+                        return None, False, unavailable+"PATH_BOUND"
+                    if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                        return None, False, unavailable+"UNSAFE_PATH"
+                    if path is not None:
+                        return None, False, unavailable+"AMBIGUOUS"
+                    path = Path(entry.path)
+            if path is None:
+                return None, False, unavailable+"MISSING"
+        else:
+            path = Path(explicit)
+            if len(str(path).encode("utf-8")) > 512:
+                return None, False, unavailable+"PATH_BOUND"
+            if path.is_symlink() or any(p.is_symlink() for p in path.parents):
+                return None, False, unavailable+"UNSAFE_PATH"
+            if not path.is_file():
+                return None, False, unavailable+"MISSING"
+        data = read(path)
+    except (OSError, ValueError, UnicodeError):
+        return None, False, unavailable+"UNREADABLE_OR_OUT_OF_BOUNDS"
+    try:
+        passed = junit(data)
+    except (ValueError, ET.ParseError, UnicodeError):
+        return data, False, unavailable+"MALFORMED"
+    return data, passed, "AVAILABLE_EXACT_DEDICATED_HOST_TEST" if passed else "UNAVAILABLE_HOST_TEST_NOT_PASSED"
+
+
 def graph_evidence(raw, identity, manifest):
     """Validate complete CSG1 cell order and return factual per-cell point bits."""
     require(manifest.get("format") == "cross-stream-graph-big-endian-raw-binary64-v1" and manifest.get("profiles") == 57,
@@ -370,13 +424,14 @@ def collect(root, expected, identity, exit_code, log, xml, output, branch=BRANCH
         compiled(root, expected, seal)
         leaves["compiled.json"] = read(seal)
         compiled_ok = True
-    xml_pass = False
-    if Path(xml).exists():
-        leaves["host.xml"] = read(xml); xml_pass = junit(leaves["host.xml"])
+    host, xml_pass, host_availability = host_evidence(root, xml)
+    if host is not None:
+        leaves["host.xml"] = host
     facts = {"case": identity, "protocolSha256": expected, "actualCheckoutCommit": publication,
              "reviewedCodeCommit": protocol["reviewedCodeCommit"], "shellWaitExitCode": exit_code,
              "externalCutoffObserved": exit_code in (124, 137), "nativePolicy": "NOT_NATIVE_DEFAULT",
              "emptyPhaseEvidence": empty_phase,
+             "hostReportAvailability": host_availability,
              "modelQualified": False, "feasibilityPassed": False, "entryReturnAndClosure": "UNKNOWN_WITHOUT_FACTUAL_RECEIPT_AND_HOST_XML",
              "rawInventory": [{"file": n, "bytes": len(b), "sha256": sha(b)} for n, b in sorted(raw.items())]}
     reason = "UNAVAILABLE_MISSING_OR_PARTIAL_OR_FAILED_EXECUTION"

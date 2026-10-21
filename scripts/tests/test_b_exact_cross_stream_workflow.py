@@ -194,6 +194,61 @@ def xml_bytes(passed=True):
             (0 if passed else 1, v.TEST_CLASS, '/>' if passed else '><failure/></testcase>')).encode()
 
 
+def test_host_auto_discovery_accepts_hashed_gradle_basename(tmp_path):
+    directory=tmp_path/"build/test-results/test";directory.mkdir(parents=True)
+    report=directory/"TEST-or-32L5CVHK3FGP0.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.V022ExactCrossStreamComparisonTest.xml"
+    data=xml_bytes();report.write_bytes(data)
+    assert v.host_evidence(tmp_path)==(data,True,"AVAILABLE_EXACT_DEDICATED_HOST_TEST")
+
+
+@pytest.mark.parametrize("invalid",["duplicate","symlink","oversize","malformed","wrong-class","different-method","too-many"])
+def test_invalid_host_discovery_is_unavailable_not_an_evidence_collection_abort(tmp_path,invalid):
+    directory=tmp_path/"build/test-results/test";directory.mkdir(parents=True)
+    report=directory/("TEST-"+v.TEST_CLASS+".xml");data=xml_bytes();report.write_bytes(data)
+    if invalid=="duplicate":(directory/("TEST-hash."+v.TEST_CLASS+".xml")).write_bytes(data)
+    elif invalid=="symlink":
+        report.unlink();target=tmp_path/"untrusted";target.write_bytes(data);report.symlink_to(target)
+    elif invalid=="oversize":report.write_bytes(b"x"*65_537)
+    elif invalid=="malformed":report.write_bytes(b"<broken")
+    elif invalid=="wrong-class":report.write_bytes(data.replace(v.TEST_CLASS.encode(),b"other.Class"))
+    elif invalid=="different-method":report.write_bytes(data.replace(b"executesOneFrozenCase()",b"fixedInventoryAndPolicyCannotDrift()"))
+    else:
+        for i in range(256):(directory/("unrelated-%03d"%i)).write_bytes(b"x")
+    retained,passed,status=v.host_evidence(tmp_path)
+    assert passed is False and status.startswith("UNAVAILABLE_HOST_")
+    assert retained is None or len(retained)<=65_536
+
+
+def test_missing_and_explicit_host_paths_preserve_support_without_acquisition(tmp_path):
+    assert v.host_evidence(tmp_path)==(None,False,"UNAVAILABLE_HOST_REPORT_MISSING")
+    explicit=tmp_path/"explicit.xml";data=xml_bytes();explicit.write_bytes(data)
+    assert v.host_evidence(tmp_path,explicit)==(data,True,"AVAILABLE_EXACT_DEDICATED_HOST_TEST")
+
+
+def test_host_discovery_is_direct_and_rejects_directory_links_and_long_explicit_paths(tmp_path):
+    directory=tmp_path/"build/test-results/test";directory.mkdir(parents=True)
+    nested=directory/"binary/nested";nested.mkdir(parents=True)
+    (nested/("TEST-"+v.TEST_CLASS+".xml")).write_bytes(xml_bytes())
+    assert v.host_evidence(tmp_path)[2]=="UNAVAILABLE_HOST_REPORT_MISSING"
+    linked=tmp_path/"linked";(linked/"build/test-results").mkdir(parents=True)
+    (linked/"build/test-results/test").symlink_to(directory,target_is_directory=True)
+    assert v.host_evidence(linked)[2]=="UNAVAILABLE_HOST_REPORT_UNSAFE_PATH"
+    long_path=tmp_path
+    for _ in range(5):long_path=long_path/("x"*100)
+    assert v.host_evidence(tmp_path,long_path/"report.xml")[2]=="UNAVAILABLE_HOST_REPORT_PATH_BOUND"
+
+
+def test_collector_retains_case_log_evidence_when_host_xml_is_malformed(checkout,tmp_path):
+    identity=IDS[0];base=checkout/"build/test-results/test";base.mkdir(parents=True)
+    (base/("TEST-"+v.TEST_CLASS+".xml")).write_bytes(b"<broken")
+    log=tmp_path/"console.log";log.write_bytes(b"UNIT no numerical execution")
+    output=tmp_path/"out"
+    result=v.collect(checkout,v.sha(v.read(checkout/v.PROTOCOL)),identity,1,log,None,output,publication=v.git(checkout,"rev-parse","HEAD"))
+    assert result["feasibilityPassed"] is False and result["hostReportAvailability"].startswith("UNAVAILABLE_HOST_")
+    assert (output/"console.log").read_bytes()==log.read_bytes()
+    assert "actualSolverEntries" not in result and "normalReturns" not in result
+
+
 def test_missing_cutoff_partial_and_empty_console_never_invent_solver_facts(checkout, tmp_path):
     identity=IDS[0]; log=tmp_path/"console.log";log.write_bytes(b""); xml=tmp_path/"absent.xml"
     out=tmp_path/"out"; digest=v.sha(v.read(checkout/v.PROTOCOL)); publication=v.git(checkout,"rev-parse","HEAD")
@@ -248,6 +303,7 @@ def test_only_exact_safe_workflow_route_and_single_forced_timed_test():
         assert "-x "+task in timed
     assert "-PdedicatedExperiments=true" in timed and "executesOneFrozenCase" in timed
     assert "code=$?" in timed and timed.index("code=$?") < timed.index(" collect ")
+    assert "--xml" not in timed, "Gradle may hash long report basenames; discover exact internal identity instead"
     assert "V022_RUN_EXACT_CROSS_STREAM=true" in timed
     assert "V022_RUN_EXACT_CROSS_STREAM=true" not in "\n".join(run[:timed_index])
     init=(ROOT/v.INIT).read_text()
@@ -348,6 +404,21 @@ def test_complete_unit_only_container_retains_geometry_fail_and_long_metrics(che
     assert result["modelQualified"] is False and result["solver"]["boundWork"]["boundUnits"]==3_200_000_008
     assert (output/("route-"+identity+"-0.json")).read_bytes()==(base/("route-"+identity+"-0.json")).read_bytes()
     assert result["entryReturnAndClosure"]=="FACTUAL_RESULT_PLUS_EXACT_PASSING_HOST_POSTCLOSE_ASSERTION"
+
+
+def test_complete_unit_container_auto_host_keeps_exact_method_requirement(checkout,tmp_path):
+    identity=IDS[0];base,receipt,digest,publication=complete_unit_evidence(checkout,identity)
+    reports=checkout/"build/test-results/test";reports.mkdir(parents=True)
+    xml=reports/"TEST-or-32L5CVHK3FGP0.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.V022ExactCrossStreamComparisonTest.xml"
+    xml.write_bytes(xml_bytes());log=tmp_path/"log";log.write_bytes(b"UNIT container only")
+    passed=v.collect(checkout,digest,identity,0,log,None,tmp_path/"exact",publication=publication)
+    assert passed["feasibilityPassed"] is True and passed["geometryOracle"]["passed"] is False
+    xml.write_bytes(xml_bytes().replace(b"executesOneFrozenCase()",b"fixedInventoryAndPolicyCannotDrift()"))
+    other=v.collect(checkout,digest,identity,0,log,None,tmp_path/"metadata",publication=publication)
+    assert other["feasibilityPassed"] is False and other["hostReportAvailability"]=="UNAVAILABLE_HOST_TEST_NOT_PASSED"
+    assert other["actualSolverEntries"]==other["normalReturns"]==1 and "geometryOracle" not in other
+    assert other["entryReturnAndClosure"]=="UNKNOWN_WITHOUT_FACTUAL_RECEIPT_AND_HOST_XML"
+    assert (tmp_path/"metadata/host.xml").read_bytes()==xml.read_bytes()
 
 
 @pytest.mark.parametrize("bad", ["counter_bool","graph_hash","posterior_hash","route_bits","partial","exit","xml","resource","missing","extra"])

@@ -117,7 +117,7 @@ jobs:
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          python3 scripts/verify-b-exact-cross-stream.py collect --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --case "$CASE_ID" --exit-code "$code" --log build/exact-cross-stream-host/console.log --xml build/test-results/test/TEST-org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.V022ExactCrossStreamComparisonTest.xml --output "build/exact-cross-stream-upload/$CASE_ID"
+          python3 scripts/verify-b-exact-cross-stream.py collect --protocol-sha256 "$V022_EXACT_CROSS_STREAM_PROTOCOL_SHA256" --case "$CASE_ID" --exit-code "$code" --log build/exact-cross-stream-host/console.log --output "build/exact-cross-stream-upload/$CASE_ID"
       - name: Upload only validated current-case public evidence
         if: always()
         uses: actions/upload-artifact@v4

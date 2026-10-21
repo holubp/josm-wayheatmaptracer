@@ -1055,3 +1055,16 @@ are attached before bounded descriptive-text formatting, so an oversized nonnull
 explanation cannot erase already-available work. Tiny real-selection,
 controlled-returned-carrier and controlled-publication regressions exercise
 these boundaries without acquiring the five sources or running their solvers.
+
+Host report collection no longer assumes Gradle preserves the full Java class in
+its XML basename. When `--xml` is omitted it inspects only direct entries in
+`build/test-results/test` (at most256 entries, filename255 UTF8 bytes, path512
+bytes), requiring exactly one report with the expected class suffix. Internal
+testcase classname, exact `executesOneFrozenCase()` method, one test and zero
+failures/errors/skips remain mandatory. Explicit XML paths remain supported.
+Missing, ambiguous, linked, oversized or malformed host reports are explicitly
+unavailable while other bounded case/log diagnostics survive. A bounded failed
+or different-method report may be retained as `host.xml`, but cannot establish
+feasibility, solver entry, return or closed ownership. A metadata-only forced
+test of the same class therefore verifies discovery without becoming engine
+evidence. This reporting repair authorizes no numerical retry or gate waiver.
