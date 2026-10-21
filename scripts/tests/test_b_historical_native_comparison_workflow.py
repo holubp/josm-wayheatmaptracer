@@ -32,6 +32,7 @@ class HistoricalLaunchContracts(unittest.TestCase):
         for tree in v.TREES:
             shutil.copytree(ROOT/tree,cls.controlled_root/tree,dirs_exist_ok=True)
         m["sourceFiles"]["scripts/verify-b-historical-launch.py"]=v.driver.sha((ROOT/"scripts/verify-b-historical-launch.py").read_bytes())
+        m["javaTrees"]={tree:v.driver.tree_sha(cls.controlled_root/tree) for tree in sorted(v.TREES)}
         (cls.controlled_root/v.MANIFEST).write_bytes(v.driver.canonical(m))
 
     @classmethod
@@ -48,6 +49,28 @@ class HistoricalLaunchContracts(unittest.TestCase):
 
     def test_candidate_metadata_is_bound_without_granting_execution(self):
         self.assertEqual(32, len(self.v.verify(self.root, self.pin)["cases"]))
+
+    def test_published_manifest_and_its_old_tree_pins_still_refuse_current_sources(self):
+        """Authenticate the unit context without granting old publication authority.
+
+        The actual unchanged published tuple rejects current source. Reusing only
+        its original tree pins in the controlled context must likewise fail the
+        real tree guard, even though that context binds actual helper bytes.
+        """
+        published_path=ROOT/self.v.MANIFEST
+        published_raw=published_path.read_bytes()
+        published=json.loads(published_raw)
+        self.assertNotEqual(published["javaTrees"],self.m["javaTrees"])
+        self.assertEqual({tree:self.v.driver.tree_sha(self.root/tree) for tree in self.v.TREES},self.m["javaTrees"])
+        with self.assertRaisesRegex(ValueError,"source member changed|Java source tree changed"):
+            self.v.verify(ROOT,self.v.driver.sha(published_raw))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/"controlled";shutil.copytree(self.root,root)
+            m=copy.deepcopy(self.m);m["javaTrees"]=published["javaTrees"]
+            raw=self.v.driver.canonical(m);(root/self.v.MANIFEST).write_bytes(raw)
+            with self.assertRaisesRegex(ValueError,"Java source tree changed"):
+                self.v.verify(root,self.v.driver.sha(raw))
+        self.assertEqual(published_raw,published_path.read_bytes())
 
     def test_pending_fixture_refuses_before_any_archive_or_engine(self):
         m, p = copy.deepcopy(self.m), copy.deepcopy(self.p)
