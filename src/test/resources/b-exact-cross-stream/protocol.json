@@ -4,8 +4,8 @@
     1,
     0
   ],
-  "approval": false,
-  "approvalScope": "REVIEWED_SOURCE_BOUND_REPAIR_ONLY; no new numerical execution authority; another five-case run requires approval",
+  "approval": true,
+  "approvalScope": "ONE approved repaired five-case CI run only; no further retry/native/historical baseline rerun; never model qualification",
   "archivedInputAuditSha256": "ae7784b8d2561f093630e59a5023350eae5f132115a90eff741500264a2011aa",
   "baselineInputs": [
     {
@@ -83,7 +83,7 @@
     "same-trail-three-separated-strong"
   ],
   "comparisonIdentity": "IDENTIFIED_B0_EXACT_CROSS_STREAM_RAW1_V3_NOT_NATIVE_DEFAULT_OR_MODEL_QUALIFICATION",
-  "engineEligible": false,
+  "engineEligible": true,
   "eta": 0,
   "executionPolicy": "terminal-path-count-cross-stream-raw1-v3",
   "limits": {
