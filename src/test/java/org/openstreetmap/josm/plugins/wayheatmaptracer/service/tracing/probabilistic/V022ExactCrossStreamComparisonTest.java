@@ -26,6 +26,90 @@ class V022ExactCrossStreamComparisonTest {
     @TempDir Path temporary;
 
     @Test
+    void actualTinyAdmissionReceiptsPreserveNullSuccessAndBoundedRefusal() throws Exception {
+        var ledger=new AttemptMemoryLedger(1_000_000);
+        try(var owner=ledger.rootOwner()) {
+            var anchored=new ArrayList<ProbabilisticProfile>();
+            for(int row=0;row<3;row++) anchored.add(V022OptionalOverflowAdmissionTest.profile(row,List.of(),java.util.OptionalDouble.of(0)));
+            try(var admission=ProbabilisticOptionalOverflowAdmission.select(anchored,V022OptionalOverflowAdmissionTest.proposals(3),
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(1,10,10,1,1),CancellationProbe.NONE,owner)) {
+                assertTrue(admission.admitted());assertNull(admission.refusalReason());
+                var receipt=new LinkedHashMap<String,Object>();
+                assertDoesNotThrow(()->BExactCrossStreamComparison.admissionReceipt(receipt,admission));
+                var parsed=BIdentificationReceipt.parse(BIdentificationReceipt.canonical(receipt).getBytes(StandardCharsets.UTF_8));
+                assertEquals(true,parsed.get("admissionAdmitted"));assertEquals(false,parsed.get("admissionCoarsened"));
+                assertTrue(parsed.containsKey("admissionRefusalReason"));assertNull(parsed.get("admissionRefusalReason"));
+            }
+            anchored.set(1,V022OptionalOverflowAdmissionTest.profile(1,List.of(),java.util.OptionalDouble.empty()));
+            try(var admission=ProbabilisticOptionalOverflowAdmission.select(anchored,V022OptionalOverflowAdmissionTest.proposals(3),
+                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(1,10,10,1,1),CancellationProbe.NONE,owner)) {
+                assertFalse(admission.admitted());assertEquals("NATIVE_STATE_LIMIT",admission.refusalReason());
+                var receipt=new LinkedHashMap<String,Object>();BExactCrossStreamComparison.admissionReceipt(receipt,admission);
+                assertEquals("NATIVE_STATE_LIMIT",receipt.get("admissionRefusalReason"));
+                var refusal=admission.getClass().getDeclaredField("refusal");refusal.setAccessible(true);refusal.set(admission,"x".repeat(65_537));
+                assertThrows(BExactCrossStreamComparison.ExportOverflow.class,()->BExactCrossStreamComparison.admissionReceipt(new LinkedHashMap<>(),admission));
+            }
+            assertEquals(0,owner.currentBytes());
+        }
+        assertEquals(0,ledger.currentBytes());
+    }
+
+    @Test
+    void oversizedActualCasePublicationPreservesCompactFactualFailure() throws Exception {
+        var type=Class.forName(BExactCrossStreamComparison.class.getName()+"$Run");
+        var constructor=type.getDeclaredConstructor(String.class,BExactCrossStreamComparison.Controls.class);constructor.setAccessible(true);
+        var run=constructor.newInstance(BExactCrossStreamComparison.IDS.get(0),controls(true));
+        var receiptField=type.getDeclaredField("receipt");receiptField.setAccessible(true);
+        @SuppressWarnings("unchecked") var receipt=(Map<String,Object>)receiptField.get(run);
+        receipt.put("pipelineComplete",true);receipt.put("actualSolverEntries",1);receipt.put("normalReturns",1);
+        receipt.put("peakBytes",37_221_352L);receipt.put("limitBytes",BExactCrossStreamComparison.MEMORY);
+        receipt.put("remainingNonMetadataBytesAtPublication",0L);receipt.put("metadataBytesStillFundedAtPublication",1_048_576L);
+        receipt.put("oversizedCompletePayload","x".repeat(65_537));
+        var work=Map.of("executionPolicy","UNIT_CONTROLLED", "forwardBackwardScores",12L,"kBestScores",3L,
+                "logicalKBestExtensions",4L,"refusedScoreAttempts",0L);
+        receipt.put("solver",Map.of("status","COMPLETE","work",work,"credibleSets","x".repeat(65_537)));
+        var entries=type.getDeclaredField("entryObserved");entries.setAccessible(true);entries.setBoolean(run,true);
+        var returns=type.getDeclaredField("normalReturns");returns.setAccessible(true);returns.setInt(run,1);
+        var publish=BExactCrossStreamComparison.class.getDeclaredMethod("publishAttempt",Path.class,type,Map.class,CancellationProbe.class);publish.setAccessible(true);
+        var output=temporary.resolve("actual-case-overflow");
+        var ledger=new AttemptMemoryLedger(BExactCrossStreamComparison.MEMORY);
+        try(var owner=ledger.rootOwner();var report=owner.reserve(BExactCrossStreamComparison.METADATA_BYTES)) {
+            assertDoesNotThrow(()->publish.invoke(null,output,run,Map.of("route-"+BExactCrossStreamComparison.IDS.get(0)+"-0.json",Map.of("UNIT_ONLY",true)),CancellationProbe.NONE));
+            assertEquals(1_048_576L,ledger.currentBytes());
+        }
+        assertEquals(0,ledger.currentBytes());
+        var stored=BIdentificationReceipt.parse(Files.readAllBytes(output.resolve(BExactCrossStreamComparison.IDS.get(0)+".json")));
+        assertEquals(false,stored.get("pipelineComplete"));assertEquals("EXPORT_OVERFLOW",stored.get("safeCause"));
+        assertEquals("RESULT_PUBLICATION",stored.get("failurePhase"));assertEquals(1L,stored.get("actualSolverEntries"));assertEquals(1L,stored.get("normalReturns"));
+        assertEquals(37_221_352L,stored.get("peakBytes"));assertEquals(0L,stored.get("remainingNonMetadataBytesAtPublication"));
+        assertEquals(1_048_576L,stored.get("metadataBytesStillFundedAtPublication"));assertFalse(stored.containsKey("oversizedCompletePayload"));
+        var solver=(Map<?,?>)stored.get("solver");assertEquals("COMPLETE",solver.get("status"));assertEquals(work,solver.get("work"));
+        assertFalse(solver.containsKey("credibleSets"));assertTrue(Files.size(output.resolve(BExactCrossStreamComparison.IDS.get(0)+".json"))<8_192);
+        assertEquals(false,stored.get("routeDataAvailable"));assertEquals(List.of(),stored.get("routeFiles"));
+        try(var files=Files.list(output)){assertEquals(Set.of(BExactCrossStreamComparison.IDS.get(0)+".json","summary.json"),files.map(p->p.getFileName().toString()).collect(java.util.stream.Collectors.toSet()));}
+    }
+
+    @Test
+    void diagnosticTextOverflowRetainsAlreadyAvailableReturnedWork() {
+        var path=new ProbabilisticPath(new int[]{0,0},List.of(new MetricPoint(0,0),new MetricPoint(1,0)),"UNIT_ONLY",0,0,1);
+        var work=new org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceWorkAccounting(
+                ProbabilisticExecutionPolicy.CROSS_STREAM_VERSION,12,3,4,0);
+        var returned=new ProbabilisticInferenceResult(ProbabilisticInferenceResult.Status.COMPLETE,Optional.of(path),List.of(path),List.of(path),0,
+                List.of(),List.of(),List.of(),List.of(),List.of(),true,false,
+                Optional.of(new ProbabilisticInferenceResult.Completion(1,1,1,false,false,true)),0,15,new GapSummary(0,0,0,0,0,0),
+                "x".repeat(65_537),Optional.of(work));
+        var bound=new CrossStreamWorkAccounting(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8);
+        var receipt=new LinkedHashMap<String,Object>();
+        assertThrows(BExactCrossStreamComparison.ExportOverflow.class,()->BExactCrossStreamComparison.attachResultReceipt(receipt,
+                new CrossStreamInferenceResult(returned,bound)));
+        assertTrue(receipt.containsKey("solver"),"actual returned status/work must survive optional diagnostic formatting refusal");
+        var solver=(Map<?,?>)receipt.get("solver");assertEquals("COMPLETE",solver.get("status"));assertNotNull(solver.get("completion"));
+        assertEquals(12L,((Map<?,?>)solver.get("work")).get("forwardBackwardScores"));
+        assertEquals(3L,((Map<?,?>)solver.get("work")).get("kBestScores"));assertEquals(20,((Map<?,?>)solver.get("boundWork")).size());
+        assertFalse(solver.containsKey("explanation"));
+    }
+
+    @Test
     void initialPhasePreservesUnknownEntryAndReturnAsJsonNullWithoutAcquisition() throws Exception {
         var type=Class.forName(BExactCrossStreamComparison.class.getName()+"$Run");
         var constructor=type.getDeclaredConstructor(String.class,BExactCrossStreamComparison.Controls.class);constructor.setAccessible(true);

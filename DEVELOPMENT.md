@@ -1042,3 +1042,16 @@ commit/closure fields are intentionally stale until the controller commits the
 reviewed Java repair and binds the new actual commit plus support hashes. Source
 verification must refuse that intermediate context. Neither this repair nor the
 prior consumed single-run approval authorizes a numerical retry.
+
+The repaired launch exposed a second reporting-contract defect after successful
+admission, before any solver entry: an admitted selection's refusal reason is
+legitimately null. The receipt now retains that JSON null and still bounds every
+nonnull refusal. If complete case publication exceeds a leaf cap, the fallback
+publishes only fixed identities, actual observed entry/return/work and publication
+ownership, with bulky evidence explicitly unavailable and no route or marginal
+prefix. This preserves diagnostics; it does not turn export refusal into feasible
+inference. Fixed returned solver status/completion/work and all20 added metrics
+are attached before bounded descriptive-text formatting, so an oversized nonnull
+explanation cannot erase already-available work. Tiny real-selection,
+controlled-returned-carrier and controlled-publication regressions exercise
+these boundaries without acquiring the five sources or running their solvers.

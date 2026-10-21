@@ -139,9 +139,7 @@ final class BExactCrossStreamComparison {
             var proposals = ProbabilisticContinuationProposals.build(raw, probe, owner, PARAMETERS.localization());
             state.phase = "ADMISSION"; updatePhase(phase, state);
             try (var admission = ProbabilisticOptionalOverflowAdmission.select(raw, proposals, TraceBudgets.defaults(), probe, owner)) {
-                receipt.put("admissionPolicy", ProbabilisticOptionalOverflowAdmission.POLICY_ID);
-                receipt.put("admissionAdmitted", admission.admitted()); receipt.put("admissionCoarsened", admission.coarsened());
-                receipt.put("admissionRefusalReason", boundedText(admission.refusalReason()));
+                admissionReceipt(receipt, admission);
                 if (!admission.admitted() || admission.coarsened()) throw new SecurityException("Frozen uncoarsened admission unavailable");
                 var profiles = new ArrayList<InferenceProfile>(); var lattices = new ArrayList<ProbabilisticStateLattice>();
                 var decisions = new ArrayList<Map<String, Object>>(); long pairs = 0; boolean full = true;
@@ -169,7 +167,7 @@ final class BExactCrossStreamComparison {
                 var result = new ProbabilisticInference().solveCrossStreamRaw1(profiles, PARAMETERS, BUDGETS,
                         evidence.decisionRegion(), probe, owner, null);
                 state.normalReturns = 1; state.phase = "RETURNED_FUNDED_SOLVE"; updatePhase(phase, state);
-                receipt.put("solver", resultReceipt(result));
+                attachResultReceipt(receipt, result);
                 var posteriors = posteriorLeaves(id, result.result(), probe);
                 var posteriorManifest = new ArrayList<Map<String, Object>>();
                 for (var entry : posteriors.entrySet()) posteriorManifest.add(Map.of("file", entry.getKey(), "bytes", entry.getValue().length,
@@ -213,6 +211,24 @@ final class BExactCrossStreamComparison {
         receipt.put("elapsedBeforePublicationNanos", clock.getAsLong() - started);
         receipt.put("timingScope", "NEW_ATTEMPT_CAPTURE_THROUGH_COPY; NO_COMPARABLE_OLD_SUCCESS_OR_CPU_SPEEDUP_CLAIM");
         receipt.put("failurePhase", state.failurePhase); receipt.put("safeCause", state.failure);
+        publishAttempt(output, state, routeLeaves, probe);
+        state.phase = state.failure == null ? "TERMINAL_BOUNDED_ATTEMPT" : "TERMINAL_PIPELINE_FAILURE";
+        updatePhase(phase, state); return receipt;
+        } finally {
+            lastClosedBytes = ledger.currentBytes(); lastClosedCase = id;
+            if (lastClosedBytes != 0) throw new IllegalStateException("Whole attempt ownership did not close");
+        }
+    }
+
+    static void admissionReceipt(Map<String, Object> receipt, ProbabilisticOptionalOverflowAdmission.Selection admission) {
+        receipt.put("admissionPolicy", ProbabilisticOptionalOverflowAdmission.POLICY_ID);
+        receipt.put("admissionAdmitted", admission.admitted()); receipt.put("admissionCoarsened", admission.coarsened());
+        String refusal = admission.refusalReason();
+        receipt.put("admissionRefusalReason", refusal == null ? null : boundedText(refusal));
+    }
+
+    private static void publishAttempt(Path output, Run state, Map<String, Object> routeLeaves, CancellationProbe probe) throws Exception {
+        String id = state.id; var receipt = state.receipt;
         var batch = new LinkedHashMap<String, Object>(routeLeaves);
         receipt.put("routeFiles", routeLeaves.keySet().stream().filter(name -> name.startsWith("route-")).toList()); batch.put(id + ".json", receipt);
         batch.put("summary.json", Map.of("expectedCases", IDS, "recordedCases", List.of(id), "comparisonIdentity", IDENTITY,
@@ -224,15 +240,33 @@ final class BExactCrossStreamComparison {
             receipt.put("posteriorFiles", List.of()); receipt.put("posteriorDataAvailable", false);
             receipt.put("routeDataAvailable", false); receipt.put("geometryDisposition", "UNAVAILABLE_PUBLICATION_FAILURE");
             receipt.put("failurePhase", state.failurePhase); receipt.put("safeCause", state.failure);
+            compactPublicationFailure(receipt);
             publish(output, Map.of(id + ".json", receipt, "summary.json", Map.of("expectedCases", IDS, "recordedCases", List.of(id),
                     "comparisonIdentity", IDENTITY, "modelQualified", false, "thisAttemptPipelineComplete", false)), CancellationProbe.NONE);
         }
-        state.phase = state.failure == null ? "TERMINAL_BOUNDED_ATTEMPT" : "TERMINAL_PIPELINE_FAILURE";
-        updatePhase(phase, state); return receipt;
-        } finally {
-            lastClosedBytes = ledger.currentBytes(); lastClosedCase = id;
-            if (lastClosedBytes != 0) throw new IllegalStateException("Whole attempt ownership did not close");
+    }
+
+    /** Retain fixed identities and observed work, never retry a rejected complete payload or truncate a route. */
+    private static void compactPublicationFailure(Map<String, Object> receipt) {
+        // The actual source creates these scalar/fixed-size records. Large capture, graph,
+        // admission-row, credible-set, and route/marginal payloads are explicitly unavailable.
+        receipt.keySet().retainAll(Set.of("case", "comparisonIdentity", "reviewedCodeCommit", "actualCheckoutCommit",
+                "sourceClosureSha256", "protocolSha256", "sourceAuthentication", "eta", "potential", "parameterDiagnosticSha256",
+                "B0", "sourceSamplingPolicy", "modelQualified", "snapshotHash", "factsAndLatticeHash", "profiles", "modes",
+                "originalPairInventory", "admissionPolicy", "admissionAdmitted", "admissionCoarsened", "admissionUnits", "admissionWorkUpper",
+                "fullTwentyFiveMetreDomain", "originalFullForwardBackwardScores", "fullForwardBackwardComparison", "solver", "typedMemoryAbort",
+                "actualSolverEntries", "normalReturns", "invocationAttempted", "entryObservation", "peakBytes", "limitBytes",
+                "remainingNonMetadataBytesAtPublication", "metadataBytesStillFundedAtPublication", "outerFinallyRequiresWholeLedgerZero",
+                "pipelineComplete", "deadlineExpired", "elapsedBeforePublicationNanos", "timingScope", "failurePhase", "safeCause",
+                "routeDataAvailable", "routeFiles", "posteriorDataAvailable", "posteriorFiles", "geometryDisposition", "returnedRouteCount"));
+        if (receipt.get("solver") instanceof Map<?, ?> original) {
+            var solver = new LinkedHashMap<String, Object>();
+            for (String key : List.of("status", "posteriorUsable", "logPartitionBits", "alternativeSearchTruncated", "rawCount", "distinctCount",
+                    "pairVisits", "transitions", "completion", "work", "boundWork"))
+                if (original.containsKey(key)) solver.put(key, original.get(key));
+            receipt.put("solver", solver);
         }
+        receipt.put("completePayloadAvailability", "UNAVAILABLE_PUBLICATION_FAILURE; NO_ROUTE_OR_MARGINAL_PREFIX_PUBLISHED");
     }
 
     private static final class Run {
@@ -381,7 +415,18 @@ final class BExactCrossStreamComparison {
         }
     }
 
+    static void attachResultReceipt(Map<String, Object> receipt, CrossStreamInferenceResult wrapped) {
+        var value = fixedResultReceipt(wrapped);
+        receipt.put("solver", value); // Observed status/work survives a later diagnostic-text refusal.
+        appendResultDiagnostics(value, wrapped.result());
+    }
+
     static Map<String, Object> resultReceipt(CrossStreamInferenceResult wrapped) {
+        var value = fixedResultReceipt(wrapped);
+        appendResultDiagnostics(value, wrapped.result()); return value;
+    }
+
+    private static Map<String, Object> fixedResultReceipt(CrossStreamInferenceResult wrapped) {
         var result = wrapped.result(); var value = new LinkedHashMap<String, Object>();
         value.put("status", result.status().name()); value.put("posteriorUsable", result.posteriorUsable());
         value.put("logPartitionBits", bits(result.logPartition())); value.put("alternativeSearchTruncated", result.alternativeSearchTruncated());
@@ -397,9 +442,13 @@ final class BExactCrossStreamComparison {
         catch (ReflectiveOperationException impossible) { throw new IllegalStateException("Frozen metric record inaccessible", impossible); }
         value.put("boundWork", metrics);
         value.put("posteriorEvidence", "RETAINED_SEPARATE_TYPED_BINARY_LEAVES; NOT_OMITTED_OR_HASH_ONLY");
+        return value;
+    }
+
+    private static void appendResultDiagnostics(Map<String, Object> value, ProbabilisticInferenceResult result) {
         value.put("credibleSets", boundedText(result.credibleSets().toString()));
         value.put("gapSummary", boundedText(result.gapSummary().toString()));
-        value.put("explanation", boundedText(result.explanation())); return value;
+        value.put("explanation", boundedText(result.explanation()));
     }
 
     static final class ExportOverflow extends IllegalArgumentException { ExportOverflow() { super("Complete bounded export unavailable"); } }
