@@ -4,8 +4,8 @@
     1,
     0
   ],
-  "approval": true,
-  "approvalScope": "ONE approved repaired five-case CI run only; no further retry/native/historical baseline rerun; never model qualification",
+  "approval": false,
+  "approvalScope": "REVIEWED_SOURCE_BOUND_ADMISSION_REPAIR_ONLY; no new numerical execution authority; another five-case run requires approval",
   "archivedInputAuditSha256": "ae7784b8d2561f093630e59a5023350eae5f132115a90eff741500264a2011aa",
   "baselineInputs": [
     {
@@ -83,7 +83,7 @@
     "same-trail-three-separated-strong"
   ],
   "comparisonIdentity": "IDENTIFIED_B0_EXACT_CROSS_STREAM_RAW1_V3_NOT_NATIVE_DEFAULT_OR_MODEL_QUALIFICATION",
-  "engineEligible": true,
+  "engineEligible": false,
   "eta": 0,
   "executionPolicy": "terminal-path-count-cross-stream-raw1-v3",
   "limits": {
@@ -101,9 +101,9 @@
     "approval",
     "engineEligible"
   ],
-  "reviewedCodeCommit": "00f2ee0ca1be0cc341ad4174b484876542bc865c",
+  "reviewedCodeCommit": "fdf4867912748ae6f229d83fd4a7ac27bb82595f",
   "schema": 1,
-  "sourceClosureSha256": "29c786c8499b792805c62420b1e8600f604214cb9fa89931d8e233f772112e80",
+  "sourceClosureSha256": "a71b526a29ab8344ea2974e31486a77682e9fe9ad408c78f067c881e5f327b42",
   "sourceFiles": {
     "build.gradle.kts": "a4b7f05ba8f1218524513683ebdf842117d2f4e034eb76a24fa929e30a68d1db",
     "gradle.properties": "3627da912cd8622cb4dfb6147b57665b08718bbeb0934b1fe4e3742fa317dc86",
@@ -125,6 +125,6 @@
   "sourceTrees": {
     "src/main/java": "7905085267bc712aefbe2b96b838188a19ac7a7fd3b5a388abb482ff682c08b0",
     "src/main/resources": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
-    "src/test/java": "5ed17db530eb1fe638e1f6778992bcad946fed08f15f465e3e10fda907afcd3b"
+    "src/test/java": "e11251f7408a6de25396d057f5fbeb6167cddbfbf96219a11eee3deaeebc8ec3"
   }
 }
