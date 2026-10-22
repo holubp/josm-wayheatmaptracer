@@ -70,7 +70,15 @@ For region edge count e, A_region=(2e+2)*(128*(e+1)+ceilLog2(2e+2)+64) bounds on
 
 Use exact integer word width512 and kappa=(2*512+2)^2 as a registered weighted quadratic limb-pair proxy charge per exact API call, plus one actual API unit. This is not an upper bound on hardware bit operations, JDK word primitives, allocations or execution time: 512 words must never be treated as512 bits. Prove the bound on these declared charges against a closed prospective operation DAG, then verify the implementation follows that DAG. Independently prove safe operand/result sizes, pinned JDK17 transient allocation and cancellation bounds for the exact API allowlist. Proposed complete per-input declared-work upper:
 
-`U = 1024 + 256*(T+N0+C0+S+n+M+N+K) + 1024*R + 128*81*N + 96*N + 512*P + 4096*Z + 128*P*A_region + (N+C_samples)*(32+16*p_source+128*e_source) + (1+kappa)*(256*(M+R+P)+512*Z)`.
+`U = 1024 + 256*(T+N0+C0+S+n+M+N+K) + 1024*R + 5164*E_local + 128*81*N + 96*N + 512*P + 4096*Z + 128*P*A_region + (N+C_samples)*(32+16*p_source+128*e_source) + (1+kappa)*(256*(M+R+P)+512*Z)`.
+
+The R3 local-coordinate correction funds a separate5164-slot body per local
+query:128*32 exact-API guards +6*32 dyadic decodes +2*64 axis controls +4*64
+correctly rounded fraction/complement controls +13*28 interval operations
++128 fixed controls. This does not replace exact-API charging or increase caps.
+Before Java implementation, pin the full operation/magnitude/lifetime worksheet;
+all BigInteger accessors count as exact calls. Local interpolation retains exact
+floor/upper-cell ownership; the lower-index face rule below is chord-only.
 
 The2026-10-22 source-binding review adds C_samples=sum original profile sample
 counts and independent p_source/e_source for the snapshot's original evidence
@@ -181,6 +189,7 @@ At each phase preflight `currentBytes + next required payload <=64MiB` before re
 **Interfaces:** `Controls(approved,reviewedCodeCommit,actualCheckoutCommit,sourceClosureSha,protocolSha,casePins)`; `execute(String id,int gain,double eta,Path output,LongSupplier,CancellationProbe)->Map<String,Object>`. It makes one acquisition and at most one actual V3 raw1 solve per candidate attempt under64MiB. Independent `quality(id,actualReturnedPoints,sourceReceipt,probe,owner)` dispatches each existing ID-specific oracle after return; no truth travels upstream.
 
 - [ ] TDD metadata-only source/policy/16candidate order, fixed graph/input/old authority refusal, real null admission and zero-before-entry failure receipts, unknown/thrown/NO_ROUTE/cancel/resource/numeric/late publication, duplicate/preexisting/symlink ownership, complete routes/chunks and all20 long counters. Reuse corrected bounded XML and compact fallback patterns, not old bugs.
+- [ ] Before invoking the opt-in facts issuer, bind the actual candidate backing ledger to a limit of at most64MiB. The unchanged extractor reserves directly through its original owner; checking current usage in BSharedWork alone cannot enforce this on an ordinary256MiB root. Add a wrong256MiB-root refusal regression proving refusal before extraction/allocation, plus the valid64MiB composition control. Keep borrowed original source/snapshot/facts funding live for the full bound-field lifetime. This is the independently reviewed R2 composition precondition; the native baseline retains its separate256MiB policy.
 - [ ] Freeze captures, original mode/cell/facts hashes and native input/analysis frame distinctions before candidate outcomes. Sourceguide is not generally truth. Preserve earlier thin7 no-hop semantics and new3/5 representative semantics without a case ID reaching inference. Original source full-width proposals/admission remain unchanged.
 - [ ] Export raw browser input when separately retained, V_analysis/F/C/D/masks, streamed original per-mode e/J lineage/provenance and local rows/A/H/q/f, complete table/support identities and selected-edge J/unknown/term attribution. Typed binary chunks preserve all bits/status/order with independent decoder, exact manifest/allowlist/hash; no M*N raster retention or hash-only bytes labelled retained.
 - [ ] Own1MiB metadata through encode/stage/commit. Actual caller-postclose root0/one invocation/normal return is separate <=1KiB host evidence. Partial/cutoff/missing output never becomes observed0 or PASS. Oversized optional text cannot erase fixed actual work; atomic rollback clears success route prefix.

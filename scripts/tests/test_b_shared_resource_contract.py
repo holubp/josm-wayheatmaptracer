@@ -71,11 +71,11 @@ def test_response_count_is_nine_per_footprint_and_four_corners_per_local_cell():
 def test_independent_tiny_census_and_closed_scalar_blocks():
     report = contract.derive(counts())
     assert report["counts"]["exact_api_upper"] == 53760
-    assert report["work_upper"] == 56592450944 + (12 + 9) * (32 + 16 + 128 * 4)
+    assert report["work_upper"] == 56592450944 + (12 + 9) * (32 + 16 + 128 * 4) + 4 * 5164
     assert report["proposed_peak_bytes"] == 3209480
     assert report["scalar_block_ceilings"] == dict(metadata=256, response=1024,
                                                    context=128, deficit=96,
-                                                   pair=512, event=4096)
+                                                   pair=512, event=4096, local_query=5164)
     assert report["payload_bytes"] == dict(source=552, descriptors=1536, planes=2088,
                                            coordinates=288, table=1352, exact=2151440,
                                            row=2624, region=0, report=1048576)
@@ -101,6 +101,31 @@ def test_original_evidence_region_queries_have_an_independent_work_bound():
     another_polygon = contract.derive({**original, "source_region_edges": 7,
                                       "source_region_polygons": 2})
     assert another_polygon["work_upper"] - larger["work_upper"] == 21 * 16
+
+
+def test_local_coordinate_and_interpolation_body_is_funded_separately():
+    # Independent closed census: exact API guards, decodes, two axes,
+    # four correctly rounded fractions/complements, interval arithmetic, control.
+    local_block = 128 * 32 + 6 * 32 + 2 * 64 + 4 * 64 + 13 * 28 + 128
+    assert local_block == 5164
+    report = contract.derive(counts())
+    assert report["scalar_block_ceilings"]["local_query"] == local_block
+    assert report["counts"]["local_query_scalar_upper"] == 4 * local_block
+    # Changing E also changes four response locations and their exact ceiling;
+    # subtract those independently to isolate the missing local scalar term.
+    larger = contract.derive(counts(local_entries=5))
+    response_delta = 4 * 1024
+    exact_delta = 4 * 256 * (1 + (2 * 512 + 2) ** 2)
+    assert larger["work_upper"] - report["work_upper"] == (
+        response_delta + exact_delta + local_block
+    )
+
+
+def test_local_query_work_claim_cannot_omit_the_new_body():
+    report = contract.derive(counts())
+    report["counts"]["local_query_scalar_upper"] = 0
+    with pytest.raises(contract.ProofError, match="claim differs"):
+        contract.validate_claim(counts(), report)
 
 
 @pytest.mark.parametrize("edges,polygons", [(0, 0), (2, 1), (4, 2)])

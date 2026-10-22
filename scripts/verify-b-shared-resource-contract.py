@@ -46,6 +46,7 @@ DAG_PARTITIONS = dict(metadata=(32, 32, 64, 64, 32, 32),
                       response=(9 * 64, 128, 32, 64, 96, 96, 32),
                       context=(16, 16, 8, 8, 8, 32, 8, 32),
                       deficit=(32, 32, 32), pair=(128, 128, 128, 128),
+                      local_query=(128 * 32, 6 * 32, 2 * 64, 4 * 64, 13 * 28, 128),
                       event=(1024, 512, 256, 128, 1536, 640))
 
 
@@ -362,6 +363,7 @@ def derive(counts):
              c["mixture_entries"])), checked_mul(1024, r), checked_mul(128, 81, vertices),
         checked_mul(96, vertices), checked_mul(512, c["pairs"]), checked_mul(4096, z),
         checked_mul(128, c["pairs"], region), checked_mul(source_queries, source_membership),
+        checked_mul(checked_add(*DAG_PARTITIONS["local_query"]), c["local_entries"]),
         checked_mul(1 + kappa,
              checked_add(checked_mul(256, checked_add(c["modes"], r, c["pairs"])),
                          checked_mul(512, z))))
@@ -377,6 +379,8 @@ def derive(counts):
                             interval_events_upper=z, region_proxy=region,
                             source_region_queries=source_queries,
                             source_region_query_upper=source_membership,
+                            local_query_scalar_upper=checked_mul(
+                                checked_add(*DAG_PARTITIONS["local_query"]), c["local_entries"]),
                             exact_api_upper=checked_add(
                                 checked_mul(256, checked_add(c["modes"], r, c["pairs"])),
                                 checked_mul(512, z))),

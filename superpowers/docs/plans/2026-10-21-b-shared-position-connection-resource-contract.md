@@ -128,6 +128,7 @@ operation contract, not a statement that those future sources already exist.
 | --- | --- | --- |
 | metadata/source binding |256 per T,N0,C0,S,n,M,N,K slot|fixed slot block below; source bilinear has no data loop|
 | response |1024 per R, including9 V-plane reads/masks|9 fixed64-slot taps +448 fixed response slots|
+| local coordinate/interpolation |5164 per E_local|128*32 API guards +6*32 decodes +2*64 axis controls +4*64 RN controls +13*28 interval slots +128 fixed controls|
 | C neighbourhood |128 per candidate, at most81N|fixed integer-offset block; no secondary search|
 | D |96N|two fixed log1p API calls and bounded outward enclosure block|
 | pair setup |512P|fixed table/admission setup, region work separately charged|
@@ -142,6 +143,26 @@ counters. Counter bookkeeping itself is excluded to avoid recursive counting.
 No block measures JVM instructions or CPU time. Each bounded block polls before
 entry/after exit; response additionally polls between fixed taps, and4096-slot
 event work is divided into<=1024-slot subblocks. No cancellation-free4096 loop.
+
+R3 local-query pre-code envelope: charge5164 once per actual local evaluation,
+in addition to its four response evaluations. Count every BigInteger accessor,
+comparison, shift and conversion as an exact API, not merely scalar guards.
+The proposed additional128 exact calls/query satisfy
+14M+110R+128E_local <=14M+142R <=256(M+R+P), since4E_local<=R.
+Before helper implementation, pin named axis/RN nodes, pre-call magnitudes and
+simultaneous lifetimes into the funded wrapper,136 caller slots and4096-byte
+primitive bank; the envelope alone does not prove source conformance. Negative
+axes, exact floor/outer boundaries, subnormals and ties-even require controls.
+Local interpolation uses floor/upper-cell ownership; lower-face ownership is
+specific to chords. This correction changes neither equations nor fixed caps.
+
+The4096 local API-control/body slots must include the old local projection:
+at most115 exact APIs use115*32=3680 slots, eight old dyadic decodes use256,
+and remaining mode-switch/prepare/inside scalar controls use at most128;
+3680+256+128=4064<=4096. The separate192 decode slots cover only four new
+grid operands and two query coordinates. Pin the old scalar-node census before
+entry; no spare response1024 slots are assumed. Source exceeding115 calls or
+the128 old-control slots fails this prospective partition and requires review.
 
 | Block | Closed scalar slot partition (sum is the stated ceiling) |
 | --- | --- |
@@ -191,7 +212,7 @@ For κ=(2*512+2)^2=1,052,676, the checked proposed U is:
 
 ```
 1024 +256*(T+N0+C0+S+n+M+N+K) +1024R +128*81N +96N
- +512P +4096Z +128P*A_region +(N+C_samples)*(32+16p_source+128e_source)
+ +512P +4096Z +5164E_local +128P*A_region +(N+C_samples)*(32+16p_source+128e_source)
  +(1+κ)*(256*(M+R+P)+512Z)
 ```
 
