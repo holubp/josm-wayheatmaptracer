@@ -70,7 +70,14 @@ For region edge count e, A_region=(2e+2)*(128*(e+1)+ceilLog2(2e+2)+64) bounds on
 
 Use exact integer word width512 and kappa=(2*512+2)^2 as a registered weighted quadratic limb-pair proxy charge per exact API call, plus one actual API unit. This is not an upper bound on hardware bit operations, JDK word primitives, allocations or execution time: 512 words must never be treated as512 bits. Prove the bound on these declared charges against a closed prospective operation DAG, then verify the implementation follows that DAG. Independently prove safe operand/result sizes, pinned JDK17 transient allocation and cancellation bounds for the exact API allowlist. Proposed complete per-input declared-work upper:
 
-`U = 1024 + 256*(T+N0+C0+S+n+M+N+K) + 1024*R + 128*81*N + 96*N + 512*P + 4096*Z + 128*P*A_region + (1+kappa)*(256*(M+R+P)+512*Z)`.
+`U = 1024 + 256*(T+N0+C0+S+n+M+N+K) + 1024*R + 128*81*N + 96*N + 512*P + 4096*Z + 128*P*A_region + (N+C_samples)*(32+16*p_source+128*e_source) + (1+kappa)*(256*(M+R+P)+512*Z)`.
+
+The2026-10-22 source-binding review adds C_samples=sum original profile sample
+counts and independent p_source/e_source for the snapshot's original evidence
+region. Its point-query bound and allocation-free original-semantics helper are
+specified in the resource-contract correction; source-region census slots enter
+T. This repairs missing authorization work without changing model equations,
+chord authority or caps. Independent proof/code re-review is required before use.
 
 The exact-call allowance includes every R response location (construction Q as well as4E_local); it must not be reduced to one call allowance per profile or mode. The worksheet must separately establish the fixed256/512 API-call multiplicities and each API's512word operand/intermediate ceiling. An allowance is a proposed source-count obligation, not empirical evidence that a larger workload is admissible.
 

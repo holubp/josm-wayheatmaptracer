@@ -133,6 +133,7 @@ operation contract, not a statement that those future sources already exist.
 | pair setup |512P|fixed table/admission setup, region work separately charged|
 | scalar event/Simpson |4096Z|fixed entry/mid/exit/error blocks; exact API work separate|
 | region admission |128P*A_region|opaque proxy, not observed comparisons/JVM operations|
+| original source-region membership |(N+C_samples)*(32+16p_source+128e_source)|separate original evidence-region point queries; never inferred from the chord region|
 | exact API multiplicity |256(M+R+P)+512Z|fixed call-site ceilings below; no hidden recursive rational reducer|
 
 Primitive slots count arithmetic, finite tests, predicates, index operations and
@@ -190,7 +191,7 @@ For κ=(2*512+2)^2=1,052,676, the checked proposed U is:
 
 ```
 1024 +256*(T+N0+C0+S+n+M+N+K) +1024R +128*81N +96N
- +512P +4096Z +128P*A_region
+ +512P +4096Z +128P*A_region +(N+C_samples)*(32+16p_source+128e_source)
  +(1+κ)*(256*(M+R+P)+512Z)
 ```
 
@@ -198,6 +199,41 @@ All additions/multiplications, including intermediate totals, must fit signed
 Java long or refuse. This formula is evaluated as a **conditional proposal**;
 there is no global old G constant and no cap increase. The verifier rejects
 substituting old BUILD_UNITS or a different allocation/call-count claim.
+
+### Source-region membership correction (2026-10-22; implementation review pending)
+
+The original source sampler authorizes each query against the snapshot's
+`evidenceRegion`, independently of the chord-admission region. Let C_samples be
+the sum of original profile sample counts, and let p_source/e_source be the
+original evidence-region polygon/edge counts. The region is mandatory, with
+p_source>=1 and e_source>=3*p_source. Count its polygons/edges in the initial
+funded census, include those visited slots in T, retain its original identity
+and lifetime, and use checked long arithmetic for every multiplicity.
+
+There are N+C_samples point queries: N original-source samples for the analysis
+plane and C_samples original profile validity/value checks. Source support
+outside that region is unavailable even when the retained raster has pixels.
+The old fixed256 interpolation allowance does not absorb variable region work.
+
+For the allocation-free indexed equivalent of original MetricRegion point
+membership (lines484–515 at the pinned source), register
+B_contains(e,p)=32+16p+128e:32 fixed query setup;16 per-polygon setup/control;
+128 per edge split into16 coordinate/index reads,32 original bounding-box/
+min/max/epsilon checks,32 original cross/distance/hypot/scale operations,
+32 original ray-crossing operations and16 loop/control slots. Cache getters,
+but preserve original arithmetic grouping, union/boundary semantics, EPSILON
+and Math.hypot behavior. Check cancellation per edge and before publication;
+count actual hypot calls separately from this registered primitive upper.
+Use static double-coordinate helpers and existing retained polygon/vertex
+references: no per-query MetricPoint, iterator, stream, lambda, geometry copy
+or additional payload. An implementation choosing allocation instead needs a
+separately reviewed simultaneous scratch inventory before use.
+
+Thus U gains (N+C_samples)*B_contains(e_source,p_source). Chord region work and
+all existing caps remain unchanged. Missing/zero/impossible source-region census
+is refused; overflow refuses before construction. Original contains parity tests
+must cover boundary, union, tiny edges and holes represented by the original
+union semantics. No new interpretation of holes is authorized.
 
 ### Reviewed unit correction: registered weighted limb-pair proxy
 

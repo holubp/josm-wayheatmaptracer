@@ -31,7 +31,7 @@ SOURCE_PINS = {
 COUNT_KEYS = frozenset(("n", "modes", "width", "height", "source_vertices", "source_cells",
                         "samples", "states", "components", "mixture_entries", "local_entries",
                         "metadata_slots", "footprint_vertices", "pairs", "region_edges",
-                        "live_existing_bytes"))
+                        "live_existing_bytes", "source_region_edges", "source_region_polygons"))
 UNPROVED = ()
 JDK_SOURCE_PINS = {
     "BigInteger.java": "50c292cec45578f911a309690f990036a946ee09768ed30e4d54fb18a18a95ee",
@@ -289,6 +289,8 @@ def _validate_counts(counts):
             or not 1 <= counts["source_cells"] <= 190404
             or counts["footprint_vertices"] > checked_mul(modes, vertices)
             or counts["region_edges"] in (1, 2)
+            or counts["source_region_polygons"] < 1
+            or counts["source_region_edges"] < checked_mul(3, counts["source_region_polygons"])
             or counts["components"] > modes + n
             or counts["local_entries"] > modes * 96
             or counts["mixture_entries"] > counts["components"] * 96
@@ -351,12 +353,16 @@ def derive(counts):
     region = checked_mul(events, checked_add(checked_mul(128, e + 1),
                                            (events - 1).bit_length(), 64)) if e else 0
     kappa = (2 * 512 + 2) ** 2
+    source_queries = checked_add(vertices, c["samples"])
+    source_membership = checked_add(32, checked_mul(16, c["source_region_polygons"]),
+                                    checked_mul(128, c["source_region_edges"]))
     work = checked_add(
         1024, checked_mul(256, checked_add(c["metadata_slots"], c["source_vertices"],
              c["source_cells"], c["states"], c["n"], c["modes"], vertices,
              c["mixture_entries"])), checked_mul(1024, r), checked_mul(128, 81, vertices),
         checked_mul(96, vertices), checked_mul(512, c["pairs"]), checked_mul(4096, z),
-        checked_mul(128, c["pairs"], region), checked_mul(1 + kappa,
+        checked_mul(128, c["pairs"], region), checked_mul(source_queries, source_membership),
+        checked_mul(1 + kappa,
              checked_add(checked_mul(256, checked_add(c["modes"], r, c["pairs"])),
                          checked_mul(512, z))))
     payload = _payload(c, vertices)
@@ -369,6 +375,8 @@ def derive(counts):
                 unproved=list(UNPROVED),
                 counts=dict(response_locations=r, stencil_reads=checked_mul(9, r),
                             interval_events_upper=z, region_proxy=region,
+                            source_region_queries=source_queries,
+                            source_region_query_upper=source_membership,
                             exact_api_upper=checked_add(
                                 checked_mul(256, checked_add(c["modes"], r, c["pairs"])),
                                 checked_mul(512, z))),

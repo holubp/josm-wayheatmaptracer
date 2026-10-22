@@ -25,7 +25,7 @@ def counts(**changes):
                   source_cells=6, samples=9, states=6, components=2,
                   mixture_entries=4, local_entries=4, metadata_slots=32,
                   footprint_vertices=8, pairs=8, region_edges=0,
-                  live_existing_bytes=1024)
+                  live_existing_bytes=1024, source_region_edges=4, source_region_polygons=1)
     result.update(changes)
     return result
 
@@ -71,7 +71,7 @@ def test_response_count_is_nine_per_footprint_and_four_corners_per_local_cell():
 def test_independent_tiny_census_and_closed_scalar_blocks():
     report = contract.derive(counts())
     assert report["counts"]["exact_api_upper"] == 53760
-    assert report["work_upper"] == 56592450944
+    assert report["work_upper"] == 56592450944 + (12 + 9) * (32 + 16 + 128 * 4)
     assert report["proposed_peak_bytes"] == 3209480
     assert report["scalar_block_ceilings"] == dict(metadata=256, response=1024,
                                                    context=128, deficit=96,
@@ -87,6 +87,26 @@ def test_old_gap_budget_is_not_a_source_bound_proof():
     report["work_upper"] = 78320919079993196
     with pytest.raises(contract.ProofError, match="claim differs"):
         contract.validate_claim(counts(), report)
+
+
+def test_original_evidence_region_queries_have_an_independent_work_bound():
+    original = counts(source_region_edges=4, source_region_polygons=1)
+    report = contract.derive(original)
+    # Twelve analysis vertices and nine original samples, each with a separate
+    # four-edge source-authority membership check. Chord region is absent.
+    assert report["counts"]["source_region_queries"] == 21
+    assert report["counts"]["source_region_query_upper"] == 32 + 16 + 128 * 4
+    larger = contract.derive({**original, "source_region_edges": 7})
+    assert larger["work_upper"] - report["work_upper"] == 21 * 128 * 3
+    another_polygon = contract.derive({**original, "source_region_edges": 7,
+                                      "source_region_polygons": 2})
+    assert another_polygon["work_upper"] - larger["work_upper"] == 21 * 16
+
+
+@pytest.mark.parametrize("edges,polygons", [(0, 0), (2, 1), (4, 2)])
+def test_source_region_cannot_be_omitted_or_have_impossible_polygon_counts(edges, polygons):
+    with pytest.raises(contract.ProofError, match="capability"):
+        contract.derive(counts(source_region_edges=edges, source_region_polygons=polygons))
 
 
 @pytest.mark.parametrize("allocation", ["source", "table", "report", "exact"])
