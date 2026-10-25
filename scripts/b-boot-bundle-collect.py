@@ -188,7 +188,7 @@ def authenticate(archive,signature,keyring,home,tools,stage,e,clock,base,expecte
     require(base['file_digest'](archive,archive.stat().st_size,clock.check)==expected,'SIGNED_ARCHIVE_MUTATION')
 
 def inventory_archive(archive,stage,evidence,bounds,checkpoint):
-    """Actual signed USTAR discovery. Never a strict approved manifest/admission."""
+    """Signed USTAR/ordinary old-GNU DATA, never strict manifest/admission."""
     base=dependency();b=bounds;e=evidence;headers=0;expanded=0;selected=None;seen=set()
     def read(stream,n):
         nonlocal expanded
@@ -208,18 +208,31 @@ def inventory_archive(archive,stage,evidence,bounds,checkpoint):
             require(headers<b['headers'],'TAR_HEADER_LIMIT');headers+=1
             require(base['_octal'](header[148:156])==sum(header[:148])+8*32+sum(header[156:]),'TAR_CHECKSUM')
             kind=header[156:157];magic=header[257:265]
-            if magic!=b'ustar\x0000' or kind in (b'x',b'g',b'L',b'K'):
+            oldgnu=magic==b'ustar  \0'
+            if magic not in (b'ustar\x0000',b'ustar  \0') or kind in (b'x',b'g',b'L',b'K'):
                 _emit(e,'raw/unsupported-header.bin',header)
                 raise Failure('TAR_EXTENSION_OR_FORMAT_UNSUPPORTED')
-            name=base['_name'](header[:100]);prefix=header[345:500].rstrip(b'\0')
-            if prefix:name=base['_name'](prefix+b'/'+name.encode('ascii'))
+            # GNU tar.h oldgnu_header: 345:369 is atime/ctime, NOT prefix.
+            # Offset/longname/sparse/extended/realsize/reserved storage is outside
+            # this ordinary DATA profile, even if another reader could handle it.
+            if oldgnu and any(header[369:512]):
+                _emit(e,'raw/unsupported-header.bin',header)
+                raise Failure('TAR_EXTENSION_FIELDS_UNSUPPORTED')
+            name=base['_name'](header[:100]);times={}
+            if oldgnu:
+                for label,start in (('atime',345),('ctime',357)):
+                    raw=header[start:start+12]
+                    times[label]=base['_octal'](raw) if raw.strip(b'\0 ') else None
+            else:
+                prefix=header[345:500].rstrip(b'\0')
+                if prefix:name=base['_name'](prefix+b'/'+name.encode('ascii'))
             require(name not in seen,'TAR_DUPLICATE');seen.add(name)
             size=base['_octal'](header[124:136]);mode=base['_octal'](header[100:108])
             require(expanded+((size+511)//512)*512+1024<=b['expanded'],'TAR_DECLARED_EXPANSION')
             link=header[157:257].rstrip(b'\0')
             e.json('reports/tar/header-%05d.json'%headers,{'name':name,'type':kind.hex(),'bytes':size,'mode':mode,
                     'link_bytes_hex':link.hex(),'header_sha256':hashlib.sha256(header).hexdigest(),
-                    'offset':expanded-512,'format':'USTAR'})
+                    'offset':expanded-512,'format':'OLDGNU' if oldgnu else 'USTAR',**times})
             require(kind in (b'0',b'\0',b'5',b'1',b'2'),'TAR_TYPE_UNSUPPORTED')
             parts=name.split('/');is_modules=len(parts)==3 and parts[1:]==['lib','modules']
             if is_modules:

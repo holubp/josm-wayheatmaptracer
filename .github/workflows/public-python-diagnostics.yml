@@ -17,8 +17,8 @@ jobs:
           ref: ${{ github.sha }}
       - name: Check reviewed source and run self-contained DATA tests
         env:
-          COLLECTOR_SHA256: 09d5f9b1711e4a966eb1db3a419cf9014c4f9ccd2981ee726fc4798c7a88e1ea
-          TEST_SHA256: 8a81fee8d976312576303283478b5c0093819967a590c9c98638f98ca267c540
+          COLLECTOR_SHA256: 89422cf538c7580757987438b13bf7666cee427198f530a36da44c16c14a7839
+          TEST_SHA256: 7e4975d8f99a794c8711725f534bb86366d804e6be2577e24b1670799204e86c
           HELPER_SHA256: 864feadb68c4483b4da5272fb989624e00b596ecbfc9cabc6dabdb80a500ce20
         run: |
           set -eu

@@ -1,5 +1,6 @@
 """Bounded DATA fixtures only; no supplier archive is downloaded by tests."""
 from pathlib import Path
+import base64
 import copy
 import gzip
 import hashlib
@@ -19,6 +20,11 @@ W=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('boot_collect',W/'scripts/b-boot-bundle-collect.py')
 C=importlib.util.module_from_spec(spec);spec.loader.exec_module(C)
 
+# Actual first signed archive header retained by DATA CI40151639608. This is a
+# public format witness, not a signed archive/approval/runtime substitute.
+CI_GNU_HEADER=base64.b64decode(
+    'amRrLTE3LjAuMTIrNy8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAwMDA3NTUAMDAwMDAwMAAwMDAwMDAwADAwMDAwMDAwMDAwADE0NjQ1NTcyNjQ2ADAxMTMxNQAgNQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB1c3RhciAgAHJvb3QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcm9vdAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=')
+
 def fixture_class():
     def u2(n):return struct.pack('>H',n)
     cp=[]
@@ -28,15 +34,88 @@ def fixture_class():
 def setup(root,**changes):
     b=dict(C.BOUNDS);b.update(changes);e=C.Evidence(root/'public',b);return b,e
 
-def tar_bytes(members):
+def tar_bytes(members,fmt=tarfile.USTAR_FORMAT):
     output=io.BytesIO()
-    with tarfile.open(fileobj=output,mode='w',format=tarfile.USTAR_FORMAT) as tar:
+    with tarfile.open(fileobj=output,mode='w',format=fmt) as tar:
         for name,data in members:
             item=tarfile.TarInfo(name);item.size=len(data);item.mode=0o644
             tar.addfile(item,io.BytesIO(data))
     return gzip.compress(output.getvalue())
 
+def changed_header(data,changes):
+    raw=bytearray(gzip.decompress(data));header=bytearray(raw[:512])
+    for start,value in changes:header[start:start+len(value)]=value
+    header[148:156]=b' '*8
+    header[148:156]=('%06o\0 '%sum(header)).encode('ascii')
+    raw[:512]=header;return gzip.compress(raw)
+
 class CollectorTests(unittest.TestCase):
+    def test_actual_ci_oldgnu_directory_then_regular_modules_is_data(self):
+        self.assertEqual(512,len(CI_GNU_HEADER))
+        self.assertEqual('b037bb5163b92dbc253db0305d162e8bb64e8c5e54a22674576e3224ede8235b',
+                         hashlib.sha256(CI_GNU_HEADER).hexdigest())
+        synthetic=gzip.decompress(tar_bytes([('jdk-17.0.12+7/lib/modules',b'TINY_IMAGE')],tarfile.GNU_FORMAT))
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);archive=root/'signed';archive.write_bytes(gzip.compress(CI_GNU_HEADER+synthetic));b,e=setup(root)
+            try:result=C.inventory_archive(archive,root,e,b,lambda:None)
+            except C.Failure as failure:self.fail('Actual ordinary GNU header rejected: '+str(failure))
+            self.assertEqual(2,result['headers']);self.assertEqual(b'TINY_IMAGE',result['modules'].read_bytes())
+            record=json.loads((e.root/'reports/tar/header-00001.json.part0000').read_text())
+            self.assertEqual('jdk-17.0.12+7',record['name']);self.assertEqual('OLDGNU',record['format'])
+            self.assertFalse((root/'jdk-17.0.12+7').exists())
+
+    def test_oldgnu_times_are_metadata_not_ustar_path_prefix(self):
+        data=changed_header(tar_bytes([('jdk/lib/modules',b'DATA')],tarfile.GNU_FORMAT),
+                            [(345,b'00000000001\0'),(357,b'00000000002\0')])
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);archive=root/'signed';archive.write_bytes(data);b,e=setup(root)
+            result=C.inventory_archive(archive,root,e,b,lambda:None)
+            self.assertEqual('jdk/lib/modules',result['name']);self.assertEqual(b'DATA',result['modules'].read_bytes())
+            record=json.loads((e.root/'reports/tar/header-00001.json.part0000').read_text())
+            self.assertEqual(1,record['atime']);self.assertEqual(2,record['ctime'])
+
+    def test_oldgnu_extension_fields_and_record_types_refuse_before_selection(self):
+        ordinary=tar_bytes([('jdk/lib/modules',b'DATA')],tarfile.GNU_FORMAT)
+        # offset, longnames, unused byte, sparse offset/length, extended flag,
+        # real size and reserved tail cannot silently acquire ordinary semantics.
+        changes=[(369,b'00000000001\0'),(381,b'x'),(385,b'x'),(386,b'1'),
+                 (398,b'1'),(482,b'1'),(483,b'1'),(495,b'x')]
+        changes += [(156,kind) for kind in (b'x',b'g',b'L',b'K',b'S',b'M',b'V',b'D',b'N',b'X')]
+        for change in changes:
+            with self.subTest(change=change),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);archive=root/'signed';archive.write_bytes(changed_header(ordinary,[change]));b,e=setup(root)
+                with self.assertRaisesRegex(C.Failure,'TAR_(EXTENSION|TYPE)'):
+                    C.inventory_archive(archive,root,e,b,lambda:None)
+                self.assertFalse((root/'selected-modules').exists())
+
+    def test_oldgnu_keeps_checksum_path_size_and_cancellation_guards(self):
+        ordinary=tar_bytes([('jdk/lib/modules',b'DATA')],tarfile.GNU_FORMAT)
+        bad=bytearray(gzip.decompress(ordinary));bad[0]^=1
+        controls=[(gzip.compress(bad),{},'TAR_CHECKSUM'),
+                  (tar_bytes([('../escape',b'DATA')],tarfile.GNU_FORMAT),{},'TAR_PATH'),
+                  (ordinary,{'modules':3},'MODULES_SIZE_LIMIT')]
+        for data,limits,code in controls:
+            with self.subTest(code=code),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);archive=root/'signed';archive.write_bytes(data);b,e=setup(root,**limits)
+                with self.assertRaisesRegex(RuntimeError,code):C.inventory_archive(archive,root,e,b,lambda:None)
+                self.assertFalse((root/'selected-modules').exists())
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);archive=root/'signed';archive.write_bytes(ordinary);b,e=setup(root)
+            def cancel():raise C.Failure('CONTROLLED_CANCEL')
+            with self.assertRaisesRegex(C.Failure,'CONTROLLED_CANCEL'):C.inventory_archive(archive,root,e,b,cancel)
+            self.assertFalse((root/'selected-modules').exists())
+
+    def test_ustar_prefix_remains_a_path_prefix(self):
+        name='j'*90+'/lib/modules'
+        data=tar_bytes([(name,b'USTAR')])
+        self.assertTrue(any(gzip.decompress(data)[345:500]))
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);archive=root/'signed';archive.write_bytes(data);b,e=setup(root)
+            result=C.inventory_archive(archive,root,e,b,lambda:None)
+            self.assertEqual(name,result['name']);self.assertEqual(b'USTAR',result['modules'].read_bytes())
+            record=json.loads((e.root/'reports/tar/header-00001.json.part0000').read_text())
+            self.assertEqual('USTAR',record['format'])
+
     def test_actual_signed_stage_inventory_selects_only_regular_modules(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);archive=root/'signed.gz'
