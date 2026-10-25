@@ -90,6 +90,22 @@ python3 -m unittest discover -s scripts/tests -p test_b_shared_table_decoder.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_shared_table_decoder.py
 ```
 
+The GNU HOST route shares one cached reached-method issuer/consumer namespace.
+Its receipt retains the exact issued envelope; a report cannot replace it. The independently
+installed `B_SYSTEM_CLOSED_DIRECTORY_GNU_1` tuple binds the whole boot attachment
+and relative java/javac/modules members to its native/load/startup proof. Actual
+launch paths derive privately from the same live image. Selected native/config
+members and finite registered external files/absences remain guarded through
+callbacks, child cleanup and final publication.
+Registries remain empty: this software cannot install records, change privileges
+or grant the still-unsealed capture/runtime initializer. UNIT images and simulated
+OS tests exercise mechanics only; protected-platform evidence is required for a real run.
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_b_gnu_host_join.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_gnu_host_join.py
+```
+
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`
 mode fetches only the fixed public key into an exclusively owned output directory
 and uses temporary isolated GPG state; it does not change global key trust.
