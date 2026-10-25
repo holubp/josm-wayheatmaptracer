@@ -106,6 +106,30 @@ python3 -m unittest discover -s scripts/tests -p test_b_gnu_host_join.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_gnu_host_join.py
 ```
 
+The separately registered `B_SYSTEM_CLOSED_DIRECTORY_GNU_2` route uses
+`--host-control-gnu-v1` and the fixed 40-byte big-endian deadline frame:
+`BGNUD001`, version 1 (i32), length 40 (i32), actual child PID (i64), original
+pre-spawn monotonic nanoseconds (i64), original deadline nanoseconds (i64).
+The same clock object supplies the existing HOST transaction's first pre-spawn
+sample and subsequent samples. Readiness never resets it. The emitted deadline
+is the earlier of original integer start plus 300 seconds and the exact integer
+floor of the transaction's floating deadline; conversion uses its integer ratio
+so rounded multiplication cannot grant extra time. A failed frame/write attempt
+cannot be retried. The strict one-byte route and transaction remain unchanged.
+
+GNU2's complete installed native/startup attachment must bind both
+`BGNUD001_ABSOLUTE_MONOTONIC_NS_1` and
+`LINUX_CPYTHON_JDK_CLOCK_MONOTONIC_NS_1`. These strings, clock samples and UNIT
+frames grant no authority: genuine clock implementations/common namespace,
+owned child/pipe, source/build and startup proofs remain required. Registries
+are empty; `require_runtime` remains unavailable. The hex fixture is synthetic
+UNIT data for Python/Java parser parity, not a qualified process receipt.
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_b_gnu_deadline_control.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_gnu_deadline_control.py
+```
+
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`
 mode fetches only the fixed public key into an exclusively owned output directory
 and uses temporary isolated GPG state; it does not change global key trust.

@@ -1,5 +1,9 @@
 # AGENTS
 
+- GNU2 deadline control must retain the original pre-spawn integer clock and the
+  conservative exact-ratio floating deadline bound. Its 40-byte UNIT frame is
+  not a runtime permit; keep the strict one-byte HOST route unchanged.
+
 - GNU HOST borrowing must bind the exact issued component envelope and the same live image, derive fresh paths from approved relative members, and guard every selected member/external dependency through callbacks and cleanup. Bind the whole runtime/attachment to the independently installed native/startup proof. Keep strict HOST receipts separate and UNIT/public DATA unable to grant real runtime authority.
 
 - Offline shared-table decoding must keep each schema's approximation, parameter layout, global text count and visual/query dimensions explicit. Preserve older ABI vectors; a SOURCE-named frame, caller contract or self-consistent checksum never grants factual/runtime authority, and unselected eta is not selected eta zero.

@@ -10,15 +10,17 @@ from pathlib import Path
 import hashlib
 import grp
 import json
+import math
 import os
 import pwd
 import select
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
-from time import monotonic
+from time import monotonic, monotonic_ns
 
 DEPENDENCY_SHA256='a8c8aa239aa878d9901a59731d33a66c44f403ec14dc686cd8ff5a2dc3693951'
 # Installation-time independently reviewed source->build->output/profile tuple.
@@ -32,6 +34,8 @@ _GNU_COMPONENT=None
 MAX_TUPLE_BYTES=65536
 READY_PREFIX=b'B_HOST_READY_1 '
 MAX_READY_BYTES=len(READY_PREFIX)+19+1
+GNU_DEADLINE_PROTOCOL='BGNUD001_ABSOLUTE_MONOTONIC_NS_1'
+GNU_CLOCK_PROFILE='LINUX_CPYTHON_JDK_CLOCK_MONOTONIC_NS_1'
 
 class Pending(RuntimeError):
     """An exact necessary HOST/boot/source premise is absent or mismatched."""
@@ -149,7 +153,8 @@ def _review_gnu(key):
     path,digest=REGISTERED_TUPLES[key];_protected_ancestors(Path(path).absolute())
     data=_regular_bytes(path);require(hashlib.sha256(data).hexdigest()==digest,'INDEPENDENT_BUILD_TUPLE_DRIFT')
     c=_gnu_component();value=c['_json'](data)
-    require(type(value) is dict and value.get('schema')=='B_SYSTEM_CLOSED_DIRECTORY_GNU_1','GNU_TUPLE_SCHEMA')
+    require(type(value) is dict and value.get('schema') in
+            ('B_SYSTEM_CLOSED_DIRECTORY_GNU_1','B_SYSTEM_CLOSED_DIRECTORY_GNU_2'),'GNU_TUPLE_SCHEMA')
     attachment=c['_host_attachment'](value.get('boot_component'))
     proof=value.get('boot_load_startup')
     require(type(proof) is str and proof==attachment['native_load_startup_proof'] and
@@ -160,6 +165,8 @@ def _review_gnu(key):
     require(type(runtime) is dict and 'java' not in runtime and 'modules' not in runtime and
             runtime.get('java_member')==roles['java']['member'] and
             runtime.get('modules_member')==roles['modules']['member'],'GNU_RUNTIME_MEMBER_JOIN')
+    if value['schema']=='B_SYSTEM_CLOSED_DIRECTORY_GNU_2':
+        _require_gnu_deadline_profile(runtime)
     require(type(tools) is dict and set(tools)=={'java','javac','setpriv'},'GNU_TOOL_ROLES')
     for role in ('java','javac'):
         tool=tools[role]
@@ -421,7 +428,9 @@ def produce_gnu(review_id,source_root,protected_parent,cancel=lambda:None,*,boot
     def live():borrow.require_live();external.require_live()
     live();cancel();live()
     selected=_gnu_launch_selection(review,borrow)
-    backend=_LinuxHost(selected,Path(source_root),Path(protected_parent))
+    backend_type=(_GnuDeadlineLinuxHost if selected.data['schema']=='B_SYSTEM_CLOSED_DIRECTORY_GNU_2'
+                  else _LinuxHost)
+    backend=backend_type(selected,Path(source_root),Path(protected_parent))
     result=_transaction(backend,selected,cancel,live)
     live()
     return _HostSession(result['pid'],result['exit'])
@@ -563,3 +572,106 @@ class _LinuxHost:
             for path in self.stage.rglob('*'):
                 if path.is_dir():os.chmod(path,0o700)
             shutil.rmtree(self.stage)
+
+
+def _require_gnu_deadline_profile(runtime):
+    """Check selection syntax, never independently issue a clock/runtime proof.
+
+    _review_gnu also requires the complete runtime and component to equal their
+    independently installed startup record. These strings alone are not that
+    authority; actual registries remain empty.
+    """
+    require(type(runtime) is dict and runtime.get('host_control')==GNU_DEADLINE_PROTOCOL
+            and runtime.get('clock_profile')==GNU_CLOCK_PROFILE,'GNU_CLOCK_PROFILE_REQUIRED')
+
+
+class _GnuDeadlineClock:
+    """Original integer spawn clock for the GNU-only driver; mechanics only.
+
+    The SAME object supplies _transaction's first pre-spawn clock sample and
+    all subsequent samples. No clock is sampled at construction or reset at
+    readiness. The child deadline is bounded by both the exact original integer
+    duration and the exact value of the existing floating transaction deadline.
+    This object/frame cannot issue an initialization or runtime permit.
+    """
+    __slots__=('start_ns','last_ns','start_seconds','start_attempted','frame_attempted')
+    LIMIT=(1 << 63)-1
+    DURATION=300_000_000_000
+    def __init__(self):
+        self.start_ns=None;self.last_ns=None;self.start_seconds=None
+        self.start_attempted=False;self.frame_attempted=False
+    def _read(self):
+        now=monotonic_ns()
+        require(type(now) is int and 0<=now<=self.LIMIT and
+                (self.last_ns is None or now>=self.last_ns),'GNU_CLOCK_DOMAIN')
+        self.last_ns=now
+        return now
+    def clock(self):
+        if self.start_ns is None:
+            require(not self.start_attempted and not self.frame_attempted,'GNU_CLOCK_UNAVAILABLE')
+            self.start_attempted=True
+            now=self._read()
+            require(now<=self.LIMIT-self.DURATION,'GNU_CLOCK_DOMAIN')
+            self.start_ns=now;self.start_seconds=now/1_000_000_000
+            return self.start_seconds
+        now=self._read()
+        require(now-self.start_ns<self.DURATION,'ORIGINAL_SPAWN_DEADLINE')
+        return now/1_000_000_000
+    def frame(self,pid,outer_deadline):
+        require(not self.frame_attempted,'GNU_CONTROL_ALREADY_ATTEMPTED')
+        self.frame_attempted=True
+        require(self.start_ns is not None,'GNU_ORIGINAL_CLOCK_ABSENT')
+        require(type(pid) is int and 0<pid<=self.LIMIT,'GNU_CONTROL_PID_DOMAIN')
+        require(type(outer_deadline) is float and math.isfinite(outer_deadline)
+                and outer_deadline==self.start_seconds+300,'GNU_OUTER_DEADLINE_DOMAIN')
+        numerator,denominator=outer_deadline.as_integer_ratio()
+        # Multiplying a float by1e9 could round UP. Integer ratio is the exact
+        # original floating deadline, with an explicitly conservative floor.
+        deadline=min(self.start_ns+self.DURATION,numerator*1_000_000_000//denominator)
+        require(self.start_ns<deadline<=self.LIMIT,'GNU_OUTER_DEADLINE_DOMAIN')
+        now=self._read()
+        require(now<deadline,'ORIGINAL_SPAWN_DEADLINE')
+        return struct.pack('>8siiqqq',b'BGNUD001',1,40,pid,self.start_ns,deadline)
+
+
+class _GnuDeadlineLinuxHost(_LinuxHost):
+    """GNU2 fixed deadline handoff; still no production initializer authority.
+
+    Strict _LinuxHost and its one-byte route are unchanged. Source-qualified
+    selection additionally needs the installed clock/native/startup contract;
+    fake-driver UNIT effects cannot select or prove a supported platform.
+    """
+    def __init__(self,review,source_root,parent):
+        _require_gnu_deadline_profile(review.data.get('runtime'))
+        super().__init__(review,source_root,parent)
+        self.deadline_clock=_GnuDeadlineClock()
+    def clock(self):
+        return self.deadline_clock.clock()
+    def verify(self):
+        for path in (self.stage,*self.stage.rglob('*')):
+            record=_path_record(path)
+            require(not record['link'] and record['uid']==0 and not record['mode']&0o222 and
+                    (record['directory'] or record['regular'] and record['links']==1),'FROZEN_STAGE_DRIFT')
+        _protected_ancestors(self.classes)
+        self.h['verify_directory'](self.classes,self.metadata)
+        self.command,self.environment=_gnu_deadline_launch_spec(self.review,self.classes,self.h['BOOTSTRAP'])
+    def release(self,deadline):
+        _remaining(self,deadline)
+        frame=self.deadline_clock.frame(self.child.pid,deadline)
+        require(self.child.stdin.write(frame)==40,'CONTROL_RELEASE_WRITE')
+        self.child.stdin.close();self.child.stdin=None
+
+
+def _gnu_deadline_launch_spec(review,classes,bootstrap):
+    """Literal GNU2 argv; no mutable tuple, extra flag or caller command."""
+    _require_gnu_deadline_profile(review.get('runtime'))
+    expected=['setpriv','--reuid=CHILD_UID','--regid=CHILD_GID','--clear-groups','--bounding-set=-all',
+              '--inh-caps=-all','--ambient-caps=-all','--no-new-privs','java',
+              '-XX:+DisableAttachMechanism','-Xshare:off','-cp','OWNED_CLASSES',bootstrap,'--host-control-gnu-v1']
+    require(review['launch_template']==expected,'REVIEWED_LAUNCH_ARGUMENTS_DRIFT')
+    tools=review['tools'];uid=review['child_uid'];gid=review['child_gid']
+    _identity({'uid':uid,'gid':gid,'existing':True,'host_uid':0,'host_gid':0})
+    command=(tools['setpriv']['path'],f'--reuid={uid}',f'--regid={gid}',*expected[3:8],
+             tools['java']['path'],'-XX:+DisableAttachMechanism','-Xshare:off','-cp',str(classes),bootstrap,
+             '--host-control-gnu-v1')
+    return command,{'LANG':'C','LC_ALL':'C'}
