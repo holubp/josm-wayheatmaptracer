@@ -1,7 +1,7 @@
 """Fixed PUBLIC native-tool candidate metadata, without target execution.
 
 Reuse the immutable reviewed collector's bounded readers, guards, output and
-cleanup. Add only eight literal JDK resource candidates. New ELF dependency
+cleanup. Add eight literal JDK resources and two observed needed OS candidates. New ELF dependency
 names are reported against already observed files, never searched or acquired.
 This module cannot approve requiredness, installed payloads or any runtime.
 """
@@ -51,6 +51,26 @@ def fixed_candidates(jdk):
         ('projector-default-cds', 'lib/server/classes.jsa', False),
         ('projector-default-cds-no-coops', 'lib/server/classes_nocoops.jsa', False),
     ))
+
+
+def fixed_os_candidates(root):
+    """Return only the two explicit OS candidates named by the recorded ELF graph.
+
+    Args:
+        root: Absolute OS root, or an isolated UNIT root.
+
+    Returns:
+        Literal math/realtime candidate paths. No file discovery, loader choice
+        or requiredness approval follows from their presence in this list.
+
+    Raises:
+        ValueError: If root is not an absolute Path.
+    """
+    if not isinstance(root, Path) or not root.is_absolute():
+        raise ValueError('NATIVE_CANDIDATE_OS_ROOT')
+    return tuple((role, root / 'usr/lib/x86_64-linux-gnu' / name, True)
+                 for role, name in (('projector-needed-math', 'libm.so.6'),
+                                    ('projector-needed-realtime', 'librt.so.1')))
 
 
 def _extra(session, module, candidates):
@@ -173,7 +193,8 @@ def collect(output):
         policy = dict(module.POLICY)
         policy['runner'] = {key: os.environ[key] for key in ('ImageOS', 'ImageVersion', 'ImageRelease')
                             if key in os.environ}
-        return _acquire(output, policy, fixed_candidates(JDK), started=started)
+        return _acquire(output, policy, fixed_candidates(JDK) + fixed_os_candidates(Path('/')),
+                        started=started)
     except BaseException:
         return {'schema': 'TOOL_NATIVE_CANDIDATE_DATA_1', 'scope': 'PUBLIC_METADATA_DATA',
                 'qualified': False, 'cases': 0, 'candidateExecutions': 0, 'targetExecutions': 0,

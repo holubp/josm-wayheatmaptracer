@@ -49,7 +49,9 @@ the separate tool-profile and protected-lifetime gates. The base64 test fixture
 preserves the exact upstream public bytes, including armor-header whitespace.
 
 The separate manual `native-tool-candidates` collection retains the same bounded
-metadata readers and adds eight literal JDK native/configuration/CDS candidates.
+metadata readers and adds eight literal JDK native/configuration/CDS candidates
+plus the two OS libraries (`libm.so.6` and `librt.so.1`) named by the recorded
+native dependency graph and the existing libc6 package manifest.
 It never executes those candidates, downloads files, installs packages, or exports
 native/configuration contents. Its supplemental ELF graph matches only already observed
 file names. Unknown dependencies remain unresolved; they do not authorize a host

@@ -141,6 +141,34 @@ class NativeCandidateDataTest(unittest.TestCase):
             with self.subTest(root=invalid), self.assertRaisesRegex(ValueError, '^NATIVE_CANDIDATE_JDK_ROOT$'):
                 m.fixed_candidates(invalid)
 
+    def test_observed_needed_os_candidates_are_literal_and_root_bounded(self):
+        m = self.module()
+        self.assertTrue(hasattr(m, 'fixed_os_candidates'), 'observed needed OS candidates are missing')
+        rows = m.fixed_os_candidates(Path('/'))
+        self.assertEqual(rows, (
+            ('projector-needed-math', Path('/usr/lib/x86_64-linux-gnu/libm.so.6'), True),
+            ('projector-needed-realtime', Path('/usr/lib/x86_64-linux-gnu/librt.so.1'), True),
+        ))
+        self.assertEqual(m.fixed_os_candidates(Path('/unit')),
+                         tuple((role, Path('/unit') / path.relative_to('/'), elf)
+                               for role, path, elf in rows))
+        for invalid in ('/', Path('relative')):
+            with self.subTest(root=invalid), self.assertRaisesRegex(ValueError, '^NATIVE_CANDIDATE_OS_ROOT$'):
+                m.fixed_os_candidates(invalid)
+
+    def test_public_entry_adds_only_the_two_observed_needed_os_candidates(self):
+        m = self.module()
+        captured = []
+        with patch.object(m, '_acquire', side_effect=lambda output, policy, rows, **kw:
+                          captured.append(rows) or {'outcome': 'UNIT_INTERCEPTED'}):
+            result = m.collect(Path('/unit-output-not-created'))
+        self.assertEqual(result['outcome'], 'UNIT_INTERCEPTED')
+        self.assertEqual(len(captured), 1)
+        rows = captured[0]
+        self.assertEqual(len(rows), 10, 'public collection must include both newly observed dependencies')
+        self.assertEqual(rows[:8], m.fixed_candidates(m.JDK))
+        self.assertEqual(tuple(path.name for _, path, _ in rows[8:]), ('libm.so.6', 'librt.so.1'))
+
     def test_dependency_setup_does_not_restart_the_original_six_hundred_seconds(self):
         m = self.module()
         dep = m._dependency()
