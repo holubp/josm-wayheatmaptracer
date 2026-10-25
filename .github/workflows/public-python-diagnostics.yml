@@ -31,8 +31,8 @@ jobs:
           TEST_SHA256: 3bcc87e5feb61e39414ca1f6b28851aa28ddd609c1f48edf3dcb3afc2d0b4538
           HELPER_SHA256: 16cfafddfec78c09a61551c66920df8663324ac9fc1afc5da63ed20159828c67
           HELPER_TEST_SHA256: 5395a9279fa784746ecf7a3d3e9b7cd01e1d65ae906dc0dae0ccd2ede0fcf3e6
-          TOOL_DATA_SHA256: 084a490c31db9f010b10cdf9a5c3aabb8657f335c9d603f061c3d7ae72773fea
-          TOOL_DATA_TEST_SHA256: dbee8e3e70ee768a3f3322733b09677858f485b7aee7f55dc73c077f4922d387
+          TOOL_DATA_SHA256: 05c212cdb5d0eb7688a576821eb37805ed303de744fda99f9547dee41bbb9c4b
+          TOOL_DATA_TEST_SHA256: 52dd7ffa9b76620840c8cd5cbdc3455f1fdd7e2efbbb8c1c810467220570be58
         run: |
           set -eu
           case "$COLLECTION" in boot-artifact|tool-metadata) ;; *) exit 1 ;; esac

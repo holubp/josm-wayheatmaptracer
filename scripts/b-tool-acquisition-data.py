@@ -125,7 +125,7 @@ class _Session:
         self.clock=self.writer_module['Clock'](600,clock,cancel);self.clock.deadline=start+600
         self.e=self.writer_module['Evidence'](output,{'leaf':65536,'output':32<<20});self.output=Path(output).absolute()
         self.output_owners=_owners(self.output);self.stage=None;self.stage_owners=None
-        self.files={};self.observations={};self.hash_bytes=0;self.queries=0;self.executions=0;self.execution_available=True
+        self.files={};self.initial_reports=set();self.observations={};self.hash_bytes=0;self.queries=0;self.executions=0;self.execution_available=True
         self.roles={};self.edges=[];self.missing=set(MISSING);self.packages={}
     def check(self):
         _live(self.output_owners)
@@ -168,7 +168,9 @@ class _Session:
         row={'requested':str(path),'canonical':key,'aliases':aliases,'parents':parents,'identity':before,
              'bytes':count,'sha256':h.hexdigest(),'role':role,'provenance':'OBSERVED_NOT_APPROVED','observations':[]}
         self.files[key]=row;self.observe(path,role,row,aliases,parents)
-        self.emit('reports/files/file-%02d.json'%len(self.files),row);return row
+        self.emit('reports/files/file-%02d.json'%len(self.files),row)
+        self.initial_reports.add(key) # only after the write AND final live guard return
+        return row
     def read(self,row):
         require(row['bytes']<=65536,'METADATA_LIMIT');self.check();fd=os.open(row['canonical'],os.O_RDONLY|os.O_NOFOLLOW)
         try:
@@ -230,6 +232,7 @@ def _run(s):
     for role,path in fixed.items():
         if not path.exists():s.roles[role]={'availability':'UNAVAILABLE','cause':'FIXED_ROLE_MISSING'};s.missing.add(role);continue
         row=s.file(path,role);s.roles[role]=row
+        row['package']={'availability':'UNAVAILABLE','cause':'PACKAGE_METADATA_NOT_COMPLETED'}
         row['package']=s.provenance(row)
         if row['package'].get('availability')=='UNAVAILABLE':s.missing.add('package-provenance')
         if role in ('signer','projector'):queue.append(row)
@@ -247,9 +250,11 @@ def _run(s):
         row=queue.pop(0)
         if row['canonical'] in visited:continue
         visited.add(row['canonical']);reader=policy['readers']['elf']
-        if not reader.exists():s.missing.add('elf-reader');continue
+        if not reader.exists():
+            row['elf']={'availability':'UNAVAILABLE','cause':'ELF_READER_MISSING'}
+            s.missing.add('elf-reader');continue
+        row['elf']={'availability':'UNAVAILABLE','cause':'ELF_METADATA_NOT_COMPLETED'}
         info=_elf(s.query('elf',('--wide','--file-header','--program-headers','--dynamic',row['canonical'])))
-        row['elf']=info
         names=[('interpreter',info['interpreter'])] if info['interpreter'] else []
         names.extend(('needed',name) for name in info['needed'])
         for kind,name in names:
@@ -267,9 +272,13 @@ def _run(s):
             s.edges.append({'from':row['canonical'],'kind':kind,'name':name,'canonical':target['canonical'],
                             'requested':str(next(iter(candidates.values()))),'role':'candidate-elf-'+kind,
                             'scope':'CANDIDATE_NOT_LOADER_AUTHORITY'})
+            target['package']={'availability':'UNAVAILABLE','cause':'PACKAGE_METADATA_NOT_COMPLETED'}
             target['package']=s.provenance(target)
             if target['package'].get('availability')=='UNAVAILABLE':s.missing.add('package-provenance')
             queue.append(target)
+        # A failed candidate-path check must not publish its rejected raw path
+        # through the final snapshot; leave the finite incomplete marker instead.
+        row['elf']=info
     s.emit('reports/roles.json',s.roles);s.emit('reports/candidate-graph.json',s.edges)
     runner={}
     for key in ('ImageOS','ImageVersion','ImageRelease'):
@@ -315,23 +324,42 @@ def _finish(s,status):
         os.replace(s.output/'reports/status-correction.json',s.output/'reports/status.json')
         _live(s.output_owners)
 
+def _failure_cause(s,error):
+    known=(type(error) is Failure and str(error) in CAUSES) or (type(error) is s.writer_module['Failure'] and
+          str(error) in ('COLLECTOR_DEADLINE','OUTPUT_TOTAL_LIMIT','OUTPUT_LEAF_LIMIT')) or (
+          type(error) is s.base['Pending'] and str(error) in ('OFFLINE_TOOL_OUTPUT_BOUND','OFFLINE_TOOL_DEADLINE'))
+    return str(error) if known and re.fullmatch(r'[A-Z_]{3,64}',str(error)) else (
+        'DATA_IO' if isinstance(error,OSError) else 'DATA_CANCELLED_OR_INVALID')
+
 def _acquire(output,policy,cancel=lambda:None,clock=monotonic):
     """Private DATA engine; fixture policies have no qualifying consumer."""
-    s=_Session(output,policy,cancel,clock);cause=None;cleanup='COMPLETE'
+    s=_Session(output,policy,cancel,clock);cause=None;cleanup='COMPLETE';snapshots=0
     try:_run(s)
-    except BaseException as error:
-        known=(type(error) is Failure and str(error) in CAUSES) or (type(error) is s.writer_module['Failure'] and
-              str(error) in ('COLLECTOR_DEADLINE','OUTPUT_TOTAL_LIMIT','OUTPUT_LEAF_LIMIT')) or (
-              type(error) is s.base['Pending'] and str(error) in ('OFFLINE_TOOL_OUTPUT_BOUND','OFFLINE_TOOL_DEADLINE'))
-        cause=str(error) if known and re.fullmatch(r'[A-Z_]{3,64}',str(error)) else (
-            'DATA_IO' if isinstance(error,OSError) else 'DATA_CANCELLED_OR_INVALID')
+    except BaseException as error:cause=_failure_cause(s,error)
     finally:
+        try:
+            # Initial hash observations remain immutable. Serialize each reached
+            # canonical record only after enrichment (also on partial failure),
+            # through the same guarded/chunked writer and original deadline.
+            for index,row in enumerate(s.files.values(),1):
+                record=dict(row)
+                record.setdefault('package',{'availability':'NOT_QUERIED'})
+                record.setdefault('elf',{'availability':'NOT_QUERIED'})
+                s.emit('reports/final-files/file-%02d.json'%index,{
+                    'schema':'TOOL_FILE_METADATA_SNAPSHOT_1',
+                    'initial_report':'reports/files/file-%02d.json'%index if row['canonical'] in s.initial_reports else None,
+                    'initial_report_availability':'COMPLETE' if row['canonical'] in s.initial_reports else 'UNAVAILABLE',
+                    'record':record})
+                snapshots+=1
+        except BaseException as error:
+            if cause is None:cause=_failure_cause(s,error)
         if s.stage is not None:
             try:_live(s.stage_owners);s.base['_remove'](s.stage);s.stage=None;s.stage_owners=None
             except BaseException:cleanup='OWNERSHIP_OR_CLEANUP_UNAVAILABLE'
     status={'schema':'TOOL_ACQUISITION_DATA_1','scope':policy['scope'],'qualified':False,'cases':0,
             'candidateExecutions':0,'targetExecutions':0,'metadataQueries':s.queries,
             'metadataExecutions':s.executions if s.execution_available else None,'files':len(s.files),
+            'finalFileSnapshots':snapshots,
             'hashed_bytes':s.hash_bytes,'outcome':'PARTIAL_UNSEALED' if cause is None else 'PARTIAL_FAILURE',
             'cause':cause,'cleanup':cleanup,'missing':sorted(s.missing)}
     try:_finish(s,status)

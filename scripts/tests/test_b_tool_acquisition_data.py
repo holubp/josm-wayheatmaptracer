@@ -29,6 +29,123 @@ def fixture(root):
             'readers':{'elf':reader,'package':package},'os_release':os_release,'runner':{},'scope':'CONTROLLED_UNIT_DATA'}
 
 class ToolDataTests(unittest.TestCase):
+    def final_files(self,out):
+        first=sorted((out/'reports/final-files').glob('file-*.json.part0000'))
+        self.assertTrue(first,'Final canonical metadata must survive enrichment beyond the initial hash report')
+        rows={}
+        for path in first:
+            stem=path.name.removesuffix('.part0000')
+            chunks=sorted(path.parent.glob(stem+'.part*'))
+            self.assertEqual([stem+'.part%04d'%i for i in range(len(chunks))],[p.name for p in chunks])
+            row=json.loads(b''.join(p.read_bytes() for p in chunks))
+            self.assertEqual('TOOL_FILE_METADATA_SNAPSHOT_1',row['schema'])
+            self.assertNotIn(row['record']['canonical'],rows);rows[row['record']['canonical']]=row
+        return rows
+
+    def test_final_nonroot_metadata_retains_package_manifest_elf_search_and_shared_alias(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);policy=fixture(root);lib=root/'libs/libfixture.so'
+            alias=lib.with_name('libfixture-alias.so');alias.symlink_to(lib.name)
+            reader=policy['readers']['elf'];reader.write_text(reader.read_text()+
+                "if p.name in ('gpgv','jimage'):print('0x2 (NEEDED) Shared library: [libfixture-alias.so]')\n"
+                "if p.name=='libfixture.so':print('0x3 (RUNPATH) Library runpath: [$ORIGIN:/usr/lib]')\n")
+            manifest=['/usr/lib/'+'x'*150+str(i) for i in range(400)]
+            package=policy['readers']['package'];package.write_text(package.read_text().replace(
+                "print('/usr/bin/unit-public-file')","print('\\n'.join('/usr/lib/'+'x'*150+str(i) for i in range(400)))"))
+            out=root/'out';status=M._acquire(out,policy)
+            self.assertEqual('PARTIAL_UNSEALED',status['outcome']);self.assertIsNone(status['cause'])
+            snapshots=self.final_files(out);self.assertEqual(status['files'],len(snapshots))
+            snapshot=snapshots[str(lib)];row=snapshot['record']
+            self.assertEqual('COMPLETE',snapshot['initial_report_availability'])
+            self.assertEqual({'package':'unit-package','version':'1.0','architecture':'amd64','manifest':manifest,
+                              'directory_markers':[],'scope':'OBSERVED_PACKAGE_METADATA_NOT_PAYLOAD_APPROVAL'},row['package'])
+            self.assertEqual([],row['elf']['needed']);self.assertIsNone(row['elf']['interpreter'])
+            search=row['elf']['search'];self.assertEqual(1,len(search))
+            self.assertEqual('RUNPATH',search[0]['kind']);self.assertEqual('OBSERVED_CANDIDATE',search[0]['availability'])
+            self.assertEqual(['$ORIGIN','/usr/lib'],search[0]['paths'])
+            self.assertEqual({str(lib),str(alias)},{o['requested'] for o in row['observations']})
+            self.assertEqual(2,len(row['observations']));self.assertEqual(8,status['files'])
+            initial=json.loads(b''.join(p.read_bytes() for p in sorted(out.glob(snapshot['initial_report']+'.part*'))))
+            self.assertEqual(initial['sha256'],row['sha256']);self.assertEqual(initial['identity'],row['identity'])
+            self.assertNotIn('package',initial);self.assertNotIn('elf',initial)
+            self.assertGreater(len(list((out/'reports/final-files').glob('*.part0001'))),0,'Large manifests must reassemble across bounded chunks')
+            self.assertTrue(all(p.stat().st_size<=65536 for p in out.rglob('*') if p.is_file()))
+            self.assertLessEqual(sum(p.stat().st_size for p in out.rglob('*') if p.is_file()),32<<20)
+            self.assertEqual(sum(p.stat().st_size for p in (policy['tools']['signer'],policy['tools']['projector'],
+                policy['readers']['elf'],policy['readers']['package'],policy['jdk']/'lib/modules',policy['jdk']/'release',
+                policy['os_release'],lib)),status['hashed_bytes'])
+
+    def test_initial_report_before_or_midwrite_failure_preserves_hash_without_complete_link(self):
+        for phase in ('before','multipart'):
+            with self.subTest(phase=phase),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);deep=root
+                # Valid bounded original path, but enough actually reached
+                # parent metadata to require multiple initial-report chunks.
+                for i in range(64):deep=deep/('directory-%02d-'%i+'x'*20)
+                deep.mkdir(parents=True);policy=fixture(deep);out=root/'out'
+                writer,base=M._dependency();original=writer['Evidence'].bytes;failed=[]
+                failpart='0000' if phase=='before' else '0001'
+                def write(self,name,data,terminal=False):
+                    if name=='reports/files/file-01.json.part'+failpart and not failed:
+                        failed.append(name);raise M.Failure('METADATA_LIMIT')
+                    return original(self,name,data,terminal)
+                with patch.object(M,'_dependency',return_value=(writer,base)),patch.object(writer['Evidence'],'bytes',write):
+                    status=M._acquire(out,policy)
+                self.assertEqual(1,len(failed));self.assertEqual('METADATA_LIMIT',status['cause'])
+                self.assertEqual('COMPLETE',status['cleanup']);self.assertEqual(1,status['files'])
+                self.assertEqual(1,status['finalFileSnapshots']);self.assertEqual(0,status['metadataQueries'])
+                snapshot=self.final_files(out)[str(policy['tools']['signer'])]
+                self.assertIsNone(snapshot['initial_report'],'An absent/partial report cannot be a complete link')
+                self.assertEqual('UNAVAILABLE',snapshot['initial_report_availability'])
+                row=snapshot['record'];self.assertEqual(len(b'candidate never execute'),row['bytes'])
+                self.assertEqual(status['hashed_bytes'],row['bytes'])
+                import hashlib
+                self.assertEqual(hashlib.sha256(b'candidate never execute').hexdigest(),row['sha256'])
+                parts=list((out/'reports/files').glob('file-01.json.part*'))
+                self.assertEqual(0 if phase=='before' else 1,len(parts))
+                if parts:self.assertEqual(65536,parts[0].stat().st_size)
+                inventory=json.loads(b''.join(p.read_bytes() for p in sorted((out/'inventory').glob('files.json.part*'))))
+                names={entry['path'] for entry in inventory['files']}
+                self.assertEqual({str(p.relative_to(out)) for p in parts},{name for name in names if name.startswith('reports/files/')})
+                self.assertTrue(any(name.startswith('reports/final-files/') for name in names))
+                self.assertFalse(list(root.glob('tool-metadata-*')))
+
+    def test_final_nonroot_unavailable_package_search_and_unqueried_readers_are_explicit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);policy=fixture(root);lib=root/'libs/libfixture.so'
+            package=policy['readers']['package'];package.write_text(package.read_text().replace('import sys\n',
+                "import sys\nif sys.argv[1]=='-S' and sys.argv[2].endswith('/libfixture.so'):sys.exit(1)\n"))
+            reader=policy['readers']['elf'];reader.write_text(reader.read_text()+
+                "if p.name=='libfixture.so':print('0x3 (RUNPATH) Library runpath: [UNIT_UNTRUSTED_SEARCH]')\n")
+            out=root/'out';status=M._acquire(out,policy);self.assertEqual('PARTIAL_UNSEALED',status['outcome'])
+            snapshots=self.final_files(out);row=snapshots[str(lib)]['record']
+            self.assertEqual({'availability':'UNAVAILABLE','cause':'METADATA_READER_NONZERO'},row['package'])
+            self.assertEqual('UNAVAILABLE',row['elf']['search'][0]['availability']);self.assertIsNone(row['elf']['search'][0]['paths'])
+            self.assertNotIn('UNIT_UNTRUSTED_SEARCH',json.dumps(row))
+            for path in policy['readers'].values():
+                for field in ('package','elf'):self.assertEqual({'availability':'NOT_QUERIED'},snapshots[str(path)]['record'][field])
+
+    def test_final_snapshot_retains_completed_metadata_on_later_parse_failure_and_missing_elf(self):
+        for missing in (False,True):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);policy=fixture(root);lib=root/'libs/libfixture.so';reader=policy['readers']['elf']
+                if missing:reader.unlink()
+                else:reader.write_text(reader.read_text()+"if p.name=='libfixture.so':print('0x1 (NEEDED) malformed')\n")
+                out=root/'out';status=M._acquire(out,policy);snapshots=self.final_files(out)
+                self.assertEqual(status['files'],len(snapshots));self.assertEqual('COMPLETE',status['cleanup'])
+                if missing:
+                    self.assertIsNone(status['cause'])
+                    self.assertEqual({'availability':'UNAVAILABLE','cause':'ELF_READER_MISSING'},
+                        snapshots[str(policy['tools']['signer'])]['record']['elf'])
+                else:
+                    self.assertEqual('ELF_NEEDED_FORMAT',status['cause'])
+                    self.assertEqual('1.0',snapshots[str(lib)]['record']['package']['version'])
+                    self.assertEqual({'availability':'UNAVAILABLE','cause':'ELF_METADATA_NOT_COMPLETED'},snapshots[str(lib)]['record']['elf'])
+                inventory=json.loads(b''.join(p.read_bytes() for p in sorted((out/'inventory').glob('files.json.part*'))))
+                names={item['path'] for item in inventory['files']}
+                self.assertTrue(any(name.startswith('reports/final-files/') for name in names))
+                self.assertFalse(list(root.glob('tool-metadata-*')))
+
     def test_review_stable_spellings_share_hash_but_each_original_alias_remains_live(self):
         for mutate in range(3):
             with self.subTest(mutate=mutate),tempfile.TemporaryDirectory() as folder:
@@ -50,13 +167,14 @@ class ToolDataTests(unittest.TestCase):
                 self.assertEqual(1,len(session.files));self.assertEqual(6,session.hash_bytes)
 
     def test_review_deadline_during_last_report_cleanup_inventory_or_terminal_is_retained(self):
-        for phase in ('last-report','cleanup','inventory','terminal'):
+        for phase in ('last-report','final-file','cleanup','inventory','terminal'):
             with self.subTest(phase=phase),tempfile.TemporaryDirectory() as folder:
                 root=Path(folder);policy=fixture(root);clock=[0.];writer,base=M._dependency()
                 original=writer['Evidence'].bytes;remove=base['_remove'];triggered=[]
                 def write(self,name,data,terminal=False):
                     result=original(self,name,data,terminal)
                     if ((phase=='last-report' and name.startswith('reports/runner.json.part')) or
+                        (phase=='final-file' and name.startswith('reports/final-files/file-')) or
                         (phase=='inventory' and name.startswith('inventory/files.json.part')) or
                         (phase=='terminal' and name=='reports/status.json')):
                         clock[0]=601.;triggered.append(name)

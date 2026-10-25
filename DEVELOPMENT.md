@@ -34,6 +34,9 @@ runner origins and candidate ELF dependencies. Native/configuration closure,
 keyring/home behavior and independent profile approval remain explicitly missing;
 a successful DATA collection cannot approve its own observed tool hashes.
 No native binaries or arbitrary environment/configuration contents are uploaded.
+Final per-file metadata snapshots retain package and ELF details for dependencies
+as well as root tools. Their initial-report link is available only when that
+report completed; partial reports and unavailable metadata stay explicit.
 The collector always reports `qualified=false`, `cases=0`,
 `candidateExecutions=0` and `targetExecutions=0`; partial metadata is expected.
 
