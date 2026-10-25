@@ -40,6 +40,14 @@ report completed; partial reports and unavailable metadata stay explicit.
 The collector always reports `qualified=false`, `cases=0`,
 `candidateExecutions=0` and `targetExecutions=0`; partial metadata is expected.
 
+`scripts/b-public-keyring-data.py` provides an offline, fixed-input public-key
+decoder for the retained Temurin signing key. It checks the source hash, armor
+framing and CRC, primary fingerprint, and independently retained binary-ring
+digest. It performs no file access, key import or signature verification. Its
+`PUBLIC_KEY_DATA` report remains unqualified and cannot install trust or satisfy
+the separate tool-profile and protected-lifetime gates. The base64 test fixture
+preserves the exact upstream public bytes, including armor-header whitespace.
+
 Run the self-contained collector tests locally with:
 
 ```sh
@@ -49,6 +57,8 @@ python3 -m unittest discover -s scripts/tests -p test_b_boot_bundle_verifier.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_boot_bundle_verifier.py
 python3 -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
+python3 -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
 ```
 
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`

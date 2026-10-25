@@ -3,6 +3,7 @@
 Repository-specific guardrails for future changes:
 
 - Boot-artifact collection is public metadata only: retain `qualified=false`, zero cases and zero candidate executions. Never turn discovered archive/class hashes into their own approval records or upload private captures, whole archives or runtime images.
+- Public-key decoding checks transcription, not trust: preserve exact pinned public input and the independent historical binary digest. A matching fingerprint or valid armor CRC must never issue a signature-tool, SOURCE, HOST or runtime receipt; private generic parser fixtures do not widen the fixed DATA input contract.
 - Tool metadata must keep per-request alias guards while counting/hashing canonical files once. Package directory markers are metadata, never candidate-read authority. Retain the original deadline through terminal publication and preserve bounded failure evidence after expiry; no discovered role/file tuple grants toolchain or runtime approval.
 - Preserve final dependency metadata after enrichment; initial hash reports alone are incomplete. Link a final snapshot to an initial report only after its guarded write completes, and retain truthful unavailable/partial states when it fails.
 - Verification must retain ownership until every fallible publication cleanup succeeds. Cleanup must not follow rejected symlinks; callback boundaries must preserve borrowed-receipt liveness and the original deadline. Keep primary failures and truthful partial evidence.
