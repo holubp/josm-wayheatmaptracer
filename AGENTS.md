@@ -1,5 +1,7 @@
 # AGENTS
 
+- Offline shared-table decoding must keep each schema's approximation, parameter layout, global text count and visual/query dimensions explicit. Preserve older ABI vectors; a SOURCE-named frame, caller contract or self-consistent checksum never grants factual/runtime authority, and unselected eta is not selected eta zero.
+
 Repository-specific guardrails for future changes:
 
 - Boot-artifact collection is public metadata only: retain `qualified=false`, zero cases and zero candidate executions. Never turn discovered archive/class hashes into their own approval records or upload private captures, whole archives or runtime images.

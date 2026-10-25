@@ -58,7 +58,22 @@ file names. Unknown dependencies remain unresolved; they do not authorize a host
 search. Missing resources stay candidate observations rather than a decision that
 the running projector requires them. All output remains unqualified PUBLIC DATA.
 
-Run the self-contained collector tests locally with:
+`scripts/b-shared-table-decoder.py` reads complete offline table bundles as
+structural DATA only. It accepts distinct `TABLE_ONLY_DATA_1`/PMS1v2,
+`TABLE_ONLY_DATA_2`/PMS1v3 and `TABLE_ONLY_SOURCE_DATA_4`/PMS1v4 contracts.
+The older v2 layout keeps its original approximation and path-point visual
+count. The newer layouts use the current approximation and analysis-raster
+visual/query counts. V4 preserves the full native parameter record, its version
+text and the explicitly unselected eta family. The caller must independently
+supply the bounded expected contract; checksums and successful decoding grant
+no source/runtime authority. Raw unavailable values never become measured zero.
+Tests use literal public UNIT bundles. Two retained 210-byte parameter sections
+were emitted by the actual Java producer on public synthetic captures; their
+hex fixtures check parameter-layout interoperability only. The surrounding test
+frames remain synthetic. Complete producer/export, runtime and numerical replay
+qualification stay separate.
+
+Run the self-contained collector and decoder tests locally with:
 
 ```sh
 python3 -m unittest discover -s scripts/tests -p test_b_boot_bundle_collect.py
@@ -71,6 +86,8 @@ python3 -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
 python3 -m unittest discover -s scripts/tests -p test_b_native_tool_candidate_data.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_native_tool_candidate_data.py
+python3 -m unittest discover -s scripts/tests -p test_b_shared_table_decoder.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_shared_table_decoder.py
 ```
 
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`
