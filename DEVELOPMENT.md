@@ -14,22 +14,38 @@ The built plugin jar is written to `build/libs/wayheatmaptracer.jar`.
 
 The manual `public-python-diagnostics.yml` workflow collects public toolchain
 evidence for the experimental tracing work. Run it only on the reviewed source
-branch. It verifies the fixed supplier archive and primary signing key, inventories
+branch. Its default `boot-artifact` collection verifies the fixed supplier archive
+and primary signing key, inventories
 the archive, and uses the runner's existing `jimage` to inspect selected classes.
 It does not execute downloaded JDK programs or tracing cases, install a runtime,
 or read OSM data, heatmap captures or credentials.
 
-Its reports always state `qualified=false`, `caseCount=0` and
+Archive reports always state `qualified=false`, `caseCount=0` and
 `candidateExecutions=0`. Unsupported archive metadata or class attributes remain
 explicit failures with available evidence retained. A successful collection is
 not runtime qualification, a model-quality result or release approval. Uploads
 contain only the generated public evidence allowlist, not the archive or image.
+
+Choose `tool-metadata` to inspect the existing runner's fixed signing/projection
+tools instead. This mode downloads no archive, performs no signature or class
+projection, and executes no target or tracing candidate. It queries only fixed
+read-only metadata tools and records bounded file identities, aliases, package/
+runner origins and candidate ELF dependencies. Native/configuration closure,
+keyring/home behavior and independent profile approval remain explicitly missing;
+a successful DATA collection cannot approve its own observed tool hashes.
+No native binaries or arbitrary environment/configuration contents are uploaded.
+The collector always reports `qualified=false`, `cases=0`,
+`candidateExecutions=0` and `targetExecutions=0`; partial metadata is expected.
 
 Run the self-contained collector tests locally with:
 
 ```sh
 python3 -m unittest discover -s scripts/tests -p test_b_boot_bundle_collect.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_boot_bundle_collect.py
+python3 -m unittest discover -s scripts/tests -p test_b_boot_bundle_verifier.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_boot_bundle_verifier.py
+python3 -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
 ```
 
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`

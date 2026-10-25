@@ -519,8 +519,8 @@ class _Reader:
 def normalize_class(data):
     """Targeted Java17 method IR, CP-symbolic operands and ordered handlers.
 
-    Debug/verification attributes are recorded separately, not proof of JVM
-    verification or a source theorem. Unsupported CP/body attributes refuse.
+    Existing debug/verification-only omissions are not JVM verification or a
+    source theorem. Unsupported CP/body attributes refuse.
     Expected IR must come from independent source/body review, never this output.
     """
     r = _Reader(data)
@@ -587,10 +587,80 @@ def normalize_class(data):
             return (tag, v[1], symbol(v[2], t))
         raise Pending('CLASS_CP_UNSUPPORTED')
     def attributes(reader):
-        result = []
+        result = []; singleton = set()
         for _ in range(reader.u2()):
-            name = text(reader.u2()); result.append((name, reader.take(reader.u4())))
+            name = text(reader.u2())
+            if name in ('EnclosingMethod', 'RuntimeVisibleAnnotations'):
+                require(name not in singleton, 'CLASS_DUPLICATE_ATTRIBUTE'); singleton.add(name)
+            result.append((name, reader.take(reader.u4())))
         return result
+    # Only the newly supported declarations use this cache. Repeated annotation
+    # references share immutable CP symbols rather than expanding long strings
+    # per element. Output nodes/loops remain bounded by consumed attribute bytes.
+    declaration_symbols = {}
+    def declaration_symbol(index, kind):
+        require(entry(index)[0] == kind, 'CLASS_ANNOTATION_CP_KIND')
+        if index not in declaration_symbols:
+            declaration_symbols[index] = symbol(index)
+        return declaration_symbols[index]
+    def declaration_descriptor(index, method=False, object_only=False, allow_void=False):
+        value = text(index)
+        def field_end(start, void=False):
+            i = start
+            while i < len(value) and value[i] == '[': i += 1
+            require(i < len(value) and i-start <= 255, 'CLASS_DECLARATION_DESCRIPTOR')
+            tag = value[i]
+            if tag == 'L':
+                end = value.find(';', i+1); name = value[i+1:end]
+                require(end > i+1 and all(name.split('/')) and not any(c in name for c in '.;['),
+                        'CLASS_DECLARATION_DESCRIPTOR')
+                return end+1
+            require(tag in 'BCDFIJSZ' or (void and i == start and tag == 'V'),
+                    'CLASS_DECLARATION_DESCRIPTOR')
+            return i+1
+        if method:
+            require(value.startswith('('), 'CLASS_ENCLOSING_METHOD_DESCRIPTOR'); i = 1
+            while i < len(value) and value[i] != ')': i = field_end(i)
+            require(i < len(value) and value[i] == ')', 'CLASS_ENCLOSING_METHOD_DESCRIPTOR')
+            end = field_end(i+1, True)
+        else:
+            require(not object_only or value.startswith('L'), 'CLASS_ANNOTATION_TYPE_DESCRIPTOR')
+            end = field_end(0, allow_void)
+        require(end == len(value), 'CLASS_DECLARATION_DESCRIPTOR')
+    def visible_annotations(raw):
+        a = _Reader(raw)
+        def annotation(depth):
+            require(depth <= 32, 'CLASS_ANNOTATION_DEPTH')
+            type_index = a.u2(); type_symbol = declaration_symbol(type_index, 'utf')
+            declaration_descriptor(type_index, object_only=True)
+            count = a.u2(); require(count <= (len(raw)-a.pos)//5, 'CLASS_ANNOTATION_COUNT')
+            pairs = []
+            for _ in range(count):
+                name_index = a.u2(); name = declaration_symbol(name_index, 'utf')
+                text(name_index)  # Same explicit ASCII identifier profile as existing fields/methods.
+                pairs.append((name, element(depth+1)))
+            return type_symbol, tuple(pairs)
+        def element(depth):
+            require(depth <= 32, 'CLASS_ANNOTATION_DEPTH')
+            tag = chr(a.u1())
+            constants = {'B':3, 'C':3, 'D':6, 'F':4, 'I':3, 'J':5, 'S':3, 'Z':3, 's':'utf'}
+            if tag in constants:
+                return tag, declaration_symbol(a.u2(), constants[tag])
+            if tag == 'e':
+                type_index = a.u2(); type_symbol = declaration_symbol(type_index, 'utf')
+                declaration_descriptor(type_index, object_only=True)
+                return tag, type_symbol, declaration_symbol(a.u2(), 'utf')
+            if tag == 'c':
+                index = a.u2(); value = declaration_symbol(index, 'utf'); declaration_descriptor(index, allow_void=True)
+                return tag, value
+            if tag == '@': return tag, annotation(depth+1)
+            if tag == '[':
+                count = a.u2(); require(count <= (len(raw)-a.pos)//3, 'CLASS_ANNOTATION_COUNT')
+                return tag, tuple(element(depth+1) for _ in range(count))
+            raise Pending('CLASS_ANNOTATION_VALUE_TAG')
+        count = a.u2(); require(count <= (len(raw)-a.pos)//4, 'CLASS_ANNOTATION_COUNT')
+        values = tuple(annotation(0) for _ in range(count))
+        require(a.pos == len(raw), 'CLASS_ANNOTATION_TRAILING'); return values
     access = r.u2(); name = symbol(r.u2()); super_index = r.u2()
     superclass = symbol(super_index) if super_index else None
     interfaces = tuple(symbol(r.u2()) for _ in range(r.u2()))
@@ -603,6 +673,8 @@ def normalize_class(data):
                 require(len(raw) == 2, 'CLASS_CONSTANT_VALUE'); normalized.append((key, symbol(int.from_bytes(raw, 'big'))))
             elif key in ('Signature', 'Synthetic', 'Deprecated'):
                 normalized.append((key, text(int.from_bytes(raw, 'big')) if key == 'Signature' else raw.hex()))
+            elif key == 'RuntimeVisibleAnnotations':
+                normalized.append((key, visible_annotations(raw)))
             else:
                 raise Pending('CLASS_FIELD_ATTRIBUTE_UNSUPPORTED')
         fields.append((flags, field, descriptor, tuple(normalized)))
@@ -632,6 +704,8 @@ def normalize_class(data):
                 require(e.pos == len(raw), 'CLASS_EXCEPTIONS_TRAILING')
             elif key in ('Signature', 'Synthetic', 'Deprecated'):
                 extras.append((key, text(int.from_bytes(raw, 'big')) if key == 'Signature' else raw.hex()))
+            elif key == 'RuntimeVisibleAnnotations':
+                extras.append((key, visible_annotations(raw)))
             else:
                 raise Pending('CLASS_METHOD_ATTRIBUTE_UNSUPPORTED')
         methods.append((flags, method, descriptor, body, exceptions, tuple(extras)))
@@ -649,6 +723,15 @@ def normalize_class(data):
         elif key == 'InnerClasses':
             values = tuple(tuple(symbol(v) if v and j < 2 else text(v) if v and j == 2 else v
                                  for j, v in enumerate((a.u2(), a.u2(), a.u2(), a.u2()))) for _ in range(a.u2()))
+        elif key == 'EnclosingMethod':
+            require(len(raw) == 4, 'CLASS_ENCLOSING_LENGTH')
+            enclosing, method = a.u2(), a.u2()
+            require(entry(enclosing)[0] == 7 and (method == 0 or entry(method)[0] == 12),
+                    'CLASS_ENCLOSING_CP_KIND')
+            if method: declaration_descriptor(entry(method)[2], method=True)
+            values = symbol(enclosing), symbol(method) if method else None
+        elif key == 'RuntimeVisibleAnnotations':
+            values = visible_annotations(raw); a.pos = len(raw)
         else:
             raise Pending('CLASS_ATTRIBUTE_UNSUPPORTED')
         require(a.pos == len(raw), 'CLASS_ATTRIBUTE_TRAILING'); class_attrs.append((key, values))

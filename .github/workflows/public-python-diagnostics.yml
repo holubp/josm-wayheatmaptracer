@@ -2,6 +2,15 @@ name: Fixed boot artifact PUBLIC DATA
 
 on:
   workflow_dispatch:
+    inputs:
+      collection:
+        description: Fixed PUBLIC DATA collection
+        type: choice
+        required: true
+        default: boot-artifact
+        options:
+          - boot-artifact
+          - tool-metadata
 
 permissions:
   contents: read
@@ -17,23 +26,34 @@ jobs:
           ref: ${{ github.sha }}
       - name: Check reviewed source and run self-contained DATA tests
         env:
-          COLLECTOR_SHA256: 89422cf538c7580757987438b13bf7666cee427198f530a36da44c16c14a7839
-          TEST_SHA256: 7e4975d8f99a794c8711725f534bb86366d804e6be2577e24b1670799204e86c
-          HELPER_SHA256: 864feadb68c4483b4da5272fb989624e00b596ecbfc9cabc6dabdb80a500ce20
+          COLLECTION: ${{ inputs.collection }}
+          COLLECTOR_SHA256: 4c9740f39ae3ced533a493c89baf01a217b8a7a7100f53c4a32658e5458fce17
+          TEST_SHA256: 3bcc87e5feb61e39414ca1f6b28851aa28ddd609c1f48edf3dcb3afc2d0b4538
+          HELPER_SHA256: 16cfafddfec78c09a61551c66920df8663324ac9fc1afc5da63ed20159828c67
+          HELPER_TEST_SHA256: 5395a9279fa784746ecf7a3d3e9b7cd01e1d65ae906dc0dae0ccd2ede0fcf3e6
+          TOOL_DATA_SHA256: 084a490c31db9f010b10cdf9a5c3aabb8657f335c9d603f061c3d7ae72773fea
+          TOOL_DATA_TEST_SHA256: dbee8e3e70ee768a3f3322733b09677858f485b7aee7f55dc73c077f4922d387
         run: |
           set -eu
+          case "$COLLECTION" in boot-artifact|tool-metadata) ;; *) exit 1 ;; esac
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf '%s  %s\n' "$COLLECTOR_SHA256" scripts/b-boot-bundle-collect.py | sha256sum --check --status
           printf '%s  %s\n' "$TEST_SHA256" scripts/tests/test_b_boot_bundle_collect.py | sha256sum --check --status
           printf '%s  %s\n' "$HELPER_SHA256" scripts/b-boot-bundle-verifier.py | sha256sum --check --status
-          python3 -m unittest discover -s scripts/tests -p test_b_boot_bundle_collect.py
-          python3 -O -m unittest discover -s scripts/tests -p test_b_boot_bundle_collect.py
+          printf '%s  %s\n' "$HELPER_TEST_SHA256" scripts/tests/test_b_boot_bundle_verifier.py | sha256sum --check --status
+          printf '%s  %s\n' "$TOOL_DATA_SHA256" scripts/b-tool-acquisition-data.py | sha256sum --check --status
+          printf '%s  %s\n' "$TOOL_DATA_TEST_SHA256" scripts/tests/test_b_tool_acquisition_data.py | sha256sum --check --status
+          for suite in boot_bundle_verifier boot_bundle_collect tool_acquisition_data; do
+            python3 -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
+            python3 -O -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
+          done
       - name: Collect fixed signed supplier bytes as DATA only
+        if: ${{ inputs.collection == 'boot-artifact' }}
         run: |
           set -eu
           timeout --signal=TERM --kill-after=10s 610s python3 scripts/b-boot-bundle-collect.py --collect --output "$RUNNER_TEMP/boot-evidence-public"
       - name: Preserve generated PUBLIC DATA diagnostics
-        if: always()
+        if: ${{ always() && inputs.collection == 'boot-artifact' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: boot-artifact-public-data
@@ -43,5 +63,20 @@ jobs:
             ${{ runner.temp }}/boot-evidence-public/classes/
             ${{ runner.temp }}/boot-evidence-public/methods/
             ${{ runner.temp }}/boot-evidence-public/inventory/
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Collect fixed existing-runner tool metadata only
+        if: ${{ inputs.collection == 'tool-metadata' }}
+        run: |
+          set -eu
+          timeout --signal=TERM --kill-after=10s 610s python3 scripts/b-tool-acquisition-data.py --output "$RUNNER_TEMP/tool-evidence-public"
+      - name: Preserve generated PUBLIC tool metadata
+        if: ${{ always() && inputs.collection == 'tool-metadata' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tool-acquisition-public-data
+          path: |
+            ${{ runner.temp }}/tool-evidence-public/reports/
+            ${{ runner.temp }}/tool-evidence-public/inventory/
           if-no-files-found: warn
           retention-days: 5

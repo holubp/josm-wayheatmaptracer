@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from time import monotonic
 
-HELPER_SHA256='864feadb68c4483b4da5272fb989624e00b596ecbfc9cabc6dabdb80a500ce20'
+HELPER_SHA256='16cfafddfec78c09a61551c66920df8663324ac9fc1afc5da63ed20159828c67'
 FINGERPRINT='3B04D753C9050D9A5D343F39843C48A565F8F04B'
 BASE='https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.12%2B7/'
 NAME='OpenJDK17U-jdk_x64_linux_hotspot_17.0.12_7.tar.gz'
