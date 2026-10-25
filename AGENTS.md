@@ -2,6 +2,8 @@
 
 Repository-specific guardrails for future changes:
 
+- Boot-artifact collection is public metadata only: retain `qualified=false`, zero cases and zero candidate executions. Never turn discovered archive/class hashes into their own approval records or upload private captures, whole archives or runtime images.
+- Verification must retain ownership until every fallible publication cleanup succeeds. Cleanup must not follow rejected symlinks; callback boundaries must preserve borrowed-receipt liveness and the original deadline. Keep primary failures and truthful partial evidence.
 - Treat JOSM coordinate spaces explicitly. Downloaded-area checks use `Bounds` with geographic coordinates. The visible-layer fallback intentionally uses the 0.2.0-style rendered layer: candidates are tracked in oversampled capture space, projected back through the slide-time capture bounds, and then carried as `EastNorth` only for preview/debug export.
 - Managed mosaic origins and visualization corners are pixel boundaries, while decoded raster indexes are pixel-center samples. Managed sampling must map world pixels with `world-origin-0.5`, and managed candidate projection must add the same `0.5` back. Do not apply this correction to the visible rendered-layer transform without separate evidence.
 - `MapView` capture scale is in projection units per view pixel, not ground metres. Measure slide-time ground scale through the active projection and keep it separate from raster oversampling, optional native tile resolution, and the legacy six-raster-pixel tracker normalization. Never label a projected scale or compatibility value as metres or native source pixels.
