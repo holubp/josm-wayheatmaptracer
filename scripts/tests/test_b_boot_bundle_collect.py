@@ -326,18 +326,20 @@ class CollectorTests(unittest.TestCase):
                              r'        description: Fixed PUBLIC DATA collection\n'
                              r'        type: choice\n        required: true\n'
                              r'        default: boot-artifact\n        options:\n'
-                             r'          - boot-artifact\n          - tool-metadata\n\npermissions:')
-        self.assertIn('case "$COLLECTION" in boot-artifact|tool-metadata) ;; *) exit 1 ;; esac',text)
+                             r'          - boot-artifact\n          - tool-metadata\n          - native-tool-candidates\n\npermissions:')
+        self.assertIn('case "$COLLECTION" in boot-artifact|tool-metadata|native-tool-candidates) ;; *) exit 1 ;; esac',text)
         self.assertIn('COLLECTION: ${{ inputs.collection }}',text)
         self.assertIn('ref: ${{ github.sha }}',text)
         self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',text)
         steps=re.split(r'(?m)^      - ',text)[1:]
         uploads=[step for step in steps if re.search(r'(?m)^        uses: actions/upload-artifact@',step)]
-        self.assertEqual(2,len(uploads))
+        self.assertEqual(3,len(uploads))
         for mode,artifact,folder,prefixes in (
                 ('boot-artifact','boot-artifact-public-data','boot-evidence-public',
                  ('reports','raw','classes','methods','inventory')),
                 ('tool-metadata','tool-acquisition-public-data','tool-evidence-public',
+                 ('reports','inventory')),
+                ('native-tool-candidates','native-tool-candidates-public-data','native-tool-evidence-public',
                  ('reports','inventory'))):
             matches=[step for step in uploads if '\n          name: '+artifact+'\n' in step]
             self.assertEqual(1,len(matches),mode)
@@ -352,14 +354,16 @@ class CollectorTests(unittest.TestCase):
             self.assertIn('\n          retention-days: 5',upload)
         self.assertEqual(
             ['actions/checkout@11d5960a326750d5838078e36cf38b85af677262']+
-            ['actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02']*2,
+            ['actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02']*3,
             [left or right for left,right in re.findall(r'(?m)^      - uses: (\S+)|^        uses: (\S+)',text)])
         for name,file in [('COLLECTOR_SHA256','scripts/b-boot-bundle-collect.py'),
                           ('TEST_SHA256','scripts/tests/test_b_boot_bundle_collect.py'),
                           ('HELPER_SHA256','scripts/b-boot-bundle-verifier.py'),
                           ('HELPER_TEST_SHA256','scripts/tests/test_b_boot_bundle_verifier.py'),
                           ('TOOL_DATA_SHA256','scripts/b-tool-acquisition-data.py'),
-                          ('TOOL_DATA_TEST_SHA256','scripts/tests/test_b_tool_acquisition_data.py')]:
+                          ('TOOL_DATA_TEST_SHA256','scripts/tests/test_b_tool_acquisition_data.py'),
+                          ('NATIVE_DATA_SHA256','scripts/b-native-tool-candidate-data.py'),
+                          ('NATIVE_DATA_TEST_SHA256','scripts/tests/test_b_native_tool_candidate_data.py')]:
             match=re.search(r'(?m)^          '+name+r': ([0-9a-f]{64})$',text)
             self.assertIsNotNone(match,name)
             self.assertEqual(hashlib.sha256((W/file).read_bytes()).hexdigest(),match.group(1))

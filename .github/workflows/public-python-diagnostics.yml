@@ -11,6 +11,7 @@ on:
         options:
           - boot-artifact
           - tool-metadata
+          - native-tool-candidates
 
 permissions:
   contents: read
@@ -28,14 +29,16 @@ jobs:
         env:
           COLLECTION: ${{ inputs.collection }}
           COLLECTOR_SHA256: 4c9740f39ae3ced533a493c89baf01a217b8a7a7100f53c4a32658e5458fce17
-          TEST_SHA256: 3bcc87e5feb61e39414ca1f6b28851aa28ddd609c1f48edf3dcb3afc2d0b4538
+          TEST_SHA256: e0fd971cf3ffad54c9cdbcaba37f33ce99c9be31ac969bdaa77f5ef96380f78f
           HELPER_SHA256: 16cfafddfec78c09a61551c66920df8663324ac9fc1afc5da63ed20159828c67
           HELPER_TEST_SHA256: 5395a9279fa784746ecf7a3d3e9b7cd01e1d65ae906dc0dae0ccd2ede0fcf3e6
           TOOL_DATA_SHA256: 05c212cdb5d0eb7688a576821eb37805ed303de744fda99f9547dee41bbb9c4b
           TOOL_DATA_TEST_SHA256: 52dd7ffa9b76620840c8cd5cbdc3455f1fdd7e2efbbb8c1c810467220570be58
+          NATIVE_DATA_SHA256: cd8d3e80d030b78a0706d49b6fba074672d46e84f0e57dcba8c5742b83b433d0
+          NATIVE_DATA_TEST_SHA256: 38bc3aa3e05a9167009924f81afa46440848aeff23525eccebea95fd5433b0fd
         run: |
           set -eu
-          case "$COLLECTION" in boot-artifact|tool-metadata) ;; *) exit 1 ;; esac
+          case "$COLLECTION" in boot-artifact|tool-metadata|native-tool-candidates) ;; *) exit 1 ;; esac
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf '%s  %s\n' "$COLLECTOR_SHA256" scripts/b-boot-bundle-collect.py | sha256sum --check --status
           printf '%s  %s\n' "$TEST_SHA256" scripts/tests/test_b_boot_bundle_collect.py | sha256sum --check --status
@@ -43,7 +46,9 @@ jobs:
           printf '%s  %s\n' "$HELPER_TEST_SHA256" scripts/tests/test_b_boot_bundle_verifier.py | sha256sum --check --status
           printf '%s  %s\n' "$TOOL_DATA_SHA256" scripts/b-tool-acquisition-data.py | sha256sum --check --status
           printf '%s  %s\n' "$TOOL_DATA_TEST_SHA256" scripts/tests/test_b_tool_acquisition_data.py | sha256sum --check --status
-          for suite in boot_bundle_verifier boot_bundle_collect tool_acquisition_data; do
+          printf '%s  %s\n' "$NATIVE_DATA_SHA256" scripts/b-native-tool-candidate-data.py | sha256sum --check --status
+          printf '%s  %s\n' "$NATIVE_DATA_TEST_SHA256" scripts/tests/test_b_native_tool_candidate_data.py | sha256sum --check --status
+          for suite in boot_bundle_verifier boot_bundle_collect tool_acquisition_data native_tool_candidate_data; do
             python3 -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
             python3 -O -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
           done
@@ -78,5 +83,20 @@ jobs:
           path: |
             ${{ runner.temp }}/tool-evidence-public/reports/
             ${{ runner.temp }}/tool-evidence-public/inventory/
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Collect fixed native-tool candidate metadata only
+        if: ${{ inputs.collection == 'native-tool-candidates' }}
+        run: |
+          set -eu
+          timeout --signal=TERM --kill-after=10s 610s python3 scripts/b-native-tool-candidate-data.py --output "$RUNNER_TEMP/native-tool-evidence-public"
+      - name: Preserve generated PUBLIC native-tool candidate metadata
+        if: ${{ always() && inputs.collection == 'native-tool-candidates' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-tool-candidates-public-data
+          path: |
+            ${{ runner.temp }}/native-tool-evidence-public/reports/
+            ${{ runner.temp }}/native-tool-evidence-public/inventory/
           if-no-files-found: warn
           retention-days: 5

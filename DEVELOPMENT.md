@@ -48,6 +48,14 @@ digest. It performs no file access, key import or signature verification. Its
 the separate tool-profile and protected-lifetime gates. The base64 test fixture
 preserves the exact upstream public bytes, including armor-header whitespace.
 
+The separate manual `native-tool-candidates` collection retains the same bounded
+metadata readers and adds eight literal JDK native/configuration/CDS candidates.
+It never executes those candidates, downloads files, installs packages, or exports
+native/configuration contents. Its supplemental ELF graph matches only already observed
+file names. Unknown dependencies remain unresolved; they do not authorize a host
+search. Missing resources stay candidate observations rather than a decision that
+the running projector requires them. All output remains unqualified PUBLIC DATA.
+
 Run the self-contained collector tests locally with:
 
 ```sh
@@ -59,6 +67,8 @@ python3 -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_tool_acquisition_data.py
 python3 -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
 python3 -O -m unittest discover -s scripts/tests -p test_b_public_keyring_data.py
+python3 -m unittest discover -s scripts/tests -p test_b_native_tool_candidate_data.py
+python3 -O -m unittest discover -s scripts/tests -p test_b_native_tool_candidate_data.py
 ```
 
 Keep the large `--collect` acquisition on CI. The optional local `--prepare-key`
