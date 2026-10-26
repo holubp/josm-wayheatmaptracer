@@ -51,6 +51,78 @@ def release(index, suite='noble-updates', extra=''):
 
 
 class UbuntuPackageDataTest(unittest.TestCase):
+    def gzip_observation(self, m, expanded, compressed):
+        signed, plain, _ = release(expanded)
+        observation = self.observe(m, signed, plain)
+        observation['indexes']['main/binary-amd64/Packages.gz'] = {
+            'bytes': len(compressed), 'sha256': digest(compressed)}
+        return observation
+
+    def test_signed_nonempty_plus_empty_gzip_member_is_accepted(self):
+        m = load()
+        expanded = package_index()
+        compressed = gzip.compress(expanded, mtime=0) + gzip.compress(b'', mtime=0)
+        self.assertEqual(len(gzip.compress(b'', mtime=0)), 20)
+        observed = self.gzip_observation(m, expanded, compressed)
+        result = m.package_index_data(observed, compressed)
+        self.assertEqual(result['expanded_bytes'], len(expanded))
+        self.assertEqual(result['expanded_sha256'], digest(expanded))
+        self.assertEqual(result['compressed_bytes'], len(compressed))
+        self.assertEqual(result['compressed_sha256'], digest(compressed))
+        self.assertEqual(set(result['packages']), set(m.EXPECTED_PACKAGES[observed['release']]))
+        self.assertFalse(result['qualified'])
+
+    def test_two_members_can_split_records_but_signed_whole_hashes_remain_required(self):
+        m = load()
+        expanded = package_index()
+        mid = 17
+        compressed = gzip.compress(expanded[:mid], mtime=0) + gzip.compress(expanded[mid:], mtime=0)
+        observed = self.gzip_observation(m, expanded, compressed)
+        self.assertEqual(m.package_index_data(observed, compressed)['expanded_sha256'], digest(expanded))
+        observed['indexes']['main/binary-amd64/Packages']['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, '^PACKAGE_INDEX_EXPANDED_HASH$'):
+            m.package_index_data(observed, compressed)
+        observed['indexes']['main/binary-amd64/Packages.gz']['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, '^PACKAGE_INDEX_COMPRESSED_HASH$'):
+            m.package_index_data(observed, compressed)
+
+    def test_concatenated_gzip_rejects_junk_truncation_crc_and_excess_members(self):
+        m = load()
+        expanded = package_index()
+        first = gzip.compress(expanded, mtime=0)
+        empty = gzip.compress(b'', mtime=0)
+        corrupt = bytearray(empty); corrupt[-8] ^= 1
+        for suffix in (b'junk', empty[:-1], bytes(corrupt), empty + empty):
+            compressed = first + suffix
+            observed = self.gzip_observation(m, expanded, compressed)
+            with self.subTest(suffix=suffix.hex()), self.assertRaisesRegex(ValueError, '^PACKAGE_GZIP'):
+                m.package_index_data(observed, compressed)
+
+    def test_concatenated_gzip_has_one_total_expansion_budget_and_original_clock(self):
+        m = load()
+        expanded = package_index()
+        compressed = gzip.compress(b'x' * (4 << 20), mtime=0) + gzip.compress(b'x' * ((4 << 20) + 1), mtime=0)
+        observed = self.gzip_observation(m, expanded, compressed)
+        with self.assertRaisesRegex(ValueError, '^PACKAGE_GZIP_EXTENT$'):
+            m.package_index_data(observed, compressed)
+        compressed = gzip.compress(expanded, mtime=0) + gzip.compress(b'', mtime=0)
+        observed = self.gzip_observation(m, expanded, compressed)
+        primary = InterruptedError('UNIT original clock cancellation')
+        class Clock:
+            calls = 0
+            def check(self):
+                self.calls += 1
+                if self.calls == 4:
+                    raise primary
+        clock = Clock()
+        real = m.zlib.decompressobj
+        with patch.object(m.zlib, 'decompressobj', wraps=real) as decoder:
+            with self.assertRaises(InterruptedError) as raised:
+                m._package_index_data(observed, compressed, clock)
+        self.assertIs(raised.exception, primary)
+        self.assertEqual(decoder.call_count, 1)
+        self.assertEqual(clock.calls, 4)
+
     def test_source_derived_clearsign_plaintext_status_is_accepted(self):
         m = load()
         signed, plain, _ = release(package_index())

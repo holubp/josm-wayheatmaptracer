@@ -22,6 +22,7 @@ REFERENCE = datetime.datetime(2026, 10, 12, tzinfo=datetime.timezone.utc)
 MAX_SIGNED = 512 << 10
 MAX_INDEX = 4 << 20
 MAX_EXPANDED = 8 << 20
+MAX_GZIP_MEMBERS = 2  # Observed signed noble: data member plus empty member.
 RELEASE_PROFILES = {
     'noble': {'suite': 'noble', 'bytes': 255850,
               'sha256': 'cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0'},
@@ -373,13 +374,26 @@ def _package_index_data(observation, compressed, clock):
     expected = observation['indexes']['main/binary-amd64/Packages.gz']
     _need(len(compressed) == expected['bytes'] and _sha(compressed) == expected['sha256'],
           'PACKAGE_INDEX_COMPRESSED_HASH')
-    inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    try:
-        expanded = inflater.decompress(compressed, MAX_EXPANDED + 1)
-    except zlib.error:
-        raise ValueError('PACKAGE_GZIP') from None
-    _need(len(expanded) <= MAX_EXPANDED and inflater.eof and not inflater.unused_data
-          and not inflater.unconsumed_tail, 'PACKAGE_GZIP_EXTENT')
+    expanded = bytearray()
+    pending = compressed
+    members = 0
+    while pending:
+        clock.check()
+        _need(members < MAX_GZIP_MEMBERS, 'PACKAGE_GZIP_MEMBERS')
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        try:
+            block = inflater.decompress(pending, MAX_EXPANDED - len(expanded) + 1)
+        except zlib.error:
+            raise ValueError('PACKAGE_GZIP') from None
+        clock.check()
+        _need(len(expanded) + len(block) <= MAX_EXPANDED and inflater.eof
+              and not inflater.unconsumed_tail, 'PACKAGE_GZIP_EXTENT')
+        # A complete member, including an empty one, must consume input bytes.
+        _need(len(inflater.unused_data) < len(pending), 'PACKAGE_GZIP_PROGRESS')
+        expanded.extend(block)
+        pending = inflater.unused_data
+        members += 1
+    expanded = bytes(expanded)  # Preserve the strict immutable _fields interface.
     clock.check()
     expected = observation['indexes']['main/binary-amd64/Packages']
     _need(len(expanded) == expected['bytes'] and _sha(expanded) == expected['sha256'],

@@ -84,8 +84,10 @@ only completed, size/hash-checked requests receive fetch observations. HTTP
 error responses close without reading their bodies, preserving the primary error.
 The report artifact contains only generated JSON observations and inventory,
 without raw releases/indexes, packages or JDK/native binaries. Expected total
-download is3891927bytes, bounded by16MiB. Local collector tests use fake network
-and verification; only an independently reviewed, separately authorized exact-
+download is3891927bytes, bounded by16MiB. The signed index parser supports at most two complete gzip
+members (including noble's trailing empty member), with one8MiB total expanded
+limit and both signed compressed/expanded hashes; junk or extra members refuse.
+Local collector tests use fake network and verification; only an independently reviewed, separately authorized exact-
 commit CI run can supply actual acquisition observations. No automatic dispatch.
 
 These observations never assert current repository freshness or runtime

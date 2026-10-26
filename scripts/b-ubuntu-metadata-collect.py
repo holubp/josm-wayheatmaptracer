@@ -19,7 +19,7 @@ import urllib.request
 import urllib.error
 
 ROOT = Path(__file__).resolve().parent
-UBUNTU_SHA256 = '06ca059b74c911a109e4bdab1eabc79141d67e5a51765778e0f3032784b6d974'
+UBUNTU_SHA256 = 'be8a0521fab54ad61ae9dea2d1ce4d0232c8bdd3844bdf1dd578ff3cbabff1df'
 MANIFEST_SHA256 = 'e17df9eaf29ef26880eaaa4509c5b38b0029297e1f1e70dcd79a663ee34479af'
 SOURCE_PINS = {
     'b-boot-bundle-collect.py': '4c9740f39ae3ced533a493c89baf01a217b8a7a7100f53c4a32658e5458fce17',
