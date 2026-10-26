@@ -48,6 +48,35 @@ digest. It performs no file access, key import or signature verification. Its
 the separate tool-profile and protected-lifetime gates. The base64 test fixture
 preserves the exact upstream public bytes, including armor-header whitespace.
 
+The offline `scripts/b-ubuntu-package-data.py` bootstrap verifies the two exact
+retained historical Ubuntu releases, checks that gpgv's output is the same
+dash-unescaped signed plaintext, and joins both signed Packages hashes to all
+eight selected amd64 package/version records. `ubuntu_package_set_data` uses
+one original 600-second deadline for both releases and index parsing; incomplete
+sets refuse. The explicit Ubuntu2018 public key is fixture DATA. Verification
+uses the existing CI acquisition tool with an exclusive empty home, fixed
+`LANG=C,LC_ALL=C`, explicit keyring/output and guarded tool/input identities.
+No package payload, code, target JVM or production registry is executed or
+installed. This module performs no network access and is not yet connected to
+a reviewed network collector/manifest. Its tests substitute the verifier and
+do not authenticate the retained real releases.
+
+The acquisition-only clear-sign protocol accepts exactly the source-derived
+`PLAINTEXT 74 0 ` row (empty filename, partial packet, no length status), then
+uses the unchanged strict PRIMARY signer parser for the remaining statuses.
+Observations retain actual signed-input/ring stamps before and after the fixed
+role-based argv and `LANG=C,LC_ALL=C` invocation. Verified plaintext is consumed
+through the same bounded no-follow descriptor that supplies its digest/identity;
+new descriptor/writer cleanup preserves a primary and propagates close-only
+failure. These DATA records do not qualify the acquisition tool or a runtime.
+
+The reference is historical `2026-10-12T00:00:00Z`: the updates snapshot must be
+at most 48 hours older, while static noble has no snapshot-age rule. Present
+Valid-Until is honored at that reference; its absence is recorded explicitly.
+These observations never assert current repository freshness or runtime
+qualification. Signed release, index, package payload, installed-file equality,
+native/configuration coverage and protected runtime admission are distinct gates.
+
 The separate manual `native-tool-candidates` collection retains the same bounded
 metadata readers and adds eight literal JDK native/configuration/CDS candidates
 plus the two OS libraries (`libm.so.6` and `librt.so.1`) named by the recorded
