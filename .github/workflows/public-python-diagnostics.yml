@@ -12,6 +12,7 @@ on:
           - boot-artifact
           - tool-metadata
           - native-tool-candidates
+          - ubuntu-package-metadata
 
 permissions:
   contents: read
@@ -29,16 +30,16 @@ jobs:
         env:
           COLLECTION: ${{ inputs.collection }}
           COLLECTOR_SHA256: 4c9740f39ae3ced533a493c89baf01a217b8a7a7100f53c4a32658e5458fce17
-          TEST_SHA256: e0fd971cf3ffad54c9cdbcaba37f33ce99c9be31ac969bdaa77f5ef96380f78f
+          TEST_SHA256: 5c74dbab2268c569306cc45b6f831a2f629ba346b057edfbca9104432b7dc0ff
           HELPER_SHA256: 16cfafddfec78c09a61551c66920df8663324ac9fc1afc5da63ed20159828c67
           HELPER_TEST_SHA256: 5395a9279fa784746ecf7a3d3e9b7cd01e1d65ae906dc0dae0ccd2ede0fcf3e6
           TOOL_DATA_SHA256: 05c212cdb5d0eb7688a576821eb37805ed303de744fda99f9547dee41bbb9c4b
           TOOL_DATA_TEST_SHA256: 52dd7ffa9b76620840c8cd5cbdc3455f1fdd7e2efbbb8c1c810467220570be58
           NATIVE_DATA_SHA256: 17909e5a81a8efd14ce65fcae94d5f8ef77fb3ee35685b2d89755437c64ee3b1
-          NATIVE_DATA_TEST_SHA256: a2925717428cf7693f6a6f925ccdaf8eb0fe3b9744651ef60353d1171edd35fc
+          NATIVE_DATA_TEST_SHA256: f9885ee73c29f578d1ce37378035455f2d5910f2c87af48475f4a57cd16f1236
         run: |
           set -eu
-          case "$COLLECTION" in boot-artifact|tool-metadata|native-tool-candidates) ;; *) exit 1 ;; esac
+          case "$COLLECTION" in boot-artifact|tool-metadata|native-tool-candidates|ubuntu-package-metadata) ;; *) exit 1 ;; esac
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           printf '%s  %s\n' "$COLLECTOR_SHA256" scripts/b-boot-bundle-collect.py | sha256sum --check --status
           printf '%s  %s\n' "$TEST_SHA256" scripts/tests/test_b_boot_bundle_collect.py | sha256sum --check --status
@@ -49,6 +50,29 @@ jobs:
           printf '%s  %s\n' "$NATIVE_DATA_SHA256" scripts/b-native-tool-candidate-data.py | sha256sum --check --status
           printf '%s  %s\n' "$NATIVE_DATA_TEST_SHA256" scripts/tests/test_b_native_tool_candidate_data.py | sha256sum --check --status
           for suite in boot_bundle_verifier boot_bundle_collect tool_acquisition_data native_tool_candidate_data; do
+            python3 -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
+            python3 -O -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
+          done
+      - name: Check fixed Ubuntu metadata source and self-contained tests
+        if: ${{ inputs.collection == 'ubuntu-package-metadata' }}
+        env:
+          UBUNTU_BOOTSTRAP_SHA256: 06ca059b74c911a109e4bdab1eabc79141d67e5a51765778e0f3032784b6d974
+          UBUNTU_BOOTSTRAP_TEST_SHA256: 010dd2d8be692308f45b4f7c806c6906dbec940c4b27f15e3c217be79b984568
+          UBUNTU_COLLECTOR_SHA256: 1394df4058ca94ef0659b72b19b92617121d14f3e8c5186f09aa40b48ec03815
+          UBUNTU_COLLECTOR_TEST_SHA256: 83ca3a4787f9ed6745b0af17ec1d22b79facc4a1d308f0b137bba6d8b75d5d4a
+          UBUNTU_MANIFEST_SHA256: e17df9eaf29ef26880eaaa4509c5b38b0029297e1f1e70dcd79a663ee34479af
+          UBUNTU_KEY_SHA256: 2a3cc57ab6b47626b496a101c29af6dfe54d54d03d613f2326b9f2a30a15c39b
+          PUBLIC_KEY_HELPER_SHA256: cbd40ab75070c6228d1da1b6b3beba57f9033d7b4725297a09b6d8a6b09f4fb5
+        run: |
+          set -eu
+          printf '%s  %s\n' "$UBUNTU_BOOTSTRAP_SHA256" scripts/b-ubuntu-package-data.py | sha256sum --check --status
+          printf '%s  %s\n' "$UBUNTU_BOOTSTRAP_TEST_SHA256" scripts/tests/test_b_ubuntu_package_data.py | sha256sum --check --status
+          printf '%s  %s\n' "$UBUNTU_COLLECTOR_SHA256" scripts/b-ubuntu-metadata-collect.py | sha256sum --check --status
+          printf '%s  %s\n' "$UBUNTU_COLLECTOR_TEST_SHA256" scripts/tests/test_b_ubuntu_metadata_collect.py | sha256sum --check --status
+          printf '%s  %s\n' "$UBUNTU_MANIFEST_SHA256" scripts/data/b-ubuntu-metadata-acquisition.json | sha256sum --check --status
+          printf '%s  %s\n' "$UBUNTU_KEY_SHA256" scripts/tests/fixtures/ubuntu-archive-2018.asc | sha256sum --check --status
+          printf '%s  %s\n' "$PUBLIC_KEY_HELPER_SHA256" scripts/b-public-keyring-data.py | sha256sum --check --status
+          for suite in ubuntu_package_data ubuntu_metadata_collect; do
             python3 -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
             python3 -O -m unittest discover -s scripts/tests -p "test_b_${suite}.py"
           done
@@ -98,5 +122,20 @@ jobs:
           path: |
             ${{ runner.temp }}/native-tool-evidence-public/reports/
             ${{ runner.temp }}/native-tool-evidence-public/inventory/
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Collect only four fixed PUBLIC Ubuntu metadata sources
+        if: ${{ inputs.collection == 'ubuntu-package-metadata' }}
+        run: |
+          set -eu
+          timeout --signal=TERM --kill-after=10s 610s python3 scripts/b-ubuntu-metadata-collect.py --collect --output "$RUNNER_TEMP/ubuntu-metadata-public" --scratch "$RUNNER_TEMP/ubuntu-metadata-owned"
+      - name: Preserve generated PUBLIC Ubuntu metadata observations
+        if: ${{ always() && inputs.collection == 'ubuntu-package-metadata' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ubuntu-package-metadata-public-data
+          path: |
+            ${{ runner.temp }}/ubuntu-metadata-public/reports/
+            ${{ runner.temp }}/ubuntu-metadata-public/inventory/
           if-no-files-found: warn
           retention-days: 5

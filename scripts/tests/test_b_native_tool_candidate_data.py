@@ -213,7 +213,7 @@ class NativeCandidateDataTest(unittest.TestCase):
     def test_workflow_exposes_a_separate_fixed_manual_mode_and_only_public_reports(self):
         text = (ROOT / '.github/workflows/public-python-diagnostics.yml').read_text()
         self.assertIn('          - native-tool-candidates\n', text)
-        self.assertIn("case \"$COLLECTION\" in boot-artifact|tool-metadata|native-tool-candidates)", text)
+        self.assertIn("case \"$COLLECTION\" in boot-artifact|tool-metadata|native-tool-candidates|ubuntu-package-metadata)", text)
         for name, path in (('NATIVE_DATA_SHA256', 'scripts/b-native-tool-candidate-data.py'),
                            ('NATIVE_DATA_TEST_SHA256', 'scripts/tests/test_b_native_tool_candidate_data.py')):
             match = re.search(r'(?m)^          ' + name + r': ([0-9a-f]{64})$', text)

@@ -1,0 +1,90 @@
+{
+  "candidate_executions": 0,
+  "cases": 0,
+  "current_repository_freshness": false,
+  "deadline_seconds": 600,
+  "dispatch_authorized": false,
+  "download_bytes_limit": 16777216,
+  "expected_packages": {
+    "gpgv": {
+      "Architecture": "amd64",
+      "Version": "2.4.4-2ubuntu17.6"
+    },
+    "libassuan0": {
+      "Architecture": "amd64",
+      "Version": "2.5.6-1build1"
+    },
+    "libbz2-1.0": {
+      "Architecture": "amd64",
+      "Version": "1.0.8-5.1ubuntu0.1"
+    },
+    "libc6": {
+      "Architecture": "amd64",
+      "Version": "2.39-0ubuntu8.9"
+    },
+    "libgcrypt20": {
+      "Architecture": "amd64",
+      "Version": "1.10.3-2ubuntu0.2"
+    },
+    "libgpg-error0": {
+      "Architecture": "amd64",
+      "Version": "1.47-3build2.1"
+    },
+    "libnpth0t64": {
+      "Architecture": "amd64",
+      "Version": "1.6-3.1build1"
+    },
+    "zlib1g": {
+      "Architecture": "amd64",
+      "Version": "1:1.3.dfsg-3.1ubuntu2.2"
+    }
+  },
+  "external_timeout_seconds": 610,
+  "qualified": false,
+  "redirects": 0,
+  "reference": "2026-10-12T00:00:00+00:00",
+  "retries": 0,
+  "schema": "PUBLIC_UBUNTU_METADATA_ACQUISITION_1",
+  "scope": "PROSPECTIVE_FIXED_PUBLIC_DATA_ONLY",
+  "snapshot_max_age_hours": 48,
+  "source_observation_sha256": "8f10fb3547e82f596d5ce321dddbc25b93d9e393ca30a8194034bb9ffae4f973",
+  "source_read_chunk": 65536,
+  "sources": [
+    {
+      "bytes": 255850,
+      "kind": "release",
+      "release": "noble",
+      "sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+      "url": "https://archive.ubuntu.com/ubuntu/dists/noble/InRelease"
+    },
+    {
+      "bytes": 1808488,
+      "kind": "index",
+      "release": "noble",
+      "sha256": "e0d7e4cbb09d2aa7f9e104a1488817417bc9d85f3e5d9a21156a52ec641ae531",
+      "url": "https://archive.ubuntu.com/ubuntu/dists/noble/main/binary-amd64/Packages.gz"
+    },
+    {
+      "bytes": 126125,
+      "kind": "release",
+      "release": "snapshot-20261012-noble-updates",
+      "sha256": "73c1f36093b3247c866091dc6a486e887aa73665c013672cf240276f32348dd4",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261012T000000Z/dists/noble-updates/InRelease"
+    },
+    {
+      "bytes": 1701464,
+      "kind": "index",
+      "release": "snapshot-20261012-noble-updates",
+      "sha256": "dd9fd2d5d92c6a33b0a6f1f09ed9198671601a806f260108a2ab1bb4f81d3986",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20261012T000000Z/dists/noble-updates/main/binary-amd64/Packages.gz"
+    }
+  ],
+  "target_executions": 0,
+  "trust_anchor": {
+    "armor_bytes": 1660,
+    "armor_sha256": "2a3cc57ab6b47626b496a101c29af6dfe54d54d03d613f2326b9f2a30a15c39b",
+    "primary": "F6ECB3762474EDA9D21B7022871920D1991BC93C",
+    "ring_bytes": 1167,
+    "ring_sha256": "5ebbeeb474034b1fa7e50abbe6f136e177fc826219e01f314b3623f7b3097e96"
+  }
+}

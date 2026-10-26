@@ -73,6 +73,21 @@ failure. These DATA records do not qualify the acquisition tool or a runtime.
 The reference is historical `2026-10-12T00:00:00Z`: the updates snapshot must be
 at most 48 hours older, while static noble has no snapshot-age rule. Present
 Valid-Until is honored at that reference; its absence is recorded explicitly.
+The manual `ubuntu-package-metadata` choice in `public-python-diagnostics.yml`
+connects that bootstrap to four literal PUBLIC HTTPS metadata requests, with no
+redirects or retries and an exact size/hash manifest. The original600s includes
+dependency checks, downloads, both signatures and indexes; CI also enforces610s.
+The CLI refuses outside manual GitHub Actions on Linux/X64 before dependencies
+or transport; these environment checks grant no trust or dispatch authority.
+Partial reports count all actual returned body bytes, including failed requests;
+only completed, size/hash-checked requests receive fetch observations. HTTP
+error responses close without reading their bodies, preserving the primary error.
+The report artifact contains only generated JSON observations and inventory,
+without raw releases/indexes, packages or JDK/native binaries. Expected total
+download is3891927bytes, bounded by16MiB. Local collector tests use fake network
+and verification; only an independently reviewed, separately authorized exact-
+commit CI run can supply actual acquisition observations. No automatic dispatch.
+
 These observations never assert current repository freshness or runtime
 qualification. Signed release, index, package payload, installed-file equality,
 native/configuration coverage and protected runtime admission are distinct gates.
