@@ -660,6 +660,15 @@ class _GnuDeadlineLinuxHost(_LinuxHost):
         frame=self.deadline_clock.frame(self.child.pid,deadline)
         require(self.child.stdin.write(frame)==40,'CONTROL_RELEASE_WRITE')
         self.child.stdin.close();self.child.stdin=None
+    def wait(self,remaining):
+        #GNU2 has a distinct DATA-only response. The strict byte1 route keeps
+        #its original response contract; neither literal is runtime authority.
+        require(self.child is not None,'NO_OWNED_PID')
+        out,err=self.child.communicate(timeout=remaining)
+        require(len(out)<=4096 and len(err)<=16384,'CHILD_OUTPUT_PROFILE')
+        require(self.child.returncode==0,'CHILD_EXIT_FAILURE')
+        require(out==b'PENDING_GNU_CLOCK_SOURCE_RUNTIME\n','PRODUCTION_PROTOCOL_NOT_IMPLEMENTED')
+        return {'pid':self.child.pid,'exit':self.child.returncode}
 
 
 def _gnu_deadline_launch_spec(review,classes,bootstrap):

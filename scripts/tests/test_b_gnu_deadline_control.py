@@ -26,6 +26,79 @@ FAKE = load_fixture('test_b_trusted_host_producer')
 
 
 class GnuDeadlineTests(unittest.TestCase):
+    def test_actual_gnu_wait_accepts_the_java_unit_pending_literal(self):
+        #Literal is independently asserted by the actual Java GNU branch test.
+        #Fake owned-child transport exercises the real typed GNU2 consumer only.
+        calls = []
+        class Child:
+            pid = 123
+            returncode = 0
+            def communicate(self, timeout):
+                calls.append(timeout)
+                return b'PENDING_GNU_CLOCK_SOURCE_RUNTIME\n', b''
+        driver = object.__new__(HOST._GnuDeadlineLinuxHost)
+        driver.child = Child()
+        self.assertEqual(driver.wait(17.25), {'pid': 123, 'exit': 0})
+        self.assertEqual(calls, [17.25])
+
+    def test_gnu_wait_rejects_wrong_exit_protocol_and_output_extents(self):
+        literal = b'PENDING_GNU_CLOCK_SOURCE_RUNTIME\n'
+        cases = ((literal, b'', 7, 'CHILD_EXIT_FAILURE'),
+                 (b'PENDING_TRUSTED_HOST_STARTUP_BOOT_LAUNCH\n', b'', 0, 'PRODUCTION_PROTOCOL_NOT_IMPLEMENTED'),
+                 (b'', b'', 0, 'PRODUCTION_PROTOCOL_NOT_IMPLEMENTED'),
+                 (literal+b'x', b'', 0, 'PRODUCTION_PROTOCOL_NOT_IMPLEMENTED'),
+                 (b'x'*4097, b'', 0, 'CHILD_OUTPUT_PROFILE'),
+                 (literal, b'x'*16385, 0, 'CHILD_OUTPUT_PROFILE'))
+        for out, err, code, cause in cases:
+            with self.subTest(cause=cause, output=len(out), error=len(err)):
+                class Child:
+                    pid = 123
+                    returncode = code
+                    def communicate(self, timeout):
+                        self.timeout = timeout
+                        return out, err
+                driver = object.__new__(HOST._GnuDeadlineLinuxHost)
+                driver.child = Child()
+                with self.assertRaisesRegex(HOST.Pending, '^'+cause+'$'):
+                    driver.wait(3.5)
+                self.assertEqual(driver.child.timeout, 3.5)
+        driver.child = None
+        with self.assertRaisesRegex(HOST.Pending, '^NO_OWNED_PID$'):
+            driver.wait(3.5)
+
+    def test_actual_gnu_wait_failure_and_timeout_preserve_transaction_cleanup(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout):
+                primary = HOST.subprocess.TimeoutExpired(('UNIT-owned-child',), 300)
+                class Child:
+                    pid = 123
+                    returncode = 0
+                    def communicate(self, timeout):
+                        self.timeout = timeout
+                        if fail_timeout:
+                            raise primary
+                        return b'wrong protocol\n', b''
+                fail_timeout = timeout
+                class Driver(FAKE.FakeOS):
+                    def __init__(self):
+                        super().__init__()
+                        self.child = Child()
+                    def wait(self, remaining):
+                        self.event('wait')
+                        return HOST._GnuDeadlineLinuxHost.wait(self, remaining)
+                driver = Driver()
+                with self.assertRaises(HOST.subprocess.TimeoutExpired if timeout else HOST.Pending) as caught:
+                    HOST.simulate({'scope': 'SIMULATED'}, driver)
+                if timeout:
+                    self.assertIs(caught.exception, primary)
+                else:
+                    self.assertEqual(str(caught.exception), 'PRODUCTION_PROTOCOL_NOT_IMPLEMENTED')
+                self.assertEqual(driver.child.timeout, 300)
+                self.assertTrue(driver.reaped)
+                self.assertFalse(driver.stage)
+                self.assertEqual(driver.events[-2:], ['wait', 'cleanup'])
+                self.assertEqual(driver.events.count('cleanup'), 1)
+
     def test_frame_keeps_original_start_after_readiness_delay(self):
         with patch.object(HOST, 'monotonic_ns', side_effect=[1_000_000_000, 21_000_000_000], create=True):
             clock = HOST._GnuDeadlineClock()
