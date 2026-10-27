@@ -6,6 +6,7 @@ import java.util.OptionalDouble;
 import java.util.function.LongConsumer;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceReadView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
@@ -20,6 +21,23 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 
 /** Samples full scalar cross-sections and extracts deterministic finite observation hypotheses. */
 public final class ProbabilisticProfileFactory {
+    /** Reads evidence data without conferring capture or issuer authority. */
+    public List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
+        EvidenceReadView evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        CancellationProbe cancellation) {
+        return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters, fixedEndpoints,
+            evidence, field, parameters, cancellation, true);
+    }
+
+    /** Reads a request-owned chainage without conferring capture or issuer authority. */
+    public List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
+        org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceReadView evidence,
+        ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation) {
+        return create(sourcePolyline, profileChainage, searchHalfWidthMeters, fixedEndpoints,
+            evidence, field, parameters, cancellation, true);
+    }
     /** Exact source-only geometry from the same resampling arithmetic used by native B. */
     public record SourceSamplingGeometry(List<MetricPoint> points, List<Double> chainageMeters) {
         public SourceSamplingGeometry {
@@ -55,6 +73,23 @@ public final class ProbabilisticProfileFactory {
                 curve.chainageMeters(), configuredStepMeters);
     }
 
+    /** Bounded DATA preparation for the fixed experiment's native sampling.
+     * The caller must fund the working graph before entry; this method grants
+     * no ownership, capture, source or runtime authority. Ordinary callers keep
+     * the existing unrestricted two-argument entry and identical arithmetic. */
+    org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainageCancellableBounded(
+            List<MetricPoint> sourcePolyline, double configuredStepMeters, CancellationProbe cancellation) {
+        if (cancellation == null || sourcePolyline == null || sourcePolyline.size() < 2
+                || sourcePolyline.size() > 12 || configuredStepMeters != 1.5) {
+            throw new IllegalArgumentException("Bounded native chainage inputs are incomplete");
+        }
+        ResampledCurve curve = resample(sourcePolyline, configuredStepMeters, null, cancellation);
+        var result = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage(
+                curve.chainageMeters(), configuredStepMeters);
+        cancellation.checkpoint();
+        return result;
+    }
+
     /**
      * Samples complete physical profiles along an immutable source polyline.
      *
@@ -84,7 +119,7 @@ public final class ProbabilisticProfileFactory {
 
     List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
-        EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        EvidenceReadView evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability) {
         return create(sourcePolyline, configuredStepMeters, searchHalfWidthMeters, fixedEndpoints,
                 evidence, field, parameters, cancellation, directLongitudinalReliability, 0.0, null);
@@ -92,7 +127,7 @@ public final class ProbabilisticProfileFactory {
 
     private List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         double configuredStepMeters, double searchHalfWidthMeters, boolean fixedEndpoints,
-        EvidenceSnapshot evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
+        EvidenceReadView evidence, ScalarEvidenceField field, EvidenceModelParameters parameters,
         CancellationProbe cancellation, boolean directLongitudinalReliability,
         double sourceOriginGroundMeters, AttemptMemoryLedger.Owner owner) {
         if (sourcePolyline == null || sourcePolyline.size() < 2 || !positive(configuredStepMeters)
@@ -289,7 +324,7 @@ public final class ProbabilisticProfileFactory {
 
     /** Consumes frozen original eligibility once; promoted profiles are never proposal inputs. */
     private static CorroboratedProfiles restoreRmsSingletons(List<ProbabilisticProfile> originals,
-            List<LocalScalarProfileExtractor.DetailedResult> details, EvidenceSnapshot evidence,
+            List<LocalScalarProfileExtractor.DetailedResult> details, EvidenceReadView evidence,
             ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
             ImageOrientationDescriptor orientationDescriptor, RasterIntervalEvidence interval, AttemptMemoryLedger.Owner workOwner,
             AttemptMemoryLedger.Owner rawOwner, AttemptMemoryLedger.Owner identityOwner) {
@@ -592,7 +627,7 @@ public final class ProbabilisticProfileFactory {
 
     List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
-        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceReadView evidence,
         ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
         boolean directLongitudinalReliability) {
         if (profileChainage == null) {
@@ -615,7 +650,7 @@ public final class ProbabilisticProfileFactory {
 
     List<ProbabilisticProfile> create(List<MetricPoint> sourcePolyline,
         org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage profileChainage,
-        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceSnapshot evidence,
+        double searchHalfWidthMeters, boolean fixedEndpoints, EvidenceReadView evidence,
         ScalarEvidenceField field, EvidenceModelParameters parameters, CancellationProbe cancellation,
         boolean directLongitudinalReliability, AttemptMemoryLedger.Owner owner) {
         if (profileChainage == null || owner == null) {
@@ -737,7 +772,7 @@ public final class ProbabilisticProfileFactory {
 
     private static List<ProbabilisticProfile.Mode> bindOrientationToModes(
         List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
-        double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
+        double sourcePitch, EvidenceReadView evidence, ScalarEvidenceField field,
         EvidenceModelParameters parameters, CancellationProbe cancellation,
         ImageOrientationDescriptor descriptor, boolean directLongitudinalReliability) {
         return bindOrientationToModes(modes, anchor, normal, sourcePitch, evidence, field,
@@ -746,7 +781,7 @@ public final class ProbabilisticProfileFactory {
 
     private static List<ProbabilisticProfile.Mode> bindOrientationToModes(
         List<ProbabilisticProfile.Mode> modes, MetricPoint anchor, MetricPoint normal,
-        double sourcePitch, EvidenceSnapshot evidence, ScalarEvidenceField field,
+        double sourcePitch, EvidenceReadView evidence, ScalarEvidenceField field,
         EvidenceModelParameters parameters, CancellationProbe cancellation,
         ImageOrientationDescriptor descriptor, boolean directLongitudinalReliability,
         AttemptMemoryLedger.Owner owner, AttemptMemoryLedger.Owner retainedOwner) {
@@ -900,11 +935,17 @@ public final class ProbabilisticProfileFactory {
     /** Samples one scalar value using strict bilinear validity. */
     public OptionalDouble sample(EvidenceSnapshot evidence, ScalarEvidenceField field,
         MetricPoint point) {
+        return sample((EvidenceReadView) evidence, field, point);
+    }
+
+    /** Samples the original evidence region; this data interface grants no issuer authority. */
+    public OptionalDouble sample(EvidenceReadView evidence, ScalarEvidenceField field,
+        MetricPoint point) {
         return StrictScalarSampler.sample(field, evidence.transform(), evidence.evidenceRegion(), point);
     }
 
     private List<ProbabilisticProfile.Sample> sampleProfile(MetricPoint anchor, MetricPoint normal,
-        double minimum, double maximum, double pitch, EvidenceSnapshot evidence,
+        double minimum, double maximum, double pitch, EvidenceReadView evidence,
         ScalarEvidenceField field, AttemptMemoryLedger.Owner owner,
         AttemptMemoryLedger.Owner retainedOwner) {
         int intervals = Math.max(1, (int) Math.ceil((maximum - minimum) / pitch));
@@ -1013,7 +1054,7 @@ public final class ProbabilisticProfileFactory {
     }
 
     static double authorizedBoundary(MetricPoint anchor, MetricPoint normal, double direction,
-        double maximum, double step, EvidenceSnapshot evidence, BoundaryWork work,
+        double maximum, double step, EvidenceReadView evidence, BoundaryWork work,
         AttemptMemoryLedger.Owner owner) {
         double requested = StrictMath.ceil(maximum / step);
         if (!Double.isFinite(requested) || requested > BoundaryWork.MAXIMUM_UNITS) {
@@ -1037,7 +1078,7 @@ public final class ProbabilisticProfileFactory {
     }
 
     private static boolean authorizedNormalSegment(MetricPoint anchor, MetricPoint normal,
-            double from, double to, EvidenceSnapshot evidence, BoundaryWork work,
+            double from, double to, EvidenceReadView evidence, BoundaryWork work,
             AttemptMemoryLedger.Owner owner) {
         work.cancellation.checkpoint();
         work.admit(1L);
@@ -1099,6 +1140,12 @@ public final class ProbabilisticProfileFactory {
 
     private static ResampledCurve resample(List<MetricPoint> points, double step,
             AttemptMemoryLedger.Owner owner) {
+        return resample(points, step, owner, null);
+    }
+
+    private static ResampledCurve resample(List<MetricPoint> points, double step,
+            AttemptMemoryLedger.Owner owner, CancellationProbe cancellation) {
+        if (cancellation != null) cancellation.checkpoint();
         long sourceBytes = ProbabilisticInference.listBytes(points.size())
                 + Math.multiplyExact(points.size(), AttemptMemoryLedger.objectBytes(8));
         List<Double> sourceChainage = owner == null ? new ArrayList<>(points.size())
@@ -1106,14 +1153,22 @@ public final class ProbabilisticProfileFactory {
                     () -> new ArrayList<>(points.size()));
         sourceChainage.add(0.0);
         for (int index = 1; index < points.size(); index++) {
+            if (cancellation != null) cancellation.checkpoint();
             sourceChainage.add(sourceChainage.get(index - 1) + points.get(index - 1).distanceTo(points.get(index)));
+            if (cancellation != null) cancellation.checkpoint();
         }
         double length = sourceChainage.get(sourceChainage.size() - 1);
         if (!(length > 0.0)) {
             throw new IllegalArgumentException("Source polyline has zero length");
         }
+        if (cancellation != null && (!Double.isFinite(length) || length > 120.0)) {
+            throw new IllegalArgumentException("Bounded native chainage source exceeds 120 metres");
+        }
         int intervals = Math.max(1, (int) Math.ceil(length / step));
         int sampledCount = intervals + 1;
+        if (cancellation != null && sampledCount > 81) {
+            throw new IllegalArgumentException("Bounded native chainage exceeds 81 samples");
+        }
         List<MetricPoint> sampled = owner == null ? new ArrayList<>(sampledCount)
                 : ProbabilisticInference.allocated(owner,
                     ProbabilisticInference.listBytes(sampledCount),
@@ -1125,8 +1180,10 @@ public final class ProbabilisticProfileFactory {
                     "sampled profiles", () -> new ArrayList<>(sampledCount));
         int segment = 1;
         for (int index = 0; index <= intervals; index++) {
+            if (cancellation != null) cancellation.checkpoint();
             double target = index == intervals ? length : index * length / intervals;
             while (segment < sourceChainage.size() - 1 && sourceChainage.get(segment) < target) {
+                if (cancellation != null) cancellation.checkpoint();
                 segment++;
             }
             double startDistance = sourceChainage.get(segment - 1);
@@ -1138,6 +1195,7 @@ public final class ProbabilisticProfileFactory {
                     : index == intervals ? points.get(points.size() - 1) : null;
             // Interpolation can lose endpoint ULPs or signed zero. Still allocate a fresh,
             // identically charged point; interior interpolation keeps its original grouping.
+            if (cancellation != null) cancellation.checkpoint();
             SupplierPoint allocation = endpoint != null
                     ? () -> new MetricPoint(endpoint.xMeters(), endpoint.yMeters())
                     : () -> new MetricPoint(
@@ -1147,8 +1205,19 @@ public final class ProbabilisticProfileFactory {
                     : ProbabilisticInference.allocated(owner,
                         AttemptMemoryLedger.objectBytes(16), "sampled profiles", allocation::get));
             chainage.add(target);
+            if (cancellation != null) cancellation.checkpoint();
         }
-        if (owner == null) return new ResampledCurve(List.copyOf(sampled), List.copyOf(chainage));
+        if (owner == null) {
+            if (cancellation == null) return new ResampledCurve(List.copyOf(sampled), List.copyOf(chainage));
+            cancellation.checkpoint();
+            List<MetricPoint> retainedSampled = List.copyOf(sampled);
+            cancellation.checkpoint();
+            List<Double> retainedChainage = List.copyOf(chainage);
+            cancellation.checkpoint();
+            ResampledCurve result = new ResampledCurve(retainedSampled, retainedChainage);
+            cancellation.checkpoint();
+            return result;
+        }
         List<MetricPoint> retainedSampled = ProbabilisticInference.allocated(owner,
                 ProbabilisticInference.listBytes(sampled.size()), "sampled profiles",
                 () -> List.copyOf(sampled));
@@ -1306,7 +1375,7 @@ public final class ProbabilisticProfileFactory {
         private static final long MAXIMUM_FEATURE_UNITS = 8_000_000L;
         private static final double EPSILON = 1e-12;
 
-        private final EvidenceSnapshot evidence;
+        private final EvidenceReadView evidence;
         private final ScalarEvidenceField field;
         private final EvidenceModelParameters.Localization localization;
         private final AttemptMemoryLedger.Owner owner;
@@ -1334,7 +1403,7 @@ public final class ProbabilisticProfileFactory {
             }
         }
 
-        RasterIntervalEvidence(EvidenceSnapshot evidence, ScalarEvidenceField field,
+        RasterIntervalEvidence(EvidenceReadView evidence, ScalarEvidenceField field,
                 EvidenceModelParameters.Localization localization,
                 AttemptMemoryLedger.Owner owner) {
             this.evidence = evidence;

@@ -61,6 +61,17 @@ final class BSameTrailRecordingFixtures {
             scalar[y*81+x]=response(occupancy);
         }
         return new Fixture(id,count,scalar,validity,traces,frame.stations(1));}
+    /** Precharge the unchanged original renderer; no UNIT call is made until
+     * the transitive source program and runtime premises are admitted. */
+    static Fixture byIdOwned(BSharedCaptureAdmission owner,String id){
+        var reservation=owner.reserveSameTrailFixtureUnit(id);
+        try{
+            var fixture=byId(id);reservation.adopt(fixture);return fixture;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);throw primary;
+        }
+    }
     private static double distance(MetricPoint point,List<MetricPoint> trace) {
         double best=Double.POSITIVE_INFINITY;
         for(int i=1;i<trace.size();i++){var a=trace.get(i-1);var b=trace.get(i);double dx=b.xMeters()-a.xMeters(),dy=b.yMeters()-a.yMeters();
@@ -112,5 +123,8 @@ final class BSameTrailRecordingFixtures {
         @Override public double[] scalar(){return scalar.clone();}
         @Override public boolean[] validity(){return validity.clone();}
         @Override public double[] stations(){return stations.clone();}
+        double[] scalarOwned(BSharedCaptureAdmission owner){return owner.rawScalarCopyOriginalUnit(scalar);}
+        boolean[] validityOwned(BSharedCaptureAdmission owner){return owner.rawValidityCopyOriginalUnit(validity);}
+        double[] stationsOwned(BSharedCaptureAdmission owner){return owner.rawStationsCopyOriginalUnit(stations);}
     }
 }

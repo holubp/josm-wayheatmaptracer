@@ -77,7 +77,19 @@ tasks.withType<JavaCompile>().configureEach {
     options.release.set(17)
 }
 
+// Metadata only: package the actual compiled test runtime for isolated CI JVMs.
+tasks.register("writeSharedFeasibilityClasspath") {
+    dependsOn("testClasses")
+    val destination = layout.buildDirectory.file("shared-feasibility-classpath.txt")
+    inputs.files(sourceSets["test"].runtimeClasspath)
+    outputs.file(destination)
+    doLast {
+        destination.get().asFile.writeText(sourceSets["test"].runtimeClasspath.asPath)
+    }
+}
+
 tasks.test {
+    systemProperty("wayheatmaptracer.sharedFeasibilityTestClasspath", sourceSets["test"].runtimeClasspath.asPath)
     val validationProfile = providers.gradleProperty("validationProfile")
     val dedicatedExperiments = providers.gradleProperty("dedicatedExperiments").map {
         when (it) {

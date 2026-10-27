@@ -8,6 +8,7 @@ import java.util.OptionalDouble;
 import java.util.function.Supplier;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceReadView;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSupport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
@@ -66,6 +67,14 @@ public final class ImageOrientationDescriptor {
 
     /** Measures orientation while charging scratch and the immutable returned graph separately. */
     public Result describe(EvidenceSnapshot evidence, ScalarEvidenceField field,
+        MetricPoint center, double sourcePitchMeters, EvidenceModelParameters parameters,
+        CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+        return describe((EvidenceReadView) evidence, field, center, sourcePitchMeters,
+            parameters, cancellation, owner);
+    }
+
+    /** Reads scalar data without certifying capture, ownership, or source authority. */
+    public Result describe(EvidenceReadView evidence, ScalarEvidenceField field,
         MetricPoint center, double sourcePitchMeters, EvidenceModelParameters parameters,
         CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
         if (evidence == null || field == null || center == null || parameters == null
@@ -291,7 +300,7 @@ public final class ImageOrientationDescriptor {
         return ImageOrientationSupport.normalize((index + offset) * step);
     }
 
-    private static OptionalDouble sample(EvidenceSnapshot evidence, ScalarEvidenceField field,
+    private static OptionalDouble sample(EvidenceReadView evidence, ScalarEvidenceField field,
         MetricPoint metricPoint) {
         RasterPoint raster = evidence.transform().metricToPixelCenter(metricPoint);
         return field.sampleBilinear(raster.x(), raster.y());

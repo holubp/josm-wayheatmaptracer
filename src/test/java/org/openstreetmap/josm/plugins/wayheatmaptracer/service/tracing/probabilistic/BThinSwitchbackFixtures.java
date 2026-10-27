@@ -33,6 +33,17 @@ final class BThinSwitchbackFixtures {
         }
         return new Fixture(id,amplitude,scalar,valid);
     }
+    /** The owned branch prepays all original byId allocation sites as one
+     * source-derived reservation before it invokes the unchanged renderer. */
+    static Fixture byIdOwned(BSharedCaptureAdmission owner,String id){
+        var reservation=owner.reserveThinSwitchbackFixtureUnit(id);
+        try{
+            var fixture=byId(id);reservation.adopt(fixture);return fixture;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);throw primary;
+        }
+    }
     private static double distance(MetricPoint point,List<MetricPoint> polyline) {
         double distance=Double.POSITIVE_INFINITY;
         for(int i=1;i<polyline.size();i++)distance=Math.min(distance,distance(point,polyline.get(i-1),polyline.get(i)));
@@ -87,5 +98,7 @@ final class BThinSwitchbackFixtures {
         Fixture {scalar=scalar.clone();validity=validity.clone();}
         @Override public double[] scalar(){return scalar.clone();}
         @Override public boolean[] validity(){return validity.clone();}
+        double[] scalarOwned(BSharedCaptureAdmission owner){return owner.rawScalarCopyOriginalUnit(scalar);}
+        boolean[] validityOwned(BSharedCaptureAdmission owner){return owner.rawValidityCopyOriginalUnit(validity);}
     }
 }

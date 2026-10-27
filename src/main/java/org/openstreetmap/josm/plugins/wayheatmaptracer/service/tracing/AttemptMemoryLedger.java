@@ -351,6 +351,14 @@ public final class AttemptMemoryLedger {
             return ledger.currentBytes();
         }
 
+        /** Returns this live owner's immutable backing cap, not its current occupancy. */
+        public long limitBytes() {
+            synchronized (ledger) {
+                ensureOpen();
+                return ledger.limitBytes;
+            }
+        }
+
         /** Returns the attempt-wide retained-byte high-water mark. */
         public long peakBytes() {
             return ledger.peakBytes();

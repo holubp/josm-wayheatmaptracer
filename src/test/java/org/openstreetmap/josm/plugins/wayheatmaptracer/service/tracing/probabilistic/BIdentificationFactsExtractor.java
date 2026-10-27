@@ -11,8 +11,187 @@ import static org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.pr
 
 /** Identification-only adapter; never changes extraction or live evidence. */
 final class BIdentificationFactsExtractor {
+    CapturedFacts extractCapturedPosition(BExperimentalScalarCapture capture,EvidenceReadView evidence,
+            String fieldKey,BExperimentalScalarCapture.CapturedProfiles profiles,
+            CancellationProbe cancellation,AttemptMemoryLedger.Owner owner,BSharedWork work) {
+        Objects.requireNonNull(work);work.authoritySlots(5);work.requireOwner(owner);work.requireProbe(cancellation);
+        Objects.requireNonNull(profiles).validate(capture,evidence,fieldKey,owner,work,cancellation);
+        work.claimSourceExtraction();
+        AttemptMemoryLedger.Owner issued=null;
+        try {
+            work.poll();profiles.validate(capture,evidence,fieldKey,owner,work,cancellation);
+            var original=profiles.profiles();int count=original.size();
+            work.authoritySlots(6+fieldKey.length());
+            if(count<1||count>81)throw new IllegalArgumentException("Captured facts profile inventory");
+            //Facts capsule6refs+boolean=O49=72, checked callback2refs=O16=32.
+            //The exact immutable factory list is borrowed; no copied/replayed profiles.
+            work.metadata(72+32);
+            issued=owner.child("captured-original-facts");
+            for(int index=0;index<count;index++) {
+                work.poll();profiles.validate(capture,evidence,fieldKey,owner,work,cancellation);
+                work.authoritySlots(1);issued.retainIfAbsent(original.get(index));
+            }
+            CancellationProbe checked=new CapturedProbe(work,profiles);
+            List<ProfileFacts> facts;
+            work.sourceExtractionStarting();
+            try {
+                facts=extractReadView(evidence,original,checked,issued);
+            } catch(RuntimeException|Error primary) {
+                work.sourceExtractionFinished(false,primary instanceof java.util.concurrent.CancellationException);
+                throw primary;
+            }
+            work.sourceExtractionFinished(true,false);
+            for(int index=0;index<facts.size();index++) {
+                work.poll();profiles.validate(capture,evidence,fieldKey,owner,work,cancellation);
+                work.authoritySlots(1);
+                if(facts.get(index).baseline()!=original.get(index))
+                    throw new IllegalStateException("Extractor changed captured profile identity");
+            }
+            var result=new CapturedFacts(profiles,fieldKey,evidence.fields().get(fieldKey),facts,issued,work);
+            work.poll();profiles.validate(capture,evidence,fieldKey,owner,work,cancellation);
+            if(issued.isClosed())throw new IllegalStateException("Captured facts owner closed before publication");
+            return result;
+        } catch(RuntimeException|Error primary) {
+            if(primary instanceof java.util.concurrent.CancellationException)
+                try {work.sourceIssuerCancelled();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            if(issued!=null)try {issued.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            throw primary;
+        }
+    }
+    private static final class CapturedProbe implements CancellationProbe {
+        private final BSharedWork work;
+        private final BExperimentalScalarCapture.CapturedProfiles profiles;
+        private CapturedProbe(BSharedWork work,BExperimentalScalarCapture.CapturedProfiles profiles){this.work=work;this.profiles=profiles;}
+        public boolean cancelled(){work.authoritySlots(2);work.poll();profiles.ensureOpen();return false;}
+    }
+    static final class CapturedFacts implements BSharedPositionEvidence.SourceAuthority {
+        private final BExperimentalScalarCapture.CapturedProfiles source;
+        private final String fieldKey;
+        private final ScalarEvidenceField field;
+        private final List<ProfileFacts> facts;
+        private final AttemptMemoryLedger.Owner issued;
+        private final BSharedWork work;
+        private boolean closed;
+        private CapturedFacts(BExperimentalScalarCapture.CapturedProfiles source,String key,
+                ScalarEvidenceField field,List<ProfileFacts> facts,AttemptMemoryLedger.Owner issued,BSharedWork work) {
+            this.source=source;this.fieldKey=key;this.field=field;this.facts=facts;this.issued=issued;this.work=work;
+        }
+        public void ensureOpen(){work.authoritySlots(3);source.ensureOpen();
+            if(closed||issued.isClosed())throw new IllegalStateException("Captured facts closed");}
+        List<ProfileFacts> facts(){ensureOpen();return facts;}
+        void validate(BExperimentalScalarCapture capture,EvidenceReadView view,String key,
+                BExperimentalScalarCapture.CapturedProfiles profiles,AttemptMemoryLedger.Owner owner,
+                BSharedWork actualWork,CancellationProbe probe) {
+            ensureOpen();actualWork.authoritySlots(7);source.validate(capture,view,key,owner,actualWork,probe);
+            if(source!=profiles||work!=actualWork||!fieldKey.equals(key)||view.fields().get(key)!=field)
+                throw new IllegalArgumentException("Foreign captured facts capability");
+        }
+        @Override public void close(){closed=true;issued.close();}
+    }
+    /** Issues only actual extractor output; source objects are immutable borrows, not co-owned pixels. */
+    SharedPositionFacts extractSharedPosition(EvidenceSnapshot evidence,String fieldKey,
+            List<ProbabilisticProfile> profiles,CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner owner,BSharedWork work) {
+        Objects.requireNonNull(work);
+        // Work/owner/probe references are checked before any acquisition or child owner.
+        work.authoritySlots(3);work.requireOwner(owner);work.requireProbe(cancellation);
+        work.claimSourceExtraction();
+        AttemptMemoryLedger.Owner issued=null;
+        try {
+            work.poll();
+            // Six header slots: snapshot, key, sequence, selected field, source and transform.
+            work.authoritySlots(6);
+            Objects.requireNonNull(evidence);Objects.requireNonNull(profiles);
+            if(fieldKey==null||fieldKey.length()>8192)throw new IllegalArgumentException("Missing or unbounded selected source field");
+            work.authoritySlots(fieldKey.length());
+            ScalarEvidenceField field=evidence.fields().get(fieldKey);
+            if(field==null||profiles.isEmpty()||profiles.size()>81)
+                throw new IllegalArgumentException("Shared-position issuer inventory");
+            int count=profiles.size();
+            // Capability O80, bounded builder, up to3 profile-copy arrays (including
+            // List.copyOf scratch), and exact returned-facts list. All share the1MiB holder.
+            work.metadata(AttemptMemoryLedger.objectBytes(80)
+                    +AttemptMemoryLedger.objectBytes(32)+2*AttemptMemoryLedger.objectBytes(16)
+                    +4*AttemptMemoryLedger.arrayBytes(count,8));
+            issued=owner.child("shared-position-original-facts");
+            var copiedProfiles=new ArrayList<ProbabilisticProfile>(count);
+            for(int index=0;index<count;index++) {
+                work.poll();work.authoritySlots(1);
+                var profile=Objects.requireNonNull(profiles.get(index));
+                issued.retainIfAbsent(profile);copiedProfiles.add(profile);
+            }
+            if(profiles.size()!=count)throw new IllegalArgumentException("Original profile sequence changed");
+            var originalProfiles=List.copyOf(copiedProfiles);
+            List<ProfileFacts> facts;
+            work.sourceExtractionStarting();
+            try {
+                facts=extract(evidence,originalProfiles,cancellation,issued);
+            } catch(RuntimeException|Error failure) {
+                work.sourceExtractionFinished(false,failure instanceof java.util.concurrent.CancellationException);
+                throw failure;
+            }
+            work.sourceExtractionFinished(true,false);
+            for(int index=0;index<facts.size();index++) {
+                work.poll();work.authoritySlots(1);
+                if(facts.get(index).baseline()!=originalProfiles.get(index))
+                    throw new IllegalStateException("Extractor changed original profile identity");
+            }
+            var result=new SharedPositionFacts(evidence,fieldKey,field,originalProfiles,facts,owner,issued,cancellation,work);
+            work.poll();return result;
+        } catch(RuntimeException|Error failure) {
+            if(failure instanceof java.util.concurrent.CancellationException)work.sourceIssuerCancelled();
+            if(issued!=null)issued.close();throw failure;
+        }
+    }
+
+    static final class SharedPositionFacts implements BSharedPositionEvidence.SourceAuthority {
+        private final EvidenceSnapshot evidence;
+        private final String fieldKey;
+        private final ScalarEvidenceField field;
+        private final List<ProbabilisticProfile> profiles;
+        private final List<ProfileFacts> facts;
+        private final AttemptMemoryLedger.Owner originalOwner,issued;
+        private final CancellationProbe cancellation;
+        private final BSharedWork work;
+        private boolean closed;
+        private SharedPositionFacts(EvidenceSnapshot evidence,String fieldKey,ScalarEvidenceField field,
+                List<ProbabilisticProfile> profiles,List<ProfileFacts> facts,AttemptMemoryLedger.Owner originalOwner,
+                AttemptMemoryLedger.Owner issued,CancellationProbe cancellation,BSharedWork work) {
+            this.evidence=evidence;this.fieldKey=fieldKey;this.field=field;this.profiles=profiles;this.facts=facts;
+            this.originalOwner=originalOwner;this.issued=issued;this.cancellation=cancellation;this.work=work;
+        }
+        public void ensureOpen() {
+            work.ensureOpen();
+            if(closed||originalOwner.isClosed()||issued.isClosed())
+                throw new IllegalStateException("Shared-position facts capability closed");
+        }
+        List<ProfileFacts> facts(){ensureOpen();return facts;}
+        void validate(EvidenceSnapshot snapshot,String key,List<ProfileFacts> supplied,BSharedWork actualWork) {
+            Objects.requireNonNull(actualWork);actualWork.authoritySlots(7);ensureOpen();
+            if(actualWork!=work||snapshot!=evidence||key==null||key.length()>8192||supplied!=facts)
+                throw new IllegalArgumentException("Foreign shared-position facts authority");
+            actualWork.authoritySlots(key.length());
+            if(!fieldKey.equals(key)||snapshot.fields().get(key)!=field)
+                throw new IllegalArgumentException("Foreign selected source field");
+            actualWork.requireOwner(originalOwner);actualWork.requireProbe(cancellation);
+            for(int index=0;index<facts.size();index++) {
+                actualWork.poll();actualWork.authoritySlots(1);
+                if(facts.get(index).baseline()!=profiles.get(index))
+                    throw new IllegalArgumentException("Foreign original source profile");
+            }
+        }
+        @Override public void close(){closed=true;issued.close();}
+    }
+
     List<BIdentificationFacts.ProfileFacts> extract(EvidenceSnapshot evidence,
             List<ProbabilisticProfile> profiles, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner owner) {
+        return extractReadView(evidence,profiles,cancellation,owner);
+    }
+
+    /** Same raw extractor body; private so a read-view never becomes arbitrary issuer authority. */
+    private List<BIdentificationFacts.ProfileFacts> extractReadView(EvidenceReadView evidence,
+            List<ProbabilisticProfile> profiles,CancellationProbe cancellation,
             AttemptMemoryLedger.Owner owner) {
         Objects.requireNonNull(evidence); Objects.requireNonNull(profiles);
         Objects.requireNonNull(cancellation).checkpoint();

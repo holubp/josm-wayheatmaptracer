@@ -256,6 +256,14 @@ public final class InferenceProfile {
         return deepCopy(componentResponsibilities);
     }
 
+    /** Read-only retained map bound for the experimental getter census.
+     * The two copied maps may contain different extra, non-cell keys.
+     * This exposes no map, source capability, allocation or numerical result.
+     */
+    int maximumOrientationBranchCount() {
+        return Math.max(orientationByBranch.size(), orientationReliabilityByBranch.size());
+    }
+
     int componentCount() {
         return componentResponsibilities.length == 0 ? 0 : componentResponsibilities[0].length;
     }

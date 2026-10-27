@@ -1068,3 +1068,38 @@ or different-method report may be retained as `host.xml`, but cannot establish
 feasibility, solver entry, return or closed ownership. A metadata-only forced
 test of the same class therefore verifies discovery without becoming engine
 evidence. This reporting repair authorizes no numerical retry or gate waiver.
+# Shared-model exploratory quality comparison
+
+The approved quality-first experiment is separately labelled
+`EXPLORATORY_QUALITY_ONLY_V1`. It reuses the actual physical shared-response,
+local-row and connection-table implementation and the production raw1 solver.
+It does not establish complete64MiB plugin/process accounting, runtime
+qualification, production preview/Apply safety or release readiness.
+
+`.github/workflows/b-shared-feasibility.yml` runs a tiny consumer preflight,
+packages public synthetic neutral inputs, and compares against the isolated
+`117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a` source/defaults reference. This reference
+was designated by the user; it is not identified as the exact old tested JAR.
+Actual old/current scalar/mask/frame recapture equality is checked before
+baseline engine entry. All native alternatives are retained, with native index0
+as the declared primary, never an oracle-best alternative.
+
+The eight baseline cases must finish and reproduce a sparse-trace geometry
+failure before the fixed16-setting screening can run. Every numerical attempt
+uses a fresh JVM with300s cooperative/360s external deadlines; no retries or
+post-selection retuning are allowed. Long calculations run in GitHub Actions,
+not through AI inference or on the tablet. Private captures are not uploaded.
+
+The workflow bootstraps only on branch
+`codex/b-shared-quality-feasibility-20261027`; other branches are unaffected.
+Do not dispatch another completed numerical batch as if it were a retry.
+Full32-case confirmation, browser acceptance and original qualification remain
+separate outstanding gates after a promising screening result.
+
+Local verification is limited to tiny tests and metadata mechanics:
+
+```sh
+python -m unittest scripts.tests.test_b_shared_feasibility scripts.tests.test_run_b_shared_feasibility
+python -O -m unittest scripts.tests.test_b_shared_feasibility scripts.tests.test_run_b_shared_feasibility
+JAVA_HOME=/data/data/com.termux/files/usr/lib/jvm/java-17-openjdk sh ./gradlew test --tests '*V022BSharedFeasibilityComparisonTest' --no-daemon --max-workers=1
+```

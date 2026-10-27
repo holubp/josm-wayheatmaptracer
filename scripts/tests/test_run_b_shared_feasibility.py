@@ -1,0 +1,114 @@
+"""Bounded runner mechanics only; no original fixture or model invocation."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+ROOT=Path(__file__).resolve().parents[2]
+
+
+class RunnerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec=importlib.util.spec_from_file_location("shared_runner",ROOT/"scripts/run-b-shared-feasibility.py")
+        cls.api=importlib.util.module_from_spec(spec);spec.loader.exec_module(cls.api)
+
+    def test_manifest_requires_external_hash_and_rejects_extra_or_changed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/"data").write_bytes(b"public synthetic bytes")
+            manifest={"files":{"data":{"bytes":22,"sha256":hashlib.sha256(b"public synthetic bytes").hexdigest()}}}
+            raw=(json.dumps(manifest)+"\n").encode();(root/"manifest.json").write_bytes(raw)
+            sha=hashlib.sha256(raw).hexdigest()
+            self.api.verify_bundle(root,sha)
+            with self.assertRaises(ValueError):self.api.verify_bundle(root,"0"*64)
+            (root/"extra").write_bytes(b"extra")
+            with self.assertRaises(ValueError):self.api.verify_bundle(root,sha)
+            (root/"extra").unlink();(root/"data").write_bytes(b"changed")
+            with self.assertRaises(ValueError):self.api.verify_bundle(root,sha)
+
+    def test_atomic_receipt_never_overwrites_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"receipt.json";self.api.write_json(p,{"status":"UNIT"})
+            before=p.read_bytes()
+            with self.assertRaises(FileExistsError):self.api.write_json(p,{"status":"wrong"})
+            self.assertEqual(before,p.read_bytes())
+
+    def test_process_failure_and_cutoff_never_become_completed_model_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            result=self.api.run_process([sys.executable,"-c","raise SystemExit(7)"],root/"failed",2)
+            self.assertEqual("PROCESS_FAILURE",result["status"])
+            self.assertFalse(result["processCompleted"])
+            result=self.api.run_process([sys.executable,"-c","import threading;threading.Event().wait()"],root/"cutoff",.05)
+            self.assertEqual("EXTERNAL_CUTOFF",result["status"])
+            self.assertIsNone(result["nativeInvocations"])
+
+    def test_duplicate_json_and_paths_refuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"bad.json";p.write_text('{"status":1,"status":2}')
+            with self.assertRaises(ValueError):self.api.read_json(p)
+        for name in ("../outside","/absolute","a\\b","a/../b"):
+            with self.assertRaises(ValueError):self.api.safe_relative(name)
+
+    def test_selection_cannot_skip_demonstrating_baseline_failure(self):
+        protocol=self.api.read_json(ROOT/"src/test/resources/b-shared-feasibility/protocol.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for item in protocol["screening"]:
+                p=root/"baseline"/item["id"];p.mkdir(parents=True)
+                self.api.write_json(str(p)+".host.json",dict(processCompleted=True))
+                self.api.write_json(p/"checked.json",dict(status="MODEL_RETURNED_ROUTE",solverInvocations=1,
+                    trackedBytesAfterClose=0,quality=dict(available=True,passed=True)))
+            result=self.api.select(protocol,root/"baseline",root/"absent-candidates",root/"selection.json")
+            self.assertEqual("INCONCLUSIVE",result["status"])
+            self.assertEqual("BASELINE_SUITABILITY_NOT_ESTABLISHED",result["reason"])
+            self.assertIsNone(result["selected"])
+
+    def test_assessment_rejects_swapped_case_and_setting_and_changed_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"case";p.mkdir()
+            binding=dict(caseId="strong-parallel-gap",role="candidate",gain=1,eta=1,
+                codeCommit="a"*40,runnerManifestSha256="b"*64,protocolSha256="c"*64,snapshotHash="d"*64)
+            receipt=dict(caseId=binding["caseId"],gain=1,eta=1,sourceRevision=binding["codeCommit"],
+                evidenceClass="EXPLORATORY_QUALITY_ONLY_V1",snapshotHash=binding["snapshotHash"],
+                status="MODEL_RETURNED_ROUTE",solverInvocations=1,trackedBytesAfterClose=0,
+                quality=dict(available=True,passed=True))
+            self.api.write_json(p/"receipt.json",receipt)
+            self.api.write_json(str(p)+".host.json",dict(processCompleted=True,binding=binding,receiptSha256=self.api.sha(p/"receipt.json")))
+            self.assertTrue(self.api.assessed(p,expected=binding)["completed"])
+            for key,value in (("caseId","connected-straight"),("gain",4),("eta",4)):
+                wrong=dict(binding);wrong[key]=value
+                with self.assertRaises(ValueError):self.api.assessed(p,expected=wrong)
+            (p/"receipt.json").write_text('{}')
+            with self.assertRaises(ValueError):self.api.assessed(p,expected=binding)
+
+    def test_known_failure_rejects_setting_even_with_another_missing_row(self):
+        good=dict(completed=True,hardPassed=True)
+        bad=dict(completed=True,hardPassed=False)
+        missing=dict(completed=False,hardPassed=False)
+        self.assertEqual("REJECT",self.api.setting_verdict([bad,missing]))
+        self.assertEqual("INCONCLUSIVE",self.api.setting_verdict([good,missing]))
+        self.assertEqual("REJECT",self.api.setting_verdict([dict(good,strongComparisonPassed=False),missing]))
+        self.assertEqual("INCONCLUSIVE",self.api.setting_verdict([dict(good,metricRequired=True)]))
+        self.assertEqual("ELIGIBLE",self.api.setting_verdict([good,good]))
+        self.assertEqual("REJECT",self.api.family_verdict(["REJECT","REJECT"]))
+        self.assertEqual("INCONCLUSIVE",self.api.family_verdict(["REJECT","INCONCLUSIVE"]))
+
+    def test_pre_capture_refusal_does_not_invent_snapshot_or_break_collection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/"case";p.mkdir()
+            binding=dict(caseId="strong-parallel-gap",role="candidate",gain=1,eta=1,
+                codeCommit="a"*40,runnerManifestSha256="b"*64,protocolSha256="c"*64,snapshotHash="d"*64)
+            receipt=dict(caseId=binding["caseId"],gain=1,eta=1,sourceRevision=binding["codeCommit"],
+                evidenceClass="EXPLORATORY_QUALITY_ONLY_V1",status="INCONCLUSIVE",failurePhase="CAPTURE",solverInvocations=0,trackedBytesAfterClose=0)
+            self.api.write_json(p/"receipt.json",receipt)
+            self.api.write_json(str(p)+".host.json",dict(processCompleted=True,binding=binding,receiptSha256=self.api.sha(p/"receipt.json")))
+            value=self.api.assessed(p,expected=binding)
+            self.assertFalse(value["completed"]);self.assertFalse(value["hardPassed"])
+            self.assertNotIn("snapshotHash",value["receipt"])
+
+
+if __name__=="__main__":unittest.main()

@@ -1,0 +1,222 @@
+name: Shared model quality feasibility
+
+on:
+  workflow_dispatch:
+  # Bootstrap on one isolated branch; no numerical trigger on ordinary branches.
+  push:
+    branches: [codex/b-shared-quality-feasibility-20261027]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      manifest: ${{ steps.package.outputs.manifest }}
+      context: ${{ steps.package.outputs.context }}
+    env:
+      JAVA_TOOL_OPTIONS: "-Xmx512m -Djava.awt.headless=true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17.0.12+7"
+      - uses: actions/checkout@v4
+        with:
+          ref: 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          path: build/shared-baseline-checkout
+      - name: Verify prospective metadata and refusal controls
+        run: |
+          python3 -m unittest scripts.tests.test_b_shared_feasibility scripts.tests.test_run_b_shared_feasibility
+          python3 -O -m unittest scripts.tests.test_b_shared_feasibility scripts.tests.test_run_b_shared_feasibility
+          python3 scripts/verify-b-shared-feasibility.py src/test/resources/b-shared-feasibility/protocol.json --require-baseline-launch
+      - name: Run tiny complete consumer and numerical neighbors only
+        run: |
+          mkdir -p build
+          java -version
+          sh ./gradlew test \
+            --tests '*V022BSharedFeasibilityComparisonTest' \
+            --tests '*V022BSharedSolverParityTest.independentRetainedMapAndExhaustivePosteriorForAllExactPolicies' \
+            --tests '*V022BSharedSolverParityTest.roundedPrefixRetentionIsNotExhaustiveFinalEnergyLexicalSorting' \
+            --tests '*V022BSharedSolverParityTest.nonfiniteNegativeAndSignedZeroPotentialAndActualFailureBudgets' \
+            --tests '*V022BSharedPositionKernelTest.distinctOwnRowsCensoredAndGroupedOutcomesUseTheExistingReducer' \
+            --tests '*V022BSharedPositionKernelTest.independentThreeCellMassDensityAndUnits' \
+            --no-daemon --max-workers=1 --console=plain > build/shared-feasibility-ci-tiny.log 2>&1
+      - name: Compile the isolated source-pinned baseline
+        working-directory: build/shared-baseline-checkout
+        run: |
+          test "$(git rev-parse HEAD)" = 117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a
+          sh ./gradlew classes --no-daemon --max-workers=1 --console=plain
+      - name: Package compiled runners and neutral public inputs
+        id: package
+        run: |
+          sh ./gradlew writeSharedFeasibilityClasspath --no-daemon --max-workers=1 --console=plain
+          python3 scripts/run-b-shared-feasibility.py prepare build/shared-feasibility-classpath.txt build/shared-baseline-checkout build/shared-feasibility-runner > build/shared-feasibility-manifest.sha
+          python3 - <<'PY'
+          import os,re,hashlib
+          from pathlib import Path
+          value=Path('build/shared-feasibility-manifest.sha').read_text().strip()
+          if not re.fullmatch('[0-9a-f]{64}',value):raise SystemExit('Invalid manifest output')
+          context=hashlib.sha256(Path('build/shared-feasibility-context.json').read_bytes()).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream:stream.write('manifest='+value+'\ncontext='+context+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-context-${{ github.sha }}
+          path: build/shared-feasibility-context.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-runner-${{ github.sha }}
+          path: build/shared-feasibility-runner/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain tiny synthetic evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-feasibility-tiny-${{ github.sha }}
+          path: |
+            build/shared-feasibility-ci-tiny.log
+            build/test-results/test/*.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  baseline:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [strong-modulated-versus-quiet-faint, thin-strong-sharp-bend, switchback-thin-strong, faint-twelve-metre-bend, thin-three-strands-intermittent, thin-strands-merge-separate, same-trail-three-strong, same-trail-three-separated-strong]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17.0.12+7"
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-runner-${{ github.sha }}
+          path: build/shared-feasibility-runner
+      - name: One baseline attempt and independent post-return assessment
+        run: python3 scripts/run-b-shared-feasibility.py baseline build/shared-feasibility-runner '${{ needs.prepare.outputs.manifest }}' '${{ matrix.case }}' 'build/evidence/baseline/${{ matrix.case }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shared-baseline-${{ matrix.case }}-${{ github.sha }}
+          path: build/evidence/baseline/
+          if-no-files-found: error
+          retention-days: 7
+
+  suitability:
+    needs: [prepare, baseline]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      suitable: ${{ steps.assess.outputs.suitable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-context-${{ github.sha }}
+          path: build/context
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: shared-baseline-*-${{ github.sha }}
+          merge-multiple: true
+          path: build/evidence/baseline
+      - id: assess
+        run: |
+          python3 scripts/run-b-shared-feasibility.py suitability build/evidence/baseline build/evidence/suitability.json --context build/context/shared-feasibility-context.json --context-sha '${{ needs.prepare.outputs.context }}'
+          python3 - <<'PY'
+          import json,os
+          value=json.load(open('build/evidence/suitability.json'))
+          with open(os.environ['GITHUB_OUTPUT'],'a') as stream:stream.write('suitable='+str(value['status']=='SUITABLE').lower()+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-suitability-${{ github.sha }}
+          path: build/evidence/suitability.json
+          if-no-files-found: error
+          retention-days: 7
+
+  screening:
+    needs: [prepare, suitability]
+    if: needs.suitability.outputs.suitable == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 98
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [strong-modulated-versus-quiet-faint, thin-strong-sharp-bend, switchback-thin-strong, faint-twelve-metre-bend, thin-three-strands-intermittent, thin-strands-merge-separate, same-trail-three-strong, same-trail-three-separated-strong]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17.0.12+7"
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-runner-${{ github.sha }}
+          path: build/shared-feasibility-runner
+      - name: Complete fixed sixteen-setting family without retries
+        run: python3 scripts/run-b-shared-feasibility.py screening build/shared-feasibility-runner '${{ needs.prepare.outputs.manifest }}' '${{ matrix.case }}' 'build/evidence/candidates/${{ matrix.case }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shared-candidates-${{ matrix.case }}-${{ github.sha }}
+          path: build/evidence/candidates/
+          if-no-files-found: error
+          retention-days: 7
+
+  selection:
+    needs: [prepare, suitability, screening]
+    if: always() && needs.suitability.outputs.suitable == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-context-${{ github.sha }}
+          path: build/context
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: shared-baseline-*-${{ github.sha }}
+          merge-multiple: true
+          path: build/evidence/baseline
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: shared-candidates-*-${{ github.sha }}
+          merge-multiple: true
+          path: build/evidence/candidates
+      - name: Freeze one candidate or report rejection/inconclusiveness
+        run: python3 scripts/run-b-shared-feasibility.py select build/evidence/baseline build/evidence/selection.json build/evidence/candidates --context build/context/shared-feasibility-context.json --context-sha '${{ needs.prepare.outputs.context }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-selection-${{ github.sha }}
+          path: build/evidence/selection.json
+          if-no-files-found: error
+          retention-days: 7

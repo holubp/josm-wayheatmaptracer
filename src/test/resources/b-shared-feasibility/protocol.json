@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "evidenceClass": "EXPLORATORY_QUALITY_ONLY_V1",
+  "totalPluginMemoryQualified": false,
+  "caseRolePolicy": "PRESERVE_ORIGINAL_REQUIRED_AND_STRESS_DISPOSITIONS",
+  "cases": [
+    "strong-parallel-gap", "connected-straight", "connected-short-bend", "connected-sharp-apex",
+    "faint-six-metre-bend", "faint-twelve-metre-bend", "genuine-junction",
+    "positive-twenty-five-representation", "negative-twenty-five-representation",
+    "flecks-versus-faint-coherent", "valid-sparse-gap", "invalid-unknown-gap", "censored-flank",
+    "strong-modulated-versus-quiet-faint", "unknown-detour", "uniform-null", "alternating-null",
+    "half-pitch-alias", "quarter-phase-alias", "reverse-original-mesh",
+    "thin-three-strands", "thin-three-strands-intermittent", "thin-strands-merge-separate",
+    "drifting-strong-with-faint-original", "thin-strong-sharp-bend", "thin-faint-coherent-sharp-bend",
+    "thin-local-overlap-noise", "switchback-thin-strong", "switchback-thin-faint",
+    "same-trail-three-strong", "same-trail-five-strong", "same-trail-three-separated-strong"
+  ],
+  "screening": [
+    {"id": "strong-modulated-versus-quiet-faint", "category": "intense"},
+    {"id": "thin-strong-sharp-bend", "category": "intense"},
+    {"id": "switchback-thin-strong", "category": "intense"},
+    {"id": "faint-twelve-metre-bend", "category": "faint-intermittent"},
+    {"id": "thin-three-strands-intermittent", "category": "faint-intermittent"},
+    {"id": "thin-strands-merge-separate", "category": "representative"},
+    {"id": "same-trail-three-strong", "category": "representative"},
+    {"id": "same-trail-three-separated-strong", "category": "representative"}
+  ],
+  "gains": [1, 4, 16, 64],
+  "etas": [0, 0.25, 1, 4],
+  "baseline": {
+    "status": "SOURCE_PINNED_DEFAULTS_APPROVED",
+    "sourceCommit": "117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a",
+    "sourceTree": "a701c0bb3fe6e213f4aa44d12763863f209d6a32",
+    "defaultsToStringSha256": "4a6c463c009d9dc454741a8146de9f69c1e065b98f5026514a921c9b377a9d77",
+    "exactHistoricalTestedBinaryClaim": false,
+    "inputEquivalenceRequired": true,
+    "primarySelectionPolicy": "FIRST_NATIVE_RETURNED_ALTERNATIVE",
+    "nativePolicy": [96, 8000000, 128000000, 32, 8],
+    "nativeLedgerBytes": 268435456,
+    "stepMeters": 1.5,
+    "alignmentMode": "PRECISE_SHAPE_FIXED_ENDPOINTS",
+    "note": "User explicitly designated source117baaf/defaults. This is not an exact historical tested JAR. The isolated runner must verify actual defaults, class origin and scalar/mask/frame recapture equality before each engine call."
+  },
+  "limits": {
+    "trackedAllocationBytes": 67108864,
+    "states": 96,
+    "pairs": 8000000,
+    "solverScores": 128000000,
+    "cooperativeSeconds": 300,
+    "externalSeconds": 360,
+    "searchHalfWidthMeters": 25,
+    "jvmMaxHeapMiB": 512,
+    "receiptBytes": 1048576,
+    "caseArtifactBytes": 67108864,
+    "uploadBytes": 536870912
+  },
+  "memoryCoverage": {
+    "tracked": ["existing-work-reservations", "shared-response-banks", "exact-scratch", "table-and-solver-reservations"],
+    "excluded": ["capture-scalar-and-clones", "fixture-cache-graphs", "unfunded-original-profile-facts-lattice-objects", "unfunded-receipt-hash-visualization-buffers", "jvm-startup-provider-native-overhead"],
+    "claim": "TRACKED_PEAK_ONLY_NOT_TOTAL_PLUGIN_OR_PROCESS_BOUND"
+  },
+  "quality": {
+    "sampleSpacingNativePixels": 0.5,
+    "meanToleranceNativePixels": 0.25,
+    "p95ToleranceNativePixels": 0.5,
+    "sparseNormalizationMeters": {"faint-twelve-metre-bend": 1, "same-trail-three-strong": 1, "same-trail-three-separated-strong": 1},
+    "distance": "UNSIGNED_TRUTH_CHAINAGE_TO_NEAREST_RETURNED_CLOSED_SEGMENT",
+    "endpoints": "INCLUDE_BOTH_FINAL_ENDPOINT_ONCE",
+    "aggregation": "EQUAL_SAMPLE_WEIGHTS_P95_SORTED_CEIL_0.95_N_MINUS_1",
+    "truthPolicy": "POST_RETURN_ONLY_NOT_ORIGINAL_OSM_GUIDE",
+    "safetyScope": "EXPLORATORY_ORACLES_NOT_PRODUCTION_PREVIEW_OR_APPLY"
+  },
+  "schedule": {
+    "baselineSuitabilityAttempts": 8,
+    "candidateScreeningAttempts": 128,
+    "frozenConfirmationAttempts": 32,
+    "remainingBaselineAttempts": 24,
+    "maximumAttempts": 192,
+    "fitAuthority": "EXPLORATORY_ONLY_NOT_ORIGINAL_TRAIN_SELECT",
+    "retries": 0,
+    "solverCallsPerCandidate": 1
+  }
+}

@@ -106,6 +106,70 @@ class V022BGapMatchedControlsTest {
         }
         return new ScalarInput(w,h,p(-20,0),1,scalar,valid,source);
     }
+    /** Original 81² recipe, with raw arrays/origin/record clones paid at their sites. */
+    private static ScalarInput originalScalarInputOwnedAtOriginalSite(String id,
+            List<MetricPoint> source,BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(source);
+        int w=81,h=81;
+        double[] scalar=owner.rawScalarPlaneOriginalUnit(w*h);
+        boolean[] valid=owner.rawValidityPlaneOriginalUnit(w*h);
+        if(id.equals("flecks-versus-faint-coherent"))owner.prepayOriginalFlecksUnit();
+        Arrays.fill(valid,true);
+        for(int y=0;y<h;y++)for(int x=0;x<w;x++) {
+            owner.recipeCheckpointUnit();
+            double worldX=x-20;scalar[y*w+x]=Math.max(0,Math.min(1,intensity(id,worldX,y)));
+            if((id.equals("invalid-unknown-gap")||id.equals("unknown-detour"))&&worldX>=18&&worldX<=22&&y>=34&&y<=40)valid[y*w+x]=false;
+        }
+        var origin=owner.metricPointOriginalUnit(-20,0);
+        return scalarInputOwnedAtOriginalSite(owner,w,h,origin,1,scalar,valid,source);
+    }
+    private static ScalarInput originalInputOwnedAtOriginalSite(String id,BSharedCaptureAdmission owner){
+        var source=sourceOwnedAtOriginalSite(owner,id);
+        return originalScalarInputOwnedAtOriginalSite(id,source,owner);
+    }
+    record RawHashObservation(String rasterSha256,String validitySha256,int width,int height,
+            List<Double> origin,double pitchMeters,List<MetricPoint> source) { }
+    record OwnedCaptureObservation(EvidenceReadView view,RawHashObservation raw) { }
+    private static ScalarInput selectedInputOwnedAtOriginalSite(String id,List<MetricPoint> source,
+            BSharedCaptureAdmission owner){
+        return isSwitchback(id)?switchbackInputOwnedAtOriginalSite(id,source,owner)
+            :isSameTrail(id)||isSeparatedSameTrail(id)?sameTrailInputOwnedAtOriginalSite(id,source,owner)
+            :isThin(id)?thinInputOwnedAtOriginalSite(id,source,owner)
+            :originalScalarInputOwnedAtOriginalSite(id,source,owner);
+    }
+    /** Source-faithful first input generation and two sequential raw hashes.
+     * The provider/throw/runtime proof gate runs before any 81² recipe. */
+    private static RawHashObservation rawHashFirstPassOriginalSite(String id,BSharedCaptureAdmission owner){
+        var first=owner.beginRawHashPassOriginalUnit();
+        first.requireRawDigestRuntimeUnit();
+        var source=sourceOwnedAtOriginalSite(first,id);
+        var input=selectedInputOwnedAtOriginalSite(id,source,first);
+        if(input.width!=81||input.height!=81||input.pitchMeters!=1||source.size()>12)
+            throw new SecurityException("Fixed native dimensions changed");
+        var buffers=first.rawHashBuffersOriginalUnit(input.scalar.length,input.validity.length);
+        var bytes=buffers.raster();
+        for(int i=0;i<input.scalar.length;i++){
+            first.recipeCheckpointUnit();
+            bytes.putDouble(input.scalar[i]);
+        }
+        byte[] mask=buffers.mask();
+        for(int i=0;i<mask.length;i++){
+            first.recipeCheckpointUnit();
+            mask[i]=(byte)(input.validity[i]?1:0);
+        }
+        var rasterSha=first.rawHashOriginalUnit(bytes.array());
+        var validitySha=first.rawHashOriginalUnit(mask);
+        var reservation=first.reserveRawHashObservationOriginalUnit();
+        try{
+            var origin=List.of(input.origin.xMeters(),input.origin.yMeters());
+            var observation=new RawHashObservation(rasterSha,validitySha,input.width,input.height,
+                origin,input.pitchMeters,input.source);
+            reservation.adopt(observation);return observation;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            first.abortOriginalScalarInputUnit(primary);throw primary;
+        }
+    }
     static EvidenceSnapshot captureNativeDefaultSource(String id,Map<String,Object> binding,CancellationProbe probe){
         BNativeProductionDefaultComparison.requireCase(id);Objects.requireNonNull(binding);probe.checkpoint();
         var source=source(id);var input=isCurvedControl(id)?(isSwitchback(id)?switchbackInput(id):sameTrailInput(id)):isThin(id)?thinInput(id):originalScalarInput(id,source);
@@ -141,19 +205,99 @@ class V022BGapMatchedControlsTest {
         }
         @Override public double[] scalar(){return scalar.clone();}
         @Override public boolean[] validity(){return validity.clone();}
+        //Owned experimental branch reserves/adopts the actual getter clone.
+        //The original native constructor/getters and recipe values stay unchanged.
+        private double[] scalarOwned(BSharedCaptureAdmission owner){return owner.scalarCopyAtOriginalSite(scalar);}
+        private boolean[] validityOwned(BSharedCaptureAdmission owner){return owner.validityCopyAtOriginalSite(validity);}
+    }
+    /** Same record constructor as native; the owned branch prepays its real clones. */
+    private static ScalarInput scalarInputOwnedAtOriginalSite(BSharedCaptureAdmission owner,
+            int width,int height,MetricPoint origin,double pitchMeters,double[] scalar,
+            boolean[] validity,List<MetricPoint> source) {
+        var reservation=owner.reserveOriginalScalarInputUnit(width,height,scalar,validity,source);
+        try {
+            var input=new ScalarInput(width,height,origin,pitchMeters,scalar,validity,source);
+            reservation.adopt(input);
+            return input;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);
+            throw primary;
+        }
+    }
+    /** Owns the actual source() generation and a stable copy for capture. */
+    private static List<MetricPoint> sourceOwnedAtOriginalSite(BSharedCaptureAdmission owner,String id) {
+        var reservation=owner.reserveMetricSourceUnit();
+        try {
+            var original=source(id);
+            if(original.size()<2||original.size()>12)throw new IllegalArgumentException("Original source count");
+            var copy=new MetricPoint[original.size()];
+            for(int i=0;i<copy.length;i++){
+                var point=original.get(i);
+                copy[i]=new MetricPoint(point.xMeters(),point.yMeters());
+            }
+            //Original two-point sources use List12; twelve-point curved sources
+            //use ListN. Preserve that concrete source class for native streams.
+            var metric=copy.length==2?List.of(copy[0],copy[1]):List.of(copy);
+            owner.adoptMetricSourceUnit(reservation,metric);
+            return metric;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);
+            throw primary;
+        }
     }
     private static ScalarInput thinInput(String id) {
         var fixture=BThinStrandFixtures.byId(id);
         return new ScalarInput(fixture.width(),fixture.height(),fixture.origin(),fixture.pitchMeters(),fixture.intensities(),fixture.validity(),fixture.source());
+    }
+    /** New selected-only source identity; original eager seven-case byId is untouched. */
+    private static ScalarInput thinInputOwnedAtOriginalSite(String id,BSharedCaptureAdmission owner){
+        return thinInputOwnedAtOriginalSite(id,sourceOwnedAtOriginalSite(owner,id),owner);
+    }
+    private static ScalarInput thinInputOwnedAtOriginalSite(String id,List<MetricPoint> source,
+            BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(source);
+        var fixture=BSelectedThinStrandFixtures.selected(owner,id);
+        var origin=owner.metricPointOriginalUnit(-20,0);
+        var scalar=fixture.intensitiesOwned(owner);
+        var validity=fixture.validityOwned(owner);
+        return scalarInputOwnedAtOriginalSite(owner,fixture.width(),fixture.height(),origin,1,
+            scalar,validity,source);
     }
 
     private static ScalarInput switchbackInput(String id) {
         var fixture=BThinSwitchbackFixtures.byId(id);
         return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BThinSwitchbackFixtures.source());
     }
+    private static ScalarInput switchbackInputOwnedAtOriginalSite(String id,BSharedCaptureAdmission owner){
+        return switchbackInputOwnedAtOriginalSite(id,sourceOwnedAtOriginalSite(owner,id),owner);
+    }
+    private static ScalarInput switchbackInputOwnedAtOriginalSite(String id,List<MetricPoint> source,
+            BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(source);
+        var fixture=BThinSwitchbackFixtures.byIdOwned(owner,id);
+        var origin=owner.metricPointOriginalUnit(-25,-20);
+        var scalar=fixture.scalarOwned(owner);
+        var validity=fixture.validityOwned(owner);
+        return scalarInputOwnedAtOriginalSite(owner,81,81,origin,1,scalar,validity,source);
+    }
     private static ScalarInput sameTrailInput(String id) {
         var fixture=isSeparatedSameTrail(id)?BSeparatedSameTrailFixtures.fixture():BSameTrailRecordingFixtures.byId(id);
         return new ScalarInput(81,81,BThinSwitchbackFixtures.origin(),1,fixture.scalar(),fixture.validity(),BSameTrailRecordingFixtures.source());
+    }
+    private static ScalarInput sameTrailInputOwnedAtOriginalSite(String id,BSharedCaptureAdmission owner){
+        return sameTrailInputOwnedAtOriginalSite(id,sourceOwnedAtOriginalSite(owner,id),owner);
+    }
+    private static ScalarInput sameTrailInputOwnedAtOriginalSite(String id,List<MetricPoint> source,
+            BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(source);
+        var fixture=isSeparatedSameTrail(id)?BSeparatedSameTrailFixtures.fixtureOwned(owner)
+            :BSameTrailRecordingFixtures.byIdOwned(owner,id);
+        var origin=owner.metricPointOriginalUnit(-25,-20);
+        var scalar=fixture.scalarOwned(owner);
+        var validity=fixture.validityOwned(owner);
+        return scalarInputOwnedAtOriginalSite(owner,81,81,origin,1,scalar,validity,source);
     }
     @Test void sameTrailSourceBoundaryPreservesPriorInventoriesAndNeverPassesTraceLabels() {
         assertEquals(27,ALL_CASES.size());assertEquals(2,SWITCHBACK_CASES.size());assertEquals(2,SAME_TRAIL_CASES.size());
@@ -1285,6 +1429,83 @@ class V022BGapMatchedControlsTest {
         int height=Math.toIntExact((long)StrictMath.ceil((maxY-oy)/input.pitchMeters)+1);
         if((long)width*height>191401||(long)(width-1)*(height-1)>190404)throw new IllegalArgumentException("Switchback output exceeds unchanged source proof");
         return new MetricRasterGrid(frame,p(ox,oy),1,0,0,1,input.pitchMeters,width,height);
+    }
+    private static MetricRasterGrid switchbackOutputGridOwnedAtOriginalSite(
+            ScalarInput input,BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(input.source);
+        var reservation=owner.reserveCurvedGridScratchUnit(input.source);
+        try{
+            var grid=switchbackOutputGrid(input);
+            owner.adoptCurvedGridOriginalUnit(reservation,grid);
+            return grid;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);throw primary;
+        }
+    }
+
+    /** Second original generation under the same root and source identity. */
+    private static BSharedCaptureAdmission.MetadataNames prepareOwnedCaptureRolesAtOriginalSite(
+            String id,BSharedCaptureAdmission owner){
+        return prepareOwnedCaptureRolesAtOriginalSite(id,sourceOwnedAtOriginalSite(owner,id),owner);
+    }
+    private static BSharedCaptureAdmission.MetadataNames prepareOwnedCaptureRolesAtOriginalSite(
+            String id,List<MetricPoint> source,BSharedCaptureAdmission owner){
+        owner.requireOwnedMetricSource(source);
+        ScalarInput input=selectedInputOwnedAtOriginalSite(id,source,owner);
+        MetricRasterGrid grid;
+        LocalMetricFrame frame;
+        if(isCurvedControl(id)){
+            grid=switchbackOutputGridOwnedAtOriginalSite(input,owner);
+            frame=grid.coordinateFrame();
+        }else{
+            frame=owner.frameOriginalUnit();
+            if(isThin(id)){
+                var first=owner.metricPointOriginalUnit(-33,0);
+                grid=owner.gridOriginalUnit(frame,first,1,111,81);
+            }else{
+                boolean fine=id.equals("half-pitch-alias")||id.equals("quarter-phase-alias");
+                double pitch=fine?.5:1,phase=id.equals("quarter-phase-alias")?.25:0;
+                var first=owner.metricPointOriginalUnit(-20+phase,phase);
+                grid=owner.gridOriginalUnit(frame,first,pitch,fine?161:81,fine?161:81);
+            }
+        }
+        owner.transformOriginalUnit(frame,input.origin,input.pitchMeters);
+        owner.lineageOriginalUnit("matched-declared-scalar");
+        owner.imageOriginalUnit(input.width,input.height);
+        input.validityOwned(owner);
+        input.scalarOwned(owner);
+        owner.geographicOriginalUnit(frame,input.source);
+        owner.resolutionOriginalUnit(input.pitchMeters);
+        var names=owner.metadataNamesOriginalUnit(id,isThin(id));
+        owner.prevalidateScalarUnit();
+        owner.prevalidateMetadataUnit(names.id(),names.sourceIdentity(),"scalar",25);
+        return names;
+    }
+
+    /** The original selected-case source producer and Session consumer share
+     * one owner/Work/probe. Runtime/source qualification remains a later gate. */
+    static OwnedCaptureObservation captureOriginalOwnedAtOriginalSite(String id,
+            BSharedCaptureAdmission owner,BExperimentalScalarCapture session){
+        owner.claimOriginalSessionUnit(session);
+        try{
+            var raw=rawHashFirstPassOriginalSite(id,owner);
+            owner.retainRawMetricSourceOriginalUnit(raw.source());
+            var names=prepareOwnedCaptureRolesAtOriginalSite(id,raw.source(),owner);
+            var reservation=owner.reserveCapturedRawHandoffOriginalUnit();
+            try{
+                var view=session.captureOwned(owner,names.id(),names.sourceIdentity());
+                var result=new OwnedCaptureObservation(view,raw);
+                reservation.adopt(result);return result;
+            }catch(RuntimeException|Error primary){
+                try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+                throw primary;
+            }
+        }catch(RuntimeException|Error primary){
+            session.abortOwnedInputs(primary);
+            owner.abortOriginalScalarInputUnit(primary);
+            throw primary;
+        }
     }
 
     private static EvidenceSnapshot captureScalarOnGrid(String id,ScalarInput input,MetricRasterGrid grid) {return captureScalarOnGrid(id,input,grid,CancellationProbe.NONE);}

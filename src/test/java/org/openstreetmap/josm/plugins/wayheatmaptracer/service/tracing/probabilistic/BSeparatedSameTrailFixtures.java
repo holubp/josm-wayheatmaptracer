@@ -30,6 +30,17 @@ final class BSeparatedSameTrailFixtures {
             for(var trace:traces)if(distance(p,trace)<=.5)k++;scalar[y*81+x]=BSameTrailRecordingFixtures.response(k);}
         return new BSameTrailRecordingFixtures.Fixture(ID,3,scalar,valid,traces,stations);
     }
+    /** Precharge the existing separated fixture call without changing its
+     * recording order or making an unfunded caller-owned Fixture. */
+    static BSameTrailRecordingFixtures.Fixture fixtureOwned(BSharedCaptureAdmission owner){
+        var reservation=owner.reserveSeparatedSameTrailFixtureUnit();
+        try{
+            var result=fixture();reservation.adopt(result);return result;
+        }catch(RuntimeException|Error primary){
+            try{reservation.close();}catch(RuntimeException|Error secondary){ /* preserve primary */ }
+            owner.abortOriginalScalarInputUnit(primary);throw primary;
+        }
+    }
     private static double distance(MetricPoint p,List<MetricPoint> trace){double best=Double.POSITIVE_INFINITY;
         for(int i=1;i<trace.size();i++){var a=trace.get(i-1);var b=trace.get(i);double dx=b.xMeters()-a.xMeters(),dy=b.yMeters()-a.yMeters(),norm=dx*dx+dy*dy;
             double t=norm==0?0:Math.max(0,Math.min(1,((p.xMeters()-a.xMeters())*dx+(p.yMeters()-a.yMeters())*dy)/norm));

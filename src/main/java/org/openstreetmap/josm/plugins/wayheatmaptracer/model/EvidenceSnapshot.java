@@ -17,7 +17,7 @@ public record EvidenceSnapshot(
     Map<String, ScalarEvidenceField> fields,
     RasterResamplingProvenance resampling,
     String sourceIdentity
-) {
+) implements EvidenceReadView {
     /** Preserves direct-grid construction semantics for existing snapshot producers. */
     public EvidenceSnapshot(String snapshotId, LocalMetricFrame coordinateFrame,
             RasterMetricTransform transform, EvidenceResolution resolution,
@@ -138,6 +138,92 @@ public record EvidenceSnapshot(
         });
         return encoder.sha256();
     }
+
+    /**
+     * Encodes the same canonical payload from read-only data, without constructing or
+     * validating a native snapshot. A data hash is not capture or issuer authority.
+     */
+    public static String canonicalHash(EvidenceReadView evidence) {
+        Objects.requireNonNull(evidence, "evidence");
+        LocalMetricFrame coordinateFrame = evidence.coordinateFrame();
+        RasterMetricTransform transform = evidence.transform();
+        EvidenceResolution resolution = evidence.resolution();
+        MetricRegion decisionRegion = evidence.decisionRegion();
+        MetricRegion evidenceRegion = evidence.evidenceRegion();
+        Map<String, ScalarEvidenceField> fields = evidence.fields();
+        RasterResamplingProvenance resampling = evidence.resampling();
+        String sourceIdentity = evidence.sourceIdentity();
+        boolean completeFrame = coordinateFrame.hasCompleteNumericalIdentity();
+        CanonicalEncoder encoder = new CanonicalEncoder().field(
+                completeFrame ? "evidence-snapshot-v4" : "evidence-snapshot-v3")
+            .field(sourceIdentity).field(coordinateFrame.projectionId())
+            .field(Double.toHexString(coordinateFrame.origin().latitudeDegrees()))
+            .field(Double.toHexString(coordinateFrame.origin().longitudeDegrees()))
+            .field(coordinateFrame.distortionCertificate().method())
+            .field(Double.toHexString(coordinateFrame.distortionCertificate().maximumRelativeDistanceError()));
+        if (completeFrame) {
+            DistortionCertificate certificate = coordinateFrame.distortionCertificate();
+            encoder.field(Double.toHexString(certificate.southWest().latitudeDegrees()))
+                .field(Double.toHexString(certificate.southWest().longitudeDegrees()))
+                .field(Double.toHexString(certificate.northEast().latitudeDegrees()))
+                .field(Double.toHexString(certificate.northEast().longitudeDegrees()))
+                .field(Double.toHexString(certificate.eastMetersPerRadian()))
+                .field(Double.toHexString(certificate.northMetersPerRadian()));
+        }
+        encoder.field(transform.transformId()).field(transform.originKind().name()).field(transform.axisUnit().name())
+            .field(Double.toHexString(transform.origin().xMeters()))
+            .field(Double.toHexString(transform.origin().yMeters()))
+            .field(Double.toHexString(transform.xAxisEastMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.xAxisNorthMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.yAxisEastMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.yAxisNorthMetersPerSourcePixel()))
+            .field(Double.toHexString(transform.rasterPixelsPerSourcePixel()))
+            .field(transform.accuracyCertificate().method())
+            .field(Double.toHexString(transform.accuracyCertificate().maximumErrorMeters()))
+            .field(Double.toHexString(transform.accuracyCertificate().toleranceMeters()))
+            .field(transform.accuracyCertificate().verificationPointCount())
+            .field(resolution.kind().name())
+            .field(resolution.nativePitchMeters().isPresent())
+            .field(resolution.nativePitchMeters().isPresent()
+                ? Double.toHexString(resolution.nativePitchMeters().getAsDouble()) : "unknown")
+            .field(Double.toHexString(resolution.renderedPitchMeters()))
+            .field(resolution.resampledPitchMeters().isPresent())
+            .field(resolution.resampledPitchMeters().isPresent()
+                ? Double.toHexString(resolution.resampledPitchMeters().getAsDouble()) : "not-resampled")
+            .field(resampling.method()).field(resampling.sourceTransformKind())
+            .field(resampling.sourceTransformIdentity())
+            .field(resampling.inputCoordinateConvention())
+            .field(resampling.scalarOrder()).field(resampling.validityRule())
+            .field(resampling.inputWidth()).field(resampling.inputHeight())
+            .field(resampling.outputWidth()).field(resampling.outputHeight());
+        resolution.spatialPitchSamples().forEach(sample -> encoder.field("pitch")
+            .field(Double.toHexString(sample.chainageMeters()))
+            .field(sample.nativePitchMeters().isPresent())
+            .field(sample.nativePitchMeters().isPresent()
+                ? Double.toHexString(sample.nativePitchMeters().getAsDouble()) : "unknown")
+            .field(Double.toHexString(sample.renderedPitchMeters())));
+        encodeRegion(encoder.field("decision"), decisionRegion);
+        encodeRegion(encoder.field("evidence"), evidenceRegion);
+        fields.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+            ScalarEvidenceField field = entry.getValue();
+            EvidenceFieldLineage lineage = field.lineage();
+            encoder.field("field").field(entry.getKey()).field(field.width()).field(field.height())
+                .field(lineage.acquisitionKind().name()).field(lineage.derivationKind().name())
+                .field(lineage.sourcePalette()).field(lineage.correlationGroup().name())
+                .field(lineage.completeAggregate());
+            lineage.scalarOperations().forEach(operation -> encoder.field("operation").field(operation));
+            double[] values = field.copiedValues();
+            boolean[] valid = field.copiedValidity();
+            for (int index = 0; index < values.length; index++) {
+                encoder.field(valid[index]).fieldHexDouble(values[index]);
+            }
+            boolean[] interpolationValid = field.copiedInterpolationValidity();
+            for (boolean completeCellSupport : interpolationValid) {
+                encoder.field("cell-support").field(completeCellSupport);
+            }
+        });
+        return encoder.sha256();
+        }
 
     private static RasterResamplingProvenance directProvenance(
             Map<String, ScalarEvidenceField> fields) {

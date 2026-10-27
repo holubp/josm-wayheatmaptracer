@@ -187,6 +187,83 @@ public final class RasterEvidenceCapture {
                 acquisitionKind, List.of(field), cancellation, scalarSource);
     }
 
+    /**
+     * Validates the same fixed precomputed-scalar inputs as native capture and returns its
+     * retained admission estimate. This is raw-data preparation, not containment validation,
+     * a snapshot, an ownership certificate, or experimental source authority.
+     */
+    public long validatePrecomputedScalarInputs(String snapshotId, BufferedImage inputRaster,
+            boolean[] acquisitionValidity, double[] scalarSource,
+            List<GeographicPoint> sourcePolyline, SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid outputGrid, EvidenceResolution sourceResolution,
+            double decisionRadiusMeters, String sourceIdentity,
+            EvidenceFieldLineage.AcquisitionKind acquisitionKind, String fieldName,
+            EvidenceFieldLineage lineage, CancellationProbe cancellation) {
+        if (inputRaster == null || acquisitionValidity == null || scalarSource == null
+                || scalarSource.length != (long) inputRaster.getWidth() * inputRaster.getHeight()
+                || scalarSource.length > MAX_INPUT_PIXELS
+                || acquisitionValidity.length != scalarSource.length || lineage == null || cancellation == null
+                || lineage.acquisitionKind() != acquisitionKind) {
+            throw new IllegalArgumentException("Scalar source and native raster frame disagree");
+        }
+        for (int index = 0; index < scalarSource.length; index++) {
+            cancellation.checkpoint();
+            if (acquisitionValidity[index] && (!Double.isFinite(scalarSource[index])
+                    || scalarSource[index] < 0.0 || scalarSource[index] > 1.0)) {
+                throw new IllegalArgumentException("Valid scalar source must be normalized");
+            }
+        }
+        cancellation.checkpoint();
+        FieldSpec field = FieldSpec.direct(fieldName,
+                ignored -> { throw new IllegalStateException("Precomputed scalar mapping was bypassed"); }, lineage);
+        List<FieldSpec> specs = List.of(field);
+        validateInputs(snapshotId, inputRaster, acquisitionValidity, sourcePolyline, inputTransform,
+                outputGrid, sourceResolution, decisionRadiusMeters, sourceIdentity, acquisitionKind,
+                specs, cancellation);
+        int count = Math.multiplyExact(inputRaster.getWidth(), inputRaster.getHeight());
+        long outputCount = (long) outputGrid.width() * outputGrid.height();
+        validateResourceBounds(count, outputCount, specs);
+        requireScalarCaptureBudgetForLimit(count, outputCount, specs, workingBudgetBytes);
+        validateRetainedEvidenceBudget(count, outputGrid.width(), outputGrid.height(), sourcePolyline,
+                sourceResolution, snapshotId, sourceIdentity, inputTransform, specs);
+        validateFieldSpecs(specs, acquisitionKind);
+        validateSourcePolylinePoints(sourcePolyline);
+        if (!inputTransform.supports(acquisitionKind)) {
+            throw new IllegalArgumentException(
+                    "Input raster transform kind is unsupported for this acquisition source");
+        }
+        long retained = estimatedRetainedEvidenceBytes(outputGrid.width(), outputGrid.height(),
+                sourcePolyline, sourceResolution, snapshotId, sourceIdentity, inputTransform, specs);
+        cancellation.checkpoint();
+        return retained;
+    }
+
+    /**
+     * Returns only a detached scalar field using native inverse/support/resampling arithmetic.
+     * The caller still owns containment, snapshot validation, source and lifetime checks.
+     * Supplied arrays must be caller-owned stable copies for this synchronous invocation.
+     */
+    public static ScalarEvidenceField resamplePrecomputedScalar(double[] values, boolean[] valid,
+            int width, int height, SupportedInputRasterTransform inputTransform,
+            MetricRasterGrid grid, EvidenceFieldLineage lineage, CancellationProbe cancellation) {
+        if (width < 2 || height < 2 || values == null || valid == null || inputTransform == null
+                || grid == null || lineage == null || cancellation == null
+                || values.length != Math.multiplyExact(width, height) || valid.length != values.length
+                || values.length > MAX_INPUT_PIXELS || (long) grid.width() * grid.height() > MAX_OUTPUT_PIXELS) {
+            throw new IllegalArgumentException("Precomputed resampling inputs are incomplete");
+        }
+        for (int index = 0; index < values.length; index++) {
+            cancellation.checkpoint();
+            if (valid[index] && (!Double.isFinite(values[index]) || values[index] < 0 || values[index] > 1))
+                throw new IllegalArgumentException("Valid scalar source must be normalized");
+        }
+        cancellation.checkpoint();
+        InverseLookup lookup = inverseLookup(grid, inputTransform, width, height, valid, cancellation);
+        ScalarEvidenceField result = resample(values, width, grid, lookup, lineage, cancellation);
+        validatePostMapping(result, grid, lookup);
+        return result;
+    }
+
     private EvidenceSnapshot captureInternal(String snapshotId, BufferedImage inputRaster,
             boolean[] acquisitionValidity, List<GeographicPoint> sourcePolyline,
             List<MetricPoint> suppliedMetricSource,

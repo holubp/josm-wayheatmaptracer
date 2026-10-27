@@ -1,5 +1,7 @@
 # AGENTS
 
+- `EXPLORATORY_QUALITY_ONLY_V1` is a read-only model-quality experiment, not runtime/resource or release qualification. Its separately marked Work/bounds must always refuse qualified runtime authority. Preserve the genuine extracted-source/table/solver joins; shared-row and connection bypass regressions must discriminate the actual returned posterior. Source-pinned baseline117baaf/defaults is explicitly not an assertion about the exact historical user-tested binary. Keep private captures out of the public CI bundle.
+
 - Historical comparison collectors must preserve legitimately empty console logs
   only for their explicit console allowlist. Keep authoritative receipts nonempty
   and retain file-type, link, size and atomic-publication guards. Empty or missing
