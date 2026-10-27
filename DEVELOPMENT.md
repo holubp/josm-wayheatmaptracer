@@ -1108,8 +1108,17 @@ Run40561132381 consumed eight baseline invocations, all cancelled at300s with
 the original stack-walking observer. Preserve that inconclusive record. A
 demonstrated harness correction may start a separately identified batch, but
 does not erase consumed calls: replacement baseline8 plus screening128 brings
-the cumulative maximum to144 of192. Reconcile the remaining confirmation and
-baseline schedule before launching it; do not silently exceed the cap.
+the cumulative maximum to144 of192 under that earlier allocation.
+
+After the corrected batch hit the ordinary128M scoring limit in seven cases,
+the user approved an offline-reference-only extension:1024M scored evaluations,
+900s cooperative/960s external deadlines,18min baseline jobs. Numerical defaults,
+source,96states/8M pairs/32raw/8distinct and memory limits remain unchanged.
+Receipts label `SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1`, retain the
+ordinary policy, and bind a distinct effective settings identity. Candidate
+limits remain128M/300s/360s. The208-call/64-case-job ceiling counts16 consumed
+calls/jobs plus the full fresh schedule; a future paired confirmation job needs
+24min. These are offline comparison limits, not production plugin defaults.
 
 Local verification is limited to tiny tests and metadata mechanics:
 

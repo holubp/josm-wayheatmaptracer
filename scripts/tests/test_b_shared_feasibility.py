@@ -58,6 +58,16 @@ class FeasibilityProtocolTest(unittest.TestCase):
     def test_user_approved_source_defaults_reference_is_explicit(self):
         b = self.api.require_baseline_launch(self.protocol)
         self.assertEqual("117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a", b["sourceCommit"])
+
+    def test_extended_offline_reference_budget_preserves_candidate_limits_and_history(self):
+        b=self.api.require_baseline_launch(self.protocol)
+        self.assertEqual([96,8000000,1024000000,32,8],b["nativePolicy"])
+        self.assertEqual("SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1",b["executionLimitsPolicy"])
+        self.assertEqual((900,960),(b["cooperativeSeconds"],b["externalSeconds"]))
+        self.assertEqual((128000000,300,360),tuple(self.protocol["limits"][k]
+            for k in ("solverScores","cooperativeSeconds","externalSeconds")))
+        self.assertEqual((16,208,64),tuple(self.protocol["schedule"][k]
+            for k in ("previousOriginalAttempts","maximumAttempts","maximumCaseJobs")))
         self.assertIs(False, b["exactHistoricalTestedBinaryClaim"])
         self.assertEqual("FIRST_NATIVE_RETURNED_ALTERNATIVE", b["primarySelectionPolicy"])
         for key, value in (("sourceCommit", "0" * 40),

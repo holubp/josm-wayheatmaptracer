@@ -45,7 +45,7 @@ public final class BSharedFeasibilityTool {
     }
     /** Invoked after native return in an isolated loader, sharing its original clock. */
     public static void checkBaselineSince(String id,Path neutral,Path attempt,long started)throws Exception{
-        requireCi();CancellationProbe probe=()->System.nanoTime()-started>=300_000_000_000L;probe.checkpoint();
+        requireCi();CancellationProbe probe=()->System.nanoTime()-started>=900_000_000_000L;probe.checkpoint();
         BSharedPositionComparison.requireAttempt(id,1,0);
         var receipt=BIdentificationReceipt.read(attempt.resolve("receipt.json"));
         boolean completed=Boolean.TRUE.equals(receipt.get("routeReturned"));

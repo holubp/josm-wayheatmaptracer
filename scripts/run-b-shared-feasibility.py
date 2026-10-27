@@ -211,7 +211,8 @@ def attempt(root,manifest_sha,case,output,setting=None):
     context=dict(codeCommit=manifest["codeCommit"],runnerManifestSha256=manifest_sha,
         protocolSha256=sha(root/"resources/b-shared-feasibility/protocol.json"),
         snapshotHashes={key:value["snapshotHash"] for key,value in index["captures"].items()})
-    host=run_process(command,output,env=env,binding=expected_binding(context,case,setting),
+    seconds=protocol["baseline"]["externalSeconds"] if setting is None else protocol["limits"]["externalSeconds"]
+    host=run_process(command,output,seconds=seconds,env=env,binding=expected_binding(context,case,setting),
         receipt_file=output/("checked.json" if setting is None else "receipt.json"))
     return host
 
@@ -228,12 +229,16 @@ def assessed(directory,baseline=False,expected=None):
     if baseline:
         if (receipt.get("baselineSourceCommit")!=BASELINE
                 or receipt.get("exactHistoricalTestedBinaryClaim") is not False):raise ValueError("Baseline identity differs")
+        policy="SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1";request=receipt.get("baselineRequest")
+        if (receipt.get("executionLimitsPolicy")!=policy or request is not None and
+                (request.get("nativePolicy")!=[96,8000000,1024000000,32,8] or request.get("executionLimitsPolicy")!=policy)):
+            raise ValueError("Baseline execution limits differ")
     elif (receipt.get("gain")!=expected["gain"] or receipt.get("eta")!=expected["eta"]
             or receipt.get("sourceRevision")!=expected["codeCommit"]):raise ValueError("Candidate setting/source differs")
     quality=receipt.get("quality",{})
     complete=(host.get("processCompleted") is True and receipt.get("status")=="MODEL_RETURNED_ROUTE"
               and receipt.get("snapshotHash")==expected["snapshotHash"]
-              and (not baseline or receipt.get("inputEquivalent") is True)
+              and (not baseline or receipt.get("inputEquivalent") is True and receipt.get("baselineRequest") is not None)
               and receipt.get("solverInvocations")==1 and receipt.get("trackedBytesAfterClose")==0
               and quality.get("available") is True)
     result=dict(completed=complete,hardPassed=complete and quality.get("passed") is True,

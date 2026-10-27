@@ -65,6 +65,10 @@ class V022BSharedFeasibilityComparisonTest {
         public static void main(String[] args)throws Exception{
             try{BSharedFeasibilityTool.checkBaselineSince("strong-parallel-gap",java.nio.file.Path.of("build/nonexistent-input"),
                 java.nio.file.Path.of("build/nonexistent-attempt"),System.nanoTime()-301_000_000_000L);
+                throw new AssertionError("Expected missing synthetic input after extended-clock admission");
+            }catch(java.nio.file.NoSuchFileException expected){System.out.println("EXTENDED_CLOCK_ADMITTED_BEFORE_INPUT");}
+            try{BSharedFeasibilityTool.checkBaselineSince("strong-parallel-gap",java.nio.file.Path.of("build/nonexistent-input"),
+                java.nio.file.Path.of("build/nonexistent-attempt"),System.nanoTime()-901_000_000_000L);
                 throw new AssertionError("Checker ignored original deadline");
             }catch(java.util.concurrent.CancellationException expected){System.out.println("ORIGINAL_CLOCK_EXPIRED_BEFORE_INPUT");}
         }

@@ -9,7 +9,19 @@ public final class ExploratoryBaselineB {
     static final String SCOPE="EXPLORATORY_QUALITY_ONLY_V1";
     static final String COMMIT="117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a";
     static final String DEFAULTS="4a6c463c009d9dc454741a8146de9f69c1e065b98f5026514a921c9b377a9d77";
+    static final String EXECUTION_LIMITS="SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1";
     static void require(boolean ok,String message){if(!ok)throw new IllegalArgumentException(message);}
+    static HistoricalNativeB.Bound extendedBudget(HistoricalNativeB.Bound bound)throws Exception{
+        var old=bound.request();var budgets=new TraceBudgets(96,8_000_000L,1_024_000_000L,32,8);
+        var settings=HistoricalNativeB.hash((old.settingsHash()+"|"+EXECUTION_LIMITS+"|"+budgets).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        var request=new TraceRequest(old.selectedWayKey(),old.selectedRange(),old.engine(),old.geometryMode(),old.permissions(),budgets,
+            old.evidenceSnapshotId(),old.evidenceContentHash(),old.networkSnapshotId(),old.networkContentHash(),settings,
+            old.parameterHash(),old.samplerId(),old.configuredSampleStepMeters(),old.profileChainage(),old.evidenceResolution(),old.corridorInput());
+        var binding=new TreeMap<String,Object>(bound.binding());binding.put("ordinaryNativePolicy",binding.get("nativePolicy"));
+        binding.put("nativePolicy",List.of(96,8_000_000,1_024_000_000,32,8));binding.put("settingsHash",settings);
+        binding.put("executionLimitsPolicy",EXECUTION_LIMITS);
+        return new HistoricalNativeB.Bound(request,bound.network(),bound.nativeSource(),binding);
+    }
     public static void main(String[] args)throws Exception{
         require("true".equals(System.getenv("CI"))&&"true".equals(System.getenv("V022_RUN_SHARED_FEASIBILITY")),"Explicit CI opt-in required");
         require(args.length==4,"neutral-directory case output-directory isolated-checker-classpath");
@@ -19,10 +31,11 @@ public final class ExploratoryBaselineB {
         require(origin.getFileName().toString().equals("baseline-main"),"Baseline classes must be isolated from current classes");
         require(DEFAULTS.equals(HistoricalNativeB.identities().get("diagnosticDefaultsToStringSha256")),"Baseline defaults changed");
         Files.createDirectory(out);long start=System.nanoTime();
-        var probe=new HistoricalNativeB.Probe(System::nanoTime,()->System.nanoTime()-start>=300_000_000_000L);
+        var probe=new HistoricalNativeB.Probe(System::nanoTime,()->System.nanoTime()-start>=900_000_000_000L);
         var receipt=new TreeMap<String,Object>();receipt.put("evidenceClass",SCOPE);receipt.put("caseId",id);
         receipt.put("baselineSourceCommit",COMMIT);receipt.put("exactHistoricalTestedBinaryClaim",false);
         receipt.put("defaultsToStringSha256",DEFAULTS);receipt.put("routeReturned",false);receipt.put("status","INCONCLUSIVE");
+        receipt.put("executionLimitsPolicy",EXECUTION_LIMITS);
         receipt.put("primarySelectionPolicy","FIRST_NATIVE_RETURNED_ALTERNATIVE");
         var ledger=AttemptMemoryLedger.production();int calls=0;
         try(var root=ledger.rootOwner();var sourceOwner=root.child("exploratory-baseline-source")){
@@ -40,7 +53,7 @@ public final class ExploratoryBaselineB {
             require(HistoricalNativeB.json(HistoricalNativeB.captured(snapshot)).equals(HistoricalNativeB.json(expected)),"Old/current scalar, masks or frame differ");
             receipt.put("inputEquivalent",true);receipt.put("snapshotHash",snapshot.canonicalHash());
             receipt.put("original",HistoricalNativeB.coordinates(input.source()));
-            var bound=HistoricalNativeB.bind(snapshot,input.source(),probe);
+            var bound=extendedBudget(HistoricalNativeB.bind(snapshot,input.source(),probe));
             receipt.put("nativeSource",HistoricalNativeB.coordinates(bound.nativeSource()));
             receipt.put("baselineRequest",bound.binding());
             var result=HistoricalNativeB.nativeCall(bound,snapshot,probe,root,out);calls=result.calls;
@@ -58,8 +71,8 @@ public final class ExploratoryBaselineB {
         HistoricalNativeB.publish(out.resolve("receipt.json"),receipt);
         // The old engine has returned and closed before current checker classes
         // are loaded. Parent=platform prevents old/current application shadowing.
-        // Both phases share this JVM's original monotonic300s clock and the one
-        // external360s watchdog; no fresh checker process/deadline is issued.
+        // Both phases share this JVM's original monotonic900s clock and the one
+        // external960s watchdog; no fresh checker process/deadline is issued.
         var paths=args[3].split(java.io.File.pathSeparator);var urls=new java.net.URL[paths.length];
         for(int i=0;i<paths.length;i++)urls[i]=Path.of(paths[i]).toUri().toURL();
         try(var loader=new java.net.URLClassLoader(urls,ClassLoader.getPlatformClassLoader())){

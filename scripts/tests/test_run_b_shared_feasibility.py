@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -45,6 +46,37 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaises(ValueError):self.api.verify_bundle(root,sha)
             (root/"extra").unlink();(root/"data").write_bytes(b"changed")
             with self.assertRaises(ValueError):self.api.verify_bundle(root,sha)
+
+    def test_actual_launcher_uses_extended_timeout_only_for_baseline(self):
+        protocol=self.api.read_json(ROOT/"src/test/resources/b-shared-feasibility/protocol.json")
+        case=protocol["screening"][0]["id"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/"resources/b-shared-feasibility").mkdir(parents=True);(root/"neutral").mkdir()
+            self.api.write_json(root/"resources/b-shared-feasibility/protocol.json",protocol)
+            self.api.write_json(root/"neutral/index.json",dict(captures={case:dict(snapshotHash="d"*64)}))
+            with patch.dict(os.environ,{"GITHUB_SHA":"a"*40}),patch.object(self.api,"verify_bundle",return_value=dict(codeCommit="a"*40)):
+                for setting,seconds in ((None,960),((1,0),360)):
+                    with self.subTest(setting=setting),patch.object(self.api,"run_process",return_value={}) as launched:
+                        self.api.attempt(root,"b"*64,case,root/"attempt",setting)
+                        self.assertEqual(seconds,launched.call_args.kwargs.get("seconds",360))
+
+    def test_baseline_receipt_cannot_relabel_ordinary_limits_as_extended(self):
+        case="strong-modulated-versus-quiet-faint";policy="SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1"
+        context=dict(codeCommit="a"*40,runnerManifestSha256="b"*64,protocolSha256="c"*64,snapshotHashes={case:"d"*64})
+        binding=self.api.expected_binding(context,case)
+        with tempfile.TemporaryDirectory() as tmp:
+            for maximum in (1024000000,128000000):
+                p=Path(tmp)/str(maximum);p.mkdir()
+                receipt=dict(caseId=case,snapshotHash="d"*64,evidenceClass="EXPLORATORY_QUALITY_ONLY_V1",
+                    baselineSourceCommit=self.api.BASELINE,inputEquivalent=True,exactHistoricalTestedBinaryClaim=False,
+                    executionLimitsPolicy=policy,baselineRequest=dict(nativePolicy=[96,8000000,maximum,32,8],executionLimitsPolicy=policy),
+                    status="MODEL_RETURNED_ROUTE",solverInvocations=1,trackedBytesAfterClose=0,quality=dict(available=True,passed=True))
+                self.api.write_json(p/"checked.json",receipt)
+                self.api.write_json(str(p)+".host.json",dict(processCompleted=True,binding=binding,receiptSha256=self.api.sha(p/"checked.json")))
+                if maximum==1024000000:self.assertTrue(self.api.assessed(p,True,binding)["completed"])
+                else:
+                    with self.assertRaisesRegex(ValueError,"execution limits"):
+                        self.api.assessed(p,True,binding)
 
     def test_atomic_receipt_never_overwrites_existing(self):
         with tempfile.TemporaryDirectory() as tmp:

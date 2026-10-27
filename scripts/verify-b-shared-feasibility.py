@@ -58,7 +58,8 @@ def validate_protocol(p):
                  and p["memoryCoverage"]["claim"] == "TRACKED_PEAK_ONLY_NOT_TOTAL_PLUGIN_OR_PROCESS_BOUND"
                  and p["schedule"] == dict(baselineSuitabilityAttempts=8,
                      candidateScreeningAttempts=128, frozenConfirmationAttempts=32,
-                     remainingBaselineAttempts=24, maximumAttempts=192,
+                     remainingBaselineAttempts=24, previousOriginalAttempts=16,
+                     maximumAttempts=208, maximumCaseJobs=64,
                      fitAuthority="EXPLORATORY_ONLY_NOT_ORIGINAL_TRAIN_SELECT",
                      retries=0, solverCallsPerCandidate=1))
     except (KeyError, TypeError, ValueError) as exc:
@@ -90,7 +91,9 @@ def require_baseline_launch(p):
             or b.get("exactHistoricalTestedBinaryClaim") is not False
             or b.get("inputEquivalenceRequired") is not True
             or b.get("primarySelectionPolicy") != "FIRST_NATIVE_RETURNED_ALTERNATIVE"
-            or b.get("nativePolicy") != [96, 8000000, 128000000, 32, 8]
+            or b.get("nativePolicy") != [96, 8000000, 1024000000, 32, 8]
+            or b.get("executionLimitsPolicy") != "SOURCE117_DEFAULT_OBJECTIVE_EXTENDED_OFFLINE_V1"
+            or b.get("cooperativeSeconds") != 900 or b.get("externalSeconds") != 960
             or b.get("nativeLedgerBytes") != 268435456 or b.get("stepMeters") != 1.5):
         raise ValueError("Unresolved or changed source-pinned baseline recipe")
     return b

@@ -14,6 +14,6 @@
             // decision; retain every cancellation/deadline check below.
             boolean forbidden=!allowEngine&&forbiddenFrame.getAsBoolean();
             if(forbidden&&!allowEngine)throw new SecurityException("Numerical entry in CAPTURE_ONLY");
-            return delegate.cancelled()||checkpoints>=cancelAt||clock.getAsLong()-started>=300_000_000_000L;
+            return delegate.cancelled()||checkpoints>=cancelAt||clock.getAsLong()-started>=900_000_000_000L;
         }
     }
