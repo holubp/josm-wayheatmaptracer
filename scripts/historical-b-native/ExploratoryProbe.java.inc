@@ -17,4 +17,3 @@
             return delegate.cancelled()||checkpoints>=cancelAt||clock.getAsLong()-started>=300_000_000_000L;
         }
     }
-
