@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -15,6 +16,22 @@ class RunnerTest(unittest.TestCase):
     def setUpClass(cls):
         spec=importlib.util.spec_from_file_location("shared_runner",ROOT/"scripts/run-b-shared-feasibility.py")
         cls.api=importlib.util.module_from_spec(spec);spec.loader.exec_module(cls.api)
+
+    def test_exploratory_projection_preserves_historical_authority_and_other_code(self):
+        original=(ROOT/"scripts/historical-b-native/HistoricalNativeB.java").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            target=Path(tmp)/"generated/HistoricalNativeB.java"
+            self.api.project_baseline_support(target)
+            actual=target.read_bytes();start=original.index(b"    static final class Probe")
+            end=original.index(b"    static void require",start)
+            self.assertEqual(original[:start],actual[:start])
+            self.assertTrue(actual.endswith(original[end:]))
+            self.assertIn(b"!allowEngine&&forbiddenFrame.getAsBoolean()",actual)
+            self.assertEqual(original,(ROOT/"scripts/historical-b-native/HistoricalNativeB.java").read_bytes())
+            with patch.object(self.api,"BASELINE_SUPPORT_SHA256","0"*64):
+                with self.assertRaisesRegex(ValueError,"source changed"):
+                    self.api.project_baseline_support(Path(tmp)/"refused.java")
+            self.assertFalse((Path(tmp)/"refused.java").exists())
 
     def test_manifest_requires_external_hash_and_rejects_extra_or_changed_files(self):
         with tempfile.TemporaryDirectory() as tmp:

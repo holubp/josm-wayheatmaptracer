@@ -1096,6 +1096,21 @@ Do not dispatch another completed numerical batch as if it were a retry.
 Full32-case confirmation, browser acceptance and original qualification remain
 separate outstanding gates after a promising screening result.
 
+The exploratory adapter authenticates the unchanged historical support source
+and projects only its cancellation Probe into a generated source file. This
+keeps capture-only stack inspection out of explicitly permitted engine loops
+while retaining all deadline and cancellation checks. The generated source
+and transformation hashes belong to the runner manifest. Preparation runs an
+actual adapter smoke test before acquiring original synthetic cases; the
+qualified historical harness and its published source pins remain unchanged.
+
+Run40561132381 consumed eight baseline invocations, all cancelled at300s with
+the original stack-walking observer. Preserve that inconclusive record. A
+demonstrated harness correction may start a separately identified batch, but
+does not erase consumed calls: replacement baseline8 plus screening128 brings
+the cumulative maximum to144 of192. Reconcile the remaining confirmation and
+baseline schedule before launching it; do not silently exceed the cap.
+
 Local verification is limited to tiny tests and metadata mechanics:
 
 ```sh

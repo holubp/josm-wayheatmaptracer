@@ -31,7 +31,8 @@ class HistoricalLaunchContracts(unittest.TestCase):
             target=cls.controlled_root/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,target)
         for tree in v.TREES:
             shutil.copytree(ROOT/tree,cls.controlled_root/tree,dirs_exist_ok=True)
-        m["sourceFiles"]["scripts/verify-b-historical-launch.py"]=v.driver.sha((ROOT/"scripts/verify-b-historical-launch.py").read_bytes())
+        m["sourceFiles"]={name:v.driver.sha((cls.controlled_root/name).read_bytes())
+                          for name in m["sourceFiles"]}
         m["javaTrees"]={tree:v.driver.tree_sha(cls.controlled_root/tree) for tree in sorted(v.TREES)}
         (cls.controlled_root/v.MANIFEST).write_bytes(v.driver.canonical(m))
 

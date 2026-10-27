@@ -17,6 +17,8 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 PACKAGE="org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic."
 BASELINE="117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a"
+BASELINE_SUPPORT_SHA256="276f59cc981c9ef34737de8c87783f1f7bddf252ae5ebaf980966a08bfcaaffa"
+BASELINE_PROBE_SHA256="3a6c34ac20d00b83065b6a73bec047c4ae1f61ba6834dcebf6676c9612ad0b11"
 
 
 def module(name,path):
@@ -124,6 +126,25 @@ def classpath(root,baseline=False):
     return os.pathsep.join(str(root/p) for p in dirs)+os.pathsep+os.pathsep.join(str(p) for p in sorted((root/"libs").glob("*.jar")))
 
 
+def project_baseline_support(destination):
+    """Project only the authenticated exploratory observer; preserve old authority."""
+    source=(ROOT/"scripts/historical-b-native/HistoricalNativeB.java").read_bytes()
+    if hashlib.sha256(source).hexdigest()!=BASELINE_SUPPORT_SHA256:raise ValueError("Historical support source changed")
+    begin=b"    static final class Probe implements CancellationProbe {"
+    end=b"    static void require"
+    if source.count(begin)!=1 or source.count(end)!=1:raise ValueError("Probe boundaries changed")
+    first=source.index(begin);last=source.index(end,first)
+    if hashlib.sha256(source[first:last]).hexdigest()!=BASELINE_PROBE_SHA256:raise ValueError("Historical probe changed")
+    replacement=(ROOT/"scripts/historical-b-native/ExploratoryProbe.java.inc").read_bytes()
+    generated=source[:first]+replacement+source[last:]
+    destination=Path(destination);destination.parent.mkdir(parents=True,exist_ok=True)
+    with destination.open("xb") as stream:stream.write(generated)
+    write_json(destination.with_suffix(".projection.json"),dict(originalSha256=BASELINE_SUPPORT_SHA256,
+        originalProbeSha256=BASELINE_PROBE_SHA256,replacementSha256=hashlib.sha256(replacement).hexdigest(),
+        generatedSha256=hashlib.sha256(generated).hexdigest(),prefixUnchanged=True,suffixUnchanged=True))
+    return destination
+
+
 def prepare(classpath_file,baseline_checkout,output):
     """Package compiled public classes and generate neutral inputs once in CI."""
     if os.environ.get("CI")!="true":raise ValueError("CI-only preparation")
@@ -142,8 +163,13 @@ def prepare(classpath_file,baseline_checkout,output):
             target=output/"libs"/(sha(path)+".jar")
             if not target.exists():shutil.copyfile(path,target)
     (output/"baseline-adapter").mkdir()
+    projected=project_baseline_support(output/"generated/HistoricalNativeB.java")
     subprocess.run(["javac","--release","17","-cp",classpath(output,True),"-d",str(output/"baseline-adapter"),
-        str(ROOT/"scripts/historical-b-native/HistoricalNativeB.java"),str(ROOT/"scripts/historical-b-native/ExploratoryBaselineB.java")],check=True)
+        str(projected),str(ROOT/"scripts/historical-b-native/ExploratoryBaselineB.java"),
+        str(ROOT/"scripts/historical-b-native/BaselineProbeRegression.java")],check=True)
+    # No model invocation: verify the actual isolated adapter's capture guard,
+    # low-overhead engine observer and unchanged cancellation/deadline behavior.
+    subprocess.run(["java","-cp",classpath(output,True),"BaselineProbeRegression"],check=True,timeout=30,stdout=subprocess.DEVNULL)
     exported=run_process(["java","-Xmx512m","-cp",classpath(output),PACKAGE+"BSharedFeasibilityTool","export",str(output/"neutral")],output/"export",
         env={"V022_RUN_SHARED_FEASIBILITY":"true"})
     if not exported["processCompleted"]:raise ValueError("Neutral preparation did not complete")
