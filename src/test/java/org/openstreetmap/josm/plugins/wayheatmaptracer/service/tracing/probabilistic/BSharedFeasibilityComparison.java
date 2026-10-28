@@ -33,6 +33,7 @@ final class BSharedFeasibilityComparison {
             receipt.put("evidenceClass",EVIDENCE_CLASS);receipt.put("solverInvocations",table.solverInvocations());
             receipt.put("routeReturned",result.result().mapPath().isPresent());
             receipt.put("runtimeQualified",false);receipt.put("sharedRowsUsed",table.sharedRowsPrepared()>0);
+            receipt.put("qualifiedProspectiveEnvelopes","UNAVAILABLE");
         }finally{work.close();}
         receipt.put("trackedBytesAfterClose",root.currentBytes());return receipt;
     }
@@ -47,6 +48,7 @@ final class BSharedFeasibilityComparison {
         receipt.put("evidenceClass",EVIDENCE_CLASS);receipt.put("caseId",request.caseId());
         receipt.put("gain",request.settings().gain());receipt.put("eta",request.settings().eta());
         receipt.put("runtimeQualified",false);receipt.put("totalPluginMemoryQualified",false);
+        receipt.put("qualifiedProspectiveEnvelopes","UNAVAILABLE");
         receipt.put("javaRuntime",System.getProperty("java.runtime.version"));
         receipt.put("javaVendor",System.getProperty("java.vendor"));
         receipt.put("sourceRevision",System.getenv("GITHUB_SHA"));
@@ -80,6 +82,8 @@ final class BSharedFeasibilityComparison {
             receipt.put("failureClass",primary.getClass().getSimpleName());
             if(primary instanceof BPhysicalPairTable.EdgeCertificateFailure edge)
                 receipt.put("edgeCertificateFailure",edge.diagnostics());
+            if(primary instanceof BPhysicalPairTable.JointBudgetFailure budget)
+                receipt.put("jointBudgetFailure",budget.diagnostics());
             receipt.put("failureFrames",java.util.Arrays.stream(primary.getStackTrace()).limit(12)
                 .map(f->f.getClassName()+"."+f.getMethodName()+":"+f.getLineNumber()).toList());
         }finally{work.close();}

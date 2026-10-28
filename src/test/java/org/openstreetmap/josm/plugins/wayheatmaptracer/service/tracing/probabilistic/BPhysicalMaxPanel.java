@@ -33,7 +33,7 @@ final class BPhysicalMaxPanel implements AutoCloseable {
     private static BPhysicalMaxPanel openIn(BPhysicalResponse response,AttemptMemoryLedger.Owner parent) {
         response.bound();var w=response.work;w.claimSourcePanel();w.claimComponentPanel();w.claimMaxPanel();
         var child=parent.child("physical-max-panel");
-        try {child.reserve(4656+2048+7680+1264+136+2144+192);
+        try {child.reserve(4656+2048+7680+1264+136+2144+192+BPhysicalPanelCertificate.reuseBytes(w));
             var p=new BPhysicalMaxPanel(response,child);w.poll();p.live();return p;
         } catch(RuntimeException|Error failure){child.close();throw failure;}
     }
@@ -127,6 +127,9 @@ final class BPhysicalMaxPanel implements AutoCloseable {
             if(fieldState<3&&contextState<3)deficit();
     }
     private int stream(int context,int winnerRow,int lanes) {
+        //Every stream, including self, starts with an empty source cache.
+        //Thus a new adaptive node or chord cannot reuse another node's rows.
+        candidate.beginSourceContext(this);
         clear(lanes);fill(winnerRow);int state=0;currentWinner=-1;
         for(int at=0;at<view.bound.indices[2].length;at++) {
             work.poll();live();visits++;

@@ -14,6 +14,7 @@ class V022BSharedFeasibilityComparisonTest {
         assertEquals(1, ledgerResult.get("solverInvocations"));
         assertEquals(true, ledgerResult.get("routeReturned"));
         assertEquals(false, ledgerResult.get("runtimeQualified"));
+        assertEquals("UNAVAILABLE",ledgerResult.get("qualifiedProspectiveEnvelopes"));
         assertEquals(0L, ledgerResult.get("trackedBytesAfterClose"));
         assertEquals(true, ledgerResult.get("sharedRowsUsed"));
     }

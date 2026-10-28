@@ -223,14 +223,16 @@ class V022BPhysicalRootIntegralTest {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l))) {
                 var old=w.sourceWork().snapshot();long bytes=w.owner().currentBytes();
-                if(refuse)try(var held=w.owner().reserve((64L<<20)-bytes-18303)) {
+                long prefixCells=(long)(r.sourceWidth()+1)*(r.sourceHeight()+1);
+                long prefixDelta=8+64+(16+4*prefixCells+7)/8*8;
+                //Four new fixed arrays (18376+48+128+344) and40B shell.
+                long reuseDelta=18936;
+                if(refuse)try(var held=w.owner().reserve((64L<<20)-bytes-(18304+prefixDelta+reuseDelta-1))) {
                     long filled=w.owner().currentBytes();
                     assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException.class,()->BPhysicalRootIntegral.open(r));
                     assertEquals(filled,w.owner().currentBytes());assertFalse(w.owner().isClosed());
                 } else try(var j=BPhysicalRootIntegral.open(r)) {
-                    long prefixCells=(long)(r.sourceWidth()+1)*(r.sourceHeight()+1);
-                    long prefixDelta=8+64+(16+4*prefixCells+7)/8*8;
-                    assertEquals(bytes+18304+prefixDelta,w.owner().currentBytes());j.certify(8.0625,6.625,8.1875,6.625,4);
+                    assertEquals(bytes+18304+prefixDelta+reuseDelta,w.owner().currentBytes());j.certify(8.0625,6.625,8.1875,6.625,4);
                     assertEquals(BPhysicalRootIntegral.Status.CERTIFIED,j.status());
                 }
                 assertEquals(bytes,w.owner().currentBytes());assertFalse(w.owner().isClosed());

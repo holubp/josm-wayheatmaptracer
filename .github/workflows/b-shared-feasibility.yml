@@ -5,6 +5,13 @@ on:
   # Bootstrap on one isolated branch; no numerical trigger on ordinary branches.
   push:
     branches: [codex/b-shared-quality-feasibility-20261027]
+    paths:
+      - src/**
+      - scripts/**
+      - gradle/**
+      - build.gradle
+      - settings.gradle
+      - .github/workflows/b-shared-feasibility.yml
 
 permissions:
   contents: read
@@ -43,6 +50,9 @@ jobs:
             --tests '*V022BSharedFeasibilityComparisonTest' \
             --tests '*V022BPhysicalProductBoundsTest' \
             --tests '*V022BMaximumReductionTest' \
+            --tests '*V022BPhysicalSourceReuseTest' \
+            --tests '*V022BPhysicalBudgetFailureTest' \
+            --tests '*V022BExploratoryMemoryBudgetTest' \
             --tests '*V022BPhysicalPointCertificateTest' \
             --tests '*V022BPhysicalRootIntegralTest' \
             --tests '*V022BPhysicalPairTableTest.validTinyPositiveRasterTailsDoNotPermanentlyRefuseCellFaces' \
@@ -96,7 +106,7 @@ jobs:
           retention-days: 7
 
   baseline:
-    # Full sweeps are deliberately disabled:152 of208 approved attempts spent.
+    # Full sweeps are deliberately disabled:160 of208 approved attempts spent.
     # Repair diagnostics below spend8, with no fresh baseline or tuning sweep.
     if: false
     needs: prepare

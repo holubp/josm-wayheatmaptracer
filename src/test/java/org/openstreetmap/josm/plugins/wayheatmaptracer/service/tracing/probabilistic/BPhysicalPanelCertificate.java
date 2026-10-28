@@ -23,22 +23,31 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
     private int phase,status;
     private boolean closed;
     private double lower,upper,error;
-    private BPhysicalPanelCertificate(BPhysicalResponse response,AttemptMemoryLedger.Owner owner) {
+    private BPhysicalPanelCertificate(BPhysicalResponse response,AttemptMemoryLedger.Owner owner,boolean reuse) {
         view=response.panelSource();work=response.work;allocation=owner;
-        bank=new SourceBank(work,this,response.sourceWidth(),response.sourceHeight());
+        bank=new SourceBank(work,this,response.sourceWidth(),response.sourceHeight(),reuse);
         nodes=new Nodes(work,owner);
     }
     static BPhysicalPanelCertificate open(BPhysicalResponse response) {
         response.bound();var work=response.work;work.claimSourcePanel();
         var child=work.owner().child("physical-source-panel-root");
-        try {child.reserve(4208+96+352);var result=new BPhysicalPanelCertificate(response,child);work.poll();result.live();return result;}
+        try {child.reserve(4208+40+96+352);var result=new BPhysicalPanelCertificate(response,child,false);work.poll();result.live();return result;}
         catch(RuntimeException|Error failure){child.close();throw failure;}
     }
     //Only a privately constructed component owner can create/use this frame.
     //It owns ONE root and ONE bank;tap classifications do not claim more roots.
     static BPhysicalPanelCertificate componentFrame(BPhysicalResponse response,BPhysicalComponentPanel component) {
         component.requireConstruction(response);
-        return new BPhysicalPanelCertificate(response,component.owner);
+        return new BPhysicalPanelCertificate(response,component.owner,response.work.sourceWork().isExploratory());
+    }
+    /** Always funds40B added bank fields; exploratory arrays precede K selection. */
+    static long reuseBytes(BPhysicalWork work) {
+        return 40+(work.sourceWork().isExploratory()?AttemptMemoryLedger.arrayBytes(27*85,8)
+                +AttemptMemoryLedger.arrayBytes(27,1)+AttemptMemoryLedger.arrayBytes(27*4,1)
+                +AttemptMemoryLedger.arrayBytes(27*3,4):0);
+    }
+    void resetComponentReuse(BPhysicalComponentPanel component) {
+        component.requireFrame(this);live();bank.resetReuse();
     }
     SourceBank beginComponent(BPhysicalComponentPanel component) {
         component.requireFrame(this);live();nodes.claim();return bank;
@@ -54,7 +63,7 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
     int componentTap(BPhysicalComponentPanel component,int x,int y) {
         component.requireFrame(this);live();work.admit(BPhysicalWork.SOURCE_PANEL);boolean returned=false;
         try {
-            int result=bank.prepareComponent(component,x,y,-1)?bank.classifyPrepared():2;
+            int result=bank.prepareComponent(component,x,y,-1)?bank.classifyComponent(component,null):2;
             returned=true;return result; //A typed refusal is still a normal return.
         } finally {work.complete(BPhysicalWork.SOURCE_PANEL,returned);}
     }
@@ -65,8 +74,7 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
         try {
             currentMax.requireFor(component);
             if(!currentMax.tableOnly())throw new IllegalStateException("No table source-range permit");
-            int result=bank.prepareComponent(component,x,y,-1)?bank.classifyPrepared():2;
-            if(result==0&&bank.scratch==0&&!bank.adjacentRange(component,currentMax))result=2;
+            int result=bank.prepareComponent(component,x,y,-1)?bank.classifyComponent(component,currentMax):2;
             returned=true;return result;
         } finally {work.complete(BPhysicalWork.SOURCE_PANEL,returned);}
     }
@@ -112,7 +120,7 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
             cursor++;total++;parent[0]=-1;depth[0]=0;ordinal=0;phase=1;}
     }
 
-    /**5*77double,2*77byte,2*35double,2*35byte;14refs+6ints=4208B.
+    /**5*77double,2*77byte,2*35double,2*35byte;baseline4208B plus40B fields.
      * n/p are nominal-program interval endpoints,lo/hi real endpoints,error is
      * SAME-parameter coupling. No point-bank constant/operation methods are used.
      */
@@ -121,10 +129,54 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
         final double[] rl=new double[35],rh=new double[35];
         final BPhysicalPanelCertificate parent;
         final BPhysicalSignaturePrefix prefix;
+        //Only independently issued source outputs, never component-bank rows.
+        //27 slots:9 taps times whole panel/left endpoint/right endpoint.
+        //Each slot:6 prepared+2 inverse+8 classified+1 interpolated records,
+        //each with the unchanged five n/p/lo/hi/error lanes =85 doubles.
+        private final double[] reuseRecords;
+        private final byte[] reuseState,reuseResults;
+        private final int[] reuseCells;
+        private int reuseSlot=-1;
         int width,height,result,cx,cy,scratch;
-        private SourceBank(BPhysicalWork work,BPhysicalPanelCertificate parent,int width,int height) {
+        private SourceBank(BPhysicalWork work,BPhysicalPanelCertificate parent,int width,int height,boolean reuse) {
             super(work,77);this.parent=parent;this.width=width;this.height=height;
+            reuseRecords=reuse?new double[27*85]:null;reuseState=reuse?new byte[27]:null;
+            reuseResults=reuse?new byte[27*4]:null;reuseCells=reuse?new int[27*3]:null;
             prefix=BPhysicalSignaturePrefix.issue(parent,work,parent.view,parent.allocation,width,height);
+        }
+        private void resetReuse() {
+            checkpoint();reuseSlot=-1;if(reuseState!=null)java.util.Arrays.fill(reuseState,(byte)0);
+        }
+        //A hit still polls the original cancellation probe and validates the
+        //source/owner on both sides of copying. False/unresolved stays typed;
+        //no missing output is ever represented by an initialized zero row.
+        private boolean reused(int stage) {
+            checkpoint();return reuseSlot>=0&&(reuseState[reuseSlot]&(1<<stage))!=0;
+        }
+        private void publish(int stage,int value) {
+            checkpoint();if(reuseSlot<0)return;
+            reuseResults[reuseSlot*4+stage]=(byte)value;reuseState[reuseSlot]|=(byte)(1<<stage);
+        }
+        private int reusedResult(int stage){return reuseResults[reuseSlot*4+stage];}
+        private void record(boolean save,int offset,int row) {
+            int at=reuseSlot*85+offset;
+            if(save){reuseRecords[at]=n[row];reuseRecords[at+1]=p[row];reuseRecords[at+2]=lo[row];reuseRecords[at+3]=hi[row];reuseRecords[at+4]=error[row];}
+            else {n[row]=reuseRecords[at];p[row]=reuseRecords[at+1];lo[row]=reuseRecords[at+2];hi[row]=reuseRecords[at+3];error[row]=reuseRecords[at+4];}
+        }
+        private void preparedRecords(boolean save) {
+            record(save,0,0);record(save,5,1);record(save,10,36);record(save,15,40);record(save,20,44);record(save,25,48);
+        }
+        private void inverseRecords(boolean save){record(save,30,15);record(save,35,16);}
+        private void classifiedRecords(boolean save) {
+            record(save,40,15);record(save,45,16);
+            if(scratch==1||scratch==2)for(int i=0;i<4;i++)record(save,50+5*i,20+i);
+            //Signatures assigns only the real hull/error of29. Its nominal
+            //lanes (and52) belong to adjacentRange only when scratch==2.
+            //Never restore unused stale lanes as if they were source outputs.
+            int at=reuseSlot*85+70;
+            if(save){reuseRecords[at+2]=lo[29];reuseRecords[at+3]=hi[29];reuseRecords[at+4]=error[29];}
+            else {lo[29]=reuseRecords[at+2];hi[29]=reuseRecords[at+3];error[29]=reuseRecords[at+4];}
+            if(scratch==2){record(save,70,29);record(save,75,52);}
         }
         private void checkpoint(){work.poll();parent.live();}
         void seed(int i,double x){n[i]=p[i]=lo[i]=hi[i]=x;error[i]=0;}
@@ -140,7 +192,12 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
         }
         boolean prepareComponent(BPhysicalComponentPanel component,int tx,int ty,int endpoint) {
             component.requireFrame(parent);
-            return prepare(component.ax,component.ay,component.bx,component.by,tx,ty,endpoint,component);
+            if(tx< -1||tx>1||ty< -1||ty>1||endpoint< -1||endpoint>1)throw new IllegalArgumentException("Source reuse slot");
+            reuseSlot=reuseState==null?-1:(endpoint+1)*9+(ty+1)*3+tx+1;
+            result=2;
+            if(reused(0)){boolean ok=reusedResult(0)==1;if(ok)preparedRecords(false);checkpoint();return ok;}
+            boolean ok=prepare(component.ax,component.ay,component.bx,component.by,tx,ty,endpoint,component);
+            if(ok&&reuseSlot>=0)preparedRecords(true);publish(0,ok?1:0);return ok;
         }
         private boolean prepare(double ax,double ay,double bx,double by,int tx,int ty,int endpoint,BPhysicalComponentPanel component) {
             result=2;seed(2,ax);seed(3,ay);seed(4,bx);seed(5,by);
@@ -189,7 +246,27 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
             if(!inverse())return 2;
             return signatures();
         }
+        private int classifyComponent(BPhysicalComponentPanel component,BPhysicalMaxPanel currentMax) {
+            component.requireFrame(parent);
+            if(currentMax!=null)currentMax.requireFor(component);
+            if(reused(2)) {
+                int status=reusedResult(2);scratch=0;
+                if(status==0){scratch=reuseCells[reuseSlot*3+2];classifiedRecords(false);
+                    if(scratch==1){cx=reuseCells[reuseSlot*3];cy=reuseCells[reuseSlot*3+1];}}
+                checkpoint();return status;
+            }
+            int status=classifyPrepared();
+            if(status==0&&scratch==0&&currentMax!=null&&!adjacentRange(component,currentMax))status=2;
+            if(status==0&&reuseSlot>=0) {
+                classifiedRecords(true);reuseCells[reuseSlot*3]=cx;reuseCells[reuseSlot*3+1]=cy;reuseCells[reuseSlot*3+2]=scratch;
+            }
+            publish(2,status);return status;
+        }
         boolean inverse() {
+            if(reused(1)){boolean ok=reusedResult(1)==1;if(ok)inverseRecords(false);checkpoint();return ok;}
+            boolean ok=inverseOriginal();if(ok&&reuseSlot>=0)inverseRecords(true);publish(1,ok?1:0);return ok;
+        }
+        private boolean inverseOriginal() {
             var t=parent.view.bound.input.evidence.transform();
             seed(2,t.origin().xMeters());seed(3,t.origin().yMeters());
             seed(4,t.xAxisEastMetersPerSourcePixel());seed(5,t.xAxisNorthMetersPerSourcePixel());
@@ -234,11 +311,13 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
         }
         boolean interpolateFixed() {
             if(scratch!=1)return false;
+            if(reused(3)){boolean ok=reusedResult(3)==1;if(ok)record(false,80,29);checkpoint();return ok;}
             seed(24,cx);seed(25,cy);
-            return op(24,15,24,1)&&op(25,16,25,1)
+            boolean ok=op(24,15,24,1)&&op(25,16,25,1)
                     &&op(26,21,20,1)&&op(26,24,26,2)&&op(26,20,26,0)
                     &&op(27,23,22,1)&&op(27,24,27,2)&&op(27,22,27,0)
                     &&op(29,27,26,1)&&op(29,25,29,2)&&op(29,26,29,0);
+            if(ok&&reuseSlot>=0)record(true,80,29);publish(3,ok?1:0);return ok;
         }
         private int maskBox(double lx,double hx,double ly,double hy) {
             return prefix.rectangle(lx,hx,ly,hy);

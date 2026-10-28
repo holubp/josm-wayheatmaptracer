@@ -116,6 +116,7 @@ final class BSharedWork implements AutoCloseable {
         if(upper==0||sourceLiveJoins<=0||bound.work!=this||bound.input.captured==null&&!exploratory)
             throw new IllegalArgumentException("No authenticated captured authority allowance");
         bound.ensureOpen();authoritySlots(8);
+        if(exploratory)return; //Prospective source allowance is explicitly deferred.
         //3 checked producers,guards/operands/store and own registration fit8 slots.
         long extra=Math.addExact(8*256,Math.multiplyExact(27*256,sourceLiveJoins));
         upper=Math.addExact(upper,extra);
@@ -132,7 +133,7 @@ final class BSharedWork implements AutoCloseable {
             throw new IllegalArgumentException("Unfunded shared-feature work");
         long next = Math.addExact(build, units);
         long primitive = Math.addExact(primitiveUpper, units);
-        if (upper != 0 && next > upper) throw new IllegalArgumentException("Shared source work upper exceeded");
+        if (!exploratory && upper != 0 && next > upper) throw new IllegalArgumentException("Shared source work upper exceeded");
         build = next; primitiveUpper = primitive;
     }
 
@@ -172,7 +173,7 @@ final class BSharedWork implements AutoCloseable {
         if (upper == 0) throw new IllegalArgumentException("Exact call before source work preflight");
         long next = Math.addExact(build, 1 + EXACT_PROXY);
         long calls = Math.addExact(exactCalls, 1), proxy = Math.addExact(complexityProxy, EXACT_PROXY);
-        if (next > upper) throw new IllegalArgumentException("Shared exact-call upper exceeded");
+        if (!exploratory && next > upper) throw new IllegalArgumentException("Shared exact-call upper exceeded");
         build = next; exactCalls = calls; complexityProxy = proxy;
     }
 
@@ -224,7 +225,7 @@ final class BSharedWork implements AutoCloseable {
 
     Counters snapshot() {
         metadata(208);
-        return new Counters(build, upper, primitiveUpper, sourceReads, maskReads, strictMathCalls,
+        return new Counters(build, exploratory?-1:upper, primitiveUpper, sourceReads, maskReads, strictMathCalls,
                 exactCalls, complexityProxy, checkpoints, lookups, writes, interpolations, metadataUsed,
                 METADATA_BYTES - metadataUsed,authorityMetadataSlots,sourceExtractionStartedCalls,sourceExtractionCompletedCalls,
                 sourceExtractionNormalReturns,sourceExtractionCancelledCalls,sourceIssuerCancellations,
@@ -239,7 +240,12 @@ final class BSharedWork implements AutoCloseable {
             long sourceExtractionCompletedCalls,long sourceExtractionNormalReturns,
             long sourceExtractionCancelledCalls,long sourceIssuerCancellations,
             long captureControlProxyUpper,long captureControlProxyUsed,
-            boolean captureControlPhaseClaimed,boolean captureControlImportAttempted) { }
+            boolean captureControlPhaseClaimed,boolean captureControlImportAttempted) {
+        @Override public long reservedUpperUnits(){
+            if(reservedUpperUnits<0)throw new UnsupportedOperationException("Qualified prospective source upper UNAVAILABLE");
+            return reservedUpperUnits;
+        }
+    }
 
     void ensureOpen() {
         if (metadata.isClosed() || attempt.isClosed()) throw new IllegalStateException("Shared work closed");

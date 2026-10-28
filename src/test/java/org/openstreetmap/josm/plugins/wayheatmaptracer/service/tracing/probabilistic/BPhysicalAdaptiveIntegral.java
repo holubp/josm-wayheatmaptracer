@@ -62,7 +62,7 @@ final class BPhysicalAdaptiveIntegral implements AutoCloseable {
     private boolean fits(int k){try{return add(initialBytes,add(headroom,poolBytes(k)))<=64L<<20&&work.adaptiveFits(this,k);}catch(ArithmeticException overflow){return false;}}
     private void live(){work.liveSource();if(closed||owner.isClosed())throw new IllegalStateException("Adaptive owner closed");}
     void requireWork(BPhysicalWork expected){live();if(work!=expected||phase!=3)throw new IllegalStateException("Foreign adaptive setup");}
-    long nodeCeiling(){return nodeBound;}
+    long nodeCeiling(){if(nodeBound<0)throw new UnsupportedOperationException("Qualified prospective node ceiling UNAVAILABLE");return nodeBound;}
     void requireRoot(BPhysicalRootIntegral expected){live();if(root!=expected||(phase!=2&&phase!=3))throw new IllegalStateException("No adaptive root permit");}
     void requireMax(BPhysicalMaxPanel expected){requireRoot(root);root.requireAdaptiveMax(this,expected);}
     void requireComponent(BPhysicalComponentPanel expected){requireRoot(root);root.requireAdaptiveComponent(this,expected);}

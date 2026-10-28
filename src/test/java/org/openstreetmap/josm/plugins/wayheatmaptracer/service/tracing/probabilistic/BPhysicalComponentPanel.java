@@ -29,12 +29,15 @@ final class BPhysicalComponentPanel implements AutoCloseable {
         //Original banks remain live. Source4208+wrapper96+root352;
         //the immutable prefix shell/array is a separately funded child.
         //new component2048+poly7680+reference1264+actual outer136.
-        try {child.reserve(4656+2048+7680+1264+136);var p=new BPhysicalComponentPanel(response,child);
+        try {child.reserve(4656+2048+7680+1264+136+BPhysicalPanelCertificate.reuseBytes(w));var p=new BPhysicalComponentPanel(response,child);
             w.poll();p.live();return p;
         } catch(RuntimeException|Error failure){child.close();throw failure;}
     }
     static BPhysicalComponentPanel forMax(BPhysicalResponse response,BPhysicalMaxPanel parent) {
         parent.requireConstruction(response);return new BPhysicalComponentPanel(response,parent.owner);
+    }
+    void beginSourceContext(BPhysicalMaxPanel parent) {
+        phase=2;live();parent.requireFor(this);source.resetComponentReuse(this);
     }
     void beginMaxRoot(BPhysicalMaxPanel parent) {
         phase=0;live();parent.requireFor(this);

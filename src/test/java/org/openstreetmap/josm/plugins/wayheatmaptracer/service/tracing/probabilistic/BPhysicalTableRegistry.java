@@ -40,14 +40,16 @@ final class BPhysicalTableRegistry {
     void prepare(int role,int outcome){prepare(role,outcome,0);}
     private void prepare(int role,int outcome,long hook) {
         pendingMode=-1;live();
-        if(role<0||role>=20||outcome<0||outcome>2||role==LOCAL&&eventUpper[LOCAL]==0||role==ENERGY)
+        if(role<0||role>=20||outcome<0||outcome>2||role==LOCAL&&eventUpper[LOCAL]==0||role==ENERGY
+                ||work.defersTableBounds()&&role>=CODEC&&role<=INVENTORY)
             throw new IllegalStateException("Unavailable global role");
         if(outcome==0&&role!=SETUP&&role!=BIND&&role!=VIEW&&role!=FAILURE&&role!=CODEC&&role!=DIGEST&&role!=UNIX&&role!=INVENTORY) {
             if(view==null)throw new IllegalStateException("No source publication");view.ensureSourceLive();
         }
         long old=outcome==0?entered[role]:outcome==1?normal[role]:thrown[role];
         long next=Math.addExact(old,1);
-        if(outcome==0) {if(next>eventUpper[role])throw new IllegalStateException("Global boundary ceiling");}
+        if(outcome==0) {if((!work.defersTableBounds()||role==SETUP||role==BIND||role==VIEW||role==TABLE||role==BASELINE||role==FAILURE||role==LOCAL)
+                &&next>eventUpper[role])throw new IllegalStateException("Global boundary ceiling");}
         else if(Math.addExact(next,outcome==1?thrown[role]:normal[role])>entered[role])
             throw new IllegalStateException("Unobserved global completion");
         prepareProxy(Math.addExact(outcome==0?BEGIN:END,hook));
@@ -57,7 +59,7 @@ final class BPhysicalTableRegistry {
     }
     private void prepareProxy(long units) {
         long next=Math.addExact(used,units);
-        if(next>upper)throw new IllegalStateException("Global bookkeeping ceiling");
+        if(!work.defersTableBounds()&&next>upper)throw new IllegalStateException("Global bookkeeping ceiling");
         pendingProxy=next;
     }
     //No guard,API,callback or arithmetic here:all prospective values validated.
@@ -74,6 +76,7 @@ final class BPhysicalTableRegistry {
         source.ensureSourceLive();work.poll();source.ensureSourceLive();live();view=source;
     }
     void registerLocal(BPhysicalPairTable.Permit permit,long q,long e,long v,long fees,long semanticUpper){
+        work.requireProspectiveTableBounds();
         live();permit.requireLocalSource(work,view);
         if(sealed||table!=null||eventUpper[LOCAL]!=0)throw new IllegalStateException("Local source schedule once");
         long scalar=Math.multiplyExact(36,q),mask=Math.multiplyExact(Math.multiplyExact(90,v),q);
@@ -87,7 +90,14 @@ final class BPhysicalTableRegistry {
         eventUpper[SCALAR]=scalar;eventUpper[MASK]=mask;eventUpper[DESCRIPTOR]=descriptor;eventUpper[REGION]=region;eventUpper[LOCAL]=rows;
         upper=proxy; //Actual earlier begins/normal/throw and proxy used remain intact.
     }
+    void registerExploratoryLocal(BPhysicalPairTable.Permit permit) {
+        live();permit.requireLocalSource(work,view);
+        if(!work.defersTableBounds()||sealed||table!=null||eventUpper[LOCAL]!=0)throw new IllegalStateException("Exploratory local schedule once");
+        //Local rows are actual inventory/phase ownership, not a work envelope.
+        eventUpper[LOCAL]=view.bound.rows.length-1;
+    }
     void install(BPhysicalPairTable table,long proxyUpper) {
+        work.requireProspectiveTableBounds();
         live();if(sealed||this.table!=null||view==null||proxyUpper<used)
             throw new IllegalStateException("Global plan once");
         table.requireRegistry(this,work,view);
@@ -96,8 +106,13 @@ final class BPhysicalTableRegistry {
         for(int i=0;i<20;i++){costUpper[i]=table.roleCost(i);eventUpper[i]=table.roleMaximum(i);}
         this.table=table;upper=proxyUpper;sealed=true;phase=1;
     }
+    void installExploratory(BPhysicalPairTable table) {
+        live();if(!work.defersTableBounds()||sealed||this.table!=null||view==null)throw new IllegalStateException("Exploratory global plan once");
+        table.requireRegistry(this,work,view);view.ensureSourceLive();
+        this.table=table;sealed=true;phase=1;
+    }
     long actual(int role,int outcome){live();if(role<0||role>=20||outcome<0||outcome>2)throw new IndexOutOfBoundsException();return outcome==0?entered[role]:outcome==1?normal[role]:thrown[role];}
-    long maximum(int role){live();if(role<0||role>=20)throw new IndexOutOfBoundsException();return eventUpper[role];}
+    long maximum(int role){live();work.requireProspectiveTableBounds();if(role<0||role>=20)throw new IndexOutOfBoundsException();return eventUpper[role];}
     boolean sourcePublished(){live();return view!=null;}
     boolean geometryAvailable(){live();return sealed;}
     void requireEngine(BPhysicalResponse.SourceView source) {
@@ -107,6 +122,7 @@ final class BPhysicalTableRegistry {
     }
     void failure(){pendingMode=-1;live();if(firstCause==0)firstCause=1;}
     void freeze(boolean last) {
+        work.requireProspectiveTableBounds();
         live();long next=Math.addExact(used,COPY);if(next>upper)throw new IllegalStateException("Global cut ceiling");
         //A caller-owned PRECOMMIT opportunity,not a build-completion event.
         //TABLE success alone does not prove staging;the future wrapper owns

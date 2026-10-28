@@ -3,6 +3,49 @@
 Exploratory quality-only continuation of the approved quality-first experiment.
 Base: `38588484e74e101c6fe602d13bd6eb05f65e1339`.
 
+## Follow-up: source reuse and explicit exploratory admission
+
+Run40673913522/91ca09c completed all eight repair diagnostics. All were
+INCONCLUSIVE, with zero solver invocations/routes and trackedBytesAfterClose0.
+Three timed out in source preparation; three could not jointly fund a table
+root; two exhausted adaptive capacities459/440.160 of208 attempts are spent.
+The three funding failures do not identify excessive actual allocation: the
+old joint predicate also composes prospective proof-cost envelopes.
+
+The approved quality-first plan explicitly defers source-cost/PRECOMMIT/cadence
+qualification. A separate exploratory branch now derives maximum K solely
+from the retained64MiB tracked-memory expression, including table/frame,
+workspace, solver headroom, geometry scratch and pool arrays. Prospective
+qualified semantic/helper/boundary/hook/source envelopes are UNAVAILABLE;
+qualified getters and frozen exports reject them. Ordinary qualified paths
+retain their original checks. This is not a larger memory limit, a fabricated
+upper bound, qualified runtime evidence, or relaxed numerical accuracy.
+
+The source-certificate cache reuses mode-independent tap/endpoint records for
+one node/context only, preserving P/E/error/status/cell bits and liveness.
+It resets on every context/node. Fixed storage18936B is funded before K;
+the40B added shell is charged on ordinary paths too, while exploratory arrays
+are18896B. Tiny3-mode counters: scalar480→372, region1152→720, with identical
+component/final carriers. These are measured unit work reductions, not tracing
+speedup measurements.
+
+Tests watched RED for missing reuse, missing typed budget diagnostics, exposed
+qualified future bounds and overflowing purely prospective source allowance.
+Full Java preflight54 tests PASS,0 failures/errors/skips,246s; Python27 normal
+and27 optimized plus protocol checks PASS. Actual memory maximality/one-byte-
+short refusal, cleanup, unknown support, source/owner closure, cancellation,
+completion invariants, whole consumer, solver/kernel and qualified refusal
+controls remain covered. Numerical equations, graph/state/pair space,96states,
+8Mpairs,128Msolver scores and300/360s attempt limits are unchanged. The same
+capacity-dependent leaf-budget formula consumes the memory-selected K.
+
+Independent Sol whole-batch review ACCEPTED with no blocking finding; reviewer
+inspected all14 source hashes, actual diff, terminal log and54-test XML. No new
+original case has run after these changes. Next authorized diagnostic is the same eight cases at gain1/eta1,
+once each, for at most168 cumulative attempts. No full128 sweep is authorized
+by the remaining48 calls; no candidate selection, quality success or release
+follows from this preflight alone.
+
 The baseline returned eight paths. The original128 candidate attempts returned
 none:32 preparation timeouts,48 unresolved point responses,16 positive weighted
 underflow exceptions,32 uncertified adaptive edges. These are preparation

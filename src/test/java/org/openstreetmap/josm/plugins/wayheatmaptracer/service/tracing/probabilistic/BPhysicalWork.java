@@ -203,17 +203,25 @@ final class BPhysicalWork implements AutoCloseable {
         poll();live();tableRegistry=r;r.begin(BPhysicalTableRegistry.SETUP);r.end(BPhysicalTableRegistry.SETUP,true);return r;
     }
     BPhysicalTableRegistry tableRegistry(){live();return tableRegistry;}
+    boolean defersTableBounds(){live();return tableRegistry!=null&&sourceWork.isExploratory();}
+    void requireProspectiveTableBounds(){if(defersTableBounds())throw new UnsupportedOperationException("Qualified prospective table envelopes UNAVAILABLE");}
     void prepayTableBody(long units) {
         live();if(tableRegistry==null||units<0)throw new IllegalStateException("No private table body");
         long next=Math.addExact(semantic,units);
-        if(installed&&next>upper)throw new IllegalStateException("Table semantic ceiling");
+        if(!defersTableBounds()&&installed&&next>upper)throw new IllegalStateException("Table semantic ceiling");
         helper(63);semantic=next;
     }
     void installTableCaps(BPhysicalPairTable table,long semanticUpper,long stageUpper) {
+        requireProspectiveTableBounds();
         liveSource();table.requireRegistry(tableRegistry,this,view);
         if(stage!=1||semanticUpper<semantic||stageUpper<helpers)throw new IllegalStateException("Global caps once");
         Math.addExact(semanticUpper,stageUpper);
         upper=semanticUpper;helperUpper=stageUpper;
+    }
+    void installExploratoryTable(BPhysicalPairTable table) {
+        liveSource();table.requireRegistry(tableRegistry,this,view);
+        if(!defersTableBounds()||stage!=1)throw new IllegalStateException("Explicit exploratory table required");
+        upper=helperUpper=-1; //Private unavailable sentinels, never exported as bounds.
     }
     void claim(){live();if(claimed)throw new IllegalStateException("Physical source already claimed");claimed=true;}
     //New captured-only caller:<=32 API/constructor/failure visits*8 plus256
@@ -235,6 +243,9 @@ final class BPhysicalWork implements AutoCloseable {
         prepayTableBody(1024);
         if(queriesUpper<0||localFees<0||regionEdges<0||stage!=1||queries!=0||queryLimit!=0)
             throw new IllegalStateException("Captured local schedule once");
+        if(defersTableBounds()){
+            tableRegistry.registerExploratoryLocal(permit);queryLimit=queriesUpper;return;
+        }
         long v=view.bound.source.length;
         long oneSource=Math.addExact(costs[SOURCE],Math.addExact(4*66,
                 Math.addExact(Math.multiplyExact(10*v,66),Math.multiplyExact(4*regionEdges,76))));
@@ -331,7 +342,7 @@ final class BPhysicalWork implements AutoCloseable {
             //Only bounded setup/source phases may execute before full global
             //caps/K installation. Public point/context entries remain disabled;
             //do not instantiate an unused single-point221-U ceiling.
-            upper=Long.MAX_VALUE;helperUpper=Long.MAX_VALUE;queryLimit=0;
+            upper=helperUpper=defersTableBounds()?-1:Long.MAX_VALUE;queryLimit=0;
             view=source;bindingOrGeometry=new Geometry(null,null,null,null,0);installed=true;
             poll();source.ensureSourceLive();return;
         }
@@ -373,7 +384,7 @@ final class BPhysicalWork implements AutoCloseable {
         parent.requirePrefixConstruction(this,source,allocation);
         if(stage<4||stage>8)throw new IllegalStateException("No source-prefix stage");
         long prepaid=Math.addExact(semantic,PREFIX_RUNTIME_SETUP);
-        if(prepaid>upper)throw new IllegalStateException("Prefix dictionary bootstrap ceiling");
+        if(!defersTableBounds()&&prepaid>upper)throw new IllegalStateException("Prefix dictionary bootstrap ceiling");
         helper(63);semantic=prepaid;
         long v=Math.multiplyExact((long)w,h),body=prefixConstructionUnits(w,h);
         long helpers=Math.addExact(Math.multiplyExact(5*v,68+69),Math.addExact(Math.multiplyExact(6*v,32),
@@ -382,7 +393,7 @@ final class BPhysicalWork implements AutoCloseable {
         //helpers<=1037+2261V<2^29. These fixed additions cannot overflow long.
         long u=tableRegistry==null?Math.addExact(upper,body+PREFIX_RUNTIME_SETUP):upper;
         long budget=tableRegistry==null?Math.addExact(helperUpper,helpers+63):helperUpper;
-        Math.addExact(u,budget);upper=u;helperUpper=budget;
+        if(!defersTableBounds())Math.addExact(u,budget);upper=u;helperUpper=budget;
         semantic=Math.addExact(semantic,Math.subtractExact(body,Math.multiplyExact(5*v,66)));
     }
     void claimContext() {
@@ -419,7 +430,7 @@ final class BPhysicalWork implements AutoCloseable {
         //One checked body join plus operands/store/staging:12 new fixed units.
         long join=Math.addExact(256+16+12+64,Math.multiplyExact(23L,rings.size()));
         long next=Math.addExact(semantic,join);
-        if(next>upper)throw new IllegalStateException("Source panel join ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Source panel join ceiling");
         semantic=next;helper(63);stage=4; //Failure consumes the claim,not a reset.
         long e=0;for(int i=0;i<rings.size();i++)e=Math.addExact(e,rings.get(i).size());
         long polls=Math.addExact(1585+60,Math.addExact(Math.multiplyExact(122,e),Math.multiplyExact(2L,rings.size())));
@@ -434,7 +445,7 @@ final class BPhysicalWork implements AutoCloseable {
         //The once64 setup above pays these producers/cache joins,not tap guards.
         if(tableRegistry!=null){body=Math.addExact(body,39992);wrappers=Math.addExact(wrappers,16*66);}
         long revised=tableRegistry==null?Math.addExact(upper,Math.addExact(join,Math.addExact(PANEL_CONSTRUCTOR_UNITS,Math.addExact(body,wrappers)))):upper;
-        long revisedHelpers=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;Math.addExact(revised,revisedHelpers);
+        long revisedHelpers=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;if(!defersTableBounds())Math.addExact(revised,revisedHelpers);
         upper=revised;helperUpper=revisedHelpers;costs[SOURCE_PANEL]=body;
         semantic=Math.addExact(semantic,PANEL_CONSTRUCTOR_UNITS);
         //Same already-owned1MiB holder;before every public/private SourceBank
@@ -451,7 +462,7 @@ final class BPhysicalWork implements AutoCloseable {
         liveSource();if(stage!=4)throw new IllegalStateException("Component panel stage");
         //24 fixed checked APIs/guards fit the separate256 join BEFORE use.
         long join=256+64,next=Math.addExact(semantic,join);
-        if(next>upper)throw new IllegalStateException("Component panel join ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Component panel join ceiling");
         semantic=next;helper(63);stage=5;
         if(sourceWrapperUnits<=0)throw new IllegalStateException("Unpublished source wrapper coefficient");
         long source=Math.multiplyExact(9,Math.addExact(costs[SOURCE_PANEL],sourceWrapperUnits));
@@ -459,18 +470,18 @@ final class BPhysicalWork implements AutoCloseable {
         long extra=Math.addExact(join,Math.addExact(COMPONENT_PANEL_SETUP,
                 Math.addExact(COMPONENT_PANEL_BODY,Math.addExact(source,getters))));
         long revised=tableRegistry==null?Math.addExact(upper,extra):upper;
-        long revisedHelpers=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;Math.addExact(revised,revisedHelpers);
+        long revisedHelpers=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;if(!defersTableBounds())Math.addExact(revised,revisedHelpers);
         upper=revised;helperUpper=revisedHelpers;costs[COMPONENT_PANEL]=COMPONENT_PANEL_BODY;
         semantic=Math.addExact(semantic,COMPONENT_PANEL_SETUP);poll();
     }
-    long registeredUpper(){liveSource();return upper;}
-    void pointCouplingGuard(){liveSource();long next=Math.addExact(semantic,POINT_COUPLING_UNITS);if(next>upper)throw new IllegalStateException("Physical point coupling ceiling");helper(63);semantic=next;}
-    void geometryGuard(){liveSource();long next=Math.addExact(semantic,EXACT_GEOMETRY_UNITS);if(next>upper)throw new IllegalStateException("Physical geometry work ceiling");helper(63);semantic=next;stat(7);}
+    long registeredUpper(){liveSource();requireProspectiveTableBounds();return upper;}
+    void pointCouplingGuard(){liveSource();long next=Math.addExact(semantic,POINT_COUPLING_UNITS);if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Physical point coupling ceiling");helper(63);semantic=next;}
+    void geometryGuard(){liveSource();long next=Math.addExact(semantic,EXACT_GEOMETRY_UNITS);if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Physical geometry work ceiling");helper(63);semantic=next;stat(7);}
     void claimMaxPanel() {
         liveSource();if(stage!=5)throw new IllegalStateException("Max panel stage");
         //32fixed checked API/guard slots*8+64controls,BEFORE dictionary ops.
         long join=320,next=Math.addExact(semantic,join);
-        if(next>upper)throw new IllegalStateException("Max join ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Max join ceiling");
         semantic=next;helper(63);stage=6;
         long d=view.bound.indices[2].length;
         if(sourceWrapperUnits<=0)throw new IllegalStateException("Unpublished source wrapper coefficient");
@@ -483,14 +494,14 @@ final class BPhysicalWork implements AutoCloseable {
                 51*MAX_INITIAL+49*(315+1005+MAX_WEIGHT_CALLER)+903+299+4096);
         long body=Math.addExact(controls,Math.multiplyExact(visits,candidate));
         long revised=tableRegistry==null?Math.addExact(upper,Math.addExact(join,Math.addExact(MAX_SETUP,body))):upper;
-        long h=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;Math.addExact(revised,h);
+        long h=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;if(!defersTableBounds())Math.addExact(revised,h);
         upper=revised;helperUpper=h;costs[MAX_PANEL]=Math.addExact(controls,Math.multiplyExact(visits,MAX_TRANSLATED_COMPONENT));
         semantic=Math.addExact(semantic,MAX_SETUP);poll();
     }
     void admit(int block) {
         liveSource();if(block<0||block>=20||costs[block]<=0)throw new UnsupportedOperationException("F1 stage capability");
         long next=Math.addExact(semantic,costs[block]),count=Math.addExact(admitted[block],1);
-        if(next>upper)throw new IllegalStateException("Physical registered work ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Physical registered work ceiling");
         var registry=tableRegistry;
         if(registry!=null)registry.prepareStage(block,0);
         helper(68);semantic=next;admitted[block]=count;
@@ -510,21 +521,22 @@ final class BPhysicalWork implements AutoCloseable {
         live();helper(61);checkpointIntents=Math.addExact(checkpointIntents,1);
         probe.checkpoint();liveSource();checkpointReturns=Math.addExact(checkpointReturns,1);
     }
-    private void helper(long n){long next=Math.addExact(helpers,n);if(installed&&next>helperUpper)throw new IllegalStateException("Physical helper ceiling");helpers=next;}
+    private void helper(long n){long next=Math.addExact(helpers,n);if(!defersTableBounds()&&installed&&next>helperUpper)throw new IllegalStateException("Physical helper ceiling");helpers=next;}
     void live(){sourceWork.ensureOpen();if(closed||owner.isClosed())throw new IllegalStateException("Physical attempt closed");}
     void liveSource(){live();if(view!=null)view.ensureSourceLive();}
     long observed(int slot){liveSource();return stats[slot];}
     long semanticUnits(){liveSource();return semantic;}
     void tableGeometry(long units,long upper) {
-        liveSource();if(tableRegistry==null||units<0||actualTableGeometry>upper)throw new IllegalStateException("Geometry currency authority");
+        liveSource();if(tableRegistry==null||units<0||!defersTableBounds()&&actualTableGeometry>upper)throw new IllegalStateException("Geometry currency authority");
         long next=Math.addExact(actualTableGeometry,units);
-        if(next>upper)throw new IllegalStateException("Original geometry currency ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Original geometry currency ceiling");
         actualTableGeometry=next;
     }
     long queries(){liveSource();return queries;}
     //137-lane ABI:reviewed1581+11(new stat)+20*7(record getters)+32guards.
     static final long TABLE_IMAGE_COPY=1581+11+20*7+32;
     void freezeTableCut(BPhysicalTableRegistry registry,BSharedWork.Counters c,boolean last) {
+        requireProspectiveTableBounds();
         live();if(registry!=tableRegistry||c==null)throw new IllegalArgumentException("Foreign actual table cut");
         var image=last?terminal:prefix;if(image.frozen)throw new IllegalStateException("Physical cut once");
         prepayTableBody(TABLE_IMAGE_COPY);long[] out=image.values;
@@ -544,7 +556,7 @@ final class BPhysicalWork implements AutoCloseable {
         out[131]=1;out[132]=0;out[133]=0;out[134]=queries;out[135]=actualTableGeometry;out[136]=137;
         image.references[0]=null;image.references[1]=null;image.phase=last?2:1;image.frozen=true;
     }
-    long tableImage(boolean last,int index){live();var i=last?terminal:prefix;
+    long tableImage(boolean last,int index){live();requireProspectiveTableBounds();var i=last?terminal:prefix;
         if(!i.frozen)throw new IllegalStateException("No actual frozen physical cut");
         if(index<0||index>=137)throw new IndexOutOfBoundsException();
         if(index>=98&&index<122)throw new IllegalStateException("Original solver work NOT_RUN");return i.values[index];}
@@ -553,6 +565,7 @@ final class BPhysicalWork implements AutoCloseable {
     //guard is used,so an actual HOST cut remains readable after child rollback.
     static final long METADATA_CUT_READ=8*32+128;
     void requireMetadataCut(BPhysicalTableRegistry issuer,boolean last){
+        requireProspectiveTableBounds();
         live();if(issuer==null||issuer!=tableRegistry)throw new IllegalArgumentException("Foreign metadata cut issuer");
         if(!(last?terminal:prefix).frozen)throw new IllegalStateException("Physical metadata cut incomplete");
         issuer.requireMetadataImage(this,last);
@@ -567,10 +580,10 @@ final class BPhysicalWork implements AutoCloseable {
     void claimRootIntegral() {
         liveSource();if(stage!=6)throw new IllegalStateException("Root integral stage");
         long next=Math.addExact(semantic,256);
-        if(next>upper)throw new IllegalStateException("Integral join ceiling");
+        if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Integral join ceiling");
         semantic=next;helper(63);stage=7;
         long revised=tableRegistry==null?Math.addExact(upper,Math.addExact(256,Math.addExact(ROOT_SETUP,ROOT_BODY))):upper;
-        long h=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;Math.addExact(revised,h);
+        long h=tableRegistry==null?Math.addExact(Math.multiplyExact(230,revised),4845):helperUpper;if(!defersTableBounds())Math.addExact(revised,h);
         upper=revised;helperUpper=h;costs[ROOT_INTEGRAL]=ROOT_BODY;
         semantic=Math.addExact(semantic,ROOT_SETUP);poll();
     }
@@ -609,13 +622,14 @@ final class BPhysicalWork implements AutoCloseable {
         liveSource();if(stage!=7||source!=view)throw new IllegalStateException("Adaptive stage identity");
         //Prepaid before H loops,checked dictionary and K search. The fixed
         //join is itself<=32checked API slots*8,nonrecursive instrumentation.
-        long next=Math.addExact(semantic,256);if(next>upper)throw new IllegalStateException("Adaptive join ceiling");
+        long next=Math.addExact(semantic,256);if(!defersTableBounds()&&next>upper)throw new IllegalStateException("Adaptive join ceiling");
         semantic=next;helper(63);stage=8;
         long setup=adaptiveSetupUnits(view.bound.stateRows.length-1);
         long d=view.bound.indices[2].length;
         if(sourceWrapperUnits<=0)throw new IllegalStateException("Unpublished source wrapper coefficient");
         costs[17]=Math.addExact(ADAPTIVE_CONTROL,Math.multiplyExact(50*d,ADAPTIVE_PARAMETER));
         costs[18]=ADAPTIVE_MERGE;
+        if(defersTableBounds()){poll();return -1;}
         long base=tableRegistry==null?Math.addExact(upper,Math.addExact(256,setup)):upper;
         long h=tableRegistry==null?Math.addExact(Math.multiplyExact(230,base),4845):helperUpper;Math.addExact(base,h);
         upper=base;helperUpper=h;

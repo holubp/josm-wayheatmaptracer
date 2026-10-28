@@ -507,9 +507,9 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
     int capacity(){ready();return budget.k;}
     long nodes(){ready();return permit.nodes;}
     long merges(){ready();return permit.merges;}
-    long roleCost(int role){live();return role==BPhysicalTableRegistry.SUPPORT
+    long roleCost(int role){live();work.requireProspectiveTableBounds();return role==BPhysicalTableRegistry.SUPPORT
         ?add(budget.roleCost(role),8+(metadataSource==null?0:BPhysicalPublicationMetadata.FIXED_SUPPORT)):budget.roleCost(role);}
-    long roleMaximum(int role){live();return budget.roleMaximum(role);}
+    long roleMaximum(int role){live();work.requireProspectiveTableBounds();return budget.roleMaximum(role);}
     private void allocate() {
         int n=graph.size(),p=Math.toIntExact(budget.pairs);
         owner.reserve(budget.tableBytes-FRAME); //frame already in actual C0
@@ -527,7 +527,7 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
             permit.slot=at;permit.stage=i;permit.left=j;permit.right=l;permit.state=1;
             registry.begin(BPhysicalTableRegistry.EDGE);boolean normal=false;
             try {
-                work.prepayTableBody(budget.edgeFee);
+                if(!work.defersTableBounds())work.prepayTableBody(budget.edgeFee);
                 var b=response.bound();int a=b.stateRows[i]+j,z=b.stateRows[i+1]+l;
                 double ax=b.stateX[a],ay=b.stateY[a],bx=b.stateX[z],by=b.stateY[z];
                 //The original bounded predicate owns its two temporary Points
@@ -577,6 +577,21 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
                 "logNodes",logNodes,"numericRefusals",numericRefusals);
         }
     }
+    enum JointBudgetReason { ARITHMETIC_ENVELOPE_OVERFLOW,MEMORY_ENVELOPE_LIMIT }
+    /** Safe immutable pre-admission facts; no table/source or partial values. */
+    static final class JointBudgetFailure extends IllegalStateException {
+        private final JointBudgetReason reason;
+        private final int requestedCapacity;
+        private final long memoryBaseBytes,poolBytes;
+        JointBudgetFailure(JointBudgetReason reason,int capacity,long memoryBase,long pool) {
+            super("No complete jointly funded table root");
+            this.reason=reason;requestedCapacity=capacity;memoryBaseBytes=memoryBase;poolBytes=pool;
+        }
+        java.util.Map<String,Object> diagnostics(){
+            return java.util.Map.of("reason",reason.name(),"requestedCapacity",requestedCapacity,
+                    "memoryBaseBytes",memoryBaseBytes,"poolBytes",poolBytes,"memoryLimitBytes",64L<<20);
+        }
+    }
     @Override public void accept(long units) {
         if(permit.state!=1||owner.isClosed()||units<0)throw new IllegalStateException("Foreign geometry callback");
         work.tableGeometry(units,budget.geometryUpper);
@@ -608,7 +623,7 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
         }
         void consumeLocalFee(long units){requireLocal(table.response,table.work);
             long next=add(table.budget.localFeeUsed,units);
-            if(next>table.budget.localFeeUpper)throw new IllegalStateException("Local setup/body fee ceiling");table.budget.localFeeUsed=next;
+            if(!table.work.defersTableBounds()&&next>table.budget.localFeeUpper)throw new IllegalStateException("Local setup/body fee ceiling");table.budget.localFeeUsed=next;
         }
         void beginLocal(){requireLocal(table.response,table.work);table.registry.begin(BPhysicalTableRegistry.LOCAL);}
         void endLocal(boolean normal){table.registry.end(BPhysicalTableRegistry.LOCAL,normal);}
@@ -798,6 +813,7 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
             long e=0;
             for(int i=0;i<r;i++)e=add(e,b.input.region.polygons().get(i).size());
             long event=add(2,mul(2,e));
+            if(t.work.defersTableBounds()){bindExploratoryMemory(t,b,n,p,e,event);return;}
             long ar=mul(event,add(mul(128,add(e,1)),add(bits(event-1),64)));
             long gp=add(r,add(mul(e,add(mul(3,event),2)),add(mul(10,event),add(3,mul(event,bits(event))))));
             geometryUpper=mul(p,gp);edgeFee=add(214,add(519,add(mul(128,ar),mul(86,gp))));
@@ -822,7 +838,7 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
             headroom=BPhysicalAdaptiveIntegral.tableHeadroom(b);
             long scratch=geometryScratch(e,event);
             long prefix=BPhysicalSignaturePrefix.bytes(t.response.sourceWidth(),t.response.sourceHeight());
-            long workspace=p==0?0:add(18120,add(192,add(256,prefix)));
+            long workspace=p==0?0:add(BPhysicalPanelCertificate.reuseBytes(t.work),add(18120,add(192,add(256,prefix))));
             //A real same-probe boundary before taking C0 permits cancellation
             //and factual caller reservations. Search never retries a changed
             //post-C0 root. Two source-live guards+owner/caller controls187;
@@ -885,7 +901,8 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
             boundarySlope=mul(deltaEvents,BPhysicalTableRegistry.BEGIN+BPhysicalTableRegistry.END);
             hookBase=mul(add(mul(2,fixed),add(mul(2*p,admissions),1)),BPhysicalTableRegistry.HOOK);
             hookSlope=mul(mul(2*p,add(admissions,1)),BPhysicalTableRegistry.HOOK);
-            if(!fits(1))throw new IllegalStateException("No complete jointly funded table root");
+            var rootFailure=fitFailure(1);
+            if(rootFailure!=null)throw new JointBudgetFailure(rootFailure,1,memoryBase,pairs==0?0:BPhysicalAdaptiveIntegral.poolBytes(1));
             if(p!=0){int lo=1,hi=(int)((64L<<20)/56),steps=0;
                 while(lo<hi){if(++steps>31)throw new AssertionError("Joint search bound");int mid=lo+(hi-lo+1)/2;if(fits(mid))lo=mid;else hi=mid-1;}k=lo;}
             long semantic=at(semanticBase,semanticSlope,k),helpers=at(helperBase,helperSlope,k);
@@ -897,10 +914,35 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
         static long bits(long x){return x==0?0:64-Long.numberOfLeadingZeros(x);}
         static long chunks(long records,int stride){return records==0?0:1+(records-1)/(65528/stride);}
         static long at(long base,long slope,int k){return add(base,mul(slope,k-1L));}
-        boolean fits(int k){try{long sem=at(semanticBase,semanticSlope,k),h=at(helperBase,helperSlope,k);
+        private void bindExploratoryMemory(BPhysicalPairTable t,BSharedPositionEvidence.Bound b,int n,long p,long e,long event) {
+            //No future semantic/helper/boundary/hook/publication compilation.
+            //Retained table/frame, exact sampling workspace, solver headroom,
+            //geometry scratch and every pool byte retain the same64MiB owner.
+            headroom=BPhysicalAdaptiveIntegral.tableHeadroom(b);
+            long scratch=geometryScratch(e,event);
+            long prefix=BPhysicalSignaturePrefix.bytes(t.response.sourceWidth(),t.response.sourceHeight());
+            long workspace=p==0?0:add(BPhysicalPanelCertificate.reuseBytes(t.work),add(18120,add(192,add(256,prefix))));
+            t.work.poll();t.live();current=t.owner.currentBytes();
+            memoryBase=add(current,add(tableBytes-FRAME,add(workspace,add(headroom,scratch))));
+            var failure=fitFailure(1,t.work);
+            if(failure!=null)throw new JointBudgetFailure(failure,1,memoryBase,p==0?0:BPhysicalAdaptiveIntegral.poolBytes(1));
+            if(p!=0){int lo=1,hi=(int)((64L<<20)/56),steps=0;
+                while(lo<hi){if(++steps>31)throw new AssertionError("Joint search bound");int mid=lo+(hi-lo+1)/2;
+                    if(fitFailure(mid,t.work)==null)lo=mid;else hi=mid-1;}k=lo;}
+            t.work.poll();t.live();if(t.owner.currentBytes()!=current)throw new IllegalStateException("C0 changed;no search retry");
+            t.work.installExploratoryTable(t);t.registry.installExploratory(t);
+            t.work.prepayTableBody(661+81L*n+144*p+1125+48);
+        }
+        JointBudgetReason fitFailure(int k,BPhysicalWork work){
+            if(!work.defersTableBounds())return fitFailure(k);
+            try{return add(memoryBase,pairs==0?0:BPhysicalAdaptiveIntegral.poolBytes(k))<=64L<<20?null:JointBudgetReason.MEMORY_ENVELOPE_LIMIT;}
+            catch(ArithmeticException overflow){return JointBudgetReason.MEMORY_ENVELOPE_LIMIT;}
+        }
+        boolean fits(int k){return fitFailure(k)==null;}
+        JointBudgetReason fitFailure(int k){try{long sem=at(semanticBase,semanticSlope,k),h=at(helperBase,helperSlope,k);
             add(add(sem,h),add(at(boundaryBase,boundarySlope,k),add(at(hookBase,hookSlope,k),2*BPhysicalTableRegistry.COPY)));
-            return add(memoryBase,pairs==0?0:BPhysicalAdaptiveIntegral.poolBytes(k))<=64L<<20;
-        }catch(ArithmeticException overflow){return false;}}
+            return add(memoryBase,pairs==0?0:BPhysicalAdaptiveIntegral.poolBytes(k))<=64L<<20?null:JointBudgetReason.MEMORY_ENVELOPE_LIMIT;
+        }catch(ArithmeticException overflow){return JointBudgetReason.ARITHMETIC_ENVELOPE_OVERFLOW;}}
         long roleSlope(int role){long visits=mul(50,Math.max(1,descriptors)),taps=mul(9,visits);
             return role==3?mul(pairs,mul(24,taps)):role==5?mul(pairs,mul(14,visits)):
                 role==6?mul(pairs,mul(4*edges,taps)):role==9||role==10?pairs:0;}
