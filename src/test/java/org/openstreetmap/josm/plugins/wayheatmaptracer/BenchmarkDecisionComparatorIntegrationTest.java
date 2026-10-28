@@ -805,13 +805,21 @@ class BenchmarkDecisionComparatorIntegrationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"mayCreateNodes", "permissions"})
-    void approvedMainRejectsRechecksummedNativeIntervalAuthorityChange(String field, @TempDir Path directory) throws Exception {
+    void nativeIntervalAuthorityChangesFailClosedAtAssemblyOrComparator(String field, @TempDir Path directory) throws Exception {
         var fixture = produceNativeIntervalFixture();
         var batch = fixture.owner().intervalBatch();
         Object changed = field.equals("mayCreateNodes") ? false
                 : new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions(true, 7.01, 8.0,
                         org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED, false);
         var forgedAuthority = recordWith(batch.authoritySpecification(), field, changed);
+        if (field.equals("permissions")) {
+            var rejected = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> recordWith(batch, "authoritySpecification", forgedAuthority));
+            assertEquals("Interval authority does not match its captured source", rejected.getCause().getMessage());
+            // The mayCreateNodes case below and the separate internally-consistent frame
+            // tamper test continue to reach and exercise the actual comparator.
+            return;
+        }
         var forgedBatch = recordWith(batch, "authoritySpecification", forgedAuthority);
         var assessment = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.FixedIntervalEditPlanComposer()
                 .compose(batch, Map.of());

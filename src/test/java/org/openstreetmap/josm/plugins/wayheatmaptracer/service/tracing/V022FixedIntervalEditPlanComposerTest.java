@@ -1129,18 +1129,31 @@ class V022FixedIntervalEditPlanComposerTest {
     }
 
     @Test
-    void capturedSurroundingCrossingBlocksTheCompleteComposedPlan() throws Exception {
+    void capturedIndependentCrossingRequiresReviewOfTheCompleteComposedPlan() throws Exception {
         IntervalTraceBatch batch = batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE,
                 false, true);
         var assessment = new FixedIntervalEditPlanComposer().compose(batch, Map.of());
-        assertFalse(assessment.applyAvailable());
-        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL,
-                FixedIntervalEditPlanComposer.Disposition.BLOCKED_GLOBAL),
+        assertTrue(assessment.applyAvailable());
+        assertEquals(List.of(FixedIntervalEditPlanComposer.Disposition.CHANGED,
+                FixedIntervalEditPlanComposer.Disposition.CHANGED),
                 assessment.intervals().stream().map(
                         FixedIntervalEditPlanComposer.IntervalAssessment::disposition).toList(),
                 assessment.intervals().toString());
-        assertTrue(assessment.plan().orElseThrow().validation().findingCodes().stream()
-                .anyMatch(code -> code.startsWith("final-topology:")));
+        var plan = assessment.plan().orElseThrow();
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport.Disposition.REVIEW_REQUIRED,
+                plan.validation().disposition());
+        assertTrue(plan.validation().findingCodes().contains(ContextContactAssessment.REVIEW_CODE));
+        assertFalse(plan.validation().findingCodes().stream().anyMatch(code -> code.startsWith("final-topology:")));
+        for (long id : List.of(201L, 202L)) {
+            var key = PrimitiveKey.existing(PrimitiveKey.Type.NODE, id);
+            assertEquals(batch.network().primitives().get(key), plan.after().primitives().get(key));
+        }
+        var context = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 203);
+        assertEquals(batch.network().primitives().get(context), plan.after().primitives().get(context));
+        var withoutContext = new FixedIntervalEditPlanComposer().compose(
+                batch(296.0, 296.0, TrackerMode.CORRIDOR_AWARE, false, false), Map.of());
+        assertEquals(withoutContext.selectedWayPreview(), assessment.selectedWayPreview(),
+                "read-only independent contact policy must preserve the production geometry");
     }
 
     private record CrossingFixture(IntervalTraceBatch source,

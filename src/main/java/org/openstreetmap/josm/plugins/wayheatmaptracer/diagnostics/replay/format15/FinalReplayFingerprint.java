@@ -22,6 +22,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 /** Canonical, bounded final-geometry replay output fingerprint. */
 final class FinalReplayFingerprint {
     static final int SCHEMA_VERSION = 1;
+    static final int DISCONNECTION_SCHEMA_VERSION = 2;
+    static int schema(Format15ReplayRunner.Result output) {
+        return output.disconnectionPlanReviews().isEmpty() ? SCHEMA_VERSION : DISCONNECTION_SCHEMA_VERSION;
+    }
     private static final int MAX_ROUTES = 4_096;
     private static final int MAX_AGGREGATE_ITEMS = 500_000;
 
@@ -42,13 +46,15 @@ final class FinalReplayFingerprint {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (DataOutputStream data = new DataOutputStream(
                     new DigestOutputStream(OutputStream.nullOutputStream(), digest))) {
-                data.writeInt(SCHEMA_VERSION);
+                data.writeInt(schema(output));
                 ScalarReplayFingerprint.writeString(data,
                     ScalarReplayFingerprint.sha256(output.inference()));
                 data.writeInt(output.routes().size());
                 for (ModernTracePipeline.Route route : output.routes()) {
                     writeRoute(data, route);
                 }
+                if (!output.disconnectionPlanReviews().isEmpty())
+                    ReplayOutputCanonical.writePlanReviews(data, output.disconnectionPlanReviews());
             }
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException exception) {

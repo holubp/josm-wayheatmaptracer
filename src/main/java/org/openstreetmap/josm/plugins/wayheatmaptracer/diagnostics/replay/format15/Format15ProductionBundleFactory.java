@@ -366,7 +366,26 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         Format15ReplayRunner.Result finalResult = new Format15ReplayRunner.Result(
             ReplayLevel.FINAL_GEOMETRY, input.request().engine(), input.request().engine(),
-            actual.inference(), actual.routes(), input.canonicalHash());
+            actual.inference(), actual.routes(), input.canonicalHash(),
+            DisconnectionReplaySemantics.recompute(input, actual));
+        if (!input.request().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
+            artifacts.put(DisconnectionReplaySemantics.ARTIFACT, Format15Artifact.text(
+                    DisconnectionReplaySemantics.ARTIFACT,
+                    DisconnectionReplaySemantics.artifact(finalResult.disconnectionPlanReviews())));
+            if (plan != null && routeIndex >= 0) {
+                String expected = DisconnectionReplaySemantics.review(plan, input.evidence(),
+                        input.planSearchRadiusMeters(), input.options().sourceTier() + ":"
+                                + input.request().evidenceContentHash() + ":" + routeIndex + ":"
+                                + actual.routes().get(routeIndex).hypothesis().id());
+                if (!expected.equals(finalResult.disconnectionPlanReviews().get(routeIndex)))
+                    throw new IllegalArgumentException("Exported plan differs from actual production disconnection planning");
+            }
+        } else if (plan != null) {
+            artifacts.put("contact-review.json", Format15Artifact.text("contact-review.json",
+                    DisconnectionReplaySemantics.review(plan, input.evidence(), input.planSearchRadiusMeters(),
+                            input.options().sourceTier() + ":" + input.request().evidenceContentHash()
+                                    + ":" + routeIndex + ":" + actual.routes().get(routeIndex).hypothesis().id()) + "\n"));
+        }
         FinalReplayExpectation expectation = FinalReplayExpectation.capture(buildIdentity,
             input, finalResult);
         artifacts.put(FinalReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
@@ -411,6 +430,10 @@ public final class Format15ProductionBundleFactory {
         artifacts.put("attempt-status.json", Format15Artifact.text("attempt-status.json",
             "{\"status\":" + quote(status) + ",\"sourceLineage\":"
                 + quote(sourceLineage) + ",\"routeIndex\":" + routeIndex
+                + (plan != null ? ",\"planReviewSchema\":1,\"contactEditPlanReplay\":"
+                        + quote(input.request().permissions().junctionPolicy()
+                            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED
+                                ? "AVAILABLE" : "UNAVAILABLE_NON_FIXED") : "")
                 + ",\"manualJunctionReason\":" + (manualJunctionReason == null
                     ? "null" : quote(manualJunctionReason.name()))
                 + ",\"reviewed\":" + reviewed + ",\"applied\":" + applied
@@ -658,6 +681,8 @@ public final class Format15ProductionBundleFactory {
                 .append(",\"appliedPlanIdentity\":")
                 .append(appliedPlanIdentity == null ? "null" : quote(appliedPlanIdentity))
                 .append(",\"applyAvailable\":").append(assessment.applyAvailable())
+                .append(plan != null && batch.fullRequest().permissions().sharedNodeDisconnectionIntent().isEmpty()
+                        ? ",\"contactReviewSchema\":1" : "")
                 .append(",\"privateData\":true,\"capabilities\":{\"INTERVAL_PRODUCTION_ARTIFACT\":true,\"STRICT_INTERVAL_PRODUCTION\":")
                 .append(frozenIntervals != null)
                 .append(",\"SCALAR_INFERENCE\":false,\"FINAL_GEOMETRY\":false,\"RASTER_INFERENCE\":false,\"FULL_EDIT_PLAN\":false}")
@@ -711,6 +736,14 @@ public final class Format15ProductionBundleFactory {
         artifacts.put(INTERVAL_INDEX_ARTIFACT,
                 Format15Artifact.text(INTERVAL_INDEX_ARTIFACT,
                         new String(indexBytes, StandardCharsets.UTF_8)));
+        if (!batch.fullRequest().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
+            artifacts.put(DisconnectionReplaySemantics.ARTIFACT, Format15Artifact.text(
+                    DisconnectionReplaySemantics.ARTIFACT,
+                    DisconnectionReplaySemantics.intervalReview(batch, assessment, routeChoices)));
+        } else if (plan != null) {
+            artifacts.put("contact-review.json", Format15Artifact.text("contact-review.json",
+                    DisconnectionReplaySemantics.intervalReview(batch, assessment, routeChoices)));
+        }
         artifacts.put(INTERVAL_PREVIEW_ARTIFACT,
                 Format15Artifact.text(INTERVAL_PREVIEW_ARTIFACT, preview));
         artifacts.put(PLAN_AVAILABILITY_ARTIFACT,
@@ -719,7 +752,8 @@ public final class Format15ProductionBundleFactory {
             artifacts.put(FrozenIntervalReplayCodec.ARTIFACT,
                     Format15Artifact.binary(FrozenIntervalReplayCodec.ARTIFACT, frozenIntervals));
         }
-        if (plan != null && System.getProperty("wayheatmaptracer.benchmark.receipt") != null) {
+        if (plan != null && (System.getProperty("wayheatmaptracer.benchmark.receipt") != null
+                || !batch.fullRequest().permissions().sharedNodeDisconnectionIntent().isEmpty())) {
             String name = "private/interval-frozen-edit-plan.bin";
             artifacts.put(name, Format15Artifact.binary(name, FrozenReplayCodec.encodeEditPlan(plan)));
         }
@@ -883,6 +917,14 @@ public final class Format15ProductionBundleFactory {
                         generated.originalPointIndex()), generated);
             }
         }
+        if (plan != null) {
+            for (var entry : plan.disconnectedOccurrenceReplacements().entrySet()) {
+                PrimitiveKey original = plan.permissions().sharedNodeDisconnectionIntent()
+                        .originalNodeKeys().get(entry.getKey());
+                idsByNode.put(entry.getValue(), new FinalRoutePointId.ExistingWayNodeOccurrence(
+                        plan.selectedWayKey(), original, entry.getKey()));
+            }
+        }
         Map<FinalRoutePointId, Integer> ownerByPoint = new LinkedHashMap<>();
         for (int intervalIndex = 0; intervalIndex < batch.runs().size(); intervalIndex++) {
             IntervalTraceBatch.IntervalRun run = batch.runs().get(intervalIndex);
@@ -909,7 +951,9 @@ public final class Format15ProductionBundleFactory {
         }
 
         NetworkSnapshot finalNetwork = plan == null ? batch.network() : plan.after();
-        StringBuilder json = new StringBuilder("{\"schema\":1,\"coordinateSpace\":\"geographic-degrees\",\"points\":[");
+        boolean disconnected = plan != null && !plan.disconnectedOccurrenceReplacements().isEmpty();
+        StringBuilder json = new StringBuilder("{\"schema\":" + (disconnected ? 2 : 1)
+                + ",\"coordinateSpace\":\"geographic-degrees\",\"points\":[");
         boolean first = true;
         for (PrimitiveKey wayKey : new java.util.TreeSet<>(previewWays.keySet())) {
             DetachedWay way = (DetachedWay) finalNetwork.primitives().get(wayKey);
@@ -924,6 +968,9 @@ public final class Format15ProductionBundleFactory {
                 FinalRoutePointId pointId = idsByNode.get(nodeKey);
                 GeographicPoint coordinate = points.get(sequence);
                 Integer owner = pointId == null ? null : ownerByPoint.get(pointId);
+                if (pointId instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing
+                        && !existing.nodeKey().equals(nodeKey) && owner == null)
+                    throw new IllegalArgumentException("Disconnected final point has no interval owner");
                 if (pointId instanceof FinalRoutePointId.GeneratedCandidatePoint && owner == null) {
                     throw new IllegalArgumentException("Generated final point has no interval owner");
                 }
@@ -1041,6 +1088,15 @@ public final class Format15ProductionBundleFactory {
     private static String pointIdentityJson(FinalRoutePointId id, PrimitiveKey fallbackNode,
             boolean topologyShapeNode) {
         if (id instanceof FinalRoutePointId.ExistingWayNodeOccurrence existing) {
+            if (fallbackNode != null && !fallbackNode.equals(existing.nodeKey())) {
+                if (fallbackNode.identityKind() != PrimitiveKey.IdentityKind.PLAN_LOCAL)
+                    throw new IllegalArgumentException("Disconnected point has no planned replacement identity");
+                return "{\"kind\":\"DISCONNECTED_WAY_NODE_OCCURRENCE\",\"wayKey\":"
+                        + quote(existing.wayKey().toString()) + ",\"originalNodeKey\":"
+                        + quote(existing.nodeKey().toString()) + ",\"replacementNodeKey\":"
+                        + quote(fallbackNode.toString()) + ",\"occurrenceIndex\":"
+                        + existing.originalOccurrenceIndex() + "}";
+            }
             return "{\"kind\":\"EXISTING_WAY_NODE_OCCURRENCE\",\"wayKey\":"
                     + quote(existing.wayKey().toString()) + ",\"nodeKey\":"
                     + quote(existing.nodeKey().toString()) + ",\"occurrenceIndex\":"
@@ -1251,6 +1307,10 @@ public final class Format15ProductionBundleFactory {
         artifacts.put(FinalReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             FinalReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
         addFinalOutputComponents(artifacts, expectation, actual);
+        if (!input.request().permissions().sharedNodeDisconnectionIntent().isEmpty())
+            artifacts.put(DisconnectionReplaySemantics.ARTIFACT, Format15Artifact.text(
+                    DisconnectionReplaySemantics.ARTIFACT,
+                    DisconnectionReplaySemantics.artifact(actual.disconnectionPlanReviews())));
         return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
             base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference()));
     }

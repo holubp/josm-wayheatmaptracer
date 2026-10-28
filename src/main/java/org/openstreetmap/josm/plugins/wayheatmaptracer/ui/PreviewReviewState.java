@@ -58,11 +58,16 @@ public record PreviewReviewState(
         if (plan == null) {
             throw new IllegalArgumentException("Edit plan must not be null");
         }
-        String permissions = sha256("permissions-v1", plan.permissions().toString());
+        String permissions = sha256("permissions-v1", plan.permissions().canonicalIdentity());
         String source = sha256("source-v1", plan.before().datasetIdentity(),
             Long.toString(plan.before().sourceGeneration()), plan.evidenceHash(), plan.settingsHash(),
             plan.parameterHash());
-        return create(candidateId, plan.canonicalHash(), permissions, source, plan.validation().disposition());
+        ValidationReport.Disposition disposition = plan.validation().disposition();
+        if (!plan.permissions().sharedNodeDisconnectionIntent().isEmpty()
+                && disposition != ValidationReport.Disposition.HARD_BLOCKED) {
+            disposition = ValidationReport.Disposition.REVIEW_REQUIRED;
+        }
+        return create(candidateId, plan.canonicalHash(), permissions, source, disposition);
     }
 
     /** Returns a state confirmed for this exact candidate and all-way edit plan. */

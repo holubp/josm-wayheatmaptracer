@@ -22,8 +22,22 @@ public record TraceRequest(
     double configuredSampleStepMeters,
     ProfileChainage profileChainage,
     EvidenceResolution evidenceResolution,
-    Optional<CorridorTraceInput> corridorInput
+    Optional<CorridorTraceInput> corridorInput,
+    NetworkSnapshot disconnectionSource
 ) {
+    /** Historical requests carry no shared-node replacement source. */
+    public TraceRequest(PrimitiveKey selectedWayKey, OccurrenceRange selectedRange,
+            TrackerMode engine, AlignmentMode geometryMode, RecoveryPermissions permissions,
+            TraceBudgets budgets, String evidenceSnapshotId, String evidenceContentHash,
+            String networkSnapshotId, String networkContentHash, String settingsHash,
+            String parameterHash, String samplerId, double configuredSampleStepMeters,
+            ProfileChainage profileChainage, EvidenceResolution evidenceResolution,
+            Optional<CorridorTraceInput> corridorInput) {
+        this(selectedWayKey, selectedRange, engine, geometryMode, permissions, budgets,
+                evidenceSnapshotId, evidenceContentHash, networkSnapshotId, networkContentHash,
+                settingsHash, parameterHash, samplerId, configuredSampleStepMeters,
+                profileChainage, evidenceResolution, corridorInput, null);
+    }
     /** Validates immutable identities, measured chainage, and factual resolution support. */
     public TraceRequest {
         if (selectedWayKey == null || selectedWayKey.type() != PrimitiveKey.Type.WAY || selectedRange == null
@@ -39,6 +53,18 @@ public record TraceRequest(
         }
         DetachedValueVerifier.verify(java.util.List.of(selectedWayKey, selectedRange, engine, geometryMode,
             permissions, budgets, profileChainage, evidenceResolution, corridorInput));
+        if (!permissions.sharedNodeDisconnectionIntent().isEmpty()) {
+            var intent = permissions.sharedNodeDisconnectionIntent();
+            if (!intent.selectedWayKey().equals(selectedWayKey)
+                    || selectedRange.firstIndex() < intent.selectedRange().firstIndex()
+                    || selectedRange.lastIndex() > intent.selectedRange().lastIndex()) {
+                throw new IllegalArgumentException("Disconnection request selection differs from frozen authority");
+            }
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                    .replacements(disconnectionSource, permissions.sharedNodeDisconnectionIntent());
+        } else if (disconnectionSource != null) {
+            throw new IllegalArgumentException("Empty disconnection request cannot carry replacement authority");
+        }
     }
 
     /** Creates requests for engines that do not consume frozen corridor profile locations. */

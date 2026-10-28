@@ -511,7 +511,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"highway", "railway", "waterway", "area", "closed", "relation"})
-    void ridgeExceptionRejectsConflictingSemanticsAndParents(String conflict) throws Exception {
+    void independentRidgeContactsRemainReviewableAcrossSemanticsAndParents(String conflict) throws Exception {
         Fixture fixture = inheritedContactFixture(InheritedClass.RIDGE);
         Way ridge = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35)
                 .findFirst().orElseThrow();
@@ -528,8 +528,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
         } else ridge.put(conflict, "yes");
         var assessment = new ModernSingleWayEditPlanAdapter().assess(
                 compute(fixture, TrackerMode.PROBABILISTIC), 0);
-        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                 assessment.availability(), assessment.detail());
+        assertTrue(assessment.plan().orElseThrow().validation().reviewRequired());
     }
 
     @ParameterizedTest
@@ -639,7 +640,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
     @ParameterizedTest
     @MethodSource("unsafeInheritedSemanticCases")
-    void unknownTransportAndConflictingContextRemainHard(String semantic) throws Exception {
+    void independentContextSemanticsAndIncompleteParentsRequireReview(String semantic) throws Exception {
         Fixture fixture = inheritedContactFixture(semantic.startsWith("relation:")
                 ? InheritedClass.FOREST_OUTER : InheritedClass.CLIFF);
         Way context = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35).findFirst().orElseThrow();
@@ -660,8 +661,43 @@ class V022ModernSingleWayEditPlanAdapterTest {
             fixture.dataSet().getRelations().iterator().next().addMember(new RelationMember("outer", context));
         } else context.put(semantic, "yes");
         var assessment = new ModernSingleWayEditPlanAdapter().assess(compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
-        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                 assessment.availability(), assessment.detail());
+        assertTrue(assessment.plan().orElseThrow().validation().reviewRequired());
+        assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
+                .contains("modern-final:INDEPENDENT_CONTEXT_CONTACT"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void newStreamContactAndRemoteContactOnConnectedWayFeedActualFinalQuality(boolean connectedElsewhere)
+            throws Exception {
+        Fixture fixture = inheritedContactFixture(InheritedClass.CLIFF);
+        Way context = fixture.dataSet().getWays().stream().filter(way -> way.getUniqueId() == 35)
+                .findFirst().orElseThrow();
+        context.remove("natural");
+        context.put("waterway", "stream");
+        context.getNode(0).setCoor(new LatLon(longitude(1), longitude(0.17345)));
+        if (connectedElsewhere) {
+            Node arm = loadedNode(45, longitude(10), longitude(-8));
+            fixture.dataSet().addPrimitive(arm);
+            context.setNodes(List.of(fixture.way().getNode(0), arm, context.getNode(1), context.getNode(0)));
+        }
+        List<String> before = state(fixture);
+        var assessment = new ModernSingleWayEditPlanAdapter().assess(compute(fixture, TrackerMode.CORRIDOR_AWARE), 0);
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
+                assessment.availability(), assessment.detail());
+        var plan = assessment.plan().orElseThrow();
+        assertTrue(plan.validation().reviewRequired());
+        assertTrue(plan.validation().findingCodes().contains("modern-final:INDEPENDENT_CONTEXT_CONTACT"));
+        assertTrue(plan.validation().findingCodes().contains(ContextContactAssessment.REVIEW_CODE));
+        PrimitiveKey contextKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 35);
+        DetachedWay frozenContext = (DetachedWay) plan.before().primitives().get(contextKey);
+        assertEquals(frozenContext, plan.after().primitives().get(contextKey));
+        for (PrimitiveKey node : frozenContext.nodeKeys()) {
+            assertEquals(plan.before().primitives().get(node), plan.after().primitives().get(node));
+        }
+        assertEquals(before, state(fixture));
     }
 
     private static Stream<String> unsafeInheritedSemanticCases() {

@@ -190,6 +190,6 @@ public final class IntervalTraceRequestFactory {
                 fullRequest.networkSnapshotId(), fullRequest.networkContentHash(),
                 fullRequest.settingsHash(), fullRequest.parameterHash(), fullRequest.samplerId(),
                 fullRequest.configuredSampleStepMeters(), chainage,
-                fullRequest.evidenceResolution(), corridor);
+                fullRequest.evidenceResolution(), corridor, fullRequest.disconnectionSource());
     }
 }

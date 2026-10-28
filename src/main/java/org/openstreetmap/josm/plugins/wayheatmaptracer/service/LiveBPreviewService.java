@@ -147,7 +147,33 @@ public final class LiveBPreviewService {
             SelectedWayIntervalPartitioner.Partition intervalPartition,
             IntensitySamplingMode intensityMode,
             ManagedModernPreviewSource.SourceRasters sourceRasters,
-            TileFetchCoordinator sourceOwner, List<String> alternativeMappings) {
+            TileFetchCoordinator sourceOwner, List<String> alternativeMappings,
+            NetworkSnapshot disconnectionSource) {
+        public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
+                NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
+                List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
+                MetricRasterGrid outputGrid, String palette, double searchRadiusMeters,
+                double sampleStepMeters, String settingsHash, String parameterHash,
+                GeometryCleanupConfig cleanup, AlignmentMode geometryMode, TrackerMode engine,
+                String projectionCode, ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode, ManagedModernPreviewSource.SourceRasters sourceRasters,
+                TileFetchCoordinator sourceOwner, List<String> alternativeMappings) {
+            this(raster, managedRaster, specification, network, sourceGeographic, sourceMetric,
+                    outputGrid, palette, searchRadiusMeters, sampleStepMeters, settingsHash,
+                    parameterHash, cleanup, geometryMode, engine, projectionCode, junctionDecision,
+                    intervalPartition, intensityMode, sourceRasters, sourceOwner, alternativeMappings,
+                    specification == null ? null : specification.disconnectionSource());
+        }
+
+        /** The factual pre-island source is retained for the later explicit chooser. */
+        public Captured withInitialSource(NetworkSnapshot initial) {
+            return new Captured(raster, managedRaster, specification, network, sourceGeographic,
+                    sourceMetric, outputGrid, palette, searchRadiusMeters, sampleStepMeters,
+                    settingsHash, parameterHash, cleanup, geometryMode, engine, projectionCode,
+                    junctionDecision, intervalPartition, intensityMode, sourceRasters, sourceOwner,
+                    alternativeMappings, initial);
+        }
         public Captured(VisibleRaster raster, ManagedModernPreviewSource.Raster managedRaster,
                 NetworkSnapshotCapture.Specification specification, NetworkSnapshot network,
                 List<GeographicPoint> sourceGeographic, List<MetricPoint> sourceMetric,
@@ -199,6 +225,7 @@ public final class LiveBPreviewService {
                     parameterHash, cleanup, geometryMode, engine, projectionCode, null);
         }
         public Captured {
+            requireBoundDisconnectionSource(specification, network, disconnectionSource);
             if ((raster == null) == (managedRaster == null)) {
                 throw new IllegalArgumentException("Live preview capture requires exactly one source raster");
             }
@@ -237,7 +264,31 @@ public final class LiveBPreviewService {
             ManualJunctionEligibility.Decision junctionDecision,
             SelectedWayIntervalPartitioner.Partition intervalPartition,
             IntensitySamplingMode intensityMode,
-            AlignmentTileSourcePlan sourcePlan, List<String> alternativeMappings) {
+            AlignmentTileSourcePlan sourcePlan, List<String> alternativeMappings,
+            NetworkSnapshot disconnectionSource) {
+        public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
+                NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
+                List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
+                double searchRadiusMeters, double sampleStepMeters, String settingsHash,
+                String parameterHash, GeometryCleanupConfig cleanup, AlignmentMode geometryMode,
+                TrackerMode engine, String sourceIdentity, String projectionCode,
+                ManualJunctionEligibility.Decision junctionDecision,
+                SelectedWayIntervalPartitioner.Partition intervalPartition,
+                IntensitySamplingMode intensityMode, AlignmentTileSourcePlan sourcePlan,
+                List<String> alternativeMappings) {
+            this(specification, network, sourceGeographic, sourceMetric, frame, palette,
+                    searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash, cleanup,
+                    geometryMode, engine, sourceIdentity, projectionCode, junctionDecision,
+                    intervalPartition, intensityMode, sourcePlan, alternativeMappings,
+                    specification == null ? null : specification.disconnectionSource());
+        }
+
+        public ManagedCaptureSeed withInitialSource(NetworkSnapshot initial) {
+            return new ManagedCaptureSeed(specification, network, sourceGeographic, sourceMetric,
+                    frame, palette, searchRadiusMeters, sampleStepMeters, settingsHash, parameterHash,
+                    cleanup, geometryMode, engine, sourceIdentity, projectionCode, junctionDecision,
+                    intervalPartition, intensityMode, sourcePlan, alternativeMappings, initial);
+        }
         public ManagedCaptureSeed(NetworkSnapshotCapture.Specification specification,
                 NetworkSnapshot network, List<GeographicPoint> sourceGeographic,
                 List<MetricPoint> sourceMetric, LocalMetricFrame frame, String palette,
@@ -277,6 +328,7 @@ public final class LiveBPreviewService {
                     geometryMode, engine, sourceIdentity, projectionCode, junctionDecision, null);
         }
         public ManagedCaptureSeed {
+            requireBoundDisconnectionSource(specification, network, disconnectionSource);
             sourceGeographic = List.copyOf(sourceGeographic);
             sourceMetric = List.copyOf(sourceMetric);
             alternativeMappings = List.copyOf(alternativeMappings);
@@ -328,6 +380,9 @@ public final class LiveBPreviewService {
             if (captured == null || evidence == null || request == null || options == null
                     || (pipeline == null) == (intervalBatch == null)) {
                 throw new IllegalArgumentException("Exactly one live preview result variant is required");
+            }
+            if (pipeline != null && pipeline.inference().engine() != request.engine()) {
+                throw new IllegalArgumentException("Full-way inference does not match its requested engine");
             }
             if (intervalBatch != null && (intervalBatch.network() != captured.network()
                     || intervalBatch.evidence() != evidence
@@ -463,6 +518,7 @@ public final class LiveBPreviewService {
                 * raster.groundMetersPerViewPixel();
         RecoveryPermissions permissions = requestedPermissions == null
                 ? RecoveryPermissions.disabled(configuredRadius) : requestedPermissions;
+        requireDisconnectionPolicy(permissions);
         double radius = Math.max(configuredRadius, permissions.ordinaryRadiusMeters());
         double step = config.heatmap().crossSectionStepPx() * raster.groundMetersPerViewPixel();
         MetricRegion decision = MetricCorridorRegion.aroundPolyline(metric, radius);
@@ -483,7 +539,7 @@ public final class LiveBPreviewService {
                 decision, permissions, config);
         TrackerMode engine = config.heatmap().trackerMode();
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
-                permissions.toString());
+                permissions.canonicalIdentity());
         String parameterHash = hash("live-" + engine.name().toLowerCase(java.util.Locale.ROOT)
                 + "-v2", parameterIdentity(engine));
         String snapshotId = "live-modern-network-" + hash(Long.toString(selection.way().getUniqueId()),
@@ -496,6 +552,8 @@ public final class LiveBPreviewService {
                 true, permissions);
         if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        NetworkSnapshot initialSource = network;
+        specification = specification.withDisconnectionSource(initialSource);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, engine)) {
@@ -510,7 +568,7 @@ public final class LiveBPreviewService {
                     frame, authority.collisionEnvelope(), authority.editRegion(),
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
-                    true, permissions).withReadOnlyPortsFrom(network,
+                    true, permissions).withDisconnectionSource(initialSource).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
             if (engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID) {
                 specification = specification.withFixedReceiverGeometry();
@@ -524,7 +582,7 @@ public final class LiveBPreviewService {
             return new Captured(raster, null, specification, network, source, metric, grid,
                     config.heatmap().color(), radius, step, settingsHash, parameterHash,
                     config.cleanup(), config.heatmap().alignmentMode(), engine,
-                    raster.projectionCode(), null, intervalPartition);
+                    raster.projectionCode(), null, intervalPartition).withInitialSource(initialSource);
         }
         ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
                 specification);
@@ -536,7 +594,7 @@ public final class LiveBPreviewService {
                     frame, authority.collisionEnvelope(), authority.editRegion(),
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
-                    true, permissions);
+                    true, permissions).withDisconnectionSource(initialSource);
             if (usesFixedReceiverPolicy(engine, permissions)) specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             requireSameJunctionSource(originalNetwork, network, specification.selectedWayKey(),
@@ -544,7 +602,26 @@ public final class LiveBPreviewService {
         }
         return new Captured(raster, null, specification, network, source, metric, grid,
                 config.heatmap().color(), radius, step, settingsHash, parameterHash, config.cleanup(),
-                config.heatmap().alignmentMode(), engine, raster.projectionCode(), junction);
+                config.heatmap().alignmentMode(), engine, raster.projectionCode(), junction)
+                .withInitialSource(initialSource);
+    }
+
+    private static void requireDisconnectionPolicy(RecoveryPermissions permissions) {
+        if (!permissions.sharedNodeDisconnectionIntent().isEmpty()
+                && (permissions.junctionPolicy() != org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED
+                        || permissions.reconstructIncidentWays())) {
+            throw new IllegalArgumentException("Disconnection requires selected-way-only fixed-junction policy");
+        }
+    }
+
+    private static void requireBoundDisconnectionSource(NetworkSnapshotCapture.Specification specification,
+            NetworkSnapshot network, NetworkSnapshot source) {
+        if (specification == null || specification.permissions().sharedNodeDisconnectionIntent().isEmpty()) return;
+        if (source == null || !source.equals(specification.disconnectionSource())) {
+            throw new IllegalArgumentException("Captured disconnection source differs from bound authority");
+        }
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.SharedNodeDisconnectionPlanner
+                .requireSourceParity(source, network, specification.permissions().sharedNodeDisconnectionIntent());
     }
 
     private static CaptureAuthority captureAuthority(DataSet dataSet, SelectionContext selection,
@@ -1024,6 +1101,7 @@ public final class LiveBPreviewService {
                 config.heatmap().inferenceZoom(), config.heatmap().searchHalfWidthMeters());
         List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
         double radius = config.heatmap().searchHalfWidthMeters();
+        requireDisconnectionPolicy(permissions);
         if (permissions.ordinaryRadiusMeters() > radius + 1.0e-9) {
             throw new IllegalArgumentException(
                     "Managed preview recovery radius exceeds the captured decision corridor");
@@ -1034,7 +1112,7 @@ public final class LiveBPreviewService {
         CaptureAuthority authority = captureAuthority(dataSet, selection, way, range, frame,
                 decision, permissions, config);
         String settingsHash = hash(config.heatmap().toRedactedJson(), config.cleanup().toRedactedJson(),
-                permissions.toString());
+                permissions.canonicalIdentity());
         String snapshotId = "live-managed-network-" + hash(Long.toString(selection.way().getUniqueId()),
                 source.toString(), settingsHash).substring(0, 16);
         NetworkSnapshotCapture.Specification specification = new NetworkSnapshotCapture.Specification(snapshotId,
@@ -1046,6 +1124,8 @@ public final class LiveBPreviewService {
         if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
             specification = specification.withFixedReceiverGeometry();
         NetworkSnapshot network = NetworkSnapshotCapture.capture(dataSet, specification);
+        NetworkSnapshot initialSource = network;
+        specification = specification.withDisconnectionSource(initialSource);
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, config.heatmap().trackerMode())) {
@@ -1061,7 +1141,7 @@ public final class LiveBPreviewService {
                     frame, authority.collisionEnvelope(), authority.editRegion(),
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
-                    true, permissions).withReadOnlyPortsFrom(network,
+                    true, permissions).withDisconnectionSource(initialSource).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
             if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC
                     || config.heatmap().trackerMode() == TrackerMode.HYBRID)
@@ -1082,7 +1162,7 @@ public final class LiveBPreviewService {
                     ProjectionRegistry.getProjection().toCode(), null, intervalPartition,
                     config.heatmap().intensitySamplingMode(),
                     AlignmentTileSourcePlan.from(config.heatmap()),
-                    requestedAlternativeMappings(config.heatmap()));
+                    requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource);
         }
         ManualJunctionEligibility.Decision junction = evaluateCapturedJunction(network,
                 specification);
@@ -1094,7 +1174,7 @@ public final class LiveBPreviewService {
                     frame, authority.collisionEnvelope(), authority.editRegion(),
                     authority.editableWayOccurrences(), authority.editableExistingKeys(),
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
-                    true, permissions);
+                    true, permissions).withDisconnectionSource(initialSource);
             if (usesFixedReceiverPolicy(config.heatmap().trackerMode(), permissions))
                 specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
@@ -1112,7 +1192,7 @@ public final class LiveBPreviewService {
                 ProjectionRegistry.getProjection().toCode(), junction, null,
                 config.heatmap().intensitySamplingMode(),
                 AlignmentTileSourcePlan.from(config.heatmap()),
-                requestedAlternativeMappings(config.heatmap()));
+                requestedAlternativeMappings(config.heatmap())).withInitialSource(initialSource);
     }
 
     private static List<String> requestedAlternativeMappings(
@@ -1139,7 +1219,7 @@ public final class LiveBPreviewService {
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
                 seed.geometryMode(), seed.engine(),
                 seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
-                seed.intensityMode());
+                seed.intensityMode()).withInitialSource(seed.disconnectionSource());
     }
 
     /** Attaches the exact coordinator-owned source set and frozen selected-raster detector plan. */
@@ -1162,7 +1242,8 @@ public final class LiveBPreviewService {
                 seed.searchRadiusMeters(), seed.sampleStepMeters(), seed.settingsHash(),
                 seed.parameterHash(), seed.cleanup(), seed.geometryMode(), seed.engine(),
                 seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
-                seed.intensityMode(), sources, owner, seed.alternativeMappings());
+                seed.intensityMode(), sources, owner, seed.alternativeMappings())
+                .withInitialSource(seed.disconnectionSource());
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
@@ -1295,7 +1376,7 @@ public final class LiveBPreviewService {
                 request.evidenceContentHash(), request.networkSnapshotId(), request.networkContentHash(),
                 request.settingsHash(), request.parameterHash(), request.samplerId(),
                 request.configuredSampleStepMeters(), request.profileChainage(),
-                request.evidenceResolution(), request.corridorInput());
+                request.evidenceResolution(), request.corridorInput(), request.disconnectionSource());
     }
 
     private static boolean usesFixedIntervalBatch(SelectedWayIntervalPartitioner.Partition partition,
@@ -1412,7 +1493,9 @@ public final class LiveBPreviewService {
                 captured.network().snapshotId(), captured.network().canonicalHash(),
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
-                captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput);
+                captured.sampleStepMeters(), chainage, evidence.resolution(), corridorInput,
+                captured.specification().permissions().sharedNodeDisconnectionIntent().isEmpty()
+                        ? null : captured.disconnectionSource());
     }
 
     EvidenceSnapshot captureEvidence(Captured captured, CancellationProbe cancellation) {

@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -36,6 +38,7 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
@@ -57,6 +60,95 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 /** Transaction regressions T107-T114 for the v0.22 all-way apply boundary. */
 class V022AtomicApplyTest {
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void interruptedEntryCannotDisconnectOrAddUndoHistory(AlignmentMode mode) {
+        var fixture = DisconnectionTransactionFixture.create(mode, true);
+        var before = LiveState.capture(fixture.data());
+        var command = fixture.command(point -> { });
+        onEdt(() -> {
+            Thread.currentThread().interrupt();
+            try {
+                assertThrows(CancellationException.class, () -> UndoRedoHandler.getInstance().add(command));
+                assertTrue(Thread.currentThread().isInterrupted(), "the command must preserve its caller's interruption");
+            } finally {
+                Thread.interrupted();
+            }
+        });
+        before.assertMatches(fixture.data());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ApplyAlignmentEditPlanCommand.MutationPoint.class,
+            names = {"AFTER_CREATE_NODES", "AFTER_REPLACE_WAYS", "AFTER_DELETE_NODES"})
+    void interruptionAtMutationCheckpointRollsBackBeforeCommit(
+            ApplyAlignmentEditPlanCommand.MutationPoint point) throws Exception {
+        var fixture = DisconnectionTransactionFixture.create(AlignmentMode.MOVE_EXISTING_NODES, true);
+        assertInterruptedOrCancelledRollback(fixture, point, true);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void cancellationAtCreationAndReplacementRollsBackRealDisconnection(AlignmentMode mode) throws Exception {
+        var fixture = DisconnectionTransactionFixture.create(mode, false);
+        for (var point : List.of(ApplyAlignmentEditPlanCommand.MutationPoint.AFTER_CREATE_NODES,
+                ApplyAlignmentEditPlanCommand.MutationPoint.AFTER_REPLACE_WAYS)) {
+            assertInterruptedOrCancelledRollback(fixture, point, false);
+        }
+    }
+
+    private static void assertInterruptedOrCancelledRollback(DisconnectionTransactionFixture fixture,
+            ApplyAlignmentEditPlanCommand.MutationPoint target, boolean interrupt) throws Exception {
+        var before = LiveState.capture(fixture.data());
+        CountDownLatch reached = new CountDownLatch(1);
+        CountDownLatch released = new CountDownLatch(1);
+        AtomicReference<Thread> owner = new AtomicReference<>();
+        var executor = Executors.newSingleThreadExecutor();
+        var signal = executor.submit(() -> {
+            assertTrue(reached.await(10, TimeUnit.SECONDS), "mutation checkpoint was never reached");
+            if (interrupt) owner.get().interrupt();
+            released.countDown();
+            return null;
+        });
+        var command = fixture.command(point -> {
+            if (point != target) return;
+            owner.set(Thread.currentThread());
+            reached.countDown();
+            try {
+                assertTrue(released.await(10, TimeUnit.SECONDS), "cancellation signal was never delivered");
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+            }
+            if (!interrupt) throw new CancellationException("synthetic cancellation at " + target);
+        });
+        try {
+            onEdt(() -> {
+                try {
+                    var failure = assertThrows(IllegalStateException.class,
+                            () -> UndoRedoHandler.getInstance().add(command));
+                    assertTrue(failure.getCause() instanceof CancellationException);
+                    if (interrupt) assertTrue(Thread.currentThread().isInterrupted());
+                    before.assertMatches(fixture.data());
+                    assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+                    assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+                    command.getParticipatingPrimitives().stream().filter(OsmPrimitive::isNew)
+                            .forEach(fixture::assertDetachedWithoutLiveReferences);
+                } finally {
+                    if (interrupt) Thread.interrupted();
+                }
+            });
+            signal.get(10, TimeUnit.SECONDS);
+        } finally {
+            released.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+        onEdt(() -> { });
+        before.assertMatches(fixture.data());
+    }
+
     private static final String DATASET_ID = "atomic-fixture";
     private static final long SOURCE_GENERATION = 37L;
 

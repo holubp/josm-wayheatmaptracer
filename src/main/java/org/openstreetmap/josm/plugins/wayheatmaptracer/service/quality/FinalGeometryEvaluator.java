@@ -39,6 +39,7 @@ public final class FinalGeometryEvaluator {
         BRANCH_SWITCH,
         SUPPORT_MISMATCH,
         PREJUNCTION_CROSSING,
+        INDEPENDENT_CONTEXT_CONTACT,
         AMBIGUOUS_BRANCH,
         SEARCH_TRUNCATED,
         OPTIMIZER_FAILURE,
@@ -168,6 +169,32 @@ public final class FinalGeometryEvaluator {
         public boolean has(FindingCode code) {
             return findings.stream().anyMatch(finding -> finding.code() == code);
         }
+    }
+
+    /** Projects the adapter's proved contacts without replacing any existing quality finding or metric. */
+    public static Result withContextContacts(Result original,
+            List<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ContextContactAssessment> contacts) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(contacts, "contacts");
+        List<Finding> findings = new ArrayList<>(original.findings());
+        for (var contact : contacts) {
+            switch (contact.disposition()) {
+                case PRESERVED_CONNECTION -> { }
+                case REVIEW_REQUIRED -> findings.add(review(FindingCode.INDEPENDENT_CONTEXT_CONTACT,
+                        contact.routeSegmentIndex(), contact.routeSegmentIndex() + 1, 0));
+                case HARD_BLOCKED -> findings.add(hard(FindingCode.PREJUNCTION_CROSSING,
+                        contact.routeSegmentIndex(), contact.routeSegmentIndex() + 1, 0));
+            }
+        }
+        findings = deduplicate(findings);
+        Disposition disposition = original.disposition() == Disposition.HARD_BLOCKED
+                || findings.stream().anyMatch(finding -> finding.severity() == Severity.HARD_BLOCK)
+                        ? Disposition.HARD_BLOCKED
+                        : original.disposition() == Disposition.REVIEW_REQUIRED || !findings.isEmpty()
+                                ? Disposition.REVIEW_REQUIRED : Disposition.APPLICABLE;
+        return new Result(original.id(), disposition, findings, original.totalLengthMeters(),
+                original.directlySupportedLengthMeters(), original.worstUnsupportedSpanMeters(),
+                original.meanImageCenterCost(), original.bendPreservingRoughness());
     }
 
     /** Test-facing truthful counters for the bounded local-warning classifier. */

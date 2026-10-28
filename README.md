@@ -81,6 +81,7 @@ the preview before applying.
 - Apply operations use JOSM undo/redo commands. Undoing a precise-shape slide restores its original topology, coordinates, and primitive modified flags, so a layer that was clean before the slide becomes clean again.
 - Keep fixed segment endpoints and shared interior nodes anchored while previewing/applying the result
 - Treat shared interior nodes as fixed anchors to avoid distorting branching topology
+- In the modern alignment path, a crossing, touch or overlap with independently captured, unchanged contextual geometry requires review instead of being blocked solely by that contact. Inspect the exact preview before confirming; for waterways, verify whether a bridge, culvert, tunnel or ford is needed. No tags or connections are inferred, other geometry remains unchanged, and shared nodes stay protected by default. Self-intersections, unsafe geometry, missing authority and stale sources remain blocked.
 - Select the globally longest endpoint/junction-bounded segment, or select a node on an unambiguous way, or a way plus a node, to target the containing segment
 - Configure optional future-slide geometry cleanup, which can reduce heatmap-traced points and, in its combined mode, apply constrained smoothing before reduction while preserving fixed anchors
 - Refuse to edit when the selected segment or proposed aligned geometry would extend outside the downloaded JOSM area
@@ -385,6 +386,15 @@ cannot pass strict interval replay. Use `More tools -> Export Last Alignment
 Diagnostics` immediately after each reference attempt; keep human case annotations
 separate from Apply or Cancel, which are not quality labels.
 
+New explicit-disconnection bundles retain the original source, chosen occurrences,
+replacement identities, proposed ports, contact evidence and exact confirmation
+identity in versioned frozen artifacts and `disconnection-review.json`. Production
+replay recomputes the plan and compares this evidence. New contact-only previews
+also export checksummed `contact-review.json`. Older archives keep their original
+wire/fingerprint identities; missing newer fields provide no disconnection authority
+or implied contact/confirmation evidence. These checks do not claim general
+`FULL_EDIT_PLAN` replay or replaying the JOSM Apply transaction.
+
 ## Palette Calibration Workflow
 
 For color-scheme tuning, use `More tools -> Export Heatmap Calibration Tiles` after selecting the relevant way or way segment. The plugin downloads and exports redacted tile images for the same selected segment across the base Strava color schemes: `hot`, `blue`, `bluered`, `purple`, and `gray`. The bundle contains mosaics, source tiles, and tile metadata, but not cookies or signed URLs.
@@ -460,6 +470,18 @@ tagged, relation-protected, or otherwise complex junction cannot be moved safely
 the approved fixed-island interval plan leaves that vicinity unchanged and can move
 independently safe sections on either side. Inspect every preview before Apply;
 manual junction adjustment may still be necessary.
+
+Connections are preserved by default. In the modern preview, use **Disconnect
+selected way at shared nodes…** to choose individual shared-node occurrences or
+all eligible occurrences. The chooser explains unavailable tagged, relation-sensitive
+or incomplete cases and reports the connections being removed. It starts a fresh
+preview; review the highlighted disconnection locations and confirm that exact plan
+before Apply. The choice lasts only for this preview session. Original shared nodes
+and all other ways stay unchanged, and disconnection plus sliding is one Undo operation.
+
+Independent crossings, touches and overlaps require review rather than creating
+connections automatically. For a stream crossing, check the required bridge,
+culvert, tunnel or ford handling yourself; the plugin does not infer or change tags.
 
 Choose the engine in settings and collect the fourteen reference cases through the
 ordinary action, which records the actual source policy,

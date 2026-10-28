@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 
 import java.util.List;
+import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
@@ -65,6 +66,8 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
         if (authoritySpecification != null && (!authoritySpecification.snapshotId().equals(network.snapshotId())
                 || !authoritySpecification.selectedWayKey().equals(fullRequest.selectedWayKey())
                 || !authoritySpecification.selectedRange().equals(fullRequest.selectedRange())
+                || !authoritySpecification.permissions().equals(fullRequest.permissions())
+                || !Objects.equals(authoritySpecification.disconnectionSource(), fullRequest.disconnectionSource())
                 || !authoritySpecification.datasetIdentity().equals(network.datasetIdentity())
                 || authoritySpecification.sourceGeneration() != network.sourceGeneration())) {
             throw new IllegalArgumentException("Interval authority does not match its captured source");
@@ -74,9 +77,18 @@ public record IntervalTraceBatch(TraceRequest fullRequest, EvidenceSnapshot evid
             IntervalRun run = runs.get(index);
             if (!run.interval().equals(partition.slideIntervals().get(index))
                     || !run.request().selectedWayKey().equals(fullRequest.selectedWayKey())
+                    || run.request().engine() != fullRequest.engine()
+                    || run.request().geometryMode() != fullRequest.geometryMode()
+                    || !run.request().permissions().equals(fullRequest.permissions())
+                    || !Objects.equals(run.request().disconnectionSource(), fullRequest.disconnectionSource())
                     || !run.request().evidenceContentHash().equals(fullRequest.evidenceContentHash())
                     || !run.request().networkContentHash().equals(fullRequest.networkContentHash())) {
                 throw new IllegalArgumentException("Interval run has a different source or order");
+            }
+            if (!fullRequest.permissions().sharedNodeDisconnectionIntent().isEmpty()
+                    && !run.request().equals(new IntervalTraceRequestFactory().createDetached(fullRequest,
+                            evidence, network, run.interval(), run.request().budgets()))) {
+                throw new IllegalArgumentException("Interval disconnection request differs from its full-source derivation");
             }
         }
         TraceWorkUsage total = TraceWorkUsage.none();

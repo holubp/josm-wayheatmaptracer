@@ -4,7 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.time.Duration;
 import java.util.List;
 import java.util.OptionalDouble;
@@ -28,6 +32,7 @@ import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId.ExistingWayNodeOccurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
@@ -35,11 +40,14 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMo
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SharedNodeDisconnectionIntent;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
@@ -347,6 +355,85 @@ class V022LiveBPreviewServiceTest {
         assertTrue(managed[0].network().closure().protectedExistingNodeKeys().contains(key));
         assertFalse(visible[0].network().closure().movableExistingNodeKeys().contains(key));
         assertFalse(managed[0].network().closure().movableExistingNodeKeys().contains(key));
+    }
+
+    @Test
+    void emptyPermissionsKeepHistoricalLiveAndManagedSettingsIdentity() throws Exception {
+        Fixture fixture = fiveNodeFixture();
+        Node shared = fixture.selection().segmentNodes().get(0);
+        Node other = loadedNode(900, shared.lat() - 0.0001, shared.lon());
+        fixture.dataSet().addPrimitive(other);
+        Way receiver = new Way();
+        receiver.setNodes(List.of(shared, other));
+        receiver.setOsmId(901, 1); receiver.setModified(false);
+        fixture.dataSet().addPrimitive(receiver);
+        AlignmentConfig visibleConfig = config();
+        AlignmentConfig managedConfig = managedConfig();
+        RecoveryPermissions empty = new RecoveryPermissions(false, 7.01, 7.01,
+                JunctionPolicy.FIXED, false);
+        LiveBPreviewService service = new LiveBPreviewService();
+        LiveBPreviewService.Captured[] visible = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.Captured[] visibleWithIntent = new LiveBPreviewService.Captured[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managed = new LiveBPreviewService.ManagedCaptureSeed[1];
+        LiveBPreviewService.ManagedCaptureSeed[] managedWithIntent =
+                new LiveBPreviewService.ManagedCaptureSeed[1];
+
+        SwingUtilities.invokeAndWait(() -> {
+            visible[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                    visibleConfig, true, empty);
+            SharedNodeDisconnectionIntent visibleIntent = intentFor(
+                    visible[0].disconnectionSource(), visible[0].specification());
+            RecoveryPermissions visiblePermissions = new RecoveryPermissions(false, 7.01, 7.01,
+                    JunctionPolicy.FIXED, false, visibleIntent);
+            visibleWithIntent[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
+                    visibleConfig, true, visiblePermissions);
+            managed[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    managedConfig, "empty-permission-identity", empty);
+            SharedNodeDisconnectionIntent managedIntent = intentFor(
+                    managed[0].disconnectionSource(), managed[0].specification());
+            RecoveryPermissions managedPermissions = new RecoveryPermissions(false, 7.01, 7.01,
+                    JunctionPolicy.FIXED, false, managedIntent);
+            managedWithIntent[0] = service.captureManagedSeed(fixture.dataSet(), fixture.selection(),
+                    managedConfig, "explicit-permission-identity", managedPermissions);
+        });
+
+        String historicalPermissions = "RecoveryPermissions[widerDiscovery=false, ordinaryRadiusMeters=7.01, "
+                + "maximumDiscoveryRadiusMeters=7.01, junctionPolicy=FIXED, reconstructIncidentWays=false]";
+        assertEquals(historicalSettingsHash(visibleConfig, historicalPermissions), visible[0].settingsHash());
+        assertEquals(historicalSettingsHash(managedConfig, historicalPermissions), managed[0].settingsHash());
+        assertEquals(historicalSettingsHash(visibleConfig,
+                visibleWithIntent[0].specification().permissions().canonicalIdentity()),
+                visibleWithIntent[0].settingsHash());
+        assertEquals(historicalSettingsHash(managedConfig,
+                managedWithIntent[0].specification().permissions().canonicalIdentity()),
+                managedWithIntent[0].settingsHash());
+        assertNotEquals(visible[0].settingsHash(), visibleWithIntent[0].settingsHash());
+        assertNotEquals(managed[0].settingsHash(), managedWithIntent[0].settingsHash());
+    }
+
+    private static SharedNodeDisconnectionIntent intentFor(
+            NetworkSnapshot network, NetworkSnapshotCapture.Specification specification) {
+        DetachedWay selected = (DetachedWay) network.primitives().get(specification.selectedWayKey());
+        int index = specification.selectedRange().firstIndex();
+        return new SharedNodeDisconnectionIntent(specification.selectedWayKey(),
+                specification.selectedRange(), java.util.Map.of(index, selected.nodeKeys().get(index)),
+                network.canonicalHash());
+    }
+
+    private static String historicalSettingsHash(AlignmentConfig config, String permissionIdentity) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String value : List.of(config.heatmap().toRedactedJson(),
+                    config.cleanup().toRedactedJson(), permissionIdentity)) {
+                byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+                digest.update(Integer.toString(bytes.length).getBytes(StandardCharsets.US_ASCII));
+                digest.update((byte) ':');
+                digest.update(bytes);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("SHA-256 is unavailable", failure);
+        }
     }
 
     @Test

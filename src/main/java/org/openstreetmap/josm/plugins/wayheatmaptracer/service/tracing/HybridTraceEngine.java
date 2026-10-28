@@ -247,7 +247,8 @@ public final class HybridTraceEngine implements BudgetReportingTraceEngine {
             request.evidenceSnapshotId(), request.evidenceContentHash(),
             request.networkSnapshotId(), request.networkContentHash(), request.settingsHash(),
             request.parameterHash(), request.samplerId(), request.configuredSampleStepMeters(),
-            request.profileChainage(), request.evidenceResolution(), request.corridorInput());
+            request.profileChainage(), request.evidenceResolution(), request.corridorInput(),
+            request.disconnectionSource());
     }
 
     private static long saturatedAdd(long left, long right) {

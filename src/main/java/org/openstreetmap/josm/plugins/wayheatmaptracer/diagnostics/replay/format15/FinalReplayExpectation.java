@@ -21,16 +21,18 @@ final class FinalReplayExpectation {
     private final TrackerMode capturedEngine;
     private final TrackerMode requestedEngine;
     private final String fingerprint;
+    private final int fingerprintSchema;
 
     private FinalReplayExpectation(String buildIdentity, String inputHash,
             String parameterHash, TrackerMode capturedEngine, TrackerMode requestedEngine,
-            String fingerprint) {
+            String fingerprint, int fingerprintSchema) {
         this.buildIdentity = buildIdentity;
         this.inputHash = inputHash;
         this.parameterHash = parameterHash;
         this.capturedEngine = capturedEngine;
         this.requestedEngine = requestedEngine;
         this.fingerprint = fingerprint;
+        this.fingerprintSchema = fingerprintSchema;
     }
 
     static FinalReplayExpectation capture(String buildIdentity, FrozenReplayInput input,
@@ -43,9 +45,12 @@ final class FinalReplayExpectation {
             throw new IllegalArgumentException("final-expectation-capture-invalid");
         }
         Format15Safety.requireSafeExportedMetadata(buildIdentity);
+        if (!input.request().permissions().sharedNodeDisconnectionIntent().isEmpty()
+                && !actual.routes().isEmpty() && actual.disconnectionPlanReviews().isEmpty())
+            throw new IllegalArgumentException("disconnection-production-planning-unavailable");
         return new FinalReplayExpectation(buildIdentity, actual.inputHash(),
             input.request().parameterHash(), actual.capturedEngine(), actual.engine(),
-            FinalReplayFingerprint.sha256(actual));
+            FinalReplayFingerprint.sha256(actual), FinalReplayFingerprint.schema(actual));
     }
 
     static Optional<FinalReplayExpectation> read(Format15Archive archive) {
@@ -61,8 +66,8 @@ final class FinalReplayExpectation {
             Map<String, Object> object = Format15ArchiveReader.parseObject(bytes, ARTIFACT_NAME);
             if (!object.keySet().equals(KEYS)
                     || !SCHEMA.equals(ScalarReplayExpectation.string(object, "schema"))
-                    || ScalarReplayExpectation.integer(object, "fingerprintSchema")
-                        != FinalReplayFingerprint.SCHEMA_VERSION
+                    || ScalarReplayExpectation.integer(object, "fingerprintSchema") < 1
+                    || ScalarReplayExpectation.integer(object, "fingerprintSchema") > 2
                     || !ReplayLevel.FINAL_GEOMETRY.name().equals(
                         ScalarReplayExpectation.string(object, "replayLevel"))) {
                 throw new IllegalArgumentException("schema");
@@ -85,7 +90,7 @@ final class FinalReplayExpectation {
                 throw new IllegalArgumentException("engine");
             }
             return Optional.of(new FinalReplayExpectation(build, input, parameter,
-                captured, requested, fingerprint));
+                captured, requested, fingerprint, ScalarReplayExpectation.integer(object, "fingerprintSchema")));
         } catch (Format15ArchiveException | IllegalArgumentException exception) {
             throw new ReplayMismatchException("expected-final-output-invalid");
         }
@@ -94,7 +99,7 @@ final class FinalReplayExpectation {
     byte[] bytes() {
         ScalarReplayExpectation.requireBuildIdentityFitsEnvelope(buildIdentity);
         String json = "{\"schema\":" + ScalarReplayExpectation.quote(SCHEMA)
-            + ",\"fingerprintSchema\":" + FinalReplayFingerprint.SCHEMA_VERSION
+            + ",\"fingerprintSchema\":" + fingerprintSchema
             + ",\"buildIdentity\":" + ScalarReplayExpectation.quote(buildIdentity)
             + ",\"inputHash\":" + ScalarReplayExpectation.quote(inputHash)
             + ",\"parameterHash\":" + ScalarReplayExpectation.quote(parameterHash)
@@ -125,7 +130,7 @@ final class FinalReplayExpectation {
     FinalOutputComponentsCodec.Binding componentsBinding() {
         return new FinalOutputComponentsCodec.Binding(buildIdentity, inputHash, parameterHash,
                 capturedEngine, requestedEngine, ReplayLevel.FINAL_GEOMETRY,
-                FinalReplayFingerprint.SCHEMA_VERSION, fingerprint);
+                fingerprintSchema, fingerprint);
     }
 
     String fingerprint() { return fingerprint; }
@@ -140,6 +145,7 @@ final class FinalReplayExpectation {
 
     boolean matches(Format15ReplayRunner.Result actual) {
         return actual.level() == ReplayLevel.FINAL_GEOMETRY
+            && FinalReplayFingerprint.schema(actual) == fingerprintSchema
             && actual.capturedEngine() == capturedEngine
             && actual.engine() == requestedEngine
             && actual.inputHash().equals(inputHash)

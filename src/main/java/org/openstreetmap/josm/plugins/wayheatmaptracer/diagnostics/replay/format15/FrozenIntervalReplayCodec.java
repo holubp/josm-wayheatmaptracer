@@ -191,7 +191,7 @@ final class FrozenIntervalReplayCodec {
                 source.networkSnapshotId(), source.networkContentHash(), source.settingsHash(),
                 source.parameterHash(), source.samplerId(), source.configuredSampleStepMeters(),
                 source.profileChainage().withSourceOrigin(origin), source.evidenceResolution(),
-                source.corridorInput());
+                source.corridorInput(), source.disconnectionSource());
     }
 
     private static void hash(DataOutputStream out, String value) throws IOException {

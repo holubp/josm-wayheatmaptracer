@@ -832,6 +832,51 @@ A derives `CorridorTraceInput` from the exact request `ProfileChainage`, frozen 
 
 This interim slice does not complete other modern engines or source modes, modern edit-plan construction, Apply/Undo/Redo, or release certification.
 
+### Current modern contact and disconnection planning contracts
+
+Modern independent crossings, touches and overlaps use one certified contact
+assessment: unchanged contextual geometry without shared incidence at that contact
+is review-required. Shared-incidence, self-intersection, authority and stale-source
+failures retain their blocking checks. A waterway warning asks the mapper to verify
+bridge, culvert, tunnel or ford handling; the planner does not infer those tags.
+
+The disconnection backend retains the immutable factual capture from before fixed
+islands are imposed. Explicit intent binds that initial source hash. Effective
+capture must preserve primitive, coordinate, tag, referrer, region and port facts,
+with original movement/removal authority only a subset of that initial authority.
+Choosing a junction releases its island restrictions only for originally movable
+ordinary nodes; original shared nodes and other ways remain protected and unchanged.
+
+The plan binds source, chosen original occurrences, geometry mode, deterministic
+replacement nodes and exact proposed external-port identities. Candidate-owned
+assignments target replacements while retaining original occurrence provenance.
+Move Nodes can create only those explicit replacements. A shared private-constructor
+port proof recognizes an authorized boundary identity change only when its original
+GEOGRAPHIC boundary/outside coordinates and adjacency are unchanged. Model region
+checks and contact classification consume the same proof; changed geometry gains
+no edit-region or certification exception.
+
+Capture authority specifications bind selection, permission and source to the full
+request; interval subrequests also retain its geometry mode and engine. Nonempty
+attempts derive exact interval requests from the full source, preserving legitimate
+interval chainage and remaining budgets. Inference engines must match their owning
+requests. Every chosen occurrence
+needs an actual retained production route with positive finite direct support and
+no hard quality finding, even if its disposition claims review. Frozen/no-route,
+cancelled, resource-limited or inconsistent results cannot supply clone authority.
+
+The modeless chooser keeps occurrence choices session-local and recomputes through
+a fresh owned capture; clearing a previous choice restores empty authority.
+Versioned `FrozenReplayCodec` envelopes preserve initial source, mode, occurrence
+replacements and proposed ports. Empty constructors and historical hashes retain
+their native behavior; absent fields never grant disconnection authority.
+New ordinary and interval contact receipts bind actual contacts, plan and exact
+confirmation identity to production replay. Non-FIXED contact-only captures retain
+factual diagnostics but explicitly refuse unsupported contact/edit-plan replay;
+supported disconnection capture keeps the existing FIXED selected-way-only policy.
+The live contracts remain enforced by `IntervalTraceBatch`,
+`SharedNodeDisconnectionPlanner` and `AlignmentEditPlan`.
+
 ### Modern source freshness in the current development build
 
 For modern managed-source Apply/Redo, the command receipt reads the current

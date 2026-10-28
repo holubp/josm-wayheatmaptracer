@@ -20,6 +20,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.openstreetmap.josm.command.AddCommand;
 import org.openstreetmap.josm.data.UndoRedoHandler;
 import org.openstreetmap.josm.data.coor.LatLon;
@@ -31,6 +33,7 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.data.projection.Projections;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentEditPlan;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ClosureDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedPrimitive;
@@ -52,6 +55,98 @@ import org.openstreetmap.josm.spi.preferences.Config;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 
 class V022LockedClosureApplyTest {
+    @Test
+    void interruptionDuringFinalSourceSealRollsBackCompleteDisconnection() {
+        var fixture = DisconnectionTransactionFixture.create(AlignmentMode.PRECISE_SHAPE, true);
+        var before = V022AtomicApplyTest.LiveState.capture(fixture.data());
+        var receipts = new java.util.concurrent.atomic.AtomicInteger();
+        LockedApplyValidator source = new LockedApplyValidator() {
+            @Override public String datasetIdentity() { return fixture.validator().datasetIdentity(); }
+            @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+            @Override public Runnable prepareExecution(DataSet data, boolean redo) {
+                return () -> {
+                    if (receipts.incrementAndGet() == 3) Thread.currentThread().interrupt();
+                };
+            }
+            @Override public void validateLocked(DataSet data, AlignmentEditPlan plan, boolean generation) {
+                fixture.validator().validateLocked(data, plan, generation);
+            }
+        };
+        var command = new ApplyAlignmentEditPlanCommand(fixture.data(), fixture.plan(), source,
+                "Disconnect and align final source seal");
+        V022AtomicApplyTest.onEdt(() -> {
+            try {
+                var failure = assertThrows(IllegalStateException.class,
+                        () -> UndoRedoHandler.getInstance().add(command));
+                assertTrue(failure.getCause() instanceof java.util.concurrent.CancellationException);
+                assertEquals(3, receipts.get(), "interruption must follow the exact after-state validation");
+                assertTrue(Thread.currentThread().isInterrupted());
+                before.assertMatches(fixture.data());
+                assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            } finally {
+                Thread.interrupted();
+            }
+        });
+        before.assertMatches(fixture.data());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void disconnectedSourceAndFixedPortFactsAreRevalidatedBeforeApply(AlignmentMode mode) {
+        for (String changed : List.of("shared-coordinate", "receiver-referrer", "outside-port", "selected-order")) {
+            var fixture = DisconnectionTransactionFixture.create(mode, true);
+            var command = fixture.command(point -> { });
+            V022AtomicApplyTest.onEdt(() -> {
+                switch (changed) {
+                    case "shared-coordinate" -> fixture.originals().get(1).setCoor(new LatLon(0.000001, 0));
+                    case "receiver-referrer" -> fixture.receivers().get(0).setNodes(
+                            List.of(fixture.receivers().get(0).lastNode(), fixture.originals().get(2)));
+                    case "outside-port" -> fixture.originals().get(0).setCoor(new LatLon(0.000001, 0));
+                    case "selected-order" -> fixture.selected().setNodes(List.of(fixture.originals().get(0),
+                            fixture.originals().get(2), fixture.originals().get(1), fixture.originals().get(3)));
+                    default -> throw new AssertionError(changed);
+                }
+            });
+            var stale = V022AtomicApplyTest.LiveState.capture(fixture.data());
+            assertThrows(RuntimeException.class, () -> V022AtomicApplyTest.onEdt(
+                    () -> UndoRedoHandler.getInstance().add(command)), changed);
+            stale.assertMatches(fixture.data());
+            assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+            assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = AlignmentMode.class, names = {"PRECISE_SHAPE", "MOVE_EXISTING_NODES"})
+    void disconnectedFactsChangedAfterPreparationStillRejectAtActualLockedApply(AlignmentMode mode) {
+        var fixture = DisconnectionTransactionFixture.create(mode, true);
+        var source = fixture.visibleValidator(message -> { });
+        var stale = new java.util.concurrent.atomic.AtomicReference<V022AtomicApplyTest.LiveState>();
+        LockedApplyValidator racingSource = new LockedApplyValidator() {
+            @Override public String datasetIdentity() { return source.datasetIdentity(); }
+            @Override public boolean returnsNormallyAfterCompletedTransaction() { return true; }
+            @Override public Runnable prepareExecution(DataSet data, boolean redo) {
+                return source.prepareExecution(data, redo);
+            }
+            @Override public void executeWithPreparedSource(Runnable transaction) {
+                fixture.originals().get(1).put("name", "now protected");
+                stale.set(V022AtomicApplyTest.LiveState.capture(fixture.data()));
+                source.executeWithPreparedSource(transaction);
+            }
+            @Override public void validateLocked(DataSet data, AlignmentEditPlan plan, boolean generation) {
+                source.validateLocked(data, plan, generation);
+            }
+        };
+        var command = new ApplyAlignmentEditPlanCommand(fixture.data(), fixture.plan(), racingSource,
+                "Disconnect and align after preparation");
+        assertThrows(RuntimeException.class, () -> V022AtomicApplyTest.onEdt(
+                () -> UndoRedoHandler.getInstance().add(command)));
+        assertTrue(stale.get() != null, "the actual mutation boundary must be exercised");
+        stale.get().assertMatches(fixture.data());
+        assertTrue(UndoRedoHandler.getInstance().getUndoCommands().isEmpty());
+        assertTrue(UndoRedoHandler.getInstance().getRedoCommands().isEmpty());
+    }
+
     private static final long GENERATION = 37L;
 
     @BeforeAll

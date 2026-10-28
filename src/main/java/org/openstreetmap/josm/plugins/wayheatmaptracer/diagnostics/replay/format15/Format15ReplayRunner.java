@@ -38,7 +38,11 @@ public final class Format15ReplayRunner {
     /** Result materialized from a real production computation, never a recorded candidate. */
     public record Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
             TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
-            String inputHash) {
+            String inputHash, List<String> disconnectionPlanReviews) {
+        public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
+                TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes, String inputHash) {
+            this(level, capturedEngine, engine, inference, routes, inputHash, List.of());
+        }
         public Result {
             if (level == null || capturedEngine == null || engine == null || inference == null
                     || routes == null || inputHash == null || inputHash.isBlank()) {
@@ -48,6 +52,14 @@ public final class Format15ReplayRunner {
                 throw new IllegalArgumentException("Production replay engine lineage is inconsistent");
             }
             routes = List.copyOf(routes);
+            disconnectionPlanReviews = List.copyOf(disconnectionPlanReviews);
+            if (!disconnectionPlanReviews.isEmpty() && (level != ReplayLevel.FINAL_GEOMETRY
+                    || disconnectionPlanReviews.size() != routes.size()))
+                throw new IllegalArgumentException("Disconnection review output is incomplete");
+            disconnectionPlanReviews.forEach(review -> {
+                if (review.length() > 1_048_576) throw new IllegalArgumentException("Plan review exceeds text budget");
+                Format15Safety.requireSafeExportedMetadata(review);
+            });
         }
 
         /** Returns actual route geometry for manifest/invariant validation. */
@@ -252,6 +264,25 @@ public final class Format15ReplayRunner {
             }
         }
         String actualPlan = assessment.plan().map(plan -> plan.canonicalHash()).orElse(null);
+        if (index.containsKey("contactReviewSchema") || archive.artifact("contact-review.json").isPresent()) {
+            String review = DisconnectionReplaySemantics.intervalReview(batch, assessment, choices);
+            if (!Long.valueOf(1).equals(index.get("contactReviewSchema"))
+                    || !archive.artifact("contact-review.json").map(Format15Artifact::sha256)
+                            .filter(Format15Safety.sha256(review)::equals).isPresent())
+                throw new ReplayMismatchException("strict-interval-contact-review-mismatch");
+        }
+        if (!shared.request().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
+            String review = DisconnectionReplaySemantics.intervalReview(batch, assessment, choices);
+            if (!archive.artifact(DisconnectionReplaySemantics.ARTIFACT)
+                    .map(Format15Artifact::sha256).filter(Format15Safety.sha256(review)::equals).isPresent())
+                throw new ReplayMismatchException("strict-interval-disconnection-review-mismatch");
+            if (assessment.plan().isPresent()) {
+                var recorded = archive.artifact("private/interval-frozen-edit-plan.bin")
+                        .map(artifact -> FrozenReplayCodec.decodeEditPlan(artifact.bytes()));
+                if (recorded.isEmpty() || !recorded.orElseThrow().canonicalHash().equals(actualPlan))
+                    throw new ReplayMismatchException("strict-interval-disconnection-plan-mismatch");
+            }
+        }
         Map<org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey,
                 List<org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint>> previewWays =
                 assessment.plan().map(plan -> plan.finalPreviewWays()).orElseGet(() ->
@@ -447,6 +478,7 @@ public final class Format15ReplayRunner {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
         Result actual = replay(input, level, input.request().engine());
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        verifyDisconnectionReview(archive, input, actual);
         return actual;
     }
 
@@ -456,7 +488,72 @@ public final class Format15ReplayRunner {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
         Result actual = replay(input, level, engine);
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        verifyDisconnectionReview(archive, input, actual);
         return actual;
+    }
+
+    private static void verifyDisconnectionReview(Format15Archive archive, FrozenReplayInput input,
+            Result actual) {
+        if (actual.level() != ReplayLevel.FINAL_GEOMETRY) return;
+        if (input.request().permissions().sharedNodeDisconnectionIntent().isEmpty()
+                && archive.artifact("attempt-status.json").isPresent()) {
+            try {
+                var status = Format15ArchiveReader.parseObject(archive.artifact("attempt-status.json")
+                        .orElseThrow().bytes(), "attempt-status.json");
+                if (status.containsKey("planReviewSchema") && (!Long.valueOf(1).equals(status.get("planReviewSchema"))
+                        || archive.artifact("contact-review.json").isEmpty()))
+                    throw new IllegalArgumentException("missing or unsupported contact evidence");
+            } catch (Exception missing) {
+                throw new ReplayMismatchException("contact-production-review-unavailable");
+            }
+        }
+        if (archive.artifact("contact-review.json").isPresent()) {
+            if (input.request().permissions().junctionPolicy()
+                    != org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED)
+                throw new ReplayMismatchException("contact-production-replay-unavailable");
+            try {
+                var artifact = archive.artifact("contact-review.json").orElseThrow();
+                var receipt = Format15ArchiveReader.parseObject(artifact.bytes(), "contact-review.json");
+                var status = Format15ArchiveReader.parseObject(archive.artifact("attempt-status.json")
+                        .orElseThrow().bytes(), "attempt-status.json");
+                int route = ((Number) status.get("routeIndex")).intValue();
+                double radius = ((Number) receipt.get("searchRadiusMeters")).doubleValue();
+                if (radius != input.planSearchRadiusMeters()) throw new IllegalArgumentException("radius binding");
+                var plan = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter()
+                        .adaptFrozen(input.request(), input.evidence(), input.network(), input.options(),
+                                new ModernTracePipeline.Result(actual.inference(), actual.routes()), route, radius);
+                String candidate = input.options().sourceTier() + ":" + input.request().evidenceContentHash()
+                        + ":" + route + ":" + actual.routes().get(route).hypothesis().id();
+                if (!artifact.sha256().equals(Format15Safety.sha256(DisconnectionReplaySemantics.review(
+                        plan, input.evidence(), radius, candidate) + "\n")))
+                    throw new IllegalArgumentException("contact review");
+            } catch (Exception invalid) {
+                throw new ReplayMismatchException("contact-production-plan-mismatch");
+            }
+        }
+        if (input.request().permissions().sharedNodeDisconnectionIntent().isEmpty()) return;
+        var artifact = archive.artifact(DisconnectionReplaySemantics.ARTIFACT);
+        if (artifact.isPresent()) {
+            if (!artifact.orElseThrow().sha256().equals(Format15Safety.sha256(
+                    DisconnectionReplaySemantics.artifact(actual.disconnectionPlanReviews()))))
+                throw new ReplayMismatchException("disconnection-production-plan-mismatch");
+        } else if (archive.artifact(FinalReplayExpectation.ARTIFACT_NAME).isPresent()) {
+            throw new ReplayMismatchException("disconnection-production-review-unavailable");
+        }
+        if (archive.artifact("frozen-edit-plan.bin").isPresent()) {
+            try {
+                var status = Format15ArchiveReader.parseObject(archive.artifact("attempt-status.json")
+                        .orElseThrow().bytes(), "attempt-status.json");
+                int route = ((Number) status.get("routeIndex")).intValue();
+                var recorded = FrozenReplayCodec.decodeEditPlan(archive.artifact("frozen-edit-plan.bin").orElseThrow().bytes());
+                var receipt = Format15ArchiveReader.parseObject(actual.disconnectionPlanReviews().get(route)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8), "disconnection-review");
+                if (!recorded.canonicalHash().equals(receipt.get("planIdentity")))
+                    throw new IllegalArgumentException("plan");
+            } catch (Exception invalid) {
+                throw new ReplayMismatchException("disconnection-recorded-plan-mismatch");
+            }
+        }
     }
 
     /**
@@ -533,8 +630,8 @@ public final class Format15ReplayRunner {
             source.evidenceSnapshotId(), source.evidenceContentHash(), source.networkSnapshotId(),
             source.networkContentHash(), source.settingsHash(), source.parameterHash(),
             source.samplerId(), source.configuredSampleStepMeters(), source.profileChainage(),
-            source.evidenceResolution(), source.corridorInput());
-        return new FrozenReplayInput(request, input.evidence(), input.network(), input.options());
+            source.evidenceResolution(), source.corridorInput(), source.disconnectionSource());
+        return new FrozenReplayInput(request, input.evidence(), input.network(), input.options(), input.planSearchRadiusMeters());
     }
 
     private static Result scalar(FrozenReplayInput input, TrackerMode capturedEngine,
@@ -557,7 +654,8 @@ public final class Format15ReplayRunner {
                 new CorridorEngineAdapter(input.options().fieldName())).run(input.request(),
                 input.evidence(), input.network(), input.options(), CancellationProbe.NONE);
             return new Result(ReplayLevel.FINAL_GEOMETRY, capturedEngine,
-                input.request().engine(), actual.inference(), actual.routes(), inputHash);
+                input.request().engine(), actual.inference(), actual.routes(), inputHash,
+                DisconnectionReplaySemantics.recompute(input, actual));
         } catch (RuntimeException failure) {
             throw new ReplayMismatchException("production-engine-execution-failed");
         }

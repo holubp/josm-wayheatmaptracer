@@ -129,9 +129,12 @@ public final class ProbabilisticStructuralGuide {
                 || request.selectedRange().lastIndex() >= way.nodeKeys().size()) {
             return true;
         }
+        var disconnections = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                .SharedNodeDisconnectionPlanner.forRequest(request, network);
         for (int index = request.selectedRange().firstIndex() + 1;
                 index < request.selectedRange().lastIndex(); index++) {
-            if (network.closure().protectedExistingNodeKeys().contains(way.nodeKeys().get(index))) {
+            if (network.closure().protectedExistingNodeKeys().contains(way.nodeKeys().get(index))
+                    && !disconnections.mayPosition(index)) {
                 return true;
             }
         }

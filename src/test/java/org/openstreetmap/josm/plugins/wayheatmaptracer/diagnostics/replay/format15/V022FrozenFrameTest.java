@@ -181,12 +181,21 @@ class V022FrozenFrameTest {
             NetworkSnapshotCapture.Specification authority = scope(base);
             assertEquals(authority, FrozenReplayCodec.decodeAuthority(FrozenReplayCodec.encodeAuthority(authority)));
             assertEquals(plan(base), FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(plan(base))));
+            var extended = new FrozenReplayInput(base.request(), base.evidence(), base.network(),
+                    base.options(), base.planSearchRadiusMeters() + 1.0);
+            byte[] versionFive = FrozenReplayCodec.encode(extended);
+            assertEquals(5, FrozenReplayCodec.encodedVersion(versionFive));
+            var extendedCopy = FrozenReplayCodec.decode(versionFive);
+            assertEquals(extended.canonicalHash(), extendedCopy.canonicalHash());
+            assertEquals(extended.planSearchRadiusMeters(), extendedCopy.planSearchRadiusMeters());
+            assertEquals(!legacy, extendedCopy.evidence().coordinateFrame().hasCompleteNumericalIdentity());
+            assertTrue(extendedCopy.request().permissions().sharedNodeDisconnectionIntent().isEmpty());
         }
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(new byte[7]));
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
                 ByteBuffer.allocate(8).putInt(0).putInt(3).array()));
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
-                ByteBuffer.allocate(8).putInt(0x57545250).putInt(5).array()));
+                ByteBuffer.allocate(8).putInt(0x57545250).putInt(6).array()));
     }
 
     @Test

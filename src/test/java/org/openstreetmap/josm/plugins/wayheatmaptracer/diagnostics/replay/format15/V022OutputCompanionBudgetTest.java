@@ -12,6 +12,8 @@ import java.util.Map;
 import java.util.OptionalDouble;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.FinalRoutePointId;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
@@ -70,8 +72,9 @@ class V022OutputCompanionBudgetTest {
                         Format15Safety.MAX_ARTIFACT_BYTES, Format15Safety.MAX_TOTAL_BYTES - 1).availability());
     }
 
-    @Test
-    void remainingMandatoryBudgetIsAdmittedBeforeOptionalByteCopies() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void remainingMandatoryBudgetIsAdmittedBeforeOptionalByteCopies(boolean withPlanReview) throws Exception {
         assertEquals(0, Format15ProductionBundleFactory.optionalPayloadAllowance(511, 0, 100));
         assertEquals(0, Format15ProductionBundleFactory.optionalPayloadAllowance(510,
                 Format15Safety.MAX_TOTAL_BYTES - 100, 100));
@@ -79,12 +82,15 @@ class V022OutputCompanionBudgetTest {
                 Format15Safety.MAX_TOTAL_BYTES - 101, 100));
         assertEquals(Format15Safety.MAX_ARTIFACT_BYTES,
                 Format15ProductionBundleFactory.optionalPayloadAllowance(0, 0, 100));
-        var output = smallOutput();
+        var output = budgetOutput(withPlanReview);
         int exactBytes = FinalOutputComponentsCodec.encode(binding(output), output).bytes().length;
         assertEquals(FinalOutputComponentsCodec.Availability.UNAVAILABLE_BUDGET,
                 FinalOutputComponentsCodec.encode(binding(output), output, exactBytes - 1, 0).availability());
         assertEquals(FinalOutputComponentsCodec.Availability.AVAILABLE,
                 FinalOutputComponentsCodec.encode(binding(output), output, exactBytes, 0).availability());
+        assertEquals(output, FinalOutputComponentsCodec.decode(
+                FinalOutputComponentsCodec.encode(binding(output), output, exactBytes, 0).bytes(),
+                binding(output)).output());
 
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         for (int index = 0; index < 511; index++) {
@@ -156,14 +162,15 @@ class V022OutputCompanionBudgetTest {
         assertFalse(mixed.contains("public-route"));
     }
 
-    @Test
-    void fullMandatoryArtifactInventoryStillExportsWithoutOptionalDetail() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void fullMandatoryArtifactInventoryStillExportsWithoutOptionalDetail(boolean withPlanReview) throws Exception {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         for (int index = 0; index < Format15Safety.MAX_ARTIFACTS; index++) {
             String name = "mandatory-" + index + ".bin";
             artifacts.put(name, Format15Artifact.binary(name, new byte[0]));
         }
-        var output = smallOutput();
+        var output = budgetOutput(withPlanReview);
         addCompanion(artifacts, output);
         assertEquals(Format15Safety.MAX_ARTIFACTS, artifacts.size());
         assertFalse(artifacts.containsKey(FinalOutputComponentsCodec.ARTIFACT));
@@ -174,14 +181,24 @@ class V022OutputCompanionBudgetTest {
     private static void addCompanion(Map<String, Format15Artifact> artifacts,
             Format15ReplayRunner.Result output) throws Exception {
         var constructor = FinalReplayExpectation.class.getDeclaredConstructor(String.class, String.class,
-                String.class, TrackerMode.class, TrackerMode.class, String.class);
+                String.class, TrackerMode.class, TrackerMode.class, String.class, int.class);
         constructor.setAccessible(true);
         var expectation = constructor.newInstance("public-build", output.inputHash(), "b".repeat(64),
-                output.capturedEngine(), output.engine(), FinalReplayFingerprint.sha256(output));
+                output.capturedEngine(), output.engine(), FinalReplayFingerprint.sha256(output),
+                FinalReplayFingerprint.schema(output));
         var method = Format15ProductionBundleFactory.class.getDeclaredMethod("addFinalOutputComponents",
                 Map.class, FinalReplayExpectation.class, Format15ReplayRunner.Result.class);
         method.setAccessible(true);
         method.invoke(null, artifacts, expectation, output);
+    }
+
+    /** Exercises optional admission with both native and review-bearing wire payloads. */
+    private static Format15ReplayRunner.Result budgetOutput(boolean withPlanReview) {
+        var ordinary = smallOutput();
+        return withPlanReview ? new Format15ReplayRunner.Result(ordinary.level(), ordinary.capturedEngine(),
+                ordinary.engine(), ordinary.inference(), ordinary.routes(), ordinary.inputHash(),
+                List.of("{\"schema\":1,\"status\":\"PLAN_UNAVAILABLE\",\"routeIdentity\":\"public-route\"}"))
+                : ordinary;
     }
 
     static Format15ReplayRunner.Result smallOutput() {
@@ -208,7 +225,7 @@ class V022OutputCompanionBudgetTest {
 
     static FinalOutputComponentsCodec.Binding binding(Format15ReplayRunner.Result output) {
         return new FinalOutputComponentsCodec.Binding("public-build", output.inputHash(), "b".repeat(64),
-                output.capturedEngine(), output.engine(), output.level(), FinalReplayFingerprint.SCHEMA_VERSION,
+                output.capturedEngine(), output.engine(), output.level(), FinalReplayFingerprint.schema(output),
                 FinalReplayFingerprint.sha256(output));
     }
 

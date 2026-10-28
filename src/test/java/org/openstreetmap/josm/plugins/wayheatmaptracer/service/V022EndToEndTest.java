@@ -416,23 +416,23 @@ class V022EndToEndTest {
     }
 
     @Test
-    void fixedPolicyFinalPreviewIsBlockedByCapturedSurroundingCrossing() throws Exception {
+    void fixedPolicyIndependentSurroundingCrossingRequiresExactReview() throws Exception {
         LiveBPreviewService.Computed computed = compute(junctionFixture(0.0, true),
                 JunctionPolicy.FIXED);
 
         ModernSingleWayEditPlanAdapter.Assessment assessment =
                 new ModernSingleWayEditPlanAdapter().assess(computed, 0);
 
-        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.FINAL_TOPOLOGY_CROSSING,
+        assertEquals(ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                 assessment.availability(), () -> assessment.plan()
                         .map(plan -> plan.validation().findingCodes().toString())
                         .orElse(assessment.detail()));
         assertTrue(assessment.plan().isPresent(),
-                "blocked final geometry must remain inspectable as an exact immutable plan");
-        assertEquals(ValidationReport.Disposition.HARD_BLOCKED,
+                "reviewable final geometry must remain inspectable as an exact immutable plan");
+        assertEquals(ValidationReport.Disposition.REVIEW_REQUIRED,
                 assessment.plan().orElseThrow().validation().disposition());
         assertTrue(assessment.plan().orElseThrow().validation().findingCodes()
-                .contains("final-topology:CROSSING"));
+                .contains("independent-context-contact-review-required"));
     }
 
     @Test

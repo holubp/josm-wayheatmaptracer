@@ -166,6 +166,7 @@ public final class ModernTracePipeline {
             throw new IllegalArgumentException("Modern pipeline inputs are incomplete");
         }
         Set<Integer> exactFixed = Set.copyOf(fixedOccurrences);
+        var disconnections = SharedNodeDisconnectionPlanner.forRequest(request, network);
         if (!exactFixed.isEmpty()) {
             DetachedPrimitive selected = network.primitives().get(request.selectedWayKey());
             if (!(selected instanceof DetachedWay way)
@@ -211,7 +212,7 @@ public final class ModernTracePipeline {
             cancellation.checkpoint();
             long routeStarted = System.nanoTime();
             routes.add(finalizeRoute(hypothesis, inference, image, evidence, network,
-                    request, options, pitch, cancellation, exactFixed));
+                    request, options, pitch, cancellation, exactFixed, disconnections));
             finalizationNanos += System.nanoTime() - routeStarted;
         }
         long rankingStarted = System.nanoTime();
@@ -253,8 +254,8 @@ public final class ModernTracePipeline {
     private static Route finalizeRoute(TraceHypothesis source, TraceHypothesisSet inference,
             ImageCostField image, EvidenceSnapshot evidence, NetworkSnapshot network,
             TraceRequest request, Options options, double pitch, CancellationProbe cancellation,
-            Set<Integer> fixedOccurrences) {
-        SeedGeometry seed = seedGeometry(source, evidence, network, request, fixedOccurrences);
+            Set<Integer> fixedOccurrences, SharedNodeDisconnectionPlanner.Authority disconnections) {
+        SeedGeometry seed = seedGeometry(source, evidence, network, request, fixedOccurrences, disconnections);
         ImageSupportedLocalCleanup.Mode mode = request.geometryMode()
                 == AlignmentMode.MOVE_EXISTING_NODES
                 || request.engine() == TrackerMode.PROBABILISTIC
@@ -349,7 +350,8 @@ public final class ModernTracePipeline {
     }
 
     private static SeedGeometry seedGeometry(TraceHypothesis source, EvidenceSnapshot evidence,
-            NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences) {
+            NetworkSnapshot network, TraceRequest request, Set<Integer> fixedOccurrences,
+            SharedNodeDisconnectionPlanner.Authority disconnections) {
         DetachedPrimitive selectedPrimitive = network.primitives().get(request.selectedWayKey());
         if (!(selectedPrimitive instanceof DetachedWay selected)
                 || request.selectedRange().lastIndex() >= selected.nodeKeys().size()) {
@@ -382,8 +384,9 @@ public final class ModernTracePipeline {
         for (int local = 0; local < existingIds.size(); local++) {
             ExistingWayNodeOccurrence id = existingIds.get(local);
             PrimitiveKey nodeKey = id.nodeKey();
-            boolean protectedCoordinate = protectedNodes.contains(nodeKey);
-            boolean movableCoordinate = movable.contains(nodeKey);
+            boolean replacement = disconnections.mayPosition(id.originalOccurrenceIndex());
+            boolean protectedCoordinate = protectedNodes.contains(nodeKey) && !replacement;
+            boolean movableCoordinate = movable.contains(nodeKey) || replacement;
             boolean removableIdentity = removable.contains(nodeKey);
             if (!protectedCoordinate && !removableIdentity && !movableCoordinate) {
                 throw new IllegalArgumentException(

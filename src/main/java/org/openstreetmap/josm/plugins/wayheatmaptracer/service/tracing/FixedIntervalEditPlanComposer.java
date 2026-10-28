@@ -36,12 +36,21 @@ public final class FixedIntervalEditPlanComposer {
     public record Assessment(Optional<AlignmentEditPlan> plan,
             List<GeographicPoint> selectedWayPreview,
             Map<FinalRoutePointId, MetricPoint> assignments,
-            List<IntervalAssessment> intervals) {
+            List<IntervalAssessment> intervals, List<Integer> unownedDisconnectionOccurrences) {
+        /** Historical/no-intent assessments have no missing disconnection owners. */
+        public Assessment(Optional<AlignmentEditPlan> plan, List<GeographicPoint> selectedWayPreview,
+                Map<FinalRoutePointId, MetricPoint> assignments, List<IntervalAssessment> intervals) {
+            this(plan, selectedWayPreview, assignments, intervals, List.of());
+        }
         public Assessment {
             plan = Optional.ofNullable(plan).orElseThrow();
             selectedWayPreview = List.copyOf(selectedWayPreview);
             assignments = Map.copyOf(assignments);
             intervals = List.copyOf(intervals);
+            unownedDisconnectionOccurrences = List.copyOf(unownedDisconnectionOccurrences);
+            if (!unownedDisconnectionOccurrences.isEmpty() && plan.isPresent()) {
+                throw new IllegalArgumentException("A disconnected plan requires every production occurrence owner");
+            }
         }
         public boolean applyAvailable() {
             return plan.isPresent() && plan.orElseThrow().validation().applicable();
@@ -127,7 +136,15 @@ public final class FixedIntervalEditPlanComposer {
         ModernSingleWayEditPlanAdapter adapter = new ModernSingleWayEditPlanAdapter();
         for (int attempt = 0; attempt <= runs.size(); attempt++) {
             Candidate candidate = assemble(batch, selected, routeChoices, frozen);
-            if (candidate.changedIntervals().isEmpty()) {
+            List<Integer> unowned = unownedDisconnections(batch, routeChoices, frozen);
+            if (!unowned.isEmpty()) {
+                Assessment refused = assessment(batch, selected, routeChoices, frozen, reasons, Set.of(),
+                        Optional.empty(), candidate.assignments(), originalPreview(batch, selected));
+                return new Assessment(refused.plan(), refused.selectedWayPreview(), refused.assignments(),
+                        refused.intervals(), unowned);
+            }
+            if (candidate.changedIntervals().isEmpty()
+                    && batch.fullRequest().permissions().sharedNodeDisconnectionIntent().isEmpty()) {
                 return assessment(batch, selected, routeChoices, frozen, reasons, Set.of(),
                         Optional.empty(), candidate.assignments(), originalPreview(batch, selected));
             }
@@ -169,6 +186,32 @@ public final class FixedIntervalEditPlanComposer {
             }
         }
         throw new IllegalStateException("Interval freeze recomputation exceeded its bound");
+    }
+
+    /** A fixed/failing interval cannot turn an explicit request into a stand-alone unglue command. */
+    private static List<Integer> unownedDisconnections(IntervalTraceBatch batch,
+            Map<Integer, Integer> choices, Set<Integer> frozen) {
+        var intent = batch.fullRequest().permissions().sharedNodeDisconnectionIntent();
+        if (intent.isEmpty()) return List.of();
+        List<Integer> unowned = new ArrayList<>();
+        for (var entry : intent.originalNodeKeys().entrySet()) {
+            boolean owned = false;
+            for (int index = 0; index < batch.runs().size(); index++) {
+                var run = batch.runs().get(index);
+                if (frozen.contains(index) || run.routes().isEmpty()
+                        || entry.getKey() < run.interval().range().firstIndex()
+                        || entry.getKey() > run.interval().range().lastIndex()) continue;
+                var route = run.routes().get(choices.getOrDefault(index, 0));
+                if (!SharedNodeDisconnectionPlanner.retainedProductionOwner(run.result(), route)) continue;
+                var occurrence = new ExistingWayNodeOccurrence(intent.selectedWayKey(), entry.getValue(), entry.getKey());
+                if (route.pointIds().contains(occurrence) && route.assignments().containsKey(occurrence)) {
+                    owned = true;
+                    break;
+                }
+            }
+            if (!owned) unowned.add(entry.getKey());
+        }
+        return List.copyOf(unowned);
     }
 
     private static Set<Integer> demotableEligibleT(IntervalTraceBatch batch,
@@ -282,6 +325,8 @@ public final class FixedIntervalEditPlanComposer {
             IntervalTraceBatch.IntervalRun run, ModernTracePipeline.Route route) {
         int first = run.interval().traceRange().firstIndex();
         int last = run.interval().traceRange().lastIndex();
+        if (batch.fullRequest().permissions().sharedNodeDisconnectionIntent().originalNodeKeys()
+                .keySet().stream().anyMatch(index -> index >= first && index <= last)) return true;
         if (route.pointIds().size() != last - first + 1) return true;
         for (int offset = 0; offset <= last - first; offset++) {
             int occurrence = first + offset;

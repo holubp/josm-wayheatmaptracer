@@ -32,6 +32,7 @@ public final class PreviewOverlay implements MapViewPaintable {
     private CenterlineCandidate chosenCandidate;
     private CandidateAssessment.Disposition disposition;
     private Map<PrimitiveKey, List<EastNorth>> finalPreviewWays = Map.of();
+    private List<EastNorth> disconnectionLocations = List.of();
     private boolean reviewConfirmed;
     private boolean debugEnabled;
     private boolean attached;
@@ -48,6 +49,11 @@ public final class PreviewOverlay implements MapViewPaintable {
      */
     public static PreviewOverlay getInstance() {
         return INSTANCE;
+    }
+
+    /** Highlights only original shared-node positions owned by the current immutable plan. */
+    public void setDisconnectionLocations(List<EastNorth> locations) {
+        disconnectionLocations = List.copyOf(locations);
     }
 
     /**
@@ -122,6 +128,7 @@ public final class PreviewOverlay implements MapViewPaintable {
         chosenCandidate = null;
         disposition = null;
         finalPreviewWays = Map.of();
+        disconnectionLocations = List.of();
         reviewConfirmed = false;
     }
 
@@ -142,6 +149,13 @@ public final class PreviewOverlay implements MapViewPaintable {
         previewPolylines(finalPreviewWays, result.previewPolyline()).forEach(polyline ->
                 drawPolyline(g, mv, polyline, selectedColor, selectedDash,
                         applicable ? 3.5f : reviewRequired ? 3.2f : 2.8f));
+        g.setColor(new Color(190, 20, 150, 230));
+        g.setStroke(new BasicStroke(2.5f));
+        for (EastNorth location : disconnectionLocations) {
+            Point2D point = mv.getPoint2D(location);
+            g.draw(new java.awt.geom.Ellipse2D.Double(point.getX() - 7, point.getY() - 7, 14, 14));
+            g.drawString("disconnect", (float) point.getX() + 10, (float) point.getY());
+        }
         drawLegend(g);
     }
 
