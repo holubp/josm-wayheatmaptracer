@@ -2825,9 +2825,15 @@ public class AlignWayAction extends JosmAction {
             AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
         ManagedHeatmapConfig effective = forcedAlignmentMode == null ? config
                 : config.withAlignmentMode(forcedAlignmentMode);
-        return forcedLivePreviewEngine == null ? effective
+        ManagedHeatmapConfig result = forcedLivePreviewEngine == null ? effective
                 : effective.withAlignmentMode(AlignmentMode.PRECISE_SHAPE)
                         .withTrackerMode(forcedLivePreviewEngine);
+        if (result.trackerMode() == TrackerMode.LEGACY_THEN_B
+                && result.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
+            throw new IllegalArgumentException(
+                    "Hybrid requires Precise Shape. Select Precise Shape or another tracing method.");
+        }
+        return result;
     }
 
     /** Selects a required rendered layer for an explicit visible-source preview before UI setup. */

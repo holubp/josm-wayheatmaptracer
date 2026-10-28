@@ -40,6 +40,11 @@ public record EngineCapabilities(
         EvidenceInput.SCALAR_SNAPSHOT_WITH_A_PROPOSALS, false, true, true, true, false, true,
         ImageRecovery.SELECTIVE, true);
 
+    /** Sequential Legacy proposals refined by independent interval-local B runs. */
+    public static final EngineCapabilities LEGACY_THEN_B = new EngineCapabilities(
+        EvidenceInput.SCALAR_SNAPSHOT, true, false, true, true, false, true,
+        ImageRecovery.NONE, true);
+
     /** Direct image-space route inference. */
     public static final EngineCapabilities DIRECTIONAL_IMAGE = new EngineCapabilities(
         EvidenceInput.SCALAR_SNAPSHOT, false, true, true, true, false, true, ImageRecovery.DIRECT, true);

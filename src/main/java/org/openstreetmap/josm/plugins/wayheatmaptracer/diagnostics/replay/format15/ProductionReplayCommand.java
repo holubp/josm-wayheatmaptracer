@@ -261,6 +261,7 @@ public final class ProductionReplayCommand {
             case HYBRID -> "HYBRID";
             case DIRECTIONAL_IMAGE -> "IMAGE";
             case LEGACY_V02 -> "LEGACY";
+            case LEGACY_THEN_B -> "LEGACY_THEN_B";
         };
     }
 

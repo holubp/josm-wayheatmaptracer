@@ -245,6 +245,8 @@ public final class ModernTracePipeline {
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new IllegalArgumentException(
                     "Legacy tracing does not use the modern detached pipeline");
+            case LEGACY_THEN_B -> throw new IllegalArgumentException(
+                    "Sequential Hybrid requires its original-authority refinement pipeline");
         };
     }
 

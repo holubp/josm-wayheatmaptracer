@@ -574,6 +574,8 @@ public final class Format15ReplayRunner {
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new ReplayMismatchException(
                 "Legacy engine has no modern frozen replay route");
+            case LEGACY_THEN_B -> throw new ReplayMismatchException(
+                "Sequential Hybrid requires a legacy-then-b-v1 replay bundle");
         };
     }
 }

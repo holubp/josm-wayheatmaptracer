@@ -60,38 +60,40 @@ public class HeatmapLayerSettingsAction extends JosmAction {
             return;
         }
 
-        ManagedHeatmapConfig config = PluginPreferences.load();
-        ManagedTileRuntime.updateConfig(config);
-        if (!config.hasManagedAccessValues()) {
-            AggregateIntensityLayer.applyOrUpdateManagedLayer(config, null);
-            PluginLog.verbose("Saved settings without managed access values; using manual layer selection and regex fallback only.");
-            JOptionPane.showMessageDialog(
-                MainApplication.getMainFrame(),
-                tr("Settings saved. No managed heatmap layer was refreshed because access values are not configured."),
-                tr("WayHeatmapTracer"),
-                JOptionPane.INFORMATION_MESSAGE
-            );
-            return;
-        }
+        runSavedSettings(true, PluginPreferences.load(), new SettingsHost() {
+            public void updateRuntime(ManagedHeatmapConfig config) { ManagedTileRuntime.updateConfig(config); }
+            public void refresh(ManagedHeatmapConfig config) {
+                ImageryLayer layer = config.hasManagedAccessValues()
+                        ? ManagedImageryService.applyOrUpdateManagedLayer() : null;
+                AggregateIntensityLayer.applyOrUpdateManagedLayer(config, layer);
+                PluginLog.verbose(config.hasManagedAccessValues() ? "Managed heatmap layer refreshed."
+                        : "Saved settings without managed access values; using manual layer selection and regex fallback only.");
+            }
+            public void probe(ManagedHeatmapConfig config) { launchSelectedSourceProbe(config); }
+            public void failure() {
+                JOptionPane.showMessageDialog(MainApplication.getMainFrame(),
+                        tr("Failed to refresh the managed heatmap layer. Review the redacted diagnostics for details."),
+                        tr("WayHeatmapTracer"), JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
 
+    /** Side-effect boundary for the save/refresh workflow; inference never runs here. */
+    interface SettingsHost {
+        void updateRuntime(ManagedHeatmapConfig config);
+        void refresh(ManagedHeatmapConfig config) throws Exception;
+        void probe(ManagedHeatmapConfig config);
+        void failure();
+    }
+
+    static void runSavedSettings(boolean accepted, ManagedHeatmapConfig config, SettingsHost host) {
+        if (!accepted) { return; }
+        host.updateRuntime(config);
         try {
-            ImageryLayer managedLayer = ManagedImageryService.applyOrUpdateManagedLayer();
-            AggregateIntensityLayer.applyOrUpdateManagedLayer(config, managedLayer);
-            PluginLog.verbose("Managed heatmap layer refreshed.");
-            JOptionPane.showMessageDialog(
-                MainApplication.getMainFrame(),
-                tr("Heatmap layer settings saved and the selected source will now be checked in the visible map area."),
-                tr("WayHeatmapTracer"),
-                JOptionPane.INFORMATION_MESSAGE
-            );
-            launchSelectedSourceProbe(config);
-        } catch (Exception ex) {
-            JOptionPane.showMessageDialog(
-                MainApplication.getMainFrame(),
-                tr("Failed to refresh the managed heatmap layer. Review the redacted diagnostics for details."),
-                tr("WayHeatmapTracer"),
-                JOptionPane.ERROR_MESSAGE
-            );
+            host.refresh(config);
+            if (config.hasManagedAccessValues()) { host.probe(config); }
+        } catch (Exception failure) {
+            host.failure();
         }
     }
 

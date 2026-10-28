@@ -65,6 +65,13 @@ public class WayHeatmapTracerPlugin extends Plugin {
     public WayHeatmapTracerPlugin(PluginInformation info) {
         super(info);
         ManagedTileRuntime.initialize(PluginPreferences.load());
+        if (PluginPreferences.consumeOldHybridMigrationNotice()) {
+            javax.swing.SwingUtilities.invokeLater(() -> new org.openstreetmap.josm.gui.Notification(
+                    org.openstreetmap.josm.tools.I18n.tr(
+                        "The old A+B Hybrid has been removed. Your tracing method is now Legacy. "
+                        + "The new Legacy then B Hybrid can be selected in Heatmap Settings."))
+                    .setDuration(org.openstreetmap.josm.gui.Notification.TIME_LONG).show());
+        }
         this.modernPreviewSession = new PreviewSessionController<>(javax.swing.SwingUtilities::invokeLater);
         this.actions = createRegisteredActions(modernPreviewSession);
         this.alignWayAction = (AlignWayAction) actions.get(0);

@@ -1768,6 +1768,7 @@ public final class LiveBPreviewService {
             case DIRECTIONAL_IMAGE -> "directional-image-v1/"
                     + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case LEGACY_V02 -> "legacy-v02";
+            case LEGACY_THEN_B -> "legacy-then-b-v1";
         };
     }
 

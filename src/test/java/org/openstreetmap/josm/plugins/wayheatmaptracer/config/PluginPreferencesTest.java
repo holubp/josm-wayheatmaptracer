@@ -37,8 +37,8 @@ class PluginPreferencesTest {
     }
 
     @Test
-    void freshPreferencesUseCorridorAwareTrackerButKeepCleanupDisabled() {
-        assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.load().trackerMode());
+    void freshPreferencesUseLegacyTrackerButKeepCleanupDisabled() {
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
         assertTrue(PluginPreferences.loadGeometryCleanup().isDisabled());
     }
 
@@ -80,7 +80,37 @@ class PluginPreferencesTest {
     void unknownTrackerPreferenceUsesPublicDefault() {
         Config.getPref().put(PREFIX + "trackerMode", "removed-future-mode");
 
-        assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.load().trackerMode());
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
+    }
+
+    @Test
+    void oldHybridPreferencesMigrateWithoutReplacingAnExplicitIndependentEngine() {
+        Config.getPref().put(PREFIX + "trackerMode", "HYBRID");
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", TracingSettings.CURRENT_SCHEMA_VERSION);
+        Config.getPref().put(PREFIX + "tracing.engine", "PROBABILISTIC");
+
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.load().trackerMode());
+        assertEquals(TrackerMode.LEGACY_V02.name(), Config.getPref().get(PREFIX + "trackerMode", ""));
+        assertEquals(TrackerMode.PROBABILISTIC, PluginPreferences.loadTracingSettings().engine());
+    }
+
+    @Test
+    void oldModernHybridPreferenceIsPersistentlyMigratedToLegacy() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", TracingSettings.CURRENT_SCHEMA_VERSION);
+        Config.getPref().put(PREFIX + "tracing.engine", "HYBRID");
+
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.loadTracingSettings().engine());
+        assertEquals("LEGACY_V02", Config.getPref().get(PREFIX + "tracing.engine", ""));
+    }
+
+    @Test
+    void migrationNoticeSurvivesReloadAndIsConsumedOnlyOnce() {
+        Config.getPref().put(PREFIX + "trackerMode", "HYBRID");
+        PluginPreferences.load();
+        PluginPreferences.loadTracingSettings();
+        assertTrue(PluginPreferences.consumeOldHybridMigrationNotice());
+        PluginPreferences.load();
+        assertFalse(PluginPreferences.consumeOldHybridMigrationNotice());
     }
 
     @Test

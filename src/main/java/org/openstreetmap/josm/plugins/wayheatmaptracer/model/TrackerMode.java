@@ -6,6 +6,7 @@ public enum TrackerMode {
     CORRIDOR_AWARE("Corridor-aware (A)", EngineCapabilities.CORRIDOR_AWARE),
     PROBABILISTIC("Probabilistic longitudinal (B, experimental)", EngineCapabilities.PROBABILISTIC),
     HYBRID("Hybrid recovery (A+B, experimental)", EngineCapabilities.HYBRID),
+    LEGACY_THEN_B("Hybrid (Legacy then B)", EngineCapabilities.LEGACY_THEN_B),
     DIRECTIONAL_IMAGE("Direction-aware image search (experimental)", EngineCapabilities.DIRECTIONAL_IMAGE);
 
     private final String label;
@@ -18,16 +19,19 @@ public enum TrackerMode {
 
     /** Returns every engine deliberately exposed by the versioned tracing settings UI. */
     public static TrackerMode[] selectableValues() {
-        return values().clone();
+        return java.util.Arrays.stream(values()).filter(mode -> mode != HYBRID).toArray(TrackerMode[]::new);
     }
 
     /** Returns the public default used when no explicit preference exists. */
     public static TrackerMode defaultMode() {
-        return CORRIDOR_AWARE;
+        return LEGACY_V02;
     }
 
     /** Parses a persisted enum name, falling back only for blank or unknown values. */
     public static TrackerMode fromPreference(String value) {
+        if (value != null && "HYBRID".equalsIgnoreCase(value.trim())) {
+            return LEGACY_V02;
+        }
         if (value != null) {
             for (TrackerMode mode : values()) {
                 if (mode.name().equalsIgnoreCase(value.trim())) {

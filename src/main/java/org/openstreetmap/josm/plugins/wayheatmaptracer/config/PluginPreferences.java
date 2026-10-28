@@ -36,6 +36,7 @@ public final class PluginPreferences {
     private static final String REGEX = PREFIX + "layerRegex";
     private static final String ALIGNMENT_MODE = PREFIX + "alignmentMode";
     private static final String TRACKER_MODE = PREFIX + "trackerMode";
+    private static final String OLD_HYBRID_NOTICE = PREFIX + "migration.oldHybridNoticePending";
     private static final String VERBOSE = PREFIX + "verbose";
     private static final String DEBUG = PREFIX + "debug";
     private static final String MULTI_COLOR_DETECTION = PREFIX + "multiColorDetection";
@@ -89,6 +90,7 @@ public final class PluginPreferences {
      */
     public static ManagedHeatmapConfig load() {
         IPreferences pref = Config.getPref();
+        migrateOldHybridPreferences(pref);
         if (pref == null) {
             return defaultConfig();
         }
@@ -130,7 +132,7 @@ public final class PluginPreferences {
      * Loads versioned modern tracing settings without granting new route or network-edit authority
      * to old preferences.
      *
-     * <p>A missing modern schema retains the stored tracker choice, defaults to A otherwise, and
+     * <p>A missing modern schema retains the stored tracker choice, defaults to Legacy otherwise, and
      * maps the legacy junction checkbox only to {@link JunctionPolicy#LEGACY_BOUNDED_MOVE}.
      * It never infers {@link JunctionPolicy#REATTACH}.</p>
      *
@@ -169,6 +171,28 @@ public final class PluginPreferences {
         } catch (IllegalArgumentException exception) {
             return TracingSettings.defaults(ordinary);
         }
+    }
+
+    private static void migrateOldHybridPreferences(IPreferences pref) {
+        if (pref == null) {
+            return;
+        }
+        for (String key : new String[] {TRACKER_MODE, TRACING_ENGINE}) {
+            if ("HYBRID".equalsIgnoreCase(pref.get(key, "").trim())) {
+                pref.put(key, TrackerMode.LEGACY_V02.name());
+                pref.putBoolean(OLD_HYBRID_NOTICE, true);
+            }
+        }
+    }
+
+    /** Consumes the persisted one-time notice after migrating the removed A+B engine. */
+    public static boolean consumeOldHybridMigrationNotice() {
+        IPreferences pref = Config.getPref();
+        if (pref == null || !pref.getBoolean(OLD_HYBRID_NOTICE, false)) {
+            return false;
+        }
+        pref.putBoolean(OLD_HYBRID_NOTICE, false);
+        return true;
     }
 
     /** Saves modern tracing/recovery settings without rewriting legacy junction-adjustment intent. */

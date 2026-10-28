@@ -87,6 +87,19 @@ import org.openstreetmap.josm.spi.preferences.IBaseDirectories;
 import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 /** Verifies action-level candidate selection before the modeless preview opens. */
 class AlignWayActionTest {
+    @Test
+    void sequentialHybridMoveNodesIsRejectedBeforeSourceWork() {
+        ManagedHeatmapConfig hybrid = configuredCorridor()
+                .withTrackerMode(TrackerMode.fromPreference("LEGACY_THEN_B"))
+                .withAlignmentMode(AlignmentMode.MOVE_EXISTING_NODES);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> AlignWayAction.effectiveConfig(hybrid, null, null));
+        assertEquals("Hybrid requires Precise Shape. Select Precise Shape or another tracing method.",
+                failure.getMessage());
+        assertEquals(AlignmentMode.PRECISE_SHAPE,
+                AlignWayAction.effectiveConfig(hybrid, AlignmentMode.PRECISE_SHAPE, null).alignmentMode());
+    }
+
     @BeforeAll
     static void configureJosm() {
         Config.setPreferencesInstance(new MemoryPreferences());

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.Point;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -12,11 +13,55 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.Test;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.config.PluginPreferences;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.spi.preferences.Config;
+import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.SelectedSourceProbeResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileCachePolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus;
 
 class HeatmapLayerSettingsActionTest {
+    @Test
+    void successfulSaveRefreshesWithoutInformationalModalWithOrWithoutCredentials() {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        for (boolean managed : new boolean[] {false, true}) {
+            Config.getPref().put("wayheatmaptracer.keyPairId", managed ? "synthetic-key" : "");
+            Config.getPref().put("wayheatmaptracer.policy", managed ? "synthetic-policy" : "");
+            Config.getPref().put("wayheatmaptracer.signature", managed ? "synthetic-signature" : "");
+            Config.getPref().put("wayheatmaptracer.session", managed ? "synthetic-session" : "");
+            RecordingSettingsHost host = new RecordingSettingsHost(false);
+            HeatmapLayerSettingsAction.runSavedSettings(true, PluginPreferences.load(), host);
+            assertEquals(managed ? List.of("runtime", "refresh", "probe") : List.of("runtime", "refresh"),
+                    host.calls);
+        }
+    }
+
+    @Test
+    void cancelDoesNothingAndRefreshFailureRemainsVisibleWithoutStartingProbe() {
+        Config.setPreferencesInstance(new MemoryPreferences());
+        RecordingSettingsHost cancelled = new RecordingSettingsHost(false);
+        HeatmapLayerSettingsAction.runSavedSettings(false, PluginPreferences.load(), cancelled);
+        assertEquals(List.of(), cancelled.calls);
+        RecordingSettingsHost failed = new RecordingSettingsHost(true);
+        HeatmapLayerSettingsAction.runSavedSettings(true, PluginPreferences.load(), failed);
+        assertEquals(List.of("runtime", "refresh", "failure"), failed.calls);
+    }
+
+    private static final class RecordingSettingsHost implements HeatmapLayerSettingsAction.SettingsHost {
+        final List<String> calls = new ArrayList<>();
+        final boolean fail;
+        RecordingSettingsHost(boolean fail) { this.fail = fail; }
+        public void updateRuntime(ManagedHeatmapConfig config) { calls.add("runtime"); }
+        public void refresh(ManagedHeatmapConfig config) {
+            calls.add("refresh");
+            if (fail) { throw new IllegalStateException("synthetic-refresh-failure"); }
+        }
+        public void probe(ManagedHeatmapConfig config) { calls.add("probe"); }
+        public void information(String message) { calls.add("information"); }
+        public void failure() { calls.add("failure"); }
+    }
+
     @Test
     void createsDeterministicCenterAndInsetCornerStencil() {
         assertEquals(List.of(

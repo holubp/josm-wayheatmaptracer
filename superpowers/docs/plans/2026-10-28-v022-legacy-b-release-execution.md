@@ -200,9 +200,9 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 
 | Task | Status | Evidence / next action |
 |---|---|---|
-| 1 baseline and obligations | NOT STARTED | HEAD observed 117baaf; pre-existing primary delta must be reconciled |
-| 2 defaults/settings | NOT STARTED | approved behavior; no production edits |
-| 3 Legacy seeds/reference | NOT STARTED | existing authority factory must not be weakened |
+| 1 baseline and obligations | TESTED | isolated2fdab87 snapshot, scoped23-file inventory;90 focused tests green; original obligations mapped above |
+| 2 defaults/settings | TESTED | intended defaults/migration RED6→GREEN28; settings/guard RED2; final41PASS with corrected synthetic-session fixture; GUI smoke pending Task8 |
+| 3 Legacy seeds/reference | PARTIAL | immutable seed/section provenance and actual Legacy tracker adapter6tests green; authority/reference/partition integration pending |
 | 4 interval orchestration | NOT STARTED | partial-failure contract approved |
 | 5 assessment/preview | NOT STARTED | common FinalGeometryEvaluator integration identified |
 | 6 live/apply/export/replay | NOT STARTED | same production path required in live and replay |
