@@ -2657,37 +2657,22 @@ public final class AlignmentService {
     }
 
     private List<EastNorth> preciseShapePreview(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> working) {
-        List<Integer> fixedIndices = fixedIndices(selection);
-        List<Double> sourceFractions = PolylineMath.fractionsForSegment(sourcePolyline);
-        List<Double> workingFractions = PolylineMath.fractionsForSegment(working);
+        var geometry = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry
+                .reconstruct(
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry
+                            .fromEastNorth(sourcePolyline),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry
+                            .fromEastNorth(working),
+                    selection.fixedNodes().isEmpty() ? List.of() : fixedIndices(selection));
+        List<EastNorth> result = new ArrayList<>(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry
+                        .asEastNorth(geometry.points()));
         if (selection.fixedNodes().isEmpty()) {
             PluginLog.verbose("Precise-shape preview has no fixed anchors; using traced centerline endpoints.");
-            return new ArrayList<>(working);
+        } else {
+            PluginLog.verbose("Precise-shape preview prepared with %d points across %d fixed-anchor intervals.",
+                    result.size(), fixedIndices(selection).size() - 1);
         }
-        List<EastNorth> result = new ArrayList<>();
-
-        int intervalCount = fixedIndices.size() - 1;
-        for (int interval = 0; interval < intervalCount; interval++) {
-            int startIndex = fixedIndices.get(interval);
-            int endIndex = fixedIndices.get(interval + 1);
-            double startFraction = sourceFractions.get(startIndex);
-            double endFraction = sourceFractions.get(endIndex);
-
-            List<EastNorth> section = new ArrayList<>();
-            section.add(sourcePolyline.get(startIndex));
-            for (int i = 0; i < working.size(); i++) {
-                double fraction = workingFractions.get(i);
-                if (fraction > startFraction + 1e-9 && fraction < endFraction - 1e-9) {
-                    section.add(working.get(i));
-                }
-            }
-            section.add(sourcePolyline.get(endIndex));
-            if (!result.isEmpty()) {
-                section = new ArrayList<>(section.subList(1, section.size()));
-            }
-            result.addAll(section);
-        }
-        PluginLog.verbose("Precise-shape preview prepared with %d points across %d fixed-anchor intervals.", result.size(), intervalCount);
         return result;
     }
 

@@ -53,9 +53,9 @@ public record EvidenceModelParameters(
         return "profile-window-centered-v2";
     }
 
-    /** Native profiles are retained or regular background grids are transition-budget coarsened. */
+    /** Bounded geometric positions supplement, never replace, the original half-native lattice. */
     public static String stateSamplingPolicyVersion() {
-        return "transition-admitted-regular-continuation-v3-overflow-1";
+        return "baseline-plus-bounded-continuation-v2";
     }
 
     /** Returns the normative initial v0.22 parameter set. */

@@ -19,6 +19,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesis;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Reference;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBReferenceFactory;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.ImageOrientationDescriptor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
@@ -104,7 +106,27 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     public Accounted<TraceEngineRun> traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner attemptOwner) {
-        return traceAccounted(request, evidence, network, null, cancellation, attemptOwner);
+        return traceAccounted(request, evidence, network, null, null, cancellation, attemptOwner);
+    }
+
+    /** Runs unchanged B inference around a factual Legacy reference, with original OSM authority. */
+    public TraceEngineRun traceRefinedWithUsage(Reference reference, NetworkSnapshot network,
+            CancellationProbe cancellation) {
+        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
+        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
+        try {
+            return traceRefinedWithUsage(reference, network, cancellation, owner).value();
+        } finally {
+            owner.close();
+        }
+    }
+
+    /** Retains normal B result ownership within one shared Hybrid attempt memory ledger. */
+    public Accounted<TraceEngineRun> traceRefinedWithUsage(Reference reference, NetworkSnapshot network,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
+        if (reference == null) { throw new IllegalArgumentException("A bound reference is required"); }
+        return traceAccounted(reference.request(), reference.evidence(), network, null, reference,
+                cancellation, attemptOwner);
     }
 
     @Override
@@ -130,12 +152,12 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         if (guide == null) {
             throw new IllegalArgumentException("Structural guide is required");
         }
-        return traceAccounted(request, evidence, network, guide, cancellation, attemptOwner);
+        return traceAccounted(request, evidence, network, guide, null, cancellation, attemptOwner);
     }
 
     private Accounted<TraceEngineRun> traceAccounted(TraceRequest request,
             EvidenceSnapshot evidence, NetworkSnapshot network, ProbabilisticStructuralGuide guide,
-            CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
+            Reference reference, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
         if (attemptOwner == null) {
             throw new IllegalArgumentException("Attempt memory owner is required");
         }
@@ -146,7 +168,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         EngineWork work = new EngineWork();
         try {
             TraceEngineRun result = traceInternal(request, evidence, network, cancellation,
-                    guide, candidateOwner, workingOwner, work);
+                    guide, reference, candidateOwner, workingOwner, work);
             closeIfOpen(workingOwner, null);
             candidateOwner.transferTo(engineOwner);
             candidateOwner.close();
@@ -248,11 +270,18 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
 
     private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation,
-        ProbabilisticStructuralGuide guide, AttemptMemoryLedger.Owner candidateOwner,
+        ProbabilisticStructuralGuide guide, Reference reference, AttemptMemoryLedger.Owner candidateOwner,
         AttemptMemoryLedger.Owner workingOwner, EngineWork work) {
         long started = System.nanoTime();
         cancellation.checkpoint();
         validateSnapshots(request, evidence, network);
+        if (request.samplerId().endsWith(LegacyBReferenceFactory.REFERENCE_SAMPLER_SUFFIX)
+                && reference == null) {
+            throw new IllegalArgumentException("A bound reference is required for Legacy refinement sampling");
+        }
+        if (reference != null) {
+            new LegacyBReferenceFactory().validateReferenceAuthority(reference, network, cancellation);
+        }
         ScalarEvidenceField field = evidence.fields().get(fieldName);
         if (field == null) {
             workingOwner.close();
@@ -262,8 +291,11 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             return accountedRun(unavailable, 0, 0, candidateOwner);
         }
         AttemptMemoryLedger.Owner sourceOwner = workingOwner.child("selected-source");
-        List<MetricPoint> source = selectedPolyline(request, evidence, network, sourceOwner);
-        boolean fixedEndpoints = request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
+        List<MetricPoint> source = reference == null ? selectedPolyline(request, evidence, network, sourceOwner)
+                : ProbabilisticInference.allocated(sourceOwner,
+                    ProbabilisticInference.listBytes(reference.section().reference().size()),
+                    "refinement reference points", () -> new ArrayList<>(reference.section().reference()));
+        boolean fixedEndpoints = reference != null || request.permissions().junctionPolicy() == JunctionPolicy.FIXED;
         long profileSamplingStarted = System.nanoTime();
         List<ProbabilisticProfile> profiles = new ProbabilisticProfileFactory().create(source,
             request.profileChainage(), request.permissions().ordinaryRadiusMeters(), fixedEndpoints,
@@ -291,36 +323,6 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 ? ProbabilisticContinuationProposals.build(profiles, cancellation, workingOwner,
                     parameters.localization()) : null;
         int admittedContinuationPositions = 0;
-        ProbabilisticLatticeAdmission.Plan admission = continuationOffsets == null ? null
-                : ProbabilisticLatticeAdmission.select(profiles, continuationOffsets, request.budgets(),
-                    cancellation, workingOwner);
-        if (admission != null) {
-            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                    "trace.latticeBudgetCoarsened", admission.coarsened() ? 1L : 0L);
-            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                    "trace.latticeBackgroundStateCeiling", admission.maximumStates());
-            if (admission.nativeForwardBackwardBound() >= 0)
-                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                        "trace.latticeNativeForwardBackwardBound", admission.nativeForwardBackwardBound());
-            if (admission.completeScoreBound() >= 0)
-                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                        "trace.latticeCompleteScoreBound", admission.completeScoreBound());
-            if (admission.pairBound() >= 0)
-                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                        "trace.latticePairBound", admission.pairBound());
-            if (!admission.admitted()) {
-                TraceHypothesisSet limited = emptySet(request, TraceHypothesisSet.Status.RESOURCE_LIMIT,
-                        "transition-budget state admission cannot retain mandatory positions and full window",
-                        0, 0, candidateOwner);
-                workingOwner.close();
-                return accountedRun(limited, 0, 0, candidateOwner);
-            }
-        }
-        int effectiveStateCeiling = admission == null ? request.budgets().maximumStatesPerProfile()
-                : admission.maximumStates();
-        double maximumLatticePitch = 0.0;
-        int maximumEffectiveCeiling = 0;
-        int resolutionLimitedProfiles = 0;
         ProbabilisticStateBuilder stateBuilder = new ProbabilisticStateBuilder();
         ProbabilisticObservationModel observationModel = new ProbabilisticObservationModel();
         for (ProbabilisticProfile profile : profiles) {
@@ -330,11 +332,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             AttemptMemoryLedger.Owner latticeOwner = evaluatedOwner.child("state-lattice");
             StateSpaceBuildResult stateResult = continuationOffsets == null
                     ? stateBuilder.build(profile, request.budgets().maximumStatesPerProfile(), latticeOwner)
-                    : admission.coarsened()
-                        ? stateBuilder.buildWithReservedProposal(profile, admission.maximumStates(profile.profileIndex()),
-                            continuationOffsets[profile.profileIndex()], latticeOwner)
-                        : stateBuilder.buildWithProposal(profile, effectiveStateCeiling,
-                            continuationOffsets[profile.profileIndex()], latticeOwner);
+                    : stateBuilder.buildWithProposal(profile, request.budgets().maximumStatesPerProfile(),
+                        continuationOffsets[profile.profileIndex()], latticeOwner);
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
                 TraceHypothesisSet limited = emptySet(request,
                         TraceHypothesisSet.Status.RESOURCE_LIMIT,
@@ -344,10 +343,6 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 return accountedRun(limited, 0, 0, candidateOwner);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
-            maximumLatticePitch = Math.max(maximumLatticePitch, lattice.actualPitchMeters());
-            maximumEffectiveCeiling = Math.max(maximumEffectiveCeiling,
-                    admission == null ? effectiveStateCeiling : admission.maximumStates(profile.profileIndex()));
-            if (lattice.resolutionLimited()) resolutionLimitedProfiles++;
             if ("baseline-plus-continuation-position".equals(stateResult.explanation())) {
                 admittedContinuationPositions++;
             } else if (continuationOffsets != null) {
@@ -373,12 +368,6 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             }
         }
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "trace.latticeMaximumPitchMeters", maximumLatticePitch);
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "trace.latticeEffectiveStateCeiling", maximumEffectiveCeiling);
-        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
-                "trace.latticeResolutionLimitedProfiles", resolutionLimitedProfiles);
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.continuationPositionsAdmitted", admittedContinuationPositions);
         long inferenceStarted = System.nanoTime();

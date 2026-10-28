@@ -144,24 +144,6 @@ class V022PairLocalEnergyReuseTest {
         }
     }
 
-    @Test
-    void laterOverflowPointRemainsDeferredUntilItsOwnScoreAdmission() {
-        var profiles = List.of(profile(0, 0, 0, 0, 1, false, 1),
-                profile(1, 1, 0, 0, 1, false, 1),
-                profile(2, Double.MAX_VALUE, 0, 1, 0, false, Double.MAX_VALUE));
-        for (var parameters : weights()) {
-            var refused = receipt(profiles, parameters, 2, 1_000_000, Integer.MAX_VALUE);
-            assertEquals("none", refused.failure(), "an unadmitted later state must not validate its point");
-            assertTrue(refused.work().contains("forwardBackwardScores=2"));
-            assertTrue(refused.work().contains("refusedScoreAttempts=1"));
-            var admitted = receipt(profiles, parameters, 3, 1_000_000, Integer.MAX_VALUE);
-            if (parameters.orientationWeight() != 0.0 || parameters.turnWeight() != 0.0)
-                assertEquals("IllegalArgumentException:Metric coordinates must be finite", admitted.failure());
-            else
-                assertEquals("none", admitted.failure(), "zero-weight shape terms must not validate points");
-        }
-    }
-
     private static void assertGraph(List<InferenceProfile> profiles, EvidenceModelParameters parameters,
             MetricRegion region) {
         ProbabilisticInferenceResult exact = solve(profiles, parameters, region, true);

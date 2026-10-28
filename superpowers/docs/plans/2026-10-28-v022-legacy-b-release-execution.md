@@ -202,7 +202,7 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 |---|---|---|
 | 1 baseline and obligations | TESTED | isolated2fdab87 snapshot, scoped23-file inventory;90 focused tests green; original obligations mapped above |
 | 2 defaults/settings | TESTED | intended defaults/migration RED6→GREEN28; settings/guard RED2; final41PASS with corrected synthetic-session fixture; GUI smoke pending Task8 |
-| 3 Legacy seeds/reference | PARTIAL | immutable seed/section provenance and actual Legacy tracker adapter6tests green; authority/reference/partition integration pending |
+| 3 Legacy seeds/reference | PARTIAL | projected Legacy reconstruction, protected partition, factual reference and native B entry tested;210source117 neighbors green; frozen live seed assembly bridge pending |
 | 4 interval orchestration | NOT STARTED | partial-failure contract approved |
 | 5 assessment/preview | NOT STARTED | common FinalGeometryEvaluator integration identified |
 | 6 live/apply/export/replay | NOT STARTED | same production path required in live and replay |
@@ -214,3 +214,13 @@ Focus cases have named RED tests. New immutable models and helper types are defi
 in their owning task; existing JOSM/request types are reused. Concrete resource and
 alternative limits are implementation-plan choices for review, not measured timing
 claims. No code, tests, commits, or public releases were performed while writing it.
+
+Execution note2026-10-28: prototype fd67b52 numerical changes excluded from release
+worktree after byte-level provenance check; retained pre-experiment117 B plus
+explicit reference entry. Primary originals and35secondary research files remain
+preserved. Focused Sol/high diagnosed invalid short/censored positive fixture;
+corrected positive test uses on-ridge ends and a displaced original midpoint.
+No B tuning. Current210focused/neighbor tests pass,0fail/error/skip. Latest public
+release verified through GitHub is v0.22.0-rc.12; its crossing/disconnection branch
+has approved commits beyond117. Integration of those is a pending baseline gate,
+not an optional omission. No newer RC published.

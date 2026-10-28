@@ -17,7 +17,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
  * scalar-domain filtered center. Missing support is never filled or renormalized.</p>
  */
 public final class LocalScalarProfileExtractor {
-    private static final String OBSERVATION_MODEL_VERSION = "local-scalar-profile-v1";
     private static final double[] B3 = {1, 2, 1};
     private static final double[] B5 = {1, 4, 6, 4, 1};
     private static final double SECOND_DIFFERENCE_NOISE_RATIO = StrictMath.sqrt(3.0);
@@ -200,93 +199,32 @@ public final class LocalScalarProfileExtractor {
         }
     }
 
-    /** Filter stage whose center was measured from the same original scalar profile. */
-    public enum ObservationStage { RAW, B3, B5 }
-    private static final int OBSERVATION_STAGE_COUNT = 3;
-
-    /** Correlation lineage for filter views derived from one input profile. */
-    public enum ObservationLineage { SAME_INPUT_PROFILE_FILTER_DERIVATIVES }
-
-    /** One stage's original nested-center calculation; unavailable centers remain explicit. */
-    public record NestedCenterReceipt(ObservationStage stage, boolean available,
-            boolean intervalMeasured,
-            int winnerSampleIndex, int firstCoreSampleIndex, int lastCoreSampleIndex,
-            double localMaximum, double threshold, double centerOffsetMeters) {
-        /** Validates stage identity and measured-versus-unavailable center values. */
-        public NestedCenterReceipt {
-            if (stage == null || available && (!intervalMeasured || winnerSampleIndex < 0 || firstCoreSampleIndex < 0
-                    || firstCoreSampleIndex > winnerSampleIndex || lastCoreSampleIndex < winnerSampleIndex
-                    || !Double.isFinite(localMaximum) || !Double.isFinite(threshold)
-                    || !Double.isFinite(centerOffsetMeters))
-                    || intervalMeasured && (winnerSampleIndex < 0 || firstCoreSampleIndex < 0
-                            || firstCoreSampleIndex > winnerSampleIndex || lastCoreSampleIndex < winnerSampleIndex
-                            || !Double.isFinite(localMaximum) || !Double.isFinite(threshold))
-                    || !intervalMeasured && (winnerSampleIndex != -1 || firstCoreSampleIndex != -1
-                            || lastCoreSampleIndex != -1)
-                    || !available && !Double.isNaN(centerOffsetMeters)) {
-                throw new IllegalArgumentException("Nested-center observation receipt is invalid");
-            }
-        }
-    }
-
-    /** Original scalar measurements for one exact emitted mode and raw peak. */
-    public record ModeObservationReceipt(String modelVersion, ObservationLineage sourceLineage,
-            Mode mode, RawPeak rawPeak, int rawWinnerSampleIndex, double localBackground,
-            double rawPeakValue, double prominence, double shoulderThreshold,
-            double rmsUncertainty, double filterUncertainty, double fractionalThreshold,
-            List<NestedCenterReceipt> nestedCenters) {
-        /** Freezes stage receipts and preserves unavailable source precision as unavailable. */
-        public ModeObservationReceipt {
-            if (modelVersion == null || modelVersion.isBlank() || sourceLineage == null
-                    || mode == null || rawPeak == null || rawWinnerSampleIndex < rawPeak.firstSampleIndex()
-                    || rawWinnerSampleIndex > rawPeak.lastSampleIndex()
-                    || !Double.isFinite(localBackground) || !Double.isFinite(rawPeakValue)
-                    || !Double.isFinite(prominence) || !Double.isFinite(shoulderThreshold)
-                    || !Double.isFinite(rmsUncertainty) || rmsUncertainty < 0.0
-                    || !Double.isFinite(filterUncertainty) || filterUncertainty < 0.0
-                    || !Double.isFinite(fractionalThreshold) || fractionalThreshold < 0.0
-                    || nestedCenters == null || nestedCenters.size() != OBSERVATION_STAGE_COUNT) {
-                throw new IllegalArgumentException("Mode observation receipt is invalid");
-            }
-            nestedCenters = List.copyOf(nestedCenters);
-        }
-    }
-
     /** Baseline extraction plus optional, non-authoritative peak/core diagnostics. */
     public record DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
             List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts,
-            List<RawCoreReceipt> rawCoreReceipts,
-            List<ModeObservationReceipt> modeObservationReceipts) {
+            List<RawCoreReceipt> rawCoreReceipts) {
         /** Retains the earlier detailed-result constructor without inventing flank authority. */
         public DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
                 List<RawPeak> rawPeaks) {
-            this(baseline, suppressedModes, rawPeaks, List.of(), List.of(), List.of());
+            this(baseline, suppressedModes, rawPeaks, List.of(), List.of());
         }
 
         /** Retains the flank-aware constructor without inventing raw-core provenance. */
         public DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
                 List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts) {
-            this(baseline, suppressedModes, rawPeaks, flankReceipts, List.of(), List.of());
-        }
-
-        /** Retains the raw-core-aware constructor without inventing original measurements. */
-        public DetailedResult(Result baseline, List<SuppressedMode> suppressedModes,
-                List<RawPeak> rawPeaks, List<FlankReceipt> flankReceipts,
-                List<RawCoreReceipt> rawCoreReceipts) {
-            this(baseline, suppressedModes, rawPeaks, flankReceipts, rawCoreReceipts, List.of());
+            this(baseline, suppressedModes, rawPeaks, flankReceipts, List.of());
         }
 
         /** Freezes all result collections. */
         public DetailedResult {
             if (baseline == null || suppressedModes == null || rawPeaks == null || flankReceipts == null
-                    || rawCoreReceipts == null || modeObservationReceipts == null) {
+                    || rawCoreReceipts == null) {
                 throw new IllegalArgumentException("Detailed scalar result is incomplete");
             }
             suppressedModes = List.copyOf(suppressedModes);
             rawPeaks = List.copyOf(rawPeaks);
             flankReceipts = List.copyOf(flankReceipts);
             rawCoreReceipts = List.copyOf(rawCoreReceipts);
-            modeObservationReceipts = List.copyOf(modeObservationReceipts);
         }
     }
 
@@ -312,7 +250,6 @@ public final class LocalScalarProfileExtractor {
         private final List<RawPeak> rawPeaks;
         private final List<FlankReceipt> flankReceipts;
         private final List<RawCoreReceipt> rawCoreReceipts;
-        private final List<ModeObservationReceipt> modeObservationReceipts;
         private WorkProbe work;
 
         DetailedCollector(AttemptMemoryLedger.Owner scratchOwner,
@@ -326,8 +263,6 @@ public final class LocalScalarProfileExtractor {
             this.flankReceipts = allocated(scratchOwner, eachList,
                     () -> new ArrayList<>(capacity));
             this.rawCoreReceipts = allocated(scratchOwner, eachList,
-                    () -> new ArrayList<>(capacity));
-            this.modeObservationReceipts = allocated(scratchOwner, eachList,
                     () -> new ArrayList<>(capacity));
         }
 
@@ -347,21 +282,14 @@ public final class LocalScalarProfileExtractor {
             rawCoreReceipts.add(value);
         }
 
-        void modeObservation(ModeObservationReceipt value) {
-            modeObservationReceipts.add(value);
-        }
-
         DetailedResult freeze(Result baseline) {
-            long immutableBytes = AttemptMemoryLedger.objectBytes(48)
+            long immutableBytes = AttemptMemoryLedger.objectBytes(40)
                     + listBytes(suppressed.size()) + listBytes(rawPeaks.size())
-                    + listBytes(flankReceipts.size()) + listBytes(rawCoreReceipts.size())
-                    + listBytes(modeObservationReceipts.size());
+                    + listBytes(flankReceipts.size()) + listBytes(rawCoreReceipts.size());
             work.bulk(Math.addExact(Math.addExact(suppressed.size(), rawPeaks.size()),
-                    Math.addExact(flankReceipts.size(), Math.addExact(rawCoreReceipts.size(),
-                            modeObservationReceipts.size()))));
+                    Math.addExact(flankReceipts.size(), rawCoreReceipts.size())));
             return allocated(resultOwner, immutableBytes,
-                    () -> new DetailedResult(baseline, suppressed, rawPeaks, flankReceipts,
-                            rawCoreReceipts, modeObservationReceipts));
+                    () -> new DetailedResult(baseline, suppressed, rawPeaks, flankReceipts, rawCoreReceipts));
         }
     }
 
@@ -424,7 +352,7 @@ public final class LocalScalarProfileExtractor {
                 : detailedOwner.child("detailed-profile-diagnostics");
         try {
             cancellation.checkpoint();
-            DetailedCollector collector = allocated(detailScratch, AttemptMemoryLedger.objectBytes(56),
+            DetailedCollector collector = allocated(detailScratch, AttemptMemoryLedger.objectBytes(48),
                     () -> new DetailedCollector(detailScratch, detailedOwner, samples.size()));
             Result baseline = extractInternal(samples, sourcePitchMeters, parameters,
                     detailedOwner, cancellation, charge, collector, contextTarget);
@@ -538,12 +466,12 @@ public final class LocalScalarProfileExtractor {
                             () -> new double[2]);
             double uncertainty = localModeUncertainty(raw, b3, b5, peak, peakScratch, work,
                     uncertaintyParts);
-            double fractionThreshold = parameters.localModeProminenceFraction() * localResponseRange;
             double requiredProminence = Math.max(
-                    fractionThreshold, uncertainty);
+                    parameters.localModeProminenceFraction() * localResponseRange, uncertainty);
             boolean rmsOnly = false;
             if (!(prominence > 0.0) || prominence + 1e-12 < requiredProminence) {
                 if (detailed == null || uncertaintyParts == null) continue;
+                double fractionThreshold = parameters.localModeProminenceFraction() * localResponseRange;
                 double rmsUncertainty = uncertaintyParts[0];
                 double filterUncertainty = uncertaintyParts[1];
                 if (!(prominence > 0.0) || prominence + 1e-12 < fractionThreshold
@@ -585,17 +513,12 @@ public final class LocalScalarProfileExtractor {
             List<Double> centers = allocated(peakScratch,
                     listBytes(3) + 3L * AttemptMemoryLedger.objectBytes(8),
                     () -> new ArrayList<>(3));
-            List<NestedCenterReceipt> nestedReceipts = detailed == null ? null
-                    : allocated(peakScratch, listBytes(3), () -> new ArrayList<>(3));
             addNestedCenter(centers, raw, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), true, work, rawCoreProbe,
-                    ObservationStage.RAW, nestedReceipts, detailed == null ? null : detailed.resultOwner);
+                    parameters.localModeCoreFraction(), true, work, rawCoreProbe);
             addNestedCenter(centers, b3, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work, null,
-                    ObservationStage.B3, nestedReceipts, detailed == null ? null : detailed.resultOwner);
+                    parameters.localModeCoreFraction(), false, work, null);
             addNestedCenter(centers, b5, samples, interval, localBackground,
-                    parameters.localModeCoreFraction(), false, work, null,
-                    ObservationStage.B5, nestedReceipts, detailed == null ? null : detailed.resultOwner);
+                    parameters.localModeCoreFraction(), false, work, null);
             if (centers.size() < 2) {
                 continue;
             }
@@ -627,11 +550,6 @@ public final class LocalScalarProfileExtractor {
             Mode measured = allocated(rmsOnly ? detailed.resultOwner : owner, AttemptMemoryLedger.objectBytes(64),
                     () -> new Mode(center - halfCenter, center + halfCenter, sigma, existence,
                         confidence, peakOffsets, nestedCenters, amplitudeReliability));
-            if (detailed != null) {
-                retainModeObservationReceipt(measured, detailedPeak, rawCoreProbe, localBackground,
-                        peak.value(), prominence, threshold, uncertaintyParts, fractionThreshold,
-                        nestedReceipts, detailed, work);
-            }
             if (rawCoreProbe != null && rawCoreProbe[0] >= peak.first()
                     && rawCoreProbe[0] <= peak.last() && rawCoreProbe[1] <= peak.first()
                     && rawCoreProbe[2] >= peak.last()) {
@@ -753,33 +671,29 @@ public final class LocalScalarProfileExtractor {
 
     private static void addNestedCenter(List<Double> centers, double[] values, List<Sample> samples,
             IndexInterval search, double localBackground, double coreFraction, boolean requiredFine,
-            WorkProbe work, int[] rawCoreProbe, ObservationStage stage,
-            List<NestedCenterReceipt> receipts, AttemptMemoryLedger.Owner resultOwner) {
+            WorkProbe work, int[] rawCoreProbe) {
         int peakIndex = peak(values, search, work);
+        if (!Double.isFinite(values[peakIndex])) {
+            return;
+        }
         double localMaximum = values[peakIndex];
         double threshold = localBackground + coreFraction * Math.max(0.0, localMaximum - localBackground);
         int left = peakIndex;
         int right = peakIndex;
-        while (Double.isFinite(localMaximum) && Double.isFinite(threshold)
-                && left > search.first() && Double.isFinite(values[left - 1])
+        while (left > search.first() && Double.isFinite(values[left - 1])
                 && values[left - 1] >= threshold) {
             work.checkpoint();
             left--;
         }
-        while (Double.isFinite(localMaximum) && Double.isFinite(threshold)
-                && right < search.last() && Double.isFinite(values[right + 1])
+        while (right < search.last() && Double.isFinite(values[right + 1])
                 && values[right + 1] >= threshold) {
             work.checkpoint();
             right++;
         }
         boolean twoSided = left > 0 && right + 1 < values.length
                 && Double.isFinite(values[left - 1]) && Double.isFinite(values[right + 1]);
-        boolean intervalMeasured = Double.isFinite(localMaximum) && Double.isFinite(threshold);
-        boolean available = intervalMeasured && twoSided && (!requiredFine || localMaximum > localBackground);
-        double centerOffset = Double.NaN;
-        if (available) {
-            centerOffset = 0.5 * (samples.get(left).offsetMeters() + samples.get(right).offsetMeters());
-            centers.add(centerOffset);
+        if (twoSided && (!requiredFine || localMaximum > localBackground)) {
+            centers.add(0.5 * (samples.get(left).offsetMeters() + samples.get(right).offsetMeters()));
             if (rawCoreProbe != null) {
                 int leftAdjacent = left - 1;
                 int rightAdjacent = right + 1;
@@ -796,39 +710,6 @@ public final class LocalScalarProfileExtractor {
                 rawCoreProbe[8] = rightValid && values[rightAdjacent] < threshold ? 1 : 0;
             }
         }
-        if (receipts != null) {
-            work.bulk(1L);
-            int receiptWinner = intervalMeasured ? peakIndex : -1;
-            int receiptLeft = intervalMeasured ? left : -1;
-            int receiptRight = intervalMeasured ? right : -1;
-            double measuredCenter = available ? centerOffset : Double.NaN;
-            NestedCenterReceipt receipt = allocated(resultOwner, AttemptMemoryLedger.objectBytes(48),
-                    () -> new NestedCenterReceipt(stage, available, intervalMeasured, receiptWinner,
-                            receiptLeft, receiptRight, localMaximum, threshold, measuredCenter));
-            receipts.add(receipt);
-        }
-    }
-
-    private static void retainModeObservationReceipt(Mode mode, RawPeak rawPeak, int[] rawCoreProbe,
-            double localBackground, double rawPeakValue, double prominence, double shoulderThreshold,
-            double[] uncertaintyParts, double fractionalThreshold, List<NestedCenterReceipt> nestedCenters,
-            DetailedCollector detailed, WorkProbe work) {
-        if (rawPeak == null || rawCoreProbe == null || rawCoreProbe[0] < rawPeak.firstSampleIndex()
-                || rawCoreProbe[0] > rawPeak.lastSampleIndex() || uncertaintyParts == null
-                || uncertaintyParts.length != 2 || nestedCenters == null
-                || nestedCenters.size() != OBSERVATION_STAGE_COUNT) {
-            throw new IllegalStateException("A complete mode has incomplete original measurements");
-        }
-        List<NestedCenterReceipt> frozenCenters = allocated(detailed.resultOwner,
-                listBytes(nestedCenters.size()), () -> List.copyOf(nestedCenters));
-        work.bulk(1L);
-        ModeObservationReceipt receipt = allocated(detailed.resultOwner,
-                AttemptMemoryLedger.objectBytes(104), () -> new ModeObservationReceipt(
-                        OBSERVATION_MODEL_VERSION, ObservationLineage.SAME_INPUT_PROFILE_FILTER_DERIVATIVES,
-                        mode, rawPeak, rawCoreProbe[0], localBackground, rawPeakValue, prominence,
-                        shoulderThreshold, uncertaintyParts[0], uncertaintyParts[1], fractionalThreshold,
-                        frozenCenters));
-        detailed.modeObservation(receipt);
     }
 
     private static void retainRawCoreReceipt(Mode mode, RawPeak rawPeak, int[] probe,

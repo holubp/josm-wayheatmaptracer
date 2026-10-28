@@ -24,29 +24,6 @@ sourceSets {
         compileClasspath += sourceSets["main"].output + configurations["compileClasspath"]
         runtimeClasspath += output + compileClasspath + configurations["runtimeClasspath"]
     }
-    create("observationIdentify") {
-        java.setSrcDirs(listOf("src/test/java"))
-        java.include(
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/diagnostics/replay/format15/ObservationManifestJson.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationFacts.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationFactsExtractor.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationKernel.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentifiedObservationKernel.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationMixture.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationAdapter.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationGeometry.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationCatalog.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationScenes.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationScore.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationAcceptance.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationPairCache.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationManifest.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BIdentificationReceipt.java",
-            "org/openstreetmap/josm/plugins/wayheatmaptracer/service/tracing/probabilistic/BObservationIdentificationTool.java"
-        )
-        compileClasspath += sourceSets["main"].output + configurations["testCompileClasspath"]
-        runtimeClasspath += output + compileClasspath + configurations["testRuntimeClasspath"]
-    }
 }
 
 dependencies {
@@ -184,27 +161,4 @@ tasks.register<JavaExec>("v022ProbabilisticBenchmark") {
         }
     }
     args("--manifest", manifest.orNull ?: "")
-}
-
-tasks.register<JavaExec>("v022ObservationIdentify") {
-    group = "verification"
-    description = "Runs the sealed public B-observation score pass; no candidate or holdout promotion"
-    dependsOn(tasks.named("observationIdentifyClasses"))
-    classpath = sourceSets["observationIdentify"].runtimeClasspath
-    mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.BObservationIdentificationTool")
-    val phase = providers.gradleProperty("observationPhase")
-    val manifest = providers.gradleProperty("observationManifest")
-    val output = providers.gradleProperty("observationOutput")
-    val binding = providers.gradleProperty("observationBinding")
-    doFirst {
-        if (!phase.isPresent || phase.get() !in setOf("CATALOG", "EXTRACT", "FIT_SELECT") ||
-            !manifest.isPresent || manifest.get().isBlank() || !output.isPresent || output.get().isBlank()) {
-            throw GradleException("Requires observationPhase=CATALOG|EXTRACT|FIT_SELECT, observationManifest and new observationOutput")
-        }
-        if (phase.get() != "CATALOG" && (!binding.isPresent || binding.get().isBlank())) {
-            throw GradleException("EXTRACT/FIT_SELECT requires observationBinding=<registered CATALOG binding.json>")
-        }
-    }
-    args("--phase", phase.orNull ?: "", "--manifest", manifest.orNull ?: "", "--output", output.orNull ?: "")
-    binding.orNull?.let { args("--binding", it) }
 }

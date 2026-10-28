@@ -5,10 +5,45 @@ import java.util.Map;
 import java.util.TreeMap;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 
 /** Detached temporary geometry; original occurrence identities never become preview vertex identities. */
 public final class LegacyBModels {
     private LegacyBModels() { }
+
+    /** Derived reference sampling with explicit lineage to the factual original image capture. */
+    public record Reference(Section section, TraceRequest request, EvidenceSnapshot evidence,
+            TraceRequest originalRequest, EvidenceSnapshot originalEvidence) {
+        public Reference {
+            if (section == null || request == null || evidence == null || originalRequest == null
+                    || originalEvidence == null || originalRequest.engine() != TrackerMode.LEGACY_THEN_B
+                    || request.engine() != TrackerMode.PROBABILISTIC
+                    || !request.selectedRange().equals(section.originalRange())
+                    || !request.selectedWayKey().equals(originalRequest.selectedWayKey())
+                    || !request.networkSnapshotId().equals(originalRequest.networkSnapshotId())
+                    || !request.networkContentHash().equals(originalRequest.networkContentHash())
+                    || !request.settingsHash().equals(originalRequest.settingsHash())
+                    || !request.permissions().equals(originalRequest.permissions())
+                    || !originalRequest.evidenceSnapshotId().equals(originalEvidence.snapshotId())
+                    || !originalRequest.evidenceContentHash().equals(originalEvidence.canonicalHash())
+                    || !evidence.fields().equals(originalEvidence.fields())
+                    || !evidence.coordinateFrame().equals(originalEvidence.coordinateFrame())
+                    || !evidence.transform().equals(originalEvidence.transform())
+                    || !evidence.resolution().equals(originalEvidence.resolution())
+                    || !evidence.resampling().equals(originalEvidence.resampling())
+                    || !evidence.evidenceRegion().equals(originalEvidence.evidenceRegion())
+                    || !evidence.sourceIdentity().equals(originalEvidence.sourceIdentity())
+                    || !request.evidenceSnapshotId().equals(evidence.snapshotId())
+                    || !request.evidenceContentHash().equals(evidence.canonicalHash())) {
+                throw new IllegalArgumentException("Refinement request does not match its factual reference evidence");
+            }
+        }
+
+        /** Actual original capture digest, never an independent self-asserted provenance string. */
+        public String originalEvidenceHash() { return originalEvidence.canonicalHash(); }
+    }
 
     /** One Legacy alternative with ordered original anchor ownership. */
     public record Seed(String id, List<MetricPoint> points, Map<Integer,Integer> originalToVertex) {

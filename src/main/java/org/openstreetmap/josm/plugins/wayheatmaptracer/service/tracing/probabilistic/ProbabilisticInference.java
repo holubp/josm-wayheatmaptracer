@@ -294,8 +294,6 @@ public final class ProbabilisticInference {
                     if (!Double.isFinite(prefix)) {
                         continue;
                     }
-                    boolean firstHeadingReady = false;
-                    double firstHeading = 0.0;
                     for (int state = 0; state < currentStates; state++) {
                         if (!transitionAllowed(profiles, profileIndex - 1, prior, state, decisionRegion, admissions)) {
                             continue;
@@ -309,39 +307,9 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded");
                         }
-                        double unary = profileEnergy(profiles, profileIndex, state, parameters);
-                        double pair = 0.0;
-                        boolean secondHeadingReady = false;
-                        double secondHeading = 0.0;
-                        if (parameters.orientationWeight() != 0.0) {
-                            InferenceProfile start = profiles.get(profileIndex - 1);
-                            InferenceProfile end = profiles.get(profileIndex);
-                            MetricPoint firstPoint = start.point(prior);
-                            MetricPoint secondPoint = end.point(state);
-                            secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
-                                    secondPoint.xMeters() - firstPoint.xMeters());
-                            secondHeadingReady = true;
-                            pair = pairEnergyAtHeading(start, end, prior, state, parameters, secondHeading);
-                        }
-                        double triple = 0.0;
-                        if (parameters.turnWeight() != 0.0) {
-                            // Validate every point in the original order, after score admission.
-                            MetricPoint beforePoint = profiles.get(profileIndex - 2).point(before);
-                            MetricPoint priorPoint = profiles.get(profileIndex - 1).point(prior);
-                            MetricPoint currentPoint = profiles.get(profileIndex).point(state);
-                            if (!firstHeadingReady) {
-                                firstHeading = StrictMath.atan2(priorPoint.yMeters() - beforePoint.yMeters(),
-                                        priorPoint.xMeters() - beforePoint.xMeters());
-                                firstHeadingReady = true;
-                            }
-                            if (!secondHeadingReady) {
-                                secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
-                                        currentPoint.xMeters() - priorPoint.xMeters());
-                            }
-                            triple = tripleEnergyAtHeadings(profiles, profileIndex, parameters,
-                                    firstHeading, secondHeading);
-                        }
-                        double increment = unary + pair + triple;
+                        double increment = profileEnergy(profiles, profileIndex, state, parameters)
+                            + pairEnergy(profiles, profileIndex - 1, prior, state, parameters)
+                            + tripleEnergy(profiles, profileIndex, before, prior, state, parameters);
                         double term = prefix - increment / parameters.temperature()
                             + logMeasure(profiles.get(profileIndex).cells().get(state));
                         current[prior][state] = logAdd(current[prior][state], term);
@@ -372,8 +340,6 @@ public final class ProbabilisticInference {
             for (int before = 0; before < beforeStates; before++) {
                 for (int currentState = 0; currentState < currentStates; currentState++) {
                     double accumulated = LOG_ZERO;
-                    boolean firstHeadingReady = false;
-                    double firstHeading = 0.0;
                     for (int next = 0; next < nextStates; next++) {
                         if (!transitionAllowed(profiles, currentProfile, currentState, next, decisionRegion, admissions)) {
                             continue;
@@ -387,39 +353,9 @@ public final class ProbabilisticInference {
                             return GraphMessages.limit(pairVisits, transitions,
                                 "transition budget exceeded during backward inference");
                         }
-                        double unary = profileEnergy(profiles, nextProfile, next, parameters);
-                        double pair = 0.0;
-                        boolean secondHeadingReady = false;
-                        double secondHeading = 0.0;
-                        if (parameters.orientationWeight() != 0.0) {
-                            InferenceProfile start = profiles.get(currentProfile);
-                            InferenceProfile end = profiles.get(nextProfile);
-                            MetricPoint firstPoint = start.point(currentState);
-                            MetricPoint secondPoint = end.point(next);
-                            secondHeading = StrictMath.atan2(secondPoint.yMeters() - firstPoint.yMeters(),
-                                    secondPoint.xMeters() - firstPoint.xMeters());
-                            secondHeadingReady = true;
-                            pair = pairEnergyAtHeading(start, end, currentState, next, parameters, secondHeading);
-                        }
-                        double triple = 0.0;
-                        if (parameters.turnWeight() != 0.0) {
-                            // Keep deferred validation even when the fixed first heading is reusable.
-                            MetricPoint beforePoint = profiles.get(currentProfile - 1).point(before);
-                            MetricPoint priorPoint = profiles.get(currentProfile).point(currentState);
-                            MetricPoint currentPoint = profiles.get(nextProfile).point(next);
-                            if (!firstHeadingReady) {
-                                firstHeading = StrictMath.atan2(priorPoint.yMeters() - beforePoint.yMeters(),
-                                        priorPoint.xMeters() - beforePoint.xMeters());
-                                firstHeadingReady = true;
-                            }
-                            if (!secondHeadingReady) {
-                                secondHeading = StrictMath.atan2(currentPoint.yMeters() - priorPoint.yMeters(),
-                                        currentPoint.xMeters() - priorPoint.xMeters());
-                            }
-                            triple = tripleEnergyAtHeadings(profiles, nextProfile, parameters,
-                                    firstHeading, secondHeading);
-                        }
-                        double increment = unary + pair + triple;
+                        double increment = profileEnergy(profiles, nextProfile, next, parameters)
+                            + pairEnergy(profiles, currentProfile, currentState, next, parameters)
+                            + tripleEnergy(profiles, nextProfile, before, currentState, next, parameters);
                         double term = -increment / parameters.temperature()
                             + logMeasure(profiles.get(nextProfile).cells().get(next))
                             + nextBackward[currentState][next];

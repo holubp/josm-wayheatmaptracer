@@ -171,17 +171,6 @@ public final class InferenceProfile {
         return unaryCosts[stateIndex];
     }
 
-    /** Internal immutable observation replacement; all geometry and authority remain inherited. */
-    InferenceProfile withObservationRows(double[] costs, double[][] responsibilities,
-            AttemptMemoryLedger.Owner owner) {
-        return owner == null ? new InferenceProfile(chainageMeters, anchor, normalUnit, cells, costs,
-                orientationByBranch, orientationReliabilityByBranch, ownership, entirelyMissing,
-                structuralGuideCosts, responsibilities)
-                : accounted(chainageMeters, anchor, normalUnit, cells, costs,
-                    orientationByBranch, orientationReliabilityByBranch, ownership, entirelyMissing,
-                    structuralGuideCosts, responsibilities, owner);
-    }
-
     /** Returns alternative supported orientations in radians. */
     public List<Double> supportedDirectionsRadians() {
         return orientationByBranch.values().stream()

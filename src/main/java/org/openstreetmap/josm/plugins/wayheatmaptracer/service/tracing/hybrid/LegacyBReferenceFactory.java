@@ -9,9 +9,175 @@ import java.util.TreeSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Seed;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Section;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModels.Reference;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.NetworkSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.EvidenceModelParameters;
 
 /** Separates temporary reference geometry while retaining original occurrence ownership. */
 public final class LegacyBReferenceFactory {
+    public static final String REFERENCE_SAMPLER_SUFFIX = "/legacy-reference-v1";
+
+    /** Safe local fallback causes; arbitrary exception text is not a diagnostic reason. */
+    public enum UnavailableReason { FROZEN_SECTION, EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE }
+
+    /** An unavailable reference may retain Legacy locally without weakening original authority. */
+    public static final class ReferenceUnavailableException extends RuntimeException {
+        private final UnavailableReason reason;
+        ReferenceUnavailableException(UnavailableReason reason) {
+            super(reason.name());
+            this.reason = reason;
+        }
+        public UnavailableReason reason() { return reason; }
+    }
+
+    /** Creates fresh reference chainage and sampling identity, retaining the captured original network. */
+    public Reference prepare(Section section, TraceRequest originalRequest, EvidenceSnapshot evidence,
+            NetworkSnapshot originalNetwork, TraceBudgets remaining, CancellationProbe cancellation) {
+        if (section == null || originalRequest == null || evidence == null || originalNetwork == null
+                || remaining == null || cancellation == null
+                || originalRequest.engine() != TrackerMode.LEGACY_THEN_B
+                || originalNetwork.role() != SnapshotRole.CAPTURED_BEFORE
+                || !originalRequest.networkSnapshotId().equals(originalNetwork.snapshotId())
+                || !originalRequest.networkContentHash().equals(originalNetwork.canonicalHash())
+                || !originalRequest.evidenceSnapshotId().equals(evidence.snapshotId())
+                || !originalRequest.evidenceContentHash().equals(evidence.canonicalHash())
+                || !originalRequest.evidenceResolution().equals(evidence.resolution())
+                || section.originalRange().firstIndex() < originalRequest.selectedRange().firstIndex()
+                || section.originalRange().lastIndex() > originalRequest.selectedRange().lastIndex()
+                || remaining.maximumStatesPerProfile() != originalRequest.budgets().maximumStatesPerProfile()
+                || remaining.maximumPairVisits() > originalRequest.budgets().maximumPairVisits()
+                || remaining.maximumTransitions() > originalRequest.budgets().maximumTransitions()
+                || remaining.maximumRawAlternatives() > originalRequest.budgets().maximumRawAlternatives()
+                || remaining.maximumDistinctAlternatives() > originalRequest.budgets().maximumDistinctAlternatives()) {
+            throw new IllegalArgumentException("Refinement must retain its original capture and remaining authority");
+        }
+        cancellation.checkpoint();
+        if (section.frozen()) { throw new ReferenceUnavailableException(UnavailableReason.FROZEN_SECTION); }
+        validateOriginalGeometry(section, originalRequest, evidence, originalNetwork, cancellation);
+        return prepareSampling(section, originalRequest, evidence, remaining);
+    }
+
+    /** Revalidates original geometry ownership at the actual B entry, without rehashing image arrays. */
+    public void validateReferenceAuthority(Reference reference, NetworkSnapshot network,
+            CancellationProbe cancellation) {
+        if (reference == null || network == null || cancellation == null) {
+            throw new IllegalArgumentException("A bound reference and original network are required");
+        }
+        var original = reference.originalRequest();
+        var request = reference.request();
+        var section = reference.section();
+        if (section.frozen() || original.geometryMode()
+                    != org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentMode.PRECISE_SHAPE
+                || request.geometryMode() != original.geometryMode()
+                || !original.networkSnapshotId().equals(network.snapshotId())
+                || !original.networkContentHash().equals(network.canonicalHash())
+                || section.originalRange().firstIndex() < original.selectedRange().firstIndex()
+                || section.originalRange().lastIndex() > original.selectedRange().lastIndex()
+                || !request.samplerId().equals(original.samplerId() + REFERENCE_SAMPLER_SUFFIX)
+                || !request.parameterHash().equals(parameterHash(original.parameterHash()))
+                || request.budgets().maximumStatesPerProfile() != original.budgets().maximumStatesPerProfile()
+                || request.budgets().maximumPairVisits() > original.budgets().maximumPairVisits()
+                || request.budgets().maximumTransitions() > original.budgets().maximumTransitions()
+                || request.budgets().maximumRawAlternatives() > original.budgets().maximumRawAlternatives()
+                || request.budgets().maximumDistinctAlternatives() > original.budgets().maximumDistinctAlternatives()
+                || !reference.evidence().decisionRegion().equals(MetricCorridorRegion.aroundPolyline(
+                    section.reference(), original.permissions().ordinaryRadiusMeters()))) {
+            throw new IllegalArgumentException("Refinement lost its original authority or sampling identity");
+        }
+        validateOriginalGeometry(section, original, reference.originalEvidence(), network, cancellation);
+    }
+
+    private static void validateOriginalGeometry(Section section, TraceRequest originalRequest,
+            EvidenceSnapshot evidence, NetworkSnapshot originalNetwork, CancellationProbe cancellation) {
+        if (!(originalNetwork.primitives().get(originalRequest.selectedWayKey()) instanceof DetachedWay way)
+                || way.deleted() || originalRequest.selectedRange().lastIndex() >= way.nodeKeys().size()) {
+            throw new IllegalArgumentException("Original selected way is unavailable");
+        }
+        for (int occurrence = section.originalRange().firstIndex(); ; occurrence++) {
+            cancellation.checkpoint();
+            var key = way.nodeKeys().get(occurrence);
+            if (!(originalNetwork.primitives().get(key) instanceof DetachedNode node) || node.deleted()) {
+                throw new IllegalArgumentException("Original selected occurrence is unavailable");
+            }
+            boolean interior = occurrence != section.originalRange().firstIndex()
+                    && occurrence != section.originalRange().lastIndex();
+            boolean shared = originalNetwork.incomingReferrerWatches().getOrDefault(key, Set.of()).stream()
+                    .anyMatch(referrer -> referrer.type()
+                            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey.Type.WAY
+                            && !referrer.equals(originalRequest.selectedWayKey())
+                            && (!(originalNetwork.primitives().get(referrer) instanceof DetachedWay other)
+                                    || !other.deleted()));
+            if (interior && shared) {
+                throw new IllegalArgumentException("B refinement intervals must end at shared original occurrences");
+            }
+            if (originalNetwork.closure().protectedExistingNodeKeys().contains(key) || !node.tags().isEmpty()) {
+                Integer vertex = section.originalToVertex().get(occurrence);
+                if (vertex == null || !section.reference().get(vertex).equals(
+                        evidence.coordinateFrame().toMetric(node.coordinate()))) {
+                    throw new IllegalArgumentException("Reference moved an original protected occurrence");
+                }
+                if (interior) {
+                    throw new IllegalArgumentException("Refinement section crosses a protected original anchor");
+                }
+            }
+            if (occurrence == section.originalRange().lastIndex()) { break; }
+        }
+    }
+
+    private static Reference prepareSampling(Section section, TraceRequest originalRequest,
+            EvidenceSnapshot evidence, TraceBudgets remaining) {
+        // A chainage table on the original curve is not a spatial pitch field on a different curve.
+        if (evidence.resolution().spatialPitchSamples().size() != 1) {
+            throw new ReferenceUnavailableException(UnavailableReason.SPATIAL_RESOLUTION_UNAVAILABLE);
+        }
+        var decision = MetricCorridorRegion.aroundPolyline(section.reference(),
+                originalRequest.permissions().ordinaryRadiusMeters());
+        if (!evidence.evidenceRegion().containsRegion(decision)) {
+            throw new ReferenceUnavailableException(UnavailableReason.EVIDENCE_COVERAGE);
+        }
+        var referenceEvidence = new EvidenceSnapshot(evidence.snapshotId() + "/" + section.id(),
+                evidence.coordinateFrame(), evidence.transform(), evidence.resolution(), decision,
+                evidence.evidenceRegion(), evidence.fields(), evidence.resampling(), evidence.sourceIdentity());
+        var chainage = new ProbabilisticProfileFactory().profileChainage(section.reference(),
+                originalRequest.configuredSampleStepMeters());
+        var request = new TraceRequest(originalRequest.selectedWayKey(), section.originalRange(),
+                TrackerMode.PROBABILISTIC, originalRequest.geometryMode(), originalRequest.permissions(), remaining,
+                referenceEvidence.snapshotId(), referenceEvidence.canonicalHash(),
+                originalRequest.networkSnapshotId(), originalRequest.networkContentHash(), originalRequest.settingsHash(),
+                parameterHash(originalRequest.parameterHash()),
+                originalRequest.samplerId() + REFERENCE_SAMPLER_SUFFIX,
+                originalRequest.configuredSampleStepMeters(), chainage, evidence.resolution());
+        return new Reference(section, request, referenceEvidence, originalRequest, evidence);
+    }
+
+    private static String parameterHash(String original) {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            for (String field : List.of(original, REFERENCE_SAMPLER_SUFFIX,
+                    EvidenceModelParameters.defaults().toString(),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
+                            .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(TrackerMode.PROBABILISTIC))) {
+                byte[] value = field.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                digest.update(Integer.toString(value.length).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                digest.update((byte) ':');
+                digest.update(value);
+            }
+            return java.util.HexFormat.of().formatHex(digest.digest());
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("Java runtime lacks required SHA-256", unavailable);
+        }
+    }
+
     /**
      * Splits at protected occurrences and frozen-range boundaries, never at ordinary
      * movable nodes. Callers supply protection from the captured original authority;
