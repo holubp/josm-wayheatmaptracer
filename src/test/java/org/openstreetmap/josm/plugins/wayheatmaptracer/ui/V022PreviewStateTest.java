@@ -32,13 +32,15 @@ class V022PreviewStateTest {
     }
 
     @Test
-    void t115AllFiveEnginesAreSelectableAndMissingPreferenceDefaultsToA() {
+    void t115AllFiveEnginesAreSelectableAndMissingPreferenceDefaultsToLegacy() {
         assertEquals(5, TrackerMode.selectableValues().length);
-        assertEquals(TrackerMode.CORRIDOR_AWARE, PluginPreferences.loadTracingSettings().engine());
+        assertEquals(TrackerMode.LEGACY_V02, PluginPreferences.loadTracingSettings().engine());
     }
 
     @Test
     void t116ExistingEngineChoiceRoundTripsWithoutPromotion() {
+        // Ordinary radius belongs to the existing search-width setting, not saveTracingSettings.
+        Config.getPref().putDouble(PREFIX + "searchHalfWidthMeters", 7.01);
         TracingSettings settings = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
             TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false);
 

@@ -202,9 +202,9 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 |---|---|---|
 | 1 baseline and obligations | TESTED | isolated2fdab87 snapshot, scoped23-file inventory;90 focused tests green; original obligations mapped above |
 | 2 defaults/settings | TESTED | intended defaults/migration RED6→GREEN28; settings/guard RED2; final41PASS with corrected synthetic-session fixture; GUI smoke pending Task8 |
-| 3 Legacy seeds/reference | PARTIAL | projected Legacy reconstruction, protected partition, factual reference and native B entry tested;210source117 neighbors green; frozen live seed assembly bridge pending |
-| 4 interval orchestration | NOT STARTED | partial-failure contract approved |
-| 5 assessment/preview | NOT STARTED | common FinalGeometryEvaluator integration identified |
+| 3 Legacy seeds/reference | PARTIAL |4027f47,d46ffe6,9e6eacb: detached reference, native B entry, captured-projection seed conversion, exact anchors and cancellation tested;101bridge/Legacy/interval neighbors green; frozen source assembly and simplification provenance still need Task6 integration |
+| 4 interval orchestration | TESTED CORE |7dc2b57:27focused then58native B/pipeline tests green; local fallback, bounded variants, shared counters/deadline; native memory/source runner and final status integration remain |
+| 5 assessment/preview | TESTED COMPONENTS |75tests PASS: shared evaluator, complete support denominator, actual native section identity, wrapped table, immutable projected highlight and existing preview state; ordinary action hookup remains Task6 |
 | 6 live/apply/export/replay | NOT STARTED | same production path required in live and replay |
 | 7 old Hybrid removal | NOT STARTED | implementation removal explicitly approved |
 | 8 RC/final release | NOT STARTED | no release readiness or new RC claimed |

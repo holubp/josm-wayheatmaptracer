@@ -1374,12 +1374,21 @@ public final class FinalGeometryEvaluator {
 
     /** Reuses the evaluator's exact directed sampling and cross-vertex gap integration. */
     public static SupportInspection inspectSupport(List<MetricPoint> points, ImageCostField image, double pitch) {
+        return inspectSupport(points, image, pitch, CancellationProbe.NONE);
+    }
+
+    /** Same directed support integration with cancellation while retaining per-edge observations. */
+    public static SupportInspection inspectSupport(List<MetricPoint> points, ImageCostField image, double pitch,
+            CancellationProbe cancellation) {
+        Objects.requireNonNull(cancellation, "cancellation");
+        cancellation.checkpoint();
         if (points == null || points.size() < 2 || image == null || !Double.isFinite(pitch) || pitch <= 0.0) {
             throw new IllegalArgumentException("Physical support inputs are incomplete");
         }
         DirectedSamplingMemo sampling = new DirectedSamplingMemo(2_048);
         List<SupportSample> samples = new ArrayList<>();
-        SupportMetrics support = supportMetrics(points, image, pitch, sampling, samples);
+        SupportMetrics support = supportMetrics(points, image, pitch, sampling, samples, cancellation);
+        cancellation.checkpoint();
         return new SupportInspection(support.totalLength, support.directLength, support.worstUnsupportedSpan,
                 sampling.routePolylineCost(points, image), samples);
     }
@@ -1391,14 +1400,22 @@ public final class FinalGeometryEvaluator {
 
     private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image,
             double pitch, DirectedSamplingMemo sampling, List<SupportSample> retainedSamples) {
+        return supportMetrics(points, image, pitch, sampling, retainedSamples, CancellationProbe.NONE);
+    }
+
+    private static SupportMetrics supportMetrics(List<MetricPoint> points, ImageCostField image,
+            double pitch, DirectedSamplingMemo sampling, List<SupportSample> retainedSamples,
+            CancellationProbe cancellation) {
         double total = 0.0;
         double direct = 0.0;
         double currentUnsupported = 0.0;
         double worstUnsupported = 0.0;
         for (int segment = 0; segment < points.size() - 1; segment++) {
+            cancellation.checkpoint();
             SupportSamples samples = sampling.support(points.get(segment), points.get(segment + 1),
                 image, pitch);
             for (boolean supported : samples.directlyLocalized()) {
+                cancellation.checkpoint();
                 if (retainedSamples != null) retainedSamples.add(new SupportSample(segment, supported, samples.pieceMeters()));
                 total += samples.pieceMeters();
                 if (supported) {

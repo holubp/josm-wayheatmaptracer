@@ -33,6 +33,7 @@ public final class PreviewOverlay implements MapViewPaintable {
     private CandidateAssessment.Disposition disposition;
     private Map<PrimitiveKey, List<EastNorth>> finalPreviewWays = Map.of();
     private List<EastNorth> disconnectionLocations = List.of();
+    private List<EastNorth> highlightedSection = List.of();
     private boolean reviewConfirmed;
     private boolean debugEnabled;
     private boolean attached;
@@ -55,6 +56,28 @@ public final class PreviewOverlay implements MapViewPaintable {
     public void setDisconnectionLocations(List<EastNorth> locations) {
         disconnectionLocations = List.copyOf(locations);
     }
+
+    /** Selects an exact final section in slide-time projected geometry, never current screen pixels. */
+    public void setHighlightedSection(List<EastNorth> finalProjected,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.VertexRange range) {
+        if (finalProjected == null || range == null || range.last() >= finalProjected.size()) {
+            throw new IllegalArgumentException("Highlighted section lies outside the selected final geometry");
+        }
+        highlightedSection = List.copyOf(finalProjected.subList(range.first(),range.last()+1));
+        if (MainApplication.getMap() != null && MainApplication.getMap().mapView != null) {
+            MainApplication.getMap().mapView.repaint();
+        }
+    }
+
+    /** Clears the prior row selection without changing the candidate or its review state. */
+    public void clearHighlightedSection() {
+        highlightedSection = List.of();
+        if (MainApplication.getMap() != null && MainApplication.getMap().mapView != null) {
+            MainApplication.getMap().mapView.repaint();
+        }
+    }
+
+    List<EastNorth> highlightedSection() { return highlightedSection; }
 
     /**
      * Attaches or refreshes the overlay for an active preview.
@@ -101,6 +124,7 @@ public final class PreviewOverlay implements MapViewPaintable {
         this.selection = selection;
         this.result = result;
         this.chosenCandidate = chosenCandidate;
+        this.highlightedSection = List.of();
         this.disposition = disposition;
         this.reviewConfirmed = reviewConfirmed;
         this.debugEnabled = debugEnabled;
@@ -129,6 +153,7 @@ public final class PreviewOverlay implements MapViewPaintable {
         disposition = null;
         finalPreviewWays = Map.of();
         disconnectionLocations = List.of();
+        highlightedSection = List.of();
         reviewConfirmed = false;
     }
 
@@ -149,6 +174,7 @@ public final class PreviewOverlay implements MapViewPaintable {
         previewPolylines(finalPreviewWays, result.previewPolyline()).forEach(polyline ->
                 drawPolyline(g, mv, polyline, selectedColor, selectedDash,
                         applicable ? 3.5f : reviewRequired ? 3.2f : 2.8f));
+        drawPolyline(g,mv,highlightedSection,new Color(20,190,200,240),null,5.5f);
         g.setColor(new Color(190, 20, 150, 230));
         g.setStroke(new BasicStroke(2.5f));
         for (EastNorth location : disconnectionLocations) {
