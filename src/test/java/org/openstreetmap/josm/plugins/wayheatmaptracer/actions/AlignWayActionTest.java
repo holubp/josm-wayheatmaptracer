@@ -988,6 +988,113 @@ class AlignWayActionTest {
     }
 
     @Test
+    void rejectedComputedPreviewRetainsItsFrozenEvidenceAndSafeFailure(@TempDir Path directory)
+            throws Exception {
+        var computed = new LiveBPreviewService().compute(computedIntervalFixture().captured(),
+                CancellationProbe.NONE);
+        assertFalse(computed.partitioned());
+        assertFalse(computed.pipeline().routes().isEmpty());
+        AlignWayAction.recordRejectedModernPreview(computed, "failed", "rejected-ordinary", null);
+        Path exported = directory.resolve("rejected-ordinary.zip");
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        var archive = Format15ArchiveReader.read(exported);
+        String summary = new String(archive.artifact("failure-summary.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(summary.contains("COMPUTED_PREVIEW_REJECTED"));
+        assertTrue(summary.contains("\"finalRoutes\":" + computed.pipeline().routes().size()));
+        assertTrue(archive.artifact("frozen-input.bin").isPresent());
+        assertTrue(archive.artifact("final-route.json").isPresent());
+        assertFalse(archive.artifact("frozen-edit-plan.bin").isPresent());
+        String availability = new String(archive.artifact("plan-availability.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(availability.contains("\"status\":\"FAILED\""));
+        assertTrue(availability.contains("ATTEMPT_FAILED"));
+
+        Map<String, Number> excessiveCounters = new java.util.HashMap<>();
+        for (int i = 0; i < 129; i++) excessiveCounters.put("counter" + i, i);
+        var cannotExport = new LiveBPreviewService.Computed(computed.captured(), computed.evidence(),
+                computed.request(), computed.pipeline(), computed.options(), excessiveCounters);
+        AlignWayAction.recordRejectedModernPreview(cannotExport, "failed", "rejected-export-budget", null);
+        DiagnosticsRegistry.writeLatest(exported.toFile());
+        var fallback = Format15ArchiveReader.read(exported);
+        String fallbackSummary = new String(fallback.artifact("failure-summary.json").orElseThrow().bytes(),
+                StandardCharsets.UTF_8);
+        assertTrue(fallbackSummary.contains("DIAGNOSTIC_EXPORT"));
+        assertTrue(fallbackSummary.contains("counter-budget"));
+        assertTrue(fallbackSummary.contains("\"finalRoutes\":" + computed.pipeline().routes().size()));
+        assertFalse(fallback.artifact("frozen-edit-plan.bin").isPresent());
+    }
+
+    @Test
+    void rejectedIntervalPreviewKeepsEvidenceAndCannotOverwriteNewerAttempt(@TempDir Path directory)
+            throws Exception {
+        LiveBPreviewService.Computed computed = computedIntervalFixture();
+        try (PreviewSessionController<LiveBPreviewService.Computed> session =
+                new PreviewSessionController<>(Runnable::run)) {
+            var oldOwner = session.open(() -> { });
+            var currentOwner = session.open(() -> { });
+            AtomicInteger publications = new AtomicInteger();
+            Runnable publish = () -> {
+                AlignWayAction.recordRejectedModernPreview(computed, "failed", "rejected-preview", null);
+                publications.incrementAndGet();
+            };
+            assertFalse(AlignWayAction.closeAndPublishIfCurrent(session, oldOwner, publish));
+            assertEquals(0, publications.get());
+            assertTrue(AlignWayAction.closeAndPublishIfCurrent(session, currentOwner, publish));
+            Path exported = directory.resolve("rejected-computed.zip");
+            DiagnosticsRegistry.writeLatest(exported.toFile());
+            var archive = Format15ArchiveReader.read(exported);
+            String summary = new String(archive.artifact("failure-summary.json").orElseThrow().bytes(),
+                    StandardCharsets.UTF_8);
+            assertTrue(summary.contains("\"phase\":\"PREVIEW_PUBLICATION\""));
+            assertTrue(summary.contains("COMPUTED_PREVIEW_REJECTED"));
+            assertTrue(summary.contains("\"intervalRuns\":2"));
+            assertTrue(archive.artifact("private/interval-0-routes.json").isPresent());
+            assertFalse(archive.artifact("frozen-edit-plan.bin").isPresent());
+            String availability = new String(archive.artifact("plan-availability.json").orElseThrow().bytes(),
+                    StandardCharsets.UTF_8);
+            assertTrue(availability.contains("\"status\":\"FAILED\""));
+            assertTrue(availability.contains("ATTEMPT_FAILED"));
+        }
+    }
+
+    @Test
+    void preciseRecoveryKeepsAttemptModeWhenOriginatingActionForcedMoveNodes() {
+        for (AlignmentMode savedMode : AlignmentMode.values()) {
+            AlignmentConfig persisted = new AlignmentConfig(configuredCorridor()
+                    .withTrackerMode(TrackerMode.PROBABILISTIC).withAlignmentMode(savedMode),
+                    GeometryCleanupConfig.disabled());
+            TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                    TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                    AlignmentSourceMode.MANAGED_TILES);
+            AlignmentConfig precise = AlignWayAction.resolvePreciseRerun(tracing, persisted,
+                    () -> "visible", () -> "legacy").route().invocation().config();
+            assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, precise, persisted,
+                    tracing, tracing, null),
+                    "A computed Precise recovery owns its mode at publication and Apply");
+            AlignmentConfig changed = new AlignmentConfig(persisted.heatmap()
+                    .withAlignmentMode(savedMode == AlignmentMode.PRECISE_SHAPE
+                            ? AlignmentMode.MOVE_EXISTING_NODES : AlignmentMode.PRECISE_SHAPE),
+                    persisted.cleanup());
+            assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, precise, changed,
+                    tracing, tracing, null));
+        }
+    }
+
+    @Test
+    void preciseRecoveryNormalizesLegacyTrackerPreferenceToOrdinaryEngine() {
+        AlignmentConfig persisted = new AlignmentConfig(configuredCorridor()
+                .withTrackerMode(TrackerMode.CORRIDOR_AWARE), GeometryCleanupConfig.disabled());
+        TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
+                TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
+                AlignmentSourceMode.MANAGED_TILES);
+        AlignmentConfig precise = AlignWayAction.resolvePreciseRerun(tracing, persisted,
+                () -> "visible", () -> "legacy").route().invocation().config();
+        assertEquals(TrackerMode.PROBABILISTIC, precise.heatmap().trackerMode());
+        assertEquals(TrackerMode.CORRIDOR_AWARE, persisted.heatmap().trackerMode());
+    }
+
+    @Test
     void normalizedBPreviewStillMatchesUnchangedSavedSettings() {
         ManagedHeatmapConfig saved = configuredCorridor().withTrackerMode(TrackerMode.PROBABILISTIC);
         AlignmentConfig persisted = new AlignmentConfig(saved,
@@ -999,11 +1106,11 @@ class AlignWayActionTest {
                 TrackerMode.PROBABILISTIC, RecoverySettings.defaults(7.01), false,
                 AlignmentSourceMode.MANAGED_TILES);
         assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, effective, persisted,
-                tracing, tracing, null, null));
+                tracing, tracing, null));
         AlignmentConfig changed = new AlignmentConfig(saved,
                 GeometryCleanupPreset.STRONG.apply());
         assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, effective, changed,
-                tracing, tracing, null, null));
+                tracing, tracing, null));
     }
 
     @Test
@@ -1237,9 +1344,9 @@ class AlignWayActionTest {
                 false, AlignmentSourceMode.VISIBLE_LAYER);
 
         assertTrue(AlignWayAction.matchesLivePreviewSettings(persisted, persisted, persisted,
-                captured, captured, null, null));
+                captured, captured, null));
         assertFalse(AlignWayAction.matchesLivePreviewSettings(persisted, persisted, persisted,
-                captured, changed, null, null));
+                captured, changed, null));
     }
 
     @Test

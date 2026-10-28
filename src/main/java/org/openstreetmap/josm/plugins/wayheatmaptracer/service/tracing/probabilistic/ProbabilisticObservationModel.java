@@ -10,6 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ImageOrientationSup
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ObservationOwnership;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.OrderedDoubleSum;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Evaluates the deterministic finite observation mixture on an admitted lateral lattice. */
 public final class ProbabilisticObservationModel {
@@ -63,8 +64,8 @@ public final class ProbabilisticObservationModel {
                 case MISSING -> fillUniform(logDensity[componentIndex], lattice.cells());
                 case MEASURED -> fillMeasured(logDensity[componentIndex], profile, lattice.cells(), evidence,
                     findMode(profile, component), parameters);
-                case CENSORED -> fillCensored(logDensity[componentIndex], profile, lattice.cells(),
-                    findCensored(profile, component));
+                case CENSORED -> fillBaselineCensoredRow(logDensity[componentIndex], profile,
+                    lattice.cells(), component, CancellationProbe.NONE);
                 default -> throw new IllegalStateException("Unhandled observation component");
             }
         }
@@ -265,6 +266,34 @@ public final class ProbabilisticObservationModel {
         normalizeDensity(output, cells);
     }
 
+    /**
+     * Fills an already allocated, caller-owned row with the original normalized censored density.
+     * The caller reserves/accounts its output storage before allocation; this seam allocates no
+     * output or scratch payload. Validation and cancellation preflight finish before any write,
+     * so a rejected request leaves the caller's row and memory owner unchanged. The subsequent
+     * original fill/normalization is one bounded row operation in the admitted state domain.
+     * Anchor conditioning belongs to the mixture consumer, not this density producer.
+     */
+    static void fillBaselineCensoredRow(double[] output, ProbabilisticProfile profile,
+            List<LateralStateCell> cells, ObservationComponent component,
+            CancellationProbe cancellation) {
+        if (output == null || profile == null || cells == null || cells.isEmpty()
+                || output.length != cells.size() || component == null
+                || component.kind() != ObservationComponent.Kind.CENSORED || cancellation == null) {
+            throw new IllegalArgumentException("A censored row requires matching complete inputs");
+        }
+        cancellation.checkpoint();
+        for (int state = 0; state < cells.size(); state++) {
+            cancellation.checkpoint();
+            if (cells.get(state) == null) {
+                throw new IllegalArgumentException("A censored row requires complete cells");
+            }
+        }
+        ProbabilisticProfile.CensoredMode mode = findCensored(profile, component);
+        cancellation.checkpoint();
+        fillCensored(output, profile, cells, mode);
+    }
+
     private static void fillUniform(double[] output, List<LateralStateCell> cells) {
         OrderedDoubleSum reduction = new OrderedDoubleSum();
         for (LateralStateCell cell : cells) reduction.add(cell.quadratureWidthMeters());
@@ -291,7 +320,7 @@ public final class ProbabilisticObservationModel {
         }
     }
 
-    private static double interpolate(List<ProbabilisticProfile.Sample> samples, double offset) {
+    static double interpolate(List<ProbabilisticProfile.Sample> samples, double offset) {
         int exact = java.util.Collections.binarySearch(samples,
             new ProbabilisticProfile.Sample(offset, Double.NaN, false),
             Comparator.comparingDouble(ProbabilisticProfile.Sample::offsetMeters));

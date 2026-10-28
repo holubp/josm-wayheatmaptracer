@@ -102,7 +102,7 @@ the preview before applying.
 - Parallel-way awareness is opt-in and applies only to the corridor-aware tracker. It uses downloaded nearby `highway=*` ways as read-only ranking context; it never edits those ways and cannot prove lane or carriageway semantics on its own.
 - With complete managed Strava access values, `Stable fixed scale` and `Raw high-resolution` align from fetched source tiles rather than the current screen capture. This makes sliding independent of the current JOSM zoom and allows the selected way to extend outside the current viewport.
 - Without managed Strava access values, alignment falls back to the legacy visible rendered-layer path. In that fallback mode, the plugin temporarily renders the selected segment plus the search corridor through a normal-resolution virtual JOSM viewport. If one viewport would be too large, it pans that virtual viewport over the extent and stitches the rendered chunks for sampling, then restores the user's previous viewport.
-- Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The default fixed-scale search is calibrated to the good z15 setup: source tile z15, 6.0x reference raster, 0.389 m/px reference view, about 7.01 m search half-width, and about 1.56 m sampling step.
+- Fixed source-tile inference uses the configured inference zoom, validation zoom, search half-width meters, and sample step meters. The fixed-scale sampling reference remains source tile z15, 6.0x reference raster, 0.389 m/px reference view, and about 1.56 m sampling step. New or missing search-width preferences default to a 25 m half-width, allowing realistic lateral displacement beyond the earlier 7.01 m search. Explicitly saved widths are preserved.
 
 ## Offline Confidence Calibration
 
@@ -204,6 +204,10 @@ all three archive paths. Calling `./gradlew test` without a profile preserves
 the historical full-suite behavior, including the sparse replay's optional
 assumption when no explicit archive property is supplied.
 
+The quarantined Engine B observation experiment has a separate manual,
+[public-only CI workflow](superpowers/docs/plans/2026-10-17-b-observation-ci.md).
+It produces synthetic experiment receipts, not a plugin release or an accepted model.
+
 ## Optimum JOSM Workflow
 
 ### 1. Configure Heatmap Access
@@ -216,7 +220,7 @@ assumption when no explicit archive property is supplied.
 6. Choose the Strava activity (`all`, `ride`, `run`, `water`, or `winter`) and the visible Strava color (`hot`, `blue`, `bluered`, `purple`, or `gray`).
 7. Enable `Run alternative detector mappings on current source` if you want palette classifier alternatives for the currently sampled source. Enable `Aggregate all managed color schemes into one intensity map` if you want managed source tiles from all base colors fused into an `all-colors-combined` candidate.
 8. Leave `Intensity source` at `Color mapping` for normal Strava heatmap work. Use `Direct luminance`, `Direct max channel`, or `Direct alpha` only for scalar rendered imagery or diagnostics where pixel brightness/opacity already is the intended intensity.
-9. For fixed-resolution sliding, start with `Stable fixed scale`, inference zoom `15`, validation zoom `13`, search half-width `7.01`, and sample step `1.56`. These reproduce the z15/reference-raster setup that has been working well in recent tests.
+9. For fixed-resolution sliding, start with `Stable fixed scale`, inference zoom `15`, validation zoom `13`, search half-width `25`, and sample step `1.56`. The half-width is the search distance on each side of the original way. Existing installations retain their saved width; change `Search half-width meters` to `25` explicitly to use the wider search.
 10. Press `OK`. If access values are complete, the plugin refreshes the managed heatmap layer and asynchronously performs a fresh-network check on a deterministic stencil of up to five selected-color z15 tiles in the visible area. A validated response proves fresh network access; cache-only diagnostics prove only that a validated tile is cached. Successful checks do not open any UI message and are recorded only in verbose diagnostics, while authentication, rate-limit, network, unusable-image, and inconclusive no-tile outcomes remain warning dialogs. If every probe coordinate has no tile, the message is spatially inconclusive and does not claim the source is unavailable everywhere. Layer recreation itself is not proof of access.
 
 Do not paste cookie examples into files, issues, commits, or screenshots. The debug export redacts credentials, but manually copied cookies are still secrets.
@@ -226,7 +230,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
 - `Ridge tracker`: use the default `Corridor-aware (recommended)` tracker for broad-corridor centering, sparse longitudinal inference, parallel parent/child candidates, and pre-optimized endpoint approaches. Select `Legacy v0.2-compatible` only when compatibility or direct comparison with the older tracker is required. A preview label such as `Hot detector - sparse corridor 1` is the additional parent hypothesis; ordinary `strand` candidates are its retained elementary alternatives. This is an independent choice from `Alignment mode`.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` uses the calibrated fixed-scale sampling parameters and avoids broad z15 heat dilation; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
-- Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. Use 7.01-14 m for ordinary tracing; larger values can include unrelated switchback limbs or parallel traces and should be reserved for explicit rough relocation work.
+- Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. The 25 m default accommodates displaced paths; a narrower saved width remains useful when nearby parallel traces make the intended branch ambiguous.
 - If a corridor-aware preview says the heatmap center leaves the search corridor, the candidate remains selectable for inspection but Apply stays disabled. `Retry with wider search...` re-runs the complete unchanged selection once at an explicitly entered larger physical half-width. It does not alter saved settings, reuse old profiles, or widen automatically, and ordinary retries are capped at a 14 m half-width.
 - `Cross-section half-width px` and `Cross-section step px`: used by the legacy visible-layer fallback. Fixed source-tile alignment uses the meter-based fields above and converts them to the same 0.389 m/px reference view scale reported in the preview.
 - `Geometry cleanup...`: opens the dedicated cleanup dialog. The same dialog is available directly as `More tools -> Geometry Cleanup Settings...`. Cleanup is disabled by default and affects only candidates produced by later slides; it is never an immediate edit operation.

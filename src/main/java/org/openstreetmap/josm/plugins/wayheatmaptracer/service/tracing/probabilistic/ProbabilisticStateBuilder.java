@@ -36,7 +36,26 @@ public final class ProbabilisticStateBuilder {
     /** Adds a coordinate choice after baseline admission, without replacing old states or evidence. */
     StateSpaceBuildResult buildWithProposal(ProbabilisticProfile profile, int maximumStates,
             double proposedOffset, AttemptMemoryLedger.Owner owner) {
-        StateSpaceBuildResult baseline = build(profile, maximumStates, owner);
+        return buildWithProposal(profile, maximumStates, proposedOffset, owner, false);
+    }
+
+    /** Reserves continuation before constructing a transition-admitted regular baseline. */
+    StateSpaceBuildResult buildWithReservedProposal(ProbabilisticProfile profile, int maximumStates,
+            double proposedOffset, AttemptMemoryLedger.Owner owner) {
+        return buildWithProposal(profile, maximumStates, proposedOffset, owner, true);
+    }
+
+    private StateSpaceBuildResult buildWithProposal(ProbabilisticProfile profile, int maximumStates,
+            double proposedOffset, AttemptMemoryLedger.Owner owner, boolean reserveProposal) {
+        if (profile == null || maximumStates <= 0)
+            throw new IllegalArgumentException("State construction requires a profile and positive budget");
+        boolean reserve = reserveProposal && needsContinuationReservation(profile, proposedOffset, owner);
+        int baselineLimit = reserve ? Math.min(maximumStates, 96) - 1 : maximumStates;
+        if (baselineLimit <= 0) {
+            return new StateSpaceBuildResult(StateSpaceBuildResult.Status.STATE_LIMIT, Optional.empty(),
+                    List.of(), "continuation cannot retain a full-window baseline");
+        }
+        StateSpaceBuildResult baseline = build(profile, baselineLimit, owner);
         if (baseline.status() != StateSpaceBuildResult.Status.COMPLETE
                 || Double.isNaN(proposedOffset) || profile.exactAnchorOffsetMeters().isPresent()) {
             return baseline;
@@ -204,6 +223,44 @@ public final class ProbabilisticStateBuilder {
         }
         result.sort(Comparator.comparingDouble(RequiredOffset::offset));
         return result;
+    }
+
+    /** Minimum mandatory/endpoints capacity with separately reserved continuation. */
+    int minimumReservedStateLimit(ProbabilisticProfile profile, double proposedOffset,
+            AttemptMemoryLedger.Owner owner) {
+        if (profile.exactAnchorOffsetMeters().isPresent()) return 1;
+        var values = minimumBaselineOffsets(profile, owner);
+        return values.size() + (Double.isFinite(proposedOffset)
+                && !duplicates(values, proposedOffset, profile) ? 1 : 0);
+    }
+
+    private static boolean needsContinuationReservation(ProbabilisticProfile profile, double proposedOffset,
+            AttemptMemoryLedger.Owner owner) {
+        if (!Double.isFinite(proposedOffset) || profile.exactAnchorOffsetMeters().isPresent()) return false;
+        var scratch = owner == null ? null : owner.child("continuation-reservation");
+        try { return !duplicates(minimumBaselineOffsets(profile, scratch), proposedOffset, profile); }
+        finally { if (scratch != null) scratch.close(); }
+    }
+
+    private static boolean duplicates(List<RequiredOffset> values, double proposedOffset, ProbabilisticProfile profile) {
+        double tolerance = 1e-6 * Math.max(profile.sourcePitchMeters(), 1.0);
+        for (var value : values) if (Math.abs(value.offset() - proposedOffset) <= tolerance) return true;
+        return false;
+    }
+
+    private static List<RequiredOffset> minimumBaselineOffsets(ProbabilisticProfile profile,
+            AttemptMemoryLedger.Owner owner) {
+        double tolerance = 1e-6 * Math.max(profile.sourcePitchMeters(), 1.0);
+        var required = requiredOffsets(profile, tolerance, ObservationFamily.ELEMENTARY, owner);
+        int capacity = required.size() + 2;
+        List<RequiredOffset> values = owner == null ? new ArrayList<>(capacity)
+                : ProbabilisticInference.allocated(owner,
+                    ProbabilisticInference.listBytes(capacity) + 2L * AttemptMemoryLedger.objectBytes(16),
+                    "state admission", () -> new ArrayList<>(capacity));
+        values.addAll(required);
+        insertUnlessDuplicate(values, new RequiredOffset(profile.minimumOffsetMeters(), false, false), tolerance);
+        insertUnlessDuplicate(values, new RequiredOffset(profile.maximumOffsetMeters(), false, false), tolerance);
+        return values;
     }
 
     private static void insertUnlessDuplicate(List<RequiredOffset> values, RequiredOffset candidate,

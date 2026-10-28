@@ -261,13 +261,14 @@ public final class HeatmapSettingsDialog {
             (InferenceMode) inferenceMode.getSelectedItem(),
             parseInt(inferenceZoom.getText(), 15),
             parseInt(validationZoom.getText(), 13),
-            parseDouble(searchHalfWidthMeters.getText(), 7.01),
+            parseDouble(searchHalfWidthMeters.getText(), PluginPreferences.DEFAULT_SEARCH_HALF_WIDTH_METERS),
             parseDouble(sampleStepMeters.getText(), 1.56),
             (IntensitySamplingMode) intensitySamplingMode.getSelectedItem(),
             cacheBuster
         ));
 
-        double ordinaryRadius = parseDouble(searchHalfWidthMeters.getText(), 7.01);
+        double ordinaryRadius = parseDouble(searchHalfWidthMeters.getText(),
+            PluginPreferences.DEFAULT_SEARCH_HALF_WIDTH_METERS);
         boolean enableWiderDiscovery = widerDiscovery.isSelected();
         JunctionPolicy selectedJunctionPolicy = (JunctionPolicy) junctionPolicy.getSelectedItem();
         if (selectedJunctionPolicy == null) {

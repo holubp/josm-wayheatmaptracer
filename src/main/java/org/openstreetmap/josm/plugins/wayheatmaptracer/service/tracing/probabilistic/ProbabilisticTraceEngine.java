@@ -291,6 +291,36 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 ? ProbabilisticContinuationProposals.build(profiles, cancellation, workingOwner,
                     parameters.localization()) : null;
         int admittedContinuationPositions = 0;
+        ProbabilisticLatticeAdmission.Plan admission = continuationOffsets == null ? null
+                : ProbabilisticLatticeAdmission.select(profiles, continuationOffsets, request.budgets(),
+                    cancellation, workingOwner);
+        if (admission != null) {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "trace.latticeBudgetCoarsened", admission.coarsened() ? 1L : 0L);
+            org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                    "trace.latticeBackgroundStateCeiling", admission.maximumStates());
+            if (admission.nativeForwardBackwardBound() >= 0)
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                        "trace.latticeNativeForwardBackwardBound", admission.nativeForwardBackwardBound());
+            if (admission.completeScoreBound() >= 0)
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                        "trace.latticeCompleteScoreBound", admission.completeScoreBound());
+            if (admission.pairBound() >= 0)
+                org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                        "trace.latticePairBound", admission.pairBound());
+            if (!admission.admitted()) {
+                TraceHypothesisSet limited = emptySet(request, TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                        "transition-budget state admission cannot retain mandatory positions and full window",
+                        0, 0, candidateOwner);
+                workingOwner.close();
+                return accountedRun(limited, 0, 0, candidateOwner);
+            }
+        }
+        int effectiveStateCeiling = admission == null ? request.budgets().maximumStatesPerProfile()
+                : admission.maximumStates();
+        double maximumLatticePitch = 0.0;
+        int maximumEffectiveCeiling = 0;
+        int resolutionLimitedProfiles = 0;
         ProbabilisticStateBuilder stateBuilder = new ProbabilisticStateBuilder();
         ProbabilisticObservationModel observationModel = new ProbabilisticObservationModel();
         for (ProbabilisticProfile profile : profiles) {
@@ -300,8 +330,11 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             AttemptMemoryLedger.Owner latticeOwner = evaluatedOwner.child("state-lattice");
             StateSpaceBuildResult stateResult = continuationOffsets == null
                     ? stateBuilder.build(profile, request.budgets().maximumStatesPerProfile(), latticeOwner)
-                    : stateBuilder.buildWithProposal(profile, request.budgets().maximumStatesPerProfile(),
-                        continuationOffsets[profile.profileIndex()], latticeOwner);
+                    : admission.coarsened()
+                        ? stateBuilder.buildWithReservedProposal(profile, admission.maximumStates(profile.profileIndex()),
+                            continuationOffsets[profile.profileIndex()], latticeOwner)
+                        : stateBuilder.buildWithProposal(profile, effectiveStateCeiling,
+                            continuationOffsets[profile.profileIndex()], latticeOwner);
             if (stateResult.status() == StateSpaceBuildResult.Status.STATE_LIMIT) {
                 TraceHypothesisSet limited = emptySet(request,
                         TraceHypothesisSet.Status.RESOURCE_LIMIT,
@@ -311,6 +344,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 return accountedRun(limited, 0, 0, candidateOwner);
             }
             ProbabilisticStateLattice lattice = stateResult.lattice().orElseThrow();
+            maximumLatticePitch = Math.max(maximumLatticePitch, lattice.actualPitchMeters());
+            maximumEffectiveCeiling = Math.max(maximumEffectiveCeiling,
+                    admission == null ? effectiveStateCeiling : admission.maximumStates(profile.profileIndex()));
+            if (lattice.resolutionLimited()) resolutionLimitedProfiles++;
             if ("baseline-plus-continuation-position".equals(stateResult.explanation())) {
                 admittedContinuationPositions++;
             } else if (continuationOffsets != null) {
@@ -336,6 +373,12 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             }
         }
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "trace.latticeMaximumPitchMeters", maximumLatticePitch);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "trace.latticeEffectiveStateCeiling", maximumEffectiveCeiling);
+        org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
+                "trace.latticeResolutionLimitedProfiles", resolutionLimitedProfiles);
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.continuationPositionsAdmitted", admittedContinuationPositions);
         long inferenceStarted = System.nanoTime();

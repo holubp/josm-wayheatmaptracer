@@ -15,6 +15,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.MetricCorridorRegion;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.LocalScalarProfileExtractor;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.StrictScalarSampler;
 
@@ -157,6 +158,40 @@ class V022ProbabilisticProfileBoundaryTest {
         assertEquals(0L, ledger.peakBytes());
         assertEquals(0L, ledger.currentBytes());
         owner.close();
+    }
+
+    @Test
+    void twentyFiveMeterWindowsFor843ProfilesFitUnchangedGeometryWorkLimit() {
+        // A long, gently bending 86-point source produces 85 overlapping corridor polygons.
+        // This intentionally shares the production attempt budget across every physical prefix.
+        var source = java.util.stream.IntStream.rangeClosed(0, 85).mapToObj(index ->
+                new MetricPoint(842.0 * index / 85.0,
+                        0.2 * StrictMath.sin(Math.PI * index / 85.0))).toList();
+        var decision = MetricCorridorRegion.aroundPolyline(source, 26.0);
+        var base = scene(25.0, NATIVE, 0.08, false, MetricRegion.rectangle(-10, -25, 74, 25));
+        int width = 1000, height = 100;
+        var field = new ScalarEvidenceField(width, height, new double[width * height],
+                new boolean[width * height], base.fields().get("scalar").lineage());
+        var evidence = new EvidenceSnapshot("wide-profile-boundary", base.coordinateFrame(),
+                new RasterMetricTransform("wide-profile-boundary",
+                        RasterMetricTransform.OriginKind.VISIBLE_FIRST_PIXEL_CENTER,
+                        new MetricPoint(-50, -50), 1, 0, 0, 1, 1),
+                base.resolution(), decision, MetricRegion.rectangle(-30, -30, 875, 30),
+                Map.of("scalar", field), "wide-profile-boundary");
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        var owner = ledger.rootOwner();
+        var work = new ProbabilisticProfileFactory.BoundaryWork(CancellationProbe.NONE);
+        try {
+            for (int index = 0; index < 843; index++) {
+                double x = index;
+                var anchor = new MetricPoint(x, 0.2 * StrictMath.sin(Math.PI * x / 842.0));
+                for (double direction : new double[] {-1.0, 1.0})
+                    assertEquals(direction * 25.0, ProbabilisticProfileFactory.authorizedBoundary(
+                            anchor, new MetricPoint(0, 1), direction, 25.0, 0.5 * NATIVE,
+                            evidence, work, owner), 0.0);
+            }
+        } finally { owner.close(); }
+        assertEquals(0L, ledger.currentBytes());
     }
 
     private static Stream<MetricRegion> noncontiguousRegions() {

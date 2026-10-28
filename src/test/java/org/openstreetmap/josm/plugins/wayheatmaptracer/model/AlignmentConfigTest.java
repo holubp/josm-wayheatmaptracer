@@ -34,6 +34,7 @@ class AlignmentConfigTest {
     @Test
     void retryWidthOverrideIsRunScopedAndLeavesPersistedHeatmapUntouched() {
         Config.setPreferencesInstance(new MemoryPreferences());
+        Config.getPref().putDouble("wayheatmaptracer.searchHalfWidthMeters", 7.01);
         ManagedHeatmapConfig heatmap = PluginPreferences.load();
         AlignmentConfig base = new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());
 

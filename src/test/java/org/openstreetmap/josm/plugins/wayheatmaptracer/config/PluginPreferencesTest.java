@@ -43,6 +43,29 @@ class PluginPreferencesTest {
     }
 
     @Test
+    void missingSearchWidthUsesTwentyFiveMetersForAlignmentAndRecovery() {
+        assertEquals(25.0, PluginPreferences.load().searchHalfWidthMeters(), 1e-9);
+        assertEquals(25.0,
+            PluginPreferences.loadTracingSettings().recovery().ordinaryRadiusMeters(), 1e-9);
+    }
+
+    @Test
+    void explicitSearchWidthsSurviveLoadSaveAndRecovery() {
+        for (double width : new double[] {7.01, 14.0, 25.0, 40.0}) {
+            Config.getPref().putDouble(PREFIX + "searchHalfWidthMeters", width);
+
+            assertEquals(width, PluginPreferences.load().searchHalfWidthMeters(), 1e-9);
+            assertEquals(width,
+                PluginPreferences.loadTracingSettings().recovery().ordinaryRadiusMeters(), 1e-9);
+
+            PluginPreferences.save(PluginPreferences.load());
+            assertEquals(width, PluginPreferences.load().searchHalfWidthMeters(), 1e-9);
+            assertEquals(width,
+                PluginPreferences.loadTracingSettings().recovery().ordinaryRadiusMeters(), 1e-9);
+        }
+    }
+
+    @Test
     void explicitLegacyTrackerPreferenceRoundTripsWithoutPromotion() {
         Config.getPref().put(PREFIX + "trackerMode", TrackerMode.LEGACY_V02.name());
 

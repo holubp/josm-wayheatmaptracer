@@ -5,12 +5,18 @@ on:
     branches: ["**"]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  observation-identification:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/observation-identification.yml
+
   public-validation:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:

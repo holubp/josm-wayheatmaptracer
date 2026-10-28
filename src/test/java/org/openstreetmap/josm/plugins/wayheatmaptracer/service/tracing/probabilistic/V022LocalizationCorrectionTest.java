@@ -463,6 +463,8 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(32);
         assertEquals(2_440L, pathGraphBytes + hypothesisGraphBytes + resultBytes);
         assertEquals(2_440L, ledger.currentBytes());
+        assertEquals(0L, traceCounters.get("trace.latticeBudgetCoarsened").longValue(),
+                "this native fixture retains an admission plan without a coarsened floor array");
         assertEquals(29L, maximumStates);
         assertEquals(11L, traceCounters.get("trace.profiles").longValue());
         assertEquals(2L + 9L * 29L, traceCounters.get("trace.states").longValue());
@@ -545,6 +547,7 @@ class V022LocalizationCorrectionTest {
                 + AttemptMemoryLedger.objectBytes(24) + ProbabilisticInference.listBytes(11)
                 + ProbabilisticInference.listBytes(11) // evaluated-profile list
                 + AttemptMemoryLedger.arrayBytes(11, Double.BYTES) // continuation offsets
+                + AttemptMemoryLedger.objectBytes(48) // retained native-lattice admission plan
                 + 2L * AttemptMemoryLedger.objectBytes(16); // exact-anchor optionals
         return sampled + 9L * (localizationFixtureLatticeBytes(29)
                 + localizationFixtureObservationBytes(29))

@@ -22,6 +22,9 @@ import org.openstreetmap.josm.spi.preferences.IPreferences;
  * Loads and stores plugin preferences, keeping sensitive heatmap access values out of debug exports.
  */
 public final class PluginPreferences {
+    /** Default physical search half-width for new or missing preferences. */
+    public static final double DEFAULT_SEARCH_HALF_WIDTH_METERS = 25.0;
+
     private static final String PREFIX = "wayheatmaptracer.";
     private static final String KEY_PAIR_ID = PREFIX + "keyPairId";
     private static final String POLICY = PREFIX + "policy";
@@ -116,7 +119,7 @@ public final class PluginPreferences {
             InferenceMode.fromPreference(pref.get(INFERENCE_MODE, InferenceMode.STABLE_FIXED_SCALE.name())),
             clampZoom(pref.getInt(INFERENCE_ZOOM, 15), 10, 16),
             clampZoom(pref.getInt(VALIDATION_ZOOM, 13), 10, 16),
-            Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, 7.01)),
+            Math.max(2.0, pref.getDouble(SEARCH_HALF_WIDTH_METERS, DEFAULT_SEARCH_HALF_WIDTH_METERS)),
             Math.max(0.5, pref.getDouble(SAMPLE_STEP_METERS, 1.56)),
             IntensitySamplingMode.fromPreference(pref.get(INTENSITY_SAMPLING_MODE, IntensitySamplingMode.COLOR_MAPPING.name())),
             Math.max(0L, pref.getLong(CACHE_BUSTER, 0L))
@@ -436,7 +439,7 @@ public final class PluginPreferences {
             InferenceMode.STABLE_FIXED_SCALE,
             15,
             13,
-            7.01,
+            DEFAULT_SEARCH_HALF_WIDTH_METERS,
             1.56,
             IntensitySamplingMode.COLOR_MAPPING,
             0L

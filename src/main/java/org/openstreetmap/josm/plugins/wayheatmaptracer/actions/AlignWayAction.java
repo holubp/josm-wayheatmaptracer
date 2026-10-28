@@ -868,9 +868,7 @@ public class AlignWayAction extends JosmAction {
             } catch (RuntimeException exception) {
                 boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner, () -> {
                     try {
-                        recordIntervalDiagnostics(computed,
-                                new IntervalPreviewState(computed.intervalBatch()),
-                                IntervalArtifactStatus.FAILED, diagnosticAttemptIdentity);
+                        recordRejectedModernPreview(computed, "failed", diagnosticAttemptIdentity, null);
                     } catch (RuntimeException compositionFailure) {
                         recordModernUnavailable("failed", computed.captured().managedRaster() == null
                                 ? "visible-layer" : "managed-tiles", diagnosticAttemptIdentity);
@@ -931,7 +929,7 @@ public class AlignWayAction extends JosmAction {
             String rejectedStatus = terminalStatus;
             ManualJunctionEligibility.Reason rejectedManualReason = terminalManualReason;
             boolean closed = closeAndPublishIfCurrent(livePreviewSession, previewOwner,
-                    () -> recordModernDiagnostics(computed, rejectedStatus, 0, null, false, false,
+                    () -> recordRejectedModernPreview(computed, rejectedStatus,
                             diagnosticAttemptIdentity, rejectedManualReason));
             progress.dispose();
             if (closed) {
@@ -2058,7 +2056,10 @@ public class AlignWayAction extends JosmAction {
     static <T> OrdinaryActionRouting<T> resolvePreciseRerun(TracingSettings tracing,
             AlignmentConfig saved, Supplier<T> requiredVisibleSource,
             Supplier<T> legacyVisibleSource) {
-        return resolveOrdinaryAction(tracing, oneShotPreciseConfig(saved),
+        AlignmentConfig normalized = new AlignmentConfig(
+                saved.heatmap().withTrackerMode(tracing.engine()), saved.cleanup(),
+                saved.searchHalfWidthMetersOverride());
+        return resolveOrdinaryAction(tracing, oneShotPreciseConfig(normalized),
                 requiredVisibleSource, legacyVisibleSource);
     }
 
@@ -2239,7 +2240,7 @@ public class AlignWayAction extends JosmAction {
         boolean managed = captured.managedRaster() != null;
         if (MainApplication.getLayerManager().getEditDataSet() != dataSet
                 || !matchesLivePreviewSettings(persistedSlideConfig, slideConfig, currentPersisted,
-                        tracingAtCapture, currentTracing, forcedAlignmentMode, forcedLivePreviewEngine)
+                        tracingAtCapture, currentTracing, forcedLivePreviewEngine)
                 || managed && !slideConfig.heatmap().hasSameManagedSource(currentPersisted.heatmap())
                 || managed && sourceOwner != ManagedTileRuntime.initializedCoordinator()
                 || managed && !ManagedTileRuntime.initializedCoordinator().isActiveGeneration(
@@ -2629,13 +2630,45 @@ public class AlignWayAction extends JosmAction {
             String attemptIdentity, ManualJunctionEligibility.Reason assessedManualReason,
             ModernSingleWayEditPlanAdapter.Assessment assessment,
             NetworkSnapshot currentNoChangeNetwork) {
+        recordModernDiagnostics(root, computed, status, routeIndex, plan, reviewed, applied,
+                attemptIdentity, assessedManualReason, assessment, currentNoChangeNetwork, false);
+    }
+
+    /** Retains computed evidence when publication fails; accepts no arbitrary exception text. */
+    static void recordRejectedModernPreview(LiveBPreviewService.Computed computed, String status,
+            String attemptIdentity, ManualJunctionEligibility.Reason manualReason) {
+        if (computed.partitioned()) {
+            try {
+                Format15Bundle bundle = createIntervalDiagnostics(computed,
+                        new IntervalPreviewState(computed.intervalBatch()), IntervalArtifactStatus.FAILED);
+                DiagnosticsRegistry.setLastModernBundle(withFailureSummary(bundle,
+                        "PREVIEW_PUBLICATION", "COMPUTED_PREVIEW_REJECTED", computed));
+            } catch (RuntimeException failure) {
+                recordIntervalDiagnostics(computed, new IntervalPreviewState(computed.intervalBatch()),
+                        IntervalArtifactStatus.FAILED, attemptIdentity);
+            }
+            return;
+        }
+        recordModernDiagnostics(computed, computed, status, 0, null, false, false,
+                attemptIdentity, manualReason, null, null, true);
+    }
+
+    private static void recordModernDiagnostics(LiveBPreviewService.Computed root,
+            LiveBPreviewService.Computed computed, String status, int routeIndex,
+            AlignmentEditPlan plan, boolean reviewed, boolean applied,
+            String attemptIdentity, ManualJunctionEligibility.Reason assessedManualReason,
+            ModernSingleWayEditPlanAdapter.Assessment assessment,
+            NetworkSnapshot currentNoChangeNetwork, boolean publicationRejected) {
         String sourceLineage = computed.captured().managedRaster() == null
                 ? "visible-layer" : "managed-tiles";
         try {
             Format15Bundle bundle = createModernDiagnostics(root, computed,
                     status, routeIndex, plan, reviewed, applied, assessedManualReason,
                     assessment, currentNoChangeNetwork);
-            if (computed.pipeline().routes().isEmpty()) {
+            if (publicationRejected) {
+                bundle = withFailureSummary(bundle, "PREVIEW_PUBLICATION",
+                        "COMPUTED_PREVIEW_REJECTED", computed);
+            } else if (computed.pipeline().routes().isEmpty()) {
                 bundle = withFailureSummary(bundle, "PREVIEW", "NO_PREVIEWABLE_ROUTE", computed);
             }
             DiagnosticsRegistry.setLastModernBundle(bundle);
@@ -2861,10 +2894,11 @@ public class AlignWayAction extends JosmAction {
         return effectiveAtCapture.equals(currentEffective);
     }
 
+    /** Revalidates the immutable attempt mode, including an authorized Precise recovery. */
     static boolean matchesLivePreviewSettings(AlignmentConfig persistedAtCapture,
             AlignmentConfig effectiveAtCapture, AlignmentConfig currentPersisted,
             TracingSettings tracingAtCapture, TracingSettings currentTracing,
-            AlignmentMode forcedAlignmentMode, TrackerMode forcedLivePreviewEngine) {
+            TrackerMode forcedLivePreviewEngine) {
         if (!persistedAtCapture.equals(currentPersisted)) {
             return false;
         }
@@ -2876,7 +2910,8 @@ public class AlignWayAction extends JosmAction {
                 ? currentPersisted.heatmap().withTrackerMode(currentTracing.engine())
                 : currentPersisted.heatmap();
         AlignmentConfig currentEffective = new AlignmentConfig(
-                effectiveConfig(currentBase, forcedAlignmentMode, forcedLivePreviewEngine),
+                effectiveConfig(currentBase, effectiveAtCapture.heatmap().alignmentMode(),
+                        forcedLivePreviewEngine),
                 currentPersisted.cleanup()).forEffectiveModernAttempt();
         return effectiveAtCapture.equals(currentEffective);
     }
