@@ -44,6 +44,16 @@ in89s, including complete tiny-consumer, solver-parity and kernel neighbors.
 New test dependencies are all tracked. These checks do not establish original-case
 completion, full project qualification, or release readiness.
 
+Cold CI at a66f8fc/40672964188 exposed an environment error:21 tests used the
+native Termux-qualified Work instead of the approved exploratory Java17 Work.
+The native runtime guard correctly rejected Temurin before numerical execution.
+No original-case attempt ran; spent count remains152. The portable regression
+roots now explicitly use `createExploratory`; numerical assertions, native
+runtime guards and production code are unchanged. This correction requires a
+fresh CI run; the earlier local pass alone was insufficient portability evidence.
+Corrected exact40-test local preflight PASS in98s; independent review confirms
+only test-root routing changed and qualified runtime checks are intact.
+
 ## Bounded CI continuation
 
 152 original-case attempts are already consumed under the208-call ceiling.

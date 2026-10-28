@@ -13,7 +13,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Tiny actual factory/retained source only;no inference or table. */
 class V022BPhysicalRootIntegralTest {
     @Test void positiveSignalSelfMaximumHasExactZeroDeficitWithoutLogMoments() {
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)){
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var c=BPhysicalContext.open(r)){
                 c.query(8.125,8.625,4);assertTrue(c.field()>0);assertEquals(c.field(),c.context(),0);
@@ -27,7 +27,7 @@ class V022BPhysicalRootIntegralTest {
         }
     }
     @Test void signedZeroCoordinatesKeepTheSameSelfMaximumIdentity() {
-        for(double x:new double[]{0.0,-0.0})try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+        for(double x:new double[]{0.0,-0.0})try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)){
             var f=fixture(w,false,-8);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var j=BPhysicalRootIntegral.open(r)){
                 j.certify(x,8.625,x,8.6875,4);
@@ -37,7 +37,7 @@ class V022BPhysicalRootIntegralTest {
         }
     }
     @Test void positiveAffineLogNeedsBothCertifiedMomentsAndTheirTails() {
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var c=BPhysicalContext.open(r)) {
                 c.query(8.125,6.625,4);assertEquals(BPhysicalContext.Reason.AVAILABLE,c.reason());
@@ -75,7 +75,7 @@ class V022BPhysicalRootIntegralTest {
         }
     }
     @Test void exactGeometricZeroRequiresCertifiedRootRatherThanUnimplementedEntry() {
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l))) {
                 assertEquals(8,r.bound().d[0][0],0);assertEquals(.5,r.bound().d[7][0],0);
@@ -97,7 +97,7 @@ class V022BPhysicalRootIntegralTest {
     }
     @Test void canonicalReversalAndSignedZeroLengthPreserveRootMeaning() {
         long[] original=null;
-        for(boolean reverse:new boolean[]{false,true})try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(boolean reverse:new boolean[]{false,true})try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var j=BPhysicalRootIntegral.open(r)) {
                 j.certify(reverse?8.1875:8.0625,6.625,reverse?8.0625:8.1875,6.625,4);
@@ -106,7 +106,7 @@ class V022BPhysicalRootIntegralTest {
                 if(original==null)original=bits;else assertArrayEquals(original,bits);
             }
         }
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var j=BPhysicalRootIntegral.open(r)) {
                 long reads=w.observed(0);j.certify(-0.0,8.625,+0.0,8.625,64);
@@ -117,7 +117,7 @@ class V022BPhysicalRootIntegralTest {
         }
     }
     @Test void knownSelfDominatedRangeMissingSupportAndExactBlindBoundaryHaveDistinctMeanings() {
-        for(int variant=0;variant<3;variant++)try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(int variant=0;variant<3;variant++)try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,variant==1);var ps=variant==0?f.profiles():List.of(f.profiles().get(1));
             var ls=ps.stream().map(p->V022BSharedPositionFieldTest.tinyLattice(w.owner(),p)).toList();
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",ps,ls);var j=BPhysicalRootIntegral.open(r)) {
@@ -155,7 +155,7 @@ class V022BPhysicalRootIntegralTest {
                     if(action==0)return true;if(action==1)box[0].close();else source[0].close();
                 }return false;
             };
-            var w=BPhysicalWork.create(probe);var root=w.owner();
+            var w=BPhysicalWork.createExploratory(probe);var root=w.owner();
             try(w) {
                 var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(root,p);
                 try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var j=BPhysicalRootIntegral.open(r)) {
@@ -169,7 +169,7 @@ class V022BPhysicalRootIntegralTest {
         }
     }
     @Test void invalidConsumedAndOverflowEntriesNeverExposeOldRoot() {
-        for(int variant=0;variant<3;variant++)try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(int variant=0;variant<3;variant++)try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var j=BPhysicalRootIntegral.open(r)) {
                 assertThrows(IllegalStateException.class,j::value);
@@ -196,7 +196,7 @@ class V022BPhysicalRootIntegralTest {
         assertEquals(checkedApis,java.util.regex.Pattern.compile("Math\\.(?:add|multiply)Exact\\(").matcher(method).results().count());
         assertTrue(method.indexOf("semantic=next")<method.indexOf("long revised="));
         long[] maxOnly=null;
-        for(boolean root:new boolean[]{false,true})try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(boolean root:new boolean[]{false,true})try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l))) {
                 long beforeUpper=w.registeredUpper(),beforeUnits=w.semanticUnits();
@@ -219,7 +219,7 @@ class V022BPhysicalRootIntegralTest {
     @Test void actualWrapperBytesRollbackAndOldCurrencyIsolation() {
         assertEquals(173,fields(BPhysicalRootIntegral.class));assertEquals(192,o(173));
         assertEquals(173,fields(BPhysicalMaxPanel.class));assertEquals(18112,17920+192);assertEquals(200,18312-18112);
-        for(boolean refuse:new boolean[]{false,true})try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(boolean refuse:new boolean[]{false,true})try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,false);var p=f.profiles().get(1);var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l))) {
                 var old=w.sourceWork().snapshot();long bytes=w.owner().currentBytes();

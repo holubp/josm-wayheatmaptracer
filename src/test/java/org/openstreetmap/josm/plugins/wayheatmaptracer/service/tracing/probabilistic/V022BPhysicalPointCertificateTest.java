@@ -12,7 +12,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Tiny original-factory point certificates, never a chord/table or inference. */
 class V022BPhysicalPointCertificateTest {
     @Test void translatedAdapterRejectsNullStaleAndForeignProducersWithoutLeakingPriorR() {
-        try(var work=BPhysicalWork.create(CancellationProbe.NONE);var foreign=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE);var foreign=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work);var p=f.profiles().get(1);
             var ff=rotated(foreign);var fp=ff.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
@@ -49,7 +49,7 @@ class V022BPhysicalPointCertificateTest {
             }
             return false;
         };
-        try(var work=BPhysicalWork.create(probe)) {
+        try(var work=BPhysicalWork.createExploratory(probe)) {
             wr[0]=work;var f=rotated(work);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l));var c=BPhysicalContext.open(r)) {
@@ -63,7 +63,7 @@ class V022BPhysicalPointCertificateTest {
     }
 
     @Test void rotatedContextCarriesItsRealTranslationAndMatchesIndependentFortyNineMax() {
-        try(var work=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l));var c=BPhysicalContext.open(r)) {
@@ -94,7 +94,7 @@ class V022BPhysicalPointCertificateTest {
         }
     }
     @Test void rotatedFactoryOwnRidgeHasCertifiedPositivePhysicalResponse() {
-        try(var work=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l))) {
@@ -123,7 +123,7 @@ class V022BPhysicalPointCertificateTest {
     }
 
     @Test void ownStateCouplingUsesOriginalOperandsAndDirectPointsUseExactInputs() {
-        try(var work=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l))) {
@@ -150,7 +150,7 @@ class V022BPhysicalPointCertificateTest {
     }
 
     @Test void closedCapBranchUnionPreservesTheCompleteNominalContextProgram() {
-        try(var work=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l));var c=BPhysicalContext.open(r)) {
@@ -174,7 +174,7 @@ class V022BPhysicalPointCertificateTest {
     }
 
     @Test void nonconvexAuthorizationAndInvalidCornerRemainFactualSourceUnknown() {
-        for(int variant:new int[]{1,2})try(var work=BPhysicalWork.create(CancellationProbe.NONE)) {
+        for(int variant:new int[]{1,2})try(var work=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=rotated(work,variant);var p=f.profiles().get(1);
             var l=V022BSharedPositionFieldTest.tinyLattice(work.owner(),p);
             try(var r=BPhysicalResponse.open(work,f.snapshot(),"scalar",List.of(p),List.of(l))) {

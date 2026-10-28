@@ -8,7 +8,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 /** Analytical scalar-reducer tests; synthetic coefficients grant no source authority. */
 class V022BMaximumReductionTest {
     @Test void laterWholePanelDominanceRecoversOnePolynomialAfterCrossingRanges()throws Exception{
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)){
             var f=V022BPhysicalPairTableTest.fixture(w,true,2);var p=f.profiles().get(0);
             var l=V022BSharedPositionFieldTest.tinyLattice(w.owner(),p);
             try(var r=BPhysicalResponse.open(w,f.snapshot(),"scalar",List.of(p),List.of(l));var max=BPhysicalMaxPanel.open(r)){

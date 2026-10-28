@@ -262,7 +262,7 @@ class V022BPhysicalPairTableTest {
         //translated lateral tents vanish (rho1 shifts2m);all a!=0 context
         //weights<=3/4,so they cannot beat base. Thus C=F and D=J=0.
         assertTrue(.75<.875);
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)) {
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)) {
             var f=fixture(w,true,2,false,true,false);
             var ls=List.of(unitSingleton(w,f.profiles.get(0),27.0/16),unitSingleton(w,f.profiles.get(1),30.0/16));
             try(var table=BPhysicalPairTable.build(w,f.snapshot,"scalar",f.profiles,ls,EvidenceModelParameters.defaults(),4,
@@ -277,7 +277,7 @@ class V022BPhysicalPairTableTest {
         }
     }
     @Test void validTinyPositiveRasterTailsDoNotPermanentlyRefuseCellFaces() {
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)){
             var f=fixture(w,true,2,false,true,false,Math.scalb(1.0,-300));
             assertTrue(java.util.Arrays.stream(f.snapshot.fields().get("scalar").copiedValues()).anyMatch(v->v>0&&v<0x1p-256));
             // The translated lower tap crosses the exact6.25m raster face;
@@ -295,7 +295,7 @@ class V022BPhysicalPairTableTest {
     }
     @Test void unavailableEdgeRetainsBoundedFailureEvidenceAfterCleanup() {
         RuntimeException failure;
-        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+        try(var w=BPhysicalWork.createExploratory(CancellationProbe.NONE)){
             var f=fixture(w,true,2,false,true,true);
             var ls=List.of(unitSingleton(w,f.profiles.get(0),0),unitSingleton(w,f.profiles.get(1),0));
             failure=assertThrows(RuntimeException.class,()->BPhysicalPairTable.build(w,f.snapshot,"scalar",f.profiles,ls,
