@@ -2,7 +2,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabil
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 
-/** One shared F/C root;degree4 winners or permanent RANGE,no integral. */
+/** One shared F/C root; degree4 winners or certified ranges, no integral. */
 final class BPhysicalMaxPanel implements AutoCloseable {
     enum Status { EMPTY,WINNER,RANGE,SOURCE_UNKNOWN,UNRESOLVED }
     final BPhysicalWork work;
@@ -66,7 +66,20 @@ final class BPhysicalMaxPanel implements AutoCloseable {
     void requireLoan(BPhysicalRootIntegral integral){live();if(borrower!=integral)throw new IllegalStateException("Foreign integral bank");integral.requireFor(this);}
     BPhysicalComponentPanel.Reference integralScratch(BPhysicalRootIntegral integral){requireLoan(integral);return candidate.referenceForIntegral(this,integral);}
     void beginIntegral(BPhysicalRootIntegral integral){ready();requireLoan(integral);candidate.beginIntegral(this,integral);}
-    boolean exactZero(BPhysicalRootIntegral integral){ready();requireLoan(integral);var r=poly.registers;return fieldState<3&&contextState<3&&r[1]==0&&r[3]==0&&r[4]==0&&r[11]==0&&r[13]==0&&r[14]==0;}
+    boolean exactZero(BPhysicalRootIntegral integral){
+        ready();requireLoan(integral);var r=poly.registers;
+        if(fieldState<3&&contextState<3&&r[1]==0&&r[3]==0&&r[4]==0&&r[11]==0&&r[13]==0&&r[14]==0)return true;
+        // The complete self stream is F, including any changes of winner.
+        // Every other weighted stream is bounded below F in both programs.
+        if(fieldState<3&&contextState<3&&r[22]==1&&r[23]==1)return true;
+        // Both whole-panel maxima select the same observed component with
+        // zero translation and exact unit weight. Thus C=F, even for positive
+        // signal: identical finite log1p expressions subtract to exact zero.
+        return fieldState==1&&contextState==1&&fieldWinner>=0&&fieldWinner==contextMode
+            &&contextWinner>=0&&contextWinner<49&&weights.ax[contextWinner]==0&&weights.by[contextWinner]==0
+            &&weights.nominal[contextWinner]==1&&weights.lower[contextWinner]==1
+            &&weights.upper[contextWinner]==1&&weights.error[contextWinner]==0;
+    }
     void certify(double ax,double ay,double bx,double by,int gain) {
         phase=0;live();if(consumed!=0)throw new IllegalStateException("Max root consumed");consumed=1;
         work.admit(BPhysicalWork.MAX_PANEL);boolean returned=false;
@@ -93,11 +106,20 @@ final class BPhysicalMaxPanel implements AutoCloseable {
     private void evaluate() {
             fieldState=stream(-1,14,0);fieldWinner=currentWinner;
             clear(10);contextState=0;contextWinner=contextMode=-1;fill(15);
+            // Frame-local proof flags, reset also for every adaptive node.
+            poly.registers[22]=0;poly.registers[23]=1;
             for(contextIndex=0;contextIndex<49;contextIndex++) {
                 currentState=stream(contextIndex,16,5);
                 //Full contributor support BEFORE weight,even weight0/self.
-                if(currentState>=3){contextState=combine(contextState,currentState);continue;}
-                weight(contextIndex);contextState=update(contextState,currentState,15,17,10,15);
+                if(currentState>=3){poly.registers[23]=0;contextState=combine(contextState,currentState);continue;}
+                weight(contextIndex);
+                var r=poly.registers;
+                boolean self=weights.ax[contextIndex]==0&&weights.by[contextIndex]==0
+                    &&weights.nominal[contextIndex]==1&&weights.lower[contextIndex]==1
+                    &&weights.upper[contextIndex]==1&&weights.error[contextIndex]==0;
+                if(self)r[22]=1;
+                else if(r[16]>Math.max(0,r[0])||r[18]>Math.max(0,r[2]))r[23]=0;
+                contextState=update(contextState,currentState,15,17,10,15);
                 if(contextState==1&&poly.registers[32]==1){contextWinner=contextIndex;contextMode=currentWinner;}
                 else if(contextState==2)contextWinner=contextMode=-1;
             }
@@ -128,6 +150,11 @@ final class BPhysicalMaxPanel implements AutoCloseable {
     private void copy(int target,int source){for(int k=0;k<5;k++){work.poll();live();poly.put(target,k,poly.c[source][k],poly.lo[source][k],poly.hi[source][k]);}}
     private int update(int state,int incoming,int winner,int input,int out,int in) {
         var r=poly.registers;boolean old=true,fresh=true,equal=true;
+        // A newly certified polynomial can dominate the whole previous range
+        // in BOTH nominal and reference lanes. Unknown support stays sticky.
+        if(state==2&&incoming==1&&r[in]>=r[out+1]&&r[in+2]>=r[out+3]){
+            copy(winner,input);for(int k=0;k<5;k++)r[out+k]=r[in+k];r[32]=1;return 1;
+        }
         if(state==2||incoming==2){
             for(int k=0;k<5;k++)r[out+k]=Math.max(r[out+k],r[in+k]);
             r[32]=0;return state>=3?state:2; //Never read a stale coefficient.
@@ -140,8 +167,11 @@ final class BPhysicalMaxPanel implements AutoCloseable {
         boolean take=state==0||fresh&&!old;r[32]=take?1:0;
         int result=state>=3?state:state==2||incoming==2?2:state==0||old||fresh||equal?1:2;
         if(result==1&&take)copy(winner,input);
-        return result; //RANGE never recovers,even if a later candidate dominates.
+        return result;
     }
+    // A positive exact product may round to zero. Adjacent endpoints still
+    // enclose it: the positive upper endpoint preserves that tail and its
+    // error contribution. Non-finite products remain a refusal.
     private void weight(int index) {
         var r=poly.registers;double w=weights.nominal[index],l=weights.lower[index],h=weights.upper[index];
         if(r[6]==0&&r[8]==0&&r[9]==0||w==0&&l==0&&h==0) {
@@ -162,8 +192,8 @@ final class BPhysicalMaxPanel implements AutoCloseable {
         r[17]=Math.max(0,downProduct(r[7],l));r[18]=Math.max(0,upProduct(r[8],h));
         r[19]=upSum(upSum(upProduct(r[9],w),upProduct(r[8],weights.error[index])),Math.ulp(Math.max(r[6],r[8])*w));
     }
-    private static double downProduct(double a,double b){double v=a*b;if(a>0&&b>0&&v==0)throw new ArithmeticException("Positive weighted underflow");finite(v);return Math.nextDown(v);}
-    private static double upProduct(double a,double b){double v=a*b;if(a>0&&b>0&&v==0)throw new ArithmeticException("Positive weighted underflow");finite(v);return Math.nextUp(v);}
+    private static double downProduct(double a,double b){double v=a*b;finite(v);return Math.nextDown(v);}
+    private static double upProduct(double a,double b){double v=a*b;finite(v);return Math.nextUp(v);}
     private static double upSum(double a,double b){double v=Math.nextUp(a+b);finite(v);return v;}
     private void deficit() {
         var r=poly.registers;

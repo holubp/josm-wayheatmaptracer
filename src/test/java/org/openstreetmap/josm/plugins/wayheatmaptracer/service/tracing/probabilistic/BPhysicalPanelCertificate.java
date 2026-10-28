@@ -253,13 +253,16 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
             checkpoint();
             double pxl=n[15],pxh=p[15],pyl=n[16],pyh=p[16];
             double exl=lo[15],exh=hi[15],eyl=lo[16],eyh=hi[16];
-            //The sufficient normal-product lattice applies BEFORE fraction
-            //subtraction,including near-face fractions smaller than2^-32.
-            if(!((pxl==0&&pxh==0)||pxl>=0x1p-32)
-                    ||!((pyl==0&&pyh==0)||pyl>=0x1p-32))return false;
+            // P uses monotone rounded extrema; E rounds every operation
+            // outward. Both remain sound through gradual underflow and near
+            // zero coordinates; no relative-error/normal-product lemma is used.
+            if(!(Double.isFinite(pxl)&&Double.isFinite(pxh)&&pxl<=pxh
+                    &&Double.isFinite(pyl)&&Double.isFinite(pyh)&&pyl<=pyh
+                    &&Double.isFinite(exl)&&Double.isFinite(exh)&&exl<=exh
+                    &&Double.isFinite(eyl)&&Double.isFinite(eyh)&&eyl<=eyh))return false;
             int xa=(int)StrictMath.floor(Math.min(pxl,exl)),xb=(int)StrictMath.floor(Math.max(pxh,exh));
             int ya=(int)StrictMath.floor(Math.min(pyl,eyl)),yb=(int)StrictMath.floor(Math.max(pyh,eyh));
-            if(xb-xa>1||yb-ya>1)return false;
+            if(xa<0||ya<0||xb>=width||yb>=height||xb-xa>1||yb-ya>1)return false;
             int seen=0;double pl=Double.POSITIVE_INFINITY,ph=Double.NEGATIVE_INFINITY;
             double el=Double.POSITIVE_INFINITY,eh=Double.NEGATIVE_INFINITY;
             for(int y=ya;y<=yb;y++)for(int x=xa;x<=xb;x++) {
@@ -268,10 +271,7 @@ final class BPhysicalPanelCertificate implements AutoCloseable {
                 int row=y*width,row1=y1*width;
                 double a=parent.view.scalar(row+x),b=parent.view.scalar(row+x1);
                 double c=parent.view.scalar(row1+x),d=parent.view.scalar(row1+x1);
-                if(!(a>=0&&a<=1&&(a==0||a>=0x1p-256))
-                        ||!(b>=0&&b<=1&&(b==0||b>=0x1p-256))
-                        ||!(c>=0&&c<=1&&(c==0||c>=0x1p-256))
-                        ||!(d>=0&&d<=1&&(d==0||d>=0x1p-256)))return false;
+                if(!(a>=0&&a<=1)||!(b>=0&&b<=1)||!(c>=0&&c<=1)||!(d>=0&&d<=1))return false;
                 seed(20,a);seed(21,b);seed(22,c);seed(23,d);
                 for(int domain=0;domain<2;domain++) {
                     checkpoint();

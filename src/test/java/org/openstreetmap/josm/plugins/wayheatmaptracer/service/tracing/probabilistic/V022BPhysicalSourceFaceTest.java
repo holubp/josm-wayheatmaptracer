@@ -16,7 +16,8 @@ class V022BPhysicalSourceFaceTest {
         assertEquals(4,occurrences(adjacent,"parent.view.scalar("));
         assertEquals(11,occurrences(adjacent,"rangeOp("));
         assertEquals(4,occurrences(adjacent,"checkpoint();"),"entry,cell,domain,final;88 op checks are in rangeOp");
-        assertTrue(adjacent.indexOf("pxl>=0x1p-32")<adjacent.indexOf("rangeOp(55"));
+        assertTrue(adjacent.indexOf("Double.isFinite(pxl)")<adjacent.indexOf("rangeOp(55"));
+        assertFalse(adjacent.contains("pxl>=0x1p-32"));assertFalse(adjacent.contains("0x1p-256"));
         assertTrue(adjacent.indexOf("n[29]=p[29]=lo[29]=hi[29]=error[29]=Double.NaN")<adjacent.indexOf("checkpoint();"));
         assertTrue(adjacent.indexOf("currentMax.requireFor(component)")<adjacent.indexOf("scratch=2;return true"));
         String original=source.substring(source.indexOf("    int componentTap("),source.indexOf("    /** TABLE-only extension"));

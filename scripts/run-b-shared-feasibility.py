@@ -302,7 +302,7 @@ def select(protocol,baseline_root,candidate_root,output,context=None):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest="command",required=True)
     p=sub.add_parser("prepare");p.add_argument("classpath");p.add_argument("baseline");p.add_argument("output")
-    for mode in ("baseline","screening"):
+    for mode in ("baseline","screening","diagnostic"):
         p=sub.add_parser(mode);p.add_argument("bundle");p.add_argument("manifest_sha");p.add_argument("case");p.add_argument("output")
     for mode in ("suitability","select"):
         p=sub.add_parser(mode);p.add_argument("baseline");p.add_argument("output")
@@ -311,6 +311,10 @@ def main():
     args=parser.parse_args();protocol=read_json(ROOT/"src/test/resources/b-shared-feasibility/protocol.json")
     if args.command=="prepare":print(prepare(args.classpath,args.baseline,args.output))
     elif args.command=="baseline":attempt(args.bundle,args.manifest_sha,args.case,args.output)
+    elif args.command=="diagnostic":
+        if args.case not in {row["id"] for row in protocol["screening"]}:
+            raise ValueError("Diagnostic requires a registered screening case")
+        attempt(args.bundle,args.manifest_sha,args.case,args.output,(1,1))
     elif args.command=="screening":
         for gain,eta in GUARD.settings(protocol):attempt(args.bundle,args.manifest_sha,args.case,Path(args.output)/f"gain-{gain}-eta-{protocol['etas'].index(eta)}",(gain,eta))
     else:

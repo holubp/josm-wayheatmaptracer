@@ -271,8 +271,13 @@ final class BPhysicalResponse extends BPhysicalResponseBank implements AutoClose
             }
             flags[0]=(byte)(exactFamily&&lo[11]==hi[11]&&lo[12]==hi[12]?1:0);
             project(13,14,11,12);
-            if(hi[13]<n[9]||lo[13]>n[10]) {finish(Reason.GEOMETRIC_ZERO,0,0,0,context);return;}
-            if(lo[13]<n[9]||hi[13]>n[10]) {finish(Reason.UNRESOLVED,0,0,0,context);return;}
+            boolean nominalOutside=n[13]<n[9]||n[13]>n[10];
+            boolean referenceOutside=hi[13]<n[9]||lo[13]>n[10];
+            if(nominalOutside&&referenceOutside) {finish(Reason.GEOMETRIC_ZERO,0,0,0,context);return;}
+            // A closed-cap branch may differ between the nominal program and
+            // real-coordinate enclosure. Keep both traces, without narrowing
+            // coordinates: the reference response is a union with zero.
+            boolean mixedCap=nominalOutside||lo[13]<n[9]||hi[13]>n[10];
             sub(15,13,4);absolute(15,15);absolute(16,14);
             div(15,15,7);div(16,16,8);constant(17,1);
             sub(15,17,15);positive(15,15);sub(16,17,16);positive(16,16);
@@ -283,15 +288,25 @@ final class BPhysicalResponse extends BPhysicalResponseBank implements AutoClose
                     finish(source.reason==1?Reason.SOURCE_UNKNOWN:Reason.UNRESOLVED,0,0,0,context);return;
                 }
                 copy(18,source,0);copy(19,source,1);project(20,-1,18,19);
-                if(hi[20]<n[9]||lo[20]>n[10])constant(21+tap,0);
-                else if(lo[20]<n[9]||hi[20]>n[10]) {finish(Reason.UNRESOLVED,0,0,0,context);return;}
-                else {copy(21+tap,source,29);sub(21+tap,21+tap,5);sub(21+tap,21+tap,6);positive(21+tap,21+tap);}
+                boolean tapNominalOutside=n[20]<n[9]||n[20]>n[10];
+                boolean tapReferenceOutside=hi[20]<n[9]||lo[20]>n[10];
+                if(tapNominalOutside&&tapReferenceOutside)constant(21+tap,0);
+                else {
+                    copy(21+tap,source,29);sub(21+tap,21+tap,5);sub(21+tap,21+tap,6);positive(21+tap,21+tap);
+                    if(tapNominalOutside||lo[20]<n[9]||hi[20]>n[10]){
+                        int slot=21+tap;mixedCap=true;
+                        set(slot,tapNominalOutside?0:n[slot],0,tapReferenceOutside?0:Math.max(0,hi[slot]));
+                    }
+                }
             }
             constant(33,2);constant(34,4);
             for(int i=0;i<3;i++) {mul(30+i,22+3*i,33);add(30+i,21+3*i,30+i);add(30+i,30+i,23+3*i);div(30+i,30+i,34);}
             mul(31,31,33);add(30,30,31);add(30,30,32);div(30,30,34);
             mul(35,16,15);mul(35,35,30);
-            finish(n[35]==0?Reason.OBSERVED_ZERO:Reason.AVAILABLE,n[35],lo[35],hi[35],context);
+            double value=nominalOutside?0:n[35];
+            double lower=referenceOutside?0:mixedCap?Math.min(0,lo[35]):lo[35];
+            double upper=referenceOutside?0:mixedCap?Math.max(0,hi[35]):hi[35];
+            finish(value==0&&!mixedCap?Reason.OBSERVED_ZERO:Reason.AVAILABLE,value,lower,upper,context);
         } catch(RuntimeException|Error failure) {phase=0;work.complete(BPhysicalWork.COMPONENT,false);throw failure;}
         finally { }
     }

@@ -270,11 +270,44 @@ class V022BPhysicalPairTableTest {
                 var out=table.supportCarrier();table.support(0,0,0,out);
                 assertTrue(out.value()>=0&&out.error()<=Math.scalb(1,-32));
                 assertTrue(out.value()-out.error()<=0&&out.value()+out.error()>=0);
-                assertEquals(0,out.unknownLength(),0);assertTrue(table.nodes()>1);
+                assertEquals(0,out.unknownLength(),0);assertEquals(1,table.nodes());
                 System.out.println("TABLE_APEX J="+Double.toHexString(out.value())+" error="+Double.toHexString(out.error())
                         +" K="+table.capacity()+" nodes="+table.nodes()+" merges="+table.merges()+" independentJ=0");
             } catch(RuntimeException failure){postmortem(w);throw failure;}
         }
+    }
+    @Test void validTinyPositiveRasterTailsDoNotPermanentlyRefuseCellFaces() {
+        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+            var f=fixture(w,true,2,false,true,false,Math.scalb(1.0,-300));
+            assertTrue(java.util.Arrays.stream(f.snapshot.fields().get("scalar").copiedValues()).anyMatch(v->v>0&&v<0x1p-256));
+            // The translated lower tap crosses the exact6.25m raster face;
+            // both adjacent cells contain genuine tiny positive source data.
+            var ls=List.of(unitSingleton(w,f.profiles.get(0),25.0/16),unitSingleton(w,f.profiles.get(1),27.0/16));
+            try(var table=assertDoesNotThrow(()->BPhysicalPairTable.build(w,f.snapshot,"scalar",f.profiles,ls,
+                    EvidenceModelParameters.defaults(),4,BPhysicalPairTable.unitPublicationBounds(w,2)))){
+                var out=table.supportCarrier();table.support(0,0,0,out);
+                assertTrue(out.value()-out.error()<=0&&out.value()+out.error()>=0,"independent self-dominance proves J=0");
+                assertTrue(out.error()<=Math.scalb(1.0,-32));assertEquals(0,out.unknownLength(),0);
+                assertEquals(1,table.nodes(),"known zero-context dominance proves the whole RANGE chord without subdivision");
+                assertEquals(0,out.value(),0);assertEquals(0,out.error(),0);
+            }
+        }
+    }
+    @Test void unavailableEdgeRetainsBoundedFailureEvidenceAfterCleanup() {
+        RuntimeException failure;
+        try(var w=BPhysicalWork.create(CancellationProbe.NONE)){
+            var f=fixture(w,true,2,false,true,true);
+            var ls=List.of(unitSingleton(w,f.profiles.get(0),0),unitSingleton(w,f.profiles.get(1),0));
+            failure=assertThrows(RuntimeException.class,()->BPhysicalPairTable.build(w,f.snapshot,"scalar",f.profiles,ls,
+                EvidenceModelParameters.defaults(),4,BPhysicalPairTable.unitPublicationBounds(w,2)));
+        }
+        assertEquals("EdgeCertificateFailure",failure.getClass().getSimpleName());
+        var diagnostic=((BPhysicalPairTable.EdgeCertificateFailure)failure).diagnostics();
+        assertEquals("SOURCE_UNKNOWN",diagnostic.get("status"));
+        assertEquals(java.util.Set.of("status","nodes","splits","merges","capacity","maximumDepth",
+            "rangeNodes","branchNodes","logNodes","numericRefusals"),diagnostic.keySet());
+        assertTrue((int)diagnostic.get("nodes")>=1);
+        assertThrows(UnsupportedOperationException.class,()->diagnostic.put("status","CERTIFIED"));
     }
     @Test void genuineOneEdgeNonzeroIntegralExceedsIndependentWholeChordLowerBound() throws Exception {
         //Declared BEFORE outcomes:fixed endpoint native singleton rows,one
@@ -570,10 +603,13 @@ class V022BPhysicalPairTableTest {
         return fixture(w,signal,count,false,false,false);
     }
     static Fixture fixture(BPhysicalWork w,boolean signal,int count,boolean narrow,boolean positive,boolean masked) {
+        return fixture(w,signal,count,narrow,positive,masked,.02);
+    }
+    static Fixture fixture(BPhysicalWork w,boolean signal,int count,boolean narrow,boolean positive,boolean masked,double background) {
         if(positive)assertTrue(signal&&count==2);
         try(var held=w.owner().reserve(32L<<20)) {
             double[] values=new double[17*25];boolean[] valid=new boolean[values.length];
-            Arrays.fill(values,signal?.02:0);Arrays.fill(valid,true);if(signal)Arrays.fill(values,8*17,10*17,1);
+            Arrays.fill(values,signal?background:0);Arrays.fill(valid,true);if(signal)Arrays.fill(values,8*17,10*17,1);
             if(masked)valid[8*17+6]=false; //off-profile applicable translated tap
             var lineage=new EvidenceFieldLineage(EvidenceFieldLineage.AcquisitionKind.SYNTHETIC,
                     EvidenceFieldLineage.DerivationKind.DIRECT_INTENSITY,"scalar",EvidenceCorrelationGroup.SYNTHETIC_TRUTH,false);

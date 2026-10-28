@@ -41,6 +41,13 @@ jobs:
           java -version
           sh ./gradlew test \
             --tests '*V022BSharedFeasibilityComparisonTest' \
+            --tests '*V022BPhysicalProductBoundsTest' \
+            --tests '*V022BMaximumReductionTest' \
+            --tests '*V022BPhysicalPointCertificateTest' \
+            --tests '*V022BPhysicalRootIntegralTest' \
+            --tests '*V022BPhysicalPairTableTest.validTinyPositiveRasterTailsDoNotPermanentlyRefuseCellFaces' \
+            --tests '*V022BPhysicalPairTableTest.genuineNondyadicApexTableIntegralEnclosesIndependentZero' \
+            --tests '*V022BPhysicalPairTableTest.unavailableEdgeRetainsBoundedFailureEvidenceAfterCleanup' \
             --tests '*V022BSharedSolverParityTest.independentRetainedMapAndExhaustivePosteriorForAllExactPolicies' \
             --tests '*V022BSharedSolverParityTest.roundedPrefixRetentionIsNotExhaustiveFinalEnergyLexicalSorting' \
             --tests '*V022BSharedSolverParityTest.nonfiniteNegativeAndSignedZeroPotentialAndActualFailureBudgets' \
@@ -89,6 +96,9 @@ jobs:
           retention-days: 7
 
   baseline:
+    # Full sweeps are deliberately disabled:152 of208 approved attempts spent.
+    # Repair diagnostics below spend8, with no fresh baseline or tuning sweep.
+    if: false
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 18
@@ -121,7 +131,7 @@ jobs:
 
   suitability:
     needs: [prepare, baseline]
-    if: always() && needs.prepare.result == 'success'
+    if: always() && needs.prepare.result == 'success' && needs.baseline.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     outputs:
@@ -184,6 +194,37 @@ jobs:
         with:
           name: shared-candidates-${{ matrix.case }}-${{ github.sha }}
           path: build/evidence/candidates/
+          if-no-files-found: error
+          retention-days: 7
+
+  diagnostic:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        case: [strong-modulated-versus-quiet-faint, thin-strong-sharp-bend, switchback-thin-strong, faint-twelve-metre-bend, thin-three-strands-intermittent, thin-strands-merge-separate, same-trail-three-strong, same-trail-three-separated-strong]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17.0.12+7"
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-runner-${{ github.sha }}
+          path: build/shared-feasibility-runner
+      - name: One preparation-repair diagnostic at gain1 eta1, without retry
+        run: python3 scripts/run-b-shared-feasibility.py diagnostic build/shared-feasibility-runner '${{ needs.prepare.outputs.manifest }}' '${{ matrix.case }}' 'build/evidence/diagnostic/${{ matrix.case }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shared-diagnostic-${{ matrix.case }}-${{ github.sha }}
+          path: build/evidence/diagnostic/
           if-no-files-found: error
           retention-days: 7
 

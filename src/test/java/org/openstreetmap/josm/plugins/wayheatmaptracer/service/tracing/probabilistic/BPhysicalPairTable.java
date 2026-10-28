@@ -547,7 +547,7 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
                     permit.state=2;permit.workspace.certifyForTable(permit,ax,ay,bx,by,gain);
                     permit.nodes=add(permit.nodes,permit.workspace.nodes());permit.merges=add(permit.merges,permit.workspace.merges());
                     if(permit.workspace.status()!=BPhysicalAdaptiveIntegral.Status.CERTIFIED)
-                        throw new IllegalStateException("Admitted original edge not certified");
+                        throw new EdgeCertificateFailure(permit.workspace);
                     double v=permit.workspace.value(),e=permit.workspace.error(),u=permit.workspace.unknownUpper();
                     if(!Double.isFinite(v)||!Double.isFinite(e)||!Double.isFinite(u)||v<0||e<0||u<0)
                         throw new ArithmeticException("Invalid certified table carrier");
@@ -560,6 +560,22 @@ final class BPhysicalPairTable implements AutoCloseable,java.util.function.LongC
             at++;
         }
         if(at!=status.length)throw new IllegalStateException("Complete ordered original pair inventory");
+    }
+    /** Bounded postmortem facts only; never retains a workspace or integral value. */
+    static final class EdgeCertificateFailure extends IllegalStateException {
+        private final BPhysicalAdaptiveIntegral.Status status;
+        private final int nodes,splits,merges,capacity,maximumDepth,rangeNodes,branchNodes,logNodes,numericRefusals;
+        EdgeCertificateFailure(BPhysicalAdaptiveIntegral integral){
+            super("Admitted original edge not certified");
+            status=integral.status();nodes=integral.nodes();splits=integral.splits();merges=integral.merges();
+            capacity=integral.capacity();maximumDepth=integral.maximumDepth();rangeNodes=integral.rangeNodes();
+            branchNodes=integral.branchNodes();logNodes=integral.logNodes();numericRefusals=integral.numericRefusals();
+        }
+        java.util.Map<String,Object> diagnostics(){
+            return java.util.Map.of("status",status.name(),"nodes",nodes,"splits",splits,"merges",merges,
+                "capacity",capacity,"maximumDepth",maximumDepth,"rangeNodes",rangeNodes,"branchNodes",branchNodes,
+                "logNodes",logNodes,"numericRefusals",numericRefusals);
+        }
     }
     @Override public void accept(long units) {
         if(permit.state!=1||owner.isClosed()||units<0)throw new IllegalStateException("Foreign geometry callback");

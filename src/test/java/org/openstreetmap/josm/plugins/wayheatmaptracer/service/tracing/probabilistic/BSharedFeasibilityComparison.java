@@ -78,6 +78,8 @@ final class BSharedFeasibilityComparison {
             receipt.remove("returned");receipt.remove("quality");
             receipt.put("status","INCONCLUSIVE");receipt.put("failurePhase",phase);
             receipt.put("failureClass",primary.getClass().getSimpleName());
+            if(primary instanceof BPhysicalPairTable.EdgeCertificateFailure edge)
+                receipt.put("edgeCertificateFailure",edge.diagnostics());
             receipt.put("failureFrames",java.util.Arrays.stream(primary.getStackTrace()).limit(12)
                 .map(f->f.getClassName()+"."+f.getMethodName()+":"+f.getLineNumber()).toList());
         }finally{work.close();}

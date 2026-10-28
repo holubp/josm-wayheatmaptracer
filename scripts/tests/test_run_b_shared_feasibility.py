@@ -13,6 +13,17 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 class RunnerTest(unittest.TestCase):
+    def test_diagnostic_runs_exactly_one_registered_case_and_fixed_setting(self):
+        with patch.object(sys,"argv",["runner","diagnostic","bundle","a"*64,
+                "thin-strong-sharp-bend","output"]), patch.object(self.api,"attempt") as launch:
+            self.api.main()
+        launch.assert_called_once_with("bundle","a"*64,"thin-strong-sharp-bend","output",(1,1))
+        with patch.object(sys,"argv",["runner","diagnostic","bundle","a"*64,
+                "uniform-null","output"]), patch.object(self.api,"attempt") as launch:
+            with self.assertRaisesRegex(ValueError,"screening case"):
+                self.api.main()
+        launch.assert_not_called()
+
     @classmethod
     def setUpClass(cls):
         spec=importlib.util.spec_from_file_location("shared_runner",ROOT/"scripts/run-b-shared-feasibility.py")
