@@ -62,6 +62,7 @@ class LegacyBPipelineTest {
                 refined.sections().stream().map(SectionChoice::source).toList());
         assertEquals(new VertexRange(2,3),refined.sections().get(1).vertices());
         assertEquals(21,batch.usage().transitions());
+        assertEquals(Status.PARTIAL,batch.status());
     }
 
     @Test void allFailuresAndFrozenSectionsKeepOnlyUnchangedLegacyAndActualWork() {
@@ -89,6 +90,7 @@ class LegacyBPipelineTest {
         assertEquals(10,batch.usage().transitions());
         assertEquals(2,batch.candidates().size());
         assertTrue(batch.truncated());
+        assertEquals(Status.RESOURCE_LIMIT,batch.status());
     }
 
     @Test void deadlineIsSharedWithLegacyAndStopsLaterSectionsWithoutSleeping() {
@@ -165,8 +167,10 @@ class LegacyBPipelineTest {
                         new TraceWorkUsage(1,7,0,0)),Optional.empty()),BUDGET,CancellationProbe.NONE);
         assertEquals(Reason.RESOURCE_LIMIT,batch.sections().get(0).reason());
         assertEquals(Outcome.UNATTEMPTED_BUDGET,batch.sections().get(1).outcome());
+        assertEquals(Reason.RESOURCE_LIMIT,batch.sections().get(1).reason());
         assertEquals(7,batch.usage().transitions());
         assertEquals(1,batch.candidates().size());
+        assertEquals(Status.RESOURCE_LIMIT,batch.status());
     }
 
     @Test void inFlightDeadlineRetainsNativeWorkWithoutBeingReportedAsUserCancellation() {
@@ -182,5 +186,19 @@ class LegacyBPipelineTest {
         assertEquals(Reason.DEADLINE,batch.sections().get(0).reason());
         assertEquals(Outcome.UNATTEMPTED_BUDGET,batch.sections().get(2).outcome());
         assertEquals(7,batch.usage().transitions());
+    }
+
+    @Test void completePolicyFrozenAndAbsentLegacyHaveExplicitTerminalStatuses() {
+        var seed=seed("a");
+        var complete=pipeline().refine(List.of(seed),sections(seed),(s,b,p)->run(s,1,1),BUDGET,CancellationProbe.NONE);
+        assertEquals(Status.COMPLETE,complete.status());
+        var frozen=new LegacyBReferenceFactory().partition(seed,new OccurrenceRange(0,3),java.util.Set.of(1,2),
+                List.of(new OccurrenceRange(0,3)));
+        var retained=pipeline().refine(List.of(seed),frozen,(s,b,p)->{fail("frozen");return null;},
+                BUDGET,CancellationProbe.NONE);
+        assertEquals(Status.COMPLETE,retained.status());
+        var noLegacy=pipeline().refine(List.of(),List.of(),(s,b,p)->{fail("no seed");return null;},
+                BUDGET,CancellationProbe.NONE);
+        assertEquals(Status.NO_ROUTE,noLegacy.status());
     }
 }

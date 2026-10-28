@@ -58,7 +58,10 @@ Remaining implementation:
 4. Run full public CI and required factual replay, independent Sol audit, final
    requirement reconciliation, then publish one new RC and verify its downloaded JAR.
 
-Task4 core still needs explicit aggregate completion/resource reason integration;
+Task4 explicit completion/resource reasons were added after an intended API RED;
+67pipeline/assessor/table/native B regression tests passed in2m49s. They distinguish
+local fallback, budget/resource refusal, completed intentional freezing and absent
+Legacy routes. Later sections retain the actual resource-refusal reason.
 Tasks3/5 tested components must not be described as an implemented live Hybrid.
 The new mode currently fails closed where its live route is not wired. Final0.22
 additionally needs user RC acceptance and all mandatory remaining release gates;

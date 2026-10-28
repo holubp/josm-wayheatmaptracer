@@ -26,6 +26,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 public final class LegacyBPipeline {
     public enum Outcome { B_REFINED, LEGACY_RETAINED, FROZEN, UNATTEMPTED_BUDGET }
     public enum Source { LEGACY, B }
+    /** Cancellation and integrity failures throw; only successfully returned provisional batches have this status. */
+    public enum Status { COMPLETE, PARTIAL, RESOURCE_LIMIT, NO_ROUTE }
     public enum Reason {
         B_REFINED, LEGACY_ALTERNATIVE, FIXED_SECTION, NO_ROUTE, DEGENERATE_REFERENCE,
         EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE, WORK_BUDGET, RESOURCE_LIMIT, DEADLINE
@@ -119,6 +121,20 @@ public final class LegacyBPipeline {
                 throw new IllegalArgumentException("Hybrid candidate cap is invalid");
             }
         }
+
+        /** Derived from actual section outcomes, without relabeling a local fallback as whole-attempt failure. */
+        public Status status() {
+            if (candidates.isEmpty()) { return Status.NO_ROUTE; }
+            if (sections.stream().anyMatch(section -> section.outcome() == Outcome.UNATTEMPTED_BUDGET
+                    || section.reason() == Reason.DEADLINE || section.reason() == Reason.RESOURCE_LIMIT
+                    || section.execution().isPresent() && section.execution().orElseThrow().run().result().status()
+                            == TraceHypothesisSet.Status.RESOURCE_LIMIT)) {
+                return Status.RESOURCE_LIMIT;
+            }
+            return truncated || omittedParents > 0
+                    || sections.stream().anyMatch(section -> section.outcome() == Outcome.LEGACY_RETAINED)
+                    ? Status.PARTIAL : Status.COMPLETE;
+        }
     }
 
     private final Deadline deadline;
@@ -139,6 +155,7 @@ public final class LegacyBPipeline {
         var outcomes = new ArrayList<SectionOutcome>();
         TraceWorkUsage usage = TraceWorkUsage.none();
         boolean stopped = false;
+        Reason stoppedReason = Reason.WORK_BUDGET;
         boolean truncated = seeds.size() > 2;
         for (Seed seed : seeds.subList(0, Math.min(2, seeds.size()))) {
             var parentOutcomes = new ArrayList<SectionOutcome>();
@@ -151,7 +168,7 @@ public final class LegacyBPipeline {
                     outcome = unavailable(section, Outcome.FROZEN, Reason.FIXED_SECTION);
                 } else if (stopped || deadline.expired() || exhausted(usage, budgets)) {
                     outcome = unavailable(section, Outcome.UNATTEMPTED_BUDGET,
-                            deadline.expired() ? Reason.DEADLINE : Reason.WORK_BUDGET);
+                            deadline.expired() ? Reason.DEADLINE : stopped ? stoppedReason : Reason.WORK_BUDGET);
                     truncated = true;
                 } else {
                     TraceBudgets remaining = remaining(usage, budgets);
@@ -164,6 +181,7 @@ public final class LegacyBPipeline {
                         if (result.status() == TraceHypothesisSet.Status.CANCELLED) {
                             if (!deadline.expired()) { throw new CancellationException("B section cancelled"); }
                             stopped = true;
+                            stoppedReason = Reason.DEADLINE;
                             outcome = new SectionOutcome(section, Outcome.LEGACY_RETAINED, Reason.DEADLINE,
                                     Optional.of(execution));
                         } else if (!result.hypotheses().isEmpty()) {
@@ -175,7 +193,9 @@ public final class LegacyBPipeline {
                                     resource ? Reason.RESOURCE_LIMIT : Reason.NO_ROUTE, Optional.of(execution));
                         }
                         // A native resource refusal is terminal for starting new inference. Retain its output.
-                        if (result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT) { stopped = true; }
+                        if (result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT) {
+                            stopped = true; stoppedReason = Reason.RESOURCE_LIMIT;
+                        }
                         truncated |= result.truncated() || stopped;
                     } catch (LegacyBReferenceFactory.ReferenceUnavailableException unavailable) {
                         outcome = unavailable(section, Outcome.LEGACY_RETAINED,
