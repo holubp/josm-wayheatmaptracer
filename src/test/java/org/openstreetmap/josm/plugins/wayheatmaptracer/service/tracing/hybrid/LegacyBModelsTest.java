@@ -49,4 +49,11 @@ class LegacyBModelsTest {
         assertThrows(IllegalArgumentException.class, () -> new LegacyBModels.Seed("legacy-0",
                 List.of(new MetricPoint(0, 0), new MetricPoint(0, 0)), Map.of(0, 0, 1, 1)));
     }
+
+    @Test void degenerateLocalSectionCanBeRetainedWithoutLosingItsDistinctOccurrences() {
+        var section = new LegacyBModels.Section("zero-length", "legacy-0", new OccurrenceRange(4, 5),
+                List.of(new MetricPoint(0, 0), new MetricPoint(0, 0)), Map.of(4, 0, 5, 1), false);
+        assertEquals(Map.of(4, 0, 5, 1), section.originalToVertex());
+        assertEquals(2, section.reference().size());
+    }
 }

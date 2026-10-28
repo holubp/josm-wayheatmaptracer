@@ -28,7 +28,7 @@ public final class LegacyBReferenceFactory {
     public static final String REFERENCE_SAMPLER_SUFFIX = "/legacy-reference-v1";
 
     /** Safe local fallback causes; arbitrary exception text is not a diagnostic reason. */
-    public enum UnavailableReason { FROZEN_SECTION, EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE }
+    public enum UnavailableReason { FROZEN_SECTION, DEGENERATE_REFERENCE, EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE }
 
     /** An unavailable reference may retain Legacy locally without weakening original authority. */
     public static final class ReferenceUnavailableException extends RuntimeException {
@@ -63,6 +63,12 @@ public final class LegacyBReferenceFactory {
         }
         cancellation.checkpoint();
         if (section.frozen()) { throw new ReferenceUnavailableException(UnavailableReason.FROZEN_SECTION); }
+        boolean hasSegment = false;
+        for (int i = 1; i < section.reference().size(); i++) {
+            cancellation.checkpoint();
+            hasSegment |= section.reference().get(i - 1).distanceTo(section.reference().get(i)) > 1e-9;
+        }
+        if (!hasSegment) { throw new ReferenceUnavailableException(UnavailableReason.DEGENERATE_REFERENCE); }
         validateOriginalGeometry(section, originalRequest, evidence, originalNetwork, cancellation);
         return prepareSampling(section, originalRequest, evidence, remaining);
     }
@@ -156,7 +162,8 @@ public final class LegacyBReferenceFactory {
                 originalRequest.networkSnapshotId(), originalRequest.networkContentHash(), originalRequest.settingsHash(),
                 parameterHash(originalRequest.parameterHash()),
                 originalRequest.samplerId() + REFERENCE_SAMPLER_SUFFIX,
-                originalRequest.configuredSampleStepMeters(), chainage, evidence.resolution());
+                originalRequest.configuredSampleStepMeters(), chainage, evidence.resolution(),
+                java.util.Optional.empty(), originalRequest.disconnectionSource());
         return new Reference(section, request, referenceEvidence, originalRequest, evidence);
     }
 

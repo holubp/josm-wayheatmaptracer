@@ -26,6 +26,7 @@ public final class LegacyBModels {
                     || !request.networkContentHash().equals(originalRequest.networkContentHash())
                     || !request.settingsHash().equals(originalRequest.settingsHash())
                     || !request.permissions().equals(originalRequest.permissions())
+                    || !java.util.Objects.equals(request.disconnectionSource(), originalRequest.disconnectionSource())
                     || !originalRequest.evidenceSnapshotId().equals(originalEvidence.snapshotId())
                     || !originalRequest.evidenceContentHash().equals(originalEvidence.canonicalHash())
                     || !evidence.fields().equals(originalEvidence.fields())
@@ -49,7 +50,7 @@ public final class LegacyBModels {
     public record Seed(String id, List<MetricPoint> points, Map<Integer,Integer> originalToVertex) {
         public Seed {
             requireId(id);
-            validateGeometry(points, originalToVertex);
+            validateGeometry(points, originalToVertex, true);
             points = List.copyOf(points);
             originalToVertex = Map.copyOf(originalToVertex);
         }
@@ -61,7 +62,7 @@ public final class LegacyBModels {
         public Section {
             requireId(id);
             requireId(parentSeedId);
-            validateGeometry(reference, originalToVertex);
+            validateGeometry(reference, originalToVertex, false);
             if (originalRange == null || !originalToVertex.containsKey(originalRange.firstIndex())
                     || !originalToVertex.containsKey(originalRange.lastIndex())
                     || originalToVertex.keySet().stream().anyMatch(index -> index < originalRange.firstIndex()
@@ -77,7 +78,8 @@ public final class LegacyBModels {
         if (id == null || id.isBlank()) { throw new IllegalArgumentException("Geometry identity is required"); }
     }
 
-    private static void validateGeometry(List<MetricPoint> points, Map<Integer,Integer> mapping) {
+    private static void validateGeometry(List<MetricPoint> points, Map<Integer,Integer> mapping,
+            boolean requirePositiveLength) {
         if (points == null || points.size() < 2 || points.stream().anyMatch(java.util.Objects::isNull)
                 || mapping == null || mapping.size() < 2
                 || mapping.keySet().stream().anyMatch(index -> index == null || index < 0)
@@ -97,7 +99,7 @@ public final class LegacyBModels {
         }
         double length = 0;
         for (int i = 1; i < points.size(); i++) { length += points.get(i - 1).distanceTo(points.get(i)); }
-        if (!Double.isFinite(length) || length <= 0) {
+        if (!Double.isFinite(length) || requirePositiveLength && length <= 0) {
             throw new IllegalArgumentException("Temporary geometry must have positive finite metric length");
         }
     }

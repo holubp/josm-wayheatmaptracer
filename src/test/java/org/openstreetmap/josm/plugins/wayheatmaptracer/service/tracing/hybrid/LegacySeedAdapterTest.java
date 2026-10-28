@@ -3,13 +3,54 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid;
 import static org.junit.jupiter.api.Assertions.*;
 import java.awt.geom.Point2D;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.data.coor.EastNorth;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RidgeTracker;
 
 class LegacySeedAdapterTest {
+    @Test void reconstructionPreservesOriginalAnchorBitsAndUsesCapturedProjectionUnits() {
+        var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
+                new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
+        var original = List.of(new ProjectedPoint(0, 0), new ProjectedPoint(5, 0), new ProjectedPoint(10, 0));
+        // Original authority is retained exactly; do not recreate it with a rounded projection round trip.
+        var originalMetric = List.of(new MetricPoint(0, 0), new MetricPoint(5.000000000001, 0),
+                new MetricPoint(10.000000000001, 0));
+        var trace = List.of(new ProjectedPoint(0, 14), new ProjectedPoint(2.5, 14),
+                new ProjectedPoint(5, 14), new ProjectedPoint(7.5, 14), new ProjectedPoint(10, 14));
+        var seed = new LegacySeedAdapter().reconstructSeed("legacy-0", original, originalMetric,
+                trace, List.of(1), new OccurrenceRange(7, 9), "EPSG:3857", frame);
+        assertEquals(Map.of(7, 0, 8, 2, 9, 4), seed.originalToVertex());
+        assertEquals(originalMetric.get(0), seed.points().get(0));
+        assertEquals(originalMetric.get(1), seed.points().get(2));
+        assertEquals(originalMetric.get(2), seed.points().get(4));
+        assertEquals(2.5, seed.points().get(1).xMeters(), 1e-8);
+        assertEquals(13.90627868, seed.points().get(1).yMeters(), 1e-5);
+        assertThrows(IllegalArgumentException.class, () -> new LegacySeedAdapter().reconstructSeed(
+                "bad", original, originalMetric, trace, List.of(1), new OccurrenceRange(7, 10),
+                "EPSG:3857", frame));
+    }
+
+    @Test void cancellationInterruptsLegacyWorkAfterItHasStarted() {
+        var profiles = IntStream.range(0, 80).mapToObj(i ->
+                new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(i, 0),
+                        new Point2D.Double(i, 0), new Point2D.Double(0, 1),
+                        List.of(new RenderedHeatmapSampler.CrossSectionPeak(14, .85, 2, false)))).toList();
+        var checks = new AtomicInteger();
+        assertThrows(CancellationException.class, () -> new LegacySeedAdapter().track(
+                profiles, 1, () -> checks.incrementAndGet() == 40));
+        assertEquals(40, checks.get());
+    }
+
     @Test void legacyAdapterUsesProductionLegacyNumericsForLargeDeviation() {
         var profiles = IntStream.range(0, 5).mapToObj(i ->
                 new RenderedHeatmapSampler.CrossSectionProfile(new EastNorth(i * 10, 0),

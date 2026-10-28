@@ -9,6 +9,7 @@ import java.util.Map;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CandidateEvidence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CenterlineCandidate;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /**
  * Links cross-section heatmap peaks into one or more longitudinal ridge candidates.
@@ -42,11 +43,20 @@ public final class RidgeTracker {
      * @return candidate centerlines sorted by score
      */
     public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles, double sourcePixelSizePx) {
+        return track(profiles, sourcePixelSizePx, CancellationProbe.NONE);
+    }
+
+    /** Tracks identical Legacy candidates, with cancellation at profile traversal boundaries. */
+    public List<CenterlineCandidate> track(List<RenderedHeatmapSampler.CrossSectionProfile> profiles,
+            double sourcePixelSizePx, CancellationProbe cancellation) {
+        java.util.Objects.requireNonNull(cancellation, "Cancellation probe is required");
+        cancellation.checkpoint();
+        profiles = cancellableProfiles(profiles, cancellation);
         if (profiles.isEmpty()) {
             return List.of();
         }
         double sourcePixel = Double.isFinite(sourcePixelSizePx) && sourcePixelSizePx > 0.0 ? sourcePixelSizePx : 1.0;
-        profiles = suppressLongitudinalNoise(profiles);
+        profiles = cancellableProfiles(suppressLongitudinalNoise(profiles), cancellation);
 
         List<Double> seeds = collectSeedOffsets(profiles);
         List<CenterlineCandidate> candidates = new ArrayList<>();
@@ -72,9 +82,25 @@ public final class RidgeTracker {
                 .withEvidence(evidenceFor(profiles, smoothedOffsets, intensities)));
         }
 
+        cancellation.checkpoint();
         return deduplicate(candidates).stream()
             .sorted(Comparator.comparingDouble(CenterlineCandidate::score).reversed())
             .toList();
+    }
+
+    private static List<RenderedHeatmapSampler.CrossSectionProfile> cancellableProfiles(
+            List<RenderedHeatmapSampler.CrossSectionProfile> profiles, CancellationProbe cancellation) {
+        if (cancellation == CancellationProbe.NONE) { return profiles; }
+        return new java.util.AbstractList<>() {
+            @Override public RenderedHeatmapSampler.CrossSectionProfile get(int index) {
+                cancellation.checkpoint();
+                return profiles.get(index);
+            }
+            @Override public int size() {
+                cancellation.checkpoint();
+                return profiles.size();
+            }
+        };
     }
 
     private List<RenderedHeatmapSampler.CrossSectionProfile> suppressLongitudinalNoise(

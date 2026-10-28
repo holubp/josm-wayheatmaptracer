@@ -56,4 +56,15 @@ class LegacyBReferencePreparationTest {
                 LegacyBTestFixtures.section(fixture, 4), fixture.request(), fixture.evidence(),
                 fixture.network(), fixture.request().budgets(), CancellationProbe.NONE));
     }
+
+    @Test void degenerateLocalReferenceIsTypedUnavailableRatherThanAnAttemptFailure() {
+        var fixture = LegacyBTestFixtures.fixture();
+        var section = new LegacyBModels.Section("zero-length", "legacy-0", new OccurrenceRange(0, 1),
+                java.util.List.of(fixture.original().get(0), fixture.original().get(0)),
+                java.util.Map.of(0, 0, 1, 1), false);
+        var failure = assertThrows(LegacyBReferenceFactory.ReferenceUnavailableException.class,
+                () -> new LegacyBReferenceFactory().prepare(section, fixture.request(), fixture.evidence(),
+                        fixture.network(), fixture.request().budgets(), CancellationProbe.NONE));
+        assertEquals("DEGENERATE_REFERENCE", failure.reason().name());
+    }
 }
