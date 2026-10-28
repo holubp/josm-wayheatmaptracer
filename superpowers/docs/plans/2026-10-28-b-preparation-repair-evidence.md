@@ -3,6 +3,13 @@
 Exploratory quality-only continuation of the approved quality-first experiment.
 Base: `38588484e74e101c6fe602d13bd6eb05f65e1339`.
 
+Final outcome: CI40683227458/488ed7d returned no paths on eight cases
+(five300s preparation timeouts,three tracked-memory refusals). Independent
+audit supports stopping this certified implementation under the existing
+constraints; mathematical tracing quality remains unmeasured. See
+[the full practical evaluation](2026-10-28-b-feasibility-decision.md).
+168 of208 attempts are spent; no additional cases or release are planned.
+
 ## Follow-up: source reuse and explicit exploratory admission
 
 Run40673913522/91ca09c completed all eight repair diagnostics. All were

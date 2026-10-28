@@ -1,0 +1,232 @@
+{
+  "schema": 1,
+  "evidenceClass": "EXPLORATORY_QUALITY_ONLY_V1",
+  "codeCommit": "488ed7d714f25b57fb49e9df82134d893653df24",
+  "runId": 40683227458,
+  "runUrl": "https://github.com/holubp/josm-wayheatmaptracer/actions/runs/40683227458",
+  "caseBindingVerified": true,
+  "contextSha256": "2922d94e50dd2365de4fc467e9b99935dac3fe5432d554043248612ebdba334a",
+  "protocolSha256": "085082550979cc75ae3208a8a90922a2cde3198b123d36ec5d3a98ccb62810d8",
+  "runnerManifestSha256": "909bb72b4c51942bb5c10aacee17268a13b5fe8b6c338ff19ab981aa609317ae",
+  "practicalDecision": "STOP_CURRENT_CERTIFIED_IMPLEMENTATION",
+  "geometryQuality": "UNMEASURED",
+  "selection": "INCONCLUSIVE_NO_ELIGIBLE_CANDIDATE",
+  "source117Reference": "117baaf09f4b81a38ad4679eedc8fd1b12ed3d2a",
+  "referenceBudgetNote": "Offline extended1024M scores/900s cooperative/960s external; not ordinary production performance",
+  "candidateLimits": {
+    "trackedMemoryBytes": 67108864,
+    "states": 96,
+    "pairs": 8000000,
+    "solverScores": 128000000,
+    "cooperativeSeconds": 300,
+    "externalSeconds": 360
+  },
+  "caseCount": 8,
+  "returnedPathCount": 0,
+  "solverInvocations": 0,
+  "failures": {
+    "CancellationException": 5,
+    "JointBudgetFailure": 3
+  },
+  "attemptsSpent": 168,
+  "attemptCeiling": 208,
+  "full32Confirmation": "NOT_EXECUTED_NO_ELIGIBLE_CANDIDATE",
+  "qualifiedRuntime": false,
+  "totalPluginMemoryQualified": false,
+  "rows": [
+    {
+      "caseId": "faint-twelve-metre-bend",
+      "snapshotHash": "d31a98f7dea7f86a04d27e55ae39e2b5b341bef478b258133ad9984fc02c351f",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 300.004460777,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "CancellationException",
+        "jointBudgetFailure": null,
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 86.16810643299999,
+        "hardOraclePassed": true
+      },
+      "receiptSha256": "9c7ea32923c305d3663075c55282e9f3ab42fbd72c19a859aa2f33b852fb4412",
+      "hostSha256": "520a00a715da771fe5e4429e4562203168cb900ebd7a67d9041c106c840cffc8"
+    },
+    {
+      "caseId": "same-trail-three-separated-strong",
+      "snapshotHash": "e4961e5ce418eb28a05f82bf98c4fe7135185e8fa0f7e8b23b06dd347fb8152d",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 11.051108244,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "JointBudgetFailure",
+        "jointBudgetFailure": {
+          "memoryBaseBytes": 69416392,
+          "memoryLimitBytes": 67108864,
+          "poolBytes": 352,
+          "reason": "MEMORY_ENVELOPE_LIMIT",
+          "requestedCapacity": 1
+        },
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 270.598072623,
+        "hardOraclePassed": false
+      },
+      "receiptSha256": "d223b993609805d960781bc5281aed75ca82e59bec5f1e2ae44178dadf62a1bf",
+      "hostSha256": "7adae8162afb8151e63d2560024f26c8220e2832083d26b5e76974744e73db71"
+    },
+    {
+      "caseId": "same-trail-three-strong",
+      "snapshotHash": "d42a16e39eb62ef9ac12b4bb238c0c312d86baaab7d1cae9c1f4ebfb69d6970b",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 7.861733781,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "JointBudgetFailure",
+        "jointBudgetFailure": {
+          "memoryBaseBytes": 67867072,
+          "memoryLimitBytes": 67108864,
+          "poolBytes": 352,
+          "reason": "MEMORY_ENVELOPE_LIMIT",
+          "requestedCapacity": 1
+        },
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 405.516669691,
+        "hardOraclePassed": false
+      },
+      "receiptSha256": "24611e371ede964bd327906273158ba256e5062659f1faa85f3af1866ed9e051",
+      "hostSha256": "ffca7c149963558e18c66d12a1d51a699890274df6429227ae1d47a29ff4323a"
+    },
+    {
+      "caseId": "strong-modulated-versus-quiet-faint",
+      "snapshotHash": "994b44ee17200fc0eb8c0a784858aff9828020cb7f15ff764ec2bc7cbeb3b729",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 300.005909077,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "CancellationException",
+        "jointBudgetFailure": null,
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 52.24735245199999,
+        "hardOraclePassed": true
+      },
+      "receiptSha256": "dc9d9e4181f354062974cfc3ee5bf05610484cf390b43fa2756aef503622d19f",
+      "hostSha256": "da1c6125b43dff458b14be98c2d786ba43eb6edd13920803843ad9d44a6fff96"
+    },
+    {
+      "caseId": "switchback-thin-strong",
+      "snapshotHash": "9715a4b15a32b3283d527c76f3c2e5924ae9d0e767e6af1352b2b054b5874e69",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 6.111754267,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "JointBudgetFailure",
+        "jointBudgetFailure": {
+          "memoryBaseBytes": 67510208,
+          "memoryLimitBytes": 67108864,
+          "poolBytes": 352,
+          "reason": "MEMORY_ENVELOPE_LIMIT",
+          "requestedCapacity": 1
+        },
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 316.373528492,
+        "hardOraclePassed": false
+      },
+      "receiptSha256": "53604936a46e8fc40bc841be658642d7f5a0b9143729fd66d949790e2ca331f5",
+      "hostSha256": "8fd5da45d42151a58a8771631d05c40733a2391977df6027648925ec49c6f7a7"
+    },
+    {
+      "caseId": "thin-strands-merge-separate",
+      "snapshotHash": "a1e875bc2877e2c9dfdd06bf12d4430ecfa033da95d37fb68b1c7701c08b5868",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 300.009213805,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "CancellationException",
+        "jointBudgetFailure": null,
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 298.859399336,
+        "hardOraclePassed": false
+      },
+      "receiptSha256": "ff107a84cd6a007c9ad8dd8b8f0358614985524f5ade5083c57b8080b5d1c32c",
+      "hostSha256": "9e1123cccf0b7192370cf57f170330a850b6cdb15dd07e9d588ed87bea1454f6"
+    },
+    {
+      "caseId": "thin-strong-sharp-bend",
+      "snapshotHash": "cfaa0da3d5df119e67b657e5f442812211517c4378834ff37749015a14ddd1e5",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 300.008594116,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "CancellationException",
+        "jointBudgetFailure": null,
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 115.998111723,
+        "hardOraclePassed": true
+      },
+      "receiptSha256": "e51c4b89641fdf881d9f80f63ecc42bd2cadaaead622e1d4644826d8fa1a9c65",
+      "hostSha256": "a1f72d8a2e320fa1046cfd390a934c77d041eab398bfda267347076cd84f35f2"
+    },
+    {
+      "caseId": "thin-three-strands-intermittent",
+      "snapshotHash": "a5415796f3e4913849739888fde9ea461120586d98429e69414a714d6d8a8197",
+      "candidate": {
+        "status": "INCONCLUSIVE",
+        "seconds": 300.008604396,
+        "failurePhase": "SHARED_TABLE",
+        "failureClass": "CancellationException",
+        "jointBudgetFailure": null,
+        "solverInvocations": 0,
+        "trackedBytesAfterClose": 0,
+        "geometryQuality": "UNMEASURED",
+        "qualifiedProspectiveEnvelopes": "UNAVAILABLE"
+      },
+      "reference": {
+        "completed": true,
+        "seconds": 482.981100044,
+        "hardOraclePassed": false
+      },
+      "receiptSha256": "edaeb1b4a481ee5065c2242ff9b2b5b93b4a5609e807be100f53ce3442d5f008",
+      "hostSha256": "e80b8b08ef945e7061043bd65d74ec576c47be5afb7131f19aab36a83915dfad"
+    }
+  ]
+}
