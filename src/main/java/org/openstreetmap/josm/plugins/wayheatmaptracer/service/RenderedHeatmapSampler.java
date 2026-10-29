@@ -227,14 +227,32 @@ public final class RenderedHeatmapSampler {
         IntensitySamplingMode intensitySamplingMode,
         RasterCoordinateProjector projectedCoordinateProjector
     ) {
+        return sampleProfilesOnAnchors(raster, anchors, halfWidthPx, stepPx, colorMode, rasterScale,
+            sourceCoordinateScale, intensitySamplingMode, projectedCoordinateProjector, CancellationProbe.NONE);
+    }
+
+    List<CrossSectionProfile> sampleProfilesOnAnchors(
+        BufferedImage raster,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        String colorMode,
+        double rasterScale,
+        double sourceCoordinateScale,
+        IntensitySamplingMode intensitySamplingMode,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation
+    ) {
         if (anchors.size() < 2) {
             return Collections.emptyList();
         }
+        Objects.requireNonNull(cancellation, "cancellation");
         double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
             ? sourceCoordinateScale
             : 1.0;
         List<CrossSectionProfile> profiles = new ArrayList<>();
         for (int i = 0; i < anchors.size(); i++) {
+            cancellation.checkpoint();
             ProfileSamplingAnchor samplingAnchor = anchors.get(i);
             Point2D.Double current = samplingAnchor.rasterCoordinate();
             Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();
