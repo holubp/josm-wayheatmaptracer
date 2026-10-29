@@ -133,7 +133,7 @@ public final class LegacyBAssessor {
                     protectedAssignments.put(vertex, context.evidence().coordinateFrame().toMetric(node.coordinate()));
                 }
             }
-            validatePartition(candidate, batch, context.request().selectedRange());
+            validatePartition(candidate, batch, context);
             for (SectionChoice choice : candidate.sections()) {
                 if (choice.section().frozen()) {
                     for (var entry : choice.section().originalToVertex().entrySet()) {
@@ -212,7 +212,9 @@ public final class LegacyBAssessor {
                 .execution().orElseThrow(() -> new IllegalArgumentException("B section has no native result"));
     }
 
-    private static void validatePartition(Candidate candidate, Batch batch, OccurrenceRange selected) {
+    private static void validatePartition(Candidate candidate, Batch batch, AssessmentContext context) {
+        var selected = context.request().selectedRange();
+        var way = (DetachedWay) context.network().primitives().get(context.request().selectedWayKey());
         int next = 0;
         int nextOriginal = selected.firstIndex();
         for (SectionChoice choice : candidate.sections()) {
@@ -245,6 +247,19 @@ public final class LegacyBAssessor {
                     actualMapping.put(original,vertex);
                 }
             });
+            for (var extra : actualMapping.entrySet()) {
+                if (expectedMapping.containsKey(extra.getKey())) continue;
+                var key = way.nodeKeys().get(extra.getKey());
+                if (!context.network().closure().movableExistingNodeKeys().contains(key)
+                        || context.network().closure().protectedExistingNodeKeys().contains(key)
+                        || !(context.network().primitives().get(key) instanceof DetachedNode node) || !node.tags().isEmpty()
+                        || context.network().incomingReferrerWatches().getOrDefault(key, Set.of()).stream()
+                                .anyMatch(referrer -> !referrer.equals(way.key()))
+                        || extra.getValue() <= choice.vertices().first() || extra.getValue() >= choice.vertices().last()) {
+                    throw new IllegalArgumentException("Hybrid reconstructed occurrence lacks ordinary movement authority");
+                }
+                expectedMapping.put(extra.getKey(), extra.getValue());
+            }
             if (!expectedMapping.equals(actualMapping)) {
                 throw new IllegalArgumentException("Hybrid final occurrence assignments differ from section ownership");
             }

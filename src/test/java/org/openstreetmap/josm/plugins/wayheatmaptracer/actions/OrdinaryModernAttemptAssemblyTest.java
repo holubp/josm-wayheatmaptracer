@@ -64,6 +64,73 @@ class OrdinaryModernAttemptAssemblyTest {
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
+    @Test void sequentialHybridSubrangeApplyPreservesOutsideOccurrencesAndUndoHistory() throws Exception {
+        var dataSet = new DataSet();
+        var nodes = new ArrayList<Node>();
+        double[] east = {-30, -8, 0, 8, 30};
+        for (int index = 0; index < east.length; index++) {
+            var node = loadedNode(100 + index, longitude(east[index]));
+            nodes.add(node); dataSet.addPrimitive(node);
+        }
+        var way = new Way(); way.setNodes(nodes); way.setOsmId(110, 1); way.setModified(false);
+        dataSet.addPrimitive(way);
+        var originalCoordinates = nodes.stream().map(Node::getCoor).toList();
+        var selection = new SelectionContext(way, 1, 3, nodes.subList(1, 4), Set.of(nodes.get(1), nodes.get(3)));
+        var published = new AtomicReference<LiveBPreviewService.Computed>();
+        var ready = new CountDownLatch(1);
+        try (var session = new PreviewSessionController<LiveBPreviewService.Computed>(Runnable::run)) {
+            var owner = session.open(() -> { });
+            SwingUtilities.invokeAndWait(() -> new AlignWayAction.OrdinaryModernAttemptAssembly().start(
+                    session, owner, routing(TrackerMode.LEGACY_THEN_B, AlignmentSourceMode.VISIBLE_LAYER),
+                    dataSet, selection, "hybrid-selected-subrange",
+                    (source, invocation, permissions) -> visibleRaster(),
+                    (seed, invocation, context) -> { throw new AssertionError("Visible input must stay visible"); },
+                    attempt -> { published.set(attempt.result()); ready.countDown(); }));
+            assertTrue(ready.await(60, TimeUnit.SECONDS), session.currentAttempt().toString());
+            var computed = published.get(); assertNotNull(computed);
+            assertEquals(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 3),
+                    computed.request().selectedRange());
+            assertEquals(nodes, way.getNodes(), "Temporary Legacy/B geometry must not mutate live OSM");
+            var adapter = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter();
+            var plan = java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
+                    .filter(index -> computed.pipeline().routes().get(index).hypothesis().diagnostics()
+                            .getOrDefault("hasBRefinement", 0.0) == 1.0)
+                    .mapToObj(index -> adapter.assess(computed, index))
+                    .filter(assessment -> assessment.availability() == org.openstreetmap.josm.plugins.wayheatmaptracer
+                            .service.tracing.ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE)
+                    .findFirst().orElseThrow(() -> new AssertionError("No usable actual B-refined subrange: "
+                            + computed.pipeline().routes().stream().map(route -> route.hypothesis().diagnostics()
+                                    + ": " + route.quality()).toList()
+                            + "; plans=" + java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
+                                    .mapToObj(index -> adapter.assess(computed, index)).toList()
+                            + "; sections=" + computed.legacyB().result().batch().sections().stream()
+                                    .map(section -> section.outcome() + ":" + section.reason()).toList()))
+                    .plan().orElseThrow();
+            SwingUtilities.invokeAndWait(() -> {
+                var history = org.openstreetmap.josm.data.UndoRedoHandler.getInstance(); history.clean();
+                try {
+                    var capture = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture
+                            .captureBound(dataSet, computed.captured().specification());
+                    var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.LiveNetworkSnapshotValidator(
+                            capture, plan, () -> plan.before().sourceGeneration());
+                    history.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
+                            dataSet, plan, validator, "Apply Hybrid subrange test"));
+                    assertEquals(1, history.getUndoCommands().size());
+                    assertEquals(nodes.get(0), way.firstNode()); assertEquals(nodes.get(4), way.lastNode());
+                    for (int index : new int[] {0, 1, 3, 4})
+                        assertEquals(originalCoordinates.get(index), nodes.get(index).getCoor());
+                    var applied = way.getNodes().stream().map(Node::getCoor).toList();
+                    history.undo();
+                    assertEquals(nodes, way.getNodes());
+                    assertEquals(originalCoordinates, way.getNodes().stream().map(Node::getCoor).toList());
+                    assertTrue(dataSet.allPrimitives().stream().noneMatch(primitive -> primitive.isModified()));
+                    history.redo(); assertEquals(applied, way.getNodes().stream().map(Node::getCoor).toList());
+                    history.undo();
+                } finally { history.clean(); }
+            });
+        }
+    }
+
     @Test void managedSequentialHybridUsesAcquiredNativePixelsAndKeepsReplaySource(@TempDir Path directory)
             throws Exception {
         var fixture = fixture();

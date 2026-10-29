@@ -21,6 +21,8 @@ import org.openstreetmap.josm.data.osm.Way;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.PolylineMath;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.MonotonicOccurrenceMatcher;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.tools.ImageProvider;
 
 /**
@@ -262,52 +264,14 @@ public final class ReplaceWaySegmentCommand extends Command {
                 slots.add(previewIndex);
             }
         }
-        MatchCell[][] table = new MatchCell[nodes.size() + 1][slots.size() + 1];
-        table[nodes.size()][slots.size()] = new MatchCell(0, 0.0, MatchDecision.DONE);
-        for (int sourceIndex = nodes.size(); sourceIndex >= 0; sourceIndex--) {
-            for (int slotIndex = slots.size(); slotIndex >= 0; slotIndex--) {
-                if (sourceIndex == nodes.size() && slotIndex == slots.size()) {
-                    continue;
-                }
-                MatchCell best = null;
-                if (sourceIndex < nodes.size()) {
-                    best = choose(best, advance(table[sourceIndex + 1][slotIndex], MatchDecision.SKIP_SOURCE,
-                        0, 0.0));
-                }
-                if (slotIndex < slots.size()) {
-                    best = choose(best, advance(table[sourceIndex][slotIndex + 1], MatchDecision.SKIP_SLOT,
-                        0, 0.0));
-                }
-                if (sourceIndex < nodes.size() && slotIndex < slots.size()) {
-                    double sourceFraction = sourceFractions.get(sourceIndex);
-                    double previewFraction = previewFractions.get(slots.get(slotIndex));
-                    if (anchorInterval(sourceFraction, anchorBoundaries, true)
-                        == anchorInterval(previewFraction, anchorBoundaries, false)) {
-                        double error = Math.abs(sourceFraction - previewFraction);
-                        best = choose(best, advance(table[sourceIndex + 1][slotIndex + 1], MatchDecision.MATCH,
-                            1, error));
-                    }
-                }
-                table[sourceIndex][slotIndex] = best;
-            }
-        }
+        var matches = MonotonicOccurrenceMatcher.match(sourceFractions,
+                slots.stream().map(previewFractions::get).toList(),
+                sourceFractions.stream().map(fraction -> anchorInterval(fraction, anchorBoundaries, true)).toList(),
+                slots.stream().map(previewFractions::get)
+                        .map(fraction -> anchorInterval(fraction, anchorBoundaries, false)).toList(),
+                CancellationProbe.NONE);
         Map<Integer, Node> result = new java.util.LinkedHashMap<>();
-        int sourceIndex = 0;
-        int slotIndex = 0;
-        while (sourceIndex < nodes.size() || slotIndex < slots.size()) {
-            MatchDecision decision = table[sourceIndex][slotIndex].decision();
-            if (decision == MatchDecision.MATCH) {
-                result.put(slots.get(slotIndex), nodes.get(sourceIndex));
-                sourceIndex++;
-                slotIndex++;
-            } else if (decision == MatchDecision.SKIP_SOURCE) {
-                sourceIndex++;
-            } else if (decision == MatchDecision.SKIP_SLOT) {
-                slotIndex++;
-            } else {
-                break;
-            }
-        }
+        matches.forEach((slotIndex, sourceIndex) -> result.put(slots.get(slotIndex), nodes.get(sourceIndex)));
         return result;
     }
 
@@ -369,26 +333,6 @@ public final class ReplaceWaySegmentCommand extends Command {
             }
         }
         return -1;
-    }
-
-    private MatchCell advance(MatchCell following, MatchDecision decision, int matches, double error) {
-        if (following == null) {
-            return null;
-        }
-        return new MatchCell(following.matches() + matches, following.error() + error, decision);
-    }
-
-    private MatchCell choose(MatchCell first, MatchCell second) {
-        if (second == null) {
-            return first;
-        }
-        if (first == null || second.matches() > first.matches()
-            || second.matches() == first.matches() && second.error() < first.error() - 1e-12
-            || second.matches() == first.matches() && Math.abs(second.error() - first.error()) <= 1e-12
-                && second.decision().priority < first.decision().priority) {
-            return second;
-        }
-        return first;
     }
 
     private boolean canRemoveDroppedNode(Node node) {
@@ -573,22 +517,6 @@ public final class ReplaceWaySegmentCommand extends Command {
     }
 
     private record AnchorBoundary(double sourceFraction, double previewFraction, Node node) {
-    }
-
-    private record MatchCell(int matches, double error, MatchDecision decision) {
-    }
-
-    private enum MatchDecision {
-        MATCH(0),
-        SKIP_SLOT(1),
-        SKIP_SOURCE(2),
-        DONE(3);
-
-        private final int priority;
-
-        MatchDecision(int priority) {
-            this.priority = priority;
-        }
     }
 
 }

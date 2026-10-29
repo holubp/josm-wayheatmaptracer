@@ -235,7 +235,7 @@ public final class LegacyBProductionRunner {
             var engine = new ProbabilisticTraceEngine(input.fieldName());
             var image = ImageCostField.fromEvidence(input.evidence(), input.fieldName());
             var authorityWork = new AuthorityWork();
-            var batch = new LegacyBPipeline(deadline).refine(seeds, sections, (section, remaining, probe) -> {
+            var nativeBatch = new LegacyBPipeline(deadline).refine(seeds, sections, (section, remaining, probe) -> {
                 var reference = new LegacyBReferenceFactory().prepare(section, input.request(), input.evidence(),
                         input.network(), remaining, probe);
                 var nativeRun = engine.traceRefinedWithUsage(reference, input.network(), probe, resultOwner);
@@ -279,6 +279,11 @@ public final class LegacyBProductionRunner {
                             authorityWork.used - authorityStart, authorityLimited);
                 } finally { nativeRun.owner().close(); }
             }, available, cancellation);
+            var reconstructed = new ArrayList<Candidate>();
+            for (var candidate : nativeBatch.candidates()) reconstructed.add(LegacyBOccurrenceReconstruction
+                    .reuseAvailableVertices(input, candidate, cancellation, resultOwner));
+            var batch = new Batch(reconstructed, nativeBatch.sections(), nativeBatch.usage(),
+                    nativeBatch.truncated(), nativeBatch.omittedParents());
             var assessments = new ArrayList<LegacyBAssessor.AssessedCandidate>();
             for (var candidate : batch.candidates()) {
                 cancellation.checkpoint();

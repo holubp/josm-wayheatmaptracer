@@ -4,6 +4,22 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Newest local batch: actual five-node selected subrange reproduced omitted ordinary
+node identity and unavailable Apply. Shared native reuse-first matcher is extracted
+without arithmetic/tie changes; Hybrid now assigns ordinary movable identities to
+existing final vertices between preserved anchors without changing coordinates or
+B intervals. Actual B-refined subrange Apply/Undo/Redo, off-range identity/coordinate
+preservation and original modified flags now pass. Targeted23tests pass in1m15s;
+independent affected-scope review confirms90000 old/new matcher equivalence cases.
+Sparse previews with too few vertices still safely refuse and require completion.
+
+Whole-delta independent review is recorded in
+[the audit](2026-10-29-v022-legacy-b-release-audit.md). It additionally demonstrates
+global per-source cap leakage, inherited-cliff contact parity failure, optional
+source memory-refusal loss of completed work, and coincident identity limitations.
+These are open implementation requirements, not accepted release exceptions.
+Public CI40890204818 for committed93258e8 is running; no RC/tag published.
+
 Current2026-10-29: HEAD437c685, historical removal committed/pushed. Its public
 Build40881958032 failed two of2297tests (zero errors/skips): both replay tests still
 expected removed A+B execution. Assertions now distinguish supported A/B traversal,
