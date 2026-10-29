@@ -498,7 +498,7 @@ public final class TileHeatmapSampler {
             parameters, stableInference, virtualRasterScale);
     }
 
-    private BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
+    static BufferedImage stableInferenceImage(BufferedImage source, String color, int zoom) {
         int radius = stableInferenceDilationRadius(zoom);
         if (radius <= 0) {
             PluginLog.verbose("Using raw stable fixed-scale inference raster for color '%s' z%d without heat dilation.",
@@ -554,7 +554,7 @@ public final class TileHeatmapSampler {
         return clamp(15 - zoom, 1, 2);
     }
 
-    private double detectorIntensity(int argb, String color) {
+    private static double detectorIntensity(int argb, String color) {
         int alpha = (argb >>> 24) & 0xFF;
         if (alpha == 0) {
             return 0.0;
@@ -621,9 +621,14 @@ public final class TileHeatmapSampler {
     }
 
     private SamplingParameters parametersFor(ManagedHeatmapConfig config, int zoom, double latitude, boolean sketchLikeSelection) {
+        return legacySamplingParameters(zoom, latitude,
+                effectiveSearchHalfWidthMeters(config, sketchLikeSelection), Math.max(0.5, config.sampleStepMeters()));
+    }
+
+    /** Native numerical preparation shared by live Legacy and frozen sequential Hybrid sources. */
+    static SamplingParameters legacySamplingParameters(int zoom, double latitude,
+            double halfMeters, double stepMeters) {
         double metersPerPixel = metersPerPixel(zoom, latitude);
-        double halfMeters = effectiveSearchHalfWidthMeters(config, sketchLikeSelection);
-        double stepMeters = Math.max(0.5, config.sampleStepMeters());
         int halfWidthPx = clamp((int) Math.round(halfMeters / metersPerPixel), 6, 96);
         int stepPx = clamp((int) Math.round(stepMeters / metersPerPixel), 1, Math.max(1, halfWidthPx / 3));
         return new SamplingParameters(zoom, latitude, metersPerPixel, halfMeters, stepMeters, halfWidthPx, stepPx);

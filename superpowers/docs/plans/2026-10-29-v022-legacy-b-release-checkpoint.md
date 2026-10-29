@@ -50,6 +50,13 @@ sh ./gradlew test --tests '*LegacyBAssessorTest' --tests '*LegacyBPipelineTest' 
 
 Remaining implementation:
 
+Source preparation now freezes credential-free numerical settings and actual visible
+anchors/managed inference rasters using native Legacy sampling clamps, stable-image
+preparation and pixel phase.23focused source/tile tests pass. The additive lossless
+LegacySourceCodec passed54codec/Format15/source/tracker tests in its isolated tree:
+bounded compression, malformed/trailing input rejection, exact RGBA and ordered
+managed mosaics. These are integration components, not a claim of live routing.
+
 Detached Legacy topology assignment now shares the precise live command's exact
 near-fraction arithmetic. The source occurrence identities remain separate from
 final geometry vertices, including coincident targets. The focused planner,
