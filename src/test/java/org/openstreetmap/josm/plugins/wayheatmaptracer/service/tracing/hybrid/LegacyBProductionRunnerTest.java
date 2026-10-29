@@ -19,6 +19,64 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    @Test void discoveryRunsActualLegacyWithoutBAndExplicitAdmissionOwnsRefinement() {
+        var fixture = fixture(false,false); var runner = new LegacyBProductionRunner();
+        var deadline = LegacyBPipeline.Deadline.production();
+        CancellationProbe rejectEarlyB = () -> Arrays.stream(Thread.currentThread().getStackTrace())
+                .anyMatch(frame -> frame.getClassName().endsWith(".ProbabilisticTraceEngine"));
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var discovery = assertDoesNotThrow(() -> runner.discoverVisible(fixture.input(), fixture.visible(),
+                    rejectEarlyB,owner,deadline));
+            assertEquals(3,discovery.value().profileCount());
+            assertFalse(discovery.value().seeds().isEmpty());
+            assertTrue(discovery.value().alternatives().get(0).rawProjected().stream().anyMatch(point -> point.north() > 2));
+            var admitted = List.of(discovery.value().seeds().get(0).id());
+            var result = runner.refine(discovery,admitted,fixture.input().request().budgets(),
+                    CancellationProbe.NONE,owner,deadline);
+            assertTrue(result.value().batch().usage().transitions() > 0);
+            assertTrue(result.value().batch().candidates().stream().allMatch(candidate -> admitted.contains(candidate.parentSeedId())));
+            assertThrows(IllegalStateException.class, () -> runner.refine(discovery,admitted,
+                    fixture.input().request().budgets(),CancellationProbe.NONE,owner,deadline));
+            result.owner().close(); assertEquals(0,owner.currentBytes());
+        }
+    }
+
+    @Test void unadmittedSourceKeepsActualLegacyEvidenceWithoutInventingBWork() {
+        var fixture = fixture(false,false); var runner = new LegacyBProductionRunner();
+        var deadline = LegacyBPipeline.Deadline.production();
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var discovery = runner.discoverVisible(fixture.input(),fixture.visible(),CancellationProbe.NONE,owner,deadline);
+            int omitted = discovery.value().seeds().size(); assertTrue(omitted > 0);
+            var result = runner.refine(discovery,List.of(),fixture.input().request().budgets(),
+                    CancellationProbe.NONE,owner,deadline);
+            assertFalse(result.value().alternatives().isEmpty());
+            assertEquals(omitted,result.value().batch().omittedParents());
+            assertTrue(result.value().batch().truncated());
+            assertTrue(result.value().batch().candidates().isEmpty());
+            assertEquals(LegacyBPipeline.Status.RESOURCE_LIMIT,result.value().batch().status());
+            assertEquals(TraceWorkUsage.none(),result.value().batch().usage());
+            var preview = LegacyBModernResultAdapter.adapt(result.value(),fixture.input(),
+                    new ModernTracePipeline.Options(fixture.input().fieldName(),GeometryCleanupConfig.disabled(),"selected",0),
+                    CancellationProbe.NONE);
+            assertEquals(TraceHypothesisSet.Status.RESOURCE_LIMIT,preview.inference().status());
+            assertTrue(preview.routes().isEmpty());
+            result.owner().close(); assertEquals(0,owner.currentBytes());
+        }
+    }
+
+    @Test void cancellationBetweenDiscoveryAndRefinementReleasesTheConsumedDiscovery() {
+        var fixture = fixture(false,false); var runner = new LegacyBProductionRunner();
+        var deadline = LegacyBPipeline.Deadline.production();
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var discovery = runner.discoverVisible(fixture.input(),fixture.visible(),CancellationProbe.NONE,owner,deadline);
+            var admitted = List.of(discovery.value().seeds().get(0).id());
+            assertTrue(owner.currentBytes() > 0);
+            assertThrows(CancellationException.class, () -> runner.refine(discovery,admitted,
+                    fixture.input().request().budgets(),() -> true,owner,deadline));
+            assertEquals(0,owner.currentBytes(),"The cancelled attempt must release native discovery data");
+        }
+    }
+
     @Test void contextualCrossingWithRemoteEndpointsIsCheckedWithoutProjectingOutsideCertifiedDomain() {
         var fixture = fixture(true, true, Double.POSITIVE_INFINITY, true, 2000);
         var before = fixture.input().network().canonicalHash();

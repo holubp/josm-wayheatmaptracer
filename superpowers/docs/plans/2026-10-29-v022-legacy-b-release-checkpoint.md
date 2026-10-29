@@ -4,6 +4,19 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Current global-admission foundation separates actual owned Legacy discovery from B
+refinement. Discovery invokes no B; refinement consumes its owner once and accepts
+only at most two explicit discovered parent IDs in native order. Existing single-
+source wrappers preserve their first-two behavior. Empty admission retains actual
+Legacy diagnostics, zero native B work, and an explicit resource-limited composite
+state rather than no-signal. Cancellation at the phase handoff releases discovery
+data; its3072-byte leak was reproduced RED before correction.
+The deterministic admission helper selects source representatives before second
+native ranks, retaining selected and complete aggregate representatives. API/helper/
+ordinary/frozen neighbors pass36tests (3m10s); final status/cancellation checks pass6
+(38s). This foundation is NOT YET wired across ordinary source choices or frozen
+source-local admission: Task4/6 global caps remain open until that integration.
+
 Sparse-occurrence follow-up is now focused-tested and independently reviewed:
 45tests/0failures/errors/skips (2m24s), including ordinary dense/normal subrange
 Apply/Undo/Redo, frozen/archive replay, exact subdivision adversaries and a retained

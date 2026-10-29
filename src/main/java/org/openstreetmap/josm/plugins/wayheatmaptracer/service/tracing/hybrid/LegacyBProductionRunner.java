@@ -125,6 +125,16 @@ public final class LegacyBProductionRunner {
         }
     }
 
+    /** Actual native Legacy discovery, before any B invocation or global parent admission. */
+    public record Discovery(Input input, String detector, int profileCount, List<LegacyAlternative> alternatives,
+            List<Seed> seeds, List<Section> sections) {
+        public Discovery {
+            Objects.requireNonNull(input); Objects.requireNonNull(detector);
+            if (profileCount < 0) throw new IllegalArgumentException("Negative native profile count");
+            alternatives = List.copyOf(alternatives); seeds = List.copyOf(seeds); sections = List.copyOf(sections);
+        }
+    }
+
     public Accounted<Result> runVisible(Input input, LegacyVisibleProfileSampler.Input source,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, Deadline deadline) {
         return runVisible(input, source, input.request().budgets(), cancellation, owner, deadline);
@@ -132,6 +142,14 @@ public final class LegacyBProductionRunner {
 
     /** Available work is caller-owned remaining work across source choices, never a fresh enlarged budget. */
     public Accounted<Result> runVisible(Input input, LegacyVisibleProfileSampler.Input source, TraceBudgets available,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, Deadline deadline) {
+        requireBudget(input.request().budgets(), available);
+        var discovered = discoverVisible(input, source, cancellation, owner, deadline);
+        return refine(discovered, discovered.value().seeds().stream().limit(2).map(Seed::id).toList(),
+                available, cancellation, owner, deadline);
+    }
+
+    public Accounted<Discovery> discoverVisible(Input input, LegacyVisibleProfileSampler.Input source,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, Deadline deadline) {
         requireDetector(source.detectors());
         if (!source.anchors().stream().map(LegacyVisibleProfileSampler.Anchor::source).toList().equals(input.originalProjected())
@@ -142,7 +160,7 @@ public final class LegacyBProductionRunner {
         var sampler = new LegacyVisibleProfileSampler();
         long pixels = Math.multiplyExact((long) source.raster().width(), source.raster().height());
         long samples = 4L * source.options().halfWidthPx() * 6 / source.options().stepPx() + 4;
-        return run(input, source.detectors().get(0), source.options().trackerNormalizationRasterPx(), available,
+        return discover(input, source.detectors().get(0), source.options().trackerNormalizationRasterPx(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
                 points -> sampler.project(source, points), nativeWorkingBytes(pixels, source.anchors().size(), samples),
                 cancellation, owner, deadline);
@@ -154,6 +172,14 @@ public final class LegacyBProductionRunner {
     }
 
     public Accounted<Result> runManaged(Input input, LegacyManagedProfileSampler.Input source, TraceBudgets available,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, Deadline deadline) {
+        requireBudget(input.request().budgets(), available);
+        var discovered = discoverManaged(input, source, cancellation, owner, deadline);
+        return refine(discovered, discovered.value().seeds().stream().limit(2).map(Seed::id).toList(),
+                available, cancellation, owner, deadline);
+    }
+
+    public Accounted<Discovery> discoverManaged(Input input, LegacyManagedProfileSampler.Input source,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, Deadline deadline) {
         requireDetector(source.detectors());
         if (!source.sourcePolyline().equals(input.originalProjected()) || !source.projectionCode().equals(input.projectionCode())) {
@@ -169,19 +195,18 @@ public final class LegacyBProductionRunner {
         long profiles = Math.max(2, (long) Math.ceil(length / source.inferenceParameters().sampleStepMeters()) + 2);
         long samples = 4L * source.inferenceParameters().halfWidthPx() * 6
                 / source.inferenceParameters().stepPx() + 4;
-        return run(input, source.detectors().get(0), source.trackerNormalizationRasterPx(), available,
+        return discover(input, source.detectors().get(0), source.trackerNormalizationRasterPx(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
                 points -> sampler.project(source, source.detectors().get(0), points),
                 nativeWorkingBytes(pixels, profiles, samples), cancellation, owner, deadline);
     }
 
-    private Accounted<Result> run(Input input, String detector, double normalization, TraceBudgets available,
+    private Accounted<Discovery> discover(Input input, String detector, double normalization,
             Supplier<List<RenderedHeatmapSampler.CrossSectionProfile>> sample,
             Function<List<RasterPoint>,List<ProjectedPoint>> project, long workingBytes,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner, Deadline deadline) {
-        requireBudget(input.request().budgets(), available);
         cancellation.checkpoint();
-        var resultOwner = attemptOwner.child("legacy-b-production-result");
+        var resultOwner = attemptOwner.child("legacy-discovery-result");
         var legacyOwner = resultOwner.child("legacy-sampling-and-tracking");
         try {
             List<RenderedHeatmapSampler.CrossSectionProfile> profiles;
@@ -231,11 +256,39 @@ public final class LegacyBProductionRunner {
             }
             int profileCount = profiles.size();
             legacyOwner.close();
+            var discovery = new Discovery(input, detector, profileCount, alternatives, seeds, sections);
+            own(resultOwner, discovery, 1024L + 128L * (alternatives.size() + seeds.size() + sections.size()));
+            return new Accounted<>(discovery, resultOwner);
+        } catch (RuntimeException | Error failure) {
+            resultOwner.close(); throw failure;
+        }
+    }
+
+    /** Consumes one owned discovery exactly once; omitted parents retain factual diagnostics but do no B work. */
+    public Accounted<Result> refine(Accounted<Discovery> discovery, List<String> admittedParentIds,
+            TraceBudgets available, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner,
+            Deadline deadline) {
+        var nativeDiscovery = discovery.value(); var input = nativeDiscovery.input();
+        requireBudget(input.request().budgets(), available);
+        var admitted = List.copyOf(admittedParentIds);
+        var admittedSet = new LinkedHashSet<>(admitted);
+        var selectedSeeds = nativeDiscovery.seeds().stream().filter(seed -> admittedSet.contains(seed.id())).toList();
+        if (admitted.size() > 2 || admittedSet.size() != admitted.size()
+                || !selectedSeeds.stream().map(Seed::id).toList().equals(admitted))
+            throw new IllegalArgumentException("Parent admission must name at most two discovered parents in native order");
+        var resultOwner = attemptOwner.child("legacy-b-production-result");
+        try {
+            discovery.owner().transferTo(resultOwner); discovery.owner().close();
+            cancellation.checkpoint();
+            var detector = nativeDiscovery.detector(); int profileCount = nativeDiscovery.profileCount();
+            var alternatives = nativeDiscovery.alternatives(); var seeds = nativeDiscovery.seeds();
+            var sections = nativeDiscovery.sections().stream().filter(section -> admittedSet.contains(section.parentSeedId())).toList();
+            var facts = effectiveOccurrences(input);
             var sectionQualities = new ArrayList<SectionQuality>();
             var engine = new ProbabilisticTraceEngine(input.fieldName());
             var image = ImageCostField.fromEvidence(input.evidence(), input.fieldName());
             var authorityWork = new AuthorityWork();
-            var nativeBatch = new LegacyBPipeline(deadline).refine(seeds, sections, (section, remaining, probe) -> {
+            var nativeBatch = new LegacyBPipeline(deadline).refine(selectedSeeds, sections, (section, remaining, probe) -> {
                 var reference = new LegacyBReferenceFactory().prepare(section, input.request(), input.evidence(),
                         input.network(), remaining, probe);
                 var nativeRun = engine.traceRefinedWithUsage(reference, input.network(), probe, resultOwner);
@@ -283,7 +336,8 @@ public final class LegacyBProductionRunner {
             for (var candidate : nativeBatch.candidates()) reconstructed.add(LegacyBOccurrenceReconstruction
                     .reuseAvailableVertices(input, candidate, cancellation, resultOwner));
             var batch = new Batch(reconstructed, nativeBatch.sections(), nativeBatch.usage(),
-                    nativeBatch.truncated(), nativeBatch.omittedParents());
+                    nativeBatch.truncated() || seeds.size() > admitted.size(),
+                    nativeBatch.omittedParents() + seeds.size() - admitted.size());
             var assessments = new ArrayList<LegacyBAssessor.AssessedCandidate>();
             for (var candidate : batch.candidates()) {
                 cancellation.checkpoint();

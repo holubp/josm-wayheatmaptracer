@@ -72,9 +72,8 @@ public final class LegacyBModernResultAdapter {
                 ambiguous |= nativeResult.status() == TraceHypothesisSet.Status.AMBIGUOUS;
             }
         }
-        var status = hypotheses.isEmpty() ? TraceHypothesisSet.Status.NO_ROUTE
-                : result.batch().status() == LegacyBPipeline.Status.RESOURCE_LIMIT
-                        ? TraceHypothesisSet.Status.RESOURCE_LIMIT
+        var status = result.batch().status() == LegacyBPipeline.Status.RESOURCE_LIMIT
+                        ? TraceHypothesisSet.Status.RESOURCE_LIMIT : hypotheses.isEmpty() ? TraceHypothesisSet.Status.NO_ROUTE
                         : ambiguous || result.batch().status() == LegacyBPipeline.Status.PARTIAL
                                 ? TraceHypothesisSet.Status.AMBIGUOUS : TraceHypothesisSet.Status.COMPLETE;
         var inference = new TraceHypothesisSet(TrackerMode.LEGACY_THEN_B, hypotheses, status,

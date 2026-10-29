@@ -176,7 +176,7 @@ public final class LegacyBPipeline {
 
         /** Derived from actual section outcomes, without relabeling a local fallback as whole-attempt failure. */
         public Status status() {
-            if (candidates.isEmpty()) { return Status.NO_ROUTE; }
+            if (candidates.isEmpty()) { return omittedParents > 0 ? Status.RESOURCE_LIMIT : Status.NO_ROUTE; }
             if (sections.stream().anyMatch(section -> section.outcome() == Outcome.UNATTEMPTED_BUDGET
                     || section.reason() == Reason.DEADLINE || section.reason() == Reason.RESOURCE_LIMIT
                     || section.execution().isPresent() && (section.execution().orElseThrow().run().result().status()
