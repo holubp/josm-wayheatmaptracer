@@ -195,7 +195,7 @@ class V022FrozenFrameTest {
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
                 ByteBuffer.allocate(8).putInt(0).putInt(3).array()));
         assertThrows(IllegalArgumentException.class, () -> FrozenReplayCodec.encodedVersion(
-                ByteBuffer.allocate(8).putInt(0x57545250).putInt(6).array()));
+                ByteBuffer.allocate(8).putInt(0x57545250).putInt(FrozenReplayCodec.VERSION + 1).array()));
     }
 
     @Test

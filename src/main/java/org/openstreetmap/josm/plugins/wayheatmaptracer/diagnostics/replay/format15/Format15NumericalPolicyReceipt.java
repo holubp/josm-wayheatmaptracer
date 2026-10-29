@@ -114,6 +114,7 @@ final class Format15NumericalPolicyReceipt {
     }
 
     private static String inferencePolicy(TrackerMode engine) {
+        if (engine == TrackerMode.LEGACY_THEN_B) return "legacy-then-b-v1/" + inferencePolicy(TrackerMode.PROBABILISTIC);
         return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
             ? ModernNumericalPolicy.B_INFERENCE + "/" + EvidenceModelParameters.orientationIntegrationVersion()
                 + "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic

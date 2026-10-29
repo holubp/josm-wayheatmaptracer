@@ -160,6 +160,7 @@ final class ScalarReplayExpectation {
         return engine == TrackerMode.CORRIDOR_AWARE
             || engine == TrackerMode.PROBABILISTIC
             || engine == TrackerMode.HYBRID
+            || engine == TrackerMode.LEGACY_THEN_B
             || engine == TrackerMode.DIRECTIONAL_IMAGE;
     }
 

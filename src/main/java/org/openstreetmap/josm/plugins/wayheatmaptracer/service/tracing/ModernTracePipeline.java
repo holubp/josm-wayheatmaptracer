@@ -216,7 +216,7 @@ public final class ModernTracePipeline {
             finalizationNanos += System.nanoTime() - routeStarted;
         }
         long rankingStarted = System.nanoTime();
-        List<Route> ranked = rank(routes, request.engine(), options);
+        List<Route> ranked = rankRoutes(routes, request.engine(), options);
         long rankingNanos = System.nanoTime() - rankingStarted;
         if (request.engine() == TrackerMode.PROBABILISTIC) {
             org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -679,7 +679,8 @@ public final class ModernTracePipeline {
             Map<FinalRoutePointId, ObservationOwnership> sourceOwnership) {
     }
 
-    private static List<Route> rank(List<Route> routes, TrackerMode engine, Options options) {
+    /** Reuses common physical ranking for already assessed production compositions. */
+    public static List<Route> rankRoutes(List<Route> routes, TrackerMode engine, Options options) {
         CandidateRankingPolicy ranking = new CandidateRankingPolicy();
         Map<String, Route> byId = new LinkedHashMap<>();
         List<CandidateRankingPolicy.Candidate> candidates = new ArrayList<>();

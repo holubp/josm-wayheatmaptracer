@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 import java.util.function.LongSupplier;
@@ -30,7 +31,8 @@ public final class LegacyBPipeline {
     public enum Status { COMPLETE, PARTIAL, RESOURCE_LIMIT, NO_ROUTE }
     public enum Reason {
         B_REFINED, LEGACY_ALTERNATIVE, FIXED_SECTION, NO_ROUTE, DEGENERATE_REFERENCE,
-        EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE, WORK_BUDGET, RESOURCE_LIMIT, DEADLINE
+        EVIDENCE_COVERAGE, SPATIAL_RESOLUTION_UNAVAILABLE, WORK_BUDGET, RESOURCE_LIMIT, DEADLINE,
+        NO_USABLE_REFINEMENT
     }
 
     /** One attempt clock, created before Legacy runs and shared by every B section. */
@@ -58,13 +60,26 @@ public final class LegacyBPipeline {
     }
 
     /** Runner retains the factual native result, optional reference binding, and work exactly once. */
-    public record SectionExecution(TraceEngineRun run, Optional<Reference> reference) {
+    public record SectionExecution(TraceEngineRun run, Optional<Reference> reference,
+            Set<String> eligibleHypothesisIds) {
         public SectionExecution {
             Objects.requireNonNull(run);
             Objects.requireNonNull(reference);
+            eligibleHypothesisIds = Set.copyOf(eligibleHypothesisIds);
             if (run.result().engine() != TrackerMode.PROBABILISTIC) {
                 throw new IllegalArgumentException("Section must execute the native B engine");
             }
+            var actualIds = run.result().hypotheses().stream().map(TraceHypothesis::id)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!actualIds.containsAll(eligibleHypothesisIds)) {
+                throw new IllegalArgumentException("Eligible hypotheses must belong to the unchanged native result");
+            }
+        }
+
+        /** Compatibility for runners whose native outputs have no additional local quality exclusions. */
+        public SectionExecution(TraceEngineRun run, Optional<Reference> reference) {
+            this(run, reference, run.result().hypotheses().stream().map(TraceHypothesis::id)
+                    .collect(java.util.stream.Collectors.toSet()));
         }
     }
 
@@ -184,13 +199,14 @@ public final class LegacyBPipeline {
                             stoppedReason = Reason.DEADLINE;
                             outcome = new SectionOutcome(section, Outcome.LEGACY_RETAINED, Reason.DEADLINE,
                                     Optional.of(execution));
-                        } else if (!result.hypotheses().isEmpty()) {
+                        } else if (!execution.eligibleHypothesisIds().isEmpty()) {
                             outcome = new SectionOutcome(section, Outcome.B_REFINED, Reason.B_REFINED,
                                     Optional.of(execution));
                         } else {
                             boolean resource = result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT;
                             outcome = new SectionOutcome(section, Outcome.LEGACY_RETAINED,
-                                    resource ? Reason.RESOURCE_LIMIT : Reason.NO_ROUTE, Optional.of(execution));
+                                    resource ? Reason.RESOURCE_LIMIT : result.hypotheses().isEmpty()
+                                            ? Reason.NO_ROUTE : Reason.NO_USABLE_REFINEMENT, Optional.of(execution));
                         }
                         // A native resource refusal is terminal for starting new inference. Retain its output.
                         if (result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT) {
@@ -308,7 +324,9 @@ public final class LegacyBPipeline {
             Section section = outcome.section();
             TraceHypothesis hypothesis = null;
             if (rank >= 0 && outcome.outcome() == Outcome.B_REFINED) {
-                var alternatives = outcome.execution().orElseThrow().run().result().hypotheses();
+                var execution = outcome.execution().orElseThrow();
+                var alternatives = execution.run().result().hypotheses().stream()
+                        .filter(item -> execution.eligibleHypothesisIds().contains(item.id())).toList();
                 hypothesis = alternatives.get(rank < alternatives.size() ? rank : 0);
             }
             var geometry = hypothesis == null ? section.reference() : hypothesis.points();

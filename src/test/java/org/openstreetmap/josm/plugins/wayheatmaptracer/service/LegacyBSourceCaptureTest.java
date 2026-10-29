@@ -62,6 +62,36 @@ class LegacyBSourceCaptureTest {
                 IntensitySamplingMode.COLOR_MAPPING));
     }
 
+    @Test void captureGeometryCopiesExactLegacyOccurrencePolicyOnEdt() throws Exception {
+        org.openstreetmap.josm.data.projection.ProjectionRegistry.setProjection(
+                Projections.getProjectionByCode("EPSG:3857"));
+        var first = new org.openstreetmap.josm.data.osm.Node(new org.openstreetmap.josm.data.coor.LatLon(0, 0));
+        var middle = new org.openstreetmap.josm.data.osm.Node(new org.openstreetmap.josm.data.coor.LatLon(0, .001));
+        var last = new org.openstreetmap.josm.data.osm.Node(new org.openstreetmap.josm.data.coor.LatLon(0, .002));
+        var way = new org.openstreetmap.josm.data.osm.Way();
+        way.setNodes(List.of(first, middle, last));
+        var other = new org.openstreetmap.josm.data.osm.Way();
+        other.setNodes(List.of(middle, new org.openstreetmap.josm.data.osm.Node(
+                new org.openstreetmap.josm.data.coor.LatLon(.001, .001))));
+        var dataSet = new org.openstreetmap.josm.data.osm.DataSet();
+        for (var node : List.of(first, middle, last, other.getNode(1))) { dataSet.addPrimitive(node); }
+        dataSet.addPrimitive(way);
+        dataSet.addPrimitive(other);
+        var selection = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext(
+                way, 0, 2, List.of(first, middle, last), Set.of(first, last));
+        var result = new java.util.concurrent.atomic.AtomicReference<LegacyBSourceCapture.Geometry>();
+        javax.swing.SwingUtilities.invokeAndWait(() -> result.set(LegacyBSourceCapture.geometry(selection, true, 1.5)));
+        assertEquals(List.of(true, false, true), result.get().occurrences().stream().map(
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyTopologyPlanner.Occurrence::fixed).toList());
+        assertTrue(result.get().occurrences().get(1).topologyAnchor());
+        var original = result.get().originalProjected().get(1);
+        middle.setCoor(new org.openstreetmap.josm.data.coor.LatLon(0, .003));
+        assertEquals(original, result.get().originalProjected().get(1));
+        assertTrue(result.get().simplify());
+        assertEquals(1.5, result.get().projectedTolerance());
+        assertThrows(IllegalStateException.class, () -> LegacyBSourceCapture.geometry(selection, false, 0));
+    }
+
     @Test void acquiredManagedRasterKeepsNativePhaseScaleAndSamplingClamps() {
         var image = new java.awt.image.BufferedImage(128, 128, java.awt.image.BufferedImage.TYPE_INT_ARGB);
         image.setRGB(30, 60, 0xFFEEFFFF);

@@ -67,7 +67,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 5;
+    public static final int VERSION = 6;
     private static final int REQUEST_MAGIC = 0x57544452;
     private static final int AUTHORITY_MAGIC = 0x57544155;
     private static final int AUTHORITY_VERSION = 2;
@@ -118,10 +118,11 @@ public final class FrozenReplayCodec {
             try (DataOutputStream out = new DataOutputStream(bytes)) {
                 out.writeInt(0x57545250);
                 boolean explicit = !input.request().permissions().sharedNodeDisconnectionIntent().isEmpty();
-                boolean extended = explicit || input.planSearchRadiusMeters()
+                boolean hasLegacy = input.legacyB() != null;
+                boolean extended = hasLegacy || explicit || input.planSearchRadiusMeters()
                         != input.request().permissions().ordinaryRadiusMeters();
                 boolean semantic = extended || input.network().semanticWitness() != null;
-                out.writeInt(extended ? VERSION : semantic ? 4
+                out.writeInt(hasLegacy ? 6 : extended ? 5 : semantic ? 4
                         : input.evidence().coordinateFrame().hasCompleteNumericalIdentity() ? 3 : 2);
                 if (semantic) out.writeBoolean(input.evidence().coordinateFrame().hasCompleteNumericalIdentity());
                 evidence(out, input.evidence());
@@ -129,6 +130,7 @@ public final class FrozenReplayCodec {
                 network(out, input.network(), semantic, extended);
                 options(out, input.options());
                 if (extended) out.writeDouble(input.planSearchRadiusMeters());
+                if (hasLegacy) legacyB(out, input.legacyB());
             }
             return bytes.toByteArray();
         } catch (IOException exception) {
@@ -157,10 +159,12 @@ public final class FrozenReplayCodec {
             NetworkSnapshot network = network(in, version >= 4, version >= 5);
             ModernTracePipeline.Options options = options(in);
             double planRadius = version >= 5 ? in.readDouble() : request.permissions().ordinaryRadiusMeters();
+            FrozenLegacyBInput legacy = version >= 6 ? legacyB(in) : null;
             if (in.read() != -1) {
                 throw new IllegalArgumentException("Frozen replay input has trailing data");
             }
-            FrozenReplayInput decoded = new FrozenReplayInput(request, evidence, network, options, planRadius);
+            FrozenReplayInput decoded = new FrozenReplayInput(request, evidence, network, options, planRadius, legacy);
+            if (legacy != null && request.engine() == TrackerMode.LEGACY_THEN_B) legacy.bind(decoded);
             admit(decoded, new Admission());
             return decoded;
         } catch (IOException | RuntimeException exception) {
@@ -1219,6 +1223,44 @@ public final class FrozenReplayCodec {
         return values;
     }
 
+    private static void legacyB(DataOutputStream out, FrozenLegacyBInput value) throws IOException {
+        out.writeInt(value.sourceKind());
+        byte[] source = value.sourceBytes();
+        out.writeInt(source.length);
+        out.write(source);
+        count(out, value.occurrences().size());
+        for (var occurrence : value.occurrences()) {
+            out.writeInt(occurrence.sourceIndex()); out.writeBoolean(occurrence.fixed());
+            out.writeBoolean(occurrence.topologyAnchor());
+        }
+        count(out, value.frozenRanges().size());
+        for (var range : value.frozenRanges()) { out.writeInt(range.firstIndex()); out.writeInt(range.lastIndex()); }
+        out.writeBoolean(value.simplify()); out.writeDouble(value.projectedTolerance());
+    }
+
+    private static FrozenLegacyBInput legacyB(DataInputStream in) throws IOException {
+        int kind = in.readInt();
+        if (kind != 1 && kind != 2) throw new IllegalArgumentException("Unknown frozen Legacy source kind");
+        int length = in.readInt();
+        if (length <= 0 || length > Format15Safety.MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Frozen Legacy source exceeds artifact budget");
+        }
+        admission().bytes(2L * length);
+        byte[] source = new byte[length]; in.readFully(source);
+        int count = count(in);
+        var occurrences = new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                .LegacyTopologyPlanner.Occurrence>(count);
+        for (int index = 0; index < count; index++) {
+            occurrences.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                    .LegacyTopologyPlanner.Occurrence(in.readInt(), in.readBoolean(), in.readBoolean()));
+        }
+        int frozenCount = count(in);
+        var frozen = new ArrayList<OccurrenceRange>(frozenCount);
+        for (int index = 0; index < frozenCount; index++) frozen.add(new OccurrenceRange(in.readInt(), in.readInt()));
+        return FrozenLegacyBInput.decode(kind, source, occurrences, frozen, in.readBoolean(), in.readDouble(),
+                bytes -> admission().bytes(bytes));
+    }
+
     private static void count(DataOutputStream output, int count) throws IOException {
         if (count < 0 || count > MAX_ENTRIES) {
             throw new IllegalArgumentException("Replay collection exceeds component budget");
@@ -1310,6 +1352,12 @@ public final class FrozenReplayCodec {
 
     private static void admit(FrozenReplayInput input, Admission admission) {
         admission.bytes(4096);
+        if (input.legacyB() != null) {
+            var legacy = input.legacyB();
+            admission.bytes(2L * legacy.sourceByteCount() + legacy.rasterBytes());
+            admission.entries(legacy.occurrences().size());
+            admission.entries(legacy.frozenRanges().size());
+        }
         EvidenceSnapshot evidence = input.evidence();
         admitMetadata(evidence.snapshotId(), admission);
         admitMetadata(evidence.sourceIdentity(), admission);

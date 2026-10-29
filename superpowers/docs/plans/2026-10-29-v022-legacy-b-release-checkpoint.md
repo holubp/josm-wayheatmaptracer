@@ -4,6 +4,27 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Current continuation (uncommitted after6d0ee1d): ordinary visible Hybrid now executes
+actual Legacy and native interval B, retains their source/provenance and produces
+an available exact Apply plan in its integration fixture. A new positive production
+fixture proves B improves the curve between sparse Legacy anchors. Additive frozen
+input version6 binds actual Legacy RGBA and occurrence/frozen/simplification policy;
+versions1–5 keep their prior encodings. Direct strict replay runs the same new
+production runner. Four corrected production/action tests passed; the subsequent
+20-test input/replay/Apply run passed19, with only a historical test treating newly
+supported header6 as unknown (updated to reject VERSION+1). Archive-level native
+section work receipt/export validation is being completed, not yet qualified.
+Managed ordinary integration, complete source-option parity, section UI wiring,
+transaction/failure regressions, old A+B deletion, full CI and final independent
+review remain open. No RC has been created or published.
+
+Latest archive integration: live Format15 export and archive-based production replay
+passed together with the old-header regression (2tests,2PASS,2m2s). The export failure
+was the executable-engine whitelist omitting the newly implemented mode; that guard
+now admits Newmode while factory serialization still rejects missing Legacy input.
+Native B section work is captured and replay-validated separately from composite
+metadata; no full-way B posterior or Legacy transition count is invented.
+
 Worktree: `.worktrees/v022-legacy-b-release`; branch:
 `codex/v022-legacy-b-release`. The original `codex/v0.22.0-release` worktree at
 117baaf and its user edits/private artifacts were preserved. Exact shipped RC12
@@ -77,7 +98,7 @@ native mosaic iteration order, which the frozen codec must preserve explicitly.
    visible RenderedHeatmapSampler and managed TileHeatmapSampler inputs and their
    source-specific normalization. Corridor scalar sampling is not an established
    equivalent. Keep all original occurrence keys and frozen geometry exact.
-2. Wire actual Legacy→interval B→whole assessment through the ordinary attempt
+2. Finish actual Legacy→interval B→whole assessment through the ordinary attempt
    controller, native memory owner, one immutable Apply plan, diagnostics and strict
    replay. Live/replay must call the same production implementations. Cover global
    cancellation/staleness, local fallback, variants, all-color/alternative semantics
@@ -92,7 +113,8 @@ Task4 explicit completion/resource reasons were added after an intended API RED;
 local fallback, budget/resource refusal, completed intentional freezing and absent
 Legacy routes. Later sections retain the actual resource-refusal reason.
 Tasks3/5 tested components must not be described as an implemented live Hybrid.
-The new mode currently fails closed where its live route is not wired. Final0.22
+The new mode has a tested ordinary visible route; remaining source/integration gates
+are still incomplete. Final0.22
 additionally needs user RC acceptance and all mandatory remaining release gates;
 original R04/R05/R16 evidence has not been silently waived. METHODS and total256MiB
 proof remain approved0.22.1 deferrals; existing runtime limits still apply.

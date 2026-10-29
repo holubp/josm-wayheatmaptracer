@@ -251,6 +251,10 @@ public final class Format15ProductionBundleFactory {
             throw new IllegalArgumentException("Build identity and frozen replay input are required");
         }
         byte[] frozenInput = FrozenReplayCodec.encode(input);
+        if (input.request().engine() == org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode.LEGACY_THEN_B
+                && input.legacyB() == null) {
+            throw new IllegalArgumentException("legacy-production-source-unavailable");
+        }
         String inputHash = Format15Safety.sha256(frozenInput);
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>();
         artifacts.put("frozen-input.bin",

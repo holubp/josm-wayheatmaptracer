@@ -9,7 +9,12 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTra
 
 /** Complete detached input required for strict offline scalar and final-geometry replay. */
 public record FrozenReplayInput(TraceRequest request, EvidenceSnapshot evidence,
-        NetworkSnapshot network, ModernTracePipeline.Options options, double planSearchRadiusMeters) {
+        NetworkSnapshot network, ModernTracePipeline.Options options, double planSearchRadiusMeters,
+        FrozenLegacyBInput legacyB) {
+    public FrozenReplayInput(TraceRequest request, EvidenceSnapshot evidence, NetworkSnapshot network,
+            ModernTracePipeline.Options options, double planSearchRadiusMeters) {
+        this(request, evidence, network, options, planSearchRadiusMeters, null);
+    }
     public FrozenReplayInput(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, ModernTracePipeline.Options options) {
         this(request, evidence, network, options, request.permissions().ordinaryRadiusMeters());

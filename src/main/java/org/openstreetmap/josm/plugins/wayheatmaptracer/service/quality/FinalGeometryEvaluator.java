@@ -66,13 +66,14 @@ public final class FinalGeometryEvaluator {
             List<FinalRoutePointId> pointIds, ImageCostField image,
             double sourcePitchMeters, Map<Integer, MetricPoint> protectedAssignments,
             List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
-            boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed) {
+            boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed,
+            Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
         /** Copies final geometry and validates physical inputs. */
         public Request {
             if (id == null || id.isBlank() || points == null || points.size() < 2
                     || pointIds == null || pointIds.size() != points.size() || image == null
                     || !Double.isFinite(sourcePitchMeters) || sourcePitchMeters <= 0.0
-                    || protectedAssignments == null || proposedIncidentGeometry == null) {
+                    || protectedAssignments == null || proposedIncidentGeometry == null || sharedContacts == null) {
                 throw new IllegalArgumentException("Final geometry evaluation input is incomplete");
             }
             points = List.copyOf(points);
@@ -92,6 +93,40 @@ public final class FinalGeometryEvaluator {
                 incidents.add(List.copyOf(incident));
             }
             proposedIncidentGeometry = List.copyOf(incidents);
+            Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> contacts = new LinkedHashMap<>();
+            for (var entry : sharedContacts.entrySet()) {
+                if (entry.getKey() == null || entry.getKey() < 0 || entry.getKey() >= incidents.size()
+                        || entry.getValue() == null || entry.getValue().isEmpty()) {
+                    throw new IllegalArgumentException("Shared contact incident identity is invalid");
+                }
+                var identities = Set.copyOf(entry.getValue());
+                for (var identity : identities) {
+                    int vertex = pointIds.indexOf(identity);
+                    if (vertex < 0 || !incidents.get(entry.getKey()).contains(points.get(vertex))) {
+                        throw new IllegalArgumentException("Shared contact lacks its exact retained vertex");
+                    }
+                }
+                contacts.put(entry.getKey(), identities);
+            }
+            sharedContacts = Map.copyOf(contacts);
+        }
+
+        /** Existing callers retain their original terminal-contact policy. */
+        public Request(String id, List<MetricPoint> points, List<FinalRoutePointId> pointIds,
+                ImageCostField image, double sourcePitchMeters, Map<Integer, MetricPoint> protectedAssignments,
+                List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
+                boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed) {
+            this(id, points, pointIds, image, sourcePitchMeters, protectedAssignments,
+                    proposedIncidentGeometry, cleaned, branchAmbiguous, searchTruncated, optimizerFailed, Map.of());
+        }
+
+        /**
+         * Adds caller-proved shared-node identities for specific incident ways. Coordinates alone
+         * cannot authorize this contact: callers must bind each occurrence to captured topology.
+         */
+        public Request withSharedContacts(Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> contacts) {
+            return new Request(id, points, pointIds, image, sourcePitchMeters, protectedAssignments,
+                    proposedIncidentGeometry, cleaned, branchAmbiguous, searchTruncated, optimizerFailed, contacts);
         }
 
         /** Compatibility constructor for callers without typed final occurrence identities. */
@@ -1332,20 +1367,38 @@ public final class FinalGeometryEvaluator {
     }
 
     private static void inspectIncidentCrossings(Request request, List<Finding> findings) {
-        for (List<MetricPoint> incident : request.proposedIncidentGeometry()) {
+        for (int incidentIndex = 0; incidentIndex < request.proposedIncidentGeometry().size(); incidentIndex++) {
+            List<MetricPoint> incident = request.proposedIncidentGeometry().get(incidentIndex);
             for (int candidateSegment = 0; candidateSegment < request.points().size() - 1; candidateSegment++) {
                 for (int incidentSegment = 0; incidentSegment < incident.size() - 1; incidentSegment++) {
                     IntersectionKind kind = intersection(request.points().get(candidateSegment),
                             request.points().get(candidateSegment + 1), incident.get(incidentSegment),
                             incident.get(incidentSegment + 1));
-                    if (kind != IntersectionKind.NONE && !sharedTerminalContact(kind, request.points(), incident,
-                            candidateSegment, incidentSegment)) {
+                    boolean legacyTerminalContact = !request.sharedContacts().containsKey(incidentIndex)
+                            && sharedTerminalContact(kind, request.points(), incident, candidateSegment, incidentSegment);
+                    if (kind != IntersectionKind.NONE && !legacyTerminalContact
+                            && !provenSharedContact(request, kind, incidentIndex, candidateSegment, incidentSegment)) {
                         findings.add(hard(FindingCode.PREJUNCTION_CROSSING, candidateSegment,
                                 candidateSegment + 1, 0));
                     }
                 }
             }
         }
+    }
+
+    private static boolean provenSharedContact(Request request, IntersectionKind kind,
+            int incidentIndex, int candidateSegment, int incidentSegment) {
+        if (kind != IntersectionKind.TOUCH) { return false; }
+        var incident = request.proposedIncidentGeometry().get(incidentIndex);
+        for (var identity : request.sharedContacts().getOrDefault(incidentIndex, Set.of())) {
+            int vertex = request.pointIds().indexOf(identity);
+            if (vertex != candidateSegment && vertex != candidateSegment + 1) { continue; }
+            MetricPoint point = request.points().get(vertex);
+            if (point.equals(incident.get(incidentSegment)) || point.equals(incident.get(incidentSegment + 1))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean sharedTerminalContact(IntersectionKind kind, List<MetricPoint> candidate,

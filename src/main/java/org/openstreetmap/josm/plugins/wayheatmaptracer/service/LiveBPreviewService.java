@@ -53,6 +53,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModernResultAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.JunctionAuthorityBounds;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
@@ -372,10 +376,38 @@ public final class LiveBPreviewService {
     }
 
     /** Detached result from the actual common modern final pipeline. */
+    /** Pure source policy copied on the EDT before acquisition or tracing starts. */
+    public record LegacyBInvocation(LegacyBSourceCapture.Settings sampling,
+            LegacyBSourceCapture.Geometry geometry) {
+        public LegacyBInvocation { Objects.requireNonNull(sampling); Objects.requireNonNull(geometry); }
+        public static LegacyBInvocation capture(SelectionContext selection, AlignmentConfig config) {
+            if (config.heatmap().trackerMode() != TrackerMode.LEGACY_THEN_B
+                    || config.heatmap().alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
+                throw new IllegalArgumentException("Sequential Hybrid requires Precise Shape");
+            }
+            return new LegacyBInvocation(LegacyBSourceCapture.Settings.capture(config.heatmap()),
+                    LegacyBSourceCapture.geometry(selection, config.heatmap().simplifyEnabled(),
+                            config.heatmap().simplifyTolerancePx()));
+        }
+    }
+
+    /** Actual source inputs and native section execution retained for diagnostics and strict replay. */
+    public record LegacyBComputation(LegacyBProductionRunner.Input input,
+            LegacyBProductionRunner.Result result, LegacyVisibleProfileSampler.Input visibleSource,
+            LegacyManagedProfileSampler.Input managedSource) {
+        public LegacyBComputation {
+            Objects.requireNonNull(input); Objects.requireNonNull(result);
+            if ((visibleSource == null) == (managedSource == null)) {
+                throw new IllegalArgumentException("Hybrid computation needs exactly one actual Legacy source");
+            }
+        }
+    }
+
     public record Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
             ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
             Map<String, Number> counters, IntervalTraceBatch intervalBatch,
-            String settingsResolutionJson, List<DetectorAttempt> sourceAttempts) {
+            String settingsResolutionJson, List<DetectorAttempt> sourceAttempts,
+            LegacyBComputation legacyB) {
         public Computed {
             if (captured == null || evidence == null || request == null || options == null
                     || (pipeline == null) == (intervalBatch == null)) {
@@ -383,6 +415,11 @@ public final class LiveBPreviewService {
             }
             if (pipeline != null && pipeline.inference().engine() != request.engine()) {
                 throw new IllegalArgumentException("Full-way inference does not match its requested engine");
+            }
+            if (legacyB != null && (request.engine() != TrackerMode.LEGACY_THEN_B
+                    || legacyB.input().request() != request || legacyB.input().evidence() != evidence
+                    || legacyB.input().network() != captured.network())) {
+                throw new IllegalArgumentException("Hybrid computation must retain its factual capture");
             }
             if (intervalBatch != null && (intervalBatch.network() != captured.network()
                     || intervalBatch.evidence() != evidence
@@ -397,6 +434,13 @@ public final class LiveBPreviewService {
                             || !attempt.owner().options().sourceTier().equals(attempt.sourceTier())))) {
                 throw new IllegalArgumentException("Detector run has a different captured owner");
             }
+        }
+        public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
+                ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
+                Map<String, Number> counters, IntervalTraceBatch intervalBatch,
+                String settingsResolutionJson, List<DetectorAttempt> sourceAttempts) {
+            this(captured, evidence, request, pipeline, options, counters, intervalBatch,
+                    settingsResolutionJson, sourceAttempts, null);
         }
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
                 ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
@@ -420,7 +464,7 @@ public final class LiveBPreviewService {
         }
         public Computed withSourceAttempts(List<DetectorAttempt> attempts) {
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, settingsResolutionJson, attempts);
+                    intervalBatch, settingsResolutionJson, attempts, legacyB);
         }
         public Computed(Captured captured, EvidenceSnapshot evidence, TraceRequest request,
                 ModernTracePipeline.Result pipeline, ModernTracePipeline.Options options,
@@ -437,7 +481,7 @@ public final class LiveBPreviewService {
                             attempt.sourceTier(), attempt.status(),
                             attempt.owner().withSettingsResolution(redactedJson))).toList();
             return new Computed(captured, evidence, request, pipeline, options, counters,
-                    intervalBatch, redactedJson, updated);
+                    intervalBatch, redactedJson, updated, legacyB);
         }
         /** Whether this result contains production interval runs instead of a full-way run. */
         public boolean partitioned() {
@@ -1248,6 +1292,22 @@ public final class LiveBPreviewService {
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */
     public Computed compute(Captured captured, CancellationProbe cancellation) {
+        return compute(captured, cancellation, null);
+    }
+
+    /** Ordinary sequential Hybrid retains its EDT-captured native Legacy source policy. */
+    public Computed compute(Captured captured, CancellationProbe cancellation, LegacyBInvocation legacy) {
+        if (captured != null && ((captured.engine() == TrackerMode.LEGACY_THEN_B) != (legacy != null))) {
+            throw new IllegalArgumentException("Sequential Hybrid requires its captured Legacy source policy");
+        }
+        var ledger = legacy == null ? null : AttemptMemoryLedger.production();
+        try (var owner = ledger == null ? null : ledger.rootOwner()) {
+            return computeOwned(captured, cancellation, legacy, owner, LegacyBPipeline.Deadline.production());
+        }
+    }
+
+    private Computed computeOwned(Captured captured, CancellationProbe cancellation,
+            LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner, LegacyBPipeline.Deadline deadline) {
         if (SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("Live preview inference must execute off the EDT");
         }
@@ -1264,7 +1324,7 @@ public final class LiveBPreviewService {
         TraceBudgets limit = captured.engine() == TrackerMode.HYBRID
                 ? TraceBudgets.fundedHybrid() : TraceBudgets.defaults();
         ChoiceRun nativeRun = computeChoice(captured, partition, null, "selected-visible", 0,
-                limit, cancellation);
+                limit, cancellation, legacy, owner, deadline);
         if (captured.sourceRasters() == null || captured.intensityMode()
                 != IntensitySamplingMode.COLOR_MAPPING) {
             return nativeRun.computed();
@@ -1290,7 +1350,8 @@ public final class LiveBPreviewService {
                 } else {
                     try {
                         ChoiceRun aggregate = computeChoice(captured, partition, mapping, mapping, 1,
-                                remainingBudget(limit, remainingPairs, remainingTransitions), cancellation);
+                                remainingBudget(limit, remainingPairs, remainingTransitions), cancellation,
+                                legacy, owner, deadline);
                         attempts.add(new DetectorAttempt(mapping, mapping,
                                 DetectorAttemptStatus.PRODUCED, aggregate.computed()));
                         remainingPairs -= aggregate.usage().pairVisits();
@@ -1317,7 +1378,8 @@ public final class LiveBPreviewService {
             }
             try {
                 ChoiceRun choice = computeChoice(captured, partition, mapping, tier, preference++,
-                        remainingBudget(limit, remainingPairs, remainingTransitions), cancellation);
+                        remainingBudget(limit, remainingPairs, remainingTransitions), cancellation,
+                        legacy, owner, deadline);
                 attempts.add(new DetectorAttempt(mapping, tier,
                         DetectorAttemptStatus.PRODUCED, choice.computed()));
                 remainingPairs -= choice.usage().pairVisits();
@@ -1341,7 +1403,8 @@ public final class LiveBPreviewService {
 
     private ChoiceRun computeChoice(Captured captured,
             SelectedWayIntervalPartitioner.Partition partition, String mapping, String sourceTier,
-            int preference, TraceBudgets budget, CancellationProbe cancellation) {
+            int preference, TraceBudgets budget, CancellationProbe cancellation,
+            LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner, LegacyBPipeline.Deadline deadline) {
         if (captured.sourceOwner() != null && !captured.sourceOwner()
                 .isActiveGeneration(captured.managedRaster().generation())) {
             throw new IllegalStateException("Managed source generation changed during inference");
@@ -1354,6 +1417,10 @@ public final class LiveBPreviewService {
                             : captureManagedMappingEvidence(captured, mapping, cancellation);
             ModernTracePipeline.Options options = new ModernTracePipeline.Options(FIELD,
                     captured.cleanup(), sourceTier, preference);
+            if (captured.engine() == TrackerMode.LEGACY_THEN_B) {
+                return computeLegacyBChoice(captured, partition, mapping, budget, cancellation,
+                        legacy, owner, deadline, evidence, options);
+            }
             if (usesFixedIntervalBatch(partition, captured.engine())) {
                 IntervalTraceBatch batch = computePartitioned(captured, partition, cancellation,
                         evidence, options, budget);
@@ -1370,6 +1437,53 @@ public final class LiveBPreviewService {
         }
     }
 
+    private ChoiceRun computeLegacyBChoice(Captured captured,
+            SelectedWayIntervalPartitioner.Partition partition, String mapping, TraceBudgets budget,
+            CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
+            LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options) {
+        Objects.requireNonNull(legacy);
+        TraceRequest request = withBudgets(fullRequest(captured, evidence), budget);
+        var way = (DetachedWay) captured.network().primitives().get(request.selectedWayKey());
+        var geometry = legacy.geometry();
+        var frozen = partition.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList();
+        var facts = new ArrayList<org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                .LegacyTopologyPlanner.Occurrence>();
+        for (var fact : geometry.occurrences()) {
+            int original = request.selectedRange().firstIndex() + fact.sourceIndex();
+            var key = way.nodeKeys().get(original);
+            boolean fixed = fact.fixed() || captured.network().closure().protectedExistingNodeKeys().contains(key)
+                    || frozen.stream().anyMatch(range -> original >= range.firstIndex() && original <= range.lastIndex());
+            facts.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                    .LegacyTopologyPlanner.Occurrence(fact.sourceIndex(), fixed, fact.topologyAnchor()));
+        }
+        var input = new LegacyBProductionRunner.Input(request, captured.network(), evidence, FIELD,
+                geometry.originalProjected(), captured.sourceMetric(), captured.projectionCode(), facts,
+                frozen, geometry.simplify(), geometry.projectedTolerance());
+        String detector = mapping == null ? captured.intensityMode().usesColorMapping() ? captured.palette()
+                : captured.intensityMode().detectorName() : mapping;
+        LegacyVisibleProfileSampler.Input visible = null;
+        LegacyManagedProfileSampler.Input managed = null;
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Result> executed;
+        var runner = new LegacyBProductionRunner();
+        if (captured.raster() != null) {
+            visible = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(),
+                    geometry.originalProjected(), detector);
+            executed = runner.runVisible(input, visible, budget, cancellation, owner, deadline);
+        } else {
+            if (captured.sourceRasters() == null) {
+                throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
+            }
+            managed = LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
+                    geometry.originalProjected(), captured.projectionCode(), detector);
+            executed = runner.runManaged(input, managed, budget, cancellation, owner, deadline);
+        }
+        var result = executed.value();
+        var pipeline = LegacyBModernResultAdapter.adapt(result, input, options, cancellation);
+        var provenance = new LegacyBComputation(input, result, visible, managed);
+        return new ChoiceRun(new Computed(captured, evidence, request, pipeline, options,
+                ModernDiagnosticCounters.snapshot(), null, null, List.of(), provenance), result.batch().usage());
+    }
+
     private static TraceRequest withBudgets(TraceRequest request, TraceBudgets budget) {
         return new TraceRequest(request.selectedWayKey(), request.selectedRange(), request.engine(),
                 request.geometryMode(), request.permissions(), budget, request.evidenceSnapshotId(),
@@ -1382,7 +1496,8 @@ public final class LiveBPreviewService {
     private static boolean usesFixedIntervalBatch(SelectedWayIntervalPartitioner.Partition partition,
             TrackerMode engine) {
         return !partition.fixedIslands().isEmpty()
-                && ((engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID)
+                && ((engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
+                        || engine == TrackerMode.LEGACY_THEN_B)
                         && !partition.slideIntervals().isEmpty()
                 || partition.junctionDispositions().stream().anyMatch(junction ->
                         !junction.automaticEligible()
@@ -1392,7 +1507,7 @@ public final class LiveBPreviewService {
 
     /** Receiver geometry is read-only when Hybrid junction movement was explicitly disabled. */
     private static boolean usesFixedReceiverPolicy(TrackerMode engine, RecoveryPermissions permissions) {
-        return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
+        return engine == TrackerMode.PROBABILISTIC || (engine == TrackerMode.HYBRID || engine == TrackerMode.LEGACY_THEN_B)
                 && permissions.junctionPolicy() == org.openstreetmap.josm.plugins.wayheatmaptracer.model
                         .JunctionPolicy.FIXED;
     }
@@ -1747,7 +1862,8 @@ public final class LiveBPreviewService {
         if (heatmap.trackerMode() == TrackerMode.DIRECTIONAL_IMAGE && !explicitVisibleSource) {
             throw new IllegalArgumentException("Directional Image preview is visible-source only");
         }
-        if (heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()) {
+        if (heatmap.trackerMode() != TrackerMode.LEGACY_THEN_B
+                && heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()) {
             throw new IllegalArgumentException("Modern Precise Shape alignment requires simplification Off");
         }
         if ((heatmap.hasManagedAccessValues() && !explicitVisibleSource)
@@ -1776,7 +1892,8 @@ public final class LiveBPreviewService {
         }
         var heatmap = config.heatmap();
         if (!heatmap.trackerMode().capabilities().supportsManagedSource()
-                || heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()
+                || heatmap.trackerMode() != TrackerMode.LEGACY_THEN_B
+                        && heatmap.alignmentMode() == AlignmentMode.PRECISE_SHAPE && heatmap.simplifyEnabled()
                 || heatmap.parallelWayAwareness()
                 || config.searchHalfWidthMetersOverride().isPresent()) {
             throw new IllegalArgumentException("Modern managed tracing cannot use this engine, "
@@ -1851,7 +1968,7 @@ public final class LiveBPreviewService {
             case DIRECTIONAL_IMAGE -> "directional-image-v1/"
                     + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case LEGACY_V02 -> "legacy-v02";
-            case LEGACY_THEN_B -> "legacy-then-b-v1";
+            case LEGACY_THEN_B -> "legacy-then-b-v1/" + parameterIdentity(TrackerMode.PROBABILISTIC);
         };
     }
 

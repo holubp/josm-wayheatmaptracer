@@ -86,10 +86,16 @@ public final class LegacySourceCodec {
 
     /** Decodes a visible source after validating limits before allocating pixels or profile metadata. */
     public static LegacyVisibleProfileSampler.Input decodeVisible(byte[] bytes) {
+        return decodeVisible(bytes, ignored -> { });
+    }
+
+    /** Reserves raster payload against a containing frozen-input budget before pixel allocation. */
+    static LegacyVisibleProfileSampler.Input decodeVisible(byte[] bytes, java.util.function.LongConsumer reserve) {
         try (DataInputStream in = input(bytes, VISIBLE)) {
             int width = in.readInt();
             int height = in.readInt();
             pixelsBound(width, height, 1);
+            reserve.accept((long) width * height * Integer.BYTES);
             double minEast = finite(in.readDouble());
             double minNorth = finite(in.readDouble());
             double maxEast = finite(in.readDouble());
@@ -180,6 +186,11 @@ public final class LegacySourceCodec {
 
     /** Decodes managed mosaics after enforcing count, dimension, retained-byte, and stream budgets. */
     public static LegacyManagedProfileSampler.Input decodeManaged(byte[] bytes) {
+        return decodeManaged(bytes, ignored -> { });
+    }
+
+    /** Shares the containing frozen-input budget across every decoded native mosaic. */
+    static LegacyManagedProfileSampler.Input decodeManaged(byte[] bytes, java.util.function.LongConsumer reserve) {
         try (DataInputStream in = input(bytes, MANAGED)) {
             InferenceMode mode = enumValue(in, InferenceMode.class);
             int requestedInference = in.readInt();
@@ -204,6 +215,7 @@ public final class LegacySourceCodec {
                 int height = in.readInt();
                 pixelsBound(width, height, 1);
                 retainedBytes = addRasterBytes(retainedBytes, width, height);
+                reserve.accept((long) width * height * Integer.BYTES);
                 var parameters = samplingParameters(in);
                 boolean stable = in.readBoolean();
                 double virtualScale = positive(in.readDouble());

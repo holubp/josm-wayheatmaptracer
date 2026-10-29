@@ -69,6 +69,7 @@ public final class HybridSectionTableModel extends AbstractTableModel {
             case LEGACY_ALTERNATIVE -> tr("Legacy alternative");
             case FIXED_SECTION -> tr("Protected section left untouched");
             case NO_ROUTE -> tr("B found no usable route; Legacy retained");
+            case NO_USABLE_REFINEMENT -> tr("B result did not pass local safety or support checks; Legacy retained");
             case DEGENERATE_REFERENCE -> tr("Section too short for B; Legacy retained");
             case EVIDENCE_COVERAGE -> tr("B imagery coverage unavailable; Legacy retained");
             case SPATIAL_RESOLUTION_UNAVAILABLE -> tr("B image resolution unavailable; Legacy retained");

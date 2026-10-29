@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalDouble;
+import java.util.Set;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.quality.FinalGeometryEvaluator.Finding;
@@ -17,7 +18,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 public final class LegacyBAssessor {
     /** Original frozen authority and image; incident geometry must use proposed shared-node coordinates. */
     public record AssessmentContext(TraceRequest request, NetworkSnapshot network, EvidenceSnapshot evidence,
-            String fieldName, List<List<MetricPoint>> proposedIncidentGeometry) {
+            String fieldName, List<List<MetricPoint>> proposedIncidentGeometry,
+            Map<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
         public AssessmentContext {
             if (request == null || network == null || evidence == null || fieldName == null
                     || !evidence.fields().containsKey(fieldName) || proposedIncidentGeometry == null
@@ -32,6 +34,15 @@ public final class LegacyBAssessor {
                 throw new IllegalArgumentException("Hybrid assessment lacks its original frozen authority");
             }
             proposedIncidentGeometry = proposedIncidentGeometry.stream().map(List::copyOf).toList();
+            var contacts = new LinkedHashMap<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>>();
+            sharedContacts.forEach((index, identities) -> contacts.put(index, Set.copyOf(identities)));
+            sharedContacts = Map.copyOf(contacts);
+        }
+
+        /** Compatibility for callers without independently captured shared-node identity evidence. */
+        public AssessmentContext(TraceRequest request, NetworkSnapshot network, EvidenceSnapshot evidence,
+                String fieldName, List<List<MetricPoint>> proposedIncidentGeometry) {
+            this(request, network, evidence, fieldName, proposedIncidentGeometry, Map.of());
         }
     }
 
@@ -142,7 +153,8 @@ public final class LegacyBAssessor {
             }
             var request = new FinalGeometryEvaluator.Request(candidate.id(), candidate.points(), pointIds, image,
                     context.evidence().resolution().effectivePitchMeters(), protectedAssignments,
-                    context.proposedIncidentGeometry(), false, ambiguous, truncated, false);
+                    context.proposedIncidentGeometry(), false, ambiguous, truncated, false)
+                    .withSharedContacts(context.sharedContacts());
             var quality = new FinalGeometryEvaluator().evaluate(request, cancellation);
             cancellation.checkpoint();
             var support = FinalGeometryEvaluator.inspectSupport(candidate.points(), image,

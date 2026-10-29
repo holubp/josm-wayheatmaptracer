@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.actions;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -70,13 +71,17 @@ class OrdinaryModernAttemptAssemblyTest {
                 new RouteCase(TrackerMode.CORRIDOR_AWARE, AlignmentSourceMode.MANAGED_TILES, true),
                 new RouteCase(TrackerMode.PROBABILISTIC, AlignmentSourceMode.VISIBLE_LAYER, false),
                 new RouteCase(TrackerMode.PROBABILISTIC, AlignmentSourceMode.MANAGED_TILES, true),
+                new RouteCase(TrackerMode.LEGACY_THEN_B, AlignmentSourceMode.VISIBLE_LAYER, false),
                 new RouteCase(TrackerMode.HYBRID, AlignmentSourceMode.VISIBLE_LAYER, false),
                 new RouteCase(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.VISIBLE_LAYER, false));
 
         for (RouteCase routeCase : cases) {
             Fixture fixture = fixture();
             AlignmentConfig config = routeCase.engine() == TrackerMode.PROBABILISTIC
-                    ? incompatibleBConfig() : config(routeCase.engine());
+                    ? incompatibleBConfig() : routeCase.engine() == TrackerMode.LEGACY_THEN_B
+                            ? new AlignmentConfig(incompatibleBConfig().heatmap()
+                                    .withTrackerMode(TrackerMode.LEGACY_THEN_B), GeometryCleanupConfig.disabled())
+                            : config(routeCase.engine());
             RecoverySettings recovery = RecoverySettings.defaults(7.01);
             TracingSettings tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION,
                     routeCase.engine(), recovery, false, routeCase.sourceMode());
@@ -118,6 +123,45 @@ class OrdinaryModernAttemptAssemblyTest {
             assertEquals(routeCase.engine(), computed.request().engine());
             assertEquals(recovery.toPermissions(), computed.request().permissions());
             assertEquals(routeCase.engine(), computed.pipeline().inference().engine());
+            if (routeCase.engine() == TrackerMode.LEGACY_THEN_B) {
+                assertNotNull(computed.legacyB());
+                assertFalse(computed.legacyB().result().alternatives().isEmpty());
+                assertTrue(computed.legacyB().result().batch().sections().stream().anyMatch(section ->
+                        section.execution().isPresent()));
+                assertTrue(computed.pipeline().routes().stream().allMatch(route ->
+                        route.hypothesis().posteriorProbability().isEmpty()));
+                assertTrue(computed.legacyB().input().simplify());
+                assertEquals(AlignWayAction.ModernApplyPreflight.READY,
+                        AlignWayAction.modernApplyPreflight(computed.captured(), routing.route().invocation().config()));
+                var adapter = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                        .ModernSingleWayEditPlanAdapter();
+                var plans = java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
+                        .mapToObj(index -> adapter.assess(computed, index)).toList();
+                assertTrue(plans.stream().anyMatch(plan -> plan.availability()
+                        == org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                            .ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE
+                        || plan.availability() == org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing
+                            .ModernSingleWayEditPlanAdapter.ApplyAvailability.NO_CHANGE), plans.toString());
+                assertDoesNotThrow(() -> AlignWayAction.createModernDiagnostics(computed, computed,
+                        "preview-open", 0, null, false, false, null));
+                AlignWayAction.recordModernDiagnostics(computed, "preview-open", 0, null,
+                        false, false, "ordinary-legacy-b-attempt");
+                Path exported = directory.resolve("legacy-b.zip");
+                DiagnosticsRegistry.writeLatest(exported.toFile());
+                var archive = Format15ArchiveReader.read(exported);
+                var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes());
+                assertNotNull(frozen.legacyB());
+                assertEquals(computed.legacyB().input().occurrences(), frozen.legacyB().occurrences());
+                assertTrue(archive.artifact("legacy-b-native-work.json").isPresent(),
+                        "Actual B section work must remain separately available from the composition");
+                var replay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .Format15ReplayRunner.replay(archive,
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                            archive.sourceIdentityHash(), archive.parameterHash());
+                assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
+                        replay.routes().stream().map(route -> route.hypothesis().points()).toList());
+            }
             if (routeCase.engine() == TrackerMode.PROBABILISTIC) {
                 assertTrue(computed.captured().cleanup().isDisabled());
                 assertTrue(computed.options().cleanup().isDisabled());

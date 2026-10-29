@@ -10,12 +10,53 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyTopologyPlanner.Occurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 /** Captures only the numerical settings and actual source pixels consumed by sequential Hybrid. */
 public final class LegacyBSourceCapture {
     private LegacyBSourceCapture() { }
+
+    /** Exact source coordinates and native Legacy fixed/topology policy, detached on the EDT. */
+    public record Geometry(List<ProjectedPoint> originalProjected, List<Occurrence> occurrences,
+            boolean simplify, double projectedTolerance) {
+        public Geometry {
+            originalProjected = List.copyOf(originalProjected);
+            occurrences = List.copyOf(occurrences);
+            if (originalProjected.size() < 2 || originalProjected.size() != occurrences.size()
+                    || !Double.isFinite(projectedTolerance) || projectedTolerance < 0) {
+                throw new IllegalArgumentException("Complete Legacy source policy is required");
+            }
+            for (int index = 0; index < occurrences.size(); index++) {
+                if (occurrences.get(index).sourceIndex() != index) {
+                    throw new IllegalArgumentException("Legacy source policy must retain occurrence order");
+                }
+            }
+        }
+    }
+
+    /** Mirrors the standalone precise command's source-occurrence policy before worker dispatch. */
+    public static Geometry geometry(SelectionContext selection, boolean simplify, double projectedTolerance) {
+        if (!javax.swing.SwingUtilities.isEventDispatchThread()) {
+            throw new IllegalStateException("Legacy source policy must be captured on the EDT");
+        }
+        Objects.requireNonNull(selection);
+        var projected = new java.util.ArrayList<ProjectedPoint>();
+        var occurrences = new java.util.ArrayList<Occurrence>();
+        int last = selection.segmentNodes().size() - 1;
+        for (int index = 0; index <= last; index++) {
+            var node = selection.segmentNodes().get(index);
+            var coordinate = node.getEastNorth();
+            if (coordinate == null) { throw new IllegalArgumentException("Legacy source coordinate is unavailable"); }
+            projected.add(new ProjectedPoint(coordinate.east(), coordinate.north()));
+            occurrences.add(new Occurrence(index, selection.fixedNodes().contains(node),
+                    index == 0 || index == last || node.hasKeys()
+                            || node.getReferrers().stream().anyMatch(referrer -> referrer != selection.way())));
+        }
+        return new Geometry(projected, occurrences, simplify, projectedTolerance);
+    }
 
     /** Credential-free slide-time choices; source-specific clamps remain those of native Legacy. */
     public record Settings(int visibleHalfWidthPx, int visibleStepPx, InferenceMode inferenceMode,

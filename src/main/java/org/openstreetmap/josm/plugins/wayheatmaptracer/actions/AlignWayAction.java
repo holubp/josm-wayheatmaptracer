@@ -238,19 +238,21 @@ public class AlignWayAction extends JosmAction {
                     LiveBPreviewService.Captured captured = previewService.capture(dataSet,
                             selection, raster, invocation.config(), true, permissions);
                     yield new AlignmentJob.CapturedAttempt<>(snapshot(captured, sourceIdentity),
-                            new OrdinaryCapturedSource(invocation, captured, null));
+                            new OrdinaryCapturedSource(invocation, captured, null,
+                                    legacyBInvocation(selection, invocation.config())));
                 }
                 case MODERN_MANAGED -> {
                     LiveBPreviewService.ManagedCaptureSeed seed = previewService.captureManagedSeed(
                             dataSet, selection, invocation.config(), sourceIdentity, permissions);
                     yield new AlignmentJob.CapturedAttempt<>(snapshot(seed, sourceIdentity),
-                            new OrdinaryCapturedSource(invocation, null, seed));
+                            new OrdinaryCapturedSource(invocation, null, seed,
+                                    legacyBInvocation(selection, invocation.config())));
                 }
                 case LEGACY_COMPATIBILITY -> throw new IllegalArgumentException(
                         "Legacy compatibility alignment cannot enter the modern attempt assembly");
             }, (captured, context) -> {
                 if (captured.visible() != null) {
-                    return previewService.compute(captured.visible(), context)
+                    return previewService.compute(captured.visible(), context, captured.legacyB())
                             .withSettingsResolution(settingsResolutionJson(
                                     routing.requestedConfig(), captured.invocation().config()));
                 }
@@ -261,7 +263,7 @@ public class AlignWayAction extends JosmAction {
                         : previewService.attachManagedSources(captured.managed(),
                                 sourcesAcquire.acquire(captured.managed(), captured.invocation(), context),
                                 sourceOwner);
-                return previewService.compute(managed, context)
+                return previewService.compute(managed, context, captured.legacyB())
                         .withSettingsResolution(settingsResolutionJson(
                                 routing.requestedConfig(), captured.invocation().config()));
             }, publisher);
@@ -279,9 +281,16 @@ public class AlignWayAction extends JosmAction {
                     seed.settingsHash(), seed.network().canonicalHash());
         }
 
+        private static LiveBPreviewService.LegacyBInvocation legacyBInvocation(
+                SelectionContext selection, AlignmentConfig config) {
+            return config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B
+                    ? LiveBPreviewService.LegacyBInvocation.capture(selection, config) : null;
+        }
+
         private record OrdinaryCapturedSource(ModernAlignmentInvocation invocation,
                 LiveBPreviewService.Captured visible,
-                LiveBPreviewService.ManagedCaptureSeed managed) {
+                LiveBPreviewService.ManagedCaptureSeed managed,
+                LiveBPreviewService.LegacyBInvocation legacyB) {
             OrdinaryCapturedSource {
                 Objects.requireNonNull(invocation, "invocation");
                 if ((visible == null) == (managed == null)) {
@@ -2146,7 +2155,7 @@ public class AlignWayAction extends JosmAction {
         boolean engineSupported = captured.engine().capabilities().requiresEvidenceSnapshot();
         boolean geometrySupported = captured.geometryMode() == heatmap.alignmentMode()
                 && (heatmap.alignmentMode() == AlignmentMode.MOVE_EXISTING_NODES
-                    || !heatmap.simplifyEnabled());
+                    || !heatmap.simplifyEnabled() || captured.engine() == TrackerMode.LEGACY_THEN_B);
         return engineSupported && geometrySupported
                 ? ModernApplyPreflight.READY : ModernApplyPreflight.CONFIGURATION_UNSUPPORTED;
     }
@@ -2289,7 +2298,8 @@ public class AlignWayAction extends JosmAction {
                 if (!routed.heatmap().trackerMode().capabilities().supportsManagedSource()) {
                     return tr("The selected engine cannot use the managed source");
                 }
-                if (routed.heatmap().simplifyEnabled()) {
+                if (routed.heatmap().simplifyEnabled()
+                        && routed.heatmap().trackerMode() != TrackerMode.LEGACY_THEN_B) {
                     return tr("Precise Shape requires simplification Off for this engine");
                 }
                 if (routed.heatmap().parallelWayAwareness()) {
@@ -2872,7 +2882,9 @@ public class AlignWayAction extends JosmAction {
             NetworkSnapshot currentNoChangeNetwork) {
         FrozenReplayInput input = new FrozenReplayInput(computed.request(),
                 computed.evidence(), computed.captured().network(), computed.options(),
-                computed.captured().searchRadiusMeters());
+                computed.captured().searchRadiusMeters(), computed.legacyB() == null ? null
+                    : org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                            .FrozenLegacyBInput.capture(computed.legacyB()));
         int selectedRoute = computed.pipeline().routes().isEmpty() ? -1 : routeIndex;
         ManualJunctionEligibility.Decision junction = computed.request().permissions()
                 .junctionPolicy() == JunctionPolicy.FIXED ? null
@@ -2922,6 +2934,10 @@ public class AlignWayAction extends JosmAction {
                     LastSlideDebugBundle.buildIdentity(), input, computed.pipeline(), status,
                     sourceLineage, selectedRoute, plan, reviewed, applied, computed.counters(),
                     reason, availability, currentNoChangeNetwork);
+        }
+        if (computed.legacyB() != null) {
+            bundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                    .LegacyBReplayWork.attach(bundle, input, computed.legacyB());
         }
         return withSourceChoices(withSettingsResolution(
                 Format15ProductionBundleFactory.withCurrentNumericalPolicy(
@@ -3077,6 +3093,7 @@ public class AlignWayAction extends JosmAction {
             case CORRIDOR_AWARE -> tr("Corridor-aware A");
             case PROBABILISTIC -> tr("Probabilistic B");
             case HYBRID -> tr("Hybrid A+B");
+            case LEGACY_THEN_B -> tr("Hybrid: Legacy then B");
             case DIRECTIONAL_IMAGE -> tr("Directional Image");
             default -> tr("Modern");
         };
@@ -3087,6 +3104,7 @@ public class AlignWayAction extends JosmAction {
             case CORRIDOR_AWARE -> "A";
             case PROBABILISTIC -> "B";
             case HYBRID -> "Hybrid A+B";
+            case LEGACY_THEN_B -> "Legacy then B";
             case DIRECTIONAL_IMAGE -> "Image";
             default -> "Modern";
         };

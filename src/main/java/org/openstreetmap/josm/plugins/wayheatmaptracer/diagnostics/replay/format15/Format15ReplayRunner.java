@@ -38,7 +38,13 @@ public final class Format15ReplayRunner {
     /** Result materialized from a real production computation, never a recorded candidate. */
     public record Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
             TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
-            String inputHash, List<String> disconnectionPlanReviews) {
+            String inputHash, List<String> disconnectionPlanReviews,
+            List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork) {
+        public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
+                TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
+                String inputHash, List<String> disconnectionPlanReviews) {
+            this(level, capturedEngine, engine, inference, routes, inputHash, disconnectionPlanReviews, List.of());
+        }
         public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
                 TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes, String inputHash) {
             this(level, capturedEngine, engine, inference, routes, inputHash, List.of());
@@ -53,6 +59,9 @@ public final class Format15ReplayRunner {
             }
             routes = List.copyOf(routes);
             disconnectionPlanReviews = List.copyOf(disconnectionPlanReviews);
+            nativeBExecutionWork = List.copyOf(nativeBExecutionWork);
+            if (engine != TrackerMode.LEGACY_THEN_B && !nativeBExecutionWork.isEmpty())
+                throw new IllegalArgumentException("Section work is reserved for sequential Hybrid");
             if (!disconnectionPlanReviews.isEmpty() && (level != ReplayLevel.FINAL_GEOMETRY
                     || disconnectionPlanReviews.size() != routes.size()))
                 throw new IllegalArgumentException("Disconnection review output is incomplete");
@@ -478,6 +487,7 @@ public final class Format15ReplayRunner {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
         Result actual = replay(input, level, input.request().engine());
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        LegacyBReplayWork.validate(archive, actual);
         verifyDisconnectionReview(archive, input, actual);
         return actual;
     }
@@ -488,6 +498,7 @@ public final class Format15ReplayRunner {
         FrozenReplayInput input = load(archive, level, expectedInputHash, expectedParameterHash);
         Result actual = replay(input, level, engine);
         Format15NumericalPolicyReceipt.validateRecordedWork(archive, List.of(actual.inference()));
+        LegacyBReplayWork.validate(archive, actual);
         verifyDisconnectionReview(archive, input, actual);
         return actual;
     }
@@ -575,6 +586,9 @@ public final class Format15ReplayRunner {
         TrackerMode capturedEngine = input.request().engine();
         String inputHash = input.canonicalHash();
         FrozenReplayInput requested = withEngine(input, engine);
+        if (engine == TrackerMode.LEGACY_THEN_B) {
+            return legacyB(requested, level, capturedEngine, inputHash);
+        }
         Result result = level == ReplayLevel.SCALAR_INFERENCE
             ? scalar(requested, capturedEngine, inputHash)
             : finalGeometry(requested, capturedEngine, inputHash);
@@ -631,7 +645,40 @@ public final class Format15ReplayRunner {
             source.networkContentHash(), source.settingsHash(), source.parameterHash(),
             source.samplerId(), source.configuredSampleStepMeters(), source.profileChainage(),
             source.evidenceResolution(), source.corridorInput(), source.disconnectionSource());
-        return new FrozenReplayInput(request, input.evidence(), input.network(), input.options(), input.planSearchRadiusMeters());
+        return new FrozenReplayInput(request, input.evidence(), input.network(), input.options(),
+                input.planSearchRadiusMeters(), input.legacyB());
+    }
+
+    private static Result legacyB(FrozenReplayInput input, ReplayLevel level, TrackerMode capturedEngine,
+            String inputHash) {
+        if (input.legacyB() == null) throw new ReplayMismatchException("legacy-production-source-unavailable");
+        var source = input.legacyB();
+        var request = source.bind(input);
+        var runner = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner();
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var deadline = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production();
+            var executed = source.visibleSource() != null
+                    ? runner.runVisible(request, source.visibleSource(), CancellationProbe.NONE, owner, deadline)
+                    : runner.runManaged(request, source.managedSource(), CancellationProbe.NONE, owner, deadline);
+            for (var section : executed.value().batch().sections()) {
+                if (section.execution().isPresent()) {
+                    var nativeResult = section.execution().orElseThrow().run().result();
+                    if (nativeResult.status() == TraceHypothesisSet.Status.COMPLETE
+                            || nativeResult.status() == TraceHypothesisSet.Status.AMBIGUOUS
+                            || nativeResult.workAccounting().isPresent()) {
+                        Format15NumericalPolicyReceipt.validateExecuted(nativeResult);
+                    }
+                }
+            }
+            var actual = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                    .LegacyBModernResultAdapter.adapt(executed.value(), request, input.options(), CancellationProbe.NONE);
+            return new Result(level, capturedEngine, TrackerMode.LEGACY_THEN_B, actual.inference(),
+                    level == ReplayLevel.SCALAR_INFERENCE ? List.of() : actual.routes(), inputHash,
+                    level == ReplayLevel.SCALAR_INFERENCE ? List.of() : DisconnectionReplaySemantics.recompute(input, actual),
+                    executed.value().batch().sections().stream().flatMap(section -> section.execution().stream())
+                        .map(execution -> execution.run().result().workAccounting()).toList());
+        }
     }
 
     private static Result scalar(FrozenReplayInput input, TrackerMode capturedEngine,
