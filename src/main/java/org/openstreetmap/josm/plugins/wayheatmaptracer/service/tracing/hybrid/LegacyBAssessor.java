@@ -133,7 +133,7 @@ public final class LegacyBAssessor {
                     protectedAssignments.put(vertex, context.evidence().coordinateFrame().toMetric(node.coordinate()));
                 }
             }
-            validatePartition(candidate, batch, context);
+            validatePartition(candidate, batch, context, cancellation);
             for (SectionChoice choice : candidate.sections()) {
                 if (choice.section().frozen()) {
                     for (var entry : choice.section().originalToVertex().entrySet()) {
@@ -212,12 +212,16 @@ public final class LegacyBAssessor {
                 .execution().orElseThrow(() -> new IllegalArgumentException("B section has no native result"));
     }
 
-    private static void validatePartition(Candidate candidate, Batch batch, AssessmentContext context) {
+    private static void validatePartition(Candidate candidate, Batch batch, AssessmentContext context,
+            CancellationProbe cancellation) {
         var selected = context.request().selectedRange();
         var way = (DetachedWay) context.network().primitives().get(context.request().selectedWayKey());
         int next = 0;
+        int nextNative = 0;
+        var nativeIndexes = candidate.nativeVertexIndexes();
         int nextOriginal = selected.firstIndex();
         for (SectionChoice choice : candidate.sections()) {
+            cancellation.checkpoint();
             if (!choice.section().parentSeedId().equals(candidate.parentSeedId()) || choice.vertices().first() != next
                     || choice.vertices().last() >= candidate.points().size()
                     || choice.section().originalRange().firstIndex() != nextOriginal
@@ -234,12 +238,11 @@ public final class LegacyBAssessor {
                 expectedMapping.put(choice.section().originalRange().firstIndex(),choice.vertices().first());
                 expectedMapping.put(choice.section().originalRange().lastIndex(),choice.vertices().last());
             } else {
+                int nativeOffset = nextNative;
                 choice.section().originalToVertex().forEach((original,vertex) ->
-                        expectedMapping.put(original,choice.vertices().first()+vertex));
+                        expectedMapping.put(original,nativeIndexes.get(nativeOffset + vertex)));
             }
-            if (!factual.equals(candidate.points().subList(choice.vertices().first(),choice.vertices().last()+1))) {
-                throw new IllegalArgumentException("Hybrid final geometry differs from its claimed native section");
-            }
+            validateNativeSection(candidate, choice, factual, nativeIndexes, nextNative, cancellation);
             var actualMapping = new LinkedHashMap<Integer,Integer>();
             candidate.originalToVertex().forEach((original,vertex) -> {
                 if (original >= choice.section().originalRange().firstIndex()
@@ -264,10 +267,36 @@ public final class LegacyBAssessor {
                 throw new IllegalArgumentException("Hybrid final occurrence assignments differ from section ownership");
             }
             next = choice.vertices().last();
+            nextNative += factual.size() - 1;
             nextOriginal = choice.section().originalRange().lastIndex();
         }
-        if (next != candidate.points().size()-1 || nextOriginal != selected.lastIndex()) {
+        if (next != candidate.points().size()-1 || nextOriginal != selected.lastIndex()
+                || nextNative != nativeIndexes.size() - 1) {
             throw new IllegalArgumentException("Hybrid final geometry is unowned");
+        }
+    }
+
+    private static void validateNativeSection(Candidate candidate, SectionChoice choice, List<MetricPoint> factual,
+            List<Integer> indexes, int nativeFirst, CancellationProbe cancellation) {
+        if (nativeFirst + factual.size() > indexes.size() || indexes.get(nativeFirst) != choice.vertices().first()
+                || indexes.get(nativeFirst + factual.size() - 1) != choice.vertices().last())
+            throw new IllegalArgumentException("Hybrid native vertex partition differs from final ownership");
+        for (int local = 0; local < factual.size(); local++) {
+            cancellation.checkpoint();
+            int vertex = indexes.get(nativeFirst + local);
+            if (!candidate.points().get(vertex).equals(factual.get(local)))
+                throw new IllegalArgumentException("Hybrid final geometry differs from its claimed native section");
+            if (local == factual.size() - 1) continue;
+            double previous = -1;
+            for (int inserted = vertex + 1; inserted < indexes.get(nativeFirst + local + 1); inserted++) {
+                cancellation.checkpoint();
+                var subdivision = candidate.subdivisions().get(inserted);
+                if (subdivision == null || subdivision.nativeEdgeIndex() != nativeFirst + local
+                        || subdivision.fraction() < previous || !candidate.points().get(inserted).equals(
+                                subdivision.interpolate(factual.get(local), factual.get(local + 1))))
+                    throw new IllegalArgumentException("Hybrid inserted occurrence is not a proved native edge subdivision");
+                previous = subdivision.fraction();
+            }
         }
     }
 }

@@ -66,6 +66,34 @@ class LegacyBAssessorTest {
                 "synthetic",List.of());
     }
 
+    @Test void reconstructedVerticesMustProveExactOrderedSubdivisionOfNativeGeometry() {
+        var fixture = fourNodeFixture(); var nativeBatch = batch(fixture.original(), false);
+        var original = nativeBatch.candidates().get(0);
+        var points = List.of(p(0,0), p(5,0), p(10,0), p(20,0), p(30,0));
+        var choices = original.sections().stream().map(choice -> new SectionChoice(choice.section(),
+                new VertexRange(choice.vertices().first() == 0 ? 0 : choice.vertices().first() + 1,
+                        choice.vertices().last() + 1), choice.source(), choice.outcome(), choice.reason(),
+                choice.hypothesisId())).toList();
+        var mapping = Map.of(0,0,1,2,2,3,3,4);
+        var candidate = new Candidate(original.id(), original.parentSeedId(), points, mapping, choices,
+                Map.of(1, new Subdivision(0,.5)));
+        var assessed = new LegacyBAssessor().assess(new Batch(List.of(candidate), nativeBatch.sections(),
+                nativeBatch.usage(), false, 0), context(fixture), CancellationProbe.NONE);
+        assertEquals(30, assessed.get(0).quality().totalLengthMeters(), 1e-12);
+        for (var metadata : List.of(Map.of(1, new Subdivision(0,.25)), Map.of(1, new Subdivision(1,.5)))) {
+            var forged = new Candidate(candidate.id(), candidate.parentSeedId(), points, mapping, choices, metadata);
+            assertThrows(IllegalArgumentException.class, () -> new LegacyBAssessor().assess(
+                    new Batch(List.of(forged), nativeBatch.sections(), nativeBatch.usage(), false, 0),
+                    context(fixture), CancellationProbe.NONE));
+        }
+        var alteredPoints = new ArrayList<>(points); alteredPoints.set(1,p(5,.001));
+        var altered = new Candidate(candidate.id(), candidate.parentSeedId(), alteredPoints, mapping, choices,
+                candidate.subdivisions());
+        assertThrows(IllegalArgumentException.class, () -> new LegacyBAssessor().assess(
+                new Batch(List.of(altered), nativeBatch.sections(), nativeBatch.usage(), false, 0),
+                context(fixture), CancellationProbe.NONE));
+    }
+
     @Test void supportIncludesFallbackAndFrozenSectionsWithoutDuplicatingBoundaryLength() {
         var fixture=fourNodeFixture();
         var assessed=new LegacyBAssessor().assess(batch(fixture.original(),true),context(fixture),CancellationProbe.NONE);

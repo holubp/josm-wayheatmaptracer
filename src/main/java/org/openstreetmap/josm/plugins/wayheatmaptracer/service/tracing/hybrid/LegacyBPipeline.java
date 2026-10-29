@@ -121,8 +121,21 @@ public final class LegacyBPipeline {
         }
     }
 
+    /** One factual interpolation on an unchanged native assembled edge; never new image evidence. */
+    public record Subdivision(int nativeEdgeIndex, double fraction) {
+        public Subdivision {
+            if (nativeEdgeIndex < 0 || !Double.isFinite(fraction) || fraction < 0 || fraction > 1)
+                throw new IllegalArgumentException("Invalid native edge subdivision");
+        }
+        public MetricPoint interpolate(MetricPoint start, MetricPoint end) {
+            return new MetricPoint(start.xMeters() + (end.xMeters() - start.xMeters()) * fraction,
+                    start.yMeters() + (end.yMeters() - start.yMeters()) * fraction);
+        }
+    }
+
     public record Candidate(String id, String parentSeedId, List<MetricPoint> points,
-            Map<Integer,Integer> originalToVertex, List<SectionChoice> sections) {
+            Map<Integer,Integer> originalToVertex, List<SectionChoice> sections,
+            Map<Integer,Subdivision> subdivisions) {
         public Candidate {
             // Reuse ordered mapping and positive-length validation; section metadata grants no authority.
             new Seed(id, points, originalToVertex);
@@ -130,6 +143,24 @@ public final class LegacyBPipeline {
             points = List.copyOf(points);
             originalToVertex = Map.copyOf(originalToVertex);
             sections = List.copyOf(sections);
+            subdivisions = Map.copyOf(subdivisions);
+            int nativeCount = points.size() - subdivisions.size();
+            int finalCount = points.size();
+            if (nativeCount < 2 || subdivisions.entrySet().stream().anyMatch(entry ->
+                    entry.getKey() <= 0 || entry.getKey() >= finalCount - 1
+                    || entry.getValue().nativeEdgeIndex() >= nativeCount - 1))
+                throw new IllegalArgumentException("Subdivision ownership differs from native geometry");
+        }
+        public Candidate(String id, String parentSeedId, List<MetricPoint> points,
+                Map<Integer,Integer> originalToVertex, List<SectionChoice> sections) {
+            this(id, parentSeedId, points, originalToVertex, sections, Map.of());
+        }
+        /** Native vertices retain their exact coordinates and order, including coincident occurrences. */
+        public List<Integer> nativeVertexIndexes() {
+            var indexes = new ArrayList<Integer>();
+            for (int vertex = 0; vertex < points.size(); vertex++)
+                if (!subdivisions.containsKey(vertex)) indexes.add(vertex);
+            return List.copyOf(indexes);
         }
     }
 

@@ -15,7 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 
 /**
  * Bounded canonical record of actual intermediate Hybrid outputs, not reconstructed archive claims.
- * Schema 2 uses DataOutput primitives and length-prefixed UTF-8 strings, starting with LBB1.
+ * Schema 3 uses DataOutput primitives and length-prefixed UTF-8 strings, starting with LBB1.
  * Ordered blocks retain native Legacy alternatives, retained seeds, section references/execution,
  * local quality exclusions, assembled choices and measured section support. Metric and projected
  * coordinates stay separate. Native B work remains in its dedicated work artifact.
@@ -28,7 +28,7 @@ final class LegacyBProvenance {
         var bytes = new BoundedOutput();
         try (var data = new DataOutputStream(bytes)) {
             data.writeInt(0x4c424231);
-            data.writeInt(2);
+            data.writeInt(3);
             text(data, "legacy-then-b-v1");
             text(data, input.request().networkContentHash());
             text(data, input.request().evidenceContentHash());
@@ -93,6 +93,11 @@ final class LegacyBProvenance {
             for (var candidate : batch.candidates()) {
                 text(data, candidate.id()); text(data, candidate.parentSeedId());
                 points(data, candidate.points()); mapping(data, candidate.originalToVertex());
+                data.writeInt(candidate.subdivisions().size());
+                for (var entry : new java.util.TreeMap<>(candidate.subdivisions()).entrySet()) {
+                    data.writeInt(entry.getKey()); data.writeInt(entry.getValue().nativeEdgeIndex());
+                    number(data, entry.getValue().fraction());
+                }
                 data.writeInt(candidate.sections().size());
                 for (var choice : candidate.sections()) choice(data, choice);
             }

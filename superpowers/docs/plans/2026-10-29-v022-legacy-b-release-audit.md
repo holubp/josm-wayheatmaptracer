@@ -46,3 +46,20 @@ No blocking finding in this sufficient-slot change; diff check passes.
 This does not close sparse previews with too few vertices, coincident identities,
 global source caps, inherited contacts, resource preservation or the remaining
 ordinary integration/release gates. No RC approval is implied.
+
+## Affected-scope re-review: sparse mandatory occurrences
+
+Sparse-slot repair now passes45focused tests including actual ordinary dense/normal
+subranges and frozen/archive replay. Native slots are matched first; missing identity
+groups are bracketed by nearest matched neighbors, with only the deficit subdividing
+the unchanged native edge. Exact native vertex/order and edge/fraction interpolation
+proofs remain mandatory, and subdivisions are bound into provenance schema3.
+
+Review found and corrected two additional cases: inserting every mandatory identity
+instead of only the deficit, and a target landing on a vertex already owned by another
+identity after a neighboring section changed global chainage. The latter is retained
+in LegacyBOccurrenceReconstructionTest with observed RED before correction.
+Independent final harnesses confirm1added/19native slots reused and all6identities/
+1added in the multi-anchor case. Cancellation/memory refusal release reservations.
+No remaining blocker in sparse-deficit scope; earlier global-cap/contact/resource/
+coincident-topology/integration/release gates remain open. No RC approval.

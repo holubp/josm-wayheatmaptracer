@@ -65,9 +65,18 @@ class OrdinaryModernAttemptAssemblyTest {
     }
 
     @Test void sequentialHybridSubrangeApplyPreservesOutsideOccurrencesAndUndoHistory() throws Exception {
+        verifyHybridSubrange(new double[] {-30, -8, 0, 8, 30});
+    }
+
+    @Test void denseOriginalOccurrencesSurviveSparseHybridPreviewWithoutChangingItsCurve() throws Exception {
+        var east = new double[23]; east[0] = -30; east[22] = 30;
+        for (int index = 1; index <= 21; index++) east[index] = -8 + .8 * (index - 1);
+        verifyHybridSubrange(east);
+    }
+
+    private static void verifyHybridSubrange(double[] east) throws Exception {
         var dataSet = new DataSet();
         var nodes = new ArrayList<Node>();
-        double[] east = {-30, -8, 0, 8, 30};
         for (int index = 0; index < east.length; index++) {
             var node = loadedNode(100 + index, longitude(east[index]));
             nodes.add(node); dataSet.addPrimitive(node);
@@ -75,7 +84,8 @@ class OrdinaryModernAttemptAssemblyTest {
         var way = new Way(); way.setNodes(nodes); way.setOsmId(110, 1); way.setModified(false);
         dataSet.addPrimitive(way);
         var originalCoordinates = nodes.stream().map(Node::getCoor).toList();
-        var selection = new SelectionContext(way, 1, 3, nodes.subList(1, 4), Set.of(nodes.get(1), nodes.get(3)));
+        int last = nodes.size() - 2;
+        var selection = new SelectionContext(way, 1, last, nodes.subList(1, last + 1), Set.of(nodes.get(1), nodes.get(last)));
         var published = new AtomicReference<LiveBPreviewService.Computed>();
         var ready = new CountDownLatch(1);
         try (var session = new PreviewSessionController<LiveBPreviewService.Computed>(Runnable::run)) {
@@ -88,8 +98,18 @@ class OrdinaryModernAttemptAssemblyTest {
                     attempt -> { published.set(attempt.result()); ready.countDown(); }));
             assertTrue(ready.await(60, TimeUnit.SECONDS), session.currentAttempt().toString());
             var computed = published.get(); assertNotNull(computed);
-            assertEquals(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, 3),
+            assertEquals(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, last),
                     computed.request().selectedRange());
+            if (east.length > 5) {
+                var refined = computed.legacyB().result().batch().candidates().stream().filter(candidate ->
+                        candidate.sections().stream().anyMatch(section -> section.source()
+                                == org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Source.B))
+                        .toList();
+                assertFalse(refined.isEmpty());
+                for (var candidate : refined) assertEquals(Math.max(selection.segmentNodes().size(),
+                        candidate.nativeVertexIndexes().size()), candidate.points().size(),
+                        "Reuse all native slots before adding only the missing mandatory occurrences");
+            }
             assertEquals(nodes, way.getNodes(), "Temporary Legacy/B geometry must not mutate live OSM");
             var adapter = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernSingleWayEditPlanAdapter();
             var plan = java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
@@ -102,7 +122,8 @@ class OrdinaryModernAttemptAssemblyTest {
                             + computed.pipeline().routes().stream().map(route -> route.hypothesis().diagnostics()
                                     + ": " + route.quality()).toList()
                             + "; plans=" + java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
-                                    .mapToObj(index -> adapter.assess(computed, index)).toList()
+                                    .mapToObj(index -> adapter.assess(computed, index))
+                                    .map(assessment -> assessment.availability() + ":" + assessment.detail()).toList()
                             + "; sections=" + computed.legacyB().result().batch().sections().stream()
                                     .map(section -> section.outcome() + ":" + section.reason()).toList()))
                     .plan().orElseThrow();
@@ -116,8 +137,9 @@ class OrdinaryModernAttemptAssemblyTest {
                     history.add(new org.openstreetmap.josm.plugins.wayheatmaptracer.util.ApplyAlignmentEditPlanCommand(
                             dataSet, plan, validator, "Apply Hybrid subrange test"));
                     assertEquals(1, history.getUndoCommands().size());
-                    assertEquals(nodes.get(0), way.firstNode()); assertEquals(nodes.get(4), way.lastNode());
-                    for (int index : new int[] {0, 1, 3, 4})
+                    assertTrue(way.getNodes().containsAll(nodes), "Every non-removable occurrence must retain its identity");
+                    assertEquals(nodes.get(0), way.firstNode()); assertEquals(nodes.get(last + 1), way.lastNode());
+                    for (int index : new int[] {0, 1, last, last + 1})
                         assertEquals(originalCoordinates.get(index), nodes.get(index).getCoor());
                     var applied = way.getNodes().stream().map(Node::getCoor).toList();
                     history.undo();

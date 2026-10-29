@@ -4,6 +4,23 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Sparse-occurrence follow-up is now focused-tested and independently reviewed:
+45tests/0failures/errors/skips (2m24s), including ordinary dense/normal subrange
+Apply/Undo/Redo, frozen/archive replay, exact subdivision adversaries and a retained
+multi-anchor deficit regression. Existing native slots are matched first; only
+unmatched mandatory identities add vertices, strictly inside their matched-neighbor
+native edge. Every original native coordinate/order is retained and final validation
+checks explicit edge/fraction interpolation exactly. Native B output/work is intact;
+unreleased Hybrid provenance schema3 binds subdivision metadata. No curve smoothing,
+general redistribution or deletion-authority expansion is introduced.
+Independent harnesses prove one added vertex for both the20required/19slots case
+and the multi-anchor global-chainage counterexample; cancellation/memory reservations
+release cleanly. Global source caps, inherited contacts, optional-source resource
+preservation and the other release gates remain open. Coincident topology is separate.
+
+Public Build40895416431 forf477acb completedSUCCESS:2306Java tests, zero failures,
+errors or skips; all public validation stages pass, private scope not executed.
+
 Newest local batch: actual five-node selected subrange reproduced omitted ordinary
 node identity and unavailable Apply. Shared native reuse-first matcher is extracted
 without arithmetic/tie changes; Hybrid now assigns ordinary movable identities to
