@@ -676,9 +676,17 @@ public final class Format15ReplayRunner {
         var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
         try (var owner = ledger.rootOwner()) {
             var deadline = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production();
-            var executed = source.visibleSource() != null
-                    ? runner.runVisible(request, source.visibleSource(), CancellationProbe.NONE, owner, deadline)
-                    : runner.runManaged(request, source.managedSource(), CancellationProbe.NONE, owner, deadline);
+            var discovery = source.visibleSource() != null
+                    ? runner.discoverVisible(request, source.visibleSource(), CancellationProbe.NONE, owner, deadline)
+                    : runner.discoverManaged(request, source.managedSource(), CancellationProbe.NONE, owner, deadline);
+            var policy = source.parentPolicy().orElseGet(() -> new FrozenLegacyBInput.ParentPolicy(
+                    discovery.value().seeds().stream().limit(2).map(seed -> seed.id()).toList(),true));
+            var actualAdmitted = discovery.value().seeds().stream().map(seed -> seed.id())
+                    .filter(policy.admittedParentIds()::contains).toList();
+            if (!actualAdmitted.equals(policy.admittedParentIds()))
+                throw new ReplayMismatchException("legacy-parent-admission-mismatch");
+            var executed = runner.refine(discovery,policy.admittedParentIds(),policy.effectiveBudget().orElse(request.request().budgets()),
+                    policy.bInferenceAllowed(),policy.unavailableReason(),CancellationProbe.NONE,owner,deadline);
             for (var section : executed.value().batch().sections()) {
                 if (section.execution().isPresent()) {
                     var nativeResult = section.execution().orElseThrow().run().result();

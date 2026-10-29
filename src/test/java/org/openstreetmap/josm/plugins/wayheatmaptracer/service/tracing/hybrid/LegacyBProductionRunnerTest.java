@@ -19,6 +19,20 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    @Test void tinyNativeAllocationKeepsFactualResourceReceiptInsteadOfThrowing() {
+        var fixture = fixture(false,false); var tiny = new TraceBudgets(96,1,1,1,1);
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var result = assertDoesNotThrow(() -> new LegacyBProductionRunner().runVisible(fixture.input(),fixture.visible(),
+                    tiny,CancellationProbe.NONE,owner,LegacyBPipeline.Deadline.production()));
+            assertEquals(LegacyBPipeline.Status.RESOURCE_LIMIT,result.value().batch().status());
+            assertTrue(result.value().batch().usage().pairVisits() <= tiny.maximumPairVisits());
+            assertTrue(result.value().batch().usage().transitions() <= tiny.maximumTransitions());
+            assertTrue(result.value().batch().sections().stream().anyMatch(section -> section.execution().isPresent()
+                    && section.execution().orElseThrow().run().result().status() == TraceHypothesisSet.Status.RESOURCE_LIMIT));
+            result.owner().close(); assertEquals(0,owner.currentBytes());
+        }
+    }
+
     @Test void discoveryRunsActualLegacyWithoutBAndExplicitAdmissionOwnsRefinement() {
         var fixture = fixture(false,false); var runner = new LegacyBProductionRunner();
         var deadline = LegacyBPipeline.Deadline.production();
@@ -74,6 +88,25 @@ class LegacyBProductionRunnerTest {
             assertThrows(CancellationException.class, () -> runner.refine(discovery,admitted,
                     fixture.input().request().budgets(),() -> true,owner,deadline));
             assertEquals(0,owner.currentBytes(),"The cancelled attempt must release native discovery data");
+        }
+    }
+
+    @Test void exhaustedRootAllocationRetainsAdmittedLegacyWithoutCallingB() {
+        var fixture = fixture(false,false); var runner = new LegacyBProductionRunner();
+        var deadline = LegacyBPipeline.Deadline.production();
+        CancellationProbe rejectB = () -> Arrays.stream(Thread.currentThread().getStackTrace())
+                .anyMatch(frame -> frame.getClassName().endsWith(".ProbabilisticTraceEngine"));
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var discovery = runner.discoverVisible(fixture.input(),fixture.visible(),rejectB,owner,deadline);
+            var admitted = List.of(discovery.value().seeds().get(0).id());
+            var result = runner.refine(discovery,admitted,fixture.input().request().budgets(),false,
+                    rejectB,owner,deadline);
+            assertEquals(TraceWorkUsage.none(),result.value().batch().usage());
+            assertEquals(1,result.value().batch().candidates().size());
+            assertEquals(LegacyBPipeline.Status.RESOURCE_LIMIT,result.value().batch().status());
+            assertTrue(result.value().batch().sections().stream().allMatch(section -> section.outcome()
+                    == LegacyBPipeline.Outcome.UNATTEMPTED_BUDGET && section.execution().isEmpty()));
+            result.owner().close(); assertEquals(0,owner.currentBytes());
         }
     }
 

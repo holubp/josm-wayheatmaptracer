@@ -2,18 +2,42 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.forma
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.HashSet;
 import java.util.function.LongConsumer;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedNode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.DetachedWay;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Reason;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyTopologyPlanner.Occurrence;
 
 /** All additional algorithm-consumed Legacy inputs, included in the root frozen replay identity. */
 public final class FrozenLegacyBInput {
+    /** Source-local allocation input; this does not claim to replay admission of all other sources. */
+    public record ParentPolicy(List<String> admittedParentIds, boolean bInferenceAllowed, Reason unavailableReason,
+            Optional<TraceBudgets> effectiveBudget) {
+        public ParentPolicy {
+            admittedParentIds = List.copyOf(admittedParentIds);
+            Objects.requireNonNull(effectiveBudget);
+            if (admittedParentIds.size() > 2 || new HashSet<>(admittedParentIds).size() != admittedParentIds.size()
+                    || admittedParentIds.stream().anyMatch(id -> id.isBlank() || id.length() > 512)
+                    || unavailableReason != Reason.WORK_BUDGET && unavailableReason != Reason.DEADLINE && unavailableReason != Reason.RESOURCE_LIMIT
+                    || bInferenceAllowed && unavailableReason != Reason.WORK_BUDGET
+                    || !bInferenceAllowed && effectiveBudget.isPresent())
+                throw new IllegalArgumentException("Frozen source-local parent allocation is invalid");
+        }
+        public ParentPolicy(List<String> admittedParentIds, boolean bInferenceAllowed) {
+            this(admittedParentIds,bInferenceAllowed,Reason.WORK_BUDGET,Optional.empty());
+        }
+        public ParentPolicy(List<String> admittedParentIds, boolean bInferenceAllowed, Reason unavailableReason) {
+            this(admittedParentIds,bInferenceAllowed,unavailableReason,Optional.empty());
+        }
+    }
     private final int sourceKind;
     private final byte[] sourceBytes;
     private final LegacyVisibleProfileSampler.Input visibleSource;
@@ -22,6 +46,7 @@ public final class FrozenLegacyBInput {
     private final List<OccurrenceRange> frozenRanges;
     private final boolean simplify;
     private final double projectedTolerance;
+    private final Optional<ParentPolicy> parentPolicy;
 
     private FrozenLegacyBInput(int sourceKind, byte[] sourceBytes, List<Occurrence> occurrences,
             List<OccurrenceRange> frozenRanges, boolean simplify, double projectedTolerance,
@@ -40,6 +65,7 @@ public final class FrozenLegacyBInput {
         this.frozenRanges = List.copyOf(frozenRanges);
         this.simplify = simplify;
         this.projectedTolerance = projectedTolerance;
+        this.parentPolicy = Optional.empty();
         int count = visibleSource == null ? managedSource.sourcePolyline().size() : visibleSource.anchors().size();
         if (count != occurrences.size()) { throw new IllegalArgumentException("Legacy source occurrence count differs"); }
         for (int index = 0; index < occurrences.size(); index++) {
@@ -48,6 +74,18 @@ public final class FrozenLegacyBInput {
             }
         }
     }
+
+    private FrozenLegacyBInput(FrozenLegacyBInput source, ParentPolicy policy) {
+        sourceKind = source.sourceKind; sourceBytes = source.sourceBytes;
+        visibleSource = source.visibleSource; managedSource = source.managedSource;
+        occurrences = source.occurrences; frozenRanges = source.frozenRanges;
+        simplify = source.simplify; projectedTolerance = source.projectedTolerance;
+        parentPolicy = Optional.of(Objects.requireNonNull(policy));
+    }
+
+    /** Adds allocation metadata without decoding, cloning or fabricating another source raster. */
+    public FrozenLegacyBInput withParentPolicy(ParentPolicy policy) { return new FrozenLegacyBInput(this,policy); }
+    public Optional<ParentPolicy> parentPolicy() { return parentPolicy; }
 
     public static FrozenLegacyBInput visible(LegacyVisibleProfileSampler.Input source, List<Occurrence> occurrences,
             List<OccurrenceRange> frozen, boolean simplify, double tolerance) {
@@ -63,11 +101,16 @@ public final class FrozenLegacyBInput {
     public static FrozenLegacyBInput capture(LiveBPreviewService.LegacyBComputation computation) {
         Objects.requireNonNull(computation);
         var input = computation.input();
-        return computation.visibleSource() != null
+        var source = computation.visibleSource() != null
                 ? visible(computation.visibleSource(), input.occurrences(), input.frozenRanges(),
                         input.simplify(), input.projectedTolerance())
                 : managed(computation.managedSource(), input.occurrences(), input.frozenRanges(),
                         input.simplify(), input.projectedTolerance());
+        var admitted = computation.result().batch().sections().stream().map(section -> section.section().parentSeedId()).distinct().toList();
+        var actual = computation.result();
+        var reason = actual.bInferenceAllowed() ? Reason.WORK_BUDGET : actual.unavailableReason();
+        return source.withParentPolicy(new ParentPolicy(admitted,actual.bInferenceAllowed(),reason,
+                actual.bInferenceAllowed() ? Optional.of(actual.refinementBudget()) : Optional.empty()));
     }
 
     static FrozenLegacyBInput decode(int kind, byte[] source, List<Occurrence> occurrences,

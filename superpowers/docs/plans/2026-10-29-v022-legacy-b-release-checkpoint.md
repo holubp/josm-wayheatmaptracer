@@ -4,6 +4,54 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+RESUMED2026-10-29: the saved global resource-stop neighbor run completed SUCCESS,
+68tests/0failures/errors/skips in4m38s. Confirmed terminal log
+v022-global-resource-stop-neighbors-green.log and current XML, no local Gradle test
+process remaining. Both real managed resource refusals now retain actual Legacy
+results while preventing subsequent B; each admitted retained source exports its
+typed frozen policy and reproduces final geometry offline. Global two-parent/six-
+candidate/four-counter checks and all-source replay pass. Earlier PAUSED/running
+paragraph below is historical. Goal active; this batch is ready for scoped commit
+and public CI, not RC qualification. Inherited contact/coincident identity and the
+remaining integration/private/final audit gates remain open.
+
+USER PAUSED2026-10-29: HEAD7e53bd8, current scoped changes remain uncommitted.
+Both global resource-stop defects are reproduced by the actual managed regression:
+v022-global-resource-stop-both-red-bounded.log,1m19s, two intended assertion failures
+(later-source B starts after native refusal; B starts after optional discovery
+ledger refusal). An earlier setup failure was corrected by capturing Legacy policy
+on EDT. An interrupted initial assertAll run has no valid terminal receipt; its
+test probe was bounded to stop inspecting stacks after the injected refusal.
+Production repair now carries an attempt-wide typed inferenceStopReason through
+discovery and refinement, including returned native/authority resource stops;
+ordinary local coverage/no-route and parent-cap omissions do not set that latch.
+The first GREEN attempt failed compilation for a missing TraceHypothesisSet import,
+now corrected. Current focused/neighbor run session90587 was confirmed live at pause,
+log /data/data/com.termux/files/usr/tmp/v022-global-resource-stop-neighbors-green.log;
+includes ordinary assembly, runner, frozen replay, admission, pipeline, inference,
+Format15 foundation and registry. NO GREEN claim yet. On resume poll this same
+handle or inspect authoritative processes/log/XML before starting any Gradle.
+Test now also checks frozen stop policy and replayed retained geometry for resource
+stops. No commit/push/release of this batch yet. Public CI40904143896 forcbdf6cd
+confirmed SUCCESS for validation and GUI jobs; it predates this batch.
+
+Latest verified continuation: HEAD7e53bd8 plus uncommitted global source-admission,
+actual frozen allocation and V2 refused-pair accounting changes. The ordinary
+managed workflow now passes the global two-parent/six-candidate/four-work-counter
+checks and offline Format15 production replay for every source, including sources
+with no admitted parent (1test,59s). Focused ordinary/pipeline/runner/parent-admission/
+frozen/native-inference neighbors57PASS, zero failures/errors/skips,2m32s.
+Logs: v022-global-all-source-replay.log and v022-global-admission-neighbors.log
+under the Termux temporary directory. These are local checks, not final CI.
+
+Independent affected-scope Sol review found one remaining global resource-stop
+propagation defect: optional discovery refusal and returned native resource/authority
+exhaustion must stop subsequent B inference even when counters retain positive
+remainder. Actual managed tiny-budget and optional-ledger-refusal regressions are
+being added; no repair claim before RED/GREEN. Completed Legacy results must survive,
+local evidence/no-route fallback must remain local, and every frozen source policy
+must preserve the factual stop reason/allocation. No new RC/tag/release published.
+
 Current global-admission foundation separates actual owned Legacy discovery from B
 refinement. Discovery invokes no B; refinement consumes its owner once and accepts
 only at most two explicit discovered parent IDs in native order. Existing single-

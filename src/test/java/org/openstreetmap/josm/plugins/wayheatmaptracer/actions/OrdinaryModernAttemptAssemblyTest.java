@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.nio.file.Path;
@@ -155,8 +156,17 @@ class OrdinaryModernAttemptAssemblyTest {
 
     @Test void managedSequentialHybridUsesAcquiredNativePixelsAndKeepsReplaySource(@TempDir Path directory)
             throws Exception {
+        verifyManagedSequentialHybrid(directory,false);
+    }
+
+    @Test void managedHybridAdmitsAtMostTwoParentsAcrossAllRequestedSources(@TempDir Path directory)
+            throws Exception {
+        verifyManagedSequentialHybrid(directory,true);
+    }
+
+    private static void verifyManagedSequentialHybrid(Path directory, boolean allSources) throws Exception {
         var fixture = fixture();
-        var config = config(TrackerMode.LEGACY_THEN_B);
+        var config = config(TrackerMode.LEGACY_THEN_B,allSources,allSources);
         var recovery = RecoverySettings.defaults(7.01);
         var tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.LEGACY_THEN_B,
                 recovery, false, AlignmentSourceMode.MANAGED_TILES);
@@ -199,7 +209,7 @@ class OrdinaryModernAttemptAssemblyTest {
                             seed.sourceGeographic(), invocation.config().effectiveHeatmap(), seed.sourceIdentity(),
                             org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot.fromConfig(null), context),
                     coordinator, attempt -> { published.set(attempt.result()); ready.countDown(); }));
-            assertTrue(ready.await(30, TimeUnit.SECONDS), session.currentAttempt().toString());
+            assertTrue(ready.await(allSources ? 120 : 30, TimeUnit.SECONDS), session.currentAttempt().toString());
             var computed = published.get();
             assertNotNull(computed.legacyB());
             assertNull(computed.captured().raster());
@@ -214,6 +224,43 @@ class OrdinaryModernAttemptAssemblyTest {
                     .anyMatch(section -> section.execution().isPresent()),
                     computed.legacyB().result().batch().sections().stream().map(section ->
                         section.reason().name() + ": " + section.section().reference()).toList().toString());
+            if (allSources) {
+                assertTrue(computed.detectorAttempts().size() >= 3);
+                long parents = computed.productionRuns().stream().mapToLong(run -> run.legacyB().result().batch().sections()
+                        .stream().map(section -> section.section().parentSeedId()).distinct().count()).sum();
+                assertTrue(parents <= 2,"Global retained parents: " + parents);
+                assertTrue(computed.productionRuns().stream().mapToInt(run -> run.pipeline().routes().size()).sum() <= 6);
+                var aggregate = computed.productionRuns().stream().filter(run -> run.options().sourceTier()
+                        .equals("all-colors-combined")).findFirst().orElseThrow();
+                assertFalse(aggregate.legacyB().result().batch().sections().isEmpty(),
+                        "A complete aggregate must retain its representative before a second native rank");
+                var usage = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage.none();
+                for (var run : computed.productionRuns()) usage = usage.plus(run.legacyB().result().batch().usage());
+                var limits = org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults();
+                assertTrue(usage.pairVisits() <= limits.maximumPairVisits());
+                assertTrue(usage.transitions() <= limits.maximumTransitions());
+                assertTrue(usage.rawAlternatives() <= limits.maximumRawAlternatives());
+                assertTrue(usage.distinctAlternatives() <= limits.maximumDistinctAlternatives());
+                int beforeSourceReplays = fetches.get();
+                for (var run : computed.productionRuns()) {
+                    var sourceBundle = AlignWayAction.createModernDiagnostics(computed, run, "preview-open", 0,
+                            null, false, false, null);
+                    var sourceFrozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
+                            .decode(sourceBundle.artifact("frozen-input.bin").bytes());
+                    var sourceReplay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner
+                            .replay(sourceFrozen,
+                                    org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                                    TrackerMode.LEGACY_THEN_B);
+                    assertEquals(run.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
+                            sourceReplay.routes().stream().map(route -> route.hypothesis().points()).toList(),
+                            "Every source must replay its own admitted parents and actual allocation: "
+                                    + run.options().sourceTier());
+                }
+                assertEquals(beforeSourceReplays, fetches.get(), "Every source replay must remain offline");
+                org.junit.jupiter.api.Assertions.assertAll(
+                        () -> verifyAttemptResourceStop(computed,fixture,config,false),
+                        () -> verifyAttemptResourceStop(computed,fixture,config,true));
+            }
             var bundle = AlignWayAction.createModernDiagnostics(computed, computed, "preview-open", 0,
                     null, false, false, null);
             var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
@@ -226,6 +273,79 @@ class OrdinaryModernAttemptAssemblyTest {
             assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
                     replay.routes().stream().map(route -> route.hypothesis().points()).toList());
             assertEquals(beforeReplay, fetches.get(), "Offline production replay must not acquire more tiles");
+        }
+    }
+
+    /** Exercise the real owned multi-source boundary with deterministic allocation refusals. */
+    private static void verifyAttemptResourceStop(LiveBPreviewService.Computed capturedRun, Fixture fixture,
+            AlignmentConfig config, boolean discoveryRefusal) throws Exception {
+        var service = new LiveBPreviewService();
+        var captured = capturedRun.captured();
+        var partition = captured.intervalPartition();
+        if (partition == null) partition = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner
+                .partition(captured.network(),captured.specification());
+        var method = LiveBPreviewService.class.getDeclaredMethod("computeLegacyBAttempt",
+                LiveBPreviewService.Captured.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner.Partition.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.class,
+                LiveBPreviewService.LegacyBInvocation.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.Owner.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.class,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.class);
+        method.setAccessible(true);
+        var refused = new java.util.concurrent.atomic.AtomicBoolean();
+        var invocation = new AtomicReference<LiveBPreviewService.LegacyBInvocation>();
+        SwingUtilities.invokeAndWait(() -> invocation.set(LiveBPreviewService.LegacyBInvocation.capture(fixture.selection(),config)));
+        try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger
+                .production().rootOwner()) {
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe probe = () -> {
+                if (discoveryRefusal && !refused.get() && Arrays.stream(Thread.currentThread().getStackTrace()).anyMatch(frame ->
+                        frame.getMethodName().equals("captureManagedAggregateEvidence"))) {
+                    refused.set(true);
+                    // Real ledger refusal after selected-source discovery owns retained data.
+                    owner.reserve(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);
+                    throw new AssertionError("The full ledger reservation must fail");
+                }
+                return false;
+            };
+            var limits = discoveryRefusal ? org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets.defaults()
+                    : new org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets(96,1,1,1,1);
+            var result = (LiveBPreviewService.Computed) method.invoke(service,captured,partition,probe,
+                    invocation.get(),owner,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production(),limits);
+            assertFalse(result.pipeline().routes().isEmpty(),"Completed Legacy preview must survive a resource stop");
+            if (discoveryRefusal) {
+                assertTrue(refused.get(),"The optional aggregate discovery must reach the real ledger refusal");
+                assertFalse(result.legacyB().bInferenceAllowed(),"Discovery resource stop must prevent starting B");
+                assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage.none(),
+                        result.legacyB().result().batch().usage());
+            } else {
+                assertTrue(result.legacyB().result().batch().sections().stream().anyMatch(section ->
+                        section.execution().isPresent() && section.execution().orElseThrow().run().result().status()
+                            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet.Status.RESOURCE_LIMIT));
+                var aggregate = result.productionRuns().stream().filter(run -> run.options().sourceTier()
+                        .equals("all-colors-combined")).findFirst().orElseThrow();
+                assertFalse(aggregate.legacyB().bInferenceAllowed(),"A native resource stop must prevent B on later sources");
+                assertFalse(aggregate.pipeline().routes().isEmpty(),"Admitted aggregate Legacy result must survive");
+                assertTrue(aggregate.legacyB().result().batch().sections().stream().allMatch(section -> section.execution().isEmpty()));
+            }
+            for (var run : result.productionRuns()) {
+                if (run.pipeline().routes().isEmpty()) continue;
+                var bundle = AlignWayAction.createModernDiagnostics(result,run,"preview-open",0,null,false,false,null);
+                var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
+                        .decode(bundle.artifact("frozen-input.bin").bytes());
+                var policy = frozen.legacyB().parentPolicy().orElseThrow();
+                assertEquals(run.legacyB().bInferenceAllowed(),policy.bInferenceAllowed());
+                if (!policy.bInferenceAllowed()) assertEquals(
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Reason.RESOURCE_LIMIT,
+                        policy.unavailableReason());
+                var replay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner
+                        .replay(frozen,org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                                TrackerMode.LEGACY_THEN_B);
+                assertEquals(run.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
+                        replay.routes().stream().map(route -> route.hypothesis().points()).toList(),
+                        "Resource-stopped source must replay its retained actual geometry");
+            }
         }
     }
 
@@ -596,10 +716,14 @@ class OrdinaryModernAttemptAssemblyTest {
     }
 
     private static AlignmentConfig config(TrackerMode engine) {
+        return config(engine,false,false);
+    }
+
+    private static AlignmentConfig config(TrackerMode engine, boolean mappings, boolean aggregate) {
         ManagedHeatmapConfig heatmap = new ManagedHeatmapConfig(
                 "key", "policy", "signature", "session", "all", "hot", "", ".*",
                 AlignmentMode.PRECISE_SHAPE, engine, false, false,
-                false, false, false, false, false, false, false, false,
+                mappings, aggregate, false, false, false, false, false, false,
                 7, 4, 3.0, InferenceMode.RAW_HIGH_RESOLUTION, 15, 15,
                 7.01, 1.56, IntensitySamplingMode.COLOR_MAPPING, 0L);
         return new AlignmentConfig(heatmap, GeometryCleanupConfig.disabled());

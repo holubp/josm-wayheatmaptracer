@@ -200,6 +200,26 @@ public final class LegacyBPipeline {
      */
     public Batch refine(List<Seed> seeds, List<Section> sections, SectionRunner runner,
             TraceBudgets budgets, CancellationProbe cancellation) {
+        return refine(seeds, sections, runner, budgets, cancellation, true, Reason.WORK_BUDGET);
+    }
+
+    /** Retains admitted Legacy parents when the root attempt has no remaining B allocation. */
+    public Batch retainLegacy(List<Seed> seeds, List<Section> sections, TraceBudgets budgets,
+            CancellationProbe cancellation) {
+        return retainLegacy(seeds, sections, budgets, Reason.WORK_BUDGET, cancellation);
+    }
+
+    public Batch retainLegacy(List<Seed> seeds, List<Section> sections, TraceBudgets budgets,
+            Reason reason, CancellationProbe cancellation) {
+        if (reason != Reason.WORK_BUDGET && reason != Reason.DEADLINE && reason != Reason.RESOURCE_LIMIT)
+            throw new IllegalArgumentException("Legacy-only allocation requires an actual root resource reason");
+        return refine(seeds, sections, (section, remaining, probe) -> {
+            throw new IllegalStateException("An exhausted root allocation cannot invoke B");
+        }, budgets, cancellation, false, reason);
+    }
+
+    private Batch refine(List<Seed> seeds, List<Section> sections, SectionRunner runner,
+            TraceBudgets budgets, CancellationProbe cancellation, boolean inferenceAllowed, Reason unavailableReason) {
         Objects.requireNonNull(seeds); Objects.requireNonNull(sections); Objects.requireNonNull(runner);
         Objects.requireNonNull(budgets); Objects.requireNonNull(cancellation);
         cancellation.checkpoint();
@@ -207,8 +227,8 @@ public final class LegacyBPipeline {
         var candidates = new ArrayList<Candidate>();
         var outcomes = new ArrayList<SectionOutcome>();
         TraceWorkUsage usage = TraceWorkUsage.none();
-        boolean stopped = false;
-        Reason stoppedReason = Reason.WORK_BUDGET;
+        boolean stopped = !inferenceAllowed;
+        Reason stoppedReason = unavailableReason;
         boolean truncated = seeds.size() > 2;
         for (Seed seed : seeds.subList(0, Math.min(2, seeds.size()))) {
             var parentOutcomes = new ArrayList<SectionOutcome>();
@@ -221,7 +241,7 @@ public final class LegacyBPipeline {
                     outcome = unavailable(section, Outcome.FROZEN, Reason.FIXED_SECTION);
                 } else if (stopped || deadline.expired() || exhausted(usage, budgets)) {
                     outcome = unavailable(section, Outcome.UNATTEMPTED_BUDGET,
-                            deadline.expired() ? Reason.DEADLINE : stopped ? stoppedReason : Reason.WORK_BUDGET);
+                            inferenceAllowed && deadline.expired() ? Reason.DEADLINE : stopped ? stoppedReason : Reason.WORK_BUDGET);
                     truncated = true;
                 } else {
                     TraceBudgets remaining = remaining(usage, budgets);

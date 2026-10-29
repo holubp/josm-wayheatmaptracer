@@ -233,10 +233,11 @@ public final class ProbabilisticInference {
         CancellationProbe cancellation, TransitionAdmissionMemo admissions,
         AttemptMemoryLedger.Owner owner, WorkCounter workCounter) {
         cancellation.checkpoint();
+        boolean boundedPairAdmission = workCounter.mode == ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2;
         if (profiles.size() == 1) {
             InferenceProfile profile = profiles.get(0);
             if (profile.cells().size() > budgets.maximumPairVisits()) {
-                return GraphMessages.limit(profile.cells().size(), 0, "pair-visit budget exceeded");
+                return GraphMessages.limit(boundedPairAdmission ? 0 : profile.cells().size(), 0, "pair-visit budget exceeded");
             }
             workCounter.pairVisits = profile.cells().size();
             double[] alpha = allocated(owner,
@@ -254,6 +255,9 @@ public final class ProbabilisticInference {
         int firstStates = profiles.get(0).cells().size();
         int secondStates = profiles.get(1).cells().size();
         long pairVisits = (long) firstStates * secondStates;
+        if (boundedPairAdmission && pairVisits > budgets.maximumPairVisits()) {
+            return GraphMessages.limit(0, 0, "pair-visit budget exceeded");
+        }
         workCounter.pairVisits = pairVisits;
         if (pairVisits > budgets.maximumPairVisits()) {
             return GraphMessages.limit(pairVisits, 0, "pair-visit budget exceeded");
@@ -280,7 +284,11 @@ public final class ProbabilisticInference {
             int previousPreviousStates = profiles.get(profileIndex - 2).cells().size();
             int previousStates = profiles.get(profileIndex - 1).cells().size();
             int currentStates = profiles.get(profileIndex).cells().size();
-            pairVisits += (long) previousStates * currentStates;
+            long additionalPairs = (long) previousStates * currentStates;
+            if (boundedPairAdmission && additionalPairs > budgets.maximumPairVisits() - pairVisits) {
+                return GraphMessages.limit(pairVisits, transitions, "pair-visit budget exceeded");
+            }
+            pairVisits += additionalPairs;
             workCounter.pairVisits = pairVisits;
             if (pairVisits > budgets.maximumPairVisits()) {
                 return GraphMessages.limit(pairVisits, transitions, "pair-visit budget exceeded");

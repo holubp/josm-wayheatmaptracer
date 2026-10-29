@@ -5,6 +5,38 @@ actual source and tests. Requested Sol6.1/high; exposed runtime metadata could n
 independently certify the effective routing. No Astra or recursive delegation.
 This is a failed completion audit, not a release approval or a goal pause.
 
+## Global-admission affected review (uncommitted after7e53bd8)
+
+Controller closure of the stop finding: both managed resource cases reproduced
+RED in v022-global-resource-stop-both-red-bounded.log (two intended assertions).
+Typed attempt stop now survives both phases and factual native/authority stops;
+cap omissions and local no-route/coverage do not trigger it. Latest focused and
+Format15 neighbors68PASS/0failures/errors/skips,4m38s, including actual per-source
+frozen resource policy and retained geometry replay. This closes the reviewed
+global stop defect in focused evidence, not the other whole-release findings.
+
+Read-only Sol follow-up inspected actual Live discovery/admission/refinement and
+source-local frozen replay. Global parent selection, all four remaining counters,
+source-current checks and every-source offline replay are coherent, but two stop
+propagation paths remain blocking: optional discovery memory refusal must prevent
+starting B afterward; a returned native RESOURCE_LIMIT/authority exhaustion must
+stop later-source B even with positive unused counters. Cap-only omissions and
+ordinary local coverage/no-route fallback must not stop unrelated inference.
+Actual managed tiny-positive-budget regression reproduced the latter failure
+(v022-global-resource-stop-red-2.log,1m17s). Controller is adding the optional
+discovery-ledger refusal to the same test before repair. No whole-release approval.
+
+Inherited-contact implementation guidance from the same reviewer: reuse only the
+existing narrow complete ordered proof, with cancellation/work/memory bounds;
+construct detached full selected proposals for local section replacement and final
+assembled geometry independently. Retain context-way/edge identities. Permit only
+proved proper crossings, adding REVIEW evidence before unconditional incident
+blocking; never erase a hard finding afterward. Missing/stale semantics, new contacts,
+changed count/edge/order, excessive displacement, touches/overlaps, transport and
+remote uncertified context remain hard. Final edit-plan topology proof is mandatory.
+This guidance is an implementation decomposition of the existing approved contract,
+not a new exception or a completed repair.
+
 | Finding | Evidence | Required closure |
 |---|---|---|
 | P1 Ordinary interior identities omitted | Actual selected1–3 of five-node ordinary Hybrid produces B refinement, but both variants fail `Final route omits a protected or movable existing occurrence` | Extract native reuse-first monotonic fraction matcher; reconstruct mandatory ordinary identity on final geometry without making every ordinary node a B boundary or loosening deletion authority. Preserve native B outputs and assess final coordinates independently |

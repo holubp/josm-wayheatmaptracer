@@ -67,7 +67,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.Selected
  * serialization is used.
  */
 public final class FrozenReplayCodec {
-    public static final int VERSION = 6;
+    public static final int VERSION = 7;
     private static final int REQUEST_MAGIC = 0x57544452;
     private static final int AUTHORITY_MAGIC = 0x57544155;
     private static final int AUTHORITY_VERSION = 2;
@@ -122,7 +122,7 @@ public final class FrozenReplayCodec {
                 boolean extended = hasLegacy || explicit || input.planSearchRadiusMeters()
                         != input.request().permissions().ordinaryRadiusMeters();
                 boolean semantic = extended || input.network().semanticWitness() != null;
-                out.writeInt(hasLegacy ? 6 : extended ? 5 : semantic ? 4
+                out.writeInt(hasLegacy ? input.legacyB().parentPolicy().isPresent() ? 7 : 6 : extended ? 5 : semantic ? 4
                         : input.evidence().coordinateFrame().hasCompleteNumericalIdentity() ? 3 : 2);
                 if (semantic) out.writeBoolean(input.evidence().coordinateFrame().hasCompleteNumericalIdentity());
                 evidence(out, input.evidence());
@@ -159,7 +159,7 @@ public final class FrozenReplayCodec {
             NetworkSnapshot network = network(in, version >= 4, version >= 5);
             ModernTracePipeline.Options options = options(in);
             double planRadius = version >= 5 ? in.readDouble() : request.permissions().ordinaryRadiusMeters();
-            FrozenLegacyBInput legacy = version >= 6 ? legacyB(in) : null;
+            FrozenLegacyBInput legacy = version >= 6 ? legacyB(in,version >= 7) : null;
             if (in.read() != -1) {
                 throw new IllegalArgumentException("Frozen replay input has trailing data");
             }
@@ -1236,9 +1236,22 @@ public final class FrozenReplayCodec {
         count(out, value.frozenRanges().size());
         for (var range : value.frozenRanges()) { out.writeInt(range.firstIndex()); out.writeInt(range.lastIndex()); }
         out.writeBoolean(value.simplify()); out.writeDouble(value.projectedTolerance());
+        if (value.parentPolicy().isPresent()) {
+            var policy = value.parentPolicy().orElseThrow();
+            out.writeBoolean(policy.bInferenceAllowed()); str(out,policy.unavailableReason().name());
+            out.writeBoolean(policy.effectiveBudget().isPresent());
+            if (policy.effectiveBudget().isPresent()) {
+                var budget = policy.effectiveBudget().orElseThrow();
+                out.writeInt(budget.maximumStatesPerProfile()); out.writeLong(budget.maximumPairVisits());
+                out.writeLong(budget.maximumTransitions()); out.writeInt(budget.maximumRawAlternatives());
+                out.writeInt(budget.maximumDistinctAlternatives());
+            }
+            count(out,policy.admittedParentIds().size());
+            for (var id : policy.admittedParentIds()) str(out,id);
+        }
     }
 
-    private static FrozenLegacyBInput legacyB(DataInputStream in) throws IOException {
+    private static FrozenLegacyBInput legacyB(DataInputStream in, boolean explicitAllocation) throws IOException {
         int kind = in.readInt();
         if (kind != 1 && kind != 2) throw new IllegalArgumentException("Unknown frozen Legacy source kind");
         int length = in.readInt();
@@ -1257,8 +1270,25 @@ public final class FrozenReplayCodec {
         int frozenCount = count(in);
         var frozen = new ArrayList<OccurrenceRange>(frozenCount);
         for (int index = 0; index < frozenCount; index++) frozen.add(new OccurrenceRange(in.readInt(), in.readInt()));
-        return FrozenLegacyBInput.decode(kind, source, occurrences, frozen, in.readBoolean(), in.readDouble(),
+        var value = FrozenLegacyBInput.decode(kind, source, occurrences, frozen, in.readBoolean(), in.readDouble(),
                 bytes -> admission().bytes(bytes));
+        if (!explicitAllocation) return value;
+        boolean allowed = in.readBoolean();
+        var reason = switch (str(in)) {
+            case "WORK_BUDGET" -> org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Reason.WORK_BUDGET;
+            case "DEADLINE" -> org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Reason.DEADLINE;
+            case "RESOURCE_LIMIT" -> org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Reason.RESOURCE_LIMIT;
+            default -> throw new IllegalArgumentException("Invalid frozen root allocation reason");
+        };
+        java.util.Optional<TraceBudgets> budget = in.readBoolean()
+                ? java.util.Optional.of(new TraceBudgets(in.readInt(),in.readLong(),in.readLong(),in.readInt(),in.readInt()))
+                : java.util.Optional.empty();
+        int parents = in.readInt();
+        if (parents < 0 || parents > 2) throw new IllegalArgumentException("Frozen parent allocation exceeds cap");
+        admission().entries(parents);
+        var ids = new ArrayList<String>(parents);
+        for (int index = 0; index < parents; index++) ids.add(str(in));
+        return value.withParentPolicy(new FrozenLegacyBInput.ParentPolicy(ids,allowed,reason,budget));
     }
 
     private static void count(DataOutputStream output, int count) throws IOException {
@@ -1357,6 +1387,10 @@ public final class FrozenReplayCodec {
             admission.bytes(2L * legacy.sourceByteCount() + legacy.rasterBytes());
             admission.entries(legacy.occurrences().size());
             admission.entries(legacy.frozenRanges().size());
+            legacy.parentPolicy().ifPresent(policy -> {
+                admission.bytes(192); admission.entries(policy.admittedParentIds().size());
+                for (var id : policy.admittedParentIds()) admitMetadata(id,admission);
+            });
         }
         EvidenceSnapshot evidence = input.evidence();
         admitMetadata(evidence.snapshotId(), admission);

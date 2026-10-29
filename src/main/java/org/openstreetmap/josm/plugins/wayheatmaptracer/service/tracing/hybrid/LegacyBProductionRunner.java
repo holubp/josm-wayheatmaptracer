@@ -118,10 +118,12 @@ public final class LegacyBProductionRunner {
 
     public record Result(String detector, int profileCount, List<LegacyAlternative> alternatives,
             List<Seed> seeds, Batch batch, List<LegacyBAssessor.AssessedCandidate> assessments,
-            FinalGeometryEvaluator.Result originalQuality, List<SectionQuality> sectionQualities) {
+            FinalGeometryEvaluator.Result originalQuality, List<SectionQuality> sectionQualities,
+            TraceBudgets refinementBudget, boolean bInferenceAllowed, Reason unavailableReason) {
         public Result {
             alternatives = List.copyOf(alternatives); seeds = List.copyOf(seeds);
             assessments = List.copyOf(assessments); sectionQualities = List.copyOf(sectionQualities);
+            Objects.requireNonNull(refinementBudget); Objects.requireNonNull(unavailableReason);
         }
     }
 
@@ -268,6 +270,21 @@ public final class LegacyBProductionRunner {
     public Accounted<Result> refine(Accounted<Discovery> discovery, List<String> admittedParentIds,
             TraceBudgets available, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner,
             Deadline deadline) {
+        return refine(discovery, admittedParentIds, available, true, cancellation, attemptOwner, deadline);
+    }
+
+    public Accounted<Result> refine(Accounted<Discovery> discovery, List<String> admittedParentIds,
+            TraceBudgets available, boolean bInferenceAllowed, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner attemptOwner, Deadline deadline) {
+        return refine(discovery, admittedParentIds, available, bInferenceAllowed, Reason.WORK_BUDGET,
+                cancellation, attemptOwner, deadline);
+    }
+
+    public Accounted<Result> refine(Accounted<Discovery> discovery, List<String> admittedParentIds,
+            TraceBudgets available, boolean bInferenceAllowed, Reason unavailableReason, CancellationProbe cancellation,
+            AttemptMemoryLedger.Owner attemptOwner, Deadline deadline) {
+        if (unavailableReason != Reason.WORK_BUDGET && unavailableReason != Reason.DEADLINE && unavailableReason != Reason.RESOURCE_LIMIT)
+            throw new IllegalArgumentException("Invalid root refinement allocation reason");
         var nativeDiscovery = discovery.value(); var input = nativeDiscovery.input();
         requireBudget(input.request().budgets(), available);
         var admitted = List.copyOf(admittedParentIds);
@@ -288,7 +305,7 @@ public final class LegacyBProductionRunner {
             var engine = new ProbabilisticTraceEngine(input.fieldName());
             var image = ImageCostField.fromEvidence(input.evidence(), input.fieldName());
             var authorityWork = new AuthorityWork();
-            var nativeBatch = new LegacyBPipeline(deadline).refine(selectedSeeds, sections, (section, remaining, probe) -> {
+            SectionRunner sectionRunner = (section, remaining, probe) -> {
                 var reference = new LegacyBReferenceFactory().prepare(section, input.request(), input.evidence(),
                         input.network(), remaining, probe);
                 var nativeRun = engine.traceRefinedWithUsage(reference, input.network(), probe, resultOwner);
@@ -331,7 +348,10 @@ public final class LegacyBProductionRunner {
                     return new SectionExecution(nativeRun.value(), Optional.of(reference), eligible,
                             authorityWork.used - authorityStart, authorityLimited);
                 } finally { nativeRun.owner().close(); }
-            }, available, cancellation);
+            };
+            var pipeline = new LegacyBPipeline(deadline);
+            var nativeBatch = bInferenceAllowed ? pipeline.refine(selectedSeeds, sections, sectionRunner, available, cancellation)
+                    : pipeline.retainLegacy(selectedSeeds, sections, available, unavailableReason, cancellation);
             var reconstructed = new ArrayList<Candidate>();
             for (var candidate : nativeBatch.candidates()) reconstructed.add(LegacyBOccurrenceReconstruction
                     .reuseAvailableVertices(input, candidate, cancellation, resultOwner));
@@ -364,7 +384,8 @@ public final class LegacyBProductionRunner {
                     input.originalMetric(), originalIds, image, input.evidence().resolution().effectivePitchMeters(),
                     originalProtected, originalIncidents.geometry(), false, false, false, false)
                     .withSharedContacts(originalIncidents.contacts()), cancellation);
-            var result = new Result(detector, profileCount, alternatives, seeds, batch, assessments, originalQuality, sectionQualities);
+            var result = new Result(detector, profileCount, alternatives, seeds, batch, assessments, originalQuality,
+                    sectionQualities, available, bInferenceAllowed, unavailableReason);
             long points = batch.candidates().stream().mapToLong(candidate -> candidate.points().size()).sum();
             own(resultOwner, result, 1024L + 1024L * points + 64L * originalQuality.findings().size());
             cancellation.checkpoint();

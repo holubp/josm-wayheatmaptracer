@@ -49,6 +49,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.RasterEvidenceCapture;
@@ -56,6 +57,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.Supporte
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBParentAdmission;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBModernResultAdapter;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.JunctionAuthorityBounds;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.ManualJunctionEligibility;
@@ -394,12 +396,18 @@ public final class LiveBPreviewService {
     /** Actual source inputs and native section execution retained for diagnostics and strict replay. */
     public record LegacyBComputation(LegacyBProductionRunner.Input input,
             LegacyBProductionRunner.Result result, LegacyVisibleProfileSampler.Input visibleSource,
-            LegacyManagedProfileSampler.Input managedSource) {
+            LegacyManagedProfileSampler.Input managedSource, boolean bInferenceAllowed) {
         public LegacyBComputation {
             Objects.requireNonNull(input); Objects.requireNonNull(result);
+            if (bInferenceAllowed != result.bInferenceAllowed())
+                throw new IllegalArgumentException("Hybrid allocation differs from actual execution");
             if ((visibleSource == null) == (managedSource == null)) {
                 throw new IllegalArgumentException("Hybrid computation needs exactly one actual Legacy source");
             }
+        }
+        public LegacyBComputation(LegacyBProductionRunner.Input input, LegacyBProductionRunner.Result result,
+                LegacyVisibleProfileSampler.Input visibleSource, LegacyManagedProfileSampler.Input managedSource) {
+            this(input,result,visibleSource,managedSource,result.bInferenceAllowed());
         }
     }
 
@@ -1337,6 +1345,8 @@ public final class LiveBPreviewService {
             throw new IllegalStateException("Frozen interval source changed before inference");
         }
         TraceBudgets limit = TraceBudgets.defaults();
+        if (captured.engine() == TrackerMode.LEGACY_THEN_B)
+            return computeLegacyBAttempt(captured,partition,cancellation,legacy,owner,deadline,limit);
         ChoiceRun nativeRun = computeChoice(captured, partition, null, "selected-visible", 0,
                 limit, cancellation, legacy, owner, deadline);
         if (captured.sourceRasters() == null || captured.intensityMode()
@@ -1410,6 +1420,131 @@ public final class LiveBPreviewService {
 
     private record ChoiceRun(Computed computed, TraceWorkUsage usage) { }
 
+    private record LegacyBChoiceSpec(String mapping, String sourceTier, int preference, boolean available) { }
+
+    /** Actual discovery precedes one global parent allocation; B never runs for omitted parents. */
+    private Computed computeLegacyBAttempt(Captured captured, SelectedWayIntervalPartitioner.Partition partition,
+            CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
+            LegacyBPipeline.Deadline deadline, TraceBudgets limits) {
+        var choices = new ArrayList<LegacyBChoiceSpec>();
+        choices.add(new LegacyBChoiceSpec(null,"selected-visible",0,true));
+        if (captured.sourceRasters() != null && captured.intensityMode() == IntensitySamplingMode.COLOR_MAPPING) {
+            var sources = captured.sourceRasters();
+            if (sources.plan().aggregateDetectorRequested()) choices.add(new LegacyBChoiceSpec("all-colors-combined",
+                    "all-colors-combined",1,sources.aggregateAvailability() == ManagedModernPreviewSource.AggregateAvailability.COMPLETE));
+            int preference = 2;
+            for (var mapping : captured.alternativeMappings())
+                choices.add(new LegacyBChoiceSpec(mapping,"selected-mapping-" + mapping,preference++,true));
+        }
+        var discoveries = new LinkedHashMap<LegacyBChoiceSpec,LegacyBDiscoveredChoice>();
+        var failures = new LinkedHashMap<LegacyBChoiceSpec,DetectorAttempt>();
+        boolean discoveryStopped = false;
+        LegacyBPipeline.Reason inferenceStopReason = null;
+        for (var choice : choices) {
+            cancellation.checkpoint();
+            if (!choice.available()) {
+                failures.put(choice,new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.SOURCE_UNAVAILABLE,null));
+                continue;
+            }
+            if (discoveryStopped || deadline.expired()) {
+                if (choice.mapping() == null) throw new IllegalStateException("Legacy discovery deadline expired before selected source");
+                failures.put(choice,new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.RESOURCE_LIMIT,null));
+                if (inferenceStopReason == null) inferenceStopReason = LegacyBPipeline.Reason.DEADLINE;
+                discoveryStopped = true; continue;
+            }
+            ModernDiagnosticCounters.begin();
+            try {
+                requireLegacyBSourceCurrent(captured);
+                if ("all-colors-combined".equals(choice.mapping())
+                        && !captured.sourceRasters().provenCompleteAggregate(captured.sourceOwner()))
+                    throw new IllegalStateException("Managed aggregate source proof became stale");
+                EvidenceSnapshot evidence = choice.mapping() == null ? captureEvidence(captured,cancellation)
+                        : "all-colors-combined".equals(choice.mapping()) ? captureManagedAggregateEvidence(captured,cancellation)
+                        : captureManagedMappingEvidence(captured,choice.mapping(),cancellation);
+                var options = new ModernTracePipeline.Options(FIELD,captured.cleanup(),choice.sourceTier(),choice.preference());
+                discoveries.put(choice,discoverLegacyBChoice(captured,partition,choice.mapping(),cancellation,legacy,
+                        owner,deadline,evidence,options));
+            } catch (AttemptMemoryLedger.ResourceLimitException | RasterEvidenceCapture.ResourceLimitException
+                    | IntervalTraceBatch.ResourceLimitException resource) {
+                if (choice.mapping() == null) throw resource;
+                failures.put(choice,new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.RESOURCE_LIMIT,null));
+                inferenceStopReason = LegacyBPipeline.Reason.RESOURCE_LIMIT;
+                discoveryStopped = true;
+            } catch (java.util.concurrent.CancellationException cancelled) {
+                if (cancellation.cancelled() || !deadline.expired() || choice.mapping() == null) throw cancelled;
+                failures.put(choice,new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.RESOURCE_LIMIT,null));
+                inferenceStopReason = LegacyBPipeline.Reason.DEADLINE;
+                discoveryStopped = true;
+            } finally { ModernDiagnosticCounters.end(); }
+        }
+        var prepared = new ArrayList<>(discoveries.entrySet());
+        var admissions = LegacyBParentAdmission.select(prepared.stream().map(entry -> new LegacyBParentAdmission.Source(
+                entry.getKey().sourceTier(),entry.getValue().discovery().value().seeds().stream().map(seed -> seed.id()).toList())).toList());
+        var completed = new LinkedHashMap<LegacyBChoiceSpec,Computed>();
+        TraceWorkUsage used = TraceWorkUsage.none();
+        for (int index = 0; index < prepared.size(); index++) {
+            cancellation.checkpoint(); requireLegacyBSourceCurrent(captured);
+            var entry = prepared.get(index); var choice = entry.getKey();
+            var allocation = remainingLegacyBAllocation(limits,used);
+            boolean allowed = inferenceStopReason == null && !deadline.expired() && allocation.isPresent();
+            var reason = inferenceStopReason != null ? inferenceStopReason : deadline.expired()
+                    ? LegacyBPipeline.Reason.DEADLINE : LegacyBPipeline.Reason.WORK_BUDGET;
+            ModernDiagnosticCounters.begin();
+            try {
+                var run = finishLegacyBChoice(captured,entry.getValue(),admissions.get(index).admittedParentIds(),
+                        allocation.orElse(limits),allowed,reason,cancellation,owner,deadline);
+                used = used.plus(run.usage()); remainingLegacyBAllocation(limits,used);
+                completed.put(choice,run.computed());
+                // A refused native block may leave every counter positive. Stop on its actual
+                // terminal receipt, not on remaining arithmetic or cap-only parent omissions.
+                if (inferenceStopReason == null) {
+                    for (var section : run.computed().legacyB().result().batch().sections()) {
+                        if (section.execution().isPresent() && (section.execution().orElseThrow().authorityWorkLimited()
+                                || section.execution().orElseThrow().run().result().status()
+                                    == TraceHypothesisSet.Status.RESOURCE_LIMIT)
+                                || section.reason() == LegacyBPipeline.Reason.RESOURCE_LIMIT) {
+                            inferenceStopReason = LegacyBPipeline.Reason.RESOURCE_LIMIT; break;
+                        }
+                        if (section.reason() == LegacyBPipeline.Reason.DEADLINE
+                                || section.reason() == LegacyBPipeline.Reason.WORK_BUDGET) {
+                            inferenceStopReason = section.reason(); break;
+                        }
+                    }
+                }
+            } catch (AttemptMemoryLedger.ResourceLimitException | RasterEvidenceCapture.ResourceLimitException
+                    | IntervalTraceBatch.ResourceLimitException resource) {
+                if (choice.mapping() == null) throw resource;
+                failures.put(choice,new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.RESOURCE_LIMIT,null));
+                if (inferenceStopReason == null) inferenceStopReason = LegacyBPipeline.Reason.RESOURCE_LIMIT;
+            } finally { ModernDiagnosticCounters.end(); }
+        }
+        var root = completed.get(choices.get(0));
+        if (root == null) throw new IllegalStateException("Selected Legacy source did not produce a completed assessment");
+        var attempts = new ArrayList<DetectorAttempt>();
+        for (int index = 1; index < choices.size(); index++) {
+            var choice = choices.get(index); var produced = completed.get(choice);
+            attempts.add(produced == null ? Objects.requireNonNull(failures.get(choice))
+                    : new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.PRODUCED,produced));
+        }
+        return root.withSourceAttempts(attempts);
+    }
+
+    private static void requireLegacyBSourceCurrent(Captured captured) {
+        if (captured.sourceOwner() != null && !captured.sourceOwner().isActiveGeneration(captured.managedRaster().generation()))
+            throw new IllegalStateException("Managed source generation changed during inference");
+    }
+
+    private static java.util.Optional<TraceBudgets> remainingLegacyBAllocation(TraceBudgets limit, TraceWorkUsage used) {
+        long pairs = limit.maximumPairVisits() - used.pairVisits();
+        long transitions = limit.maximumTransitions() - used.transitions();
+        int raw = limit.maximumRawAlternatives() - used.rawAlternatives();
+        int distinct = limit.maximumDistinctAlternatives() - used.distinctAlternatives();
+        if (pairs < 0 || transitions < 0 || raw < 0 || distinct < 0)
+            throw new IllegalStateException("Shared B work exceeded the root attempt allocation");
+        return pairs == 0 || transitions == 0 || raw == 0 || distinct == 0 ? java.util.Optional.empty()
+                : java.util.Optional.of(new TraceBudgets(limit.maximumStatesPerProfile(),pairs,transitions,raw,Math.min(raw,distinct)));
+    }
+
     private static TraceBudgets remainingBudget(TraceBudgets initial, long pairs, long transitions) {
         return new TraceBudgets(initial.maximumStatesPerProfile(), pairs, transitions,
                 initial.maximumRawAlternatives(), initial.maximumDistinctAlternatives());
@@ -1455,8 +1590,23 @@ public final class LiveBPreviewService {
             SelectedWayIntervalPartitioner.Partition partition, String mapping, TraceBudgets budget,
             CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
             LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options) {
+        var discovery = discoverLegacyBChoice(captured,partition,mapping,cancellation,legacy,owner,deadline,evidence,options);
+        return finishLegacyBChoice(captured,discovery,discovery.discovery().value().seeds().stream().limit(2)
+                .map(seed -> seed.id()).toList(),budget,true,LegacyBPipeline.Reason.WORK_BUDGET,cancellation,owner,deadline);
+    }
+
+    private record LegacyBDiscoveredChoice(EvidenceSnapshot evidence, ModernTracePipeline.Options options,
+            LegacyBProductionRunner.Input input, LegacyVisibleProfileSampler.Input visible,
+            LegacyManagedProfileSampler.Input managed,
+            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Discovery> discovery,
+            Map<String,Number> counters) { }
+
+    private LegacyBDiscoveredChoice discoverLegacyBChoice(Captured captured,
+            SelectedWayIntervalPartitioner.Partition partition, String mapping,
+            CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
+            LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options) {
         Objects.requireNonNull(legacy);
-        TraceRequest request = withBudgets(fullRequest(captured, evidence), budget);
+        TraceRequest request = fullRequest(captured, evidence);
         var way = (DetachedWay) captured.network().primitives().get(request.selectedWayKey());
         var geometry = legacy.geometry();
         var frozen = partition.fixedIslands().stream().map(SelectedWayIntervalPartitioner.FixedIsland::range).toList();
@@ -1477,25 +1627,35 @@ public final class LiveBPreviewService {
                 : captured.intensityMode().detectorName() : mapping;
         LegacyVisibleProfileSampler.Input visible = null;
         LegacyManagedProfileSampler.Input managed = null;
-        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Result> executed;
+        org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Accounted<LegacyBProductionRunner.Discovery> discovered;
         var runner = new LegacyBProductionRunner();
         if (captured.raster() != null) {
             visible = LegacyBSourceCapture.visible(legacy.sampling(), captured.raster(),
                     geometry.originalProjected(), detector);
-            executed = runner.runVisible(input, visible, budget, cancellation, owner, deadline);
+            discovered = runner.discoverVisible(input, visible, cancellation, owner, deadline);
         } else {
             if (captured.sourceRasters() == null) {
                 throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
             }
             managed = LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
                     geometry.originalProjected(), captured.projectionCode(), detector);
-            executed = runner.runManaged(input, managed, budget, cancellation, owner, deadline);
+            discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
         }
+        return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());
+    }
+
+    private ChoiceRun finishLegacyBChoice(Captured captured, LegacyBDiscoveredChoice discovered,
+            List<String> admitted, TraceBudgets budget, boolean allowed, LegacyBPipeline.Reason unavailableReason,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, LegacyBPipeline.Deadline deadline) {
+        var executed = new LegacyBProductionRunner().refine(discovered.discovery(),admitted,budget,allowed,
+                unavailableReason,cancellation,owner,deadline);
         var result = executed.value();
-        var pipeline = LegacyBModernResultAdapter.adapt(result, input, options, cancellation);
-        var provenance = new LegacyBComputation(input, result, visible, managed);
-        return new ChoiceRun(new Computed(captured, evidence, request, pipeline, options,
-                ModernDiagnosticCounters.snapshot(), null, null, List.of(), provenance), result.batch().usage());
+        var pipeline = LegacyBModernResultAdapter.adapt(result, discovered.input(), discovered.options(), cancellation);
+        var provenance = new LegacyBComputation(discovered.input(), result, discovered.visible(), discovered.managed());
+        var counters = new LinkedHashMap<String,Number>(discovered.counters());
+        counters.putAll(ModernDiagnosticCounters.snapshot());
+        return new ChoiceRun(new Computed(captured, discovered.evidence(), discovered.input().request(), pipeline, discovered.options(),
+                counters, null, null, List.of(), provenance), result.batch().usage());
     }
 
     private static TraceRequest withBudgets(TraceRequest request, TraceBudgets budget) {

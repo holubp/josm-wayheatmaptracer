@@ -3,16 +3,95 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid;
 import static org.junit.jupiter.api.Assertions.*;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.*;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceBudgets;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
 class LegacyBFrozenReplayTest {
+    @Test void frozenCaptureUsesActualRefinementAllocationRatherThanDiscoveryCeiling() {
+        var fixture = LegacyBProductionRunnerTest.fixture(false,false); var input = fixture.input();
+        var allocation = new TraceBudgets(96,8_000_000,10_000,32,8);
+        try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+            var runner = new LegacyBProductionRunner(); var deadline = LegacyBPipeline.Deadline.production();
+            var discovery = runner.discoverVisible(input,fixture.visible(),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner,deadline);
+            var actual = runner.refine(discovery,List.of(discovery.value().seeds().get(0).id()),allocation,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner,deadline);
+            assertEquals(10_000,actual.value().batch().usage().transitions());
+            var stage = FrozenLegacyBInput.capture(new LiveBPreviewService.LegacyBComputation(input,actual.value(),fixture.visible(),null));
+            var frozen = new FrozenReplayInput(input.request(),input.evidence(),input.network(),
+                    new ModernTracePipeline.Options(input.fieldName(),GeometryCleanupConfig.disabled(),"selected-visible",0),4,stage);
+            var replay = Format15ReplayRunner.replay(FrozenReplayCodec.decode(FrozenReplayCodec.encode(frozen)),
+                    ReplayLevel.FINAL_GEOMETRY,TrackerMode.LEGACY_THEN_B);
+            assertEquals(actual.value().batch().usage().transitions(),replay.inference().evaluatedTransitions(),
+                    "Source replay must not receive the larger original discovery ceiling");
+        }
+    }
+
+    @Test void frozenSourceAdmissionCannotReAdmitOmittedParentsOrInventBWork() {
+        var fixture = LegacyBProductionRunnerTest.fixture(false,false); var input = fixture.input();
+        var base = FrozenLegacyBInput.visible(fixture.visible(),input.occurrences(),input.frozenRanges(),false,0);
+        var options = new ModernTracePipeline.Options(input.fieldName(),GeometryCleanupConfig.disabled(),"selected-visible",0);
+        var stage = base.withParentPolicy(new FrozenLegacyBInput.ParentPolicy(List.of(),true));
+        var frozen = new FrozenReplayInput(input.request(),input.evidence(),input.network(),options,4,stage);
+        byte[] bytes = FrozenReplayCodec.encode(frozen);
+        assertEquals(7,ByteBuffer.wrap(bytes).getInt(4));
+        var decoded = FrozenReplayCodec.decode(bytes);
+        assertArrayEquals(bytes,FrozenReplayCodec.encode(decoded));
+        assertEquals(stage.parentPolicy(),decoded.legacyB().parentPolicy());
+        var replay = Format15ReplayRunner.replay(decoded,ReplayLevel.FINAL_GEOMETRY,TrackerMode.LEGACY_THEN_B);
+        assertEquals(0,replay.inference().evaluatedTransitions());
+        assertTrue(replay.routes().isEmpty());
+        assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceHypothesisSet.Status.RESOURCE_LIMIT,
+                replay.inference().status());
+        assertNotEquals(frozen.canonicalHash(),new FrozenReplayInput(input.request(),input.evidence(),input.network(),options,4,base).canonicalHash());
+    }
+
+    @Test void frozenExhaustedAllocationKeepsAdmittedLegacyButDoesNotRunB() {
+        var fixture = LegacyBProductionRunnerTest.fixture(false,false); var input = fixture.input();
+        String parent;
+        try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+            var discovery = new LegacyBProductionRunner().discoverVisible(input,fixture.visible(),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner,
+                    LegacyBPipeline.Deadline.production());
+            parent = discovery.value().seeds().get(0).id();
+        }
+        for (var reason : List.of(LegacyBPipeline.Reason.WORK_BUDGET,LegacyBPipeline.Reason.DEADLINE,
+                LegacyBPipeline.Reason.RESOURCE_LIMIT)) {
+            var stage = FrozenLegacyBInput.visible(fixture.visible(),input.occurrences(),input.frozenRanges(),false,0)
+                    .withParentPolicy(new FrozenLegacyBInput.ParentPolicy(List.of(parent),false,reason));
+            var frozen = new FrozenReplayInput(input.request(),input.evidence(),input.network(),
+                    new ModernTracePipeline.Options(input.fieldName(),GeometryCleanupConfig.disabled(),"selected-visible",0),4,stage);
+            var replay = Format15ReplayRunner.replay(FrozenReplayCodec.decode(FrozenReplayCodec.encode(frozen)),
+                    ReplayLevel.FINAL_GEOMETRY,TrackerMode.LEGACY_THEN_B);
+            assertEquals(0,replay.inference().evaluatedTransitions());
+            assertFalse(replay.routes().isEmpty());
+            assertTrue(replay.routes().stream().allMatch(route -> route.hypothesis().diagnostics()
+                    .getOrDefault("hasBRefinement",0.0) == 0));
+            assertTrue(new String(replay.legacyBProvenance().bytes(),java.nio.charset.StandardCharsets.UTF_8)
+                    .contains(reason.name()),"A fresh replay deadline must not relabel the actual root stop reason");
+        }
+    }
+
+    @Test void selfConsistentFrozenPolicyCannotAdmitAnUncapturedParent() {
+        var fixture = LegacyBProductionRunnerTest.fixture(false,false); var input = fixture.input();
+        var stage = FrozenLegacyBInput.visible(fixture.visible(),input.occurrences(),input.frozenRanges(),false,0)
+                .withParentPolicy(new FrozenLegacyBInput.ParentPolicy(List.of("not-a-discovered-parent"),true));
+        var frozen = new FrozenReplayInput(input.request(),input.evidence(),input.network(),
+                new ModernTracePipeline.Options(input.fieldName(),GeometryCleanupConfig.disabled(),"selected-visible",0),4,stage);
+        var decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(frozen));
+        var failure = assertThrows(ReplayMismatchException.class,() -> Format15ReplayRunner.replay(decoded,
+                ReplayLevel.FINAL_GEOMETRY,TrackerMode.LEGACY_THEN_B));
+        assertEquals("legacy-parent-admission-mismatch",failure.getMessage());
+    }
+
     @Test void canonicalFrozenIdentityIncludesActualLegacyPixelsAndPolicy() {
         var fixture = LegacyBProductionRunnerTest.fixture(false, false);
         var input = fixture.input();

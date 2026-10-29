@@ -21,6 +21,42 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters;
 
 class V022ProbabilisticInferenceTest {
+    @Test void productionPairBudgetCountsOnlyAdmittedBlocks() {
+        long[][] cases = {{1,1,0,0},{2,3,0,0},{3,7,4,0},{4,11,8,8}};
+        for (var row : cases) {
+            var profiles = denseProfiles((int) row[0],2);
+            try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+                var result = new ProbabilisticInference().solve(profiles,EvidenceModelParameters.withoutShapeTerms(),
+                        new TraceBudgets(96,row[1],1_000_000,32,8),null,CancellationProbe.NONE,owner,
+                        ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+                assertEquals(ProbabilisticInferenceResult.Status.RESOURCE_LIMIT,result.status());
+                assertEquals(row[2],result.evaluatedPairVisits(),"Refused blocks were not visited");
+                assertEquals(row[3],result.evaluatedTransitions());
+            }
+        }
+    }
+
+    @Test void productionExactPairBoundariesPreserveSuccessfulGeometryAndWork() {
+        for (int count = 1; count <= 3; count++) {
+            var profiles = denseProfiles(count,2);
+            long pairs = count == 1 ? 2 : 4L * (count - 1);
+            try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+                var inference = new ProbabilisticInference();
+                var limited = inference.solve(profiles,EvidenceModelParameters.withoutShapeTerms(),
+                        new TraceBudgets(96,pairs,1_000_000,32,8),null,CancellationProbe.NONE,owner,
+                        ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+                var full = inference.solve(profiles,EvidenceModelParameters.withoutShapeTerms(),
+                        TraceBudgets.defaults(),null,CancellationProbe.NONE,owner,
+                        ProbabilisticExecutionPolicy.Mode.EXACT_DOMINANCE_V2);
+                assertEquals(full.status(),limited.status());
+                assertArrayEquals(full.mapPath().orElseThrow().stateIndices(),limited.mapPath().orElseThrow().stateIndices());
+                assertEquals(full.mapPath().orElseThrow().energy(),limited.mapPath().orElseThrow().energy());
+                assertEquals(full.evaluatedPairVisits(),limited.evaluatedPairVisits());
+                assertEquals(full.evaluatedTransitions(),limited.evaluatedTransitions());
+            }
+        }
+    }
+
     @Test
     void boundedKBestAllocatesAncestryOnlyForRetainedExtensions() {
         List<InferenceProfile> profiles = denseProfiles(4, 6);
