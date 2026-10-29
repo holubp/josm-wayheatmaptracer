@@ -78,7 +78,7 @@ class V022CandidateRankingTest {
     void T080_pointCountAndHybridLabelProvideNoAutomaticBonus() {
         CandidateRankingPolicy.Candidate ordinary = candidate("a-ordinary", TrackerMode.PROBABILISTIC, true,
                 96, 100, 1, 0, .1, 50, 0, false, false);
-        CandidateRankingPolicy.Candidate hybridCleaned = candidate("z-hybrid", TrackerMode.HYBRID, true,
+        CandidateRankingPolicy.Candidate hybridCleaned = candidate("z-hybrid", TrackerMode.LEGACY_THEN_B, true,
                 96, 100, 1, 0, .1, 3, 0, true, false);
 
         assertEquals("a-ordinary", ranking.rank(List.of(hybridCleaned, ordinary)).get(0).id());

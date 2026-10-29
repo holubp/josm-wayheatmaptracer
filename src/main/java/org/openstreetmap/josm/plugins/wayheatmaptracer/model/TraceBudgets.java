@@ -12,14 +12,6 @@ public record TraceBudgets(int maximumStatesPerProfile, long maximumPairVisits,
         }
     }
 
-    /**
-     * Returns explicitly funded attempt-wide limits for full Hybrid A, unguided B, and guided B.
-     * Callers must select these limits deliberately; frozen and user-supplied budgets are never upgraded.
-     */
-    public static TraceBudgets fundedHybrid() {
-        return new TraceBudgets(96, 24_000_000L, 384_000_000L, 96, 24);
-    }
-
     /** Returns the named opt-in experimental B preview limit, never an ordinary default. */
     public static TraceBudgets experimentalProbabilisticPreview8x4() {
         return new TraceBudgets(96, 8_000_000L, 48_000_000L, 8, 4);

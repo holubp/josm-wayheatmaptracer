@@ -29,9 +29,10 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMe
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngineRun;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceMemoryLimitException;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceWorkUsage;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.BudgetReportingTraceEngine;
 
 /** Standalone B engine using full scalar profiles and exact finite-state longitudinal inference. */
-public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceEngine {
+public final class ProbabilisticTraceEngine implements BudgetReportingTraceEngine {
     /** Caller-owned capability boundary for B's experimental weak-signal semantics. */
     public enum ReliabilityPolicy { DIRECT_LONGITUDINAL_V2, BASELINE }
 
@@ -39,7 +40,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     public static ReliabilityPolicy reliabilityPolicyFor(TrackerMode mode) {
         return switch (mode) {
             case PROBABILISTIC -> ReliabilityPolicy.DIRECT_LONGITUDINAL_V2;
-            case HYBRID -> ReliabilityPolicy.BASELINE;
+            case HYBRID -> ReliabilityPolicy.BASELINE; // Historical receipt metadata only; all A+B factories refuse execution.
             default -> throw new IllegalArgumentException("Mode does not execute probabilistic B");
         };
     }
@@ -106,7 +107,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     public Accounted<TraceEngineRun> traceWithUsage(TraceRequest request, EvidenceSnapshot evidence,
             NetworkSnapshot network, CancellationProbe cancellation,
             AttemptMemoryLedger.Owner attemptOwner) {
-        return traceAccounted(request, evidence, network, null, null, cancellation, attemptOwner);
+        return traceAccounted(request, evidence, network, null, cancellation, attemptOwner);
     }
 
     /** Runs unchanged B inference around a factual Legacy reference, with original OSM authority. */
@@ -125,50 +126,23 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
     public Accounted<TraceEngineRun> traceRefinedWithUsage(Reference reference, NetworkSnapshot network,
             CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
         if (reference == null) { throw new IllegalArgumentException("A bound reference is required"); }
-        return traceAccounted(reference.request(), reference.evidence(), network, null, reference,
+        return traceAccounted(reference.request(), reference.evidence(), network, reference,
                 cancellation, attemptOwner);
     }
 
-    @Override
-    public TraceEngineRun traceGuidedWithUsage(TraceRequest request, EvidenceSnapshot evidence,
-            NetworkSnapshot network, ProbabilisticStructuralGuide guide,
-            CancellationProbe cancellation) {
-        if (guide == null) {
-            throw new IllegalArgumentException("Structural guide is required");
-        }
-        AttemptMemoryLedger ledger = AttemptMemoryLedger.production();
-        AttemptMemoryLedger.Owner owner = ledger.rootOwner();
-        try {
-            return traceGuidedWithUsage(request, evidence, network, guide, cancellation, owner).value();
-        } finally {
-            owner.close();
-        }
-    }
-
-    @Override
-    public Accounted<TraceEngineRun> traceGuidedWithUsage(TraceRequest request,
-            EvidenceSnapshot evidence, NetworkSnapshot network, ProbabilisticStructuralGuide guide,
-            CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
-        if (guide == null) {
-            throw new IllegalArgumentException("Structural guide is required");
-        }
-        return traceAccounted(request, evidence, network, guide, null, cancellation, attemptOwner);
-    }
-
     private Accounted<TraceEngineRun> traceAccounted(TraceRequest request,
-            EvidenceSnapshot evidence, NetworkSnapshot network, ProbabilisticStructuralGuide guide,
+            EvidenceSnapshot evidence, NetworkSnapshot network,
             Reference reference, CancellationProbe cancellation, AttemptMemoryLedger.Owner attemptOwner) {
         if (attemptOwner == null) {
             throw new IllegalArgumentException("Attempt memory owner is required");
         }
-        AttemptMemoryLedger.Owner engineOwner = attemptOwner.child(
-                guide == null ? "probabilistic-engine" : "guided-probabilistic-engine");
+        AttemptMemoryLedger.Owner engineOwner = attemptOwner.child("probabilistic-engine");
         AttemptMemoryLedger.Owner candidateOwner = engineOwner.child("candidate-result");
         AttemptMemoryLedger.Owner workingOwner = engineOwner.child("probabilistic-working-set");
         EngineWork work = new EngineWork();
         try {
             TraceEngineRun result = traceInternal(request, evidence, network, cancellation,
-                    guide, reference, candidateOwner, workingOwner, work);
+                    reference, candidateOwner, workingOwner, work);
             closeIfOpen(workingOwner, null);
             candidateOwner.transferTo(engineOwner);
             candidateOwner.close();
@@ -270,7 +244,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
 
     private TraceEngineRun traceInternal(TraceRequest request, EvidenceSnapshot evidence,
         NetworkSnapshot network, CancellationProbe cancellation,
-        ProbabilisticStructuralGuide guide, Reference reference, AttemptMemoryLedger.Owner candidateOwner,
+        Reference reference, AttemptMemoryLedger.Owner candidateOwner,
         AttemptMemoryLedger.Owner workingOwner, EngineWork work) {
         long started = System.nanoTime();
         cancellation.checkpoint();
@@ -355,17 +329,8 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             AttemptMemoryLedger.Owner baselineOwner = evaluatedOwner.child("baseline-observation");
             InferenceProfile evaluatedProfile = observationModel.evaluate(profile, lattice, parameters,
                     reliabilityPolicy == ReliabilityPolicy.DIRECT_LONGITUDINAL_V2, baselineOwner);
-            if (guide == null) {
-                baselineOwner.transferTo(evaluatedOwner);
-                evaluated.add(evaluatedProfile);
-            } else {
-                AttemptMemoryLedger.Owner guidedOwner = evaluatedOwner.child("guided-observation");
-                InferenceProfile guided = guide.apply(evaluatedProfile,
-                        profile.sourcePitchMeters(), guidedOwner);
-                baselineOwner.close();
-                guidedOwner.transferTo(evaluatedOwner);
-                evaluated.add(guided);
-            }
+            baselineOwner.transferTo(evaluatedOwner);
+            evaluated.add(evaluatedProfile);
         }
         long stateObservationNanos = System.nanoTime() - stateObservationStarted;
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
@@ -383,7 +348,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 || inference.status() == ProbabilisticInferenceResult.Status.REVIEW_REQUIRED;
         long materializationStarted = System.nanoTime();
         List<TraceHypothesis> hypotheses = usableRoutes
-                ? accountedHypotheses(inference, profiles, evaluated, evidence, guide,
+                ? accountedHypotheses(inference, profiles, evaluated, evidence,
                     candidateOwner, workingOwner) : List.of();
         long materializationNanos = System.nanoTime() - materializationStarted;
         TraceHypothesisSet.Status status = switch (inference.status()) {
@@ -394,8 +359,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
         };
         TraceHypothesisSet result = accountedSet(candidateOwner, workingOwner, hypotheses,
                 status, inference.alternativeSearchTruncated(), stateCount,
-                inference.evaluatedTransitions(), guide == null ? inference.explanation()
-                    : inference.explanation() + "; capped same-image structural guide applied",
+                inference.evaluatedTransitions(), inference.explanation(),
                 inference.workAccounting());
         org.openstreetmap.josm.plugins.wayheatmaptracer.util.ModernDiagnosticCounters.record(
             "trace.profileMs", millis(profileSamplingNanos));
@@ -471,10 +435,10 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
 
     private List<TraceHypothesis> accountedHypotheses(ProbabilisticInferenceResult inference,
             List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
-            EvidenceSnapshot evidence, ProbabilisticStructuralGuide guide,
+            EvidenceSnapshot evidence,
             AttemptMemoryLedger.Owner resultOwner, AttemptMemoryLedger.Owner workingOwner) {
         int hypothesisCount = inference.distinctPaths().size();
-        int diagnosticCount = guide == null ? 15 : 20;
+        int diagnosticCount = 15;
         long outputBytes = ProbabilisticInference.listBytes(hypothesisCount);
         long temporaryBytes = ProbabilisticInference.listBytes(hypothesisCount) * 3L
                 + mapBytes(hypothesisCount);
@@ -498,7 +462,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
                 for (MetricPoint point : path.points()) resultOwner.retain(point);
             }
             List<TraceHypothesis> hypotheses = toHypotheses(inference, sampledProfiles,
-                    profiles, evidence, guide);
+                    profiles, evidence);
             output.adopt(hypotheses);
             return hypotheses;
         } catch (RuntimeException | Error exception) {
@@ -576,7 +540,7 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
 
     private List<TraceHypothesis> toHypotheses(ProbabilisticInferenceResult inference,
         List<ProbabilisticProfile> sampledProfiles, List<InferenceProfile> profiles,
-        EvidenceSnapshot evidence, ProbabilisticStructuralGuide guide) {
+        EvidenceSnapshot evidence) {
         List<TraceHypothesis> result = new ArrayList<>();
         List<ProbabilisticPath> distinctPaths = inference.distinctPaths();
         List<String> exportedBranches = exportedBranchSignatures(distinctPaths);
@@ -600,13 +564,6 @@ public final class ProbabilisticTraceEngine implements GuidedProbabilisticTraceE
             diagnostics.put("terminalCountSaturated", completion.terminalCountSaturated() ? 1.0 : 0.0);
             diagnostics.put("rawEnumerationCapped", completion.rawEnumerationCapped() ? 1.0 : 0.0);
             diagnostics.put("requestedDiversityReached", completion.requestedDiversityReached() ? 1.0 : 0.0);
-            if (guide != null) {
-                diagnostics.put("structuralGuideApplied", 1.0);
-                diagnostics.put("structuralGuideWeight", parameters.guideWeight());
-                diagnostics.put("structuralGuideCap", ProbabilisticStructuralGuide.MAXIMUM_COST);
-                diagnostics.put("structuralGuideSameImage", 1.0);
-                diagnostics.put("structuralGuideSectionCount", (double) guide.sectionCount());
-            }
             String exportedBranch = exportedBranches.get(index);
             result.add(new TraceHypothesis("probabilistic-" + index++, exportedBranch,
                 path.points(), support, path.energy(), path.conditionalPosteriorMass(), diagnostics));

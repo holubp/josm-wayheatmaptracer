@@ -205,9 +205,9 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 | 3 Legacy seeds/reference | IMPLEMENTED; focused native integration TESTED |5942d82/577d89e supply actual captured visible/managed Legacy inputs, shared native simplification/topology and explicit native B reference; remaining occurrence edge cases and final audit in Task6/8 |
 | 4 interval orchestration | TESTED NATIVE CORE |7dc2b57/5942d82 exercise actual leased runner, mixed fallback and shared work; cross-detector global parent/candidate caps still need audit/correction |
 | 5 assessment/preview | IMPLEMENTED ordinary UI; focused tests PASS |75component tests plusa188b48 ordinary route-bound section rows/highlight and assembled raw/final semantics; actual-dialog smoke remains Task8 |
-| 6 live/apply/export/replay | PARTIAL |5942d82/577d89e/a188b48: actual visible/managed production, live Format15/root v6 and offline native replay, genuinely B-refined exact plan Apply/Undo/Redo. Remaining explicit output provenance, all-source cap/authority/contact/occurrence and failure regressions listed in current checkpoint/SDD ledger |
-| 7 old Hybrid removal | NOT STARTED | implementation removal explicitly approved |
-| 8 RC/final release | NOT STARTED | no release readiness or new RC claimed |
+| 6 live/apply/export/replay | PARTIAL |5942d82/577d89e/a188b48/91333d9: actual visible/managed production, Format15/root v6 and actual intermediate/native-work replay, genuine B-refined exact plan Apply/Undo/Redo. All-source cap/authority/contact/occurrence/no-signal/failure audit remains |
+| 7 old Hybrid removal | IMPLEMENTED locally; focused gates PASS | Old engine/guide/hooks/funded3x API removed; historical decode/refusal, migration and source roles retained;70routing/refusal tests plus7ported contracts PASS; full CI/final audit pending |
+| 8 RC/final release | PARTIAL verification |91333d9 full public CI40868988501 and standalone B GUI PASS; private scope not executed. No release qualification or new RC claimed |
 
 Plan self-review: approved design sections mapped to Tasks 1–8; all five Review
 Focus cases have named RED tests. New immutable models and helper types are defined

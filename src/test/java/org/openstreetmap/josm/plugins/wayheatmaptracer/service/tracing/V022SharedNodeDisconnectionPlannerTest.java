@@ -115,7 +115,7 @@ class V022SharedNodeDisconnectionPlannerTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC"})
     void sourceBoundIntentSurvivesActualProductionEngineRequests(TrackerMode engine) throws Exception {
         Fixture fixture = fixture(false);
         Result result = compute(fixture, AlignmentMode.PRECISE_SHAPE,

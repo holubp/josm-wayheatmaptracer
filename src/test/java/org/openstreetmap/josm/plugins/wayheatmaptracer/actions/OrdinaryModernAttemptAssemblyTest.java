@@ -149,7 +149,6 @@ class OrdinaryModernAttemptAssemblyTest {
                 new RouteCase(TrackerMode.PROBABILISTIC, AlignmentSourceMode.VISIBLE_LAYER, false),
                 new RouteCase(TrackerMode.PROBABILISTIC, AlignmentSourceMode.MANAGED_TILES, true),
                 new RouteCase(TrackerMode.LEGACY_THEN_B, AlignmentSourceMode.VISIBLE_LAYER, false),
-                new RouteCase(TrackerMode.HYBRID, AlignmentSourceMode.VISIBLE_LAYER, false),
                 new RouteCase(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.VISIBLE_LAYER, false));
 
         for (RouteCase routeCase : cases) {

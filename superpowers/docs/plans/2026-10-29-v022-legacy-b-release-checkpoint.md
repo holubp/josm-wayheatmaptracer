@@ -4,6 +4,32 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Latest verification: development91333d9 passed GitHub Build40868988501, both
+public-validation and public-gui-smoke. Downloaded public-only evidence records all
+Java/Python/report-integrity/scale/diff/artifact stages PASS. The GUI oracle exercised
+ordinary standalone B, visible preview, geometry, cancellation/no late publication
+and unchanged dataset/Undo history. This does not constitute private-corpus or a
+dedicated Hybrid-dialog oracle. Private fixture scope was explicitly not executed.
+
+Current local Task7 batch removes the old A+B engine, exclusive structural-guide
+classes/hooks and funded3x budget API. Historical HYBRID remains a hidden inspection
+identity; preferences migrate to Legacy and live/replay entry points refuse the old
+algorithm explicitly. Historical numerical-policy descriptors remain readable.
+The default standalone B numerical branch is unchanged; only the old guided branch
+is deleted. Old-algorithm-only tests are removed; shared safety/transaction/replay
+checks retain standalone B, with actual new-Hybrid tests kept separately. Related
+receiver tests now execute B on both capture sources rather than merely refusing
+old managed Hybrid. Targeted routing/refusal/metadata tests passed70, and seven
+ported policy/disconnection/related-receiver checks passed. Full CI on this batch
+and final independent audit remain required.
+
+The removal audit also reproduced a real New-Hybrid capture defect: rebuilding a
+protected-island specification lost fixedReceiverGeometry. Its regression was RED
+before preserving the flag in visible and managed recapture. The new ordinary
+Hybrid now retains its fixed-interval receiver policy instead of entering the removed
+old engine's special branch. README and project guardrails reflect Legacy defaults,
+new Hybrid, local fallback and historical-mode refusal.
+
 Current committed integration5942d82: ordinary visible Hybrid now executes
 actual Legacy and native interval B, retains their source/provenance and produces
 an available exact Apply plan in its integration fixture. A new positive production
@@ -14,9 +40,9 @@ production runner. Four corrected production/action tests passed; the subsequent
 20-test input/replay/Apply run passed19, with only a historical test treating newly
 supported header6 as unknown (updated to reject VERSION+1). Archive-level native
 section work receipt/export validation is being completed, not yet qualified.
-Managed ordinary integration, complete source-option parity, section UI wiring,
-transaction/failure regressions, old A+B deletion, full CI and final independent
-review remain open. No RC has been created or published.
+Visible/managed integration, section UI and exact Apply history have focused evidence
+below. Complete source-option/global-cap audit, remaining topology/occurrence/failure
+regressions and final independent review remain open. No RC has been created or published.
 
 Latest archive integration: live Format15 export and archive-based production replay
 passed together with the old-header regression (2tests,2PASS,2m2s). The export failure
@@ -60,7 +86,7 @@ checksums is rejected. Live archive/foundation batch passed13tests in2m33s.
 The offline expected-output recorder was then observed RED with real captured input:
 it omitted this intermediate evidence. It now attaches the same actual result and
 native work without running another inference. Java and test compilation pass;
-the recorder correction's GREEN and broader suites are pending commit-based CI.
+the recorder correction and broader suites passed commit-based CI40868988501.
 An earlier recorder harness used an invalid placeholder parameter hash; moved that
 check to actual ordinary capture rather than loosening archive hash validation.
 The shared frozen fixture was restored unchanged. No private inputs are pushed.

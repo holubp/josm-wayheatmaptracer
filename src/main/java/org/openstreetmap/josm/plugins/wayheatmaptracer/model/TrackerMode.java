@@ -5,7 +5,7 @@ public enum TrackerMode {
     LEGACY_V02("Legacy v0.2-compatible", EngineCapabilities.LEGACY),
     CORRIDOR_AWARE("Corridor-aware (A)", EngineCapabilities.CORRIDOR_AWARE),
     PROBABILISTIC("Probabilistic longitudinal (B, experimental)", EngineCapabilities.PROBABILISTIC),
-    HYBRID("Hybrid recovery (A+B, experimental)", EngineCapabilities.HYBRID),
+    HYBRID("Historical A+B Hybrid (unsupported)", EngineCapabilities.HISTORICAL_HYBRID),
     LEGACY_THEN_B("Hybrid (Legacy then B)", EngineCapabilities.LEGACY_THEN_B),
     DIRECTIONAL_IMAGE("Direction-aware image search (experimental)", EngineCapabilities.DIRECTIONAL_IMAGE);
 

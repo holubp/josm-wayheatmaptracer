@@ -1999,7 +1999,8 @@ public class AlignWayAction extends JosmAction {
 
     /** Routes persisted modern engines through their detached live pipeline. */
     static boolean requiresLiveModernPreview(TrackerMode engine) {
-        return Objects.requireNonNull(engine, "engine").capabilities().requiresEvidenceSnapshot();
+        return Objects.requireNonNull(engine, "engine") != TrackerMode.HYBRID
+                && engine.capabilities().requiresEvidenceSnapshot();
     }
 
     /** Returns whether the declared engine can consume an authenticated managed tile raster. */
@@ -3012,6 +3013,9 @@ public class AlignWayAction extends JosmAction {
         ManagedHeatmapConfig result = forcedLivePreviewEngine == null ? effective
                 : effective.withAlignmentMode(AlignmentMode.PRECISE_SHAPE)
                         .withTrackerMode(forcedLivePreviewEngine);
+        if (result.trackerMode() == TrackerMode.HYBRID) {
+            throw new IllegalArgumentException("Historical A+B Hybrid is no longer supported");
+        }
         if (result.trackerMode() == TrackerMode.LEGACY_THEN_B
                 && result.alignmentMode() != AlignmentMode.PRECISE_SHAPE) {
             throw new IllegalArgumentException(
@@ -3034,6 +3038,9 @@ public class AlignWayAction extends JosmAction {
     static OrdinaryRoute resolveOrdinaryRoute(TracingSettings tracing, AlignmentConfig config) {
         Objects.requireNonNull(tracing, "tracing");
         Objects.requireNonNull(config, "config");
+        if (tracing.engine() == TrackerMode.HYBRID || config.heatmap().trackerMode() == TrackerMode.HYBRID) {
+            throw new IllegalArgumentException("Historical A+B Hybrid is no longer supported");
+        }
         if (!tracing.engine().capabilities().requiresEvidenceSnapshot()) {
             return new OrdinaryRoute(OrdinaryPipeline.LEGACY_COMPATIBILITY, null);
         }

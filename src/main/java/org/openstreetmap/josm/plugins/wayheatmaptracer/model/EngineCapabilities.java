@@ -35,10 +35,10 @@ public record EngineCapabilities(
     public static final EngineCapabilities PROBABILISTIC = new EngineCapabilities(
         EvidenceInput.SCALAR_SNAPSHOT, true, true, true, true, false, true, ImageRecovery.NONE, true);
 
-    /** A proposals plus independent B and selective image recovery. */
-    public static final EngineCapabilities HYBRID = new EngineCapabilities(
-        EvidenceInput.SCALAR_SNAPSHOT_WITH_A_PROPOSALS, false, true, true, true, false, true,
-        ImageRecovery.SELECTIVE, true);
+    /** Historical archive identity only; no live A+B implementation remains. */
+    public static final EngineCapabilities HISTORICAL_HYBRID = new EngineCapabilities(
+        EvidenceInput.SCALAR_SNAPSHOT_WITH_A_PROPOSALS, false, false, false, false, false, false,
+        ImageRecovery.NONE, true);
 
     /** Sequential Legacy proposals refined by independent interval-local B runs. */
     public static final EngineCapabilities LEGACY_THEN_B = new EngineCapabilities(

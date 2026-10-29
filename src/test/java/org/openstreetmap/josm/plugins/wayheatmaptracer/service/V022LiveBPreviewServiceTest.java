@@ -758,11 +758,11 @@ class V022LiveBPreviewServiceTest {
                 wideFlatRaster(), configured, true, permissions));
         assertTrue(captured[0].specification().fixedReceiverGeometry());
         if (!receiverRelations) {
-            for (TrackerMode other : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.HYBRID)) {
+            for (TrackerMode other : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.LEGACY_THEN_B)) {
                 var control = new LiveBPreviewService.Captured[1];
                 SwingUtilities.invokeAndWait(() -> control[0] = service.capture(dataSet, selection,
                         wideFlatRaster(), config(other), true, permissions));
-                if (other == TrackerMode.HYBRID) {
+                if (other == TrackerMode.LEGACY_THEN_B) {
                     assertTrue(control[0].specification().fixedReceiverGeometry());
                     assertNotNull(control[0].intervalPartition(),
                             "Hybrid must freeze a manual endpoint before interval inference");
@@ -943,7 +943,7 @@ class V022LiveBPreviewServiceTest {
     void productionEnginesTraceBothOriginalOccurrenceIntervalsAndRetainEveryAlternative() throws Exception {
         Fixture fixture = intervalFixture();
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
-                TrackerMode.PROBABILISTIC, TrackerMode.HYBRID,
+                TrackerMode.PROBABILISTIC,
                 TrackerMode.DIRECTIONAL_IMAGE)) {
             LiveBPreviewService service = new LiveBPreviewService();
             LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
@@ -1040,25 +1040,26 @@ class V022LiveBPreviewServiceTest {
 
     @Test
     void liveParameterIdentityBindsEachModernNumericalPolicyAndPreservesLegacy() {
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID,
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.LEGACY_THEN_B,
                 TrackerMode.CORRIDOR_AWARE, TrackerMode.DIRECTIONAL_IMAGE)) {
             String identity = LiveBPreviewService.parameterIdentity(engine);
             assertTrue(identity.contains("shared-modern-cost-fdlibm53-v1"), engine.name());
             assertTrue(identity.contains("ordered-compensated-java17-v1"), engine.name());
-            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B,
                     identity.contains("java17-fdlibm53-v1"), engine.name());
-            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B,
                     identity.contains("terminal-path-count-scored-work-v2"), engine.name());
-            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID,
+            assertEquals(engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B,
                     identity.contains("adjacent-orientation-trapezoid-v1"), engine.name());
         }
         assertEquals("legacy-v02", LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_V02));
     }
 
     @Test
-    void liveParameterIdentitySeparatesDirectBFromBaselineHybrid() throws Exception {
+    void liveParameterIdentitySeparatesDirectBFromSequentialHybridAndRefusesHistoricalHybrid() throws Exception {
         String direct = LiveBPreviewService.parameterIdentity(TrackerMode.PROBABILISTIC);
-        String hybrid = LiveBPreviewService.parameterIdentity(TrackerMode.HYBRID);
+        String hybrid = LiveBPreviewService.parameterIdentity(TrackerMode.LEGACY_THEN_B);
+        assertThrows(IllegalArgumentException.class, () -> LiveBPreviewService.parameterIdentity(TrackerMode.HYBRID));
         Fixture fixture = fixture();
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[2];
@@ -1066,12 +1067,12 @@ class V022LiveBPreviewServiceTest {
             captured[0] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
                     config(TrackerMode.PROBABILISTIC));
             captured[1] = service.capture(fixture.dataSet(), fixture.selection(), raster(),
-                    config(TrackerMode.HYBRID));
+                    config(TrackerMode.LEGACY_THEN_B));
         });
 
         assertTrue(direct.contains(EvidenceModelParameters.reliabilityPolicyVersion()));
         assertTrue(direct.contains("DIRECT_LONGITUDINAL_V2"));
-        assertTrue(hybrid.contains("BASELINE"));
+        assertTrue(hybrid.contains("legacy-then-b-v1/"));
         assertNotEquals(direct, hybrid);
         assertNotEquals(captured[0].parameterHash(), captured[1].parameterHash());
     }
@@ -1165,27 +1166,15 @@ class V022LiveBPreviewServiceTest {
     }
 
     @Test
-    void realProductionHybridRetainsUnguidedBWithFundedHybridBudget() throws Exception {
+    void historicalHybridIsRefusedBeforeCapturingVisibleSource() throws Exception {
         Fixture fixture = fixture();
         List<String> before = state(fixture.dataSet());
         LiveBPreviewService service = new LiveBPreviewService();
         LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
-        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(),
-                fixture.selection(), raster(), config(TrackerMode.HYBRID)));
-
-        LiveBPreviewService.Computed result = service.compute(captured[0], CancellationProbe.NONE);
-
-        assertEquals(TrackerMode.HYBRID, result.request().engine());
-        assertEquals(TraceBudgets.fundedHybrid(), result.request().budgets());
-        assertEquals(TrackerMode.HYBRID, result.pipeline().inference().engine());
-        assertTrue(result.pipeline().inference().hypotheses().stream()
-                .anyMatch(hypothesis -> hypothesis.branchSignature().startsWith("b:")),
-                "Hybrid output must retain the unguided B family");
-        assertFalse(result.pipeline().routes().isEmpty(),
-                "supported visible evidence must produce a final Hybrid route");
-        assertTrue(result.pipeline().routes().stream()
-                .anyMatch(route -> route.hypothesis().branchSignature().startsWith("b:")),
-                "common final processing must retain an unguided B route");
+        SwingUtilities.invokeAndWait(() -> assertThrows(IllegalArgumentException.class,
+                () -> captured[0] = service.capture(fixture.dataSet(),
+                        fixture.selection(), raster(), config(TrackerMode.HYBRID))));
+        assertNull(captured[0]);
         assertEquals(before, state(fixture.dataSet()));
     }
 

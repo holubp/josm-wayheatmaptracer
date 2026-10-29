@@ -601,7 +601,7 @@ public final class LiveBPreviewService {
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, engine)) {
-            if (engine == TrackerMode.HYBRID && !specification.fixedReceiverGeometry()) {
+            if (engine == TrackerMode.LEGACY_THEN_B && !specification.fixedReceiverGeometry()) {
                 specification = specification.withFixedReceiverGeometry();
                 network = NetworkSnapshotCapture.capture(dataSet, specification);
                 intervalPartition = SelectedWayIntervalPartitioner.partition(network, specification);
@@ -614,7 +614,7 @@ public final class LiveBPreviewService {
                     authority.movableNodes(), authority.removableNodes(), authority.protectedNodes(),
                     true, permissions).withDisconnectionSource(initialSource).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
-            if (engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID) {
+            if (engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B) {
                 specification = specification.withFixedReceiverGeometry();
             }
             network = NetworkSnapshotCapture.capture(dataSet, specification);
@@ -1175,7 +1175,7 @@ public final class LiveBPreviewService {
         SelectedWayIntervalPartitioner.Partition intervalPartition =
                 SelectedWayIntervalPartitioner.partition(network, specification);
         if (usesFixedIntervalBatch(intervalPartition, config.heatmap().trackerMode())) {
-            if (config.heatmap().trackerMode() == TrackerMode.HYBRID
+            if (config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B
                     && !specification.fixedReceiverGeometry()) {
                 specification = specification.withFixedReceiverGeometry();
                 network = NetworkSnapshotCapture.capture(dataSet, specification);
@@ -1190,7 +1190,7 @@ public final class LiveBPreviewService {
                     true, permissions).withDisconnectionSource(initialSource).withReadOnlyPortsFrom(network,
                             intervalPartition.provedPorts());
             if (config.heatmap().trackerMode() == TrackerMode.PROBABILISTIC
-                    || config.heatmap().trackerMode() == TrackerMode.HYBRID)
+                    || config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B)
                 specification = specification.withFixedReceiverGeometry();
             network = NetworkSnapshotCapture.capture(dataSet, specification);
             if (!SelectedWayIntervalPartitioner.verifyFrozenParity(intervalPartition, network)) {
@@ -1336,8 +1336,7 @@ public final class LiveBPreviewService {
                 && !SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured.network())) {
             throw new IllegalStateException("Frozen interval source changed before inference");
         }
-        TraceBudgets limit = captured.engine() == TrackerMode.HYBRID
-                ? TraceBudgets.fundedHybrid() : TraceBudgets.defaults();
+        TraceBudgets limit = TraceBudgets.defaults();
         ChoiceRun nativeRun = computeChoice(captured, partition, null, "selected-visible", 0,
                 limit, cancellation, legacy, owner, deadline);
         if (captured.sourceRasters() == null || captured.intensityMode()
@@ -1511,8 +1510,7 @@ public final class LiveBPreviewService {
     private static boolean usesFixedIntervalBatch(SelectedWayIntervalPartitioner.Partition partition,
             TrackerMode engine) {
         return !partition.fixedIslands().isEmpty()
-                && ((engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.HYBRID
-                        || engine == TrackerMode.LEGACY_THEN_B)
+                && ((engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B)
                         && !partition.slideIntervals().isEmpty()
                 || partition.junctionDispositions().stream().anyMatch(junction ->
                         !junction.automaticEligible()
@@ -1522,7 +1520,7 @@ public final class LiveBPreviewService {
 
     /** Receiver geometry is read-only when Hybrid junction movement was explicitly disabled. */
     private static boolean usesFixedReceiverPolicy(TrackerMode engine, RecoveryPermissions permissions) {
-        return engine == TrackerMode.PROBABILISTIC || (engine == TrackerMode.HYBRID || engine == TrackerMode.LEGACY_THEN_B)
+        return engine == TrackerMode.PROBABILISTIC || engine == TrackerMode.LEGACY_THEN_B
                 && permissions.junctionPolicy() == org.openstreetmap.josm.plugins.wayheatmaptracer.model
                         .JunctionPolicy.FIXED;
     }
@@ -1534,8 +1532,7 @@ public final class LiveBPreviewService {
         try {
             return computePartitioned(captured, partition, cancellation,
                     captureEvidence(captured, cancellation), optionsFor(captured),
-                    captured.engine() == TrackerMode.HYBRID
-                            ? TraceBudgets.fundedHybrid() : TraceBudgets.defaults());
+                    TraceBudgets.defaults());
         } finally {
             ModernDiagnosticCounters.end();
         }
@@ -1608,18 +1605,14 @@ public final class LiveBPreviewService {
         ProfileChainage chainage = new ProbabilisticProfileFactory().profileChainage(
                 captured.sourceMetric(), captured.sampleStepMeters());
         Optional<CorridorTraceInput> corridorInput =
-                (captured.engine() == TrackerMode.CORRIDOR_AWARE
-                        || captured.engine() == TrackerMode.HYBRID)
+                captured.engine() == TrackerMode.CORRIDOR_AWARE
                 ? Optional.of(IntervalTraceRequestFactory.corridorForAnchors(chainage, captured.sourceMetric(),
                         captured.sourceGeographic(), evidence))
                 : Optional.empty();
         return new TraceRequest(captured.specification().selectedWayKey(),
                 captured.specification().selectedRange(), captured.engine(),
                 captured.geometryMode(), captured.specification().permissions(),
-                captured.engine() == TrackerMode.HYBRID ? TraceBudgets.fundedHybrid()
-                        : captured.engine() == TrackerMode.PROBABILISTIC
-                                ? TraceBudgets.defaults()
-                                : TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
+                TraceBudgets.defaults(), evidence.snapshotId(), evidence.canonicalHash(),
                 captured.network().snapshotId(), captured.network().canonicalHash(),
                 captured.settingsHash(), captured.parameterHash(), "visible-"
                         + captured.engine().name().toLowerCase(java.util.Locale.ROOT) + "-v1",
@@ -1870,9 +1863,12 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Live preview inputs are incomplete");
         }
         var heatmap = config.heatmap();
+        if (heatmap.trackerMode() == TrackerMode.HYBRID) {
+            throw new IllegalArgumentException("Historical A+B Hybrid is no longer supported");
+        }
         if (!heatmap.trackerMode().capabilities().requiresEvidenceSnapshot()) {
             throw new IllegalArgumentException("Modern alignment supports only Corridor-aware A, "
-                    + "Probabilistic B, visible Hybrid A+B, or visible Directional Image");
+                    + "Probabilistic B, Legacy then B, or visible Directional Image");
         }
         if (heatmap.trackerMode() == TrackerMode.DIRECTIONAL_IMAGE && !explicitVisibleSource) {
             throw new IllegalArgumentException("Directional Image preview is visible-source only");
@@ -1975,9 +1971,7 @@ public final class LiveBPreviewService {
             case PROBABILISTIC -> EvidenceModelParameters.defaults().version() + "/"
                     + ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2 + "/"
                     + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
-            case HYBRID -> EvidenceModelParameters.defaults().version() + "/"
-                    + ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE + "/"
-                    + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
+            case HYBRID -> throw new IllegalArgumentException("Historical A+B Hybrid is no longer supported");
             case CORRIDOR_AWARE -> "corridor-aware-v1/"
                     + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernNumericalPolicy.SHARED_COST;
             case DIRECTIONAL_IMAGE -> "directional-image-v1/"

@@ -65,7 +65,7 @@ the preview before applying.
 - Use cross-section gradient evidence, intensity/prominence, raw/B3/B5 peak-center agreement, and source-pixel roughness when ranking ridge candidates and confirming longitudinal stability
 - Resolve ridge geometry through reliable anchor profiles and constrained intervals, reducing short weak side excursions near crossings
 - Treat source-tile resolution as a real evidence limit: sub-source-pixel alternating wiggles are penalized, while sustained bends remain available as candidate geometry
-- Choose the default `Corridor-aware (recommended)` tracker, which uses nested corridor boundaries, continuous signal/localization confidence, longitudinal strand identity, and second-order centerline optimization, or explicitly select the `Legacy v0.2-compatible` fallback
+- Use the default `Legacy v0.2-compatible` tracker, or select Corridor-aware A, experimental Probabilistic B, or the Precise Shape-only `Hybrid (Legacy then B)` workflow
 - In corridor-aware mode, combine complementary intermittent recording strands into an additional `sparse corridor` candidate when their longitudinal union is coherent. Direct child evidence and bounded interpolation remain distinct, every elementary child stays selectable, and persistent deep-valley parallel roads remain separate.
 - In corridor-aware mode, map RGB to scalar intensity first, interpolate corridor edges and intensity evidence between source samples, then build local L0/L1/L2 Gaussian levels from the imagery already acquired for the slide. Source pixels define evidence uncertainty, not a grid to which the result must snap.
 - In corridor-aware mode, associate the same longitudinal strand through short gaps, fit confidence-weighted 5 m and 12 m robust corridor references, and add a 32 m reference only for weak signal without sustained motion. One exact second-order centerline optimization follows that evidence; temporary side traces cannot authorize a lateral switch, while sustained weak turns and switchbacks retain the local reference.
@@ -225,7 +225,7 @@ Do not paste cookie examples into files, issues, commits, or screenshots. The de
 ### 2. Recommended Settings
 
 - `Alignment mode`: use `Move Existing Nodes` for normal OSM ways whose node count should remain stable. Use `Precise Shape` when drawing from a rough sketch or when the existing geometry is too coarse.
-- `Ridge tracker`: use the default `Corridor-aware (recommended)` tracker for broad-corridor centering, sparse longitudinal inference, parallel parent/child candidates, and pre-optimized endpoint approaches. Select `Legacy v0.2-compatible` only when compatibility or direct comparison with the older tracker is required. A preview label such as `Hot detector - sparse corridor 1` is the additional parent hypothesis; ordinary `strand` candidates are its retained elementary alternatives. This is an independent choice from `Alignment mode`.
+- `Ridge tracker`: `Legacy v0.2-compatible` is the default. Corridor-aware A remains an option for corridor centering and sparse longitudinal inference; its `sparse corridor` candidates supplement the retained elementary strands. Experimental Probabilistic B remains independently selectable. `Hybrid (Legacy then B)` first runs Legacy and then refines eligible sections with B; it requires `Precise Shape`. Saved valid engine choices are preserved. The removed A+B Hybrid preference migrates to Legacy with a one-time nonmodal notice.
 - `Inference mode`, `Inference zoom`, `Validation zoom`, `Search half-width meters`, and `Sample step meters`: used by managed source-tile alignment. `Stable fixed scale` uses the calibrated fixed-scale sampling parameters and avoids broad z15 heat dilation; `Raw high-resolution` uses the source tiles directly. When no managed access values are configured, the plugin uses the legacy visible-layer path instead.
 - Rough 2-5 node sketches use the same configured `Search half-width meters`; the plugin does not silently widen the search. The 25 m default accommodates displaced paths; a narrower saved width remains useful when nearby parallel traces make the intended branch ambiguous.
 - If a corridor-aware preview says the heatmap center leaves the search corridor, the candidate remains selectable for inspection but Apply stays disabled. `Retry with wider search...` re-runs the complete unchanged selection once at an explicitly entered larger physical half-width. It does not alter saved settings, reuse old profiles, or widen automatically, and ordinary retries are capped at a 14 m half-width.
@@ -472,13 +472,24 @@ The documentation avoids publishing a raw tokenized imagery URL, but the setting
 
 ### v0.22 modern preview workflow
 
-Use the ordinary `More tools -> Align Way to Heatmap` action for Engine A,
-Probabilistic B, Hybrid, or Directional Image. It presents production alternatives
+Legacy v0.2 is the default. Use the ordinary `More tools -> Align Way to Heatmap`
+action for Corridor-aware A, Probabilistic B, Hybrid (Legacy then B), or Directional
+Image. It presents production alternatives
 in one modeless preview and exports Format-15 diagnostics for the attempt. When a
 tagged, relation-protected, or otherwise complex junction cannot be moved safely,
 the approved fixed-island interval plan leaves that vicinity unchanged and can move
 independently safe sections on either side. Inspect every preview before Apply;
 manual junction adjustment may still be necessary.
+
+Hybrid requires **Precise Shape**. It first computes Legacy geometry, then runs
+B between junction/protected boundaries using that geometry as its reference.
+When B cannot refine one section, that section retains Legacy while other sections
+can still use B. Compare the Legacy-only and assembled alternatives, inspect the
+section table, and select a row to highlight its final geometry on the map. Reported
+support includes the retained sections; absent B confidence is shown as unavailable.
+One final Apply performs the combined change, with one Undo operation. Temporary
+Legacy geometry is never applied to the dataset. The former A+B Hybrid is removed;
+historical captures remain inspectable but cannot execute that removed algorithm.
 
 Connections are preserved by default. In the modern preview, use **Disconnect
 selected way at shared nodes…** to choose individual shared-node occurrences or

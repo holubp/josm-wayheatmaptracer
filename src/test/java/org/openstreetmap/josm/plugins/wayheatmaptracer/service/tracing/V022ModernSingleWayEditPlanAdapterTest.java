@@ -1029,18 +1029,9 @@ class V022ModernSingleWayEditPlanAdapterTest {
 
     @ParameterizedTest
     @MethodSource("fixedPolicySources")
-    void hybridFixedPolicyKeepsRelatedReceiversExactAcrossBothCaptureSources(FixedPolicySource source,
+    void fixedPolicyKeepsRelatedReceiversExactAcrossBothCaptureSources(FixedPolicySource source,
             @TempDir Path directory) throws Exception {
-        if (source.managed()) {
-            assertFalse(TrackerMode.HYBRID.capabilities().supportsManagedSource());
-            var refusal = assertThrows(java.lang.reflect.InvocationTargetException.class,
-                    () -> fixedPolicyRoundTrip(source, directory, TrackerMode.HYBRID, true));
-            assertTrue(refusal.getCause().getCause() instanceof IllegalArgumentException);
-            assertTrue(refusal.getCause().getCause().getMessage()
-                    .contains("Modern managed tracing cannot use this engine"));
-            return;
-        }
-        fixedPolicyRoundTrip(source, directory, TrackerMode.HYBRID, true);
+        fixedPolicyRoundTrip(source, directory, TrackerMode.PROBABILISTIC, true);
     }
 
     private void fixedPolicyRoundTrip(FixedPolicySource source, Path directory,
@@ -1279,7 +1270,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC"})
     void fixedNonHighwayJunctionCannotWaiveFinalBacktrack(TrackerMode engine) throws Exception {
         // Both engines now partition manual endpoint islands. Leave enough
         // supported outside length for two adjacent movable points in the mutant.
@@ -1627,11 +1618,25 @@ class V022ModernSingleWayEditPlanAdapterTest {
         assertTrue(failure.getMessage().contains("captured Legacy source policy"));
     }
 
+    @Test
+    void sequentialHybridKeepsFixedReceiverPolicyWhenRecapturingProtectedIslands() throws Exception {
+        var fixture = relationJunctionFixture();
+        var before = state(fixture);
+        var service = new LiveBPreviewService();
+        var captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = service.capture(fixture.dataSet(), fixture.selection(),
+                raster(), config(TrackerMode.LEGACY_THEN_B), false, RecoveryPermissions.disabled(7.01)));
+        assertFalse(captured[0].intervalPartition().fixedIslands().isEmpty());
+        assertTrue(captured[0].specification().fixedReceiverGeometry(),
+                "Rebuilding the fixed-island specification must preserve the captured read-only receiver policy");
+        assertEquals(before, state(fixture));
+    }
+
     // The composite's actual Legacy-source route and exact Apply/Undo/Redo are exercised
     // by OrdinaryModernAttemptAssemblyTest; a scalar-only fixture cannot execute Legacy.
     @ParameterizedTest
     @EnumSource(value = TrackerMode.class, mode = EnumSource.Mode.EXCLUDE,
-            names = {"LEGACY_V02", "LEGACY_THEN_B"})
+            names = {"LEGACY_V02", "LEGACY_THEN_B", "HYBRID"})
     void t164RasterEvidenceProducesOneDeterministicDetachedPlanWithoutMutation(
             TrackerMode mode) throws Exception {
         Fixture fixture = fixture();
@@ -1702,7 +1707,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC"})
     void relationJunctionCanLeaveAnExactFrozenFootprintWhileSlidingOutside(
             TrackerMode engine, @TempDir Path directory) throws Exception {
         Fixture fixture = relationJunctionFixture();
@@ -1833,7 +1838,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC"})
     void taggedJunctionCannotInventAReceiverPortAfterFreezing(TrackerMode engine) throws Exception {
         Fixture fixture = relationJunctionFixture();
         Node junction = fixture.way().getNode(7);
@@ -1902,7 +1907,7 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, names = {"HYBRID", "PROBABILISTIC"})
+    @EnumSource(value = TrackerMode.class, names = {"PROBABILISTIC"})
     void manualJunctionWithoutSupportedOutsideConnectorHasVisibleNonApplyableReason(TrackerMode engine) throws Exception {
         Fixture fixture = relationJunctionFixture();
         List<String> before = state(fixture);
@@ -2089,10 +2094,6 @@ class V022ModernSingleWayEditPlanAdapterTest {
                         GeometryCleanupMode.NONE, true, AlignmentMode.PRECISE_SHAPE,
                         ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE,
                         "Exact immutable plan available", IntensitySamplingMode.DIRECT_LUMINANCE),
-                new TaskFourAuthorityCase(TrackerMode.HYBRID, false,
-                        GeometryCleanupMode.REDUCE_POINTS_ONLY, true, AlignmentMode.MOVE_EXISTING_NODES,
-                        ModernSingleWayEditPlanAdapter.ApplyAvailability.PRECISE_SHAPE_REQUIRED,
-                        "The existing nodes cannot safely represent the actual final route; use Precise Shape"),
                 new TaskFourAuthorityCase(TrackerMode.DIRECTIONAL_IMAGE, false,
                         GeometryCleanupMode.CONSTRAINED_SMOOTH_AND_REDUCE, false,
                         AlignmentMode.MOVE_EXISTING_NODES,

@@ -872,8 +872,8 @@ class AlignWayActionTest {
     void explicitHybridPreviewConfigUsesTheSharedReadOnlyContract() {
         ManagedHeatmapConfig configured = configuredCorridor();
         ManagedHeatmapConfig preview = AlignWayAction.effectiveConfig(configured, null,
-                TrackerMode.HYBRID);
-        assertEquals(TrackerMode.HYBRID, preview.trackerMode());
+                TrackerMode.LEGACY_THEN_B);
+        assertEquals(TrackerMode.LEGACY_THEN_B, preview.trackerMode());
         assertEquals(AlignmentMode.PRECISE_SHAPE, preview.alignmentMode());
         assertEquals(configured.keyPairId(), preview.keyPairId());
     }
@@ -1295,7 +1295,8 @@ class AlignWayActionTest {
     void persistedModernEnginesUseTheLivePipelineRatherThanLegacyProfileTracking() {
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.CORRIDOR_AWARE));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.PROBABILISTIC));
-        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.HYBRID));
+        assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.HYBRID));
+        assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.LEGACY_THEN_B));
         assertTrue(AlignWayAction.requiresLiveModernPreview(TrackerMode.DIRECTIONAL_IMAGE));
         assertFalse(AlignWayAction.requiresLiveModernPreview(TrackerMode.LEGACY_V02));
         assertTrue(AlignWayAction.supportsManagedModernSource(TrackerMode.CORRIDOR_AWARE));
@@ -1310,12 +1311,12 @@ class AlignWayActionTest {
                 AlignWayAction.OrdinaryPipeline.MODERN_MANAGED);
         assertOrdinaryRoute(TrackerMode.PROBABILISTIC, AlignmentSourceMode.AUTOMATIC,
                 AlignWayAction.OrdinaryPipeline.MODERN_MANAGED);
-        assertOrdinaryRoute(TrackerMode.HYBRID, AlignmentSourceMode.AUTOMATIC,
-                AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE);
+        assertOrdinaryRoute(TrackerMode.LEGACY_THEN_B, AlignmentSourceMode.AUTOMATIC,
+                AlignWayAction.OrdinaryPipeline.MODERN_MANAGED);
         assertOrdinaryRoute(TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.AUTOMATIC,
                 AlignWayAction.OrdinaryPipeline.MODERN_VISIBLE);
 
-        assertThrows(IllegalStateException.class, () -> ordinaryRoute(
+        assertThrows(IllegalArgumentException.class, () -> ordinaryRoute(
                 TrackerMode.HYBRID, AlignmentSourceMode.MANAGED_TILES));
         assertThrows(IllegalStateException.class, () -> ordinaryRoute(
                 TrackerMode.DIRECTIONAL_IMAGE, AlignmentSourceMode.MANAGED_TILES));

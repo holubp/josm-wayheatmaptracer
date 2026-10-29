@@ -14,7 +14,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CorridorEngineAdapter;
-import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.HybridTraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.IntervalTraceBatch;
@@ -592,6 +591,9 @@ public final class Format15ReplayRunner {
             throw new IllegalArgumentException("Frozen input, level, and engine are required");
         }
         requireSupportedLevel(level);
+        if (engine == TrackerMode.HYBRID) {
+            throw new ReplayMismatchException("unsupported-historical-a-b-hybrid");
+        }
         if (engine == TrackerMode.LEGACY_V02) {
             throw new ReplayMismatchException("Legacy engine has no modern frozen replay route");
         }
@@ -730,9 +732,7 @@ public final class Format15ReplayRunner {
             case CORRIDOR_AWARE -> new CorridorEngineAdapter(fieldName);
             case PROBABILISTIC -> new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
                     ProbabilisticTraceEngine.reliabilityPolicyFor(mode));
-            case HYBRID -> new HybridTraceEngine(new CorridorEngineAdapter(fieldName),
-                new ProbabilisticTraceEngine(fieldName, EvidenceModelParameters.defaults(),
-                        ProbabilisticTraceEngine.reliabilityPolicyFor(mode)));
+            case HYBRID -> throw new ReplayMismatchException("unsupported-historical-a-b-hybrid");
             case DIRECTIONAL_IMAGE -> new DirectionalImageTraceEngine(fieldName);
             case LEGACY_V02 -> throw new ReplayMismatchException(
                 "Legacy engine has no modern frozen replay route");

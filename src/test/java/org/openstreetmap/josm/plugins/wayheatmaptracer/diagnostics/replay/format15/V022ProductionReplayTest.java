@@ -197,18 +197,14 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void productionHybridRetainsEveryExecutedBStagePolicy() throws Exception {
-        var actual = Format15ReplayRunner.replay(fixture(TrackerMode.HYBRID, Scene.RIDGE),
-                ReplayLevel.SCALAR_INFERENCE, TrackerMode.HYBRID);
-        var receipt = executionWorkReceipt(actual.inference());
-        assertTrue(receipt.isPresent(), "Hybrid must retain actual B-stage work receipts");
-        var stages = (List<?>) receipt.orElseThrow().getClass().getMethod("bStages")
-                .invoke(receipt.orElseThrow());
-        assertFalse(stages.isEmpty());
-        for (Object stage : stages) {
-            assertEquals("terminal-path-count-scored-work-v2", stage.getClass()
-                    .getMethod("executionPolicy").invoke(stage));
-        }
+    void historicalHybridInputRemainsReadableButItsExecutionIsUnsupported() throws Exception {
+        var original = fixture(TrackerMode.HYBRID, Scene.RIDGE);
+        var decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(original));
+        assertEquals(TrackerMode.HYBRID, decoded.request().engine());
+        assertEquals(original.canonicalHash(), decoded.canonicalHash());
+        var refusal = assertThrows(ReplayMismatchException.class, () -> Format15ReplayRunner.replay(decoded,
+                ReplayLevel.SCALAR_INFERENCE, TrackerMode.HYBRID));
+        assertEquals("unsupported-historical-a-b-hybrid", refusal.getMessage());
     }
 
     private static java.util.Optional<?> executionWorkReceipt(TraceHypothesisSet result)
@@ -365,9 +361,9 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void executingProfileSamplingPolicyIsExplicitForBAndHybridOnly() {
+    void executingProfileSamplingPolicyIsExplicitForBOnly() {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                     input.canonicalHash(), input.request().parameterHash(), engine, engine).bytes(),
                     StandardCharsets.UTF_8);
@@ -382,7 +378,7 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void executingStateLatticePolicyDistinguishesDirectBFromHybrid() {
+    void stateLatticeMetadataDistinguishesCurrentBFromHistoricalHybrid() {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         String direct = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
                 input.canonicalHash(), input.request().parameterHash(), TrackerMode.PROBABILISTIC,
@@ -392,7 +388,7 @@ class V022ProductionReplayTest {
                 TrackerMode.HYBRID).bytes(), StandardCharsets.UTF_8);
         assertTrue(direct.contains("/" + EvidenceModelParameters.stateSamplingPolicyVersion()));
         assertTrue(hybrid.contains("/half-native-baseline-v1"),
-                "Hybrid executes baseline state sampling, not B's proposal continuation policy");
+                "Historical A+B receipts describe baseline state sampling, not current B's proposal policy");
         assertFalse(hybrid.contains("/" + EvidenceModelParameters.stateSamplingPolicyVersion()));
         assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
                 .ProbabilisticTraceEngine.ReliabilityPolicy.DIRECT_LONGITUDINAL_V2,
@@ -402,7 +398,7 @@ class V022ProductionReplayTest {
                 .ProbabilisticTraceEngine.ReliabilityPolicy.BASELINE,
                 org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
                     .ProbabilisticTraceEngine.reliabilityPolicyFor(TrackerMode.HYBRID));
-        for (TrackerMode mode : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode mode : List.of(TrackerMode.PROBABILISTIC)) {
             var expectedPolicy = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
                     .ProbabilisticTraceEngine.reliabilityPolicyFor(mode);
             assertEquals(expectedPolicy, reliabilityPolicy(productionEngine(mode)));
@@ -420,7 +416,7 @@ class V022ProductionReplayTest {
     @Test
     void wrongStateLatticePolicyRemainsReadableButCannotCertifyReplay(@TempDir Path directory)
             throws Exception {
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             FrozenReplayInput input = fixture(engine, Scene.RIDGE);
             Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                     "runtime-state-lattice-test-" + engine.name(), input, engine);
@@ -483,12 +479,6 @@ class V022ProductionReplayTest {
                     org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine engine) {
         try {
             var probabilistic = engine;
-            if (engine instanceof org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.HybridTraceEngine) {
-                var hybridField = engine.getClass().getDeclaredField("probabilisticEngine");
-                hybridField.setAccessible(true);
-                probabilistic = (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.TraceEngine)
-                        hybridField.get(engine);
-            }
             var policyField = probabilistic.getClass().getDeclaredField("reliabilityPolicy");
             policyField.setAccessible(true);
             return (org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
@@ -523,7 +513,7 @@ class V022ProductionReplayTest {
     @Test
     void bRuntimeReliabilityPolicyIsBoundIndependentlyOfCapturedParameters() {
         FrozenReplayInput input = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             String runtime = "/" + org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic
                     .ProbabilisticTraceEngine.reliabilityPolicyVersionFor(engine);
             String receipt = new String(Format15NumericalPolicyReceipt.current("0".repeat(64),
@@ -583,7 +573,7 @@ class V022ProductionReplayTest {
 
     @Test
     void versionFourReliabilityReceiptsCannotCertifyContextVetoRuntime(@TempDir Path directory) throws Exception {
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             FrozenReplayInput input = fixture(engine, Scene.RIDGE);
             Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                     "old-context-veto-policy-test", input, engine);
@@ -631,7 +621,7 @@ class V022ProductionReplayTest {
 
     @Test
     void versionSixReceiptsCannotCertifyQueryLocalProofReuse(@TempDir Path directory) throws Exception {
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             FrozenReplayInput input = fixture(engine, Scene.RIDGE);
             Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                     "old-query-local-proof-policy", input, engine);
@@ -654,7 +644,7 @@ class V022ProductionReplayTest {
     @Test
     void versionSevenReceiptsCannotCertifyOwnedMembershipAdmission(@TempDir Path directory) throws Exception {
         assertEquals("direct-longitudinal-8",EvidenceModelParameters.reliabilityPolicyVersion());
-        for(TrackerMode engine:List.of(TrackerMode.PROBABILISTIC,TrackerMode.HYBRID)) {
+        for(TrackerMode engine:List.of(TrackerMode.PROBABILISTIC)) {
             FrozenReplayInput input=fixture(engine,Scene.RIDGE);
             Format15Bundle base=Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                     "old-owned-membership-policy",input,engine);
@@ -683,7 +673,7 @@ class V022ProductionReplayTest {
     @Test
     void versionEightReceiptsRemainReadableButCannotCertifyProjectedRuntime(@TempDir Path directory)
             throws Exception {
-        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+        for (TrackerMode engine : List.of(TrackerMode.PROBABILISTIC)) {
             FrozenReplayInput input = fixture(engine, Scene.RIDGE);
             Format15Bundle base = Format15ProductionBundleFactory.createWithExpectedScalarOutput(
                     "old-full-context-work-policy", input, engine);
@@ -1751,7 +1741,7 @@ class V022ProductionReplayTest {
         Format15Archive archive = Format15ArchiveReader.read(archivePath);
 
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
-                TrackerMode.PROBABILISTIC, TrackerMode.HYBRID)) {
+                TrackerMode.PROBABILISTIC)) {
             assertProductionReplay(archive, decoded, engine, 51.0, 55.0);
         }
 
@@ -1832,7 +1822,7 @@ class V022ProductionReplayTest {
     void uniformNoSignalCannotSatisfyAProductionReplayGate() {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.NO_SIGNAL);
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE,
-                TrackerMode.PROBABILISTIC, TrackerMode.HYBRID,
+                TrackerMode.PROBABILISTIC,
                 TrackerMode.DIRECTIONAL_IMAGE)) {
             assertThrows(ReplayMismatchException.class, () -> {
                 Format15ReplayRunner.Result result = Format15ReplayRunner.replay(
@@ -1846,7 +1836,7 @@ class V022ProductionReplayTest {
     void weakerParallelRidgeDoesNotReplaceTheSelectedAnalyticRidge() {
         FrozenReplayInput input = fixture(TrackerMode.CORRIDOR_AWARE, Scene.PARALLEL);
         for (TrackerMode engine : List.of(TrackerMode.CORRIDOR_AWARE, TrackerMode.PROBABILISTIC,
-                TrackerMode.HYBRID, TrackerMode.DIRECTIONAL_IMAGE)) {
+                TrackerMode.DIRECTIONAL_IMAGE)) {
             Format15ReplayRunner.Result result = Format15ReplayRunner.replay(
                 input, ReplayLevel.FINAL_GEOMETRY, engine);
             assertFalse(result.geometry().isEmpty());
