@@ -63,6 +63,79 @@ class OrdinaryModernAttemptAssemblyTest {
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
+    @Test void managedSequentialHybridUsesAcquiredNativePixelsAndKeepsReplaySource(@TempDir Path directory)
+            throws Exception {
+        var fixture = fixture();
+        var config = config(TrackerMode.LEGACY_THEN_B);
+        var recovery = RecoverySettings.defaults(7.01);
+        var tracing = new TracingSettings(TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.LEGACY_THEN_B,
+                recovery, false, AlignmentSourceMode.MANAGED_TILES);
+        var routing = AlignWayAction.resolveOrdinaryAction(tracing, config, () -> "unused", () -> "unused");
+        var decoder = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier();
+        var fetches = new AtomicInteger();
+        try (var coordinator = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator(
+                (request, credentials) -> {
+                    fetches.incrementAndGet();
+                    var image = new BufferedImage(512, 512, BufferedImage.TYPE_INT_ARGB);
+                    double pitch = 156543.03392804097 / Math.pow(2, request.address().zoom()) / 2;
+                    double equator = Math.scalb(512.0, request.address().zoom() - 1);
+                    for (int y = 0; y < 512; y++) {
+                        double north = (equator - (request.address().y() * 512.0 + y + .5)) * pitch;
+                        double intensity = .02 + .8 * Math.exp(-.5 * Math.pow((north - 2) / 1.8, 2));
+                        int gray = (int) Math.round(255 * intensity);
+                        // Real managed heatmap tiles have transparent empty background. An almost
+                        // solid opaque black synthetic tile is correctly rejected as a placeholder.
+                        int alpha = intensity > .025 ? 0xFF000000 : 0;
+                        for (int x = 0; x < 512; x++) image.setRGB(x, y,
+                                alpha | gray << 16 | gray << 8 | gray);
+                    }
+                    var bytes = new java.io.ByteArrayOutputStream();
+                    try { javax.imageio.ImageIO.write(image, "png", bytes); }
+                    catch (java.io.IOException failure) { throw new AssertionError("Synthetic PNG encoding failed", failure); }
+                    return new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TransportResponse(
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchStatus.SUCCESS_NETWORK,
+                            200, "image/png", bytes.toByteArray(), null, java.time.Duration.ZERO, "");
+                }, new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache(directory, decoder),
+                decoder, org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy.defaults());
+                var session = new PreviewSessionController<LiveBPreviewService.Computed>(Runnable::run)) {
+            coordinator.updateActiveGeneration(new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(0));
+            var published = new AtomicReference<LiveBPreviewService.Computed>();
+            var ready = new CountDownLatch(1);
+            var owner = session.open(() -> { });
+            SwingUtilities.invokeAndWait(() -> new AlignWayAction.OrdinaryModernAttemptAssembly().startWithSources(
+                    session, owner, routing, fixture.dataSet(), fixture.selection(), "synthetic-managed-legacy-b",
+                    (source, invocation, permissions) -> { throw new AssertionError("Managed source must be used"); },
+                    (seed, invocation, context) -> new ManagedModernPreviewSource(coordinator).acquireSources(
+                            seed.sourceGeographic(), invocation.config().effectiveHeatmap(), seed.sourceIdentity(),
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot.fromConfig(null), context),
+                    coordinator, attempt -> { published.set(attempt.result()); ready.countDown(); }));
+            assertTrue(ready.await(30, TimeUnit.SECONDS), session.currentAttempt().toString());
+            var computed = published.get();
+            assertNotNull(computed.legacyB());
+            assertNull(computed.captured().raster());
+            assertNotNull(computed.legacyB().managedSource());
+            assertTrue(fetches.get() > 0);
+            assertFalse(computed.legacyB().result().alternatives().isEmpty());
+            assertFalse(computed.pipeline().routes().isEmpty());
+            assertTrue(computed.legacyB().result().batch().sections().stream()
+                    .anyMatch(section -> section.execution().isPresent()),
+                    computed.legacyB().result().batch().sections().stream().map(section ->
+                        section.reason().name() + ": " + section.section().reference()).toList().toString());
+            var bundle = AlignWayAction.createModernDiagnostics(computed, computed, "preview-open", 0,
+                    null, false, false, null);
+            var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
+                    .decode(bundle.artifact("frozen-input.bin").bytes());
+            assertNotNull(frozen.legacyB().managedSource());
+            int beforeReplay = fetches.get();
+            var replay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner
+                    .replay(frozen, org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                            TrackerMode.LEGACY_THEN_B);
+            assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
+                    replay.routes().stream().map(route -> route.hypothesis().points()).toList());
+            assertEquals(beforeReplay, fetches.get(), "Offline production replay must not acquire more tiles");
+        }
+    }
+
     @Test
     void productionAssemblyCapturesComputesAndPublishesAllOrdinaryModernRoutes(@TempDir Path directory)
             throws Exception {

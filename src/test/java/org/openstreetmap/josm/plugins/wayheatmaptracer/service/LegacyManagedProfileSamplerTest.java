@@ -35,6 +35,13 @@ class LegacyManagedProfileSamplerTest {
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
     }
 
+    @Test void offlineNumericalSamplerCannotAcquireTiles() {
+        var sampler = TileHeatmapSampler.numericalOnly();
+        var failure = assertThrows(IllegalStateException.class, () -> sampler.prepare(null,
+                List.of(new EastNorth(0, 0), new EastNorth(20, 0)), List.of("hot")));
+        assertEquals("Detached Legacy sampling cannot acquire tiles", failure.getMessage());
+    }
+
     @Test void frozenSelectedMosaicMatchesNativeProfilesTrackerAndProjectionAfterSwitch() {
         var fixture = fixture(COLORS);
         var nativeSampler = new TileHeatmapSampler();

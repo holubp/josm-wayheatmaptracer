@@ -118,7 +118,7 @@ public final class LegacyManagedProfileSampler {
 
     private final TileHeatmapSampler tileSampler;
 
-    public LegacyManagedProfileSampler() { this(new TileHeatmapSampler()); }
+    public LegacyManagedProfileSampler() { this(TileHeatmapSampler.numericalOnly()); }
 
     LegacyManagedProfileSampler(TileHeatmapSampler tileSampler) {
         this.tileSampler = Objects.requireNonNull(tileSampler, "tileSampler");

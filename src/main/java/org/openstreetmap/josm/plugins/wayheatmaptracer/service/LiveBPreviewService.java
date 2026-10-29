@@ -1142,7 +1142,9 @@ public final class LiveBPreviewService {
         List<GeographicPoint> source = selection.segmentNodes().stream()
                 .map(LiveBPreviewService::geographic).toList();
         LocalMetricFrame frame = ManagedModernPreviewSource.managedFrame(source,
-                config.heatmap().inferenceZoom(), config.heatmap().searchHalfWidthMeters());
+                config.heatmap().inferenceZoom(), config.heatmap().searchHalfWidthMeters()
+                        * (config.heatmap().trackerMode() == TrackerMode.LEGACY_THEN_B
+                                ? 1.0 + Math.sqrt(2.0) : 1.0));
         List<MetricPoint> metric = source.stream().map(frame::toMetric).toList();
         double radius = config.heatmap().searchHalfWidthMeters();
         requireDisconnectionPolicy(permissions);
@@ -1256,8 +1258,7 @@ public final class LiveBPreviewService {
                 || seed.specification().sourceGeneration() != raster.generation().value()) {
             throw new IllegalArgumentException("Managed raster does not match its captured seed");
         }
-        MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
-                seed.sourceMetric(), raster.zoom(), seed.searchRadiusMeters());
+        MetricRasterGrid grid = managedEvidenceGrid(seed, raster.zoom());
         return new Captured(null, raster, seed.specification(), seed.network(), seed.sourceGeographic(),
                 seed.sourceMetric(), grid, seed.palette(), seed.searchRadiusMeters(),
                 seed.sampleStepMeters(), seed.settingsHash(), seed.parameterHash(), seed.cleanup(),
@@ -1279,8 +1280,7 @@ public final class LiveBPreviewService {
             throw new IllegalArgumentException("Managed source set does not match its captured seed");
         }
         ManagedModernPreviewSource.Raster selected = sources.selectedRaster();
-        MetricRasterGrid grid = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
-                seed.sourceMetric(), selected.zoom(), seed.searchRadiusMeters());
+        MetricRasterGrid grid = managedEvidenceGrid(seed, selected.zoom());
         return new Captured(null, selected, seed.specification(), seed.network(),
                 seed.sourceGeographic(), seed.sourceMetric(), grid, seed.palette(),
                 seed.searchRadiusMeters(), seed.sampleStepMeters(), seed.settingsHash(),
@@ -1288,6 +1288,21 @@ public final class LiveBPreviewService {
                 seed.projectionCode(), seed.junctionDecision(), seed.intervalPartition(),
                 seed.intensityMode(), sources, owner, seed.alternativeMappings())
                 .withInitialSource(seed.disconnectionSource());
+    }
+
+    /** Adds image support for a shifted Legacy reference without extending original edit authority. */
+    private static MetricRasterGrid managedEvidenceGrid(ManagedCaptureSeed seed, int zoom) {
+        MetricRasterGrid original = ManagedModernPreviewSource.managedOutputGrid(seed.frame(),
+                seed.sourceMetric(), zoom, seed.searchRadiusMeters());
+        if (seed.engine() != TrackerMode.LEGACY_THEN_B) return original;
+        // B's rectangular segment corridors may extend sqrt(2)*radius along either
+        // axis around the Legacy path. Expand by whole cells to preserve source phase.
+        int halo = (int) Math.ceil(Math.sqrt(2.0) * seed.searchRadiusMeters() / original.pitchMeters());
+        return new MetricRasterGrid(original.coordinateFrame(), original.pixelCenterToMetric(-halo, -halo),
+                original.xAxisEastUnit(), original.xAxisNorthUnit(), original.yAxisEastUnit(),
+                original.yAxisNorthUnit(), original.pitchMeters(),
+                Math.addExact(original.width(), Math.multiplyExact(2, halo)),
+                Math.addExact(original.height(), Math.multiplyExact(2, halo)));
     }
 
     /** Runs RasterEvidenceCapture, production B, and common final processing off the EDT. */

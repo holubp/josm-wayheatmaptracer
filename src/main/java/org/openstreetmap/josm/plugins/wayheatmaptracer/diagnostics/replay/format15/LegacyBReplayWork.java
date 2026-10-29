@@ -10,6 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 /** Actual ordered native B receipts, separate from the assembled Hybrid and unmeasured Legacy work. */
 public final class LegacyBReplayWork {
     public static final String ARTIFACT = "legacy-b-native-work.json";
+    private static final String NO_NATIVE_RUNS = "{\"schema\":1,\"runs\":[]}\n";
     private LegacyBReplayWork() { }
 
     public static Format15Bundle attach(Format15Bundle bundle, FrozenReplayInput frozen,
@@ -32,14 +33,20 @@ public final class LegacyBReplayWork {
                     return execution.run().result().workAccounting();
                 }).toList();
         var artifacts = new LinkedHashMap<>(bundle.artifacts());
-        artifacts.put(ARTIFACT, Format15Artifact.binary(ARTIFACT,
-                Format15ExecutionWorkCodec.artifact(receipts).bytes()));
+        artifacts.put(ARTIFACT, receipts.isEmpty() ? Format15Artifact.text(ARTIFACT, NO_NATIVE_RUNS)
+                : Format15Artifact.binary(ARTIFACT, Format15ExecutionWorkCodec.artifact(receipts).bytes()));
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
     }
 
     static void validate(Format15Archive archive, Format15ReplayRunner.Result result) {
         if (result.engine() != TrackerMode.LEGACY_THEN_B) return;
         try {
+            if (result.nativeBExecutionWork().isEmpty()) {
+                if (!archive.artifact(ARTIFACT).orElseThrow().sha256().equals(Format15Safety.sha256(NO_NATIVE_RUNS))) {
+                    throw new IllegalArgumentException("Expected no native B invocations");
+                }
+                return;
+            }
             List<Optional<ExecutionWorkReceipt>> recorded = Format15ExecutionWorkCodec.read(
                     archive.artifact(ARTIFACT).orElseThrow());
             if (!recorded.equals(result.nativeBExecutionWork())) {

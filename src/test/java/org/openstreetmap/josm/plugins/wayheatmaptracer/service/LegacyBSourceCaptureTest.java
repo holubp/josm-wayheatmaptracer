@@ -98,7 +98,7 @@ class LegacyBSourceCaptureTest {
         var valid = new boolean[128 * 128];
         Arrays.fill(valid, true);
         var transform = org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence
-                .SupportedInputRasterTransform.webMercator(15, 8_388_544, 8_388_544, 1);
+                .SupportedInputRasterTransform.webMercator(15, 4_194_272, 4_194_272, 2);
         var raster = new ManagedModernPreviewSource.Raster(image, valid, transform, "hot", 15,
                 "synthetic", new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileGeneration(1));
         var sources = new ManagedModernPreviewSource.SourceRasters(Map.of("hot", raster),
@@ -117,6 +117,24 @@ class LegacyBSourceCaptureTest {
         image.setRGB(30, 60, 0);
         assertEquals(0xFFEEFFFF, mosaic.argb()[60 * 128 + 30]);
         assertEquals(6, input.trackerNormalizationRasterPx());
+        var projection = Projections.getProjectionByCode("EPSG:3857");
+        var sampler = new LegacyManagedProfileSampler();
+        for (var point : List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint(0, 0),
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint(600, 800))) {
+            var projected = sampler.project(input, "hot", List.of(point)).get(0);
+            var ll = projection.eastNorth2latlon(new org.openstreetmap.josm.data.coor.EastNorth(
+                    projected.east(), projected.north()));
+            var rasterPoint = transform.toRasterCenter(new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                    .GeographicPoint(ll.lat(), ll.lon()));
+            assertEquals(point.x() / mosaic.virtualRasterScale(), rasterPoint.x(), 1e-8);
+            assertEquals(point.y() / mosaic.virtualRasterScale(), rasterPoint.y(), 1e-8);
+        }
+        var wrong = new ManagedModernPreviewSource.Raster(image, valid,
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform
+                    .webMercator(15, 4_194_272, 4_194_272, 1), "hot", 15, "synthetic", raster.generation());
+        var wrongSources = new ManagedModernPreviewSource.SourceRasters(Map.of("hot", wrong), sources.plan());
+        assertThrows(IllegalArgumentException.class, () -> LegacyBSourceCapture.managed(settings(),
+                wrongSources, source, "EPSG:3857", "hot"));
         assertThrows(IllegalArgumentException.class, () -> LegacyBSourceCapture.managed(settings(),
                 sources, source, "EPSG:3857", "all-colors-combined"));
     }

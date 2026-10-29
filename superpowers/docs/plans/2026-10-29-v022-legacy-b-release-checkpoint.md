@@ -4,7 +4,7 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
-Current continuation (uncommitted after6d0ee1d): ordinary visible Hybrid now executes
+Current committed integration5942d82: ordinary visible Hybrid now executes
 actual Legacy and native interval B, retains their source/provenance and produces
 an available exact Apply plan in its integration fixture. A new positive production
 fixture proves B improves the curve between sparse Legacy anchors. Additive frozen
@@ -24,6 +24,20 @@ was the executable-engine whitelist omitting the newly implemented mode; that gu
 now admits Newmode while factory serialization still rejects missing Legacy input.
 Native B section work is captured and replay-validated separately from composite
 metadata; no full-way B posterior or Legacy transition count is invented.
+
+Managed-source follow-up (currently uncommitted): real coordinator acquisition,
+native Legacy sampling, native B section invocation, frozen-source export and offline
+production replay now pass together with source/sampler neighbors:12tests, no failures,
+errors or skips (v022-managed-evidence-halo-green.log,3m13s). The actual producer uses
+standard256 world units for native512 tile pixels; capture now converts the boundary
+origin without resampling or changing half-pixel phase. New Hybrid adds an integer-cell
+evidence halo for the shifted Legacy reference while retaining original search/edit
+authority. Standalone modern grids are unchanged. Empty-native-run export remains
+explicit and does not weaken the generic native work receipt contract.
+Offline frozen sampling cannot initialize or use acquisition transport. A prior
+opaque synthetic PNG was correctly rejected as a placeholder; its background now
+matches real transparent heatmap tiles. Section UI integration is underway and has
+not yet passed its new binding regression. Full CI and final review remain pending.
 
 Worktree: `.worktrees/v022-legacy-b-release`; branch:
 `codex/v022-legacy-b-release`. The original `codex/v0.22.0-release` worktree at

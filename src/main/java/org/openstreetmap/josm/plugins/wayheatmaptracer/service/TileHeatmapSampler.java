@@ -64,6 +64,11 @@ public final class TileHeatmapSampler {
     public TileHeatmapSampler(TileFetchCoordinator tileCoordinator) {
         this.tileCoordinator = java.util.Objects.requireNonNull(tileCoordinator, "tileCoordinator");
     }
+
+    private TileHeatmapSampler(boolean numericalOnly) { this.tileCoordinator = null; }
+
+    /** Creates the pure numerical view used by frozen replay, without initializing tile runtime. */
+    public static TileHeatmapSampler numericalOnly() { return new TileHeatmapSampler(true); }
     private static final List<String> BASE_AGGREGATE_COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 
     /**
@@ -97,6 +102,9 @@ public final class TileHeatmapSampler {
         List<String> tileColors,
         boolean sketchLikeSelection
     ) {
+        if (tileCoordinator == null) {
+            throw new IllegalStateException("Detached Legacy sampling cannot acquire tiles");
+        }
         if (sourcePolyline.size() < 2) {
             throw new IllegalStateException("Selected segment is too short for tile sampling.");
         }

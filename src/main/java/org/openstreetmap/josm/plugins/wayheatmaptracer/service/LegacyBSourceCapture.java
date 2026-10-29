@@ -159,8 +159,12 @@ public final class LegacyBSourceCapture {
         for (var entry : sources.palettes().entrySet()) {
             if (!aggregate && !entry.getKey().equals(sources.plan().selectedColor())) { continue; }
             var raster = entry.getValue();
+            // SupportedInputRasterTransform uses standard 256-pixel world units. Plugin-direct
+            // managed rasters contain native 512-pixel tiles, without image resampling.
+            double nativePixelsPerWorldPixel = TileHeatmapSampler.TILE_SIZE / 256.0;
             if (!(raster.transform() instanceof SupportedInputRasterTransform.WebMercator transform)
-                    || transform.rasterPixelsPerWorldPixel() != 1 || transform.zoom() != settings.inferenceZoom()) {
+                    || transform.rasterPixelsPerWorldPixel() != nativePixelsPerWorldPixel
+                    || transform.zoom() != settings.inferenceZoom()) {
                 throw new IllegalArgumentException("Managed Legacy requires its exact native world-pixel frame");
             }
             for (boolean valid : raster.validity()) {
@@ -172,8 +176,8 @@ public final class LegacyBSourceCapture {
             double virtualScale = inference.metersPerPixel()
                     / TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL * RenderedHeatmapSampler.RASTER_SCALE;
             mosaics.put(entry.getKey() + "@" + raster.zoom(), new LegacyManagedProfileSampler.Mosaic(
-                    entry.getKey(), raster.zoom(), transform.inputWorldPixelBoundaryX(),
-                    transform.inputWorldPixelBoundaryY(), image.getWidth(), image.getHeight(),
+                    entry.getKey(), raster.zoom(), transform.inputWorldPixelBoundaryX() * nativePixelsPerWorldPixel,
+                    transform.inputWorldPixelBoundaryY() * nativePixelsPerWorldPixel, image.getWidth(), image.getHeight(),
                     image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth()),
                     inference, settings.inferenceMode().stableFixedScale(), virtualScale));
         }
