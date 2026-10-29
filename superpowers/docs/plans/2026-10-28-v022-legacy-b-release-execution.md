@@ -202,10 +202,10 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 |---|---|---|
 | 1 baseline and obligations | TESTED | isolated2fdab87 snapshot, scoped23-file inventory;90 focused tests green; original obligations mapped above |
 | 2 defaults/settings | TESTED | intended defaults/migration RED6→GREEN28; settings/guard RED2; final41PASS with corrected synthetic-session fixture; GUI smoke pending Task8 |
-| 3 Legacy seeds/reference | PARTIAL |4027f47,d46ffe6,9e6eacb: detached reference, native B entry, captured-projection seed conversion, exact anchors and cancellation tested;101bridge/Legacy/interval neighbors green; frozen source assembly and simplification provenance still need Task6 integration |
-| 4 interval orchestration | TESTED CORE |7dc2b57:27focused then58native B/pipeline tests green; explicit completion/resource reasons added RED→GREEN67 with assessor/native neighbors; live memory/source runner remains Task6 |
-| 5 assessment/preview | TESTED COMPONENTS |75tests PASS: shared evaluator, complete support denominator, actual native section identity, wrapped table, immutable projected highlight and existing preview state; ordinary action hookup remains Task6 |
-| 6 live/apply/export/replay | NOT STARTED | same production path required in live and replay |
+| 3 Legacy seeds/reference | IMPLEMENTED; focused native integration TESTED |5942d82/577d89e supply actual captured visible/managed Legacy inputs, shared native simplification/topology and explicit native B reference; remaining occurrence edge cases and final audit in Task6/8 |
+| 4 interval orchestration | TESTED NATIVE CORE |7dc2b57/5942d82 exercise actual leased runner, mixed fallback and shared work; cross-detector global parent/candidate caps still need audit/correction |
+| 5 assessment/preview | IMPLEMENTED ordinary UI; focused tests PASS |75component tests plusa188b48 ordinary route-bound section rows/highlight and assembled raw/final semantics; actual-dialog smoke remains Task8 |
+| 6 live/apply/export/replay | PARTIAL |5942d82/577d89e/a188b48: actual visible/managed production, live Format15/root v6 and offline native replay, genuinely B-refined exact plan Apply/Undo/Redo. Remaining explicit output provenance, all-source cap/authority/contact/occurrence and failure regressions listed in current checkpoint/SDD ledger |
 | 7 old Hybrid removal | NOT STARTED | implementation removal explicitly approved |
 | 8 RC/final release | NOT STARTED | no release readiness or new RC claimed |
 

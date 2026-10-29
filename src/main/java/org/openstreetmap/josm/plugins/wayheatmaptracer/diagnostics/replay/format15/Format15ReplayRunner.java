@@ -39,7 +39,15 @@ public final class Format15ReplayRunner {
     public record Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
             TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
             String inputHash, List<String> disconnectionPlanReviews,
-            List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork) {
+            List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork,
+            Format15Artifact legacyBProvenance) {
+        public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
+                TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
+                String inputHash, List<String> disconnectionPlanReviews,
+                List<java.util.Optional<org.openstreetmap.josm.plugins.wayheatmaptracer.model.ExecutionWorkReceipt>> nativeBExecutionWork) {
+            this(level, capturedEngine, engine, inference, routes, inputHash, disconnectionPlanReviews,
+                    nativeBExecutionWork, null);
+        }
         public Result(ReplayLevel level, TrackerMode capturedEngine, TrackerMode engine,
                 TraceHypothesisSet inference, List<ModernTracePipeline.Route> routes,
                 String inputHash, List<String> disconnectionPlanReviews) {
@@ -60,6 +68,9 @@ public final class Format15ReplayRunner {
             routes = List.copyOf(routes);
             disconnectionPlanReviews = List.copyOf(disconnectionPlanReviews);
             nativeBExecutionWork = List.copyOf(nativeBExecutionWork);
+            if (legacyBProvenance != null && (engine != TrackerMode.LEGACY_THEN_B
+                    || !LegacyBProvenance.ARTIFACT.equals(legacyBProvenance.name())))
+                throw new IllegalArgumentException("Intermediate provenance is reserved for sequential Hybrid");
             if (engine != TrackerMode.LEGACY_THEN_B && !nativeBExecutionWork.isEmpty())
                 throw new IllegalArgumentException("Section work is reserved for sequential Hybrid");
             if (!disconnectionPlanReviews.isEmpty() && (level != ReplayLevel.FINAL_GEOMETRY
@@ -69,6 +80,11 @@ public final class Format15ReplayRunner {
                 if (review.length() > 1_048_576) throw new IllegalArgumentException("Plan review exceeds text budget");
                 Format15Safety.requireSafeExportedMetadata(review);
             });
+        }
+
+        /** Hash of the actual bounded intermediate record, absent for historical/non-Hybrid results. */
+        public String legacyBProvenanceHash() {
+            return legacyBProvenance == null ? "" : legacyBProvenance.sha256();
         }
 
         /** Returns actual route geometry for manifest/invariant validation. */
@@ -677,7 +693,8 @@ public final class Format15ReplayRunner {
                     level == ReplayLevel.SCALAR_INFERENCE ? List.of() : actual.routes(), inputHash,
                     level == ReplayLevel.SCALAR_INFERENCE ? List.of() : DisconnectionReplaySemantics.recompute(input, actual),
                     executed.value().batch().sections().stream().flatMap(section -> section.execution().stream())
-                        .map(execution -> execution.run().result().workAccounting()).toList());
+                        .map(execution -> execution.run().result().workAccounting()).toList(),
+                    LegacyBProvenance.artifact(request, executed.value()));
         }
     }
 

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -228,6 +229,8 @@ class OrdinaryModernAttemptAssemblyTest {
                 var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
                         .FrozenReplayCodec.decode(archive.artifact("frozen-input.bin").orElseThrow().bytes());
                 assertNotNull(frozen.legacyB());
+                assertTrue(archive.artifact("legacy-b-provenance.bin").isPresent(),
+                        "Export must retain actual Legacy seeds, B references and section outcomes");
                 assertEquals(computed.legacyB().input().occurrences(), frozen.legacyB().occurrences());
                 assertTrue(archive.artifact("legacy-b-native-work.json").isPresent(),
                         "Actual B section work must remain separately available from the composition");
@@ -237,6 +240,37 @@ class OrdinaryModernAttemptAssemblyTest {
                             archive.sourceIdentityHash(), archive.parameterHash());
                 assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
                         replay.routes().stream().map(route -> route.hypothesis().points()).toList());
+                var changedArtifacts = new java.util.LinkedHashMap<>(archive.artifacts());
+                byte[] changedProvenance = archive.artifact("legacy-b-provenance.bin").orElseThrow().bytes();
+                changedProvenance[changedProvenance.length - 1] ^= 1;
+                changedArtifacts.put("legacy-b-provenance.bin",
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15Artifact
+                                .binary("legacy-b-provenance.bin", changedProvenance));
+                var changedBundle = new org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .Format15Bundle(archive.buildIdentity(), archive.sourceIdentityHash(),
+                                archive.parameterHash(), changedArtifacts);
+                var changedPath = directory.resolve("changed-hybrid-provenance.zip");
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
+                        .write(changedBundle, changedPath);
+                var changedArchive = Format15ArchiveReader.read(changedPath);
+                var mismatch = assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay
+                        .format15.ReplayMismatchException.class, () -> org.openstreetmap.josm.plugins.wayheatmaptracer
+                                .diagnostics.replay.format15.Format15ReplayRunner.replay(changedArchive,
+                                        org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                                        changedArchive.sourceIdentityHash(), changedArchive.parameterHash()));
+                assertTrue(mismatch.getMessage().contains("legacy-provenance"));
+                var expectedBundle = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .Format15ProductionBundleFactory.createWithExpectedFinalOutput("test", frozen, TrackerMode.LEGACY_THEN_B);
+                var expectedPath = directory.resolve("recorded-hybrid-output.zip");
+                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15BundleWriter
+                        .write(expectedBundle, expectedPath);
+                var expectedArchive = Format15ArchiveReader.read(expectedPath);
+                var recordedReplay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15
+                        .Format15ReplayRunner.replay(expectedArchive,
+                                org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
+                                expectedArchive.sourceIdentityHash(), expectedArchive.parameterHash());
+                assertEquals(replay.routes().stream().map(route -> route.hypothesis().points()).toList(),
+                        recordedReplay.routes().stream().map(route -> route.hypothesis().points()).toList());
                 int refined = java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
                         .filter(index -> computed.pipeline().routes().get(index).hypothesis().diagnostics()
                                 .getOrDefault("hasBRefinement", 0.0) == 1.0

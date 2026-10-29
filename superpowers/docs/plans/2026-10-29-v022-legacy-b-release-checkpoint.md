@@ -52,6 +52,19 @@ fixture now tests explicit refusal and reserves its positive matrix for scalar-i
 engines; all5affected cases passed in1m32s. Actual Hybrid positive source/transaction
 coverage remains mandatory. Full CI, actual-dialog smoke and final review are pending.
 
+Intermediate provenance follow-up: actual Legacy alternatives/seeds, B references,
+native hypotheses/local exclusions, section choices and measured quality are emitted
+as bounded canonical `legacy-b-provenance.bin` under existing artifact limits.
+Archive replay recomputes it; an adversary that changes it and rewrites valid archive
+checksums is rejected. Live archive/foundation batch passed13tests in2m33s.
+The offline expected-output recorder was then observed RED with real captured input:
+it omitted this intermediate evidence. It now attaches the same actual result and
+native work without running another inference. Java and test compilation pass;
+the recorder correction's GREEN and broader suites are pending commit-based CI.
+An earlier recorder harness used an invalid placeholder parameter hash; moved that
+check to actual ordinary capture rather than loosening archive hash validation.
+The shared frozen fixture was restored unchanged. No private inputs are pushed.
+
 Worktree: `.worktrees/v022-legacy-b-release`; branch:
 `codex/v022-legacy-b-release`. The original `codex/v0.22.0-release` worktree at
 117baaf and its user edits/private artifacts were preserved. Exact shipped RC12

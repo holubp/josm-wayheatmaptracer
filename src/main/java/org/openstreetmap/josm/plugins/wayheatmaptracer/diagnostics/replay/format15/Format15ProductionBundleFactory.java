@@ -1294,8 +1294,8 @@ public final class Format15ProductionBundleFactory {
         Map<String, Format15Artifact> artifacts = new LinkedHashMap<>(base.artifacts());
         artifacts.put(ScalarReplayExpectation.ARTIFACT_NAME, Format15Artifact.binary(
             ScalarReplayExpectation.ARTIFACT_NAME, expectation.bytes()));
-        return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference()));
+        return LegacyBReplayWork.attach(withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference())), actual);
     }
 
     /** Creates a frozen bundle that records one actual final-geometry production result. */
@@ -1315,8 +1315,8 @@ public final class Format15ProductionBundleFactory {
             artifacts.put(DisconnectionReplaySemantics.ARTIFACT, Format15Artifact.text(
                     DisconnectionReplaySemantics.ARTIFACT,
                     DisconnectionReplaySemantics.artifact(actual.disconnectionPlanReviews())));
-        return withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
-            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference()));
+        return LegacyBReplayWork.attach(withCurrentNumericalPolicy(new Format15Bundle(base.buildIdentity(), base.sourceIdentityHash(),
+            base.parameterHash(), artifacts), input, requestedEngine, List.of(actual.inference())), actual);
     }
 
     private static void addFinalOutputComponents(Map<String, Format15Artifact> artifacts,

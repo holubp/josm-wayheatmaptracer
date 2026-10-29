@@ -376,6 +376,15 @@ quality. Bundles without the level-specific artifact remain readable and report 
 unavailable. Raster preprocessing, full edit plans, and deterministic expected
 cancellation remain unfinished.
 
+Development Legacy→B Hybrid bundles additionally freeze the actual Legacy raster and
+occurrence/simplification policy. They retain actual Legacy seeds, B references,
+section choices, fallback reasons and measured quality in `legacy-b-provenance.bin`,
+with native B work separately recorded in `legacy-b-native-work.json`. Live export
+and offline expected-output recording use the same production implementation.
+Strict replay recomputes this intermediate record; matching archive checksums alone
+cannot substitute different intermediate outputs. These captures contain private
+geometry and imagery and must stay out of public CI inputs.
+
 Format-15 interval bundles from the ordinary modern preview also carry one bounded
 private frozen source frame, the original partition authority, and each interval's
 production request. The strict interval runner recomputes the partition and every

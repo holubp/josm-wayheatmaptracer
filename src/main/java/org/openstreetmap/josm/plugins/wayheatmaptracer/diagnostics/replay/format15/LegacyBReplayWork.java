@@ -32,7 +32,23 @@ public final class LegacyBReplayWork {
                     }
                     return execution.run().result().workAccounting();
                 }).toList();
+        return attachArtifacts(bundle, receipts, LegacyBProvenance.artifact(computation.input(), computation.result()));
+    }
+
+    /** Expected-output recording must keep the same actual intermediate evidence as live export. */
+    static Format15Bundle attach(Format15Bundle bundle, Format15ReplayRunner.Result result) {
+        if (result.engine() != TrackerMode.LEGACY_THEN_B) return bundle;
+        if (result.capturedEngine() != TrackerMode.LEGACY_THEN_B || result.legacyBProvenance() == null
+                || !bundle.sourceIdentityHash().equals(result.inputHash())) {
+            throw new IllegalArgumentException("Recorded Hybrid evidence has another frozen owner");
+        }
+        return attachArtifacts(bundle, result.nativeBExecutionWork(), result.legacyBProvenance());
+    }
+
+    private static Format15Bundle attachArtifacts(Format15Bundle bundle,
+            List<Optional<ExecutionWorkReceipt>> receipts, Format15Artifact provenance) {
         var artifacts = new LinkedHashMap<>(bundle.artifacts());
+        artifacts.put(LegacyBProvenance.ARTIFACT, provenance);
         artifacts.put(ARTIFACT, receipts.isEmpty() ? Format15Artifact.text(ARTIFACT, NO_NATIVE_RUNS)
                 : Format15Artifact.binary(ARTIFACT, Format15ExecutionWorkCodec.artifact(receipts).bytes()));
         return new Format15Bundle(bundle.buildIdentity(), bundle.sourceIdentityHash(), bundle.parameterHash(), artifacts);
@@ -40,6 +56,11 @@ public final class LegacyBReplayWork {
 
     static void validate(Format15Archive archive, Format15ReplayRunner.Result result) {
         if (result.engine() != TrackerMode.LEGACY_THEN_B) return;
+        if (result.legacyBProvenanceHash().isEmpty()
+                || !archive.artifact(LegacyBProvenance.ARTIFACT).map(Format15Artifact::sha256)
+                        .orElse("").equals(result.legacyBProvenanceHash())) {
+            throw new ReplayMismatchException("legacy-provenance-mismatch-or-unavailable");
+        }
         try {
             if (result.nativeBExecutionWork().isEmpty()) {
                 if (!archive.artifact(ARTIFACT).orElseThrow().sha256().equals(Format15Safety.sha256(NO_NATIVE_RUNS))) {
