@@ -143,7 +143,7 @@ public final class LegacyBAssessor {
                     }
                 }
             }
-            boolean ambiguous = false, truncated = false;
+            boolean ambiguous = false, truncated = batch.truncated();
             for (SectionChoice choice : candidate.sections()) {
                 if (choice.source() == Source.B) {
                     var execution = execution(batch, choice);

@@ -10,7 +10,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 
 /** Certified, read-only projection of contextual OSM segments for final topology checks. */
-final class CertifiedContextSegmentClipper {
+public final class CertifiedContextSegmentClipper {
     // The final collision classifier uses 1e-8 metres on coordinate comparisons.
     // Keep a wider exclusion guard for binary64 operations and frame admission (1e-12 degrees).
     private static final double EXCLUSION_GUARD_METERS = 1e-5;
@@ -18,7 +18,7 @@ final class CertifiedContextSegmentClipper {
 
     private CertifiedContextSegmentClipper() { }
 
-    record ClippedSegment(MetricPoint start, MetricPoint end,
+    public record ClippedSegment(MetricPoint start, MetricPoint end,
             boolean originalStart, boolean originalEnd) { }
 
     /** Exact binary64-input chord in physical predicate units, independent of clipping. */
@@ -620,7 +620,7 @@ final class CertifiedContextSegmentClipper {
      * only when the complete segment misses a guarded rectangle around the certificate.
      * A near-boundary miss cannot be proved irrelevant to the metric collision classifier.
      */
-    static Optional<ClippedSegment> clip(GeographicPoint start, GeographicPoint end,
+    public static Optional<ClippedSegment> clip(GeographicPoint start, GeographicPoint end,
             LocalMetricFrame frame) {
         if (start == null || end == null || frame == null) {
             throw new InvalidContextGeometryException("Context segment or frame is incomplete");

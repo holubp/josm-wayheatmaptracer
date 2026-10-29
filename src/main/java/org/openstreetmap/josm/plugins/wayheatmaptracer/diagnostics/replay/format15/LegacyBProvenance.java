@@ -15,7 +15,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 
 /**
  * Bounded canonical record of actual intermediate Hybrid outputs, not reconstructed archive claims.
- * Schema 1 uses DataOutput primitives and length-prefixed UTF-8 strings, starting with LBB1.
+ * Schema 2 uses DataOutput primitives and length-prefixed UTF-8 strings, starting with LBB1.
  * Ordered blocks retain native Legacy alternatives, retained seeds, section references/execution,
  * local quality exclusions, assembled choices and measured section support. Metric and projected
  * coordinates stay separate. Native B work remains in its dedicated work artifact.
@@ -28,7 +28,7 @@ final class LegacyBProvenance {
         var bytes = new BoundedOutput();
         try (var data = new DataOutputStream(bytes)) {
             data.writeInt(0x4c424231);
-            data.writeInt(1);
+            data.writeInt(2);
             text(data, "legacy-then-b-v1");
             text(data, input.request().networkContentHash());
             text(data, input.request().evidenceContentHash());
@@ -63,6 +63,7 @@ final class LegacyBProvenance {
                 data.writeBoolean(outcome.execution().isPresent());
                 if (outcome.execution().isPresent()) {
                     var execution = outcome.execution().orElseThrow();
+                    data.writeLong(execution.authorityWorkUnits()); data.writeBoolean(execution.authorityWorkLimited());
                     var reference = execution.reference().orElseThrow(() ->
                             new IllegalArgumentException("Actual Hybrid section lacks reference provenance"));
                     var request = reference.request();
@@ -85,6 +86,8 @@ final class LegacyBProvenance {
             for (var quality : result.sectionQualities()) {
                 text(data, quality.sectionId()); text(data, quality.hypothesisId());
                 data.writeBoolean(quality.eligible()); ReplayOutputCanonical.writeQuality(data, quality.quality());
+                data.writeBoolean(quality.editAuthority().isPresent());
+                if (quality.editAuthority().isPresent()) data.writeBoolean(quality.editAuthority().orElseThrow());
             }
             data.writeInt(batch.candidates().size());
             for (var candidate : batch.candidates()) {

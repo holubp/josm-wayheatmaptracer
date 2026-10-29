@@ -61,11 +61,12 @@ public final class LegacyBPipeline {
 
     /** Runner retains the factual native result, optional reference binding, and work exactly once. */
     public record SectionExecution(TraceEngineRun run, Optional<Reference> reference,
-            Set<String> eligibleHypothesisIds) {
+            Set<String> eligibleHypothesisIds, long authorityWorkUnits, boolean authorityWorkLimited) {
         public SectionExecution {
             Objects.requireNonNull(run);
             Objects.requireNonNull(reference);
             eligibleHypothesisIds = Set.copyOf(eligibleHypothesisIds);
+            if (authorityWorkUnits < 0) throw new IllegalArgumentException("Negative authority proof work");
             if (run.result().engine() != TrackerMode.PROBABILISTIC) {
                 throw new IllegalArgumentException("Section must execute the native B engine");
             }
@@ -74,6 +75,11 @@ public final class LegacyBPipeline {
             if (!actualIds.containsAll(eligibleHypothesisIds)) {
                 throw new IllegalArgumentException("Eligible hypotheses must belong to the unchanged native result");
             }
+        }
+
+        /** Compatibility for callers without additional authority-proof work. */
+        public SectionExecution(TraceEngineRun run, Optional<Reference> reference, Set<String> eligibleHypothesisIds) {
+            this(run, reference, eligibleHypothesisIds, 0, false);
         }
 
         /** Compatibility for runners whose native outputs have no additional local quality exclusions. */
@@ -142,8 +148,9 @@ public final class LegacyBPipeline {
             if (candidates.isEmpty()) { return Status.NO_ROUTE; }
             if (sections.stream().anyMatch(section -> section.outcome() == Outcome.UNATTEMPTED_BUDGET
                     || section.reason() == Reason.DEADLINE || section.reason() == Reason.RESOURCE_LIMIT
-                    || section.execution().isPresent() && section.execution().orElseThrow().run().result().status()
-                            == TraceHypothesisSet.Status.RESOURCE_LIMIT)) {
+                    || section.execution().isPresent() && (section.execution().orElseThrow().run().result().status()
+                            == TraceHypothesisSet.Status.RESOURCE_LIMIT
+                            || section.execution().orElseThrow().authorityWorkLimited()))) {
                 return Status.RESOURCE_LIMIT;
             }
             return truncated || omittedParents > 0
@@ -203,13 +210,14 @@ public final class LegacyBPipeline {
                             outcome = new SectionOutcome(section, Outcome.B_REFINED, Reason.B_REFINED,
                                     Optional.of(execution));
                         } else {
-                            boolean resource = result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT;
+                            boolean resource = result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT
+                                    || execution.authorityWorkLimited();
                             outcome = new SectionOutcome(section, Outcome.LEGACY_RETAINED,
                                     resource ? Reason.RESOURCE_LIMIT : result.hypotheses().isEmpty()
                                             ? Reason.NO_ROUTE : Reason.NO_USABLE_REFINEMENT, Optional.of(execution));
                         }
                         // A native resource refusal is terminal for starting new inference. Retain its output.
-                        if (result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT) {
+                        if (result.status() == TraceHypothesisSet.Status.RESOURCE_LIMIT || execution.authorityWorkLimited()) {
                             stopped = true; stoppedReason = Reason.RESOURCE_LIMIT;
                         }
                         truncated |= result.truncated() || stopped;

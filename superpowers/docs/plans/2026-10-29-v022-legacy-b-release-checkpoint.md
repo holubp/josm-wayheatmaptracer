@@ -4,6 +4,28 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+Current2026-10-29: HEAD437c685, historical removal committed/pushed. Its public
+Build40881958032 failed two of2297tests (zero errors/skips): both replay tests still
+expected removed A+B execution. Assertions now distinguish supported A/B traversal,
+missing A input, and explicit historical-Hybrid refusal; both corrected tests pass
+(48s). No source or engine policy is weakened to accommodate obsolete tests.
+
+Local authority gate reproduced an actual outside-edit-region B refinement while
+Legacy stayed authorized. Complete-segment proof now excludes that refinement
+locally and preserves its native diagnostics. Separate bounded geometry proof work
+can stop further refinement while preserving already proved results and truthful
+native receipts. Ordinary action/export and frozen replay neighbors pass6tests
+(1m30s). A blank-source regression additionally reproduced a confirmable no-signal
+Legacy fallback; this now remains inspectable but HARD_BLOCKED when no B section
+refined it. Faint nonzero evidence policy is unchanged. A distant contextual-way
+endpoint regression reproduced the certified-frame exception; Hybrid now reuses
+the existing certified read-only segment clipper, preserving actual interior
+crossings, shared-node identity and exact proposed shared coordinates. It never
+changes contextual ways; final exact-plan topology checks remain mandatory.
+Combined focused regression passes40tests/0failures/errors/skips (1m20s), including
+the13existing clipper controls. Full stable-snapshot CI and final independent
+review remain required; no release qualification is claimed.
+
 Latest verification: development91333d9 passed GitHub Build40868988501, both
 public-validation and public-gui-smoke. Downloaded public-only evidence records all
 Java/Python/report-integrity/scale/diff/artifact stages PASS. The GUI oracle exercised

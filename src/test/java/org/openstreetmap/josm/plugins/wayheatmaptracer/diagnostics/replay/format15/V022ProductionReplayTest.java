@@ -1719,8 +1719,8 @@ class V022ProductionReplayTest {
             @TempDir Path directory) throws Exception {
         String fineResults = runStrictCli(directory.resolve("fine fixture with spaces"),
             fixture(TrackerMode.CORRIDOR_AWARE, Scene.RIDGE, RasterFixture.FINE),
-            "A,B,HYBRID", 51.0, 55.0);
-        assertEquals(3, occurrences(fineResults, "\"status\":\"ok\""));
+            "A,B", 51.0, 55.0);
+        assertEquals(2, occurrences(fineResults, "\"status\":\"ok\""));
 
         String coarseImageResults = runStrictCli(directory.resolve("coarse image fixture"),
             fixture(TrackerMode.DIRECTIONAL_IMAGE, Scene.RIDGE, RasterFixture.COARSE),
@@ -2162,7 +2162,7 @@ class V022ProductionReplayTest {
     }
 
     @Test
-    void strictCliNamesMissingCorridorInputForRequestedAAndHybrid(@TempDir Path directory)
+    void strictCliDistinguishesMissingCorridorInputFromRemovedHistoricalHybrid(@TempDir Path directory)
             throws Exception {
         FrozenReplayInput captured = fixture(TrackerMode.PROBABILISTIC, Scene.RIDGE);
         TraceRequest source = captured.request();
@@ -2179,8 +2179,11 @@ class V022ProductionReplayTest {
             false, "{}");
 
         assertEquals(2, result.exit());
-        assertEquals(2, occurrences(result.output(),
+        assertEquals(1, occurrences(result.output(),
             "\"reason\":\"corridor-input-missing\""));
+        assertEquals(1, occurrences(result.output(),
+            "\"reason\":\"unsupported-historical-a-b-hybrid\""));
+        assertEquals(2, occurrences(result.output(), "\"status\":\"failed\""));
     }
 
     @Test

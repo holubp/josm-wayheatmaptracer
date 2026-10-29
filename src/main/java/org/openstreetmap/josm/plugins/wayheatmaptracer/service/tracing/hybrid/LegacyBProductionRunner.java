@@ -83,7 +83,38 @@ public final class LegacyBProductionRunner {
 
     /** Native hypotheses are never rewritten when local quality excludes them from assembly. */
     public record SectionQuality(String sectionId, String hypothesisId, FinalGeometryEvaluator.Result quality,
-            boolean eligible) { }
+            boolean eligible, Optional<Boolean> editAuthority) {
+        public SectionQuality {
+            Objects.requireNonNull(editAuthority);
+            if (eligible && editAuthority.isPresent() && !editAuthority.orElseThrow())
+                throw new IllegalArgumentException("An unauthorized refinement cannot be eligible");
+        }
+    }
+
+    /** Separate deterministic geometry-work ceiling; these units are never counted as B solver scores. */
+    private static final class AuthorityWork {
+        private static final long LIMIT = 8_000_000;
+        private long used;
+        private org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion.YMembershipIndex index;
+        private void charge(long units) {
+            if (units < 0) throw new IllegalArgumentException("Negative geometry work charge");
+            if (units > LIMIT - used) throw new AuthorityWorkLimit();
+            used += units;
+        }
+    }
+    private static final class AuthorityWorkLimit extends RuntimeException { }
+
+    private static boolean insideEditAuthority(Input input, List<MetricPoint> points,
+            CancellationProbe cancellation, AttemptMemoryLedger.Owner owner, AuthorityWork work) {
+        var region = input.network().closure().editRegion();
+        if (work.index == null) work.index = region.prepareYMembership(cancellation, work::charge, owner);
+        for (int index = 1; index < points.size(); index++) {
+            cancellation.checkpoint();
+            if (!region.containsSegmentWithBoundedEvents(points.get(index - 1), points.get(index),
+                    cancellation, work::charge, owner, work.index)) return false;
+        }
+        return true;
+    }
 
     public record Result(String detector, int profileCount, List<LegacyAlternative> alternatives,
             List<Seed> seeds, Batch batch, List<LegacyBAssessor.AssessedCandidate> assessments,
@@ -203,10 +234,13 @@ public final class LegacyBProductionRunner {
             var sectionQualities = new ArrayList<SectionQuality>();
             var engine = new ProbabilisticTraceEngine(input.fieldName());
             var image = ImageCostField.fromEvidence(input.evidence(), input.fieldName());
+            var authorityWork = new AuthorityWork();
             var batch = new LegacyBPipeline(deadline).refine(seeds, sections, (section, remaining, probe) -> {
                 var reference = new LegacyBReferenceFactory().prepare(section, input.request(), input.evidence(),
                         input.network(), remaining, probe);
                 var nativeRun = engine.traceRefinedWithUsage(reference, input.network(), probe, resultOwner);
+                long authorityStart = authorityWork.used;
+                boolean authorityLimited = false;
                 try {
                     var eligible = new LinkedHashSet<String>();
                     for (var hypothesis : nativeRun.value().result().hypotheses()) {
@@ -214,7 +248,7 @@ public final class LegacyBProductionRunner {
                         var mapping = Map.of(section.originalRange().firstIndex(), 0,
                                 section.originalRange().lastIndex(), hypothesis.points().size() - 1);
                         var identities = identities(input, section.id() + "/" + hypothesis.id(), hypothesis.points(), mapping);
-                        var incidents = incidents(input, hypothesis.points(), mapping, identities);
+                        var incidents = incidents(input, hypothesis.points(), mapping, identities, cancellation);
                         var protectedPoints = Map.of(0, section.reference().get(0), hypothesis.points().size() - 1,
                                 section.reference().get(section.reference().size() - 1));
                         var quality = new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request(
@@ -224,23 +258,40 @@ public final class LegacyBProductionRunner {
                                 nativeRun.value().result().truncated(), false).withSharedContacts(incidents.contacts()), cancellation);
                         boolean usable = quality.disposition() != FinalGeometryEvaluator.Disposition.HARD_BLOCKED
                                 && quality.directlySupportedLengthMeters() > 0;
-                        var row = new SectionQuality(section.id(), hypothesis.id(), quality, usable);
+                        Optional<Boolean> authority = Optional.empty();
+                        if (usable) {
+                            try {
+                                authority = Optional.of(insideEditAuthority(input, hypothesis.points(), cancellation,
+                                        resultOwner, authorityWork));
+                                usable = authority.orElseThrow();
+                            } catch (AuthorityWorkLimit | AttemptMemoryLedger.ResourceLimitException limit) {
+                                usable = false;
+                                authorityLimited = true;
+                            }
+                        }
+                        var row = new SectionQuality(section.id(), hypothesis.id(), quality, usable, authority);
                         own(resultOwner, row, 256L + 64L * quality.findings().size()); sectionQualities.add(row);
                         if (usable) eligible.add(hypothesis.id());
+                        if (authorityLimited) break;
                     }
                     nativeRun.owner().transferTo(resultOwner);
-                    return new SectionExecution(nativeRun.value(), Optional.of(reference), eligible);
+                    return new SectionExecution(nativeRun.value(), Optional.of(reference), eligible,
+                            authorityWork.used - authorityStart, authorityLimited);
                 } finally { nativeRun.owner().close(); }
             }, available, cancellation);
             var assessments = new ArrayList<LegacyBAssessor.AssessedCandidate>();
             for (var candidate : batch.candidates()) {
                 cancellation.checkpoint();
                 var ids = identities(input, candidate.id(), candidate.points(), candidate.originalToVertex());
-                var incidents = incidents(input, candidate.points(), candidate.originalToVertex(), ids);
+                var incidents = incidents(input, candidate.points(), candidate.originalToVertex(), ids, cancellation);
                 var context = new LegacyBAssessor.AssessmentContext(input.request(), input.network(), input.evidence(),
                         input.fieldName(), incidents.geometry(), incidents.contacts());
-                assessments.addAll(new LegacyBAssessor().assess(new Batch(List.of(candidate), batch.sections(),
-                        batch.usage(), batch.truncated(), batch.omittedParents()), context, cancellation));
+                var assessed = new LegacyBAssessor().assess(new Batch(List.of(candidate), batch.sections(),
+                        batch.usage(), batch.truncated(), batch.omittedParents()), context, cancellation);
+                boolean noSignalFallback = candidate.sections().stream().noneMatch(section -> section.source() == Source.B)
+                        && alternatives.stream().filter(parent -> parent.id().equals(candidate.parentSeedId()))
+                                .findFirst().orElseThrow().evidence().supportedProfiles() == 0;
+                for (var row : assessed) assessments.add(noSignalFallback ? blockNoSignalFallback(row) : row);
             }
             var originalMapping = new TreeMap<Integer,Integer>();
             var originalProtected = new TreeMap<Integer,MetricPoint>();
@@ -249,7 +300,7 @@ public final class LegacyBProductionRunner {
                 if (fact.fixed()) originalProtected.put(fact.sourceIndex(), input.originalMetric().get(fact.sourceIndex()));
             }
             var originalIds = identities(input, "original", input.originalMetric(), originalMapping);
-            var originalIncidents = incidents(input, input.originalMetric(), originalMapping, originalIds);
+            var originalIncidents = incidents(input, input.originalMetric(), originalMapping, originalIds, cancellation);
             var originalQuality = new FinalGeometryEvaluator().evaluate(new FinalGeometryEvaluator.Request("original",
                     input.originalMetric(), originalIds, image, input.evidence().resolution().effectivePitchMeters(),
                     originalProtected, originalIncidents.geometry(), false, false, false, false)
@@ -266,8 +317,22 @@ public final class LegacyBProductionRunner {
 
     private record Incidents(List<List<MetricPoint>> geometry, Map<Integer,Set<ExistingWayNodeOccurrence>> contacts) { }
 
+    /** Zero native support is an admission failure, not an invitation to confirm empty imagery. */
+    private static LegacyBAssessor.AssessedCandidate blockNoSignalFallback(LegacyBAssessor.AssessedCandidate row) {
+        var quality = row.quality();
+        var findings = new ArrayList<>(quality.findings());
+        findings.removeIf(finding -> finding.code() == FinalGeometryEvaluator.FindingCode.INSUFFICIENT_DIRECT_SUPPORT);
+        findings.add(new FinalGeometryEvaluator.Finding(FinalGeometryEvaluator.FindingCode.INSUFFICIENT_DIRECT_SUPPORT,
+                FinalGeometryEvaluator.Severity.HARD_BLOCK, 0, row.candidate().points().size() - 1, 0));
+        var blocked = new FinalGeometryEvaluator.Result(quality.id(), FinalGeometryEvaluator.Disposition.HARD_BLOCKED,
+                findings, quality.totalLengthMeters(), quality.directlySupportedLengthMeters(),
+                quality.worstUnsupportedSpanMeters(), quality.meanImageCenterCost(), quality.bendPreservingRoughness());
+        return new LegacyBAssessor.AssessedCandidate(row.candidate(), row.pointIds(), row.assignments(), blocked,
+                row.sections(), row.directlySupportedLengthMeters());
+    }
+
     private static Incidents incidents(Input input, List<MetricPoint> points, Map<Integer,Integer> mapping,
-            List<FinalRoutePointId> identities) {
+            List<FinalRoutePointId> identities, CancellationProbe cancellation) {
         var selected = (DetachedWay) input.network().primitives().get(input.request().selectedWayKey());
         var positions = new HashMap<PrimitiveKey,MetricPoint>();
         var identityByNode = new HashMap<PrimitiveKey,ExistingWayNodeOccurrence>();
@@ -280,15 +345,32 @@ public final class LegacyBProductionRunner {
         for (var primitive : input.network().primitives().values().stream()
                 .sorted(Comparator.comparing(value -> value.key().toString())).toList()) {
             if (!(primitive instanceof DetachedWay way) || way.deleted() || way.key().equals(selected.key())) continue;
-            var line = new ArrayList<MetricPoint>(); var shared = new LinkedHashSet<ExistingWayNodeOccurrence>();
+            var nodes = new ArrayList<DetachedNode>();
             for (var key : way.nodeKeys()) {
+                cancellation.checkpoint();
                 if (!(input.network().primitives().get(key) instanceof DetachedNode node) || node.deleted())
                     throw new IllegalArgumentException("Captured incident geometry is incomplete");
-                line.add(positions.getOrDefault(key, input.evidence().coordinateFrame().toMetric(node.coordinate())));
-                if (identityByNode.containsKey(key)) shared.add(identityByNode.get(key));
+                nodes.add(node);
             }
-            if (line.size() >= 2) {
-                int index = geometry.size(); geometry.add(List.copyOf(line));
+            var frame = input.evidence().coordinateFrame();
+            for (int edge = 1; edge < nodes.size(); edge++) {
+                cancellation.checkpoint();
+                var first = nodes.get(edge - 1); var second = nodes.get(edge);
+                var start = positions.containsKey(first.key()) ? frame.toGeographic(positions.get(first.key()))
+                        : first.coordinate();
+                var end = positions.containsKey(second.key()) ? frame.toGeographic(positions.get(second.key()))
+                        : second.coordinate();
+                var clipped = CertifiedContextSegmentClipper.clip(start, end, frame);
+                if (clipped.isEmpty()) continue;
+                var segment = clipped.orElseThrow();
+                var shared = new LinkedHashSet<ExistingWayNodeOccurrence>();
+                if (segment.originalStart() && identityByNode.containsKey(first.key())) shared.add(identityByNode.get(first.key()));
+                if (segment.originalEnd() && identityByNode.containsKey(second.key())) shared.add(identityByNode.get(second.key()));
+                var metricStart = segment.originalStart() && positions.containsKey(first.key())
+                        ? positions.get(first.key()) : segment.start();
+                var metricEnd = segment.originalEnd() && positions.containsKey(second.key())
+                        ? positions.get(second.key()) : segment.end();
+                int index = geometry.size(); geometry.add(List.of(metricStart, metricEnd));
                 if (!shared.isEmpty()) contacts.put(index, Set.copyOf(shared));
             }
         }

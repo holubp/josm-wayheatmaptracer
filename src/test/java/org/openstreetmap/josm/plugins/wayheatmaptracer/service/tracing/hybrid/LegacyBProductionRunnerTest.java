@@ -19,6 +19,36 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    @Test void contextualCrossingWithRemoteEndpointsIsCheckedWithoutProjectingOutsideCertifiedDomain() {
+        var fixture = fixture(true, true, Double.POSITIVE_INFINITY, true, 2000);
+        var before = fixture.input().network().canonicalHash();
+        try (var root = AttemptMemoryLedger.production().rootOwner()) {
+            var run = assertDoesNotThrow(() -> new LegacyBProductionRunner().runVisible(
+                    fixture.input(), fixture.visible(), CancellationProbe.NONE, root,
+                    LegacyBPipeline.Deadline.production()));
+            assertFalse(run.value().assessments().isEmpty());
+            assertTrue(run.value().assessments().stream().allMatch(assessment ->
+                    assessment.quality().has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING)),
+                    "Clipping remote context must retain the real crossing inside the certified domain");
+            assertEquals(before, fixture.input().network().canonicalHash());
+        }
+    }
+
+    @Test void blankSourceCannotBecomeAnApplicableLegacyOnlyFallback() {
+        var fixture = fixture(false, false, Double.POSITIVE_INFINITY, false);
+        try (var root = AttemptMemoryLedger.production().rootOwner()) {
+            var run = new LegacyBProductionRunner().runVisible(fixture.input(), fixture.visible(),
+                    CancellationProbe.NONE, root, LegacyBPipeline.Deadline.production());
+            assertTrue(run.value().alternatives().stream()
+                    .allMatch(alternative -> alternative.evidence().supportedProfiles() == 0));
+            assertTrue(run.value().batch().sections().stream().filter(section -> section.execution().isPresent())
+                    .allMatch(section -> section.execution().orElseThrow().eligibleHypothesisIds().isEmpty()));
+            assertTrue(run.value().assessments().stream().allMatch(assessment ->
+                    assessment.quality().disposition() == FinalGeometryEvaluator.Disposition.HARD_BLOCKED),
+                    "A zero-signal fallback must not be confirmable as an applicable slide");
+        }
+    }
+
     @Test void actualVisibleLegacyThenBIntervenesBetweenCoarseNativeAnchors() {
         var fixture = fixture(false, false);
         var ledger = AttemptMemoryLedger.production();
@@ -81,6 +111,39 @@ class LegacyBProductionRunnerTest {
         }
     }
 
+    @Test void expandedImageCoverageDoesNotAuthorizeBToLeaveOriginalEditRegion() {
+        var fixture = fixture(false, false, 3.6);
+        var ledger = AttemptMemoryLedger.production();
+        try (var root = ledger.rootOwner()) {
+            var run = new LegacyBProductionRunner().runVisible(fixture.input(), fixture.visible(),
+                    CancellationProbe.NONE, root, LegacyBPipeline.Deadline.production());
+            var authority = fixture.input().network().closure().editRegion();
+            assertFalse(run.value().seeds().isEmpty());
+            assertTrue(contained(authority, run.value().seeds().get(0).points()),
+                    "The original Legacy alternative must remain inside actual authority");
+            boolean outsideNativeOutput = false;
+            for (var section : run.value().batch().sections()) {
+                if (section.execution().isEmpty()) continue;
+                var execution = section.execution().orElseThrow();
+                for (var hypothesis : execution.run().result().hypotheses()) {
+                    if (!contained(authority, hypothesis.points())) {
+                        outsideNativeOutput = true;
+                        assertFalse(execution.eligibleHypothesisIds().contains(hypothesis.id()),
+                                "Usable imagery outside the edit region cannot authorize a local refinement");
+                    }
+                }
+            }
+            assertTrue(outsideNativeOutput, "The counterexample must actually exercise the authority boundary");
+            assertTrue(run.value().batch().candidates().stream().allMatch(candidate -> contained(authority, candidate.points())));
+        }
+    }
+
+    private static boolean contained(MetricRegion region, List<MetricPoint> points) {
+        for (int i = 1; i < points.size(); i++)
+            if (!region.containsSegment(points.get(i - 1), points.get(i))) return false;
+        return true;
+    }
+
     @Test void frozenGeometryIsOriginalAndBDoesNoInference() {
         var fixture = fixture(false, false);
         var old = fixture.input();
@@ -138,6 +201,19 @@ class LegacyBProductionRunnerTest {
     record Fixture(LegacyBProductionRunner.Input input, LegacyVisibleProfileSampler.Input visible) { }
 
     static Fixture fixture(boolean fixedMiddle, boolean crossing) {
+        return fixture(fixedMiddle, crossing, Double.POSITIVE_INFINITY);
+    }
+
+    private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth) {
+        return fixture(fixedMiddle, crossing, authorizedHalfWidth, true);
+    }
+
+    private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal) {
+        return fixture(fixedMiddle, crossing, authorizedHalfWidth, signal, 10);
+    }
+
+    private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal,
+            double contextExtent) {
         var projection = Projections.getProjectionByCode("EPSG:3857");
         var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
                 new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
@@ -152,7 +228,7 @@ class LegacyBProductionRunnerTest {
         values.put(way, new DetachedWay(way, keys, Map.of("highway", "path"), false, false));
         if (crossing) {
             for (int i = 0; i < 2; i++) {
-                var ll = projection.eastNorth2latlon(new EastNorth(20, i == 0 ? -10 : 10));
+                var ll = projection.eastNorth2latlon(new EastNorth(20, i == 0 ? -contextExtent : contextExtent));
                 values.put(nodeKey(4 + i), new DetachedNode(nodeKey(4 + i),
                         new GeographicPoint(ll.lat(), ll.lon()), Map.of(), false, false));
             }
@@ -166,7 +242,7 @@ class LegacyBProductionRunnerTest {
         for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
             double east = -20 + x / 6.0, north = 20 - y / 6.0;
             double ridge = fixedMiddle ? 0 : 3 + Math.sin(Math.PI * Math.max(0, Math.min(80, east)) / 80);
-            int value = (int) Math.round(255 * (.02 + .90 * Math.exp(-Math.pow((north - ridge) / .65, 2) / 2)));
+            int value = signal ? (int) Math.round(255 * (.02 + .90 * Math.exp(-Math.pow((north - ridge) / .65, 2) / 2))) : 0;
             pixels[y * width + x] = 0xFF000000 | value << 16 | value << 8 | value;
             scalar[y * width + x] = value / 255.0;
         }
@@ -190,9 +266,13 @@ class LegacyBProductionRunnerTest {
                 footprint, footprint, Map.of("hot", new ScalarEvidenceField(width, height, scalar, valid, lineage)),
                 "synthetic-runner");
         var protectedKeys = fixedMiddle ? Set.copyOf(keys) : Set.of(keys.get(0), keys.get(2));
+        var editRegion = Double.isFinite(authorizedHalfWidth)
+                ? new MetricRegion(List.of(List.of(new MetricPoint(-20, -authorizedHalfWidth),
+                        new MetricPoint(100, -authorizedHalfWidth), new MetricPoint(100, authorizedHalfWidth),
+                        new MetricPoint(-20, authorizedHalfWidth)))) : footprint;
         var closure = new ClosureDescriptor(ClosureDescriptor.Scope.SELECTION_SAFETY, "runner-test", values.keySet(),
                 Set.of(way), Set.of(), protectedKeys, Set.of(), Map.of(way, List.of(new OccurrenceRange(0, 2))),
-                List.of(), footprint, footprint, true, true, true, true);
+                List.of(), footprint, editRegion, true, true, true, true);
         var network = new NetworkSnapshot("runner-network", SnapshotRole.CAPTURED_BEFORE, "synthetic", 1,
                 closure, values, V022SnapshotFixtures.closedWorldReferrerWatches(values));
         var original = keys.stream().map(key -> frame.toMetric(((DetachedNode) values.get(key)).coordinate())).toList();

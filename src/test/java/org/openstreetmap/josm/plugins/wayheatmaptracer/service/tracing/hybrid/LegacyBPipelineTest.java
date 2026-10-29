@@ -65,6 +65,27 @@ class LegacyBPipelineTest {
         assertEquals(Status.PARTIAL,batch.status());
     }
 
+    @Test void authorityProofLimitKeepsProvedRefinementAndStopsLaterNativeWork() {
+        var seed = seed("legacy-proof-limit");
+        var calls = new ArrayList<Integer>();
+        var batch = pipeline().refine(List.of(seed), sections(seed), (section, remaining, probe) -> {
+            calls.add(section.originalRange().firstIndex());
+            var nativeRun = run(section, 1, 7);
+            return new SectionExecution(nativeRun.run(), nativeRun.reference(), nativeRun.eligibleHypothesisIds(), 12, true);
+        }, BUDGET, CancellationProbe.NONE);
+        assertEquals(List.of(0), calls);
+        assertEquals(Outcome.B_REFINED, batch.sections().get(0).outcome());
+        assertEquals(TraceHypothesisSet.Status.COMPLETE,
+                batch.sections().get(0).execution().orElseThrow().run().result().status(),
+                "A later authority-proof limit must not rewrite the native B result");
+        assertEquals(List.of(Outcome.B_REFINED, Outcome.UNATTEMPTED_BUDGET, Outcome.UNATTEMPTED_BUDGET),
+                batch.sections().stream().map(SectionOutcome::outcome).toList());
+        assertEquals(7, batch.usage().transitions());
+        assertTrue(batch.truncated());
+        assertEquals(Status.RESOURCE_LIMIT, batch.status());
+        assertEquals(2, batch.candidates().size(), "Keep Legacy and the already-proved refinement");
+    }
+
     @Test void allFailuresAndFrozenSectionsKeepOnlyUnchangedLegacyAndActualWork() {
         var seed=seed("legacy-0");
         var sections=new LegacyBReferenceFactory().partition(seed,new OccurrenceRange(0,3),
