@@ -50,6 +50,15 @@ sh ./gradlew test --tests '*LegacyBAssessorTest' --tests '*LegacyBPipelineTest' 
 
 Remaining implementation:
 
+Frozen visible profile extraction is now committed394ee96 with39native-parity/
+neighbor tests passing. Prepared managed mosaic extraction subsequently passed41
+tests, including exact native projection and strict five-color aggregation; live
+source acquisition/attachment remains open. Public CI40788456764 ran2271tests with
+4failures: three stale default/experiment test expectations were repaired and21
+targeted tests passed; the new-Hybrid generic factory case remains a Task6 gate.
+No full-suite green or new release is claimed. Aggregate reference follows actual
+native mosaic iteration order, which the frozen codec must preserve explicitly.
+
 1. Finish the actual frozen Legacy source/profile bridge and freeze safe intervals. Preserve
    visible RenderedHeatmapSampler and managed TileHeatmapSampler inputs and their
    source-specific normalization. Corridor scalar sampling is not an established

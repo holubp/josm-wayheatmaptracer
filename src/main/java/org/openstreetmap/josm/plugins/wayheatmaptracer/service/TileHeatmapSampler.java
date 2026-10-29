@@ -13,7 +13,9 @@ import java.util.Map;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projection;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.InferenceMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CancellationToken;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot;
@@ -24,6 +26,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileCachePolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchResult;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TilePurpose;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileRequest;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginDirectories;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
@@ -168,6 +171,32 @@ public final class TileHeatmapSampler {
         );
     }
 
+    /** Frozen-projection Legacy sampling with explicit scalar mode and cooperative cancellation. */
+    public List<RenderedHeatmapSampler.CrossSectionProfile> sampleProfiles(
+        TileMosaic mosaic,
+        List<EastNorth> sourcePolyline,
+        String detectorMode,
+        IntensitySamplingMode intensityMode,
+        Projection projection,
+        CancellationProbe cancellation
+    ) {
+        java.util.Objects.requireNonNull(intensityMode, "intensityMode");
+        java.util.Objects.requireNonNull(projection, "projection");
+        java.util.Objects.requireNonNull(cancellation, "cancellation");
+        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
+                Math.max(4.0, mosaic.parameters().sampleStepMeters()));
+        if (dense.size() < 2) return List.of();
+        List<Point2D.Double> local = localPolyline(mosaic, dense, projection);
+        int halfWidthPx = Math.max(1, (int) Math.round(
+                mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int stepPx = Math.max(1, (int) Math.round(
+                mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        return new RenderedHeatmapSampler().sampleProfilesOnAnchors(mosaic.image(),
+                ProfileSamplingAnchor.pair(dense, local, projection), halfWidthPx, stepPx,
+                detectorMode, REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), intensityMode,
+                mosaicProjector(mosaic, projection), cancellation);
+    }
+
     /**
      * Samples L0/L1/L2 scalar profiles from one already prepared managed mosaic.
      *
@@ -238,6 +267,34 @@ public final class TileHeatmapSampler {
         );
     }
 
+    /** Samples native all-color aggregation using captured projection and cooperative cancellation. */
+    public List<RenderedHeatmapSampler.CrossSectionProfile> sampleAggregatedProfiles(
+        TileMosaicSet mosaics,
+        int zoom,
+        List<EastNorth> sourcePolyline,
+        Projection projection,
+        CancellationProbe cancellation
+    ) {
+        java.util.Objects.requireNonNull(projection, "projection");
+        java.util.Objects.requireNonNull(cancellation, "cancellation");
+        AggregateSourceFrame frame = aggregateSourceFrame(mosaics, zoom);
+        if (frame == null) return List.of();
+        TileMosaic reference = frame.reference();
+        Map<String, BufferedImage> images = frame.images();
+        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
+                Math.max(4.0, reference.parameters().sampleStepMeters()));
+        if (dense.size() < 2) return List.of();
+        List<Point2D.Double> local = localPolyline(reference, dense, projection);
+        int halfWidthPx = Math.max(1, (int) Math.round(
+                reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int stepPx = Math.max(1, (int) Math.round(
+                reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        return new RenderedHeatmapSampler().sampleProfilesOnAggregatedAnchors(images,
+                ProfileSamplingAnchor.pair(dense, local, projection), halfWidthPx, stepPx,
+                REFERENCE_RASTER_SCALE, reference.virtualRasterScale(), mosaicProjector(reference, projection),
+                cancellation);
+    }
+
     /**
      * Samples a Gaussian pyramid after native semantic mappings have been aggregated to scalar L0.
      *
@@ -279,6 +336,12 @@ public final class TileHeatmapSampler {
         return local;
     }
 
+    private List<Point2D.Double> localPolyline(TileMosaic mosaic, List<EastNorth> dense, Projection projection) {
+        List<Point2D.Double> local = new ArrayList<>(dense.size());
+        for (EastNorth point : dense) local.add(toMosaicSample(mosaic, point, projection));
+        return local;
+    }
+
     /**
      * Converts projected geometry to the virtual coordinate of a decoded image sample.
      *
@@ -291,6 +354,14 @@ public final class TileHeatmapSampler {
      */
     private Point2D.Double toMosaicSample(TileMosaic mosaic, EastNorth point) {
         Point2D.Double world = toWorldPixel(point, mosaic.zoom());
+        return new Point2D.Double(
+            (world.x - mosaic.originWorldPxX() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale(),
+            (world.y - mosaic.originWorldPxY() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale()
+        );
+    }
+
+    private Point2D.Double toMosaicSample(TileMosaic mosaic, EastNorth point, Projection projection) {
+        Point2D.Double world = toWorldPixel(point, mosaic.zoom(), projection);
         return new Point2D.Double(
             (world.x - mosaic.originWorldPxX() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale(),
             (world.y - mosaic.originWorldPxY() - IMAGE_SAMPLE_CENTER_WORLD_PX) * mosaic.virtualRasterScale()
@@ -340,8 +411,30 @@ public final class TileHeatmapSampler {
             .toList();
     }
 
+    /** Projects managed mosaic positions using the captured rather than active JOSM projection. */
+    public List<EastNorth> projectCandidate(TileMosaic mosaic, List<Point2D.Double> localPoints,
+            Projection projection) {
+        return projectCandidate(mosaic.zoom(), mosaic.originWorldPxX(), mosaic.originWorldPxY(),
+                mosaic.virtualRasterScale(), localPoints, projection);
+    }
+
+    /** Projects captured numerical mosaic geometry without allocating or reading image buffers. */
+    public List<EastNorth> projectCandidate(int zoom, double originWorldPxX, double originWorldPxY,
+            double virtualRasterScale, List<Point2D.Double> localPoints, Projection projection) {
+        java.util.Objects.requireNonNull(projection, "projection");
+        return localPoints.stream()
+            .map(point -> toEastNorth(point.x / virtualRasterScale + originWorldPxX + IMAGE_SAMPLE_CENTER_WORLD_PX,
+                    point.y / virtualRasterScale + originWorldPxY + IMAGE_SAMPLE_CENTER_WORLD_PX, zoom, projection))
+            .toList();
+    }
+
     private RenderedHeatmapSampler.RasterCoordinateProjector mosaicProjector(TileMosaic mosaic) {
         return (rasterX, rasterY) -> projectMosaicPoint(mosaic, rasterX, rasterY);
+    }
+
+    private RenderedHeatmapSampler.RasterCoordinateProjector mosaicProjector(TileMosaic mosaic,
+            Projection projection) {
+        return (rasterX, rasterY) -> projectMosaicPoint(mosaic, rasterX, rasterY, projection);
     }
 
     private EastNorth projectMosaicPoint(TileMosaic mosaic, double rasterX, double rasterY) {
@@ -349,6 +442,14 @@ public final class TileHeatmapSampler {
             rasterX / mosaic.virtualRasterScale() + mosaic.originWorldPxX() + IMAGE_SAMPLE_CENTER_WORLD_PX,
             rasterY / mosaic.virtualRasterScale() + mosaic.originWorldPxY() + IMAGE_SAMPLE_CENTER_WORLD_PX,
             mosaic.zoom());
+    }
+
+    private EastNorth projectMosaicPoint(TileMosaic mosaic, double rasterX, double rasterY,
+            Projection projection) {
+        return toEastNorth(
+            rasterX / mosaic.virtualRasterScale() + mosaic.originWorldPxX() + IMAGE_SAMPLE_CENTER_WORLD_PX,
+            rasterY / mosaic.virtualRasterScale() + mosaic.originWorldPxY() + IMAGE_SAMPLE_CENTER_WORLD_PX,
+            mosaic.zoom(), projection);
     }
 
     private TileMosaic loadMosaic(
@@ -584,7 +685,11 @@ public final class TileHeatmapSampler {
     }
 
     private Point2D.Double toWorldPixel(EastNorth eastNorth, int zoom) {
-        LatLon latLon = ProjectionRegistry.getProjection().eastNorth2latlon(eastNorth);
+        return toWorldPixel(eastNorth, zoom, ProjectionRegistry.getProjection());
+    }
+
+    private Point2D.Double toWorldPixel(EastNorth eastNorth, int zoom, Projection projection) {
+        LatLon latLon = projection.eastNorth2latlon(eastNorth);
         double lat = Math.max(-85.05112878, Math.min(85.05112878, latLon.lat()));
         double lon = latLon.lon();
         double scale = TILE_SIZE * Math.pow(2.0, zoom);
@@ -595,11 +700,15 @@ public final class TileHeatmapSampler {
     }
 
     private EastNorth toEastNorth(double worldX, double worldY, int zoom) {
+        return toEastNorth(worldX, worldY, zoom, ProjectionRegistry.getProjection());
+    }
+
+    private EastNorth toEastNorth(double worldX, double worldY, int zoom, Projection projection) {
         double scale = TILE_SIZE * Math.pow(2.0, zoom);
         double lon = worldX / scale * 360.0 - 180.0;
         double mercator = Math.PI * (1.0 - 2.0 * worldY / scale);
         double lat = Math.toDegrees(Math.atan(Math.sinh(mercator)));
-        return ProjectionRegistry.getProjection().latlon2eastNorth(new LatLon(lat, lon));
+        return projection.latlon2eastNorth(new LatLon(lat, lon));
     }
 
     private BoundsPx boundsFor(List<Point2D.Double> points, double margin) {

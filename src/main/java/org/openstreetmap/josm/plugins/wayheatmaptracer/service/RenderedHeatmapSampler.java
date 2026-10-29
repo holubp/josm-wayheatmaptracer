@@ -787,14 +787,30 @@ public final class RenderedHeatmapSampler {
         double sourceCoordinateScale,
         RasterCoordinateProjector projectedCoordinateProjector
     ) {
+        return sampleProfilesOnAggregatedAnchors(rastersByColor, anchors, halfWidthPx, stepPx,
+                rasterScale, sourceCoordinateScale, projectedCoordinateProjector, CancellationProbe.NONE);
+    }
+
+    List<CrossSectionProfile> sampleProfilesOnAggregatedAnchors(
+        java.util.Map<String, BufferedImage> rastersByColor,
+        List<ProfileSamplingAnchor> anchors,
+        int halfWidthPx,
+        int stepPx,
+        double rasterScale,
+        double sourceCoordinateScale,
+        RasterCoordinateProjector projectedCoordinateProjector,
+        CancellationProbe cancellation
+    ) {
         if (anchors.size() < 2 || rastersByColor.isEmpty()) {
             return Collections.emptyList();
         }
+        Objects.requireNonNull(cancellation, "cancellation");
         double coordinateScale = sourceCoordinateScale > 0.0 && Double.isFinite(sourceCoordinateScale)
             ? sourceCoordinateScale
             : 1.0;
         List<CrossSectionProfile> profiles = new ArrayList<>();
         for (int i = 0; i < anchors.size(); i++) {
+            cancellation.checkpoint();
             ProfileSamplingAnchor samplingAnchor = anchors.get(i);
             Point2D.Double current = samplingAnchor.rasterCoordinate();
             Point2D.Double prevScreen = anchors.get(Math.max(0, i - 1)).rasterCoordinate();

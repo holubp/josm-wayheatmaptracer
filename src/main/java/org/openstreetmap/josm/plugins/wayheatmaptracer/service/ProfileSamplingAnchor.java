@@ -8,6 +8,7 @@ import java.util.Objects;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.ProjectionRegistry;
+import org.openstreetmap.josm.data.projection.Projection;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 
 /**
@@ -64,8 +65,18 @@ public record ProfileSamplingAnchor(
         List<EastNorth> sourceCoordinates,
         List<Point2D.Double> rasterCoordinates
     ) {
+        return pair(sourceCoordinates, rasterCoordinates, ProjectionRegistry.getProjection());
+    }
+
+    /** Pairs captured projected coordinates without consulting the mutable active projection. */
+    public static List<ProfileSamplingAnchor> pair(
+        List<EastNorth> sourceCoordinates,
+        List<Point2D.Double> rasterCoordinates,
+        Projection projection
+    ) {
         Objects.requireNonNull(sourceCoordinates, "sourceCoordinates");
         Objects.requireNonNull(rasterCoordinates, "rasterCoordinates");
+        Objects.requireNonNull(projection, "projection");
         if (sourceCoordinates.size() != rasterCoordinates.size()) {
             throw new IllegalArgumentException("Source and raster anchor counts must match.");
         }
@@ -75,7 +86,7 @@ public record ProfileSamplingAnchor(
         for (int index = 0; index < sourceCoordinates.size(); index++) {
             EastNorth source = Objects.requireNonNull(sourceCoordinates.get(index), "source coordinate");
             Point2D.Double raster = Objects.requireNonNull(rasterCoordinates.get(index), "raster coordinate");
-            LatLon current = ProjectionRegistry.getProjection().eastNorth2latlon(source);
+            LatLon current = projection.eastNorth2latlon(source);
             if (previous != null) {
                 double step = previous.greatCircleDistance(current);
                 if (!Double.isFinite(step) || step < 0.0) {
