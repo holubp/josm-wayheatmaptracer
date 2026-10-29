@@ -1620,8 +1620,18 @@ class V022ModernSingleWayEditPlanAdapterTest {
         UndoRedoHandler.getInstance().clean();
     }
 
+    @Test
+    void sequentialHybridRefusesScalarOnlyExecutionWithoutItsCapturedLegacySource() {
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> compute(fixture(), TrackerMode.LEGACY_THEN_B));
+        assertTrue(failure.getMessage().contains("captured Legacy source policy"));
+    }
+
+    // The composite's actual Legacy-source route and exact Apply/Undo/Redo are exercised
+    // by OrdinaryModernAttemptAssemblyTest; a scalar-only fixture cannot execute Legacy.
     @ParameterizedTest
-    @EnumSource(value = TrackerMode.class, mode = EnumSource.Mode.EXCLUDE, names = {"LEGACY_V02"})
+    @EnumSource(value = TrackerMode.class, mode = EnumSource.Mode.EXCLUDE,
+            names = {"LEGACY_V02", "LEGACY_THEN_B"})
     void t164RasterEvidenceProducesOneDeterministicDetachedPlanWithoutMutation(
             TrackerMode mode) throws Exception {
         Fixture fixture = fixture();

@@ -114,6 +114,9 @@ class OrdinaryModernAttemptAssemblyTest {
             assertNotNull(computed.legacyB());
             assertNull(computed.captured().raster());
             assertNotNull(computed.legacyB().managedSource());
+            assertEquals(config.heatmap().searchHalfWidthMeters(), computed.captured().searchRadiusMeters(),
+                    "The evidence halo must not widen the search or edit permission");
+            assertEquals(recovery.ordinaryRadiusMeters(), computed.captured().specification().permissions().ordinaryRadiusMeters());
             assertTrue(fetches.get() > 0);
             assertFalse(computed.legacyB().result().alternatives().isEmpty());
             assertFalse(computed.pipeline().routes().isEmpty());
@@ -234,6 +237,46 @@ class OrdinaryModernAttemptAssemblyTest {
                             archive.sourceIdentityHash(), archive.parameterHash());
                 assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
                         replay.routes().stream().map(route -> route.hypothesis().points()).toList());
+                int refined = java.util.stream.IntStream.range(0, computed.pipeline().routes().size())
+                        .filter(index -> computed.pipeline().routes().get(index).hypothesis().diagnostics()
+                                .getOrDefault("hasBRefinement", 0.0) == 1.0
+                            && plans.get(index).availability() == org.openstreetmap.josm.plugins.wayheatmaptracer
+                                .service.tracing.ModernSingleWayEditPlanAdapter.ApplyAvailability.PLAN_AVAILABLE)
+                        .findFirst().orElseThrow(() -> new AssertionError(
+                                "A genuine B refinement must have an exact usable plan: " + plans));
+                var exact = plans.get(refined).plan().orElseThrow();
+                assertEquals(exact.canonicalHash(), adapter.adapt(computed, refined).canonicalHash());
+                assertEquals(fixture.selection().segmentNodes(), fixture.selection().way().getNodes(),
+                        "Legacy and B must not mutate the dataset before Apply");
+                assertEquals(2, fixture.dataSet().getNodes().size());
+                assertTrue(fixture.dataSet().allPrimitives().stream().noneMatch(primitive -> primitive.isModified()));
+                SwingUtilities.invokeAndWait(() -> {
+                    var history = org.openstreetmap.josm.data.UndoRedoHandler.getInstance();
+                    history.clean();
+                    try {
+                        var capture = org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                                .NetworkSnapshotCapture.captureBound(fixture.dataSet(), computed.captured().specification());
+                        var validator = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot
+                                .LiveNetworkSnapshotValidator(capture, exact, () -> exact.before().sourceGeneration());
+                        var command = new org.openstreetmap.josm.plugins.wayheatmaptracer.util
+                                .ApplyAlignmentEditPlanCommand(fixture.dataSet(), exact, validator, "Apply Hybrid test");
+                        history.add(command);
+                        assertEquals(1, history.getUndoCommands().size());
+                        var actual = fixture.selection().way().getNodes().stream().map(node ->
+                                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint(
+                                        node.lat(), node.lon())).toList();
+                        assertEquals(exact.finalPreviewWays().get(exact.selectedWayKey()), actual);
+                        history.undo();
+                        assertEquals(fixture.selection().segmentNodes(), fixture.selection().way().getNodes());
+                        assertEquals(2, fixture.dataSet().getNodes().size());
+                        assertTrue(fixture.dataSet().allPrimitives().stream().noneMatch(primitive -> primitive.isModified()));
+                        history.redo();
+                        assertEquals(actual, fixture.selection().way().getNodes().stream().map(node ->
+                                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint(
+                                        node.lat(), node.lon())).toList());
+                        history.undo();
+                    } finally { history.clean(); }
+                });
             }
             if (routeCase.engine() == TrackerMode.PROBABILISTIC) {
                 assertTrue(computed.captured().cleanup().isDisabled());

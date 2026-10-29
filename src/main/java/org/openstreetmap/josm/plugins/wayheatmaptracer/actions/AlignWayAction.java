@@ -1522,6 +1522,15 @@ public class AlignWayAction extends JosmAction {
         buttons.add(disconnect);
         buttons.add(close);
         JPanel panel = modernReviewContent(quality, buttons);
+        var hybridSections = new org.openstreetmap.josm.plugins.wayheatmaptracer.ui.HybridSectionReviewPanel(overlay);
+        if (computed.legacyB() != null) {
+            java.awt.Component reviewScroll = ((BorderLayout) panel.getLayout()).getLayoutComponent(BorderLayout.CENTER);
+            JPanel reviewBody = new JPanel(new BorderLayout(0, 6));
+            reviewBody.add(reviewScroll, BorderLayout.CENTER);
+            reviewBody.add(hybridSections, BorderLayout.SOUTH);
+            panel.add(reviewBody, BorderLayout.CENTER);
+            panel.setPreferredSize(new Dimension(680, 435));
+        }
         panel.add(header, BorderLayout.NORTH);
         JDialog dialog = new JDialog(MainApplication.getMainFrame(),
                 tr("{0} Alignment Preview",
@@ -1586,6 +1595,15 @@ public class AlignWayAction extends JosmAction {
                 case REVIEW_REQUIRED -> CandidateAssessment.Disposition.REVIEW_REQUIRED;
                 case HARD_BLOCKED -> CandidateAssessment.Disposition.HARD_BLOCKED;
             }, false, PluginPreferences.isDebugEnabled(), projectedPreview);
+            if (run.legacyB() != null) {
+                String routeId = run.pipeline().routes().get(routeIndex).hypothesis().id();
+                var sectionAssessment = run.legacyB().result().assessments().stream()
+                        .filter(row -> row.candidate().id().equals(routeId)).findFirst().orElseThrow(() ->
+                                new IllegalArgumentException("Hybrid section report lost its selected route"));
+                hybridSections.setCandidate(sectionAssessment, candidate.finalPreviewPoints());
+            } else {
+                hybridSections.setCandidate(null, List.of());
+            }
             String availability = assessment[0] == null ? modernApplyPreflightMessage(preflight)
                     : modernApplyAvailabilityMessage(assessment[0], preflight);
             List<String> reasons = plan[0] == null

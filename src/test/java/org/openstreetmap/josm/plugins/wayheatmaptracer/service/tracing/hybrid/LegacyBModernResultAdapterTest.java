@@ -25,6 +25,9 @@ class LegacyBModernResultAdapterTest {
                 var original = executed.value().assessments().stream().filter(row ->
                         row.candidate().id().equals(route.hypothesis().id())).findFirst().orElseThrow();
                 assertEquals(original.candidate().points(), route.hypothesis().points());
+                assertEquals(route.hypothesis(), route.rawHypothesis(),
+                        "The assembled Hybrid output is the raw input to common final processing");
+                assertFalse(route.geometryChanged(), "No common cleanup changed the assembled Hybrid output");
                 assertEquals(original.pointIds(), route.pointIds());
                 assertEquals(original.assignments(), route.assignments());
                 assertEquals(original.quality(), route.quality());

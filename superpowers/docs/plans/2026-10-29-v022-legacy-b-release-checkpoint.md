@@ -36,8 +36,21 @@ authority. Standalone modern grids are unchanged. Empty-native-run export remain
 explicit and does not weaken the generic native work receipt contract.
 Offline frozen sampling cannot initialize or use acquisition transport. A prior
 opaque synthetic PNG was correctly rejected as a placeholder; its background now
-matches real transparent heatmap tiles. Section UI integration is underway and has
-not yet passed its new binding regression. Full CI and final review remain pending.
+matches real transparent heatmap tiles.
+
+Section report integration now binds the selected ordinary Hybrid route by identity,
+shows wrapped fallback/support rows and highlights copied slide-time final coordinates.
+Its row-selection/candidate-change regression passed. Common raw/final diagnostics
+now describe the assembled Hybrid output; Legacy parent geometry remains separately
+owned, and skipped common cleanup no longer claims a geometry change.
+The stronger actual ordinary test requires a B-refined PLAN_AVAILABLE (a Legacy-only
+fallback is insufficient), deterministic exact plans, zero pre-Apply dataset mutation,
+exact preview Apply, Undo restoring original nodes/modified flags, and exact Redo.
+All9focused tests passed in1m33s. The earlier broader120-test run passed119; its sole
+failure was a scalar-only fixture requesting the source-dependent composite. That
+fixture now tests explicit refusal and reserves its positive matrix for scalar-input
+engines; all5affected cases passed in1m32s. Actual Hybrid positive source/transaction
+coverage remains mandatory. Full CI, actual-dialog smoke and final review are pending.
 
 Worktree: `.worktrees/v022-legacy-b-release`; branch:
 `codex/v022-legacy-b-release`. The original `codex/v0.22.0-release` worktree at

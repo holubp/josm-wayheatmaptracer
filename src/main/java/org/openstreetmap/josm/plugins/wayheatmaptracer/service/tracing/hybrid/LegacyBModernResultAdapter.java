@@ -43,24 +43,23 @@ public final class LegacyBModernResultAdapter {
             var parent = result.alternatives().stream().filter(alternative ->
                     alternative.id().equals(candidate.parentSeedId())).findFirst().orElseThrow(() ->
                         new IllegalArgumentException("Hybrid preview lost its actual Legacy parent"));
-            var seed = parent.seed().orElseThrow(() ->
+            parent.seed().orElseThrow(() ->
                     new IllegalArgumentException("Rejected Legacy output cannot own an assembled preview"));
             var support = support(candidate.points(), candidate.originalToVertex(), input, image, cancellation);
-            var rawSupport = support(seed.points(), seed.originalToVertex(), input, image, cancellation);
             boolean refined = candidate.sections().stream().anyMatch(section -> section.source() == LegacyBPipeline.Source.B);
             Map<String, Double> diagnostics = Map.of("legacyNativeScore", parent.score(),
                     "legacyParentRank", (double) parent.nativeRank(), "hasBRefinement", refined ? 1.0 : 0.0);
-            var raw = new TraceHypothesis(candidate.id(), seed.id(), seed.points(),
-                    rawSupport, parent.score(), OptionalDouble.empty(), diagnostics);
             var finalHypothesis = new TraceHypothesis(candidate.id(), candidate.id(), candidate.points(),
                     support, parent.score(), OptionalDouble.empty(), diagnostics);
             var ownership = new LinkedHashMap<FinalRoutePointId, ObservationOwnership>();
             for (int vertex = 0; vertex < assessed.pointIds().size(); vertex++) {
                 ownership.put(assessed.pointIds().get(vertex), support.get(vertex));
             }
-            routes.add(new ModernTracePipeline.Route(raw, finalHypothesis, assessed.pointIds(),
+            // The engine output is the assembled Hybrid, not its Legacy constituent.
+            // Common cleanup is skipped, so raw and final common-pipeline geometry agree.
+            routes.add(new ModernTracePipeline.Route(finalHypothesis, finalHypothesis, assessed.pointIds(),
                     assessed.assignments(), ownership, assessed.quality(), ImageSupportedLocalCleanup.Status.SKIPPED,
-                    !candidate.points().equals(seed.points())));
+                    false));
             hypotheses.add(finalHypothesis);
         }
         long states = 0, transitions = 0;

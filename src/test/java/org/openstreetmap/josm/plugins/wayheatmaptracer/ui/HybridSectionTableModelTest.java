@@ -63,4 +63,28 @@ class HybridSectionTableModelTest {
         model.setCandidate(null);
         assertEquals(0,model.getRowCount());
     }
+
+    @Test void reviewPanelHighlightsStoredFinalRangeAndClearsItWhenCandidateChanges() throws Exception {
+        javax.swing.SwingUtilities.invokeAndWait(() -> {
+            var overlay = PreviewOverlay.getInstance();
+            var review = new HybridSectionReviewPanel(overlay);
+            var projected = new ArrayList<>(List.of(
+                    new org.openstreetmap.josm.data.coor.EastNorth(100, 200),
+                    new org.openstreetmap.josm.data.coor.EastNorth(110, 201),
+                    new org.openstreetmap.josm.data.coor.EastNorth(120, 202),
+                    new org.openstreetmap.josm.data.coor.EastNorth(130, 203)));
+            try {
+                review.setCandidate(candidate(true), projected);
+                projected.clear();
+                review.table().setRowSelectionInterval(1, 1);
+                assertEquals(List.of(new org.openstreetmap.josm.data.coor.EastNorth(110, 201),
+                        new org.openstreetmap.josm.data.coor.EastNorth(120, 202)), overlay.highlightedSection());
+                assertTrue(review.summaryText().contains("B refined 2 of 3"));
+                review.setCandidate(null, List.of());
+                assertTrue(overlay.highlightedSection().isEmpty());
+                assertEquals(0, review.table().getRowCount());
+                assertFalse(review.isVisible());
+            } finally { overlay.hide(); }
+        });
+    }
 }
