@@ -39,6 +39,7 @@ public final class FinalGeometryEvaluator {
         BRANCH_SWITCH,
         SUPPORT_MISMATCH,
         PREJUNCTION_CROSSING,
+        CONTEXT_PROOF_UNAVAILABLE,
         INDEPENDENT_CONTEXT_CONTACT,
         AMBIGUOUS_BRANCH,
         SEARCH_TRUNCATED,
@@ -67,7 +68,8 @@ public final class FinalGeometryEvaluator {
             double sourcePitchMeters, Map<Integer, MetricPoint> protectedAssignments,
             List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
             boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed,
-            Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
+            Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts,
+            Set<Integer> inheritedProperCrossingIncidents) {
         /** Copies final geometry and validates physical inputs. */
         public Request {
             if (id == null || id.isBlank() || points == null || points.size() < 2
@@ -109,6 +111,21 @@ public final class FinalGeometryEvaluator {
                 contacts.put(entry.getKey(), identities);
             }
             sharedContacts = Map.copyOf(contacts);
+            inheritedProperCrossingIncidents = Set.copyOf(inheritedProperCrossingIncidents);
+            for (int index : inheritedProperCrossingIncidents) {
+                if (index < 0 || index >= incidents.size())
+                    throw new IllegalArgumentException("Inherited contact incident identity is invalid");
+            }
+        }
+
+        /** Existing callers grant no inherited-contact exception. */
+        public Request(String id, List<MetricPoint> points, List<FinalRoutePointId> pointIds,
+                ImageCostField image, double sourcePitchMeters, Map<Integer,MetricPoint> protectedAssignments,
+                List<List<MetricPoint>> proposedIncidentGeometry, boolean cleaned,
+                boolean branchAmbiguous, boolean searchTruncated, boolean optimizerFailed,
+                Map<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
+            this(id,points,pointIds,image,sourcePitchMeters,protectedAssignments,proposedIncidentGeometry,
+                    cleaned,branchAmbiguous,searchTruncated,optimizerFailed,sharedContacts,Set.of());
         }
 
         /** Existing callers retain their original terminal-contact policy. */
@@ -126,7 +143,18 @@ public final class FinalGeometryEvaluator {
          */
         public Request withSharedContacts(Map<Integer, Set<FinalRoutePointId.ExistingWayNodeOccurrence>> contacts) {
             return new Request(id, points, pointIds, image, sourcePitchMeters, protectedAssignments,
-                    proposedIncidentGeometry, cleaned, branchAmbiguous, searchTruncated, optimizerFailed, contacts);
+                    proposedIncidentGeometry, cleaned, branchAmbiguous, searchTruncated, optimizerFailed, contacts,
+                    inheritedProperCrossingIncidents);
+        }
+
+        /**
+         * Binds incident rows proved by the complete inherited non-transport contact proof.
+         * Only proper crossings become review findings; touches and overlaps remain hard.
+         */
+        public Request withInheritedProperCrossings(Set<Integer> incidents) {
+            return new Request(id,points,pointIds,image,sourcePitchMeters,protectedAssignments,
+                    proposedIncidentGeometry,cleaned,branchAmbiguous,searchTruncated,optimizerFailed,
+                    sharedContacts,incidents);
         }
 
         /** Compatibility constructor for callers without typed final occurrence identities. */
@@ -1378,8 +1406,10 @@ public final class FinalGeometryEvaluator {
                             && sharedTerminalContact(kind, request.points(), incident, candidateSegment, incidentSegment);
                     if (kind != IntersectionKind.NONE && !legacyTerminalContact
                             && !provenSharedContact(request, kind, incidentIndex, candidateSegment, incidentSegment)) {
-                        findings.add(hard(FindingCode.PREJUNCTION_CROSSING, candidateSegment,
-                                candidateSegment + 1, 0));
+                        findings.add(kind == IntersectionKind.PROPER
+                                && request.inheritedProperCrossingIncidents().contains(incidentIndex)
+                                ? review(FindingCode.INDEPENDENT_CONTEXT_CONTACT,candidateSegment,candidateSegment+1,0)
+                                : hard(FindingCode.PREJUNCTION_CROSSING, candidateSegment,candidateSegment + 1, 0));
                     }
                 }
             }

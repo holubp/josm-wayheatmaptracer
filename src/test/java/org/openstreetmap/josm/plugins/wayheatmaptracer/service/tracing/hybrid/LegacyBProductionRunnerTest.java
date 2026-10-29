@@ -19,6 +19,67 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    @Test void inheritedCliffIsReviewableBeforeSectionAdmissionAndOnAssembledGeometry() {
+        var fixture = taggedContextFixture(Map.of("natural","cliff"),true);
+        var hash = fixture.input().network().canonicalHash();
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var run = new LegacyBProductionRunner().runVisible(fixture.input(),fixture.visible(),
+                    CancellationProbe.NONE,owner,LegacyBPipeline.Deadline.production());
+            assertTrue(run.value().assessments().stream().anyMatch(row ->
+                    !row.quality().has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING)
+                    && row.quality().has(FinalGeometryEvaluator.FindingCode.INDEPENDENT_CONTEXT_CONTACT)),
+                    "A fully proved inherited cliff must be reviewed rather than blocked as a new crossing");
+            assertTrue(run.value().batch().sections().stream().anyMatch(section ->
+                    section.outcome() == LegacyBPipeline.Outcome.B_REFINED),
+                    "The narrow contact proof must run before local B eligibility is decided");
+            assertEquals(hash,fixture.input().network().canonicalHash());
+        }
+    }
+
+    @Test void unprovedContextCrossingsRemainHardDuringHybridRefinement() {
+        for (var tags : List.of(Map.of("natural","cliff"),Map.of("highway","path"),
+                Map.of("waterway","stream"),Map.of("unknown","yes"))) {
+            var fixture = taggedContextFixture(tags,!tags.containsKey("natural"));
+            try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+                var run = new LegacyBProductionRunner().runVisible(fixture.input(),fixture.visible(),
+                        CancellationProbe.NONE,owner,LegacyBPipeline.Deadline.production());
+                assertFalse(run.value().assessments().isEmpty(),tags.toString());
+                assertTrue(run.value().batch().usage().transitions()>0,"Controls must execute actual B");
+                assertTrue(run.value().assessments().stream().allMatch(row ->
+                        row.quality().has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING)),tags.toString());
+                assertTrue(run.value().batch().sections().stream().noneMatch(section ->
+                        section.outcome() == LegacyBPipeline.Outcome.B_REFINED),tags.toString());
+            }
+        }
+    }
+
+    static Fixture taggedContextFixture(Map<String,String> tags, boolean witnessed) {
+        var fixture = fixture(false,true); var old = fixture.input(); var core = old.network();
+        var values = new LinkedHashMap<>(core.primitives());
+        var key = PrimitiveKey.existing(PrimitiveKey.Type.WAY,11); var way = (DetachedWay) values.get(key);
+        values.put(key,new DetachedWay(key,way.nodeKeys(),tags,false,false));
+        // Keep the crossing strictly inside source and context edges, away from lattice vertices.
+        for (var nodeKey : way.nodeKeys()) {
+            var node = (DetachedNode) values.get(nodeKey);
+            var en = Projections.getProjectionByCode("EPSG:3857").latlon2eastNorth(
+                    new LatLon(node.coordinate().latitudeDegrees(),node.coordinate().longitudeDegrees()));
+            var ll = Projections.getProjectionByCode("EPSG:3857").eastNorth2latlon(new EastNorth(20.17345,en.north()));
+            values.put(nodeKey,new DetachedNode(nodeKey,new GeographicPoint(ll.lat(),ll.lon()),node.tags(),false,false));
+        }
+        var bare = new NetworkSnapshot(core.snapshotId(),core.role(),core.datasetIdentity(),core.sourceGeneration(),
+                core.closure(),values,core.incomingReferrerWatches());
+        var network = witnessed ? new NetworkSnapshot(bare.snapshotId(),bare.role(),bare.datasetIdentity(),bare.sourceGeneration(),
+                bare.closure(),values,bare.incomingReferrerWatches(),new NonTransportSemanticWitness(
+                        bare.canonicalHash(),bare.datasetIdentity(),bare.sourceGeneration(),Map.of())) : bare;
+        var r = old.request();
+        var request = new TraceRequest(r.selectedWayKey(),r.selectedRange(),r.engine(),r.geometryMode(),r.permissions(),r.budgets(),
+                r.evidenceSnapshotId(),r.evidenceContentHash(),network.snapshotId(),network.canonicalHash(),r.settingsHash(),
+                r.parameterHash(),r.samplerId(),r.configuredSampleStepMeters(),r.profileChainage(),r.evidenceResolution());
+        return new Fixture(new LegacyBProductionRunner.Input(request,network,old.evidence(),old.fieldName(),old.originalProjected(),
+                old.originalMetric(),old.projectionCode(),old.occurrences(),old.frozenRanges(),old.simplify(),old.projectedTolerance()),
+                fixture.visible());
+    }
+
     @Test void tinyNativeAllocationKeepsFactualResourceReceiptInsteadOfThrowing() {
         var fixture = fixture(false,false); var tiny = new TraceBudgets(96,1,1,1,1);
         try (var owner = AttemptMemoryLedger.production().rootOwner()) {

@@ -19,7 +19,8 @@ public final class LegacyBAssessor {
     /** Original frozen authority and image; incident geometry must use proposed shared-node coordinates. */
     public record AssessmentContext(TraceRequest request, NetworkSnapshot network, EvidenceSnapshot evidence,
             String fieldName, List<List<MetricPoint>> proposedIncidentGeometry,
-            Map<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
+            Map<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts,
+            Set<Integer> inheritedProperCrossingIncidents) {
         public AssessmentContext {
             if (request == null || network == null || evidence == null || fieldName == null
                     || !evidence.fields().containsKey(fieldName) || proposedIncidentGeometry == null
@@ -37,6 +38,14 @@ public final class LegacyBAssessor {
             var contacts = new LinkedHashMap<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>>();
             sharedContacts.forEach((index, identities) -> contacts.put(index, Set.copyOf(identities)));
             sharedContacts = Map.copyOf(contacts);
+            inheritedProperCrossingIncidents = Set.copyOf(inheritedProperCrossingIncidents);
+        }
+
+        /** Existing contexts grant no inherited-contact exception. */
+        public AssessmentContext(TraceRequest request, NetworkSnapshot network, EvidenceSnapshot evidence,
+                String fieldName, List<List<MetricPoint>> proposedIncidentGeometry,
+                Map<Integer,Set<FinalRoutePointId.ExistingWayNodeOccurrence>> sharedContacts) {
+            this(request,network,evidence,fieldName,proposedIncidentGeometry,sharedContacts,Set.of());
         }
 
         /** Compatibility for callers without independently captured shared-node identity evidence. */
@@ -154,7 +163,8 @@ public final class LegacyBAssessor {
             var request = new FinalGeometryEvaluator.Request(candidate.id(), candidate.points(), pointIds, image,
                     context.evidence().resolution().effectivePitchMeters(), protectedAssignments,
                     context.proposedIncidentGeometry(), false, ambiguous, truncated, false)
-                    .withSharedContacts(context.sharedContacts());
+                    .withSharedContacts(context.sharedContacts())
+                    .withInheritedProperCrossings(context.inheritedProperCrossingIncidents());
             var quality = new FinalGeometryEvaluator().evaluate(request, cancellation);
             cancellation.checkpoint();
             var support = FinalGeometryEvaluator.inspectSupport(candidate.points(), image,

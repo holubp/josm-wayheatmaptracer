@@ -35,6 +35,28 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.v022.V022SceneCatalog;
 class V022FinalGeometryTest {
     private final FinalGeometryEvaluator evaluator = new FinalGeometryEvaluator();
 
+    @Test void inheritedRowsPermitOnlyProperCrossingsAndKeepUnrelatedContactsHard() {
+        var points = List.of(p(-8,0),p(8,0));
+        var image = ridgeImage((x,y) -> gaussian(y),(x,y) -> true);
+        var crossing = List.of(p(.17345,-8),p(.17345,8));
+        var request = new FinalGeometryEvaluator.Request("inherited",points,image,1,Set.of(0,1),
+                List.of(crossing),false,false,false,false);
+        assertTrue(evaluator.evaluate(request).has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING));
+        var reviewed = evaluator.evaluate(request.withInheritedProperCrossings(Set.of(0)));
+        assertFalse(reviewed.has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING));
+        assertTrue(reviewed.has(FinalGeometryEvaluator.FindingCode.INDEPENDENT_CONTEXT_CONTACT));
+        for (var incident : List.of(List.of(p(0,0),p(0,8)),List.of(p(-2,0),p(2,0)))) {
+            var unsafe = new FinalGeometryEvaluator.Request("unsafe",points,image,1,Set.of(0,1),
+                    List.of(incident),false,false,false,false).withInheritedProperCrossings(Set.of(0));
+            assertTrue(evaluator.evaluate(unsafe).has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING));
+        }
+        var unrelated = new FinalGeometryEvaluator.Request("unrelated",points,image,1,Set.of(0,1),
+                List.of(crossing,List.of(p(4,-8),p(4,8))),false,false,false,false)
+                .withInheritedProperCrossings(Set.of(0));
+        assertTrue(evaluator.evaluate(unrelated).has(FinalGeometryEvaluator.FindingCode.PREJUNCTION_CROSSING));
+        assertThrows(IllegalArgumentException.class,() -> request.withInheritedProperCrossings(Set.of(1)));
+    }
+
     @Test
     void physicalSupportIntegrationCarriesGapAcrossVerticesWithAnalyticalWeights() {
         var geometry = List.of(p(20, 0), p(32, 0), p(36, 0), p(48, 0), p(60, 0));

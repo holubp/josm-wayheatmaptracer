@@ -4,6 +4,33 @@ Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.
 
+LATEST2026-10-29: global batch1cd15a04149313200f5afe857cd8b3b7b6084fc0 is pushed;
+public Build40965307707 completedSUCCESS. Source remains on the isolated release
+branch; primary unrelated edits/private captures are preserved. No RC/tag published.
+
+Inherited non-transport parity repair is now focusedTESTED and independently checked:
+actual cliff regression RED (1of3tests failed), then actual native B refinement and
+reviewable complete final geometry GREEN. Missing witness, transport and unknown
+context controls remain hard. Each local substitution and complete assembled preview
+gets its own detached full-way proposal and unchanged narrow ordered contact proof;
+only full unclipped proved incident rows permit proper-crossing REVIEW. Touches,
+overlaps and unrelated unsafe contacts stay hard, and the command adapter still
+independently validates final topology. Fixed coordinates preserve original
+geographic values; no live primitives are created or changed by this proof.
+
+Proof uses existing8M geometry-work ceiling, attempt scratch/cache/event reservations
+and cancellation. Refused proof grants no exemption, blocks unproved final geometry
+with CONTEXT_PROOF_UNAVAILABLE and prevents later-source B; native B work stays
+separate. Diagnostic counters expose actual geometry units/proof-limited status.
+Independent Sol review found no unsafe exemption but identified uncharged exact
+polygon/order work. A2048-vertex polygon reproduced both budget and cancellation
+failures RED; checkpoints now cover polygon/uniqueness loops and original comparators
+without changing exact predicates/order. Final neighbors101PASS/0failures/errors/
+skips,2m7s, logv022-inherited-reviewed-neighbors-green.log. Prior adapter/contact
+neighbors129PASS10m14s; final frozen cliff geometry/quality/native-work parity and
+unsafe contact checks2PASS53s. Current contact batch awaits scoped commit/public CI;
+coincident identity, remaining integration/GUI/private and final release gates OPEN.
+
 RESUMED2026-10-29: the saved global resource-stop neighbor run completed SUCCESS,
 68tests/0failures/errors/skips in4m38s. Confirmed terminal log
 v022-global-resource-stop-neighbors-green.log and current XML, no local Gradle test

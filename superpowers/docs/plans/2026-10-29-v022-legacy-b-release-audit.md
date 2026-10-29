@@ -5,6 +5,23 @@ actual source and tests. Requested Sol6.1/high; exposed runtime metadata could n
 independently certify the effective routing. No Astra or recursive delegation.
 This is a failed completion audit, not a release approval or a goal pause.
 
+## Inherited-contact affected review and repair evidence
+
+Read-only Sol review independently reran the original cliff counterexample: current
+production returns REVIEW_REQUIRED with INDEPENDENT_CONTEXT_CONTACT and B_REFINED.
+It found no unsafe exemption: local and full assembled proposals are proved anew,
+original unchanged geographic values survive, and only full unclipped proved rows
+allow proper-crossing review. Other contacts remain hard and Apply revalidation is
+mandatory. The reviewer identified a P2 bounded-work gap in polygon winding,
+uniqueness loops and contact-order comparators. Controller reproduced both budget
+and cancellation bypass with2048polygon vertices, then added checkpoints while
+retaining the exact rational arithmetic and ordering. Latest neighbors101PASS,
+zero failures/errors/skips,2m7s; includes actual inherited-cliff frozen geometry,
+quality and native-work replay. Logs v022-inherited-polygon-budget-red-2.log and
+v022-inherited-reviewed-neighbors-green.log. Global1cd15a0 publicCI40965307707 is
+SUCCESS. This closes the reviewed inherited parity/bounded-loop findings in focused
+evidence; it does not approve RC or close coincidence/GUI/private/final gates.
+
 ## Global-admission affected review (uncommitted after7e53bd8)
 
 Controller closure of the stop finding: both managed resource cases reproduced

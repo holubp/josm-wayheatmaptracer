@@ -1495,6 +1495,8 @@ public final class LiveBPreviewService {
                         allocation.orElse(limits),allowed,reason,cancellation,owner,deadline);
                 used = used.plus(run.usage()); remainingLegacyBAllocation(limits,used);
                 completed.put(choice,run.computed());
+                if (inferenceStopReason == null && run.computed().legacyB().result().contactProofLimited())
+                    inferenceStopReason = LegacyBPipeline.Reason.RESOURCE_LIMIT;
                 // A refused native block may leave every counter positive. Stop on its actual
                 // terminal receipt, not on remaining arithmetic or cap-only parent omissions.
                 if (inferenceStopReason == null) {

@@ -21,7 +21,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 
 /** Independent complete-contact proof for the narrow inherited non-transport exception. */
-final class InheritedNonTransportContacts {
+public final class InheritedNonTransportContacts {
     private InheritedNonTransportContacts() { }
 
     /** Lazy original chords, bound to one contacts invocation's immutable inputs. */
@@ -143,6 +143,44 @@ final class InheritedNonTransportContacts {
     static Set<PrimitiveKey> prove(NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selected,
             OccurrenceRange sourceRange, EvidenceSnapshot evidence, double searchHalfWidthMeters) {
+        return prove(before,after,selected,sourceRange,evidence,searchHalfWidthMeters,ProofWork.UNBOUNDED);
+    }
+
+    /**
+     * Runs the same narrow complete-contact proof under the caller's attempt limits. Refusal
+     * propagates without granting an exemption; all invocation scratch is released on every exit.
+     * The caller still owns final geometry validation and any returned context identities.
+     */
+    public static Set<PrimitiveKey> prove(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selected,
+            OccurrenceRange sourceRange, EvidenceSnapshot evidence, double searchHalfWidthMeters,
+            CancellationProbe cancellation, java.util.function.LongConsumer geometryWork,
+            AttemptMemoryLedger.Owner owner) {
+        java.util.Objects.requireNonNull(cancellation);
+        java.util.Objects.requireNonNull(geometryWork);
+        java.util.Objects.requireNonNull(owner);
+        try (var scratch = owner.child("inherited-contact-proof")) {
+            return prove(before,after,selected,sourceRange,evidence,searchHalfWidthMeters,
+                    new ProofWork(cancellation,geometryWork,scratch));
+        }
+    }
+
+    private record ProofWork(CancellationProbe cancellation, java.util.function.LongConsumer units,
+            AttemptMemoryLedger.Owner owner) {
+        private static final ProofWork UNBOUNDED = new ProofWork(CancellationProbe.NONE,ignored -> { },null);
+        void checkpoint() { if (owner != null) { cancellation.checkpoint(); units.accept(1); } }
+        void retain(long bytes) { if (owner != null) owner.reserve(bytes); }
+        AttemptMemoryLedger.Reservation temporary(long bytes) { return owner == null ? null : owner.reserve(bytes); }
+    }
+
+    private static <T> Comparator<T> bounded(Comparator<T> comparator, ProofWork work) {
+        return (first,second) -> { work.checkpoint(); return comparator.compare(first,second); };
+    }
+
+    private static Set<PrimitiveKey> prove(NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, PrimitiveKey selected,
+            OccurrenceRange sourceRange, EvidenceSnapshot evidence, double searchHalfWidthMeters, ProofWork work) {
+        work.checkpoint();
         NonTransportSemanticWitness witness = before.semanticWitness();
         if (witness == null || !witness.matches(before) || !Double.isFinite(searchHalfWidthMeters)
                 || searchHalfWidthMeters <= 0) return Set.of();
@@ -151,36 +189,40 @@ final class InheritedNonTransportContacts {
         int first = proposed.nodeKeys().indexOf(source.nodeKeys().get(sourceRange.firstIndex()));
         int last = proposed.nodeKeys().indexOf(source.nodeKeys().get(sourceRange.lastIndex()));
         if (first < 0 || last <= first) return Set.of();
+        work.retain(Math.addExact(4096L,Math.multiplyExact(80L,before.primitives().size())));
         Set<PrimitiveKey> accepted = new LinkedHashSet<>();
         List<Pair> completePairs = new ArrayList<>();
         for (DetachedPrimitive primitive : before.primitives().values().stream()
-                .sorted(Comparator.comparing(DetachedPrimitive::key)).toList()) {
+                .sorted(bounded(Comparator.comparing(DetachedPrimitive::key),work)).toList()) {
+            work.checkpoint();
             if (!(primitive instanceof DetachedWay context) || context.key().equals(selected)
-                    || !eligible(context, before, witness)
-                    || !unchanged(context, before, after)) continue;
-            List<Event> oldEvents = contacts(source, sourceRange, context, before.primitives(), evidence);
-            List<Event> newEvents = contacts(proposed, new OccurrenceRange(first, last), context, after, evidence);
+                    || !eligible(context, before, witness,work)
+                    || !unchanged(context, before, after,work)) continue;
+            List<Event> oldEvents = contacts(source, sourceRange, context, before.primitives(), evidence,work);
+            List<Event> newEvents = contacts(proposed, new OccurrenceRange(first, last), context, after, evidence,work);
             if (oldEvents == null || newEvents == null || oldEvents.isEmpty()
                     || oldEvents.size() != newEvents.size()) continue;
             List<Pair> pairs = new ArrayList<>();
             boolean valid = true;
             for (int index = 0; index < oldEvents.size(); index++) {
+                work.checkpoint();
                 Event old = oldEvents.get(index), next = newEvents.get(index);
                 if (old.contextIndex() != next.contextIndex()
                         || !withinPhysicalBound(old.point(), next.point(), evidence, searchHalfWidthMeters)) {
                     valid = false;
                     break;
                 }
+                work.retain(256);
                 pairs.add(new Pair(old, next));
             }
             // The occurrence and order on the context way are independent of selected-way order.
             if (valid) {
-                List<Pair> oldOrder = pairs.stream().sorted(Comparator
-                        .comparing((Pair pair) -> contextPosition(pair.original()))).toList();
-                List<Pair> newOrder = pairs.stream().sorted(Comparator
-                        .comparing((Pair pair) -> contextPosition(pair.proposed()))).toList();
-                valid = oldOrder.equals(newOrder) && uniquePositions(oldOrder, true)
-                        && uniquePositions(pairs, false);
+                List<Pair> oldOrder = pairs.stream().sorted(bounded(Comparator
+                        .comparing((Pair pair) -> contextPosition(pair.original())),work)).toList();
+                List<Pair> newOrder = pairs.stream().sorted(bounded(Comparator
+                        .comparing((Pair pair) -> contextPosition(pair.proposed())),work)).toList();
+                valid = oldOrder.equals(newOrder) && uniquePositions(oldOrder, true,work)
+                        && uniquePositions(pairs, false,work);
             }
             if (valid) {
                 accepted.add(context.key());
@@ -188,20 +230,22 @@ final class InheritedNonTransportContacts {
             }
         }
         // Do not permit eligible features to swap their order along the selected path.
-        List<Pair> oldOrder = completePairs.stream().sorted(Comparator
+        work.checkpoint();
+        List<Pair> oldOrder = completePairs.stream().sorted(bounded(Comparator
                 .comparing((Pair pair) -> selectedPosition(pair.original()))
                 .thenComparing(pair -> pair.original().context())
-                .thenComparingInt(pair -> pair.original().contextIndex())).toList();
-        List<Pair> newOrder = completePairs.stream().sorted(Comparator
+                .thenComparingInt(pair -> pair.original().contextIndex()),work)).toList();
+        List<Pair> newOrder = completePairs.stream().sorted(bounded(Comparator
                 .comparing((Pair pair) -> selectedPosition(pair.proposed()))
                 .thenComparing(pair -> pair.proposed().context())
-                .thenComparingInt(pair -> pair.proposed().contextIndex())).toList();
+                .thenComparingInt(pair -> pair.proposed().contextIndex()),work)).toList();
         if (!oldOrder.equals(newOrder)) return Set.of();
         return Set.copyOf(accepted);
     }
 
-    private static boolean uniquePositions(List<Pair> pairs, boolean context) {
+    private static boolean uniquePositions(List<Pair> pairs, boolean context, ProofWork work) {
         for (int i = 1; i < pairs.size(); i++) {
+            work.checkpoint();
             Event previous = pairs.get(i - 1).original(), current = pairs.get(i).original();
             Event previousNew = pairs.get(i - 1).proposed(), currentNew = pairs.get(i).proposed();
             if ((context ? contextPosition(previous) : selectedPosition(previous))
@@ -233,13 +277,15 @@ final class InheritedNonTransportContacts {
         return distanceSquared.compareTo(new Fraction(allowedMetric.multiply(allowedMetric), BigDecimal.ONE)) <= 0;
     }
 
-    private static boolean insideDecision(ExactIntersection point, EvidenceSnapshot evidence) {
+    private static boolean insideDecision(ExactIntersection point, EvidenceSnapshot evidence, ProofWork work) {
         // Exact winding over the declared binary64 polygon vertices; no rounded intersection
         // or MetricRegion's display tolerance may turn an outside/boundary contact into proof.
         for (List<MetricPoint> polygon : evidence.decisionRegion().polygons()) {
+            work.checkpoint();
             int winding = 0;
             boolean boundary = false;
             for (int i = 0; i < polygon.size(); i++) {
+                work.checkpoint();
                 MetricPoint a = polygon.get(i), b = polygon.get((i + 1) % polygon.size());
                 BigDecimal ax = new BigDecimal(a.xMeters()), ay = new BigDecimal(a.yMeters());
                 BigDecimal bx = new BigDecimal(b.xMeters()), by = new BigDecimal(b.yMeters());
@@ -261,33 +307,39 @@ final class InheritedNonTransportContacts {
 
     static boolean unchanged(DetachedWay way, NetworkSnapshot before,
             Map<PrimitiveKey, DetachedPrimitive> after) {
+        return unchanged(way,before,after,ProofWork.UNBOUNDED);
+    }
+
+    private static boolean unchanged(DetachedWay way, NetworkSnapshot before,
+            Map<PrimitiveKey, DetachedPrimitive> after, ProofWork work) {
         return way.equals(before.primitives().get(way.key())) && way.equals(after.get(way.key()))
-                && way.nodeKeys().stream().allMatch(node ->
+                && way.nodeKeys().stream().peek(node -> work.checkpoint()).allMatch(node ->
                 before.primitives().get(node) instanceof DetachedNode
                 && before.primitives().get(node).equals(after.get(node)));
     }
 
-    private static boolean onlyTags(Map<String, String> tags, Set<String> semantic) {
-        return tags.keySet().stream().allMatch(key -> DESCRIPTIVE.contains(key)
+    private static boolean onlyTags(Map<String, String> tags, Set<String> semantic, ProofWork work) {
+        return tags.keySet().stream().peek(key -> work.checkpoint()).allMatch(key -> DESCRIPTIVE.contains(key)
                 || key.startsWith("name:") || semantic.contains(key));
     }
 
     private static boolean eligible(DetachedWay way, NetworkSnapshot before,
-            NonTransportSemanticWitness witness) {
+            NonTransportSemanticWitness witness, ProofWork work) {
         boolean closed = way.nodeKeys().size() >= 4
                 && way.nodeKeys().get(0).equals(way.nodeKeys().get(way.nodeKeys().size() - 1));
         boolean rock = closed && "bare_rock".equals(way.tags().get("natural"))
-                && onlyTags(way.tags(), Set.of("natural", "area"))
+                && onlyTags(way.tags(), Set.of("natural", "area"),work)
                 && !"no".equals(way.tags().get("area"));
         boolean cliff = !closed && "cliff".equals(way.tags().get("natural"))
-                && onlyTags(way.tags(), Set.of("natural"));
+                && onlyTags(way.tags(), Set.of("natural"),work);
         boolean ridge = !closed && "ridge".equals(way.tags().get("natural"))
-                && onlyTags(way.tags(), Set.of("natural"));
-        boolean forest = closed && onlyTags(way.tags(), Set.of());
+                && onlyTags(way.tags(), Set.of("natural"),work);
+        boolean forest = closed && onlyTags(way.tags(), Set.of(),work);
         if (!rock && !cliff && !ridge && !forest) return false;
         Set<PrimitiveKey> watches = before.incomingReferrerWatches().get(way.key());
         if (watches == null) return false;
-        Set<PrimitiveKey> parents = watches.stream().filter(key -> key.type() == PrimitiveKey.Type.RELATION)
+        work.retain(Math.multiplyExact(64L,watches.size()));
+        Set<PrimitiveKey> parents = watches.stream().peek(key -> work.checkpoint()).filter(key -> key.type() == PrimitiveKey.Type.RELATION)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
         if (parents.isEmpty()) return rock || cliff || ridge;
         // Only an exact complete forest outer provides positive parent semantics. Other parent
@@ -296,28 +348,37 @@ final class InheritedNonTransportContacts {
         var relation = witness.relations().get(parents.iterator().next());
         return relation != null && relation.complete() && !relation.deleted()
                 && relation.parentWatches().isEmpty()
-                && relation.members().stream().allMatch(NonTransportSemanticWitness.Member::complete)
-                && relation.members().stream().allMatch(member -> member.key().type() == PrimitiveKey.Type.WAY
+                && relation.members().stream().peek(member -> work.checkpoint()).allMatch(NonTransportSemanticWitness.Member::complete)
+                && relation.members().stream().peek(member -> work.checkpoint()).allMatch(member -> member.key().type() == PrimitiveKey.Type.WAY
                         && ("outer".equals(member.role()) || "inner".equals(member.role())))
                 && "multipolygon".equals(relation.tags().get("type"))
                 && "forest".equals(relation.tags().get("landuse"))
-                && onlyTags(relation.tags(), Set.of("type", "landuse"))
-                && relation.members().stream().filter(member -> member.key().equals(way.key())).count() == 1
-                && relation.members().stream().anyMatch(member -> member.key().equals(way.key())
+                && onlyTags(relation.tags(), Set.of("type", "landuse"),work)
+                && relation.members().stream().peek(member -> work.checkpoint()).filter(member -> member.key().equals(way.key())).count() == 1
+                && relation.members().stream().peek(member -> work.checkpoint()).anyMatch(member -> member.key().equals(way.key())
                         && "outer".equals(member.role()));
     }
 
     /** Null means that even one contact is uncertain, remote, a touch, or an overlap. */
     private static List<Event> contacts(DetachedWay selected, OccurrenceRange range,
             DetachedWay context, Map<PrimitiveKey, DetachedPrimitive> values, EvidenceSnapshot evidence) {
+        return contacts(selected,range,context,values,evidence,ProofWork.UNBOUNDED);
+    }
+
+    private static List<Event> contacts(DetachedWay selected, OccurrenceRange range,
+            DetachedWay context, Map<PrimitiveKey, DetachedPrimitive> values, EvidenceSnapshot evidence, ProofWork work) {
+        // The lazy cache already has a byte ceiling; reserve that ceiling only while it is live.
+        try (var cacheBytes = work.temporary(ContextChordCache.MAX_BYTES)) {
         List<Event> events = new ArrayList<>();
         ContextChordCache contextChords = ContextChordCache.create(context, values,
                 evidence.coordinateFrame(), ContextChordCache.MAX_BYTES);
         for (int i = range.firstIndex(); i < range.lastIndex(); i++) {
+            work.checkpoint();
             PrimitiveKey aKey = selected.nodeKeys().get(i), bKey = selected.nodeKeys().get(i + 1);
             GeographicPoint a = geographic(values, aKey), b = geographic(values, bKey);
             var selectedChord = CertifiedContextSegmentClipper.originalChord(a, b, evidence.coordinateFrame());
             for (int j = 0; j < context.nodeKeys().size() - 1; j++) {
+                work.checkpoint();
                 PrimitiveKey cKey = context.nodeKeys().get(j), dKey = context.nodeKeys().get(j + 1);
                 GeographicPoint c = geographic(values, cKey), d = geographic(values, dKey);
                 var contextChord = contextChords == null
@@ -354,7 +415,8 @@ final class InheritedNonTransportContacts {
                     ExactIntersection point = new ExactIntersection(
                             new Fraction(ax.multiply(exactT.denominator()).add(ex.multiply(exactT.numerator())), exactT.denominator()),
                             new Fraction(ay.multiply(exactT.denominator()).add(ey.multiply(exactT.numerator())), exactT.denominator()));
-                    if (!insideDecision(point, evidence)) return null;
+                    if (!insideDecision(point, evidence,work)) return null;
+                    work.retain(4096);
                     events.add(new Event(context.key(), j, exactU, i, exactT, point));
                 } catch (IllegalArgumentException invalidCertificate) {
                     return null;
@@ -362,6 +424,7 @@ final class InheritedNonTransportContacts {
             }
         }
         return events;
+        }
     }
 
     private static GeographicPoint geographic(Map<PrimitiveKey, DetachedPrimitive> values, PrimitiveKey key) {

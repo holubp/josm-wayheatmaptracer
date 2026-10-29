@@ -721,6 +721,74 @@ class V022ModernSingleWayEditPlanAdapterTest {
     }
 
     @Test
+    void exactDecisionPolygonWorkCannotBypassProofBudgetOrCancellation() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF),TrackerMode.CORRIDOR_AWARE);
+        var before = computed.captured().network();
+        var after = afterSelected(before,computed.request().selectedWayKey(),new double[][] {{-8,0},{8,0}});
+        var old = computed.evidence(); var polygon = new ArrayList<MetricPoint>();
+        for (int index=0;index<2048;index++) {
+            double angle=2*Math.PI*index/2048;
+            polygon.add(new MetricPoint(20*Math.cos(angle),20*Math.sin(angle)));
+        }
+        var evidence = new EvidenceSnapshot(old.snapshotId(),old.coordinateFrame(),old.transform(),old.resolution(),
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion(List.of(polygon)),
+                old.evidenceRegion(),old.fields(),old.resampling(),old.sourceIdentity());
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var work = new java.util.concurrent.atomic.AtomicLong();
+            var checks = new java.util.concurrent.atomic.AtomicInteger();
+            org.junit.jupiter.api.Assertions.assertAll(
+                    () -> assertThrows(IllegalStateException.class,() ->
+                            InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                                    computed.request().selectedRange(),evidence,7.01,CancellationProbe.NONE,
+                                    units -> { if (work.addAndGet(units)>1024) throw new IllegalStateException("synthetic-proof-budget"); },owner)),
+                    () -> assertThrows(java.util.concurrent.CancellationException.class,() ->
+                            InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                                    computed.request().selectedRange(),evidence,7.01,
+                                    () -> checks.incrementAndGet()>512,units -> { },owner)));
+            assertEquals(0,owner.currentBytes());
+        }
+    }
+
+    @Test
+    void boundedInheritedProofMatchesNarrowProofAndReleasesWorkOnEveryExit() throws Exception {
+        var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
+        var before = computed.captured().network();
+        var after = afterSelected(before,computed.request().selectedWayKey(),new double[][] {{-8,0},{8,0}});
+        var ledger = AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new java.util.concurrent.atomic.AtomicLong();
+            assertEquals(Set.of(PrimitiveKey.existing(PrimitiveKey.Type.WAY,35)),
+                    InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                            computed.request().selectedRange(),computed.evidence(),7.01,
+                            CancellationProbe.NONE,work::addAndGet,owner));
+            assertTrue(work.get()>0,"The complete contact proof must charge actual geometry work");
+            assertEquals(0,owner.currentBytes(),"Proof scratch must be released after success");
+            var cancellationChecks = new java.util.concurrent.atomic.AtomicInteger();
+            assertThrows(java.util.concurrent.CancellationException.class,() ->
+                    InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                            computed.request().selectedRange(),computed.evidence(),7.01,
+                            () -> cancellationChecks.incrementAndGet()>2,units -> { },owner));
+            assertEquals(0,owner.currentBytes());
+            var refusedWork = new java.util.concurrent.atomic.AtomicLong();
+            assertThrows(IllegalStateException.class,() ->
+                    InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                            computed.request().selectedRange(),computed.evidence(),7.01,
+                            CancellationProbe.NONE,units -> {
+                                if (refusedWork.addAndGet(units)>=Math.max(2,work.get()-1))
+                                    throw new IllegalStateException("synthetic-work-limit");
+                            },owner));
+            assertEquals(0,owner.currentBytes(),"A refused proof must neither leak nor return an exemption");
+        }
+        try (var owner = new AttemptMemoryLedger(1).rootOwner()) {
+            assertThrows(AttemptMemoryLedger.ResourceLimitException.class,() ->
+                    InheritedNonTransportContacts.prove(before,after,computed.request().selectedWayKey(),
+                            computed.request().selectedRange(),computed.evidence(),7.01,
+                            CancellationProbe.NONE,units -> { },owner));
+            assertEquals(0,owner.currentBytes());
+        }
+    }
+
+    @Test
     void inheritedProofNeedsFrozenWitnessAndExactContextGeometry() throws Exception {
         var computed = compute(inheritedContactFixture(InheritedClass.CLIFF), TrackerMode.CORRIDOR_AWARE);
         var before = computed.captured().network();
