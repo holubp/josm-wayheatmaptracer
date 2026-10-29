@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry;
+
 import java.awt.image.BufferedImage;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
@@ -83,7 +85,7 @@ public final class AlignmentService {
         return ALL_COLOR_MODES;
     }
     private static final String AGGREGATED_COLOR_MODE = "all-colors-combined";
-    private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = 75.0;
+    private static final double MAX_UNSUPPORTED_FIXED_TURN_DEGREES = LegacyPreciseGeometry.MAX_FIXED_TURN_DEGREES;
     private static final double REFERENCE_VIEW_METERS_PER_PIXEL = TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
     private static final double REFERENCE_CAPTURE_PROJECTION_UNITS_PER_VIEW_PIXEL =
         TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL;
@@ -103,7 +105,6 @@ public final class AlignmentService {
     private final ParallelWayContextResolver parallelWayContextResolver = new ParallelWayContextResolver();
     private final CorridorAssignmentService corridorAssignmentService = new CorridorAssignmentService();
     private final PathOptimizer optimizer = new PathOptimizer();
-    private final GeometryPostProcessor postProcessor = new GeometryPostProcessor();
     private final GeometryCleanupService geometryCleanupService = new GeometryCleanupService();
 
     /** Creates an alignment service with the standard sampling and tracking stages. */
@@ -2676,51 +2677,9 @@ public final class AlignmentService {
         return result;
     }
 
-    private List<EastNorth> simplifyPrecisePreview(
-        SelectionContext selection,
-        List<EastNorth> sourcePolyline,
-        List<EastNorth> preview,
-        double tolerance
-    ) {
-        if (preview.size() <= 2 || tolerance <= 0.0) {
-            return preview;
-        }
-        List<Integer> previewAnchors = new ArrayList<>();
-        for (int fixedIndex : fixedIndices(selection)) {
-            int previewIndex = findMatchingPoint(preview, sourcePolyline.get(fixedIndex));
-            if (previewIndex >= 0 && !previewAnchors.contains(previewIndex)) {
-                previewAnchors.add(previewIndex);
-            }
-        }
-        previewAnchors.sort(Integer::compareTo);
-        if (previewAnchors.isEmpty() || previewAnchors.get(0) != 0) {
-            previewAnchors.add(0, 0);
-        }
-        int last = preview.size() - 1;
-        if (previewAnchors.get(previewAnchors.size() - 1) != last) {
-            previewAnchors.add(last);
-        }
-
-        List<EastNorth> simplifiedPreview = new ArrayList<>();
-        for (int i = 0; i < previewAnchors.size() - 1; i++) {
-            int start = previewAnchors.get(i);
-            int end = previewAnchors.get(i + 1);
-            if (end <= start) {
-                continue;
-            }
-            List<EastNorth> section = new ArrayList<>(preview.subList(start, end + 1));
-            List<EastNorth> simplifiedSection = postProcessor.simplify(section, tolerance);
-            if (!simplifiedPreview.isEmpty() && !simplifiedSection.isEmpty()) {
-                simplifiedSection = new ArrayList<>(simplifiedSection.subList(1, simplifiedSection.size()));
-            }
-            simplifiedPreview.addAll(simplifiedSection);
-        }
-        if (simplifiedPreview.size() < 2) {
-            return preview;
-        }
-        PluginLog.verbose("Precise-shape interval simplification: %d -> %d points with tolerance %.2f.",
-            preview.size(), simplifiedPreview.size(), tolerance);
-        return simplifiedPreview;
+    private List<EastNorth> simplifyPrecisePreview(SelectionContext selection,
+            List<EastNorth> sourcePolyline, List<EastNorth> preview, double tolerance) {
+        return LegacyPreciseGeometry.simplifyPreview(sourcePolyline, preview, fixedIndices(selection), tolerance);
     }
 
     private List<EastNorth> guardFixedAnchorTurns(
@@ -2738,30 +2697,10 @@ public final class AlignmentService {
         };
     }
 
-    List<EastNorth> cleanPreviewTopology(
-        SelectionContext selection,
-        List<EastNorth> sourcePolyline,
-        List<EastNorth> preview,
-        AlignmentMode mode
-    ) {
-        if (preview.size() < 4 || mode != AlignmentMode.PRECISE_SHAPE) {
-            return preview;
-        }
-        List<EastNorth> protectedPoints = fixedIndices(selection).stream()
-            .map(sourcePolyline::get)
-            .toList();
-        double nearAnchorDistance = Math.max(3.0, Math.min(12.0, PolylineMath.length(sourcePolyline) * 0.08));
-        List<EastNorth> cleaned = postProcessor.pruneEndpointClusters(preview, nearAnchorDistance, 35.0);
-        cleaned = postProcessor.removeSelfIntersectionLoops(cleaned, protectedPoints);
-        if (cleaned.size() < 2) {
-            return preview;
-        }
-        if (cleaned.size() != preview.size()) {
-            PluginLog.verbose(
-                "Topology cleanup reduced precise preview points from %d to %d; terminal turn %.1f -> %.1f degrees.",
-                preview.size(), cleaned.size(), terminalTurnDegrees(preview), terminalTurnDegrees(cleaned));
-        }
-        return cleaned;
+    List<EastNorth> cleanPreviewTopology(SelectionContext selection,
+            List<EastNorth> sourcePolyline, List<EastNorth> preview, AlignmentMode mode) {
+        if (mode != AlignmentMode.PRECISE_SHAPE) { return preview; }
+        return LegacyPreciseGeometry.cleanTopology(sourcePolyline, preview, fixedIndices(selection));
     }
 
     private List<EastNorth> guardMoveModeFixedTurns(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {
@@ -2787,40 +2726,9 @@ public final class AlignmentService {
         return guarded;
     }
 
-    private List<EastNorth> guardPreciseModeFixedTurns(SelectionContext selection, List<EastNorth> sourcePolyline, List<EastNorth> preview) {
-        List<EastNorth> guarded = new ArrayList<>(preview);
-        for (int fixedIndex : fixedIndices(selection)) {
-            EastNorth anchor = sourcePolyline.get(fixedIndex);
-            int previewIndex = findMatchingPoint(guarded, anchor);
-            if (previewIndex <= 0 || previewIndex >= guarded.size() - 1) {
-                continue;
-            }
-            while (guarded.size() >= 3 && previewIndex > 0 && previewIndex < guarded.size() - 1) {
-                double turn = turningAngleDegrees(guarded.get(previewIndex - 1), guarded.get(previewIndex), guarded.get(previewIndex + 1));
-                if (turn < MAX_UNSUPPORTED_FIXED_TURN_DEGREES) {
-                    break;
-                }
-                double leftDistance = guarded.get(previewIndex - 1).distance(anchor);
-                double rightDistance = guarded.get(previewIndex + 1).distance(anchor);
-                boolean canRemoveLeft = previewIndex - 1 > 0
-                    && !isFixedAnchorPoint(selection, sourcePolyline, guarded.get(previewIndex - 1));
-                boolean canRemoveRight = previewIndex + 1 < guarded.size() - 1
-                    && !isFixedAnchorPoint(selection, sourcePolyline, guarded.get(previewIndex + 1));
-                if (leftDistance <= rightDistance && canRemoveLeft) {
-                    guarded.remove(previewIndex - 1);
-                    previewIndex--;
-                } else if (canRemoveRight) {
-                    guarded.remove(previewIndex + 1);
-                } else if (canRemoveLeft) {
-                    guarded.remove(previewIndex - 1);
-                    previewIndex--;
-                } else {
-                    break;
-                }
-                PluginLog.debug("Removed a near-anchor precise preview point to avoid an unsupported %.1f degree fixed-node turn.", turn);
-            }
-        }
-        return guarded;
+    private List<EastNorth> guardPreciseModeFixedTurns(SelectionContext selection,
+            List<EastNorth> sourcePolyline, List<EastNorth> preview) {
+        return LegacyPreciseGeometry.guardFixedTurns(sourcePolyline, preview, fixedIndices(selection));
     }
 
     private boolean isFixedAnchorPoint(SelectionContext selection, List<EastNorth> sourcePolyline, EastNorth point) {

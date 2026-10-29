@@ -32,6 +32,12 @@ Verified batches:
   observed RED before fixing the identity check. Preview-state expectations now
   reflect the approved Legacy default and explicitly configure their7.01m radius;
   the production radius contract remains unchanged from RC12.
+- Subsequent finalization dependency: standalone AlignmentService and the new
+  seed helper now share the actual Legacy simplification/fixed-turn/topology rules.
+  The final seed adapter preserves original metric bits through reduction, rebuilds
+  global occurrence mappings and rejects lost protected identities explicitly.
+  58Legacy/alignment/geometry tests passed, then the strengthened complete-anchor
+  oracle passed the focused adapter suite. Actual source capture is still unwired.
 
 Latest local verification command, with Termux JDK17:
 
@@ -44,7 +50,7 @@ sh ./gradlew test --tests '*LegacyBAssessorTest' --tests '*LegacyBPipelineTest' 
 
 Remaining implementation:
 
-1. Finish the actual frozen Legacy source/profile/simplification bridge. Preserve
+1. Finish the actual frozen Legacy source/profile bridge and freeze safe intervals. Preserve
    visible RenderedHeatmapSampler and managed TileHeatmapSampler inputs and their
    source-specific normalization. Corridor scalar sampling is not an established
    equivalent. Keep all original occurrence keys and frozen geometry exact.

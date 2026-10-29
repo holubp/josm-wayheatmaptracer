@@ -42,4 +42,27 @@ class LegacyPreciseGeometryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> LegacyPreciseGeometry.reconstruct(source, traced, List.of(3)));
     }
+
+    @Test void finalizationSimplifiesWithinProtectedIntervalsAndRebuildsOccurrenceMapping() {
+        var original=List.of(new ProjectedPoint(0,0),new ProjectedPoint(10,0),new ProjectedPoint(20,0));
+        var ridge=List.of(new ProjectedPoint(0,0),new ProjectedPoint(5,.1),new ProjectedPoint(10,0),
+                new ProjectedPoint(15,.1),new ProjectedPoint(20,0));
+        var result=LegacyPreciseGeometry.finish(original,ridge,List.of(1),true,1);
+        assertEquals(original,result.points());
+        assertEquals(Map.of(0,0,1,1,2,2),result.originalToVertex());
+        DetachedValueVerifier.verify(result);
+    }
+
+    @Test void finalizationAlsoUsesNativeLegacyFixedTurnGuardRatherThanRawReconstructionOnly() {
+        var result=LegacyPreciseGeometry.finish(source,traced,List.of(1),false,0);
+        assertEquals(source,result.points());
+        assertEquals(Map.of(0,0,1,1,2,2),result.originalToVertex());
+    }
+
+    @Test void nativePostprocessingCannotSilentlyDropProtectedIdentityFromAHybridSeed() {
+        var points=List.of(new ProjectedPoint(0,0),new ProjectedPoint(1,1),
+                new ProjectedPoint(5,0),new ProjectedPoint(10,0));
+        assertThrows(LegacyPreciseGeometry.ProtectedOccurrenceLostException.class,
+                ()->LegacyPreciseGeometry.finish(points,points,List.of(1),false,0));
+    }
 }

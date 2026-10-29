@@ -50,6 +50,41 @@ public final class LegacySeedAdapter {
             throw new IllegalArgumentException("Captured projection is unavailable");
         }
         var reconstructed = LegacyPreciseGeometry.reconstruct(originalProjected, trace, fixedIndices);
+        return seedFromResult(id, reconstructed, originalProjected, originalMetric, selectedRange,
+                projection, frame);
+    }
+
+    /** Applies standalone Legacy's complete final-geometry path before making a detached metric seed. */
+    public LegacyBModels.Seed finishSeed(String id, List<ProjectedPoint> originalProjected,
+            List<MetricPoint> originalMetric, List<ProjectedPoint> trace, List<Integer> fixedIndices,
+            OccurrenceRange selectedRange, String capturedProjectionCode, LocalMetricFrame frame,
+            boolean simplify, double projectedTolerance) {
+        validateCapturedSource(originalProjected, originalMetric, selectedRange, capturedProjectionCode, frame);
+        var projection = Projections.getProjectionByCode(capturedProjectionCode);
+        if (projection == null) {
+            throw new IllegalArgumentException("Captured projection is unavailable");
+        }
+        var finished = LegacyPreciseGeometry.finish(originalProjected, trace, fixedIndices,
+                simplify, projectedTolerance);
+        return seedFromResult(id, finished, originalProjected, originalMetric, selectedRange,
+                projection, frame);
+    }
+
+    private static void validateCapturedSource(List<ProjectedPoint> originalProjected,
+            List<MetricPoint> originalMetric, OccurrenceRange selectedRange,
+            String capturedProjectionCode, LocalMetricFrame frame) {
+        if (originalProjected == null || originalMetric == null || selectedRange == null
+                || originalProjected.size() != originalMetric.size()
+                || originalMetric.size() != selectedRange.lastIndex() - selectedRange.firstIndex() + 1
+                || frame == null || capturedProjectionCode == null) {
+            throw new IllegalArgumentException("Complete captured source and projection authority are required");
+        }
+    }
+
+    private static LegacyBModels.Seed seedFromResult(String id, LegacyPreciseGeometry.Result reconstructed,
+            List<ProjectedPoint> originalProjected, List<MetricPoint> originalMetric,
+            OccurrenceRange selectedRange, org.openstreetmap.josm.data.projection.Projection projection,
+            LocalMetricFrame frame) {
         var points = new ArrayList<MetricPoint>(reconstructed.points().size());
         var retainedOriginal = new TreeMap<Integer, Integer>();
         reconstructed.originalToVertex().forEach((original, vertex) -> {

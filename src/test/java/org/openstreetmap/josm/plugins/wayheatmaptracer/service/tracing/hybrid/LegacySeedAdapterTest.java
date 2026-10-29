@@ -18,6 +18,36 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RenderedHeatmapSa
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.RidgeTracker;
 
 class LegacySeedAdapterTest {
+    @Test void finalSeedUsesNativeFinishAndRebasesExactProtectedOccurrences() {
+        var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
+                new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
+        var original = List.of(new ProjectedPoint(0, 0), new ProjectedPoint(5, 0), new ProjectedPoint(10, 0));
+        var originalMetric = List.of(new MetricPoint(0, 0), new MetricPoint(5.000000000001, 0),
+                new MetricPoint(10.000000000001, 0));
+        var trace = List.of(new ProjectedPoint(0, .1), new ProjectedPoint(2.5, .1),
+                new ProjectedPoint(5, .1), new ProjectedPoint(7.5, .1), new ProjectedPoint(10, .1));
+
+        var seed = new LegacySeedAdapter().finishSeed("legacy-final", original, originalMetric,
+                trace, List.of(1), new OccurrenceRange(7, 9), "EPSG:3857", frame, true, .5);
+
+        assertEquals(3, seed.points().size());
+        assertEquals(Map.of(7, 0, 8, 1, 9, 2), seed.originalToVertex());
+        assertEquals(originalMetric, seed.points());
+    }
+
+    @Test void finalSeedPropagatesLostProtectedOccurrence() {
+        var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
+                new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
+        var source = List.of(new ProjectedPoint(0, 0), new ProjectedPoint(1, 1),
+                new ProjectedPoint(5, 0), new ProjectedPoint(10, 0));
+        var metric = List.of(new MetricPoint(0, 0), new MetricPoint(1, 1),
+                new MetricPoint(5, 0), new MetricPoint(10, 0));
+
+        assertThrows(LegacyPreciseGeometry.ProtectedOccurrenceLostException.class,
+                () -> new LegacySeedAdapter().finishSeed("lost-anchor", source, metric,
+                        source, List.of(1), new OccurrenceRange(20, 23), "EPSG:3857", frame, false, 0));
+    }
+
     @Test void reconstructionPreservesOriginalAnchorBitsAndUsesCapturedProjectionUnits() {
         var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
                 new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
