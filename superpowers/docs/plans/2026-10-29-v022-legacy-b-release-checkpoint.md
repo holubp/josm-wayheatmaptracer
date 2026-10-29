@@ -50,6 +50,13 @@ sh ./gradlew test --tests '*LegacyBAssessorTest' --tests '*LegacyBPipelineTest' 
 
 Remaining implementation:
 
+Detached Legacy topology assignment now shares the precise live command's exact
+near-fraction arithmetic. The source occurrence identities remain separate from
+final geometry vertices, including coincident targets. The focused planner,
+command and alignment suites passed63tests with no failures/errors/skips; Undo
+checks exact original geographic coordinates and projection agreement separately.
+Hybrid assembly must still prove its own occurrence-to-final-vertex mapping.
+
 Frozen visible profile extraction is now committed394ee96 with39native-parity/
 neighbor tests passing. Prepared managed mosaic extraction subsequently passed41
 tests, including exact native projection and strict five-color aggregation; live

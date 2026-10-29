@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -261,6 +262,105 @@ class ReplaceWaySegmentCommandTest {
     }
 
     @Test
+    void detachedTopologyExtractionKeepsAnalyticPreviewAndCommandGeometryWithoutPlanningMutation() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0, 0);
+        Node junction = nodeAtEastNorth(10, 0);
+        Node end = nodeAtEastNorth(20, 0);
+        Node side = nodeAtEastNorth(10, 20);
+        long id = 100;
+        for (Node node : List.of(start, junction, end, side)) {
+            node.setOsmId(id++, 1);
+            node.setModified(false);
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(List.of(start, junction, end));
+        way.setOsmId(110, 1);
+        way.setModified(false);
+        dataSet.addPrimitive(way);
+        Way branch = new Way();
+        branch.setNodes(List.of(junction, side));
+        branch.setOsmId(111, 1);
+        branch.setModified(false);
+        dataSet.addPrimitive(branch);
+        SelectionContext selection = new SelectionContext(way, 0, 2, way.getNodes(), Set.of(start, end));
+        List<EastNorth> source = List.of(new EastNorth(0, 0), new EastNorth(10, 0), new EastNorth(20, 0));
+        List<EastNorth> ridge = List.of(
+            new EastNorth(0, 0), new EastNorth(5, 4), new EastNorth(15, 4), new EastNorth(20, 0));
+        List<EastNorth> expected = List.of(new EastNorth(0, 0), new EastNorth(5, 4),
+            new EastNorth(10, 4), new EastNorth(15, 4), new EastNorth(20, 0));
+        List<LatLon> originalCoordinates = way.getNodes().stream().map(Node::getCoor).toList();
+
+        var assignments = PreviewNodeAssignmentPlanner.preciseAssignments(selection, source, ridge);
+        assertEquals(3, assignments.size());
+        assertSame(junction, assignments.get(1).node());
+        assertEquals(new EastNorth(10, 4), assignments.get(1).target());
+        List<EastNorth> constrained = PreviewNodeAssignmentPlanner.constrainPreciseTopology(selection, source, ridge);
+        assertEquals(expected, constrained);
+        var targets = PreviewNodeAssignmentPlanner.targetMap(
+            PreviewNodeAssignmentPlanner.preciseAssignments(selection, source, constrained));
+        ReplaceWaySegmentCommand command = new ReplaceWaySegmentCommand(
+            dataSet, way, selection, constrained, targets, "analytic detached topology");
+
+        assertEquals(List.of(start, junction, end), way.getNodes());
+        assertEquals(source, way.getNodes().stream().map(ReplaceWaySegmentCommandTest::eastNorth).toList());
+        assertEquals(List.of(junction, side), branch.getNodes());
+        assertFalse(dataSet.isModified(), "Capturing facts, planning targets and constructing the command are read-only");
+
+        command.executeCommand();
+        assertEquals(expected, way.getNodes().stream().map(ReplaceWaySegmentCommandTest::eastNorth).toList());
+        assertSame(junction, way.getNode(2));
+        assertSame(junction, branch.firstNode());
+        assertEquals(new EastNorth(10, 20), eastNorth(side));
+
+        command.undoCommand();
+        assertEquals(List.of(start, junction, end), way.getNodes());
+        assertEquals(originalCoordinates, way.getNodes().stream().map(Node::getCoor).toList());
+        assertProjectedCoordinates(source, way.getNodes());
+        assertFalse(dataSet.isModified());
+
+        command.executeCommand();
+        assertProjectedCoordinates(expected, way.getNodes());
+        assertEquals(new EastNorth(10, 4), eastNorth(junction));
+        assertSame(junction, way.getNode(2));
+        assertSame(junction, branch.firstNode());
+    }
+
+    @Test
+    void coincidentTaggedOccurrencesKeepSeparateNodeIdentitiesInTheAssignmentMap() {
+        DataSet dataSet = new DataSet();
+        Node start = nodeAtEastNorth(0, 0);
+        Node first = nodeAtEastNorth(10, 0);
+        Node second = nodeAtEastNorth(10, 0);
+        Node end = nodeAtEastNorth(20, 0);
+        first.put("name", "first");
+        second.put("name", "second");
+        for (Node node : List.of(start, first, second, end)) {
+            dataSet.addPrimitive(node);
+        }
+        Way way = new Way();
+        way.setNodes(List.of(start, first, second, end));
+        dataSet.addPrimitive(way);
+        SelectionContext selection = new SelectionContext(way, 0, 3, way.getNodes(), Set.of(start, end));
+        List<EastNorth> ridge = List.of(
+            new EastNorth(0, 0), new EastNorth(5, 4), new EastNorth(15, 4), new EastNorth(20, 0));
+        var assignments = PreviewNodeAssignmentPlanner.preciseAssignments(selection,
+            way.getNodes().stream().map(ReplaceWaySegmentCommandTest::eastNorth).toList(), ridge);
+        var targets = PreviewNodeAssignmentPlanner.targetMap(assignments);
+
+        assertEquals(4, assignments.size());
+        assertSame(first, assignments.get(1).node());
+        assertSame(second, assignments.get(2).node());
+        assertEquals(4, targets.size());
+        assertEquals(new EastNorth(10, 4), targets.get(first.getUniqueId()));
+        assertEquals(new EastNorth(10, 4), targets.get(second.getUniqueId()));
+        assertEquals(new EastNorth(10, 0), eastNorth(first));
+        assertEquals(new EastNorth(10, 0), eastNorth(second));
+        assertEquals(List.of(start, first, second, end), way.getNodes());
+    }
+
+    @Test
     void rejectsCandidatePlanMismatchBeforeMutatingDataset() {
         DataSet dataSet = new DataSet();
         Node start = nodeAtEastNorth(0.0, 0.0);
@@ -395,6 +495,16 @@ class ReplaceWaySegmentCommandTest {
 
     private static EastNorth eastNorth(Node node) {
         return node.getEastNorth(ProjectionRegistry.getProjection());
+    }
+
+    private static void assertProjectedCoordinates(List<EastNorth> expected, List<Node> nodes) {
+        assertEquals(expected.size(), nodes.size());
+        for (int index = 0; index < expected.size(); index++) {
+            EastNorth actual = eastNorth(nodes.get(index));
+            // Undo restores exact geographic values; projecting them can change cached binary64 values.
+            assertEquals(expected.get(index).east(), actual.east(), 1e-8);
+            assertEquals(expected.get(index).north(), actual.north(), 1e-8);
+        }
     }
 
     private record Fixture(
