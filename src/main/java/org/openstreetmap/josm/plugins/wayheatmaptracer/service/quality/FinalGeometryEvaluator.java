@@ -453,13 +453,16 @@ public final class FinalGeometryEvaluator {
 
     private static void inspectBacktracks(List<MetricPoint> points, List<Finding> findings) {
         for (int index = 1; index < points.size() - 1; index++) {
-            MetricPoint incoming = subtract(points.get(index), points.get(index - 1));
+            if (points.get(index).equals(points.get(index + 1))) continue;
+            int incomingIndex = index - 1;
+            while (incomingIndex > 0 && points.get(incomingIndex).equals(points.get(index))) incomingIndex--;
+            MetricPoint incoming = subtract(points.get(index), points.get(incomingIndex));
             MetricPoint outgoing = subtract(points.get(index + 1), points.get(index));
             double product = norm(incoming) * norm(outgoing);
             if (product > 0.0 && dot(incoming, outgoing) < -0.25 * product) {
-                findings.add(hard(FindingCode.ADJACENT_BACKTRACK, index - 1, index + 1, 0));
+                findings.add(hard(FindingCode.ADJACENT_BACKTRACK, incomingIndex, index + 1, 0));
                 if (index == points.size() - 2) {
-                    findings.add(hard(FindingCode.TERMINAL_OVERSHOOT, index - 1, index + 1, 0));
+                    findings.add(hard(FindingCode.TERMINAL_OVERSHOOT, incomingIndex, index + 1, 0));
                 }
             }
         }

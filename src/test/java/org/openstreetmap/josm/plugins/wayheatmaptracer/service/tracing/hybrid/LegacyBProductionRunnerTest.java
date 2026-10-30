@@ -19,6 +19,55 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic.ProbabilisticProfileFactory;
 
 class LegacyBProductionRunnerTest {
+    static Fixture coincidentProtectedFixture() {
+        return fixture(false,false,Double.POSITIVE_INFINITY,true,10,true);
+    }
+    @Test void newlyCollapsedOriginalIntervalCannotBeRestoredAsAnInheritedZeroConnector() {
+        var input = fixture(false,false).input(); var source = input.originalProjected();
+        var points = new ArrayList<>(List.of(source.get(0),source.get(2)));
+        var assignments = List.of(
+                new LegacyTopologyPlanner.Assignment(0,source.get(0),source.get(0),0,0,true),
+                new LegacyTopologyPlanner.Assignment(1,source.get(1),source.get(0),.5,0,false),
+                new LegacyTopologyPlanner.Assignment(2,source.get(2),source.get(2),1,1,true));
+        assertThrows(IllegalStateException.class,() -> LegacyBProductionRunner.exactMapping(input,assignments,points,0,CancellationProbe.NONE));
+        assertEquals(List.of(source.get(0),source.get(2)),points,"New collapse must not create a permitted zero connector");
+    }
+
+    @Test void equalTargetsAtDifferentNativeFractionsKeepTheirDistinctCurveOccurrences() {
+        var input = fixture(false,false,Double.POSITIVE_INFINITY,true,10,true).input();
+        var source = input.originalProjected(); var middle = source.get(1);
+        var points = new ArrayList<>(List.of(source.get(0),middle,new ProjectedPoint(60,10),middle,source.get(3)));
+        double fraction=40/(80+2*Math.hypot(20,10));
+        var assignments = List.of(
+                new LegacyTopologyPlanner.Assignment(0,source.get(0),source.get(0),0,0,true),
+                new LegacyTopologyPlanner.Assignment(1,source.get(1),middle,.5,fraction,true),
+                new LegacyTopologyPlanner.Assignment(2,source.get(2),middle,.5,1-fraction,true),
+                new LegacyTopologyPlanner.Assignment(3,source.get(3),source.get(3),1,1,true));
+        assertEquals(Map.of(0,0,1,1,2,3,3,4),LegacyBProductionRunner.exactMapping(input,assignments,points,0,CancellationProbe.NONE));
+        assertEquals(5,points.size(),"Storage restoration must not invent a duplicate for distinct native occurrences");
+    }
+
+    @Test void preexistingCoincidentProtectedIdentitiesRemainSeparateAndNeighborSectionsCanRefine() {
+        var fixture = fixture(false,false,Double.POSITIVE_INFINITY,true,10,true);
+        try (var owner = AttemptMemoryLedger.production().rootOwner()) {
+            var result = new LegacyBProductionRunner().runVisible(fixture.input(),fixture.visible(),
+                    CancellationProbe.NONE,owner,LegacyBPipeline.Deadline.production()).value();
+            assertFalse(result.seeds().isEmpty(),"Coincident protected identities must not disappear in deduplicated geometry");
+            var seed = result.seeds().get(0);
+            assertTrue(seed.originalToVertex().get(1)<seed.originalToVertex().get(2));
+            assertEquals(seed.points().get(seed.originalToVertex().get(1)),seed.points().get(seed.originalToVertex().get(2)));
+            assertEquals(fixture.input().originalMetric().get(1),seed.points().get(seed.originalToVertex().get(1)));
+            assertTrue(result.batch().sections().stream().anyMatch(section ->
+                    section.section().originalRange().equals(new OccurrenceRange(1,2))
+                    && section.outcome()==LegacyBPipeline.Outcome.LEGACY_RETAINED
+                    && section.reason()==LegacyBPipeline.Reason.DEGENERATE_REFERENCE));
+            assertTrue(result.batch().sections().stream().anyMatch(section -> section.outcome()==LegacyBPipeline.Outcome.B_REFINED),
+                    "The inherited zero connector must not disable nondegenerate neighboring sections");
+            assertTrue(result.assessments().stream().anyMatch(row -> row.quality().disposition()
+                    != FinalGeometryEvaluator.Disposition.HARD_BLOCKED));
+        }
+    }
+
     @Test void inheritedCliffIsReviewableBeforeSectionAdmissionAndOnAssembledGeometry() {
         var fixture = taggedContextFixture(Map.of("natural","cliff"),true);
         var hash = fixture.input().network().canonicalHash();
@@ -366,16 +415,25 @@ class LegacyBProductionRunnerTest {
 
     private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal,
             double contextExtent) {
+        return fixture(fixedMiddle,crossing,authorizedHalfWidth,signal,contextExtent,false);
+    }
+
+    private static Fixture fixture(boolean fixedMiddle, boolean crossing, double authorizedHalfWidth, boolean signal,
+            double contextExtent, boolean coincidentProtected) {
         var projection = Projections.getProjectionByCode("EPSG:3857");
         var frame = LocalMetricFrame.certifiedEquirectangular(new GeographicPoint(0, 0),
                 new GeographicPoint(-.01, -.01), new GeographicPoint(.01, .01));
-        var projected = List.of(new ProjectedPoint(0, 0), new ProjectedPoint(40, 0), new ProjectedPoint(80, 0));
-        var keys = List.of(nodeKey(1), nodeKey(2), nodeKey(3));
+        var projected = coincidentProtected
+                ? List.of(new ProjectedPoint(0,0),new ProjectedPoint(40,0),new ProjectedPoint(40,0),new ProjectedPoint(80,0))
+                : List.of(new ProjectedPoint(0, 0), new ProjectedPoint(40, 0), new ProjectedPoint(80, 0));
+        var keys = coincidentProtected ? List.of(nodeKey(1),nodeKey(2),nodeKey(6),nodeKey(3))
+                : List.of(nodeKey(1), nodeKey(2), nodeKey(3));
         var way = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 10);
         var values = new LinkedHashMap<PrimitiveKey, DetachedPrimitive>();
         for (int i = 0; i < projected.size(); i++) {
             var ll = projection.eastNorth2latlon(new EastNorth(projected.get(i).east(), projected.get(i).north()));
-            values.put(keys.get(i), new DetachedNode(keys.get(i), new GeographicPoint(ll.lat(), ll.lon()), Map.of(), false, false));
+            values.put(keys.get(i), new DetachedNode(keys.get(i), new GeographicPoint(ll.lat(), ll.lon()),
+                    coincidentProtected && (i==1 || i==2) ? Map.of("note","synthetic-protected-"+i) : Map.of(),false,false));
         }
         values.put(way, new DetachedWay(way, keys, Map.of("highway", "path"), false, false));
         if (crossing) {
@@ -417,24 +475,26 @@ class LegacyBProductionRunnerTest {
         var evidence = new EvidenceSnapshot("runner-evidence", frame, transform, resolution,
                 footprint, footprint, Map.of("hot", new ScalarEvidenceField(width, height, scalar, valid, lineage)),
                 "synthetic-runner");
-        var protectedKeys = fixedMiddle ? Set.copyOf(keys) : Set.of(keys.get(0), keys.get(2));
+        var protectedKeys = fixedMiddle || coincidentProtected ? Set.copyOf(keys)
+                : Set.of(keys.get(0),keys.get(keys.size()-1));
         var editRegion = Double.isFinite(authorizedHalfWidth)
                 ? new MetricRegion(List.of(List.of(new MetricPoint(-20, -authorizedHalfWidth),
                         new MetricPoint(100, -authorizedHalfWidth), new MetricPoint(100, authorizedHalfWidth),
                         new MetricPoint(-20, authorizedHalfWidth)))) : footprint;
         var closure = new ClosureDescriptor(ClosureDescriptor.Scope.SELECTION_SAFETY, "runner-test", values.keySet(),
-                Set.of(way), Set.of(), protectedKeys, Set.of(), Map.of(way, List.of(new OccurrenceRange(0, 2))),
+                Set.of(way), Set.of(), protectedKeys, Set.of(), Map.of(way, List.of(new OccurrenceRange(0,keys.size()-1))),
                 List.of(), footprint, editRegion, true, true, true, true);
         var network = new NetworkSnapshot("runner-network", SnapshotRole.CAPTURED_BEFORE, "synthetic", 1,
                 closure, values, V022SnapshotFixtures.closedWorldReferrerWatches(values));
         var original = keys.stream().map(key -> frame.toMetric(((DetachedNode) values.get(key)).coordinate())).toList();
-        var request = new TraceRequest(way, new OccurrenceRange(0, 2), TrackerMode.LEGACY_THEN_B,
+        var request = new TraceRequest(way, new OccurrenceRange(0,keys.size()-1), TrackerMode.LEGACY_THEN_B,
                 AlignmentMode.PRECISE_SHAPE, RecoveryPermissions.disabled(4), TraceBudgets.defaults(),
                 evidence.snapshotId(), evidence.canonicalHash(), network.snapshotId(), network.canonicalHash(),
                 "settings", "legacy-then-b-v1", "synthetic", 2,
                 new ProbabilisticProfileFactory().profileChainage(original, 2), resolution);
-        var facts = List.of(new Occurrence(0, true, true), new Occurrence(1, fixedMiddle, fixedMiddle),
-                new Occurrence(2, true, true));
+        var facts = java.util.stream.IntStream.range(0,keys.size()).mapToObj(index ->
+                new Occurrence(index,index==0 || index==keys.size()-1 || fixedMiddle || coincidentProtected,
+                        index==0 || index==keys.size()-1 || fixedMiddle || coincidentProtected)).toList();
         var input = new LegacyBProductionRunner.Input(request, network, evidence, "hot", projected, original,
                 "EPSG:3857", facts, List.of(), false, 0);
         var anchors = new ArrayList<LegacyVisibleProfileSampler.Anchor>();

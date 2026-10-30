@@ -239,9 +239,10 @@ public final class LegacyBProductionRunner {
                     var finished = LegacyPreciseGeometry.finish(input.originalProjected(), projected, fixed,
                             input.simplify(), input.projectedTolerance());
                     var frozen = restoreFrozen(input, finished);
-                    finalProjected = LegacyTopologyPlanner.constrain(input.originalProjected(), frozen, facts);
+                    finalProjected = new ArrayList<>(LegacyTopologyPlanner.constrain(input.originalProjected(), frozen, facts));
                     var assignments = LegacyTopologyPlanner.preciseAssignments(input.originalProjected(), finalProjected, facts);
-                    var mapping = exactMapping(assignments, finalProjected, input.request().selectedRange().firstIndex());
+                    var mapping = exactMapping(input,assignments,finalProjected,
+                            input.request().selectedRange().firstIndex(),cancellation);
                     var metric = metricPoints(input, finalProjected, assignments, mapping);
                     seed = Optional.of(new Seed(id, metric, mapping));
                     seeds.add(seed.orElseThrow());
@@ -568,16 +569,32 @@ public final class LegacyBProductionRunner {
         return List.copyOf(result);
     }
 
-    private static Map<Integer,Integer> exactMapping(List<LegacyTopologyPlanner.Assignment> assignments,
-            List<ProjectedPoint> points, int start) {
+    /** Restores storage for inherited zero connectors, without authorizing a new collapse. */
+    static Map<Integer,Integer> exactMapping(Input input,List<LegacyTopologyPlanner.Assignment> assignments,
+            List<ProjectedPoint> points, int start,CancellationProbe cancellation) {
         var result = new TreeMap<Integer,Integer>(); int previous = -1;
+        LegacyTopologyPlanner.Assignment prior = null;
+        var way = (DetachedWay) input.network().primitives().get(input.request().selectedWayKey());
         for (var assignment : assignments) {
+            cancellation.checkpoint();
             int found = -1;
-            for (int vertex = previous + 1; vertex < points.size(); vertex++) {
-                if (points.get(vertex).equals(assignment.target())) { found = vertex; break; }
+            boolean inherited = prior!=null && assignment.sourceIndex()==prior.sourceIndex()+1
+                    && assignment.target().equals(prior.target())
+                    && Double.doubleToLongBits(assignment.previewFraction())==Double.doubleToLongBits(prior.previewFraction())
+                    && ((DetachedNode) input.network().primitives().get(way.nodeKeys().get(start+assignment.sourceIndex())))
+                            .coordinate().equals(((DetachedNode) input.network().primitives()
+                                    .get(way.nodeKeys().get(start+prior.sourceIndex()))).coordinate());
+            if (inherited && previous>=0 && points.get(previous).equals(assignment.target())) {
+                found=previous+1;
+                points.add(found,assignment.target());
+            } else {
+                for (int vertex = previous + 1; vertex < points.size(); vertex++) {
+                    cancellation.checkpoint();
+                    if (points.get(vertex).equals(assignment.target())) { found = vertex; break; }
+                }
             }
             if (found < 0) throw new UnrepresentableAssignment();
-            result.put(start + assignment.sourceIndex(), found); previous = found;
+            result.put(start + assignment.sourceIndex(), found); previous = found; prior=assignment;
         }
         return result;
     }

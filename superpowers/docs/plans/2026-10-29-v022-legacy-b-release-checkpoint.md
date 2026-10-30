@@ -1,5 +1,46 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## 2026-10-30 protected coincident occurrence continuation
+
+Final neighboring GREEN:90tests/0failures/errors/skips,1m55s,
+v022-coincident-final-neighbors.log: runner18,reference4,planner10,
+finalgeometry48,sharedinterior5,connector5. Together with7focused below this
+qualifies the scoped batch for commit/public CI, not for RC publication.
+
+Final focused GREEN:7tests,0failures/errors/skips,1m59s,
+v022-coincident-final-focused.log. Actual ordinary B-refined selected-subrange
+Apply/Undo/Redo preserves both distinct tagged identities, fixed coordinates,
+original modified flags and outside nodes. Coincident frozen replay matches exact
+actual geometry/quality/native work. Five connector/foldback controls pass.
+Neighbor runv022-coincident-final-neighbors.log is pending; broad adapter checks
+will run through CI. Passing focused evidence supersedes the pending description
+below, without closing other release gates.
+
+HEAD098b0aa inherited-contact batch passed public CI40969218870, exact commit
+verified. Current uncommitted batch repairs the separate ordered storage of
+originally consecutive coincident protected identities, without accepting a new
+collapse or merging different native curve fractions. Runner RED empty seed
+became GREEN; ordinary transaction then reproduced a second blocker: valid local
+B/Legacy-degenerate/B assembly was rejected by final topology as a vertex touch.
+The adapter now recognizes only unchanged, uniquely ordered original zero
+connectors for same-way touch adjacency. New collapse, movement, reordered and
+nonconsecutive identities are negative controls; crossings/overlaps remain checked.
+
+Independent Sol review then reproduced a physical foldback masked by a zero
+incoming vector. FinalGeometryEvaluator now checks the preceding nonzero edge
+without changing stored geometry, with single/multiple/boundary duplicate-run
+regressions. Reviewer found no further source blocker; final passing evidence is
+still pending. Frozen replay regression checks actual refined geometry, quality
+and native work for the coincident fixture.
+
+The broad local run1074 disappeared with no terminal Gradle receipt (log
+v022-coincident-final-topology-green-2.log). Its process and handle are both absent;
+it is NOT passing evidence. Run50553 now verifies final ordinary Apply/Undo/Redo,
+connector controls and frozen replay, logv022-coincident-final-focused.log.
+Broader checks should use public CI rather than repeat the slow local adapter
+suite. GUI/private comparisons, final original-scope audit and RC qualification
+remain open. No new public release. Weekly allowance telemetry unavailable.
+
 Approved scope and exact task definitions remain in
 [the execution plan](2026-10-28-v022-legacy-b-release-execution.md) and its approved
 design. This checkpoint reports partial implementation; it is not RC qualification.

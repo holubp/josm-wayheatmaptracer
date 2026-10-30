@@ -15,6 +15,29 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewServi
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
 
 class LegacyBFrozenReplayTest {
+    @Test void coincidentProtectedOccurrencesReplayExactRefinedGeometryAndActualWork() {
+        var fixture = LegacyBProductionRunnerTest.coincidentProtectedFixture();
+        var input = fixture.input();
+        var options = new ModernTracePipeline.Options(input.fieldName(),GeometryCleanupConfig.disabled(),"selected-visible",0);
+        try (var owner = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production().rootOwner()) {
+            var actual = new LegacyBProductionRunner().runVisible(input,fixture.visible(),
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE,owner,
+                    LegacyBPipeline.Deadline.production());
+            var stage = FrozenLegacyBInput.capture(new LiveBPreviewService.LegacyBComputation(input,actual.value(),fixture.visible(),null));
+            var decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(
+                    new FrozenReplayInput(input.request(),input.evidence(),input.network(),options,4,stage)));
+            var replay = Format15ReplayRunner.replay(decoded,ReplayLevel.FINAL_GEOMETRY,TrackerMode.LEGACY_THEN_B);
+            var expected = LegacyBModernResultAdapter.adapt(actual.value(),input,options,
+                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE);
+            assertFalse(expected.routes().isEmpty());
+            assertEquals(expected.routes().stream().map(route -> route.hypothesis().points()).toList(),
+                    replay.routes().stream().map(route -> route.hypothesis().points()).toList());
+            assertEquals(expected.routes().stream().map(route -> route.quality()).toList(),
+                    replay.routes().stream().map(route -> route.quality()).toList());
+            assertEquals(actual.value().batch().usage().transitions(),replay.inference().evaluatedTransitions());
+            assertTrue(replay.inference().evaluatedTransitions()>0);
+        }
+    }
     @Test void inheritedCliffReplayPreservesActualRefinementAndReviewWithoutChangingContext() {
         var fixture = LegacyBProductionRunnerTest.taggedContextFixture(java.util.Map.of("natural","cliff"),true);
         var input = fixture.input(); var hash = input.network().canonicalHash();

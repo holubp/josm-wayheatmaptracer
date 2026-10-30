@@ -3,6 +3,7 @@ package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -2247,6 +2248,7 @@ public final class ModernSingleWayEditPlanAdapter {
         Set<PrimitiveKey> inherited = InheritedNonTransportContacts.prove(before, after,
                 selectedWay, selectedRange, evidence, searchHalfWidthMeters);
         var contactFrame = CertifiedContextSegmentClipper.prepareOriginalContactFrame(evidence.coordinateFrame());
+        var inheritedConnectorRuns = inheritedConnectorRuns(before.primitives(), after);
         for (int firstIndex = 0; firstIndex < segments.size(); firstIndex++) {
             Segment first = segments.get(firstIndex);
             for (int secondIndex = firstIndex + 1; secondIndex < segments.size(); secondIndex++) {
@@ -2279,6 +2281,10 @@ public final class ModernSingleWayEditPlanAdapter {
                 TopologyDefect defect = decision.defect();
                 if (defect == TopologyDefect.NONE) {
                     continue;
+                }
+                if (sameWay && defect == TopologyDefect.VERTEX_TOUCH) {
+                    int[] runs = inheritedConnectorRuns.get(first.wayKey());
+                    if (runs != null && runs[first.index() + 1] == runs[second.index()]) continue;
                 }
                 if (defect == TopologyDefect.VERTEX_TOUCH && decision.soleSharedContact()) {
                     continue;
@@ -2350,6 +2356,36 @@ public final class ModernSingleWayEditPlanAdapter {
         }
         return !java.util.Objects.equals(before.primitives().get(firstKey), after.get(firstKey))
                 || !java.util.Objects.equals(before.primitives().get(secondKey), after.get(secondKey));
+    }
+
+    /** Only unchanged, originally adjacent coincident identities form inherited connectors. */
+    static Map<PrimitiveKey, int[]> inheritedConnectorRuns(Map<PrimitiveKey, DetachedPrimitive> before,
+            Map<PrimitiveKey, DetachedPrimitive> after) {
+        var result = new HashMap<PrimitiveKey, int[]>();
+        for (var primitive : after.values()) {
+            if (!(primitive instanceof DetachedWay way)
+                    || !(before.get(way.key()) instanceof DetachedWay original)) continue;
+            var indexes = new HashMap<PrimitiveKey, Integer>();
+            var repeated = new HashSet<PrimitiveKey>();
+            for (int index = 0; index < original.nodeKeys().size(); index++) {
+                var key = original.nodeKeys().get(index);
+                if (indexes.put(key, index) != null) repeated.add(key);
+            }
+            int[] runs = new int[way.nodeKeys().size()];
+            for (int index = 1; index < runs.length; index++) {
+                var left = way.nodeKeys().get(index - 1);
+                var right = way.nodeKeys().get(index);
+                Integer leftIndex = indexes.get(left), rightIndex = indexes.get(right);
+                boolean inherited = !left.equals(right) && !repeated.contains(left) && !repeated.contains(right)
+                        && leftIndex != null && rightIndex != null && rightIndex == leftIndex + 1
+                        && geographic(before, left).equals(geographic(before, right))
+                        && geographic(before, left).equals(geographic(after, left))
+                        && geographic(before, right).equals(geographic(after, right));
+                runs[index] = runs[index - 1] + (inherited ? 0 : 1);
+            }
+            result.put(way.key(), runs);
+        }
+        return result;
     }
 
     private static boolean continuationReverses(Segment first, Segment second) {

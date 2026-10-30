@@ -75,18 +75,32 @@ class OrdinaryModernAttemptAssemblyTest {
         verifyHybridSubrange(east);
     }
 
+    @Test void coincidentTaggedOccurrencesSurviveHybridApplyUndoRedo() throws Exception {
+        verifyHybridSubrange(new double[] {-45, -32, 0, 0, 32, 45}, true);
+    }
+
     private static void verifyHybridSubrange(double[] east) throws Exception {
+        verifyHybridSubrange(east, false);
+    }
+
+    private static void verifyHybridSubrange(double[] east, boolean coincident) throws Exception {
         var dataSet = new DataSet();
         var nodes = new ArrayList<Node>();
         for (int index = 0; index < east.length; index++) {
             var node = loadedNode(100 + index, longitude(east[index]));
+            if (coincident && (index == 2 || index == 3)) {
+                node.put("note", "synthetic protected occurrence " + index);
+                node.setModified(false);
+            }
             nodes.add(node); dataSet.addPrimitive(node);
         }
         var way = new Way(); way.setNodes(nodes); way.setOsmId(110, 1); way.setModified(false);
         dataSet.addPrimitive(way);
         var originalCoordinates = nodes.stream().map(Node::getCoor).toList();
         int last = nodes.size() - 2;
-        var selection = new SelectionContext(way, 1, last, nodes.subList(1, last + 1), Set.of(nodes.get(1), nodes.get(last)));
+        var fixed = new java.util.HashSet<Node>(Set.of(nodes.get(1), nodes.get(last)));
+        if (coincident) { fixed.add(nodes.get(2)); fixed.add(nodes.get(3)); }
+        var selection = new SelectionContext(way, 1, last, nodes.subList(1, last + 1), fixed);
         var published = new AtomicReference<LiveBPreviewService.Computed>();
         var ready = new CountDownLatch(1);
         try (var session = new PreviewSessionController<LiveBPreviewService.Computed>(Runnable::run)) {
@@ -101,7 +115,7 @@ class OrdinaryModernAttemptAssemblyTest {
             var computed = published.get(); assertNotNull(computed);
             assertEquals(new org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange(1, last),
                     computed.request().selectedRange());
-            if (east.length > 5) {
+            if (east.length > 5 && !coincident) {
                 var refined = computed.legacyB().result().batch().candidates().stream().filter(candidate ->
                         candidate.sections().stream().anyMatch(section -> section.source()
                                 == org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Source.B))
@@ -142,6 +156,12 @@ class OrdinaryModernAttemptAssemblyTest {
                     assertEquals(nodes.get(0), way.firstNode()); assertEquals(nodes.get(last + 1), way.lastNode());
                     for (int index : new int[] {0, 1, last, last + 1})
                         assertEquals(originalCoordinates.get(index), nodes.get(index).getCoor());
+                    for (var node : fixed) assertEquals(originalCoordinates.get(nodes.indexOf(node)), node.getCoor());
+                    if (coincident) {
+                        assertTrue(way.getNodes().indexOf(nodes.get(2)) < way.getNodes().indexOf(nodes.get(3)));
+                        assertEquals("synthetic protected occurrence 2", nodes.get(2).get("note"));
+                        assertEquals("synthetic protected occurrence 3", nodes.get(3).get("note"));
+                    }
                     var applied = way.getNodes().stream().map(Node::getCoor).toList();
                     history.undo();
                     assertEquals(nodes, way.getNodes());

@@ -1,5 +1,21 @@
 # Legacy→B whole-delta audit — 2026-10-29
 
+Final affected receipts2026-10-30:7focused/0failures/errors/skips1m59s includes
+actual ordinary Apply/Undo/Redo and frozen replay;90neighbors/0failures/errors/
+skips1m55s covers runner,reference,planner,finalgeometry,sharedinterior and connector
+controls. These supersede the pending local evidence below; stable full CI and
+the remaining whole-release gates are still required.
+
+2026-10-30 affected Sol review: importer restoration is appropriately restricted
+to exact inherited consecutive coordinates/native fractions. Actual ordinary
+transaction RED exposed adapter zero-connector adjacency mismatch. Reviewer agreed
+with the unchanged original-key/run touch policy, then independently reproduced a
+foldback across that connector missed by a zero incoming vector. The follow-up
+nonzero-edge check preserves ordinary arithmetic and physical geometry; no further
+source blocker found. Final transaction/replay/negative-control GREEN is required;
+the interrupted broad local run does not provide that evidence. This review does
+not close remaining GUI/private/final release gates.
+
 Read-only independent review of `117baaf..93258e8`, approved execution/design,
 actual source and tests. Requested Sol6.1/high; exposed runtime metadata could not
 independently certify the effective routing. No Astra or recursive delegation.
