@@ -665,6 +665,57 @@ class OrdinaryModernAttemptAssemblyTest {
         }
     }
 
+    @Test void ordinaryHybridCannotPublishAfterCancellationOrSupersessionAtTheEventQueue() throws Exception {
+        for (boolean supersede : new boolean[] {false, true}) {
+            var fixture = fixture();
+            var originalNodes = fixture.selection().way().getNodes();
+            var originalCoordinates = originalNodes.stream().map(Node::getCoor).toList();
+            var queue = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+            var published = new ArrayList<TrackerMode>();
+            try (var session = new PreviewSessionController<LiveBPreviewService.Computed>(queue::add)) {
+                var assembly = new AlignWayAction.OrdinaryModernAttemptAssembly();
+                var owner = session.open(() -> { });
+                SwingUtilities.invokeAndWait(() -> assembly.start(session, owner,
+                        routing(TrackerMode.LEGACY_THEN_B, AlignmentSourceMode.VISIBLE_LAYER),
+                        fixture.dataSet(), fixture.selection(), "hybrid-queued-publication",
+                        (source, invocation, permissions) -> visibleRaster(),
+                        (seed, invocation, context) -> { throw new AssertionError("Visible Hybrid cannot acquire tiles"); },
+                        attempt -> published.add(attempt.result().request().engine())));
+                Runnable oldPublication = queue.poll(60, TimeUnit.SECONDS);
+                assertNotNull(oldPublication, String.valueOf(session.currentAttempt()));
+                assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.State.VALIDATING,
+                        session.currentAttempt().state());
+                if (supersede) {
+                    var next = session.open(() -> { });
+                    SwingUtilities.invokeAndWait(() -> assembly.start(session, next,
+                            routing(TrackerMode.PROBABILISTIC, AlignmentSourceMode.VISIBLE_LAYER),
+                            fixture.dataSet(), fixture.selection(), "newer-b-queued-publication",
+                            (source, invocation, permissions) -> visibleRaster(),
+                            (seed, invocation, context) -> { throw new AssertionError("Visible B cannot acquire tiles"); },
+                            attempt -> published.add(attempt.result().request().engine())));
+                    Runnable newPublication = queue.poll(60, TimeUnit.SECONDS);
+                    assertNotNull(newPublication, String.valueOf(session.currentAttempt()));
+                    SwingUtilities.invokeAndWait(newPublication);
+                    assertEquals(List.of(TrackerMode.PROBABILISTIC), published);
+                    var terminal = session.currentAttempt();
+                    SwingUtilities.invokeAndWait(oldPublication);
+                    assertEquals(terminal, session.currentAttempt(), "Old publication cannot overwrite a newer terminal result");
+                } else {
+                    assertTrue(session.close(owner));
+                    var terminal = session.currentAttempt();
+                    assertEquals(org.openstreetmap.josm.plugins.wayheatmaptracer.service.AlignmentJob.State.CANCELLED,
+                            terminal.state());
+                    SwingUtilities.invokeAndWait(oldPublication);
+                    assertEquals(terminal, session.currentAttempt());
+                    assertTrue(published.isEmpty(), "Cancelled Hybrid cannot publish its completed computation");
+                }
+                assertEquals(originalNodes, fixture.selection().way().getNodes());
+                assertEquals(originalCoordinates, originalNodes.stream().map(Node::getCoor).toList());
+                assertTrue(fixture.dataSet().allPrimitives().stream().noneMatch(primitive -> primitive.isModified()));
+            }
+        }
+    }
+
     @Test
     void unsupportedOneShotWidthFailsBeforeManagedTileAcquisition() throws Exception {
         Fixture fixture = fixture();

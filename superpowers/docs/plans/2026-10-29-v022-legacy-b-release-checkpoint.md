@@ -1,5 +1,21 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+2026-10-30 continuation afterGUIcommit843402e: publicCI40981960903 confirmed
+in_progress; same run must be observed. New uncommitted test-only ordinaryHybrid
+queued-publication check + common cancellation/capture suites PASS15/0failures/
+errors/skips1m28s. Cancellation or a newer B terminal publication prevents queued
+old Hybrid callback from publishing/overwriting; original OSM stays unchanged.
+No new production defect/RED claimed for this added integration coverage.
+
+Private inventory of supplied RC4 captures:8FINAL_GEOMETRY cases/0intake errors,
+copied/hash-verified into ignored build/private-legacy-b-release-20261030.
+Strict offlineB replay exit2 in33s: all8 rejected numerical-policy-invalid before
+engine execution. This provides no passing quality/performance evidence. Do not
+weaken strict policy validation or fabricate missing Legacy source inputs; use
+factual native imagery/OSM for a separately labelled fresh comparison if sufficient.
+Private receipts remain local and excluded from public CI/history. Remaining
+private three-engine/four-case-family comparison and final audit/RC gates OPEN.
+
 ## 2026-10-30 actual Hybrid GUI gate
 
 Final follow-up GREEN1lookup control/0failures/errors/skips,40s,
