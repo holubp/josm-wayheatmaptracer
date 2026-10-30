@@ -12,6 +12,8 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.coor.LatLon;
 import org.openstreetmap.josm.data.projection.Projection;
@@ -28,6 +30,61 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.Le
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 class LegacyManagedProfileSamplerTest {
+    @ParameterizedTest @ValueSource(strings = {"hot", "all-colors-combined"})
+    void admissionUsesFactualReferenceMosaicEvenWhenSummaryParametersDiffer(String detector) {
+        var fixture = fixture(COLORS);
+        var original = LegacyManagedProfileSampler.freeze(fixture.set(), fixture.source(), "EPSG:3857", "hot",
+                List.of(detector), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+        var summary = new TileHeatmapSampler.SamplingParameters(ZOOM, 0, 1, .389, 40, 1, 1);
+        var input = new LegacyManagedProfileSampler.Input(original.inferenceMode(), original.requestedInferenceZoom(),
+                original.requestedValidationZoom(), original.inferenceZoom(), original.validationZoom(), original.tileSize(),
+                original.mosaics(), summary, original.validationParameters(), original.sourcePolyline(),
+                original.projectionCode(), original.selectedPalette(), original.detectors(), original.intensityMode(),
+                original.trackerNormalizationRasterPx());
+        var actual = new LegacyManagedProfileSampler().sample(input, CancellationProbe.NONE).get(0).profiles();
+        var shape = LegacyManagedProfileSampler.samplingShape(input);
+        assertEquals(actual.size(), shape.profiles());
+        assertTrue(actual.stream().allMatch(profile -> profile.intensitySamples().size() == shape.samplesPerProfile()));
+    }
+    @Test void admissionShapeMatchesNativeSamplingAcrossRoundingAndProjectionCases() {
+        var fixture = fixture(List.of("hot"));
+        var mosaic = fixture.set().require("hot");
+        var sampler = TileHeatmapSampler.numericalOnly();
+        var parameters = mosaic.parameters();
+        var highLatitude = fixture.projection().latlon2eastNorth(new LatLon(70, 0));
+        for (var origin : List.of(fixture.sourceEastNorth().get(0), highLatitude)) {
+            for (double length : new double[] {0, 8.999999, 9, 9.000001, 1000}) {
+                var source = List.of(origin, new EastNorth(origin.east() + length, origin.north()));
+                var shape = TileHeatmapSampler.legacySamplingShape(PolylineMath.length(source), source.size(), parameters);
+                assertEquals(PolylineMath.resampleBySpacing(source, Math.max(4, parameters.sampleStepMeters())).size(),
+                        shape.profiles(), "Preserve the independent pre-existing native resampling convention");
+                var profiles = sampler.sampleProfiles(mosaic, source, "hot", IntensitySamplingMode.COLOR_MAPPING,
+                        fixture.projection(), CancellationProbe.NONE);
+                assertEquals(profiles.size(), shape.profiles());
+                assertTrue(profiles.stream().allMatch(profile -> profile.intensitySamples().size() == shape.samplesPerProfile()));
+            }
+        }
+        var source = List.of(highLatitude, highLatitude, highLatitude);
+        var shape = TileHeatmapSampler.legacySamplingShape(0, 3, parameters);
+        assertEquals(3, shape.profiles());
+        assertEquals(3, sampler.sampleProfiles(mosaic, source, "hot", IntensitySamplingMode.COLOR_MAPPING,
+                fixture.projection(), CancellationProbe.NONE).size());
+        assertThrows(IllegalArgumentException.class,
+                () -> TileHeatmapSampler.legacySamplingShape(Double.MAX_VALUE, 2, parameters));
+        var ordinary = new TileHeatmapSampler.SamplingParameters(ZOOM, 70, 1, 7.01, 1.56, 6, 1);
+        assertEquals(10, TileHeatmapSampler.legacySamplingShape(1740, 86, ordinary).samplesPerProfile(),
+                "Native/reference units produce ten samples, not the old native-pixel estimate of148");
+    }
+
+    @Test void frozenManagedAdmissionUsesTheSameNativeShapeWithoutChangingSampling() {
+        var fixture = fixture(List.of("hot"));
+        var frozen = LegacyManagedProfileSampler.freeze(fixture.set(), fixture.source(), "EPSG:3857", "hot",
+                List.of("hot"), IntensitySamplingMode.COLOR_MAPPING, 1.75);
+        var shape = LegacyManagedProfileSampler.samplingShape(frozen);
+        var actual = new LegacyManagedProfileSampler().sample(frozen, CancellationProbe.NONE).get(0).profiles();
+        assertEquals(actual.size(), shape.profiles());
+        assertTrue(actual.stream().allMatch(profile -> profile.intensitySamples().size() == shape.samplesPerProfile()));
+    }
     private static final int ZOOM = 15;
     private static final List<String> COLORS = List.of("hot", "blue", "bluered", "purple", "gray");
 

@@ -46,6 +46,35 @@ public final class TileHeatmapSampler {
     public static final double REFERENCE_VIEW_METERS_PER_PIXEL = 0.389;
     /** Legacy-compatible rendered-raster oversampling factor. */
     public static final double REFERENCE_RASTER_SCALE = RenderedHeatmapSampler.RASTER_SCALE;
+
+    /** Exact dimensions of native Legacy sampling, in its existing projected/reference frame. */
+    public record LegacySamplingShape(int profiles, int referenceHalfWidthPx, int referenceStepPx,
+            long samplesPerProfile) { }
+
+    /** Count-only admission plan shared with sampling; rejects overflow before profile allocation. */
+    public static LegacySamplingShape legacySamplingShape(double projectedLength, int sourceOccurrences,
+            SamplingParameters parameters) {
+        if (!Double.isFinite(projectedLength) || projectedLength < 0 || sourceOccurrences < 0
+                || parameters == null || !Double.isFinite(parameters.sampleStepMeters())
+                || parameters.sampleStepMeters() <= 0 || !Double.isFinite(parameters.halfWidthMeters())
+                || parameters.halfWidthMeters() <= 0) {
+            throw new IllegalArgumentException("Native Legacy sampling dimensions must be finite and positive");
+        }
+        long intervals = Math.round(projectedLength / Math.max(4.0, parameters.sampleStepMeters()));
+        if (intervals > Integer.MAX_VALUE - 1L) throw new IllegalArgumentException("Native profile count exceeds bound");
+        int profiles = sourceOccurrences < 2 ? 0 : projectedLength == 0 ? sourceOccurrences
+                : Math.max(2, (int) intervals + 1);
+        long half = Math.max(1, Math.round(parameters.halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        long step = Math.max(1, Math.round(parameters.sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        double scaledHalf = half * REFERENCE_RASTER_SCALE, scaledStep = step * REFERENCE_RASTER_SCALE;
+        if (half > Integer.MAX_VALUE || step > Integer.MAX_VALUE
+                || scaledHalf + scaledStep > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Native lateral sample count exceeds bound");
+        }
+        long samples = Math.floorDiv(2L * Math.max(1L, Math.round(scaledHalf)),
+                Math.max(1L, Math.round(scaledStep))) + 1;
+        return new LegacySamplingShape(profiles, (int) half, (int) step, samples);
+    }
     /** Maximum managed native source-pixel radius that one explicit retry may request. */
     public static final int MAX_MANAGED_SEARCH_HALF_WIDTH_NATIVE_PIXELS = 96;
 
@@ -150,13 +179,14 @@ public final class TileHeatmapSampler {
         String detectorMode,
         ManagedHeatmapConfig config
     ) {
-        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, mosaic.parameters().sampleStepMeters()));
+        var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), mosaic.parameters());
+        List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) {
             return List.of();
         }
         List<Point2D.Double> local = localPolyline(mosaic, dense);
-        int referenceHalfWidthPx = Math.max(1, (int) Math.round(mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        int referenceStepPx = Math.max(1, (int) Math.round(mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceHalfWidthPx = shape.referenceHalfWidthPx();
+        int referenceStepPx = shape.referenceStepPx();
         PluginLog.verbose("Sampling %d fixed-tile cross-sections for color '%s' z%d (halfWidth=%d ref px/%.1fm, step=%d ref px/%.1fm, virtualScale=%.2f).",
             dense.size(),
             mosaic.color(),
@@ -191,14 +221,12 @@ public final class TileHeatmapSampler {
         java.util.Objects.requireNonNull(intensityMode, "intensityMode");
         java.util.Objects.requireNonNull(projection, "projection");
         java.util.Objects.requireNonNull(cancellation, "cancellation");
-        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
-                Math.max(4.0, mosaic.parameters().sampleStepMeters()));
+        var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), mosaic.parameters());
+        List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) return List.of();
         List<Point2D.Double> local = localPolyline(mosaic, dense, projection);
-        int halfWidthPx = Math.max(1, (int) Math.round(
-                mosaic.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        int stepPx = Math.max(1, (int) Math.round(
-                mosaic.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int halfWidthPx = shape.referenceHalfWidthPx();
+        int stepPx = shape.referenceStepPx();
         return new RenderedHeatmapSampler().sampleProfilesOnAnchors(mosaic.image(),
                 ProfileSamplingAnchor.pair(dense, local, projection), halfWidthPx, stepPx,
                 detectorMode, REFERENCE_RASTER_SCALE, mosaic.virtualRasterScale(), intensityMode,
@@ -255,13 +283,14 @@ public final class TileHeatmapSampler {
         }
         TileMosaic reference = frame.reference();
         Map<String, BufferedImage> images = frame.images();
-        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline, Math.max(4.0, reference.parameters().sampleStepMeters()));
+        var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), reference.parameters());
+        List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) {
             return List.of();
         }
         List<Point2D.Double> local = localPolyline(reference, dense);
-        int referenceHalfWidthPx = Math.max(1, (int) Math.round(reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        int referenceStepPx = Math.max(1, (int) Math.round(reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int referenceHalfWidthPx = shape.referenceHalfWidthPx();
+        int referenceStepPx = shape.referenceStepPx();
         PluginLog.verbose("Sampling %d fixed-tile aggregate cross-sections at z%d from colors %s.",
             dense.size(), zoom, images.keySet());
         return new RenderedHeatmapSampler().sampleProfilesOnAggregatedAnchors(
@@ -289,14 +318,12 @@ public final class TileHeatmapSampler {
         if (frame == null) return List.of();
         TileMosaic reference = frame.reference();
         Map<String, BufferedImage> images = frame.images();
-        List<EastNorth> dense = PolylineMath.resampleBySpacing(sourcePolyline,
-                Math.max(4.0, reference.parameters().sampleStepMeters()));
+        var shape = legacySamplingShape(PolylineMath.length(sourcePolyline), sourcePolyline.size(), reference.parameters());
+        List<EastNorth> dense = PolylineMath.resampleByCount(sourcePolyline, shape.profiles());
         if (dense.size() < 2) return List.of();
         List<Point2D.Double> local = localPolyline(reference, dense, projection);
-        int halfWidthPx = Math.max(1, (int) Math.round(
-                reference.parameters().halfWidthMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
-        int stepPx = Math.max(1, (int) Math.round(
-                reference.parameters().sampleStepMeters() / REFERENCE_VIEW_METERS_PER_PIXEL));
+        int halfWidthPx = shape.referenceHalfWidthPx();
+        int stepPx = shape.referenceStepPx();
         return new RenderedHeatmapSampler().sampleProfilesOnAggregatedAnchors(images,
                 ProfileSamplingAnchor.pair(dense, local, projection), halfWidthPx, stepPx,
                 REFERENCE_RASTER_SCALE, reference.virtualRasterScale(), mosaicProjector(reference, projection),

@@ -234,6 +234,7 @@ class OrdinaryModernAttemptAssemblyTest {
             assertNotNull(computed.legacyB());
             assertNull(computed.captured().raster());
             assertNotNull(computed.legacyB().managedSource());
+            if (!allSources) verifyManagedDiscoveryReservationBoundary(computed);
             assertEquals(config.heatmap().searchHalfWidthMeters(), computed.captured().searchRadiusMeters(),
                     "The evidence halo must not widen the search or edit permission");
             assertEquals(recovery.ordinaryRadiusMeters(), computed.captured().specification().permissions().ordinaryRadiusMeters());
@@ -293,6 +294,39 @@ class OrdinaryModernAttemptAssemblyTest {
             assertEquals(computed.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
                     replay.routes().stream().map(route -> route.hypothesis().points()).toList());
             assertEquals(beforeReplay, fetches.get(), "Offline production replay must not acquire more tiles");
+        }
+    }
+
+    private static void verifyManagedDiscoveryReservationBoundary(LiveBPreviewService.Computed computed) {
+        var source = computed.legacyB().managedSource();
+        var profiles = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler()
+                .sample(source, org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe.NONE)
+                .get(0).profiles();
+        long pixels = source.mosaics().values().stream().mapToLong(mosaic -> (long) mosaic.width() * mosaic.height()).sum();
+        long samples = profiles.stream().mapToLong(profile -> profile.intensitySamples().size()).sum();
+        long required = 12L * pixels + 4096L * samples;
+        assertTrue(required > 0 && required < org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.MAX_BYTES);
+        for (boolean exact : new boolean[] {true, false}) {
+            var calls = new AtomicInteger();
+            var ledger = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger(
+                    exact ? required : required - 1);
+            try (var owner = ledger.rootOwner()) {
+                var runner = new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBProductionRunner();
+                org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe cancelAtSampling =
+                        () -> calls.incrementAndGet() >= 2;
+                if (exact) {
+                    assertThrows(java.util.concurrent.CancellationException.class, () -> runner.discoverManaged(
+                            computed.legacyB().input(), source, cancelAtSampling, owner,
+                            org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production()));
+                    assertEquals(2, calls.get(), "Exact reservation reaches native sampling before controlled cancellation");
+                } else {
+                    assertThrows(org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.ResourceLimitException.class,
+                            () -> runner.discoverManaged(computed.legacyB().input(), source, cancelAtSampling, owner,
+                                    org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyBPipeline.Deadline.production()));
+                    assertEquals(1, calls.get(), "One byte short must refuse before native sampler execution");
+                }
+                assertEquals(0, owner.currentBytes(), "Both refusal and cancellation release all working ownership");
+            }
         }
     }
 

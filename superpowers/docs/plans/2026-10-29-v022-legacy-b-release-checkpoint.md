@@ -1,5 +1,73 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## Active native-discovery admission repair — 2026-10-30
+
+Final scoped GREEN47tests/0failures/errors/skips3m8s,
+v022-managed-native-admission-final-green.log. Independent Sol affected review
+finds no additional blocker after factual reference correction. Native selected/
+aggregate sampling, exact reservation/cancellation cleanup, frozen replay and
+runner regressions pass. Real case rerun58715 is now active in a new outputfolder,
+logv022-private-native-comparison-case-01-fixed-admission.log. Earlier failure
+and completed standalone Legacy/B outputs remain preserved; actual Hybrid private
+success still pending. Scope ready for commit/public CI, not RC publication.
+
+The first factual native comparison completed standalone Legacy (applicable,
+1550ms) and B (exact plan available,59846ms,94,867,875transitions), then exposed a
+real Hybrid blocker: discovery requested517931008bytes against the unchanged
+268435456byte cap. No successful full comparison is claimed. Source diagnosis
+and independent Sol review found mismatched sampling dimensions: ground rather
+than native projected profile counts, and148estimated lateral samples where native
+reference sampling uses10. Do not raise the cap or reduce the4096byte coefficient.
+
+Shared count-only native planning now uses the exact old projected resampling and
+reference-pixel rounding in selected/aggregate samplers and discovery. Pixel12x
+and native-sample4096x allowances remain. Rounding/high-latitude/zero-length,
+overflow, native profile/score/order/projection equivalence regressions are retained.
+Initial36sampler/runner checks PASS4m4s. The new actual-managed exact-E/E-minus-one
+test reproduced old-estimate RED (20,463,616requested vs12,787,712required) before
+sampling; correct runner is restored, no mutation remains. Cancellation/refusal
+must release ownership. Sol found a second edge: frozen summary parameters can
+differ from the actual reference mosaic. Selected and aggregate controls both
+reproduced RED5expectedprofiles versus2planned. Planner now derives the same factual
+reference mosaic as sampling, rather than rejecting otherwise valid old inputs.
+
+Final run60603 pending, logv022-managed-native-admission-final-green.log, covers
+samplers/runner/frozen replay/actual managed boundary. Independent affected review
+and actual private case rerun still required. Keep previous CSV/log receipt;
+use a new private output directory. Private PNG-vs-transport hashes are explicitly
+different identities because calibration uses lossless ImageIO re-encoding.
+Total JVM/source-allocation256MiB proof remains the separate approved deferral;
+this repair does not claim to close it. Next RC remains unreleased.
+
+## Verified public integration — 2026-10-30
+
+Exact843402e publicCI40981960903 COMPLETED SUCCESS:2344Java tests with zero
+failures/errors/skips, all public validation stages passed. Downloaded separate
+B and Legacy-then-B GUI receipts both PASS: registered ordinary action, analytic
+final geometry, actual selected Hybrid refined candidate, modeless preview,
+nonterminal cancellation/no late preview, unchanged OSM/Undo and persisted silent
+Settings save. Private fixtures were explicitly not executed by this public run.
+Earlier1114ce2 incomplete run remains a failed receipt, not passing evidence; its
+aborted all-source case subsequently passed locally and in this complete CI.
+
+HEADec60151 adds15passing local cancellation/capture integration checks and is
+still local, ahead of origin843402e. Private numerical comparison driver is only
+in the ignored plan workspace, using actual standalone Legacy managed alignment
+plus fresh B/Hybrid captures on supplied native calibration PNGs and OSM. Initial
+classpath error was fixed using tools runtime (host JOSM is compileOnly for main).
+Then all50 exported PNGs differed from original transport hashes: exporter source
+proves ImageIO lossless re-encoding. The driver now retains original transport and
+actual exported-PNG hashes as separate identities, validates decoded dimensions,
+and explicitly claims fresh numerical comparison, never historical byte replay.
+It pins offline transport, private cache/temp paths and whole OSM before/after hash.
+
+Current first native case session69507, logv022-private-native-comparison-case-01-
+png.log. Actual standalone Legacy completed in1550ms with a native applicable
+1333.4m final preview; B/Hybrid have not both completed. Do not treat the partial
+CSV as a complete comparison: binding.txt is emitted only after all three runs
+and unchanged-OSM checks. Remaining case families, common final audit and next RC
+version/build/publication gates stay OPEN. No new RC/tag.
+
 2026-10-30 continuation afterGUIcommit843402e: publicCI40981960903 confirmed
 in_progress; same run must be observed. New uncommitted test-only ordinaryHybrid
 queued-publication check + common cancellation/capture suites PASS15/0failures/

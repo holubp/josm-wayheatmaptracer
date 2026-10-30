@@ -193,16 +193,11 @@ public final class LegacyBProductionRunner {
         long pixels = 0;
         for (var mosaic : source.mosaics().values()) pixels = Math.addExact(pixels,
                 Math.multiplyExact((long) mosaic.width(), mosaic.height()));
-        double length = 0;
-        for (int i = 1; i < input.originalMetric().size(); i++)
-            length += input.originalMetric().get(i - 1).distanceTo(input.originalMetric().get(i));
-        long profiles = Math.max(2, (long) Math.ceil(length / source.inferenceParameters().sampleStepMeters()) + 2);
-        long samples = 4L * source.inferenceParameters().halfWidthPx() * 6
-                / source.inferenceParameters().stepPx() + 4;
+        var shape = LegacyManagedProfileSampler.samplingShape(source);
         return discover(input, source.detectors().get(0), source.trackerNormalizationRasterPx(),
                 () -> sampler.sample(source, deadline.probe(cancellation)).get(0).profiles(),
                 points -> sampler.project(source, source.detectors().get(0), points),
-                nativeWorkingBytes(pixels, profiles, samples), cancellation, owner, deadline);
+                nativeWorkingBytes(pixels, shape.profiles(), shape.samplesPerProfile()), cancellation, owner, deadline);
     }
 
     private Accounted<Discovery> discover(Input input, String detector, double normalization,

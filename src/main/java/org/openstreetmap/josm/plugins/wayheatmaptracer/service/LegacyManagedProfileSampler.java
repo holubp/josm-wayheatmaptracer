@@ -120,6 +120,29 @@ public final class LegacyManagedProfileSampler {
 
     public LegacyManagedProfileSampler() { this(TileHeatmapSampler.numericalOnly()); }
 
+    /** Plans native counts without constructing source images or profile/tracker arrays. */
+    public static TileHeatmapSampler.LegacySamplingShape samplingShape(Input input) {
+        Objects.requireNonNull(input);
+        if (input.detectors().size() != 1) {
+            throw new IllegalArgumentException("One detector is required for native sampling admission");
+        }
+        String referenceKey;
+        if ("all-colors-combined".equals(input.detectors().get(0))) {
+            requireAggregateMode(input);
+            referenceKey = aggregateReferenceKey(input);
+        } else {
+            referenceKey = input.selectedPalette() + "@" + input.inferenceZoom();
+        }
+        var reference = input.mosaics().get(referenceKey);
+        double projectedLength = 0;
+        for (int index = 1; index < input.sourcePolyline().size(); index++) {
+            var first = input.sourcePolyline().get(index - 1);
+            var second = input.sourcePolyline().get(index);
+            projectedLength += Point2D.distance(first.east(), first.north(), second.east(), second.north());
+        }
+        return TileHeatmapSampler.legacySamplingShape(projectedLength, input.sourcePolyline().size(), reference.parameters());
+    }
+
     LegacyManagedProfileSampler(TileHeatmapSampler tileSampler) {
         this.tileSampler = Objects.requireNonNull(tileSampler, "tileSampler");
     }
