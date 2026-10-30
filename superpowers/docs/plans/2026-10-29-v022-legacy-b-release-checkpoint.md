@@ -1,5 +1,30 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## Boundary work correction and current gates — 2026-10-30
+
+HEAD before this batch: 82c0cba. The native-admission repair completed a fresh
+private comparison: standalone Legacy and B geometry/work stayed unchanged;
+Hybrid still retained Legacy because B hit the profile-boundary geometry-work
+limit before inference. That is a separate blocker from memory admission.
+
+The pending boundary correction reuses existing exact bounded-event containment
+and sampling-owned Y-membership indexes. It retains all physical ray steps,
+intersection arithmetic, containment predicates and the 64-million-unit cap.
+Dense-union regression reproduced RED on the original implementation. Final
+boundary/MetricRegion run: 55 tests, zero failures/errors/skips, 42 seconds
+(`v022-boundary-owner-final-green.log`), including owned reuse and cancellation
+cleanup. Independent Sol affected review found no blocker. A fresh private
+three-engine case-01 comparison is running in a new preserved output directory
+(`case-01-bounded-boundary`); no successful private Hybrid result is claimed yet.
+
+Full CI40987403008 failed with Java heap exhaustion. The isolated all-source
+test nevertheless passed at the unchanged 512 MiB heap in 4m11s, including final
+export (`v022-all-source-heap512-phase.log`). Thus the allocating failure site
+is not established; do not claim final export is proven responsible or raise
+the heap to hide it. Test-only numeric phase diagnostics remain in the batch.
+Full integrated CI, additional private families, matrix audit and RC publication
+remain open. No release tag was created.
+
 ## Active native-discovery admission repair — 2026-10-30
 
 Final scoped GREEN47tests/0failures/errors/skips3m8s,

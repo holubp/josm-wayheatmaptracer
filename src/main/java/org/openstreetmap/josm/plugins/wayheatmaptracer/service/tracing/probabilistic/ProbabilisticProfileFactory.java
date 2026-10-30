@@ -1,5 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabilistic;
 
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalDouble;
@@ -136,8 +138,8 @@ public final class ProbabilisticProfileFactory {
                     ProbabilisticInference.listBytes(curve.points().size()), "sampled profiles",
                     () -> new ArrayList<>(curve.points().size()));
         BoundaryWork boundaryWork = samplingOwner == null ? new BoundaryWork(cancellation)
-                : ProbabilisticInference.allocated(samplingOwner, AttemptMemoryLedger.objectBytes(24),
-                    "sampled profiles", () -> new BoundaryWork(cancellation));
+                : ProbabilisticInference.allocated(samplingOwner, AttemptMemoryLedger.objectBytes(64),
+                    "sampled profiles", () -> new BoundaryWork(cancellation, samplingOwner));
         try {
         for (int index = 0; index < curve.points().size(); index++) {
             cancellation.checkpoint();
@@ -1020,6 +1022,7 @@ public final class ProbabilisticProfileFactory {
             throw new ProfileBoundaryResourceLimitException();
         }
         work.admit((long) requested);
+        work.prepare(evidence);
         double last = 0.0;
         for (long visit = 1; visit <= (long) requested; visit++) {
             work.cancellation.checkpoint();
@@ -1046,10 +1049,10 @@ public final class ProbabilisticProfileFactory {
             if (query != null) query.reserve(2L * AttemptMemoryLedger.objectBytes(16));
             MetricPoint start = offset(anchor, normal, from);
             MetricPoint end = offset(anchor, normal, to);
-            return evidence.decisionRegion().containsSegment(start, end, work.cancellation,
-                    work::admit, query)
-                && evidence.evidenceRegion().containsSegment(start, end, work.cancellation,
-                    work::admit, query);
+            return evidence.decisionRegion().containsSegmentWithBoundedEvents(start, end, work.cancellation,
+                    work::admit, query, work.decisionIndex)
+                && evidence.evidenceRegion().containsSegmentWithBoundedEvents(start, end, work.cancellation,
+                    work::admit, query, work.evidenceIndex);
         } finally {
             if (query != null) query.close();
         }
@@ -1074,16 +1077,41 @@ public final class ProbabilisticProfileFactory {
         static final long MAXIMUM_UNITS = 64_000_000L;
         private final CancellationProbe cancellation;
         private final long maximumUnits;
+        private final AttemptMemoryLedger.Owner owner;
         private long units;
+        private MetricRegion decisionRegion, evidenceRegion;
+        private MetricRegion.YMembershipIndex decisionIndex, evidenceIndex;
 
-        BoundaryWork(CancellationProbe cancellation) { this(cancellation, MAXIMUM_UNITS); }
+        BoundaryWork(CancellationProbe cancellation) { this(cancellation, MAXIMUM_UNITS, null); }
+
+        BoundaryWork(CancellationProbe cancellation, AttemptMemoryLedger.Owner owner) {
+            this(cancellation, MAXIMUM_UNITS, owner);
+        }
 
         BoundaryWork(CancellationProbe cancellation, long maximumUnits) {
+            this(cancellation, maximumUnits, null);
+        }
+
+        BoundaryWork(CancellationProbe cancellation, long maximumUnits, AttemptMemoryLedger.Owner owner) {
             if (cancellation == null || maximumUnits <= 0L || maximumUnits > MAXIMUM_UNITS) {
                 throw new IllegalArgumentException("Boundary work controls are invalid");
             }
             this.cancellation = cancellation;
             this.maximumUnits = maximumUnits;
+            this.owner = owner;
+        }
+
+        private void prepare(EvidenceSnapshot evidence) {
+            if (decisionRegion != null) {
+                if (decisionRegion != evidence.decisionRegion() || evidenceRegion != evidence.evidenceRegion())
+                    throw new IllegalArgumentException("Boundary work must retain its captured regions");
+                return;
+            }
+            var decision = evidence.decisionRegion().prepareYMembership(cancellation, this::admit, owner);
+            var observed = evidence.evidenceRegion() == evidence.decisionRegion() ? decision
+                    : evidence.evidenceRegion().prepareYMembership(cancellation, this::admit, owner);
+            decisionRegion = evidence.decisionRegion(); evidenceRegion = evidence.evidenceRegion();
+            decisionIndex = decision; evidenceIndex = observed;
         }
 
         void admit(long requested) {

@@ -222,6 +222,7 @@ class OrdinaryModernAttemptAssemblyTest {
             var published = new AtomicReference<LiveBPreviewService.Computed>();
             var ready = new CountDownLatch(1);
             var owner = session.open(() -> { });
+            if (allSources) allSourcePhase("before-start");
             SwingUtilities.invokeAndWait(() -> new AlignWayAction.OrdinaryModernAttemptAssembly().startWithSources(
                     session, owner, routing, fixture.dataSet(), fixture.selection(), "synthetic-managed-legacy-b",
                     (source, invocation, permissions) -> { throw new AssertionError("Managed source must be used"); },
@@ -231,6 +232,7 @@ class OrdinaryModernAttemptAssemblyTest {
                     coordinator, attempt -> { published.set(attempt.result()); ready.countDown(); }));
             assertTrue(ready.await(allSources ? 120 : 30, TimeUnit.SECONDS), session.currentAttempt().toString());
             var computed = published.get();
+            if (allSources) allSourcePhase("after-compute");
             assertNotNull(computed.legacyB());
             assertNull(computed.captured().raster());
             assertNotNull(computed.legacyB().managedSource());
@@ -264,26 +266,34 @@ class OrdinaryModernAttemptAssemblyTest {
                 assertTrue(usage.distinctAlternatives() <= limits.maximumDistinctAlternatives());
                 int beforeSourceReplays = fetches.get();
                 for (var run : computed.productionRuns()) {
+                    allSourcePhase("before-source-export");
                     var sourceBundle = AlignWayAction.createModernDiagnostics(computed, run, "preview-open", 0,
                             null, false, false, null);
+                    allSourcePhase("after-source-export");
                     var sourceFrozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
                             .decode(sourceBundle.artifact("frozen-input.bin").bytes());
+                    allSourcePhase("after-source-decode");
                     var sourceReplay = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.Format15ReplayRunner
                             .replay(sourceFrozen,
                                     org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.ReplayLevel.FINAL_GEOMETRY,
                                     TrackerMode.LEGACY_THEN_B);
+                    allSourcePhase("after-source-replay");
                     assertEquals(run.pipeline().routes().stream().map(route -> route.hypothesis().points()).toList(),
                             sourceReplay.routes().stream().map(route -> route.hypothesis().points()).toList(),
                             "Every source must replay its own admitted parents and actual allocation: "
                                     + run.options().sourceTier());
                 }
                 assertEquals(beforeSourceReplays, fetches.get(), "Every source replay must remain offline");
+                allSourcePhase("before-resource-stop-cases");
                 org.junit.jupiter.api.Assertions.assertAll(
                         () -> verifyAttemptResourceStop(computed,fixture,config,false),
                         () -> verifyAttemptResourceStop(computed,fixture,config,true));
+                allSourcePhase("after-resource-stop-cases");
             }
+            if (allSources) allSourcePhase("before-final-export");
             var bundle = AlignWayAction.createModernDiagnostics(computed, computed, "preview-open", 0,
                     null, false, false, null);
+            if (allSources) allSourcePhase("after-final-export");
             var frozen = org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15.FrozenReplayCodec
                     .decode(bundle.artifact("frozen-input.bin").bytes());
             assertNotNull(frozen.legacyB().managedSource());
@@ -295,6 +305,12 @@ class OrdinaryModernAttemptAssemblyTest {
                     replay.routes().stream().map(route -> route.hypothesis().points()).toList());
             assertEquals(beforeReplay, fetches.get(), "Offline production replay must not acquire more tiles");
         }
+    }
+
+    private static void allSourcePhase(String phase) {
+        var runtime = Runtime.getRuntime();
+        System.err.println("ALL_SOURCE_PHASE " + phase + " usedBytes="
+                + (runtime.totalMemory() - runtime.freeMemory()) + " maxBytes=" + runtime.maxMemory());
     }
 
     private static void verifyManagedDiscoveryReservationBoundary(LiveBPreviewService.Computed computed) {

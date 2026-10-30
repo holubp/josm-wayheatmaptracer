@@ -20,6 +20,67 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.StrictSc
 
 /** Configured physical windows must not lose an authorized remainder or skip an unauthorized prefix. */
 class V022ProbabilisticProfileBoundaryTest {
+    @Test void boundaryMembershipIndexesAreSharedWithinTheirSamplingOwnerAndReleased() {
+        var evidence = scene(WIDTH, NATIVE, .08, false, MetricRegion.rectangle(-10, -WIDTH, 74, WIDTH));
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            var work = new ProbabilisticProfileFactory.BoundaryWork(CancellationProbe.NONE,
+                    ProbabilisticProfileFactory.BoundaryWork.MAXIMUM_UNITS, owner);
+            assertEquals(WIDTH, ProbabilisticProfileFactory.authorizedBoundary(new MetricPoint(32, 0),
+                    new MetricPoint(0, 1), 1, WIDTH, .5 * NATIVE, evidence, work, owner), 0);
+            long retained = owner.currentBytes();
+            assertTrue(retained > 0, "Persistent indexes are charged until sampling ownership closes");
+            assertEquals(WIDTH, ProbabilisticProfileFactory.authorizedBoundary(new MetricPoint(40, 0),
+                    new MetricPoint(0, 1), 1, WIDTH, .5 * NATIVE, evidence, work, owner), 0);
+            assertEquals(retained, owner.currentBytes(), "The next profile reuses both indexes");
+        }
+        assertEquals(0, ledger.currentBytes());
+    }
+
+    @Test void cancellationDuringMembershipPreparationReleasesPartialIndexStorage() {
+        var polygons = new java.util.ArrayList<List<MetricPoint>>();
+        for (int index = 0; index < 450; index++) polygons.add(MetricRegion.rectangle(
+                -10 + index * (84.0 / 450), -WIDTH,
+                -10 + (index + 1) * (84.0 / 450), WIDTH).polygons().get(0));
+        var evidence = scene(WIDTH, NATIVE, .08, false, new MetricRegion(polygons));
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var ledger = org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger.production();
+        try (var owner = ledger.rootOwner()) {
+            CancellationProbe cancellation = () -> calls.incrementAndGet() >= 32;
+            var work = new ProbabilisticProfileFactory.BoundaryWork(cancellation,
+                    ProbabilisticProfileFactory.BoundaryWork.MAXIMUM_UNITS, owner);
+            assertThrows(java.util.concurrent.CancellationException.class, () -> ProbabilisticProfileFactory.authorizedBoundary(
+                    new MetricPoint(32, 0), new MetricPoint(0, 1), 1, WIDTH, .5 * NATIVE, evidence, work, owner));
+            assertTrue(ledger.peakBytes() > 0);
+            assertEquals(0, ledger.currentBytes());
+        }
+    }
+    @Test void denseCorridorUsesActualEventsWithinTheOldFullCapacityCost() {
+        var polygons = new java.util.ArrayList<List<MetricPoint>>();
+        for (int index = 0; index < 450; index++) polygons.add(MetricRegion.rectangle(
+                -10 + index * (84.0 / 450), -WIDTH,
+                -10 + (index + 1) * (84.0 / 450), WIDTH).polygons().get(0));
+        var decision = new MetricRegion(polygons);
+        var evidence = scene(WIDTH, NATIVE, .08, false, decision);
+        double step = .5 * NATIVE;
+        long requested = (long) StrictMath.ceil(WIDTH / step);
+        long[] oldUnits = {requested};
+        double last = 0;
+        for (long visit = 1; visit <= requested; visit++) {
+            double bounded = visit == requested ? WIDTH : Math.min(WIDTH, visit * step);
+            var from = new MetricPoint(32.1, last); var to = new MetricPoint(32.1, bounded);
+            oldUnits[0]++;
+            assertTrue(decision.containsSegment(from, to, CancellationProbe.NONE, units -> oldUnits[0] += units, null));
+            assertTrue(evidence.evidenceRegion().containsSegment(from, to, CancellationProbe.NONE,
+                    units -> oldUnits[0] += units, null));
+            last = bounded;
+        }
+        assertTrue(oldUnits[0] > 1 && oldUnits[0] < ProbabilisticProfileFactory.BoundaryWork.MAXIMUM_UNITS);
+        assertEquals(last, ProbabilisticProfileFactory.authorizedBoundary(new MetricPoint(32.1, 0),
+                new MetricPoint(0, 1), 1, WIDTH, step, evidence,
+                new ProbabilisticProfileFactory.BoundaryWork(CancellationProbe.NONE, oldUnits[0] - 1), null), 0,
+                "Exact observed events must not spend the old all-edge event-capacity charge");
+    }
     private static final double WIDTH = 7.01;
     private static final double NATIVE = 1.7546997679008605;
     private static final List<MetricPoint> SOURCE = List.of(new MetricPoint(0, 0), new MetricPoint(64, 0));
