@@ -1,5 +1,40 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## 2026-10-30 actual Hybrid GUI gate
+
+Final follow-up GREEN1lookup control/0failures/errors/skips,40s,
+v022-hybrid-settings-persistence-green.log; main and test sources recompiled.
+Workflow2PASS0.60s and diffcheck pass. Sol affected re-review closes P2 in source,
+no further blocker. Actual Xvfb and full CI remain pending; no public RC.
+
+Protected-occurrence commit1114ce2 publicCI40978407058 FAILED in java-build,
+201.8s. Preserved public reports contain210cases/0failures/errors/1aborted managed
+all-source case, not a completed suite; no underlying Gradle log was uploaded, so
+the cause remains unknown. That exact all-source case passes locally with20GUI/
+Settings contracts (21PASS,2m2s,v022-hybrid-gui-final-neighbors.log). Do not claim
+CI success or dismiss the failure. Next workflow explicitly retains only the
+public java-build stage log alongside existing allowlisted public artifacts.
+
+Current GUI gate extends the existing ordinary-action Xvfb test to separate B and
+Legacy-then-B jobs with isolated homes/reports. It binds requested/frozen engine,
+actual owned choices and analytic ridge geometry; Hybrid must have actual B work
+and select a B-refined candidate, never pass with Legacy-only fallback. It retains
+cancellation/no-late-preview and unchanged dataset/Undo checks, and explicitly
+requires modeless preview. Native Hybrid fixture uses real offline coordinator
+acquisition/receipts and EDT-captured Legacy policy. Old B-only oracle RED53s was
+observed after correcting two setup errors. GUIcontract15+Settings5PASS1m33s;
+workflow semantic checks2PASS. Actual display evidence remains pending CI.
+
+Independent Sol review found a silent-save false-pass: mere closure could be a
+cancel. The corrected gate opens the registered real Settings action, toggles
+Verbose logging, clicks actual default OK and asserts persistence, while rejecting
+any unexpected modal and restoring preferences. Synthetic blank access values
+ensure this is a successful offline save without a network health probe. Unique
+control lookup rejects missing/ambiguous controls. Final follow-up compile/lookup
+run79362 is pending, logv022-hybrid-settings-persistence-green.log. Product tracing
+algorithms are unchanged in this GUI batch. Private comparisons, remaining
+controlled live failures and final original-scope audit/RC gates remain OPEN.
+
 ## 2026-10-30 protected coincident occurrence continuation
 
 Final neighboring GREEN:90tests/0failures/errors/skips,1m55s,

@@ -51,6 +51,7 @@ def test_public_artifact_upload_is_exactly_allowlisted_and_gated() -> None:
         f"{ARTIFACT_OUTPUT}/reports/java/html/",
         f"{ARTIFACT_OUTPUT}/summary.json",
         f"{ARTIFACT_OUTPUT}/status.json",
+        f"{ARTIFACT_OUTPUT}/stages/java-build.log",
     ]
     assert report_upload["with"]["if-no-files-found"] == "ignore"
 
@@ -70,6 +71,13 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     assert smoke["runs-on"] == "ubuntu-24.04"
     assert smoke["needs"] == "public-validation"
     assert smoke["timeout-minutes"] == "15"
+    assert smoke["strategy"] == {
+        "fail-fast": "false",
+        "matrix": {"include": [
+            {"engine": "PROBABILISTIC", "report": "public-gui-smoke"},
+            {"engine": "LEGACY_THEN_B", "report": "public-gui-smoke-hybrid"},
+        ]},
+    }
     steps = smoke["steps"]
     assert isinstance(steps, list)
     assert all(step.get("continue-on-error") in (None, "false") for step in steps)
@@ -77,12 +85,13 @@ def test_public_gui_smoke_is_xvfb_gated_and_failure_remains_a_job_failure() -> N
     smoke_run = next(step for step in steps if "v022PublicGuiSmoke" in step.get("run", ""))
     assert smoke_run["run"] == (
         "timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' "
-        "sh gradlew v022PublicGuiSmoke --console=plain"
+        "sh gradlew v022PublicGuiSmoke -PpublicGuiEngine=${{ matrix.engine }} --console=plain"
     )
     require_summary = next(step for step in steps if step.get("name") == "Require public GUI smoke summary after a passing run")
     assert require_summary["if"] == "success()"
-    assert require_summary["run"] == "test -s build/reports/public-gui-smoke/summary.json"
+    assert require_summary["run"] == "test -s build/reports/${{ matrix.report }}/summary.json"
     report_upload = next(step for step in steps if step.get("uses") == "actions/upload-artifact@v4")
     assert report_upload["if"] == "always()"
-    assert report_upload["with"]["path"] == "build/reports/public-gui-smoke/summary.json"
+    assert report_upload["with"]["path"] == "build/reports/${{ matrix.report }}/summary.json"
+    assert report_upload["with"]["name"] == "${{ matrix.report }}-summary"
     assert report_upload["with"]["if-no-files-found"] == "ignore"

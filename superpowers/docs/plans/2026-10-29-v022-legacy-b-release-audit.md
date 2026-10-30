@@ -1,5 +1,15 @@
 # Legacy→B whole-delta audit — 2026-10-29
 
+2026-10-30 GUI/CI affected review: Sol found no blocker in requested engine,
+actual B-work/refined-route ownership or matrix/artifact wiring. Found P2 false
+positive in successful Settings save test (closure could represent cancellation).
+Correction toggles the actual Verbose logging checkbox and asserts persistence
+after real OK, with restoration; affected re-review pending. Contracts20PASS and
+workflow2PASS; all-source neighboring21PASS2m2s does not replace actual Xvfb gate.
+Protected batch CI40978407058 failed without explanatory build log; retained XML
+is incomplete and cannot be treated as a pass. New allowlisted public stage log
+will expose the cause on the next exact-commit CI run.
+
 Final affected receipts2026-10-30:7focused/0failures/errors/skips1m59s includes
 actual ordinary Apply/Undo/Redo and frozen replay;90neighbors/0failures/errors/
 skips1m55s covers runner,reference,planner,finalgeometry,sharedinterior and connector

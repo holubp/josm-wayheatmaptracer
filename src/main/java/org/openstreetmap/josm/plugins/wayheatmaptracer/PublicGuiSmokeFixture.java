@@ -95,10 +95,14 @@ final class PublicGuiSmokeFixture {
     }
 
     void seedTiles() throws Exception {
-        if (!tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
         ManagedTileCache cache = new ManagedTileCache(
                 PluginDirectories.ensurePluginDataDirectory().toPath()
                         .resolve("managed-source-tile-cache"), new TileDecoderClassifier());
+        seedTiles(cache);
+    }
+
+    void seedTiles(ManagedTileCache cache) throws Exception {
+        if (!tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
         for (Tile tile : tiles.values()) {
             Path destination = cache.path(new ManagedTileGeneration(0L), tile.address());
             Files.createDirectories(destination.getParent());

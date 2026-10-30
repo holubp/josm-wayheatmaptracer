@@ -32,6 +32,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.AlignmentConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ManagedHeatmapConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TrackerMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.ManagedModernPreviewSource;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.SelectionResolver;
@@ -51,6 +52,20 @@ import org.openstreetmap.josm.spi.preferences.MemoryPreferences;
 import org.openstreetmap.josm.tools.PlatformManager;
 
 class PublicGuiSmokeContractTest {
+    @Test void settingsControlLookupRejectsMissingOrAmbiguousControls() {
+        var panel = new JPanel(); var nested = new JPanel(); panel.add(nested);
+        var box = new javax.swing.JCheckBox("Verbose logging"); nested.add(box);
+        assertEquals(box, PublicGuiSmokeMain.requiredCheckbox(panel, "Verbose logging"));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requiredCheckbox(panel, "missing"));
+        panel.add(new javax.swing.JCheckBox("Verbose logging"));
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.requiredCheckbox(panel, "Verbose logging"));
+    }
+    @Test void smokeEngineAdmissionNeverSubstitutesAnotherEngine() {
+        assertEquals(TrackerMode.PROBABILISTIC, PublicGuiSmokeMain.guiEngine("PROBABILISTIC"));
+        assertEquals(TrackerMode.LEGACY_THEN_B, PublicGuiSmokeMain.guiEngine("LEGACY_THEN_B"));
+        for (String other : List.of("LEGACY_V02", "HYBRID", "CORRIDOR_AWARE", "DIRECTIONAL_IMAGE", "unknown"))
+            assertThrows(IllegalArgumentException.class, () -> PublicGuiSmokeMain.guiEngine(other));
+    }
     @TempDir Path temporary;
     private static final List<String> JOSM_STARTUP_EXPORTS = List.of(
             "--add-exports=java.base/sun.security.action=ALL-UNNAMED",
@@ -127,19 +142,55 @@ class PublicGuiSmokeContractTest {
         }
     }
 
+    @Test void publicHybridOracleRequiresAnActualBRefinedRidge() throws Exception {
+        var computed = publicComputed(TrackerMode.LEGACY_THEN_B);
+        var choices = new LiveBPreviewService().adaptChoices(computed, point -> ProjectionRegistry.getProjection()
+                .latlon2eastNorth(new LatLon(point.latitudeDegrees(), point.longitudeDegrees())));
+        int selected = PublicGuiSmokeMain.oraclePassingRouteIndex(choices);
+        assertEquals(1.0, computed.pipeline().routes().get(selected).hypothesis().diagnostics().get("hasBRefinement"));
+        var legacyOnly = choices.stream().filter(choice -> computed.pipeline().routes().get(choice.localRouteIndex())
+                .hypothesis().diagnostics().getOrDefault("hasBRefinement", 0.0) == 0.0).toList();
+        assertFalse(legacyOnly.isEmpty());
+        assertThrows(IllegalStateException.class, () -> PublicGuiSmokeMain.oraclePassingRouteIndex(legacyOnly));
+    }
+
     private LiveBPreviewService.Computed publicComputed() throws Exception {
+        return publicComputed(TrackerMode.PROBABILISTIC);
+    }
+
+    private LiveBPreviewService.Computed publicComputed(TrackerMode engine) throws Exception {
         var fixture = PublicGuiSmokeFixture.create(temporary);
         ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
         fixture.dataSet().setSelected(fixture.selectedWay());
         var selection = SelectionResolver.resolve(fixture.dataSet(), false);
         var configMethod = PublicGuiSmokeMain.class.getDeclaredMethod("config");
         configMethod.setAccessible(true);
-        var config = new AlignmentConfig((ManagedHeatmapConfig) configMethod.invoke(null),
+        var config = new AlignmentConfig(((ManagedHeatmapConfig) configMethod.invoke(null)).withTrackerMode(engine),
                 GeometryCleanupConfig.disabled());
         var service = new LiveBPreviewService();
         LiveBPreviewService.ManagedCaptureSeed[] seed = new LiveBPreviewService.ManagedCaptureSeed[1];
-        SwingUtilities.invokeAndWait(() -> seed[0] = service.captureManagedSeed(fixture.dataSet(),
-                selection, config, "public-native-hot"));
+        LiveBPreviewService.LegacyBInvocation[] legacy = new LiveBPreviewService.LegacyBInvocation[1];
+        SwingUtilities.invokeAndWait(() -> {
+            seed[0] = service.captureManagedSeed(fixture.dataSet(), selection, config, "public-native-hot");
+            if (engine == TrackerMode.LEGACY_THEN_B) legacy[0] = LiveBPreviewService.LegacyBInvocation.capture(selection, config);
+        });
+        if (engine == TrackerMode.LEGACY_THEN_B) {
+            var decoder = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileDecoderClassifier();
+            var cache = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.ManagedTileCache(
+                    temporary.resolve("hybrid-tile-cache"), decoder);
+            fixture.seedTiles(cache);
+            try (var coordinator = new org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileFetchCoordinator(
+                    (request, credentials) -> { throw new AssertionError("Public fixture must stay offline"); },
+                    cache, decoder, org.openstreetmap.josm.plugins.wayheatmaptracer.tile.TileReliabilityPolicy.defaults())) {
+                coordinator.updateActiveGeneration(new ManagedTileGeneration(0));
+                var sources = new ManagedModernPreviewSource(coordinator).acquireSources(seed[0].sourceGeographic(),
+                        config.effectiveHeatmap(), seed[0].sourceIdentity(),
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.tile.CredentialSnapshot.fromConfig(config.heatmap()),
+                        CancellationProbe.NONE);
+                return service.compute(service.attachManagedSources(seed[0], sources, coordinator),
+                        CancellationProbe.NONE, legacy[0]);
+            }
+        }
         BufferedImage image = ImageIO.read(temporary.resolve("public-hot-z15.png").toFile());
         boolean[] valid = new boolean[image.getWidth() * image.getHeight()];
         Arrays.fill(valid, true);
@@ -148,7 +199,7 @@ class PublicGuiSmokeContractTest {
                         16_383 * 256.0, 2.0), "hot", 15, "public-native-hot",
                 new ManagedTileGeneration(0L));
         return service.compute(service.attachManagedRaster(seed[0], raster),
-                CancellationProbe.NONE);
+                CancellationProbe.NONE, legacy[0]);
     }
 
     @Test

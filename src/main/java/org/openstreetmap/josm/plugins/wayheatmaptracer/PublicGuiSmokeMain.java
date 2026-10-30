@@ -67,6 +67,7 @@ public final class PublicGuiSmokeMain {
         Path jar = Path.of(args[1]).toAbsolutePath().normalize();
         String stage = "preflight";
         try {
+            TrackerMode engine = guiEngine(System.getProperty("wayheatmaptracer.guiSmoke.engine", "PROBABILISTIC"));
             requireDisplay(GraphicsEnvironment.isHeadless());
             if (!Files.isRegularFile(jar)) throw new IllegalStateException("Plugin jar is missing");
             // Both JOSM and plugin-direct source acquisition are forced offline.
@@ -79,9 +80,9 @@ public final class PublicGuiSmokeMain {
                     report.getParent().resolve("public-input"));
             if (!fixture.tilesUsable()) throw new IllegalStateException("Public Hot tile is unusable");
             ProjectionRegistry.setProjection(Projections.getProjectionByCode("EPSG:3857"));
-            PluginPreferences.save(config());
+            PluginPreferences.save(config().withTrackerMode(engine));
             PluginPreferences.saveTracingSettings(new TracingSettings(
-                    TracingSettings.CURRENT_SCHEMA_VERSION, TrackerMode.PROBABILISTIC,
+                    TracingSettings.CURRENT_SCHEMA_VERSION, engine,
                     RecoverySettings.defaults(7.01), false, AlignmentSourceMode.MANAGED_TILES));
             PluginPreferences.saveGeometryCleanup(GeometryCleanupConfig.disabled());
             Config.getPref().putLong("wayheatmaptracer.cacheBuster", 0L);
@@ -114,8 +115,8 @@ public final class PublicGuiSmokeMain {
             try {
                 onEventThread(() -> { action.actionPerformed(null); return null; });
                 JDialog preview = visiblePreview.get(180, TimeUnit.SECONDS);
-                if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable())) {
-                    throw new IllegalStateException("Production preview is not visible");
+                if (!onEventThread(() -> preview.isVisible() && preview.isDisplayable() && !preview.isModal())) {
+                    throw new IllegalStateException("Production preview is not visible and modeless");
                 }
                 var ready = session.currentAttempt();
                 if (ready == null || ready.state() != AlignmentJob.State.PREVIEW_READY) {
@@ -159,8 +160,8 @@ public final class PublicGuiSmokeMain {
                 }
                 var frozen = FrozenReplayCodec.decode(archive.artifact("frozen-input.bin")
                         .orElseThrow().bytes());
-                if (frozen.request().engine() != TrackerMode.PROBABILISTIC) {
-                    throw new IllegalStateException("Ordinary action did not run Engine B");
+                if (frozen.request().engine() != engine) {
+                    throw new IllegalStateException("Ordinary action did not run the requested engine");
                 }
                 var plan = FrozenReplayCodec.decodeEditPlan(archive.artifact("frozen-edit-plan.bin")
                         .orElseThrow().bytes());
@@ -211,13 +212,16 @@ public final class PublicGuiSmokeMain {
                 throw new IllegalStateException("Cancelled attempt has no terminal diagnostics");
             }
             requireUnchanged(fixture, original, originalUndo);
+            stage = "settings-save";
+            verifySilentSettingsSave();
+            requireUnchanged(fixture, original, originalUndo);
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
                     + "\"status\":\"PASS\",\"source\":\"public-analytic-hot\","
-                    + "\"engine\":\"PROBABILISTIC\",\"ordinaryAction\":true,"
+                    + "\"engine\":\"" + engine.name() + "\",\"ordinaryAction\":true,"
                     + "\"visiblePreview\":true,\"selectedRouteIndex\":" + selectedRouteIndex + ","
                     + "\"selectedCandidateId\":\"" + selectedId + "\",\"geometryOracle\":true,"
                     + "\"cancelledNonterminal\":true,\"noLatePreview\":true,"
-                    + "\"datasetUnchanged\":true,\"undoUnchanged\":true}\n");
+                    + "\"datasetUnchanged\":true,\"undoUnchanged\":true,\"silentSettingsSave\":true}\n");
             System.exit(0);
         } catch (Exception | LinkageError failure) {
             writeSummary(report, "{\"schema\":\"wayheatmaptracer-public-gui-smoke-1\","
@@ -317,12 +321,98 @@ public final class PublicGuiSmokeMain {
     }
 
     private static ManagedHeatmapConfig config() {
-        return new ManagedHeatmapConfig("public-key", "public-policy", "public-signature",
-                "public-session", "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
+        return config(true);
+    }
+
+    private static ManagedHeatmapConfig config(boolean authenticated) {
+        return new ManagedHeatmapConfig(authenticated ? "public-key" : "", authenticated ? "public-policy" : "",
+                authenticated ? "public-signature" : "", authenticated ? "public-session" : "",
+                "all", "hot", "", ".*", AlignmentMode.PRECISE_SHAPE,
                 TrackerMode.PROBABILISTIC, false, false, false, false, false,
                 false, false, false, false, false, 7, 4, 3.0,
                 InferenceMode.RAW_HIGH_RESOLUTION, 15, 14, 7.01, 1.56,
                 IntensitySamplingMode.COLOR_MAPPING, 0L);
+    }
+
+    static TrackerMode guiEngine(String name) {
+        TrackerMode engine = TrackerMode.valueOf(name);
+        if (engine != TrackerMode.PROBABILISTIC && engine != TrackerMode.LEGACY_THEN_B) {
+            throw new IllegalArgumentException("GUI smoke requires independent B or sequential Hybrid");
+        }
+        return engine;
+    }
+
+    /** Accepts the real settings dialog and fails if successful saving opens another modal. */
+    private static void verifySilentSettingsSave() throws Exception {
+        var settings = new CompletableFuture<JDialog>();
+        var completed = new CompletableFuture<Void>();
+        var unexpectedModal = new AtomicBoolean();
+        var previous = PluginPreferences.load();
+        var previousTracing = PluginPreferences.loadTracingSettings();
+        AWTEventListener listener = event -> {
+            if (!(event instanceof WindowEvent opened) || opened.getID() != WindowEvent.WINDOW_OPENED
+                    || !(opened.getWindow() instanceof JDialog dialog) || !dialog.isModal()) return;
+            if (dialog.getTitle().equals("WayHeatmapTracer Settings") && !settings.isDone()) settings.complete(dialog);
+            else {
+                unexpectedModal.set(true);
+                SwingUtilities.invokeLater(dialog::dispose);
+            }
+        };
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.WINDOW_EVENT_MASK);
+        try {
+            // No access values means a successful offline save, with no network health probe.
+            PluginPreferences.save(config(false).withTrackerMode(previousTracing.engine()));
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    for (var component : MainApplication.getMenu().moreToolsMenu.getMenuComponents()) {
+                        if (component instanceof JMenuItem item && item.getAction() instanceof
+                                org.openstreetmap.josm.plugins.wayheatmaptracer.actions.HeatmapLayerSettingsAction action) {
+                            action.actionPerformed(null);
+                            completed.complete(null);
+                            return;
+                        }
+                    }
+                    throw new IllegalStateException("Registered Settings action is missing");
+                } catch (Exception failure) { completed.completeExceptionally(failure); }
+            });
+            JDialog dialog = settings.get(30, TimeUnit.SECONDS);
+            onEventThread(() -> {
+                var verbose = requiredCheckbox(dialog.getContentPane(), "Verbose logging");
+                if (verbose.isSelected()) throw new IllegalStateException("Settings fixture must start quiet");
+                verbose.doClick();
+                var accept = dialog.getRootPane().getDefaultButton();
+                if (accept == null || !accept.isShowing() || !accept.isEnabled()) {
+                    throw new IllegalStateException("Visible Settings accept button is unavailable");
+                }
+                accept.doClick();
+                return null;
+            });
+            completed.get(30, TimeUnit.SECONDS);
+            if (unexpectedModal.get() || onEventThread(dialog::isVisible)) {
+                throw new IllegalStateException("Successful Settings save opened an unexpected modal");
+            }
+            if (!PluginPreferences.load().verbose()) {
+                throw new IllegalStateException("Settings OK did not persist the changed control");
+            }
+        } finally {
+            Toolkit.getDefaultToolkit().removeAWTEventListener(listener);
+            PluginPreferences.save(previous);
+            PluginPreferences.saveTracingSettings(previousTracing);
+        }
+    }
+
+    static javax.swing.JCheckBox requiredCheckbox(Container root, String label) {
+        var found = new ArrayList<javax.swing.JCheckBox>();
+        findCheckboxes(root, label, found);
+        if (found.size() != 1) throw new IllegalStateException("Expected one Settings checkbox");
+        return found.get(0);
+    }
+
+    private static void findCheckboxes(Container root, String label, List<javax.swing.JCheckBox> found) {
+        for (var component : root.getComponents()) {
+            if (component instanceof javax.swing.JCheckBox box && label.equals(box.getText())) found.add(box);
+            if (component instanceof Container nested) findCheckboxes(nested, label, found);
+        }
     }
 
     private static AlignWayAction registeredOrdinaryAction() {
@@ -436,15 +526,21 @@ public final class PublicGuiSmokeMain {
     static int oraclePassingRouteIndex(List<LiveBPreviewService.PreviewChoice> choices) {
         if (choices.isEmpty()) throw new IllegalStateException("Production preview has no routes");
         var owner = choices.get(0).owner();
+        var engine = guiEngine(owner.request().engine().name());
+        if (engine == TrackerMode.LEGACY_THEN_B && (owner.legacyB() == null
+                || owner.legacyB().result().batch().usage().transitions() <= 0)) {
+            throw new IllegalStateException("Hybrid GUI smoke requires actual B execution");
+        }
         var ids = new java.util.HashSet<String>();
         int selected = -1;
         for (int i = 0; i < choices.size(); i++) {
             var choice = choices.get(i);
             if (choice.owner() != owner || choice.localRouteIndex() != i
-                    || owner.request().engine() != TrackerMode.PROBABILISTIC
                     || !ids.add(choice.candidate().id())) {
-                throw new IllegalStateException("Expected distinct owned routes from one Engine B run");
+                throw new IllegalStateException("Expected distinct owned routes from one production run");
             }
+            if (engine == TrackerMode.LEGACY_THEN_B && owner.pipeline().routes().get(i).hypothesis()
+                    .diagnostics().getOrDefault("hasBRefinement", 0.0) != 1.0) continue;
             var assessment = new ModernSingleWayEditPlanAdapter().assess(owner, i);
             if (assessment.plan().isEmpty()) continue;
             var plan = assessment.plan().orElseThrow();
@@ -483,7 +579,7 @@ public final class PublicGuiSmokeMain {
     }
 
     private static String requireSafeCandidateId(String id) {
-        if (id == null || !id.matches("[A-Za-z0-9._-]{1,80}")) {
+        if (id == null || !id.matches("[A-Za-z0-9._/-]{1,256}")) {
             throw new IllegalStateException("Selected candidate identity is not safe for receipt");
         }
         return id;

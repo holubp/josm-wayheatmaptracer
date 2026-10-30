@@ -108,7 +108,7 @@ tasks.register<JavaExec>("v022GenerateFixtures") {
 
 tasks.register<JavaExec>("v022PublicGuiSmoke") {
     group = "verification"
-    description = "Runs the public analytic Engine B fixture through the real JOSM GUI"
+    description = "Runs the public analytic B or Legacy-then-B fixture through the real JOSM GUI"
     dependsOn(tasks.jar)
     classpath = sourceSets["tools"].runtimeClasspath
     mainClass.set("org.openstreetmap.josm.plugins.wayheatmaptracer.PublicGuiSmokeMain")
@@ -119,7 +119,11 @@ tasks.register<JavaExec>("v022PublicGuiSmoke") {
         "--add-exports=java.desktop/com.sun.imageio.plugins.jpeg=ALL-UNNAMED",
         "--add-exports=java.desktop/com.sun.imageio.spi=ALL-UNNAMED",
     )
-    val root = layout.buildDirectory.dir("reports/public-gui-smoke")
+    val engine = providers.gradleProperty("publicGuiEngine").getOrElse("PROBABILISTIC")
+    require(engine in listOf("PROBABILISTIC", "LEGACY_THEN_B")) { "Unsupported public GUI engine" }
+    systemProperty("wayheatmaptracer.guiSmoke.engine", engine)
+    val root = layout.buildDirectory.dir(if (engine == "PROBABILISTIC")
+        "reports/public-gui-smoke" else "reports/public-gui-smoke-hybrid")
     doFirst {
         root.get().asFile.mkdirs()
         root.get().file("isolated-home").asFile.mkdirs()

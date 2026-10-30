@@ -37,6 +37,7 @@ jobs:
             ${{ runner.temp }}/josm-public-validation/reports/java/html/
             ${{ runner.temp }}/josm-public-validation/summary.json
             ${{ runner.temp }}/josm-public-validation/status.json
+            ${{ runner.temp }}/josm-public-validation/stages/java-build.log
           if-no-files-found: ignore
           retention-days: 5
       - name: Upload validated plugin jar
@@ -52,6 +53,14 @@ jobs:
     needs: public-validation
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: PROBABILISTIC
+            report: public-gui-smoke
+          - engine: LEGACY_THEN_B
+            report: public-gui-smoke-hybrid
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -61,15 +70,15 @@ jobs:
       - name: Check Xvfb runner availability
         run: command -v xvfb-run
       - name: Run public synthetic GUI smoke test
-        run: timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' sh gradlew v022PublicGuiSmoke --console=plain
+        run: timeout 600s xvfb-run -a -s '-screen 0 1920x1080x24' sh gradlew v022PublicGuiSmoke -PpublicGuiEngine=${{ matrix.engine }} --console=plain
       - name: Require public GUI smoke summary after a passing run
         if: success()
-        run: test -s build/reports/public-gui-smoke/summary.json
+        run: test -s build/reports/${{ matrix.report }}/summary.json
       - name: Upload public GUI smoke summary
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: public-gui-smoke-summary
-          path: build/reports/public-gui-smoke/summary.json
+          name: ${{ matrix.report }}-summary
+          path: build/reports/${{ matrix.report }}/summary.json
           if-no-files-found: ignore
           retention-days: 5
