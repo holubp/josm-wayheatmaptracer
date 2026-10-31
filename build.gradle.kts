@@ -1,3 +1,8 @@
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+
 plugins {
     `java-library`
 }
@@ -18,6 +23,66 @@ repositories {
     }
 }
 
+val josm19555HostFiles = providers.gradleProperty("josm19555HostJar").orNull?.let { rawPath ->
+    val hostJar = file(rawPath)
+    // Official Linux Java 11 packaging for revision 19555. All 5,659 compared
+    // class entries, service descriptors, and EPSG data matched. Graphics,
+    // manifest, signatures, and REVISION presentation resources differ from
+    // the blocked Maven JAR.
+    // This establishes a compatible host runtime, not full-JAR byte identity.
+    val expectedSize = 21_355_074L
+    val expectedSha256 = "d2e2310e24fdf8f4b2d18094997446e443d5894e86f6eeac27a4241bad40338e"
+    if (providers.gradleProperty("josmVersion").get() != "19555") {
+        throw GradleException("josm19555HostJar is only valid with josmVersion=19555")
+    }
+    if (!Files.isRegularFile(hostJar.toPath(), LinkOption.NOFOLLOW_LINKS)) {
+        throw GradleException("josm19555HostJar must name an existing regular file")
+    }
+    if (hostJar.length() != expectedSize) {
+        throw GradleException("josm19555HostJar has an unexpected file size")
+    }
+    val digest = MessageDigest.getInstance("SHA-256")
+    hostJar.inputStream().buffered().use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+    if (actualSha256 != expectedSha256) {
+        throw GradleException("josm19555HostJar has an unexpected SHA-256")
+    }
+    val revision = try {
+        ZipFile(hostJar).use { zip ->
+            val entry = zip.getEntry("REVISION")
+                ?: throw GradleException("josm19555HostJar has no bounded REVISION entry")
+            if (entry.size !in 0L..4096L) {
+                throw GradleException("josm19555HostJar has no bounded REVISION entry")
+            }
+            val bytes = zip.getInputStream(entry).use { input ->
+                val content = input.readNBytes(4097)
+                if (content.size > 4096) {
+                    throw GradleException("josm19555HostJar has no bounded REVISION entry")
+                }
+                content
+            }
+            Regex("(?m)^Revision:\\s*(\\d+)\\s*$")
+                .find(bytes.toString(Charsets.UTF_8))?.groupValues?.get(1)
+                ?: throw GradleException("josm19555HostJar REVISION is not recognized")
+        }
+    } catch (error: GradleException) {
+        throw error
+    } catch (error: Exception) {
+        throw GradleException("josm19555HostJar is not a readable JAR", error)
+    }
+    if (revision != "19555") {
+        throw GradleException("josm19555HostJar must have REVISION 19555")
+    }
+    files(hostJar)
+}
+
 sourceSets {
     create("tools") {
         java.srcDir("src/tools/java")
@@ -27,9 +92,15 @@ sourceSets {
 }
 
 dependencies {
-    compileOnly("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
-    testImplementation("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
-    "toolsImplementation"("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
+    if (josm19555HostFiles == null) {
+        compileOnly("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
+        testImplementation("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
+        "toolsImplementation"("org.openstreetmap.josm:josm:${providers.gradleProperty("josmVersion").get()}")
+    } else {
+        compileOnly(josm19555HostFiles)
+        testImplementation(josm19555HostFiles)
+        "toolsImplementation"(josm19555HostFiles)
+    }
 
     testImplementation(platform("org.junit:junit-bom:5.12.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
