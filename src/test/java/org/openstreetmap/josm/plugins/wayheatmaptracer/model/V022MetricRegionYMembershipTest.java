@@ -14,69 +14,6 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.Cancellat
 
 /** Conservative membership exclusion must retain the complete event proof. */
 class V022MetricRegionYMembershipTest {
-    @Test void hierarchicalMembershipRetainsHistoricalToleranceAndNonselectiveParity() {
-        var overlap = MetricRegion.rectangle(-5, -5, 5, 5).polygons().get(0);
-        for (var region : List.of(remoteFirst(), new MetricRegion(List.of(overlap, overlap)),
-                new MetricRegion(List.of(MetricRegion.rectangle(-5,-5,5,-1.5e-9).polygons().get(0),
-                        MetricRegion.rectangle(-5,1.5e-9,5,5).polygons().get(0))))) {
-            var ledger = AttemptMemoryLedger.production();
-            try (var owner = ledger.rootOwner()) {
-                var index = region.prepareHierarchicalYMembership(CancellationProbe.NONE, ignored -> {}, owner);
-                for (var polygon : region.polygons()) for (var vertex : polygon)
-                    for (double y : new double[] { vertex.yMeters(), vertex.yMeters() - 1e-9,
-                            vertex.yMeters() + 1e-9, Math.nextDown(vertex.yMeters() - 1e-9),
-                            Math.nextUp(vertex.yMeters() + 1e-9) })
-                        parity(region, index, new MetricPoint(-6, y), new MetricPoint(6, y), owner);
-                var foreign = new MetricRegion(region.polygons());
-                assertEquals(foreign.containsSegment(new MetricPoint(-1, 0), new MetricPoint(1, 0)),
-                        indexed(foreign, new MetricPoint(-1, 0), new MetricPoint(1, 0),
-                                CancellationProbe.NONE, ignored -> {}, owner, index));
-            }
-            assertEquals(0, ledger.currentBytes());
-        }
-    }
-
-    @Test void hierarchicalBuildRefusalAndCancellationReleasePartialStorage() {
-        var region = remoteFirst();
-        var calls = new AtomicLong();
-        region.prepareYMembership(() -> { calls.incrementAndGet(); return false; }, ignored -> {}, null);
-        long afterLeaves = calls.get();
-        var ledger = AttemptMemoryLedger.production();
-        try (var owner = ledger.rootOwner()) {
-            calls.set(0);
-            assertThrows(CancellationException.class, () -> region.prepareHierarchicalYMembership(
-                    () -> calls.incrementAndGet() == afterLeaves + 5, ignored -> {}, owner));
-            assertTrue(ledger.peakBytes() > 0);
-            assertEquals(0, ledger.currentBytes());
-        }
-        var small = new AttemptMemoryLedger(2_000);
-        try (var owner = small.rootOwner()) {
-            assertThrows(AttemptMemoryLedger.ResourceLimitException.class, () ->
-                    region.prepareHierarchicalYMembership(CancellationProbe.NONE, ignored -> {}, owner));
-            assertTrue(small.peakBytes() > 0, "Refuse the tree after leaf admission");
-            assertEquals(0, small.currentBytes());
-        }
-    }
-
-    @Test void hierarchicalPointProofsFitWithoutPruningAnySegmentEdges() {
-        var region = remoteFirst();
-        var ledger = AttemptMemoryLedger.production();
-        var units = new AtomicLong();
-        LongConsumer admission = amount -> {
-            if (amount > 20_000L - units.get()) throw new WorkRefusal();
-            units.addAndGet(amount);
-        };
-        try (var owner = ledger.rootOwner()) {
-            var index = region.prepareHierarchicalYMembership(CancellationProbe.NONE, admission, owner);
-            for (int query = 0; query < 20; query++) {
-                assertTrue(indexed(region, new MetricPoint(-1, 0), new MetricPoint(1, 0),
-                        CancellationProbe.NONE, admission, owner, index));
-            }
-            assertTrue(units.get() <= 20_000L);
-        }
-        assertEquals(0, ledger.currentBytes());
-    }
-
     @Test
     void repeatedExactInteriorProofsFitUnchangedSharedWorkLimit() {
         var region = remoteFirst();

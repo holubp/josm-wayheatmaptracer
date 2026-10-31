@@ -1,5 +1,66 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## RC13 qualification progress — 2026-10-31
+
+REOPENED integration gate: full local public-profile run86992 ended BUILD FAILED
+in44m39s:2362tests,5failures,0errors/skip, no heap exhaustion. Full XML is preserved
+under build/private-legacy-b-release/full-public-offline-junit. The native preview
+positive assertion failed with actual weak-signal association work limit. Exact
+focused control: current3ac75a5 FAIL52.892s;1640a2d PASS153.166s. Four additional
+context-veto tests exposed hierarchy accounting/cancellation assumptions.
+
+The optional b151 hierarchical membership optimization is rolled back to exact
+1640 versions of MetricRegion, ProbabilisticProfileFactory and membership tests.
+Existing positive assertions, work caps, owned boundary fix and persisted-engine
+coverage remain. Original context tests are retained unchanged. Independent Sol
+source review reports no blocker; fresh focused/neighbor/full CI and private
+comparisons remain pending. Rollback Gradle9260 PASSED25tests in3m16s with zero
+failures/errors/skips: native preview positive, membership10 and context-veto14.
+Existing original context assertions pass unchanged. Actual profile-boundary and
+reliability neighboring suites still need a separate run; two mistyped filters in
+the first invocation matched no classes and contribute no additional evidence.
+Private02/03 fresh membership-rollback comparison and replay are now running.
+
+Reviewed CI host repair35aaabda is integrated as5b1084d. Optional verified official
+Linux Java11 JOSM19555 host has identical5659 class entries to cached Maven19555;
+whole-JAR identity differs and is reported separately. Default Maven configuration
+and historical strict benchmark manifests remain unchanged.17Python helper tests
+pass. Isolated CI41178770758 at35aa is in progress, not release qualification.
+
+RC13 local candidate JAR has been built, manifest version0.22.0-rc.13/mainversion
+19555,3009226bytes/SHA256443bda4c3bb355510669a38fd612bfa6d1d62142a5bb6589eba9840e745c608a.
+It is NOT release-qualified and is now stale after the rollback; no tag/release.
+Source HEAD5b1084d has uncommitted rollback/version/checkpoint/matrix changes.
+Bounded official-repository monitor
+92264 writesv022-josm-repository-availability.log and a private status JSON;
+it never substitutes artifacts or publishes. Both endpoints continue503 at the
+last probe. Resume release only after the reopened regression and required gates.
+
+3ac75a5 is committed/pushed. Current source sharing passes32focused checks and
+independent source closure review. Corrected private comparisons both completed
+with unchanged original OSM bindings: case02(user-labelled high-intensity way)
+Legacy applicable, B actual interval2–105 with exact composed plan, Hybrid retains
+an applicable Legacy result after bounded preparation refusal; case03(two interior
+junctions) produces an applicable genuine B-refined Hybrid plus Legacy sibling.
+Case01(user-labelled weak example) remains a truthful bounded negative for Hybrid
+with unsafe Legacy backtrack blocked; standalone Legacy/B comparisons are retained.
+
+Fresh offline production replay of02/03 also PASSED exact candidate IDs, ordered
+geographic double bits and native transition counts (0 and1910572 respectively).
+One-ULP geometry and +1work controls were rejected. Evidence remains private in
+the ignored comparison directories and v022-private-frozen-replay-final.log.
+These are fresh numerical comparisons, not historical14-case or GUI benchmarks;
+no unavailable large-offset/private-corpus authority is fabricated.
+
+Full CI41175126701 attempts1and2 both stopped BEFORE compilation: official JOSM
+19555 Maven POM/JAR endpoints returnHTTP503. This is a separate external outage;
+the current heap fix is still unverified in full CI. Do not substitute another
+host version, silently waive checks or publish. Version is now staged for the
+next unused0.22.0-rc.13 candidate; no tag or public release exists. Complete full
+public-profile validation/build locally against the existing pinned cache while
+the repository is unavailable, then require restored exact-commit CI/GUI gates
+before publishing. Final0.22.0 user acceptance/corpus gates remain separate.
+
 ## Native source sharing verification — 2026-10-31
 
 Final scoped suite COMPLETED SUCCESS:32tests, zero failures/errors/skips,8m18s
