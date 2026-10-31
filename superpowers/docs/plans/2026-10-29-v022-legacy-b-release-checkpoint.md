@@ -2,6 +2,52 @@
 
 ## RC13 qualification progress — 2026-10-31
 
+## RC13 PUBLISHED and downloaded bytes verified — 2026-10-31
+
+Release: https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.13
+Tag/source:2860147cc1b8d346b6669a178a66140389d8a2fc. Single asset:
+wayheatmaptracer.jar,3007555bytes, SHA256
+1f3be7cd23d5bfbb8b00e9273399716640be3cd7e87de8b1666da54c3d098f87.
+Public downloaded bytes match the validated CI artifact exactly; manifest version
+0.22.0-rc.13 / minimum JOSM19555 verified. No private evidence was published.
+
+CI41179948918 SUCCESS on exact source:2359Java tests,0failures/errors/skips;
+all public stages and artifact-integrity PASS. Both actual GUI jobs PASS with
+geometry oracle, cancellation/no-late-preview, unchanged dataset/Undo and silent
+Settings save. Hybrid selected genuine refined-0. Independent Sol source audits
+and rollback closure report no remaining source blocker for the RC.
+
+The active implementation/next-RC objective is delivered. Final stable0.22.0 is
+not declared complete: user acceptance and original outstanding R04/R05/R16 /
+mandatory corpus/quality dispositions remain explicit. Do not publish another
+RC automatically. Keep existing private evidence and primary dirty tree intact.
+
+The entries below are retained investigation snapshots, superseded by publication.
+
+Latest source is committed/pushed2860147cc1b8d346b6669a178a66140389d8a2fc.
+Rollback focused25 and neighboring75 checks PASS, zero failures/errors/skips.
+Neighbor run also builds JAR, Javadoc and tools successfully in1m22s (existing
+Javadoc warnings remain). Local rebuilt RC13 JAR is3007555bytes, SHA256
+1f3be7cd23d5bfbb8b00e9273399716640be3cd7e87de8b1666da54c3d098f87;
+manifest Plugin-Version0.22.0-rc.13 / Plugin-Mainversion19555. Not yet published.
+
+Fresh private membership-rollback02/03 comparisons and actual production frozen
+replay PASS exact ordered geometry, IDs, native work0/1910572 and deliberate
+one-ULP/+1-work mismatch controls. Both preserve previous geometry/support;
+standalone B high-case exact plan and genuine Hybrid multi-junction refinement
+remain. High-case Hybrid retains safe Legacy after its pre-existing8M refusal.
+This is not final fourteen-case or visual acceptance qualification.
+
+Current full CI41179948918 runs on2860147, host preparation green. Old CI-only
+41178770758 finished2362tests/5failures with precisely the diagnosed regressions,
+not a new defect. It skipped downstream build/GUI because Java failed. Required
+current full public and both real JOSM GUI outcomes are still pending. No local
+Gradle/private JVM remains active. Release notes draft is ignored/local only;
+publish only the validated CI JAR after all required checks, then verify download.
+
+The entries below record investigation snapshots; this latest block supersedes
+their process-active/source-HEAD claims.
+
 REOPENED integration gate: full local public-profile run86992 ended BUILD FAILED
 in44m39s:2362tests,5failures,0errors/skip, no heap exhaustion. Full XML is preserved
 under build/private-legacy-b-release/full-public-offline-junit. The native preview
