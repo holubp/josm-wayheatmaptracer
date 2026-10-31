@@ -1,5 +1,48 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## Native source sharing verification — 2026-10-31
+
+Final scoped suite COMPLETED SUCCESS:32tests, zero failures/errors/skips,8m18s
+(`v022-native-mosaic-sharing-final-green-3.log`), including z14 parity, pre-copy
+refusal, post-dilation cancellation, complete ordinary-action class and native
+source codec/replay controls. The private classpath compiled successfully too.
+This supersedes the pending description below, not the outstanding full-CI gate.
+Fresh corrected02/03 private comparisons now run concurrently through the ignored
+orchestrator, separate JVMs/outputs, logv022-private-parallel-final.log. No private
+comparison success or release qualification claimed before their receipts exist.
+
+Current committed HEAD is b151427. The pending four-file memory repair integrates
+Luna's attempt-local ManagedCapture into the entire LegacyB discovery/refinement/
+final-assessment scope. Detector-specific inputs share immutable palette mosaics;
+new retained/working copies are reserved before allocation, with partial rollback.
+The actual all-source identity regression reproduced RED before integration.
+First scoped21checks PASS1m55s, including actual per-source replay and both resource
+stop cases at the unchanged512MiB heap. Phase samples before resource-stop cases
+fell to155172608bytes in this run; this is not a whole-heap proof or full-CI pass.
+
+Independent review required z14 nonzero-dilation parity/admission/cancellation
+coverage and explicit array/metadata working reservations. These are integrated,
+including corrected z14 image coordinates and positive in-raster signal control.
+One test compile error (transform interface access) and one Gradle task-option
+configuration error were corrected; neither is passing evidence. Latest corrected
+suite84627 is live, logv022-native-mosaic-sharing-final-green-3.log. It also builds
+the ignored private comparison classpath after tests. No final passing receipt yet.
+
+Final independent source/requirements closure review identifies no additional
+source blocker, but current tests, full CI, factual private comparisons and matrix/
+artifact gates remain mandatory. Case01 still hits the8Mfeature cap and its Legacy
+fallback is correctly backtrack-blocked. That bounded negative is not a Hybrid
+positive. Do not keep redesigning this one case before evaluating other families.
+
+Private02 and03 calculations reached partitioned B results, then the ignored
+comparison harness wrongly called the whole-way adapter and failed. Those partial
+outputs are preserved, not passes. Harness now uses actual production
+AlignWayAction.IntervalPreviewState/composer and labels scoped interval routes,
+actual work and whole composed support as unavailable when unmeasured. The ignored
+run-private-comparisons.py will run fresh02/03 JVMs concurrently after the classpath
+task succeeds, preserving prior outputs and checking unchanged OSM bindings.
+No private upload or public release; RC13 remains next unused candidate.
+
 ## Current continuation — 2026-10-31
 
 1640a2d exact CI40992167996 failed with Java heap exhaustion. Retained XML

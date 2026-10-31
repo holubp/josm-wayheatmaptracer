@@ -1,8 +1,11 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.service;
 
+import java.awt.image.BufferedImage;
 import java.awt.geom.Point2D;
-import java.util.List;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.openstreetmap.josm.data.coor.EastNorth;
 import org.openstreetmap.josm.data.projection.Projections;
@@ -14,6 +17,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SelectionContext;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.evidence.SupportedInputRasterTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyTopologyPlanner.Occurrence;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Captures only the numerical settings and actual source pixels consumed by sequential Hybrid. */
 public final class LegacyBSourceCapture {
@@ -131,59 +136,182 @@ public final class LegacyBSourceCapture {
     public static LegacyManagedProfileSampler.Input managed(Settings settings,
             ManagedModernPreviewSource.SourceRasters sources, List<ProjectedPoint> source,
             String projectionCode, String detector) {
-        Objects.requireNonNull(settings);
-        Objects.requireNonNull(sources);
-        requireDetector(settings, detector);
-        var projection = Projections.getProjectionByCode(projectionCode);
-        if (projection == null || source == null || source.size() < 2
-                || sources.selectedRaster().zoom() != settings.inferenceZoom()) {
-            throw new IllegalArgumentException("Captured managed sampling frame is unavailable");
+        try (var capture = new ManagedCapture(settings, sources, source, projectionCode,
+                CancellationProbe.NONE, null, false)) {
+            return capture.input(detector);
         }
-        boolean aggregate = "all-colors-combined".equals(detector);
-        if (aggregate && sources.aggregateAvailability()
-                != ManagedModernPreviewSource.AggregateAvailability.COMPLETE) {
-            throw new IllegalArgumentException("Complete acquired aggregate is required");
+    }
+
+    /** Attempt-local native managed-source mosaics shared by all detector inputs in one frame. */
+    public static final class ManagedCapture implements AutoCloseable {
+        private static final long MOSAIC_OBJECT_FIELD_BYTES = 80;
+        private final Settings settings;
+        private final ManagedModernPreviewSource.SourceRasters sources;
+        private final List<ProjectedPoint> source;
+        private final String projectionCode;
+        private final CancellationProbe cancellation;
+        private final org.openstreetmap.josm.data.projection.Projection projection;
+        private final TileHeatmapSampler.SamplingParameters inference;
+        private final TileHeatmapSampler.SamplingParameters validation;
+        private final AttemptMemoryLedger.Owner poolOwner;
+        private final Map<String, LegacyManagedProfileSampler.Mosaic> mosaics = new LinkedHashMap<>();
+        private boolean closed;
+
+        public ManagedCapture(Settings settings, ManagedModernPreviewSource.SourceRasters sources,
+                List<ProjectedPoint> source, String projectionCode, CancellationProbe cancellation,
+                AttemptMemoryLedger.Owner attemptOwner) {
+            this(settings, sources, source, projectionCode, cancellation,
+                    Objects.requireNonNull(attemptOwner, "attemptOwner"), true);
         }
-        double sumLatitude = 0;
-        for (var point : source) {
-            sumLatitude += projection.eastNorth2latlon(new EastNorth(point.east(), point.north())).lat();
-        }
-        double latitude = sumLatitude / source.size();
-        var inference = TileHeatmapSampler.legacySamplingParameters(settings.inferenceZoom(), latitude,
-                settings.searchHalfWidthMeters(), settings.sampleStepMeters());
-        int validationZoom = Math.min(settings.inferenceZoom(), settings.validationZoom());
-        var validation = TileHeatmapSampler.legacySamplingParameters(validationZoom, latitude,
-                settings.searchHalfWidthMeters(), settings.sampleStepMeters());
-        var mosaics = new LinkedHashMap<String, LegacyManagedProfileSampler.Mosaic>();
-        // Preserve acquired palette order: it determines native aggregate reference ownership.
-        for (var entry : sources.palettes().entrySet()) {
-            if (!aggregate && !entry.getKey().equals(sources.plan().selectedColor())) { continue; }
-            var raster = entry.getValue();
-            // SupportedInputRasterTransform uses standard 256-pixel world units. Plugin-direct
-            // managed rasters contain native 512-pixel tiles, without image resampling.
-            double nativePixelsPerWorldPixel = TileHeatmapSampler.TILE_SIZE / 256.0;
-            if (!(raster.transform() instanceof SupportedInputRasterTransform.WebMercator transform)
-                    || transform.rasterPixelsPerWorldPixel() != nativePixelsPerWorldPixel
-                    || transform.zoom() != settings.inferenceZoom()) {
-                throw new IllegalArgumentException("Managed Legacy requires its exact native world-pixel frame");
+
+        private ManagedCapture(Settings settings, ManagedModernPreviewSource.SourceRasters sources,
+                List<ProjectedPoint> source, String projectionCode, CancellationProbe cancellation,
+                AttemptMemoryLedger.Owner attemptOwnerOrNull, boolean allocateOwner) {
+            this.settings = Objects.requireNonNull(settings);
+            this.sources = Objects.requireNonNull(sources);
+            if (source == null || source.size() < 2 || projectionCode == null || projectionCode.isBlank()) {
+                throw new IllegalArgumentException("Captured managed sampling frame is unavailable");
             }
-            for (boolean valid : raster.validity()) {
-                if (!valid) { throw new IllegalArgumentException("Managed Legacy raster support is incomplete"); }
+            this.source = List.copyOf(source);
+            this.projectionCode = projectionCode;
+            this.cancellation = Objects.requireNonNull(cancellation);
+            projection = Projections.getProjectionByCode(projectionCode);
+            if (projection == null || sources.selectedRaster().zoom() != settings.inferenceZoom()) {
+                throw new IllegalArgumentException("Captured managed sampling frame is unavailable");
             }
-            var image = settings.inferenceMode().stableFixedScale()
-                    ? TileHeatmapSampler.stableInferenceImage(raster.image(), entry.getKey(), raster.zoom())
-                    : raster.image();
-            double virtualScale = inference.metersPerPixel()
-                    / TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL * RenderedHeatmapSampler.RASTER_SCALE;
-            mosaics.put(entry.getKey() + "@" + raster.zoom(), new LegacyManagedProfileSampler.Mosaic(
-                    entry.getKey(), raster.zoom(), transform.inputWorldPixelBoundaryX() * nativePixelsPerWorldPixel,
-                    transform.inputWorldPixelBoundaryY() * nativePixelsPerWorldPixel, image.getWidth(), image.getHeight(),
-                    image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth()),
-                    inference, settings.inferenceMode().stableFixedScale(), virtualScale));
+            double sumLatitude = 0;
+            for (var point : this.source) {
+                sumLatitude += projection.eastNorth2latlon(new EastNorth(point.east(), point.north())).lat();
+            }
+            double latitude = sumLatitude / this.source.size();
+            inference = TileHeatmapSampler.legacySamplingParameters(settings.inferenceZoom(), latitude,
+                    settings.searchHalfWidthMeters(), settings.sampleStepMeters());
+            int validationZoom = Math.min(settings.inferenceZoom(), settings.validationZoom());
+            validation = TileHeatmapSampler.legacySamplingParameters(validationZoom, latitude,
+                    settings.searchHalfWidthMeters(), settings.sampleStepMeters());
+            poolOwner = allocateOwner ? attemptOwnerOrNull.child("legacy-managed-capture") : null;
         }
-        return new LegacyManagedProfileSampler.Input(settings.inferenceMode(), settings.inferenceZoom(),
-                settings.validationZoom(), settings.inferenceZoom(), validationZoom, TileHeatmapSampler.TILE_SIZE,
-                mosaics, inference, validation, source, projectionCode, sources.plan().selectedColor(),
-                List.of(detector), settings.intensityMode(), RenderedHeatmapSampler.RASTER_SCALE);
+
+        /** Builds one factual detector input while retaining one immutable mosaic per palette. */
+        public synchronized LegacyManagedProfileSampler.Input input(String detector) {
+            ensureOpen();
+            requireDetector(settings, detector);
+            boolean aggregate = "all-colors-combined".equals(detector);
+            if (aggregate && sources.aggregateAvailability()
+                    != ManagedModernPreviewSource.AggregateAvailability.COMPLETE) {
+                throw new IllegalArgumentException("Complete acquired aggregate is required");
+            }
+            cancellation.checkpoint();
+            var newlyBuilt = new ArrayList<String>();
+            try {
+                var inputMosaics = new LinkedHashMap<String, LegacyManagedProfileSampler.Mosaic>();
+                // Preserve acquired order: it defines the aggregate's native reference palette.
+                for (var entry : sources.palettes().entrySet()) {
+                    if (!aggregate && !entry.getKey().equals(sources.plan().selectedColor())) { continue; }
+                    String key = entry.getKey() + "@" + entry.getValue().zoom();
+                    var mosaic = mosaics.get(key);
+                    if (mosaic == null) {
+                        newlyBuilt.add(key);
+                        mosaic = captureMosaic(entry.getKey(), entry.getValue());
+                        mosaics.put(key, mosaic);
+                    }
+                    inputMosaics.put(key, mosaic);
+                }
+                int validationZoom = Math.min(settings.inferenceZoom(), settings.validationZoom());
+                return new LegacyManagedProfileSampler.Input(settings.inferenceMode(), settings.inferenceZoom(),
+                        settings.validationZoom(), settings.inferenceZoom(), validationZoom, TileHeatmapSampler.TILE_SIZE,
+                        inputMosaics, inference, validation, source, projectionCode, sources.plan().selectedColor(),
+                        List.of(detector), settings.intensityMode(), RenderedHeatmapSampler.RASTER_SCALE);
+            } catch (RuntimeException | Error failure) {
+                for (int index = newlyBuilt.size() - 1; index >= 0; index--) {
+                    String key = newlyBuilt.get(index);
+                    var mosaic = mosaics.remove(key);
+                    if (poolOwner != null && mosaic != null) {
+                        // Release only this input's new mosaics; earlier complete inputs remain usable.
+                        poolOwner.retainIfAbsent(mosaic).close();
+                    }
+                }
+                throw failure;
+            }
+        }
+
+        private LegacyManagedProfileSampler.Mosaic captureMosaic(String color, ManagedModernPreviewSource.Raster raster) {
+            cancellation.checkpoint();
+            int width = raster.image().getWidth();
+            int height = raster.image().getHeight();
+            int pixels = Math.multiplyExact(width, height);
+            var retained = reserve(poolOwner, Math.addExact(AttemptMemoryLedger.arrayBytes(pixels, Integer.BYTES),
+                    AttemptMemoryLedger.objectBytes(MOSAIC_OBJECT_FIELD_BYTES)));
+            try (retained) {
+                var supportReservation = reserve(poolOwner, AttemptMemoryLedger.arrayBytes(pixels, 1));
+                try (supportReservation) {
+                    boolean[] support = raster.validity();
+                    for (int index = 0; index < support.length; index++) {
+                        if ((index & 0x3fff) == 0) { cancellation.checkpoint(); }
+                        if (!support[index]) { throw new IllegalArgumentException("Managed Legacy raster support is incomplete"); }
+                    }
+                }
+                double nativePixelsPerWorldPixel = TileHeatmapSampler.TILE_SIZE / 256.0;
+                if (!(raster.transform() instanceof SupportedInputRasterTransform.WebMercator transform)
+                        || transform.rasterPixelsPerWorldPixel() != nativePixelsPerWorldPixel
+                        || transform.zoom() != settings.inferenceZoom()) {
+                    throw new IllegalArgumentException("Managed Legacy requires its exact native world-pixel frame");
+                }
+                cancellation.checkpoint();
+                boolean stable = settings.inferenceMode().stableFixedScale();
+                int dilation = stable ? TileHeatmapSampler.stableInferenceDilationRadius(raster.zoom()) : 0;
+                var workingReservation = dilation > 0
+                        ? reserve(poolOwner, stableInferenceWorkingBytes(pixels)) : null;
+                try (workingReservation) {
+                    BufferedImage image = stable
+                            ? TileHeatmapSampler.stableInferenceImage(raster.image(), color, raster.zoom())
+                            : raster.image();
+                    cancellation.checkpoint();
+                    var pixelsReservation = reserve(poolOwner, AttemptMemoryLedger.arrayBytes(pixels, Integer.BYTES));
+                    try (pixelsReservation) {
+                        int[] argb = image.getRGB(0, 0, width, height, null, 0, width);
+                        cancellation.checkpoint();
+                        double virtualScale = inference.metersPerPixel()
+                                / TileHeatmapSampler.REFERENCE_VIEW_METERS_PER_PIXEL
+                                * RenderedHeatmapSampler.RASTER_SCALE;
+                        var mosaic = new LegacyManagedProfileSampler.Mosaic(color, raster.zoom(),
+                                transform.inputWorldPixelBoundaryX() * nativePixelsPerWorldPixel,
+                                transform.inputWorldPixelBoundaryY() * nativePixelsPerWorldPixel, width, height,
+                                argb, inference, stable, virtualScale);
+                        if (retained != null) { retained.adopt(mosaic); }
+                        return mosaic;
+                    }
+                }
+            }
+        }
+
+        private static AttemptMemoryLedger.Reservation reserve(AttemptMemoryLedger.Owner owner, long bytes) {
+            return owner == null ? null : owner.reserve(bytes);
+        }
+
+        /** Three pixel arrays plus conservative BufferedImage/Raster/DataBuffer/sample-model metadata. */
+        private static long stableInferenceWorkingBytes(int pixels) {
+            return Math.addExact(
+                    Math.addExact(AttemptMemoryLedger.arrayBytes(pixels, Integer.BYTES),
+                            AttemptMemoryLedger.arrayBytes(pixels, Double.BYTES)),
+                    Math.addExact(AttemptMemoryLedger.arrayBytes(pixels, Integer.BYTES),
+                            Math.addExact(AttemptMemoryLedger.objectBytes(96) * 8,
+                                    AttemptMemoryLedger.referenceArrayBytes(2))));
+        }
+
+        private void ensureOpen() {
+            if (closed || poolOwner != null && poolOwner.isClosed()) {
+                closed = true;
+                mosaics.clear();
+                throw new IllegalStateException("Managed capture is closed");
+            }
+        }
+
+        @Override public synchronized void close() {
+            if (closed) { return; }
+            closed = true;
+            mosaics.clear();
+            if (poolOwner != null) { poolOwner.close(); }
+        }
     }
 }

@@ -1426,6 +1426,11 @@ public final class LiveBPreviewService {
     private Computed computeLegacyBAttempt(Captured captured, SelectedWayIntervalPartitioner.Partition partition,
             CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
             LegacyBPipeline.Deadline deadline, TraceBudgets limits) {
+        if (captured.raster() == null && captured.sourceRasters() == null)
+            throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
+        try (var managedCapture = captured.raster() != null ? null : new LegacyBSourceCapture.ManagedCapture(
+                legacy.sampling(), captured.sourceRasters(), legacy.geometry().originalProjected(),
+                captured.projectionCode(), cancellation, owner)) {
         var choices = new ArrayList<LegacyBChoiceSpec>();
         choices.add(new LegacyBChoiceSpec(null,"selected-visible",0,true));
         if (captured.sourceRasters() != null && captured.intensityMode() == IntensitySamplingMode.COLOR_MAPPING) {
@@ -1463,7 +1468,7 @@ public final class LiveBPreviewService {
                         : captureManagedMappingEvidence(captured,choice.mapping(),cancellation);
                 var options = new ModernTracePipeline.Options(FIELD,captured.cleanup(),choice.sourceTier(),choice.preference());
                 discoveries.put(choice,discoverLegacyBChoice(captured,partition,choice.mapping(),cancellation,legacy,
-                        owner,deadline,evidence,options));
+                        owner,deadline,evidence,options,managedCapture));
             } catch (AttemptMemoryLedger.ResourceLimitException | RasterEvidenceCapture.ResourceLimitException
                     | IntervalTraceBatch.ResourceLimitException resource) {
                 if (choice.mapping() == null) throw resource;
@@ -1529,6 +1534,7 @@ public final class LiveBPreviewService {
                     : new DetectorAttempt(choice.mapping(),choice.sourceTier(),DetectorAttemptStatus.PRODUCED,produced));
         }
         return root.withSourceAttempts(attempts);
+        }
     }
 
     private static void requireLegacyBSourceCurrent(Captured captured) {
@@ -1592,7 +1598,7 @@ public final class LiveBPreviewService {
             SelectedWayIntervalPartitioner.Partition partition, String mapping, TraceBudgets budget,
             CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
             LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options) {
-        var discovery = discoverLegacyBChoice(captured,partition,mapping,cancellation,legacy,owner,deadline,evidence,options);
+        var discovery = discoverLegacyBChoice(captured,partition,mapping,cancellation,legacy,owner,deadline,evidence,options,null);
         return finishLegacyBChoice(captured,discovery,discovery.discovery().value().seeds().stream().limit(2)
                 .map(seed -> seed.id()).toList(),budget,true,LegacyBPipeline.Reason.WORK_BUDGET,cancellation,owner,deadline);
     }
@@ -1606,7 +1612,8 @@ public final class LiveBPreviewService {
     private LegacyBDiscoveredChoice discoverLegacyBChoice(Captured captured,
             SelectedWayIntervalPartitioner.Partition partition, String mapping,
             CancellationProbe cancellation, LegacyBInvocation legacy, AttemptMemoryLedger.Owner owner,
-            LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options) {
+            LegacyBPipeline.Deadline deadline, EvidenceSnapshot evidence, ModernTracePipeline.Options options,
+            LegacyBSourceCapture.ManagedCapture managedCapture) {
         Objects.requireNonNull(legacy);
         TraceRequest request = fullRequest(captured, evidence);
         var way = (DetachedWay) captured.network().primitives().get(request.selectedWayKey());
@@ -1639,8 +1646,9 @@ public final class LiveBPreviewService {
             if (captured.sourceRasters() == null) {
                 throw new IllegalArgumentException("Sequential Hybrid requires its acquired managed source rasters");
             }
-            managed = LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
-                    geometry.originalProjected(), captured.projectionCode(), detector);
+            managed = managedCapture != null ? managedCapture.input(detector)
+                    : LegacyBSourceCapture.managed(legacy.sampling(), captured.sourceRasters(),
+                        geometry.originalProjected(), captured.projectionCode(), detector);
             discovered = runner.discoverManaged(input, managed, cancellation, owner, deadline);
         }
         return new LegacyBDiscoveredChoice(evidence,options,input,visible,managed,discovered,ModernDiagnosticCounters.snapshot());

@@ -249,6 +249,15 @@ class OrdinaryModernAttemptAssemblyTest {
                         section.reason().name() + ": " + section.section().reference()).toList().toString());
             if (allSources) {
                 assertTrue(computed.detectorAttempts().size() >= 3);
+                var sharedMosaics = new java.util.HashMap<String,
+                        org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyManagedProfileSampler.Mosaic>();
+                for (var run : computed.productionRuns()) {
+                    for (var entry : run.legacyB().managedSource().mosaics().entrySet()) {
+                        var prior = sharedMosaics.putIfAbsent(entry.getKey(), entry.getValue());
+                        if (prior != null) org.junit.jupiter.api.Assertions.assertSame(prior, entry.getValue(),
+                                "One acquired palette must retain one immutable native mosaic across detector inputs");
+                    }
+                }
                 long parents = computed.productionRuns().stream().mapToLong(run -> run.legacyB().result().batch().sections()
                         .stream().map(section -> section.section().parentSeedId()).distinct().count()).sum();
                 assertTrue(parents <= 2,"Global retained parents: " + parents);
