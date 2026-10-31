@@ -201,13 +201,13 @@ evidence is not implicitly waived by a shorter practical-engine release request.
 | Task | Status | Evidence / next action |
 |---|---|---|
 | 1 baseline and obligations | TESTED | isolated2fdab87 snapshot, scoped23-file inventory;90 focused tests green; original obligations mapped above |
-| 2 defaults/settings | TESTED | intended defaults/migration RED6→GREEN28; settings/guard RED2; final41PASS with corrected synthetic-session fixture; GUI smoke pending Task8 |
+| 2 defaults/settings | TESTED including actual GUI | Defaults/migration and routing regressions; actual ordinary Settings OK persists the changed checkbox without an extra modal. CI40981960903 includes B and Hybrid real-JOSM GUI passes |
 | 3 Legacy seeds/reference | IMPLEMENTED; focused native integration TESTED |5942d82/577d89e supply actual captured visible/managed Legacy inputs, shared native simplification/topology and explicit native B reference; remaining occurrence edge cases and final audit in Task6/8 |
-| 4 interval orchestration | TESTED NATIVE CORE |7dc2b57/5942d82 exercise actual leased runner, mixed fallback and shared work; cross-detector global parent/candidate caps still need audit/correction |
+| 4 interval orchestration | TESTED NATIVE CORE and global source admission |7dc2b57/5942d82 actual leased runner and mixed fallback;1cd15a0 global two-parent/six-final admission, all four cumulative counters and source-local frozen allocation, optional resource-stop controls. Private dense-reference work refusals remain Task8 blockers |
 | 5 assessment/preview | IMPLEMENTED ordinary UI; focused tests PASS |75component tests plusa188b48 ordinary route-bound section rows/highlight and assembled raw/final semantics; actual-dialog smoke remains Task8 |
-| 6 live/apply/export/replay | PARTIAL |5942d82/577d89e/a188b48/91333d9: actual visible/managed production, Format15/root v6 and actual intermediate/native-work replay, genuine B-refined exact plan Apply/Undo/Redo. All-source cap/authority/contact/occurrence/no-signal/failure audit remains |
+| 6 live/apply/export/replay | IMPLEMENTED; focused and prior integrated gates TESTED | Actual visible/managed production and factual per-source replay;1cd15a0 global caps;098b0aa narrow inherited contacts;1114ce2 coincident protected identities/foldback controls;ec60151 stale publication. Genuine B-refined exact Apply/Undo/Redo and actual GUI pass. Final stable-tree integration and private practical Hybrid verification remain Task8 |
 | 7 old Hybrid removal | IMPLEMENTED locally; focused gates PASS | Old engine/guide/hooks/funded3x API removed; historical decode/refusal, migration and source roles retained;70routing/refusal tests plus7ported contracts PASS; full CI/final audit pending |
-| 8 RC/final release | PARTIAL verification |91333d9 full public CI40868988501 and standalone B GUI PASS; private scope not executed. No release qualification or new RC claimed |
+| 8 RC/final release | PARTIAL; release blocked |843402e CI40981960903 passes2344Java and both actual GUI engines. Later82c0cba/1640a2d full CI fail with heap exhaustion; isolated all-source512MiB passes. Fresh private case01 proves unchanged standalone Legacy/B geometry, but Hybrid remains blocked by bounded feature work before B. Other private families and final matrix/audit/artifact gates remain; no RC published |
 
 Plan self-review: approved design sections mapped to Tasks 1–8; all five Review
 Focus cases have named RED tests. New immutable models and helper types are defined

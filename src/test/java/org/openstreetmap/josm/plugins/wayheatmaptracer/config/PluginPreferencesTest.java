@@ -77,6 +77,20 @@ class PluginPreferencesTest {
     }
 
     @Test
+    void explicitModernEnginePreferencesRoundTripWithoutPromotionOrMigration() {
+        Config.getPref().putInt(PREFIX + "tracing.schemaVersion", TracingSettings.CURRENT_SCHEMA_VERSION);
+        for (TrackerMode expected : new TrackerMode[] { TrackerMode.LEGACY_V02, TrackerMode.CORRIDOR_AWARE,
+                TrackerMode.PROBABILISTIC, TrackerMode.DIRECTIONAL_IMAGE, TrackerMode.LEGACY_THEN_B }) {
+            Config.getPref().put(PREFIX + "tracing.engine", expected.name());
+            TracingSettings loaded = PluginPreferences.loadTracingSettings();
+            assertEquals(expected, loaded.engine(), "load " + expected);
+            PluginPreferences.saveTracingSettings(loaded);
+            assertEquals(expected.name(), Config.getPref().get(PREFIX + "tracing.engine", ""), "persist " + expected);
+            assertEquals(expected, PluginPreferences.loadTracingSettings().engine(), "reload " + expected);
+        }
+    }
+
+    @Test
     void unknownTrackerPreferenceUsesPublicDefault() {
         Config.getPref().put(PREFIX + "trackerMode", "removed-future-mode");
 

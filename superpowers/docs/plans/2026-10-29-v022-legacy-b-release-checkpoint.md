@@ -1,5 +1,35 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## Current continuation — 2026-10-31
+
+1640a2d exact CI40992167996 failed with Java heap exhaustion. Retained XML
+locates the last phase before resource-stop cases at349634944/536870912bytes.
+The isolated test passes at512MiB; the full local diagnostic process disappeared
+without a final receipt or heap dump, so it provides no passing evidence.
+Source inspection identifies repeated immutable managed-palette ARGB copies for
+each alternative detector. A bounded attempt-local sharing helper is being
+implemented by Luna in an isolated Termux temporary worktree; not integrated or
+claimed fixed yet. No heap/cap increase, test skips or source-subset waiver.
+
+The actual private Hybrid refusal was independently localized to the8M feature
+budget during RIE localized-support geometry. The smaller reviewed repair keeps
+all edge traversal/event arithmetic and groups only the existing expanded Y
+point-membership bounds in original order. Historical/default and singleton
+paths retain their previous accounting. The20-query/20kwork control reproduced
+RED with the original linear membership. Final127 geometry/reliability/settings
+checks PASS, zero failures/errors/skips,1m38s; independent affected Sol review
+found no blocker. A fresh private Hybrid-only case01 is running into
+`case-01-hierarchical-membership`; practical B refinement is not yet proved.
+
+User requested increased Luna parallelism: independent heap, private-coverage,
+defaults/removal and publication audits ran concurrently; code writers use
+separate worktrees. Five-engine persisted preference roundtrip coverage from
+Luna was integrated and is included in the127passing checks. Runtime metadata
+confirms the requested current Luna high/medium routes. RC13 is unused; actual
+release worktree is1640a2d/codex-v022-legacy-b-release, version remainsrc12.
+No release published. Remaining private families, stable CI and final audit
+remain mandatory before RC qualification.
+
 ## Boundary work correction and current gates — 2026-10-30
 
 HEAD before this batch: 82c0cba. The native-admission repair completed a fresh

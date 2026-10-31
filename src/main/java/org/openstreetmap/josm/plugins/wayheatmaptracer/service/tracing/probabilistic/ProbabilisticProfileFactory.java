@@ -1343,10 +1343,10 @@ public final class ProbabilisticProfileFactory {
             AttemptMemoryLedger.Owner preparation = owner == null ? null : owner.child("bridge-region-membership");
             boolean complete = false;
             try {
-                var decision = evidence.decisionRegion().prepareYMembership(cancellation, this, preparation);
+                var decision = evidence.decisionRegion().prepareHierarchicalYMembership(cancellation, this, preparation);
                 cancellation.checkpoint(); chargeFeatures(1L);
                 var captured = evidence.decisionRegion() == evidence.evidenceRegion() ? decision
-                        : evidence.evidenceRegion().prepareYMembership(cancellation, this, preparation);
+                        : evidence.evidenceRegion().prepareHierarchicalYMembership(cancellation, this, preparation);
                 decisionYIndex = decision; capturedYIndex = captured;
                 complete = true;
             } finally {

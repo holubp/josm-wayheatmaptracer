@@ -21,12 +21,64 @@ public final class MetricRegion {
     private final List<List<MetricPoint>> polygons;
 
     /** Immutable bounds borrowed only while their creating attempt owner remains alive. */
-    public static final class YMembershipIndex {
+    public static class YMembershipIndex {
         private final MetricRegion region;
         private final double[] lower, upper;
         private YMembershipIndex(MetricRegion region, double[] lower, double[] upper) {
             this.region = region; this.lower = lower; this.upper = upper;
         }
+    }
+
+    private static final class HierarchicalYMembershipIndex extends YMembershipIndex {
+        private final double[] groupLower, groupUpper;
+        private HierarchicalYMembershipIndex(YMembershipIndex leaves, double[] lower, double[] upper) {
+            super(leaves.region, leaves.lower, leaves.upper);
+            groupLower = lower; groupUpper = upper;
+        }
+    }
+
+    /**
+     * Groups contiguous original polygon bounds for repeated point membership queries.
+     * All segment edge events still run in their original order through the unchanged predicate.
+     */
+    public YMembershipIndex prepareHierarchicalYMembership(CancellationProbe cancellation,
+            LongConsumer admission, AttemptMemoryLedger.Owner owner) {
+        if (cancellation == null || admission == null)
+            throw new IllegalArgumentException("Membership work controls are required");
+        if (polygons.size() == 1) return prepareYMembership(cancellation, admission, owner);
+        AttemptMemoryLedger.Owner preparation = owner == null ? null : owner.child("region-y-hierarchy");
+        boolean complete = false;
+        try {
+            YMembershipIndex leaves = prepareYMembership(cancellation, admission, preparation);
+            int slots = Math.multiplyExact(polygons.size(), 4);
+            cancellation.checkpoint();
+            admission.accept(Math.addExact(Math.multiplyExact(2L, slots), 1L));
+            if (preparation != null) preparation.reserve(Math.addExact(AttemptMemoryLedger.objectBytes(40),
+                    Math.multiplyExact(2L, AttemptMemoryLedger.arrayBytes(slots, Double.BYTES))));
+            double[] lower = new double[slots];
+            double[] upper = new double[slots];
+            buildYGroups(leaves, lower, upper, 1, 0, polygons.size(), cancellation, admission);
+            var result = new HierarchicalYMembershipIndex(leaves, lower, upper);
+            complete = true;
+            return result;
+        } finally {
+            if (!complete && preparation != null) preparation.close();
+        }
+    }
+
+    private static void buildYGroups(YMembershipIndex leaves, double[] lower, double[] upper,
+            int node, int first, int last, CancellationProbe cancellation, LongConsumer admission) {
+        cancellation.checkpoint(); admission.accept(1L);
+        if (last - first == 1) {
+            lower[node] = leaves.lower[first]; upper[node] = leaves.upper[first];
+            return;
+        }
+        int middle = first + (last - first) / 2;
+        buildYGroups(leaves, lower, upper, node * 2, first, middle, cancellation, admission);
+        buildYGroups(leaves, lower, upper, node * 2 + 1, middle, last, cancellation, admission);
+        admission.accept(2L);
+        lower[node] = Math.min(lower[node * 2], lower[node * 2 + 1]);
+        upper[node] = Math.max(upper[node * 2], upper[node * 2 + 1]);
     }
 
     /** Prepares owned point bounds; segment edge events always remain complete. */
@@ -313,6 +365,8 @@ public final class MetricRegion {
         if (index == null || point == null) return contains(point, cancellation, admission);
         cancellation.checkpoint(); admission.accept(1L);
         if (index.region != this) return contains(point, cancellation, admission);
+        if (index instanceof HierarchicalYMembershipIndex grouped)
+            return containsYGroup(point, cancellation, admission, grouped, 1, 0, polygons.size());
         for (int polygonIndex = 0; polygonIndex < polygons.size(); polygonIndex++) {
             cancellation.checkpoint();
             admission.accept(2L); // Both comparisons precede even an early outside result.
@@ -321,6 +375,17 @@ public final class MetricRegion {
             if (contains(polygons.get(polygonIndex), point, cancellation, admission)) return true;
         }
         return false;
+    }
+
+    private boolean containsYGroup(MetricPoint point, CancellationProbe cancellation, LongConsumer admission,
+            HierarchicalYMembershipIndex index, int node, int first, int last) {
+        cancellation.checkpoint(); admission.accept(2L);
+        if (point.yMeters() < index.groupLower[node] || point.yMeters() > index.groupUpper[node])
+            return false;
+        if (last - first == 1) return contains(polygons.get(first), point, cancellation, admission);
+        int middle = first + (last - first) / 2;
+        return containsYGroup(point, cancellation, admission, index, node * 2, first, middle)
+                || containsYGroup(point, cancellation, admission, index, node * 2 + 1, middle, last);
     }
 
     /** Returns whether a segment touches or crosses any polygon in the union. */
