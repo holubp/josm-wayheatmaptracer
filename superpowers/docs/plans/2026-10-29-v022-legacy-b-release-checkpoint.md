@@ -6,19 +6,30 @@ User requests fixes for at least some confirmed Omice failures and another RC.
 Active compact plan: `2026-11-01-omice-rc14-repairs.md` in this directory. RC13
 publication below remains factual; its completed goal does not complete this task.
 
-Release HEADfc17721, branchcodex/v022-legacy-b-release; primary dirty117baaf
-untouched. Root release has integrated UI message patch (AlignWayAction +test),
-observed intendedRED then5GREEN action checks. Core relation-payload proof fix is
-in isolated `/data/data/com.termux/files/usr/tmp/v022-omice-relation-20261101`,
-basefc17721; actual capture→whole-freeze regression RED established. Core currently
-owns the sole local Gradle slot for compile/capture/partition/frozen-frame tests.
+Release source6f98691, branchcodex/v022-legacy-b-release; primary dirty117baaf
+untouched. Core and UI fixes integrated, independently source-reviewed by Sol;
+three findings repaired and affected source re-reviewed. Actual capture whole-freeze
+regression RED→GREEN, integrated151tests/build/Javadoc/tools PASS. One ancestry
+negative control is GREEN-only after automatic review rejected guard removal;
+no bypass or historical RED claim. Full public/GUI CI41264670843 is in progress.
 Optional payloadComplete fact, conservative old snapshots, FIXED-only read-only
 hiking/bicycle route proof; nested versioned codecs preserve older layouts.
-No core integration/review/publication yet. Independent Sol review still required.
+RC14 PUBLISHED: https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.14
+Exact source/tag6f98691ec4b9040642fb3c75e7eaefed3ee143a4; CI41264670843 PASS,
+2367Java tests/0failures/errors/skips, all public stages and both actual B/Hybrid
+GUI checks PASS. Single public JAR3011620bytes, SHA256
+af0fe6f4127cb44c6ce57e60070dd415361520d2010580bebf20ff9c2545514c.
+Downloaded public bytes and manifest verified against CI. This closes the bounded
+RC14 request; stable gates and tracing/capacity limitations remain open.
 
 Fresh private RC13 Omice baseline in release build/private-omice-rc14-20261101
 reproduces NO_CHANGE/Bwork0 on both admitted parents at actual25m width, with
-unchanged dataset. Good A archive control helper is being prepared separately.
+unchanged dataset. Fixed capture freezes only0..1 and11..13, leaving2..10movable;
+Omice still has no usable Hybrid plan because Legacy final geometry is blocked
+and native B preparation exhausts the existing64M boundary-work cap. Good A
+production replay is numerically identical to RC13 replay (548points,8257states,
+2137828transitions); original strict capture fingerprint retains an existing
+two-allocation-counter mismatch, not waived for stable release.
 No private inputs uploaded. Legacy rotating-normal hairpins and standalone B's
 25m/128M capacity limit are not claimed repaired by the bounded relation/UI work.
 

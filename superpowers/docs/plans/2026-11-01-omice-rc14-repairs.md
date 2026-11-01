@@ -41,12 +41,12 @@
 - [x] Reconcile source/worktree and prior private diagnosis; no production changes yet.
 - [x] Independent focused Sol design audit selects the smallest safe repair and precise contract.
 - [x] Add deterministic regression showing the selected repair missing; record intended RED.
-- [ ] Implement minimal repair, then focused GREEN and neighboring source/partition/replay/transaction regressions.
-- [ ] If reproduced, replace the generic B resource-limited no-preview message with the actual computation-limit cause and actionable manual narrower/shorter refinement guidance; retain modeless current-owner diagnostics and no automatic settings changes.
-- [ ] Re-capture/replay the private Omice case truthfully using factual original OSM; compare fixed islands/interior work and exact plan availability. Preserve good A control and report any remaining Legacy/B failures.
-- [ ] Independent Sol audit of actual full delta; repair findings and re-run invalidated checks.
-- [ ] Update version to next unused RC, document actual changed behavior/limitations, push scoped commit and run full public CI plus both real GUI engines.
-- [ ] Publish only validated CI `wayheatmaptracer.jar`; verify public tag/source, download bytes, SHA256 and manifest; update this ledger/checkpoint.
+- [x] Implement minimal repair, then focused GREEN and neighboring source/partition/replay/transaction regressions.
+- [x] If reproduced, replace the generic B resource-limited no-preview message with the actual computation-limit cause and actionable manual narrower/shorter refinement guidance; retain modeless current-owner diagnostics and no automatic settings changes.
+- [x] Re-capture/replay the private Omice case truthfully using factual original OSM; compare fixed islands/interior work and exact plan availability. Preserve good A control and report any remaining Legacy/B failures.
+- [x] Independent Sol audit of actual full delta; repair findings and re-run invalidated checks.
+- [x] Update version to next unused RC, document actual changed behavior/limitations, push scoped commit and run full public CI plus both real GUI engines.
+- [x] Publish only validated CI `wayheatmaptracer.jar`; verify public tag/source, download bytes, SHA256 and manifest; update this ledger/checkpoint.
 
 ## Current execution status
 
@@ -216,3 +216,41 @@ To overlap required validation, commit/push the stable reviewed source while the
 local integrated test/build task finishes; no source edits during that run. CI is
 allowed to start before the local receipt, but publication remains gated on both
 local checks and all full public/real GUI CI outcomes. No tag/release yet.
+
+### Integrated verification at6f98691
+
+Local integrated test/build/Javadoc/tools command completed exit0 in20m23s:
+151tests,0failures/errors/skips (action62,capture19,partition30,frozen16,
+disconnection24). Javadoc retains100warnings; build succeeds. Source was stable
+throughout this run. Full public/GUI CI41264670843 targets the exact same source.
+
+Post-integration good-A production replay diagnostic line is byte-identical to
+the measured RC13 replay baseline:548ordered points and logical work
+8257states/2137828transitions preserved. Its coordinate mutation negative control
+is rejected. The original captured strict fingerprint still FAILS solely for the
+pre-existing two-allocation diagnostic difference; no strict stable-release gate
+is waived. Private receipt: a-control-rc13-rc14-comparison.txt. This is an explicitly
+bounded RC13-versus-RC14 numerical comparison, not a claim of original strict
+capture equality or stable0.22 readiness.
+
+Fresh positive case03 production Hybrid control at the integrated revision exits0
+in14.91s (inference9606ms). Both Legacy fallback and refined-0 have PLAN_AVAILABLE;
+native B executes1699states/30365pair visits/1910572transitions. The dataset stays
+unchanged. Native alternative search remains AMBIGUOUS/truncated, not fabricated
+complete. Artifacts:private output root/positive-case03. This confirms an existing
+applicable real refinement survives the protection change; it does not establish
+Omice applicability or new quality/speed claims.
+
+Full CI41264670843 PASS at exact6f98691ec4b9040642fb3c75e7eaefed3ee143a4:
+2367Java tests,0failures/errors/skips, Python tests and every public stage PASS.
+Both real JOSM19555 GUI engines PASS: geometry oracle, ordinary action, visible
+preview, cancellation/no-late-preview, dataset/Undo unchanged, silent settings.
+No private inputs uploaded. Validated CI JAR3011620bytes, Plugin-Version
+0.22.0-rc.14/Mainversion19555, SHA256
+af0fe6f4127cb44c6ce57e60070dd415361520d2010580bebf20ff9c2545514c.
+Release published: https://github.com/holubp/josm-wayheatmaptracer/releases/tag/v0.22.0-rc.14
+Public download verified byte-identical to CI, manifest correct, single JAR asset,
+prerelease true/draft false; remote tag points exactly at tested6f98691 source.
+Receipt:private output root/public-release-receipt.json. Documentation-only closure
+follows the release source; it must not move the tag. Task complete for the bounded
+RC14 request, not for final stable0.22. Remaining limitations above stay open.
