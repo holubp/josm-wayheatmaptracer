@@ -1,5 +1,27 @@
 # Legacy→B release implementation checkpoint — 2026-10-29
 
+## New authorized Omice repair / RC14 task — 2026-11-01
+
+User requests fixes for at least some confirmed Omice failures and another RC.
+Active compact plan: `2026-11-01-omice-rc14-repairs.md` in this directory. RC13
+publication below remains factual; its completed goal does not complete this task.
+
+Release HEADfc17721, branchcodex/v022-legacy-b-release; primary dirty117baaf
+untouched. Root release has integrated UI message patch (AlignWayAction +test),
+observed intendedRED then5GREEN action checks. Core relation-payload proof fix is
+in isolated `/data/data/com.termux/files/usr/tmp/v022-omice-relation-20261101`,
+basefc17721; actual capture→whole-freeze regression RED established. Core currently
+owns the sole local Gradle slot for compile/capture/partition/frozen-frame tests.
+Optional payloadComplete fact, conservative old snapshots, FIXED-only read-only
+hiking/bicycle route proof; nested versioned codecs preserve older layouts.
+No core integration/review/publication yet. Independent Sol review still required.
+
+Fresh private RC13 Omice baseline in release build/private-omice-rc14-20261101
+reproduces NO_CHANGE/Bwork0 on both admitted parents at actual25m width, with
+unchanged dataset. Good A archive control helper is being prepared separately.
+No private inputs uploaded. Legacy rotating-normal hairpins and standalone B's
+25m/128M capacity limit are not claimed repaired by the bounded relation/UI work.
+
 ## RC13 qualification progress — 2026-10-31
 
 ## RC13 PUBLISHED and downloaded bytes verified — 2026-10-31

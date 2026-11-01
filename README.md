@@ -491,6 +491,19 @@ One final Apply performs the combined change, with one Undo operation. Temporary
 Legacy geometry is never applied to the dataset. The former A+B Hybrid is removed;
 historical captures remain inspectable but cannot execute that removed algorithm.
 
+With junction movement off, Hybrid can leave a connected road fixed and align
+the selected way's interior even when distant members of its hiking or cycling
+route are not downloaded. This requires a complete route member list, complete
+receiver-road geometry, and no parent relations on those partly downloaded routes.
+The junction, connected road and relations remain unchanged. Older captures without that separate proof
+retain their conservative restrictions.
+
+If B stops at its computation limit, the failure message identifies the cause and
+keeps diagnostics export available. Try a shorter selected segment; for refinement
+of an already aligned way, a smaller **Search half-width meters** setting may also
+help. These are manual choices: the plugin does not silently change the width or
+raise its computation limits.
+
 Connections are preserved by default. In the modern preview, use **Disconnect
 selected way at shared nodes…** to choose individual shared-node occurrences or
 all eligible occurrences. The chooser explains unavailable tagged, relation-sensitive

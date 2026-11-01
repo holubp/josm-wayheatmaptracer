@@ -215,6 +215,58 @@ class AlignWayActionTest {
     }
 
     @Test
+    void resourceLimitedNoPreviewExplainsWorkLimitAndScopedRecoveryOptions() throws Exception {
+        DataSet dataSet = new DataSet();
+        Node start = loadedNode(301, 0.0, 0.0);
+        Node end = loadedNode(302, 0.0, 80.0);
+        Way selected = loadedWay(303, start, end);
+        selected.put("highway", "path");
+        selected.setModified(false);
+        dataSet.addPrimitive(start);
+        dataSet.addPrimitive(end);
+        dataSet.addPrimitive(selected);
+        SelectionContext selection = new SelectionContext(selected, 0, 1,
+                List.of(start, end), Set.of(start, end));
+        int[] pixels = new int[1200 * 1200];
+        java.util.Arrays.fill(pixels, 0xff000000);
+        LiveBPreviewService.VisibleRaster raster = new LiveBPreviewService.VisibleRaster(
+                1200, 1200, pixels, -100.0, -100.0, 100.0, 100.0, 1.0, 1.0,
+                OptionalDouble.of(1.0), "visible-test", "EPSG:3857");
+        AlignmentConfig config = new AlignmentConfig(configuredCorridor()
+                .withTrackerMode(TrackerMode.PROBABILISTIC)
+                .withAlignmentMode(AlignmentMode.PRECISE_SHAPE), GeometryCleanupConfig.disabled());
+        LiveBPreviewService.Captured[] captured = new LiveBPreviewService.Captured[1];
+        SwingUtilities.invokeAndWait(() -> captured[0] = new LiveBPreviewService().capture(
+                dataSet, selection, raster, config, true));
+        LiveBPreviewService.Computed capturedResult = new LiveBPreviewService().compute(
+                captured[0], CancellationProbe.NONE);
+        TraceHypothesisSet resourceLimited = new TraceHypothesisSet(TrackerMode.PROBABILISTIC,
+                List.of(), TraceHypothesisSet.Status.RESOURCE_LIMIT, false, 0, 0,
+                "weak-signal association work limit");
+        LiveBPreviewService.Computed limitedResult = new LiveBPreviewService.Computed(
+                capturedResult.captured(), capturedResult.evidence(), capturedResult.request(),
+                new ModernTracePipeline.Result(resourceLimited, List.of()), capturedResult.options(),
+                capturedResult.counters(), capturedResult.intervalBatch(),
+                capturedResult.settingsResolutionJson(), List.of(new LiveBPreviewService.DetectorAttempt(
+                        "blue", "selected-mapping-blue",
+                        LiveBPreviewService.DetectorAttemptStatus.RESOURCE_LIMIT, null)),
+                capturedResult.legacyB());
+
+        String message = AlignWayAction.noPreviewableRouteMessage(limitedResult);
+
+        assertTrue(message.contains(resourceLimited.explanation()),
+                "The message must report the actual typed inference explanation: " + message);
+        assertTrue(message.toLowerCase(java.util.Locale.ROOT).contains("shorter selected segment"),
+                "The message must offer a shorter selection: " + message);
+        assertTrue(message.contains("Search half-width"),
+                "The message must identify the configured search width: " + message);
+        assertTrue(message.toLowerCase(java.util.Locale.ROOT).contains("already aligned"),
+                "The search-width suggestion must be scoped to already-aligned refinement: " + message);
+        assertTrue(message.contains("blue") && message.contains("route availability is unknown"),
+                "An uncompleted detector must not be described as having no route: " + message);
+    }
+
+    @Test
     void incompleteIncidentCaptureExportsTypedBlockedAttempt(@TempDir Path directory)
             throws Exception {
         String failure = "ManualJunctionCaptureException: INCOMPLETE_ARM: incomplete incident way. "

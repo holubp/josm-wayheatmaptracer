@@ -924,8 +924,7 @@ public class AlignWayAction extends JosmAction {
                 ManualJunctionEligibility.Decision manual = noRouteJunctionDecision(
                         computed.captured());
                 terminalManualReason = manual == null ? null : manual.reason();
-                throw new IllegalStateException(noPreviewableRouteMessage(computed.captured(),
-                        slideConfig.heatmap().trackerMode()));
+                throw new IllegalStateException(noPreviewableRouteMessage(computed));
             }
             showLiveBReadOnlyDialog(previewOwner, dataSet, selection, imageryLayer, mapView,
                     slideConfig, persistedSlideConfig, tracingAtCapture, computed, previewChoices,
@@ -1427,6 +1426,40 @@ public class AlignWayAction extends JosmAction {
         }
         return "Production " + livePreviewEngineLabel(engine)
                 + " returned no previewable final route";
+    }
+
+    /** Uses the typed completed inference result to explain a resource-limited no-preview failure. */
+    static String noPreviewableRouteMessage(LiveBPreviewService.Computed computed) {
+        if (computed == null) {
+            return "Alignment returned no previewable final route";
+        }
+        TraceHypothesisSet inference = computed.pipeline() == null
+                ? null : computed.pipeline().inference();
+        if (inference == null || inference.status() != TraceHypothesisSet.Status.RESOURCE_LIMIT) {
+            return noPreviewableRouteMessage(computed.captured(), computed.request().engine());
+        }
+        String message = tr("{0} stopped at its computation work limit: {1}. No preview was produced. "
+                        + "Try a shorter selected segment or reduce Search half-width (currently {2} m) "
+                        + "for an already aligned refinement, then run again. "
+                        + "Use Export Last Alignment Diagnostics for details.",
+                livePreviewEngineLabel(computed.request().engine()),
+                previewFailureText(inference.explanation()),
+                String.format(Locale.ROOT, "%.1f", computed.captured().searchRadiusMeters()));
+        List<String> uncompleted = computed.sourceAttempts().stream()
+                .filter(attempt -> attempt.status() == LiveBPreviewService.DetectorAttemptStatus.RESOURCE_LIMIT)
+                .map(LiveBPreviewService.DetectorAttempt::mapping).distinct().toList();
+        if (!uncompleted.isEmpty()) {
+            message += tr(" Requested detector runs did not complete: {0}. Their route availability is unknown.",
+                    String.join(", ", uncompleted));
+        }
+        List<String> unavailable = computed.sourceAttempts().stream()
+                .filter(attempt -> attempt.status() == LiveBPreviewService.DetectorAttemptStatus.SOURCE_UNAVAILABLE)
+                .map(LiveBPreviewService.DetectorAttempt::mapping).distinct().toList();
+        if (!unavailable.isEmpty()) {
+            message += tr(" Detector sources unavailable and not run: {0}.",
+                    String.join(", ", unavailable));
+        }
+        return message;
     }
 
     private static ManualJunctionEligibility.Decision manualJunctionDecision(
