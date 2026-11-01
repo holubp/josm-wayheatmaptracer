@@ -187,6 +187,91 @@ class V022NetworkSnapshotCaptureTest {
     }
 
     @Test
+    void capturedRouteWithUnloadedUnrelatedMemberRetainsOnlyLocalFixedReceiverIsland() {
+        DataSet dataSet = new DataSet();
+        Node a = loadedNode(101, 0, -0.0002);
+        Node junction = loadedNode(102, 0, 0);
+        Node c = loadedNode(103, 0, 0.0002);
+        Node d = loadedNode(104, 0, 0.0004);
+        Node receiverNear = loadedNode(105, 0.0002, 0);
+        Node receiverFar = loadedNode(106, 0.0004, 0);
+        add(dataSet, a, junction, c, d, receiverNear, receiverFar);
+        Way selected = loadedWay(110, List.of(a, junction, c, d));
+        Way receiver = loadedWay(111, List.of(a, receiverNear, receiverFar));
+        Way unloaded = new Way(112);
+        add(dataSet, selected, receiver, unloaded);
+        Relation route = new Relation();
+        route.setMembers(List.of(new RelationMember("", receiver), new RelationMember("", unloaded)));
+        route.put("type", "route");
+        route.put("route", "hiking");
+        route.setOsmId(120, 1);
+        route.setModified(false);
+        dataSet.addPrimitive(route);
+        var specification = specification("partial-route-payload", selected, new OccurrenceRange(0, 3),
+                Map.of(way(110), List.of(new OccurrenceRange(0, 3))), Set.of(way(110)), Set.of(),
+                Set.of(), Set.of(node(101), node(104)), false, new RecoveryPermissions(false, 7.01, 7.01,
+                        JunctionPolicy.FIXED, false)).withFixedReceiverGeometry();
+
+        NetworkSnapshot captured = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, specification));
+        var witness = captured.semanticWitness().relations().get(relation(120));
+        assertTrue(captured.primitives().containsKey(way(111)));
+        assertFalse(captured.primitives().containsKey(relation(120)));
+        assertFalse(captured.primitives().containsKey(way(112)));
+        assertTrue(captured.incomingReferrerWatches().get(way(111)).contains(relation(120)));
+        assertFalse(witness.complete());
+        assertEquals(java.util.Optional.of(true), witness.payloadComplete());
+        assertTrue(witness.members().stream().filter(member -> member.key().equals(way(111)))
+                .findFirst().orElseThrow().complete());
+        assertFalse(witness.members().stream().filter(member -> member.key().equals(way(112)))
+                .findFirst().orElseThrow().complete());
+
+        var oldRelationFact = new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                .NonTransportSemanticWitness.RelationEvidence(witness.key(), witness.tags(), witness.members(),
+                        witness.complete(), witness.deleted(), witness.modified(), witness.parentWatches());
+        var oldWitness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                captured.canonicalHash(), captured.datasetIdentity(), captured.sourceGeneration(),
+                Map.of(relation(120), oldRelationFact));
+        NetworkSnapshot historicalCapture = new NetworkSnapshot(captured.snapshotId(), captured.role(),
+                captured.datasetIdentity(), captured.sourceGeneration(), captured.closure(), captured.primitives(),
+                captured.incomingReferrerWatches(), oldWitness);
+        assertDoesNotThrow(() -> onEdt(() -> {
+            NetworkSnapshotCapture.requireSemanticWitnessCurrent(dataSet, historicalCapture);
+            return null;
+        }), "a historical witness may validate using the facts it recorded");
+        assertTrue(SelectedWayIntervalPartitioner.partition(historicalCapture, specification)
+                .slideIntervals().isEmpty(), "validation compatibility does not grant new route authority");
+
+        var partition = SelectedWayIntervalPartitioner.partition(captured, specification);
+
+        assertTrue(partition.fixedIslands().stream().anyMatch(island -> island.range().size() < 4),
+                "an unloaded unrelated member must not freeze the whole selected way");
+        assertEquals(List.of(new OccurrenceRange(0, 2)), partition.fixedIslands().stream()
+                .map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(new OccurrenceRange(3, 3)), partition.slideIntervals().stream()
+                .map(SelectedWayIntervalPartitioner.SlideInterval::range).toList());
+        assertEquals(List.of(new OccurrenceRange(2, 3)), partition.slideIntervals().stream()
+                .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(partition, captured));
+
+        onEdt(() -> {
+            route.setMembers(List.of(new RelationMember("", receiver)));
+            return null;
+        });
+        NetworkSnapshot changedMembership = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, specification));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(partition, changedMembership),
+                "changed incoming route membership invalidates the receiver proof");
+
+        onEdt(() -> {
+            route.setMembers(List.of(new RelationMember("", receiver), new RelationMember("", unloaded)));
+            receiverFar.setCoor(new LatLon(0.0005, 0));
+            return null;
+        });
+        NetworkSnapshot changedReceiverGeometry = onEdt(() -> NetworkSnapshotCapture.capture(dataSet, specification));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(partition, changedReceiverGeometry),
+                "changed receiver member geometry invalidates the receiver proof");
+    }
+
+    @Test
     void spatialQueryIncludesOutsideEndpointCrossingExcludesRemoteAndBuildsExactPorts() {
         DataSet dataSet = new DataSet();
         Node outsideBefore = loadedNode(1, 0, -0.002);

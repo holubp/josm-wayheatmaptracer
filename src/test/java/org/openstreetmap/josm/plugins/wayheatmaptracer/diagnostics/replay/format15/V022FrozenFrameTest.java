@@ -1,6 +1,7 @@
 package org.openstreetmap.josm.plugins.wayheatmaptracer.diagnostics.replay.format15;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -18,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -35,6 +37,8 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceResolution;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeographicPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.GeometryCleanupConfig;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.LocalMetricFrame;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion;
@@ -44,6 +48,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.OccurrenceRange;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.PrimitiveKey;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RecoveryPermissions;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.SnapshotRole;
@@ -54,6 +59,9 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ValidationReport;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.NetworkSnapshotCapture;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.snapshot.SelectedWayIntervalPartitioner;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.ModernTracePipeline;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LegacyVisibleProfileSampler;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.LiveBPreviewService;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid.LegacyPreciseGeometry.ProjectedPoint;
 
 /** Public synthetic numerical-frame witnesses; no real capture coordinates or identities. */
 class V022FrozenFrameTest {
@@ -218,6 +226,256 @@ class V022FrozenFrameTest {
             assertEquals(edit, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(edit)));
         }
     }
+
+    @Test
+    void payloadCompletenessUsesNewIdentityAndVersionEightWithoutChangingLegacyWitnesses() {
+        FrozenReplayInput base = input(frame());
+        NetworkSnapshot core = base.network();
+        PrimitiveKey relationKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 991);
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 992);
+        PrimitiveKey unloaded = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 993);
+        List<NonTransportSemanticWitness.Member> members = List.of(
+                new NonTransportSemanticWitness.Member(receiver, "", true),
+                new NonTransportSemanticWitness.Member(unloaded, "", false));
+        var legacyRow = new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                Map.of("type", "route", "route", "bicycle"), members,
+                false, false, false, Set.of());
+        var newRow = new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                Map.of("type", "route", "route", "bicycle"), members,
+                false, false, false, Set.of(), Optional.of(true));
+        var legacyWitness = new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                core.sourceGeneration(), Map.of(relationKey, legacyRow));
+        var newWitness = new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                core.sourceGeneration(), Map.of(relationKey, newRow));
+        var falseRow = new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                Map.of("type", "route", "route", "bicycle"), members,
+                false, false, false, Set.of(), Optional.of(false));
+        var falseWitness = new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                core.sourceGeneration(), Map.of(relationKey, falseRow));
+        assertEquals(legacyWitness.canonicalHash(), new NonTransportSemanticWitness(core.canonicalHash(),
+                core.datasetIdentity(), core.sourceGeneration(), Map.of(relationKey,
+                        new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                                legacyRow.tags(), members, false, false, false, Set.of(), Optional.empty())))
+                .canonicalHash(), "the historical empty-fact identity remains byte-for-byte stable");
+        assertNotEquals(legacyWitness.canonicalHash(), newWitness.canonicalHash());
+        assertTrue(legacyWitness.hasSameKnownFactsAs(newWitness),
+                "legacy unknown facts may validate against a fresh capture without gaining authority");
+        assertTrue(legacyWitness.hasSameKnownFactsAs(falseWitness));
+        assertEquals(falseWitness.canonicalHash(), new NonTransportSemanticWitness(core.canonicalHash(),
+                core.datasetIdentity(), core.sourceGeneration(), Map.of(relationKey,
+                        new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                                falseRow.tags(), members, false, false, false, Set.of(), Optional.of(false))))
+                .canonicalHash());
+        assertNotEquals(newWitness.canonicalHash(), falseWitness.canonicalHash());
+        assertFalse(newWitness.hasSameKnownFactsAs(legacyWitness),
+                "a new expected fact cannot be discarded by a later capture");
+        assertFalse(newWitness.hasSameKnownFactsAs(falseWitness),
+                "a changed payload fact invalidates the witness");
+        assertThrows(IllegalArgumentException.class, () -> new NonTransportSemanticWitness.RelationEvidence(
+                relationKey, Map.of("type", "route", "route", "bicycle"), members,
+                true, false, false, Set.of(), Optional.of(false)));
+
+        FrozenReplayInput legacyInput = withWitness(base, legacyWitness);
+        byte[] legacyBytes = FrozenReplayCodec.encode(legacyInput);
+        assertEquals(4, FrozenReplayCodec.encodedVersion(legacyBytes));
+        assertEquals(legacyInput.canonicalHash(), FrozenReplayCodec.decode(legacyBytes).canonicalHash());
+
+        FrozenReplayInput newInput = withWitness(base, newWitness);
+        byte[] newBytes = FrozenReplayCodec.encode(newInput);
+        assertEquals(8, FrozenReplayCodec.encodedVersion(newBytes));
+        FrozenReplayInput decoded = FrozenReplayCodec.decode(newBytes);
+        assertEquals(newInput.canonicalHash(), decoded.canonicalHash());
+        assertEquals(newWitness, decoded.network().semanticWitness());
+        FrozenReplayInput falseInput = withWitness(base, falseWitness);
+        FrozenReplayInput decodedFalse = FrozenReplayCodec.decode(FrozenReplayCodec.encode(falseInput));
+        assertEquals(falseWitness, decodedFalse.network().semanticWitness());
+        assertEquals(falseInput.canonicalHash(), decodedFalse.canonicalHash());
+        AlignmentEditPlan editPlan = plan(newInput);
+        assertEquals(editPlan, FrozenReplayCodec.decodeEditPlan(FrozenReplayCodec.encodeEditPlan(editPlan)));
+    }
+
+    @Test
+    void versionEightLegacyAllocationPresenceRoundTripsWithAndWithoutParentPolicy() {
+        FrozenReplayInput base = input(frame());
+        FrozenLegacyBInput legacy = FrozenLegacyBInput.visible(legacyVisibleInput(), List.of(
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                        .LegacyTopologyPlanner.Occurrence(0, false, false),
+                new org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.hybrid
+                        .LegacyTopologyPlanner.Occurrence(1, false, false)), List.of(), false, 1.0);
+
+        FrozenReplayInput legacyV6 = withLegacy(base, legacy);
+        byte[] v6 = FrozenReplayCodec.encode(legacyV6);
+        assertEquals(6, FrozenReplayCodec.encodedVersion(v6));
+        assertTrue(FrozenReplayCodec.decode(v6).legacyB().parentPolicy().isEmpty());
+        FrozenReplayInput legacyV7 = withLegacy(base, legacy.withParentPolicy(
+                new FrozenLegacyBInput.ParentPolicy(List.of(), false)));
+        byte[] v7 = FrozenReplayCodec.encode(legacyV7);
+        assertEquals(7, FrozenReplayCodec.encodedVersion(v7));
+        assertEquals(legacyV7.legacyB().parentPolicy(), FrozenReplayCodec.decode(v7).legacyB().parentPolicy());
+
+        PrimitiveKey relationKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 991);
+        PrimitiveKey receiver = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 992);
+        PrimitiveKey unloaded = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 993);
+        var row = new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                Map.of("type", "route", "route", "bicycle"), List.of(
+                        new NonTransportSemanticWitness.Member(receiver, "", true),
+                        new NonTransportSemanticWitness.Member(unloaded, "", false)),
+                false, false, false, Set.of(), Optional.of(true));
+        var witness = new NonTransportSemanticWitness(base.network().canonicalHash(),
+                base.network().datasetIdentity(), base.network().sourceGeneration(), Map.of(relationKey, row));
+        FrozenReplayInput payloadWithoutPolicy = withLegacy(withWitness(base, witness), legacy);
+        byte[] v8WithoutPolicy = FrozenReplayCodec.encode(payloadWithoutPolicy);
+        assertEquals(8, FrozenReplayCodec.encodedVersion(v8WithoutPolicy));
+        assertTrue(FrozenReplayCodec.decode(v8WithoutPolicy).legacyB().parentPolicy().isEmpty());
+
+        FrozenLegacyBInput allocatedLegacy = legacy.withParentPolicy(
+                new FrozenLegacyBInput.ParentPolicy(List.of(), false));
+        FrozenReplayInput payloadWithPolicy = withLegacy(withWitness(base, witness), allocatedLegacy);
+        FrozenReplayInput decoded = FrozenReplayCodec.decode(FrozenReplayCodec.encode(payloadWithPolicy));
+        assertEquals(allocatedLegacy.parentPolicy(), decoded.legacyB().parentPolicy());
+        assertEquals(witness, decoded.network().semanticWitness());
+    }
+
+    @Test
+    void payloadCompletenessWithExplicitDisconnectionRoundTripsEveryAuthorityEnvelope() {
+        ExplicitDisconnectionFixture fixture = explicitDisconnectionFixture();
+        var frozen = fixture.input();
+        assertFalse(frozen.request().permissions().sharedNodeDisconnectionIntent().isEmpty());
+        assertEquals(Optional.of(true), frozen.network().semanticWitness().relations().values().iterator().next()
+                .payloadComplete());
+
+        byte[] frozenBytes = FrozenReplayCodec.encode(frozen);
+        assertEquals(8, FrozenReplayCodec.encodedVersion(frozenBytes));
+        assertEquals(frozen.canonicalHash(), FrozenReplayCodec.decode(frozenBytes).canonicalHash());
+
+        byte[] requestBytes = FrozenReplayCodec.encodeRequestOnly(frozen.request());
+        assertEquals(2, ByteBuffer.wrap(requestBytes).getInt(4));
+        assertEquals(frozen.request(), FrozenReplayCodec.decodeRequestOnly(requestBytes, frozen.evidence()));
+
+        byte[] authorityBytes = FrozenReplayCodec.encodeAuthority(fixture.specification());
+        assertEquals(4, ByteBuffer.wrap(authorityBytes).getInt(4));
+        assertEquals(fixture.specification(), FrozenReplayCodec.decodeAuthority(authorityBytes));
+
+        byte[] editPlanBytes = FrozenReplayCodec.encodeEditPlan(fixture.plan());
+        assertEquals(5, ByteBuffer.wrap(editPlanBytes).getInt(4));
+        assertEquals(fixture.plan(), FrozenReplayCodec.decodeEditPlan(editPlanBytes));
+    }
+
+    private static FrozenReplayInput withWitness(FrozenReplayInput base,
+            NonTransportSemanticWitness witness) {
+        NetworkSnapshot core = base.network();
+        NetworkSnapshot network = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
+                core.sourceGeneration(), core.closure(), core.primitives(), core.incomingReferrerWatches(), witness);
+        return new FrozenReplayInput(base.request(), base.evidence(), network, base.options());
+    }
+
+    private static FrozenReplayInput withLegacy(FrozenReplayInput base, FrozenLegacyBInput legacy) {
+        return new FrozenReplayInput(base.request(), base.evidence(), base.network(), base.options(),
+                base.planSearchRadiusMeters(), legacy);
+    }
+
+    private static LegacyVisibleProfileSampler.Input legacyVisibleInput() {
+        int[] pixels = {0x00123456, 0xFF112233, 0x8000FF00, 0x00000001,
+                0xFFFFFFFF, 0xFF000000, 0x7FABCDEF, 0xFF010203,
+                0xFF040506, 0xFF070809, 0xFF0A0B0C, 0xFF0D0E0F};
+        var raster = new LiveBPreviewService.VisibleRaster(4, 3, pixels,
+                0, 0, 4.0 / 6.0, 0.5, 1, 1, OptionalDouble.empty(), "visible-synthetic", "EPSG:3857");
+        var anchors = List.of(
+                new LegacyVisibleProfileSampler.Anchor(new ProjectedPoint(.5, 0), new RasterPoint(3, 3), 0),
+                new LegacyVisibleProfileSampler.Anchor(new ProjectedPoint(2.5, -2), new RasterPoint(15, 15), 10));
+        return new LegacyVisibleProfileSampler.Input(raster, anchors, List.of("hot", "blue"),
+                new LegacyVisibleProfileSampler.Options(5, 1, 1.75, IntensitySamplingMode.COLOR_MAPPING));
+    }
+
+    private static ExplicitDisconnectionFixture explicitDisconnectionFixture() {
+        FrozenReplayInput base = input(frame());
+        NetworkSnapshot original = base.network();
+        PrimitiveKey selectedKey = base.request().selectedWayKey();
+        DetachedWay selected = (DetachedWay) original.primitives().get(selectedKey);
+        PrimitiveKey first = selected.nodeKeys().get(0);
+        PrimitiveKey last = selected.nodeKeys().get(1);
+        PrimitiveKey third = PrimitiveKey.existing(PrimitiveKey.Type.NODE, 5);
+        PrimitiveKey receiverKey = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 4);
+        PrimitiveKey relationKey = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 6);
+        Map<PrimitiveKey, DetachedPrimitive> primitives = new LinkedHashMap<>(original.primitives());
+        primitives.put(third, new DetachedNode(third,
+                base.evidence().coordinateFrame().toGeographic(new MetricPoint(2, 2)), Map.of(), false, false));
+        primitives.put(receiverKey, new DetachedWay(receiverKey, List.of(first, third),
+                Map.of("highway", "path"), false, false));
+        var closure = original.closure();
+        var primitiveKeys = new java.util.LinkedHashSet<>(closure.primitiveKeys());
+        primitiveKeys.add(third);
+        primitiveKeys.add(receiverKey);
+        var expandedClosure = new ClosureDescriptor(closure.scope(), closure.queryVersion(), primitiveKeys,
+                closure.editableExistingKeys(), closure.movableExistingNodeKeys(),
+                closure.protectedExistingNodeKeys(), closure.removableExistingNodeKeys(),
+                closure.editableWayOccurrences(), closure.externalPorts(), closure.collisionEnvelope(),
+                closure.editRegion(), closure.mayCreateNodes(), closure.wayReferrersComplete(),
+                closure.relationReferrersComplete(), closure.nearbyGeometryComplete());
+        Map<PrimitiveKey, Set<PrimitiveKey>> watches = new LinkedHashMap<>();
+        watches.put(first, Set.of(selectedKey, receiverKey));
+        watches.put(last, Set.of(selectedKey));
+        watches.put(third, Set.of(receiverKey));
+        watches.put(selectedKey, Set.of());
+        // The route witness is independent of the shared junction being disconnected. A route
+        // relation on the receiver way itself would correctly make this disconnection ineligible.
+        watches.put(receiverKey, Set.of());
+        NetworkSnapshot core = new NetworkSnapshot(original.snapshotId(), original.role(),
+                original.datasetIdentity(), original.sourceGeneration(), expandedClosure, primitives, watches);
+        PrimitiveKey unrelated = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 7);
+        var relation = new NonTransportSemanticWitness.RelationEvidence(relationKey,
+                Map.of("type", "route", "route", "bicycle"), List.of(
+                        new NonTransportSemanticWitness.Member(unrelated, "", false)),
+                false, false, false, Set.of(), Optional.of(true));
+        var witness = new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
+                core.sourceGeneration(), Map.of(relationKey, relation));
+        NetworkSnapshot source = new NetworkSnapshot(core.snapshotId(), core.role(), core.datasetIdentity(),
+                core.sourceGeneration(), expandedClosure, primitives, watches, witness);
+        var intent = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.SharedNodeDisconnectionIntent(
+                selectedKey, new OccurrenceRange(0, 1), Map.of(0, first), source.canonicalHash());
+        var permissions = new RecoveryPermissions(false, 7, 7, JunctionPolicy.FIXED, false, intent);
+        TraceRequest oldRequest = base.request();
+        TraceRequest request = new TraceRequest(oldRequest.selectedWayKey(), oldRequest.selectedRange(),
+                oldRequest.engine(), oldRequest.geometryMode(), permissions, oldRequest.budgets(),
+                oldRequest.evidenceSnapshotId(), oldRequest.evidenceContentHash(), source.snapshotId(),
+                source.canonicalHash(), oldRequest.settingsHash(), oldRequest.parameterHash(),
+                oldRequest.samplerId(), oldRequest.configuredSampleStepMeters(), oldRequest.profileChainage(),
+                oldRequest.evidenceResolution(), oldRequest.corridorInput(), source);
+        FrozenReplayInput input = new FrozenReplayInput(request, base.evidence(), source, base.options(),
+                base.planSearchRadiusMeters());
+
+        var specification = new NetworkSnapshotCapture.Specification(source.snapshotId(), source.datasetIdentity(),
+                source.sourceGeneration(), selectedKey, new OccurrenceRange(0, 1), base.evidence().coordinateFrame(),
+                expandedClosure.collisionEnvelope(), expandedClosure.editRegion(),
+                expandedClosure.editableWayOccurrences(), expandedClosure.editableExistingKeys(),
+                expandedClosure.movableExistingNodeKeys(), expandedClosure.removableExistingNodeKeys(),
+                expandedClosure.protectedExistingNodeKeys(), expandedClosure.mayCreateNodes(), permissions,
+                List.of(), false).withDisconnectionSource(source);
+
+        PrimitiveKey replacement = PrimitiveKey.planned(PrimitiveKey.Type.NODE, Long.MIN_VALUE);
+        Map<PrimitiveKey, DetachedPrimitive> afterPrimitives = new LinkedHashMap<>(primitives);
+        GeographicPoint firstCoordinate = ((DetachedNode) primitives.get(first)).coordinate();
+        afterPrimitives.put(replacement, new DetachedNode(replacement, firstCoordinate, Map.of(), false, true));
+        afterPrimitives.put(selectedKey, new DetachedWay(selectedKey, List.of(replacement, last),
+                selected.tags(), false, true));
+        Map<PrimitiveKey, Set<PrimitiveKey>> afterWatches = new LinkedHashMap<>(watches);
+        afterWatches.put(first, Set.of(receiverKey));
+        afterWatches.put(replacement, Set.of(selectedKey));
+        NetworkSnapshot after = new NetworkSnapshot("after", SnapshotRole.PROPOSED_AFTER,
+                source.datasetIdentity(), source.sourceGeneration(), expandedClosure, afterPrimitives,
+                afterWatches, witness);
+        List<GeographicPoint> preview = List.of(firstCoordinate,
+                ((DetachedNode) afterPrimitives.get(last)).coordinate());
+        AlignmentEditPlan plan = new AlignmentEditPlan(selectedKey, new OccurrenceRange(0, 1), source, after,
+                base.evidence().coordinateFrame(), permissions, oldRequest.settingsHash(),
+                base.evidence().canonicalHash(), oldRequest.parameterHash(), "explicit-payload-route",
+                Map.of(selectedKey, preview), new ValidationReport(ValidationReport.Disposition.APPLICABLE, List.of()),
+                source, Map.of(0, replacement), AlignmentMode.PRECISE_SHAPE);
+        return new ExplicitDisconnectionFixture(input, specification, plan);
+    }
+
+    private record ExplicitDisconnectionFixture(FrozenReplayInput input,
+            NetworkSnapshotCapture.Specification specification, AlignmentEditPlan plan) { }
 
     @Test
     void exactFramePayloadRejectsCoefficientTamperingAndLegacyDowngrade() {

@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
@@ -152,6 +153,89 @@ class V022SelectedWayIntervalPartitionerTest {
                 fixture.withParticipatingRelation().snapshot), "changed receiver membership must invalidate the proof");
         assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
                 fixture.withUnmaterializedReferrerAt(0).snapshot), "unknown geometric referrers stay unsafe");
+    }
+
+    @Test
+    void fixedHikingOrBicycleRoutePayloadCanProveOnlyItsLocalReceiverIsland() {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false).withReceiverArmLengthAt(0, 120.0)
+                .withUnmaterializedReceiverRelation(0)
+                .withExplicitReceiverRoutePayloadWitness(0, "route", "bicycle", Optional.of(true), true)
+                .withFixedPolicy();
+
+        var result = partition(fixture);
+
+        assertEquals(List.of(new OccurrenceRange(0, 2)), result.fixedIslands().stream()
+                .map(SelectedWayIntervalPartitioner.FixedIsland::range).toList());
+        assertEquals(List.of(new OccurrenceRange(2, 12)), result.slideIntervals().stream()
+                .map(SelectedWayIntervalPartitioner.SlideInterval::traceRange).toList());
+        assertFalse(result.junctionDispositions().get(0).automaticEligible(),
+                "the fixed policy never moves the shared receiver junction");
+        assertTrue(SelectedWayIntervalPartitioner.verifyFrozenParity(result, fixture.snapshot));
+        assertFalse(SelectedWayIntervalPartitioner.verifyFrozenParity(result,
+                fixture.withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(), row.members(),
+                                row.complete(), row.deleted(), row.modified(), row.parentWatches(), Optional.of(false)))
+                        .snapshot), "changed payload fact invalidates the partition proof");
+    }
+
+    @Test
+    void onlyExplicitCompletePayloadAndFixedHikingOrBicycleRouteCanUseTheRelaxation() {
+        List<Fixture> refused = List.of(
+                routePayload("route", "foot", Optional.of(true), true, true),
+                routePayload("restriction", "bicycle", Optional.of(true), true, true),
+                routePayload("route", "bicycle", Optional.of(false), true, true),
+                routePayload("route", "bicycle", Optional.empty(), true, true),
+                routePayload("route", "bicycle", Optional.of(true), false, true),
+                routePayload("route", "bicycle", Optional.of(true), true, false));
+
+        for (Fixture fixture : refused) {
+            assertTrue(partition(fixture).slideIntervals().isEmpty(),
+                    "unproved route/payload/member/policy must preserve the whole-selection freeze");
+        }
+        Fixture parentWatched = routePayload("route", "hiking", Optional.of(true), true, true)
+                .withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(), row.members(),
+                                row.complete(), row.deleted(), row.modified(),
+                                Set.of(PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9193)),
+                                row.payloadComplete()));
+        assertTrue(partition(parentWatched).slideIntervals().isEmpty(),
+                "unproved parent ancestry prevents payload-only route authority");
+
+        Fixture duplicateReceiver = routePayload("route", "bicycle", Optional.of(true), true, true)
+                .withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(), List.of(
+                                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                                        .Member(row.members().get(0).key(), "", true),
+                                new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                                        .Member(row.members().get(0).key(), "", false),
+                                row.members().get(1)), row.complete(), row.deleted(), row.modified(),
+                                row.parentWatches(), row.payloadComplete()));
+        assertTrue(partition(duplicateReceiver).slideIntervals().isEmpty(),
+                "every member occurrence naming the receiver must be complete");
+
+        Fixture deletedRoute = routePayload("route", "hiking", Optional.of(true), true, true)
+                .withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(), row.members(),
+                                row.complete(), true, row.modified(), row.parentWatches(), row.payloadComplete()));
+        assertTrue(partition(deletedRoute).slideIntervals().isEmpty(),
+                "deleted route witnesses cannot authorize receiver geometry");
+
+        Fixture missingReceiver = routePayload("route", "bicycle", Optional.of(true), true, true)
+                .withChangedReceiverWitness(row -> new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                        .NonTransportSemanticWitness.RelationEvidence(row.key(), row.tags(),
+                                List.of(row.members().get(1)), row.complete(), row.deleted(), row.modified(),
+                                row.parentWatches(), row.payloadComplete()));
+        assertTrue(partition(missingReceiver).slideIntervals().isEmpty(),
+                "an incomplete unrelated member is not a receiver witness");
+    }
+
+    private static Fixture routePayload(String type, String route, Optional<Boolean> payloadComplete,
+            boolean receiverMemberComplete, boolean fixedPolicy) {
+        Fixture fixture = pathWithJunctions(12, 0, -1, false).withReceiverArmLengthAt(0, 120.0)
+                .withUnmaterializedReceiverRelation(0)
+                .withExplicitReceiverRoutePayloadWitness(0, type, route, payloadComplete,
+                        receiverMemberComplete);
+        return fixedPolicy ? fixture.withFixedPolicy() : fixture;
     }
 
     @Test
@@ -767,6 +851,28 @@ class V022SelectedWayIntervalPartitionerTest {
                             List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model
                                     .NonTransportSemanticWitness.Member(receiver, "", true)),
                             complete, false, false, Set.of());
+            var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
+                    snapshot.canonicalHash(), snapshot.datasetIdentity(), snapshot.sourceGeneration(),
+                    Map.of(relation, row));
+            var witnessed = new NetworkSnapshot(snapshot.snapshotId(), snapshot.role(), snapshot.datasetIdentity(),
+                    snapshot.sourceGeneration(), snapshot.closure(), snapshot.primitives(),
+                    snapshot.incomingReferrerWatches(), witness);
+            return new Fixture(witnessed, specification.withFixedReceiverGeometry(), selected, selectedNodes, port);
+        }
+        Fixture withExplicitReceiverRoutePayloadWitness(int index, String type, String route,
+                Optional<Boolean> payloadComplete, boolean receiverMemberComplete) {
+            PrimitiveKey receiver = snapshot.incomingReferrerWatches().get(selectedNodes.get(index))
+                    .stream().filter(key -> key.type() == PrimitiveKey.Type.WAY && !key.equals(selected))
+                    .findFirst().orElseThrow();
+            PrimitiveKey relation = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9191);
+            PrimitiveKey unrelated = PrimitiveKey.existing(PrimitiveKey.Type.WAY, 9192);
+            var row = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                    .RelationEvidence(relation, Map.of("type", type, "route", route),
+                            List.of(new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                                    .NonTransportSemanticWitness.Member(receiver, "", receiverMemberComplete),
+                                    new org.openstreetmap.josm.plugins.wayheatmaptracer.model
+                                            .NonTransportSemanticWitness.Member(unrelated, "", false)),
+                            false, false, false, Set.of(), payloadComplete);
             var witness = new org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness(
                     snapshot.canonicalHash(), snapshot.datasetIdentity(), snapshot.sourceGeneration(),
                     Map.of(relation, row));

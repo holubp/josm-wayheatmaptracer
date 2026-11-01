@@ -211,7 +211,10 @@ public final class SelectedWayIntervalPartitioner {
                     ManualJunctionEligibility.Reason.REPEATED_OCCURRENCE, selected, representative);
         }
 
-        Proof proof = new Proof(authoritySnapshot);
+        boolean allowFixedRoutePayloadProof = authoritySpecification.fixedReceiverGeometry()
+                && authoritySpecification.permissions().junctionPolicy()
+                        == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED;
+        Proof proof = new Proof(authoritySnapshot, allowFixedRoutePayloadProof);
         proof.add(authoritySpecification.selectedWayKey());
         if (!incomingComplete(authoritySnapshot, authoritySpecification.selectedWayKey())) {
             return wholeSelection(authoritySnapshot, authoritySpecification,
@@ -404,7 +407,14 @@ public final class SelectedWayIntervalPartitioner {
             NonTransportSemanticWitness witness = frozenSnapshot.semanticWitness();
             if (witness == null || !witness.matches(frozenSnapshot)) return false;
             for (var entry : partition.parityReceiverRelations().entrySet()) {
-                if (!entry.getValue().equals(witness.relations().get(entry.getKey()))) return false;
+                var current = witness.relations().get(entry.getKey());
+                if (current == null) return false;
+                var expectedWitness = new NonTransportSemanticWitness(witness.coreHash(),
+                        witness.datasetIdentity(), witness.sourceGeneration(),
+                        Map.of(entry.getKey(), entry.getValue()));
+                var currentWitness = new NonTransportSemanticWitness(witness.coreHash(),
+                        witness.datasetIdentity(), witness.sourceGeneration(), Map.of(entry.getKey(), current));
+                if (!expectedWitness.hasSameKnownFactsAs(currentWitness)) return false;
             }
         }
         return frozenSnapshot.closure().externalPorts().containsAll(partition.provedPorts());
@@ -430,7 +440,9 @@ public final class SelectedWayIntervalPartitioner {
         if (!incomingComplete(snapshot, selected.key())
                 || incidentWays.stream().anyMatch(way -> !incomingComplete(snapshot, way)
                         && (way.equals(selected.key()) || !specification.fixedReceiverGeometry()
-                                || !fixedReceiverIncomingComplete(snapshot, way)))) {
+                                || !fixedReceiverIncomingComplete(snapshot, way,
+                                        specification.permissions().junctionPolicy()
+                                                == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED)))) {
             return decision(ManualJunctionEligibility.Reason.INCOMPLETE_CLOSURE, node);
         }
         if (hasRelationReferrer(snapshot, selected.key())
@@ -506,7 +518,9 @@ public final class SelectedWayIntervalPartitioner {
             if (!(snapshot.primitives().get(wayKey) instanceof DetachedWay way)) return null;
             boolean readOnlyReceiver = fixedReceiverOnly && specification.fixedReceiverGeometry()
                     && !wayKey.equals(selected.key());
-            if (readOnlyReceiver ? !fixedReceiverIncomingComplete(snapshot, wayKey)
+            if (readOnlyReceiver ? !fixedReceiverIncomingComplete(snapshot, wayKey,
+                    specification.permissions().junctionPolicy()
+                            == org.openstreetmap.josm.plugins.wayheatmaptracer.model.JunctionPolicy.FIXED)
                     : !incomingComplete(snapshot, wayKey)) return null;
             List<Integer> matches = new ArrayList<>();
             for (int occurrence = 0; occurrence < way.nodeKeys().size(); occurrence++) {
@@ -671,7 +685,8 @@ public final class SelectedWayIntervalPartitioner {
     }
 
     /** Complete watched relations may prove only an unchanged, read-only receiver. */
-    private static boolean fixedReceiverIncomingComplete(NetworkSnapshot snapshot, PrimitiveKey receiver) {
+    private static boolean fixedReceiverIncomingComplete(NetworkSnapshot snapshot, PrimitiveKey receiver,
+            boolean allowIncompleteRoutePayload) {
         Set<PrimitiveKey> referrers = snapshot.incomingReferrerWatches().get(receiver);
         if (referrers == null || !(snapshot.primitives().get(receiver) instanceof DetachedWay)) return false;
         for (PrimitiveKey referrer : referrers) {
@@ -680,9 +695,20 @@ public final class SelectedWayIntervalPartitioner {
             if (referrer.type() != PrimitiveKey.Type.RELATION || witness == null
                     || !witness.matches(snapshot)) return false;
             var relation = witness.relations().get(referrer);
-            if (relation == null || !relation.complete() || relation.deleted()
-                    || relation.members().stream().anyMatch(member -> !member.complete())
-                    || relation.members().stream().noneMatch(member -> member.key().equals(receiver))) return false;
+            if (relation == null || relation.deleted()) return false;
+            boolean completeWitness = relation.complete()
+                    && relation.members().stream().allMatch(NonTransportSemanticWitness.Member::complete)
+                    && relation.members().stream().anyMatch(member -> member.key().equals(receiver));
+            boolean fixedRoutePayloadWitness = allowIncompleteRoutePayload
+                    && Boolean.TRUE.equals(relation.payloadComplete().orElse(null))
+                    && "route".equals(relation.tags().get("type"))
+                    && Set.of("hiking", "bicycle").contains(relation.tags().get("route"))
+                    && relation.parentWatches().isEmpty()
+                    && relation.members().stream().anyMatch(member -> member.key().equals(receiver)
+                            && member.complete())
+                    && relation.members().stream().filter(member -> member.key().equals(receiver))
+                            .allMatch(NonTransportSemanticWitness.Member::complete);
+            if (!completeWitness && !fixedRoutePayloadWitness) return false;
         }
         return true;
     }
@@ -822,7 +848,7 @@ public final class SelectedWayIntervalPartitioner {
             NetworkSnapshotCapture.Specification specification,
             ManualJunctionEligibility.Reason reason, DetachedWay selected, int representative) {
         return wholeSelection(snapshot, specification, reason, selected, representative,
-                new ArrayList<>(), new Proof(snapshot));
+                new ArrayList<>(), new Proof(snapshot, false));
     }
 
     private static Partition wholeSelection(NetworkSnapshot snapshot,
@@ -867,6 +893,7 @@ public final class SelectedWayIntervalPartitioner {
 
     private static final class Proof {
         private final NetworkSnapshot snapshot;
+        private final boolean allowIncompleteRoutePayload;
         private final Map<PrimitiveKey, DetachedPrimitive> primitives = new LinkedHashMap<>();
         private final Map<PrimitiveKey, Set<PrimitiveKey>> referrers = new LinkedHashMap<>();
         private final Set<ExternalPort> ports = new LinkedHashSet<>();
@@ -876,7 +903,10 @@ public final class SelectedWayIntervalPartitioner {
         private boolean resourceExceeded;
         private boolean authorityIncomplete;
 
-        Proof(NetworkSnapshot snapshot) { this.snapshot = snapshot; }
+        Proof(NetworkSnapshot snapshot, boolean allowIncompleteRoutePayload) {
+            this.snapshot = snapshot;
+            this.allowIncompleteRoutePayload = allowIncompleteRoutePayload;
+        }
 
         void add(PrimitiveKey key) {
             DetachedPrimitive primitive = snapshot.primitives().get(key);
@@ -918,7 +948,7 @@ public final class SelectedWayIntervalPartitioner {
             add(port.wayKey());
             add(port.boundaryNodeKey());
             add(port.outsideNeighborKey());
-            if (!fixedReceiverIncomingComplete(snapshot, port.wayKey())
+            if (!fixedReceiverIncomingComplete(snapshot, port.wayKey(), allowIncompleteRoutePayload)
                     || !incomingComplete(snapshot, port.boundaryNodeKey())
                     || !incomingComplete(snapshot, port.outsideNeighborKey())) authorityIncomplete = true;
         }

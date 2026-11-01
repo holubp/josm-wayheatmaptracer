@@ -1901,7 +1901,8 @@ public final class LiveBPreviewService {
             }
             NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
             if (!current.canonicalHash().equals(captured.network().canonicalHash())
-                    || !java.util.Objects.equals(current.semanticWitness(), captured.network().semanticWitness())
+                    || !org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                            .sameKnownFacts(captured.network().semanticWitness(), current.semanticWitness())
                     || captured.intervalPartition() != null
                             && !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                     captured.intervalPartition(), current)) {
@@ -1963,7 +1964,8 @@ public final class LiveBPreviewService {
         }
         NetworkSnapshot current = NetworkSnapshotCapture.capture(dataSet, captured.specification());
         if (!current.canonicalHash().equals(captured.network().canonicalHash())
-                || !java.util.Objects.equals(current.semanticWitness(), captured.network().semanticWitness())
+                || !org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                        .sameKnownFacts(captured.network().semanticWitness(), current.semanticWitness())
                 || captured.intervalPartition() != null
                         && !SelectedWayIntervalPartitioner.verifyFrozenParity(
                                 captured.intervalPartition(), current)) {

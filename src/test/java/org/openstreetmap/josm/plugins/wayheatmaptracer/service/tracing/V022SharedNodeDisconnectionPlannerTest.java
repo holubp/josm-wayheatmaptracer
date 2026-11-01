@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -608,6 +609,37 @@ class V022SharedNodeDisconnectionPlannerTest {
         onEdt(() -> { fixture.nodes().get(1).setCoor(new LatLon(0.000001, fixture.nodes().get(1).lon())); return null; });
         assertThrows(RuntimeException.class, () -> onEdt(() -> NetworkSnapshotCapture.capture(fixture.data(),
                 result.computed().captured().specification())));
+    }
+
+    @Test void sourcePairingRejectsPayloadFactThatAppearsOnlyInEffectiveCapture() throws Exception {
+        Fixture fixture = ordinaryNeighborFixture();
+        Result result = compute(fixture, AlignmentMode.PRECISE_SHAPE,
+                Map.of(2, key(fixture.nodes().get(2))));
+        var intent = result.computed().request().permissions().sharedNodeDisconnectionIntent();
+        NetworkSnapshot sourceWithoutFact = withRelationPayloadFact(result.original(), Optional.empty());
+        NetworkSnapshot effectiveWithTrueFact = withRelationPayloadFact(result.plan().before(), Optional.of(true));
+        NetworkSnapshot effectiveWithFalseFact = withRelationPayloadFact(result.plan().before(), Optional.of(false));
+
+        assertThrows(IllegalArgumentException.class, () -> SharedNodeDisconnectionPlanner.requireSourceParity(
+                sourceWithoutFact, effectiveWithTrueFact, intent),
+                "effective capture cannot add affirmative payload authority");
+        assertThrows(IllegalArgumentException.class, () -> SharedNodeDisconnectionPlanner.requireSourceParity(
+                sourceWithoutFact, effectiveWithFalseFact, intent),
+                "effective capture cannot add a negative payload fact either");
+    }
+
+    private static NetworkSnapshot withRelationPayloadFact(NetworkSnapshot source, Optional<Boolean> fact) {
+        PrimitiveKey relation = PrimitiveKey.existing(PrimitiveKey.Type.RELATION, 9876);
+        var row = new NonTransportSemanticWitness.RelationEvidence(relation,
+                Map.of("type", "route", "route", "bicycle"),
+                List.of(new NonTransportSemanticWitness.Member(
+                        PrimitiveKey.existing(PrimitiveKey.Type.WAY, 9877), "", false)),
+                false, false, false, Set.of(), fact);
+        var witness = new NonTransportSemanticWitness(source.canonicalHash(), source.datasetIdentity(),
+                source.sourceGeneration(), Map.of(relation, row));
+        return new NetworkSnapshot(source.snapshotId(), source.role(), source.datasetIdentity(),
+                source.sourceGeneration(), source.closure(), source.primitives(),
+                source.incomingReferrerWatches(), witness, source.proposedPortReplacements());
     }
 
     @Test void mismatchedSourceAndSelectionAreRejectedBeforeInferenceEvenForAnEmptyEngineResult() throws Exception {

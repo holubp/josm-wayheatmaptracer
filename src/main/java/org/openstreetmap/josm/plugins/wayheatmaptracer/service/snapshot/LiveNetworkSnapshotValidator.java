@@ -68,7 +68,8 @@ public final class LiveNetworkSnapshotValidator implements LockedApplyValidator 
         NetworkSnapshot current = NetworkSnapshotCapture.capture(
             dataSet, captured.specification());
         if (!current.canonicalHash().equals(expectedBefore.canonicalHash())
-                || !Objects.equals(current.semanticWitness(), expectedBefore.semanticWitness())) {
+                || !org.openstreetmap.josm.plugins.wayheatmaptracer.model.NonTransportSemanticWitness
+                        .sameKnownFacts(expectedBefore.semanticWitness(), current.semanticWitness())) {
             throw new IllegalStateException("Live network closure changed before Apply");
         }
     }

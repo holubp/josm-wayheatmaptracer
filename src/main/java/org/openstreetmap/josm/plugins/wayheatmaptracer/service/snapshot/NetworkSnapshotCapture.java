@@ -273,7 +273,7 @@ public final class NetworkSnapshotCapture {
             if (compareCore) core.primitives().keySet().stream().sorted().forEach(materializer::include);
             if (compareCore && (!materializer.detach().equals(core.primitives())
                     || !materializer.watches().equals(core.incomingReferrerWatches()))
-                    || !materializer.semanticWitness(core).equals(core.semanticWitness())) {
+                    || !core.semanticWitness().hasSameKnownFactsAs(materializer.semanticWitness(core))) {
                 throw new IllegalStateException("Semantic witness differs from original live OSM input");
             }
         } finally {
@@ -985,7 +985,8 @@ public final class NetworkSnapshotCapture {
                 relations.put(relationKey, new NonTransportSemanticWitness.RelationEvidence(
                         relationKey, relation.getKeys(), members,
                         !relation.isIncomplete() && !relation.hasIncompleteMembers(),
-                        relation.isDeleted(), relation.isModified(), parents));
+                        relation.isDeleted(), relation.isModified(), parents,
+                        java.util.Optional.of(!relation.isIncomplete())));
                 parents.stream().sorted().forEach(pending::addLast);
             }
             return new NonTransportSemanticWitness(core.canonicalHash(), core.datasetIdentity(),
