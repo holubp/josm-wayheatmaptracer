@@ -1,11 +1,14 @@
-# Proposed amendment: optional emission of sampling rows
+# Approved amendment: optional emission of sampling rows
 
 Status: **USER APPROVED — 2026-11-02**, following explicit clarification that
 the mechanism has not yet demonstrated a Drasov improvement. Approval covers
 the precise specification, independent review and bounded implementation experiment below.
 The user subsequently amended the existing goal to include these experiments
 and explicitly authorized autonomous execution without further implementation-
-plan approvals. Technical review and all safety/resource/verification gates remain.
+plan approvals, including related follow-on designs and implementation plans
+when experiment results are positive. Technical review and all safety/resource/
+verification gates remain. This authorization is standing and does not require
+renewal at each implementation milestone.
 Parent: `2026-11-02-drasov-legacy-corridor-quality-design.md` and its execution plan.
 This changes one correspondence constraint; it does not change the goal or approve a release.
 Independent Sol/high review found no blocking inconsistency; the clarifications
