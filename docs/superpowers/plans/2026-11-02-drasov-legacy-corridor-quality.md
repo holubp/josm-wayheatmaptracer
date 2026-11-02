@@ -126,10 +126,10 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Design requirement | Owning tasks | Current status |
 | --- | --- | --- |
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
-| Causal proof and deterministic non-Drasov-only controls |2 | ACTIVE |
-| Legacy usable geometry, wide search and successful behavior retained |3 | NOT STARTED |
+| Causal proof and deterministic non-Drasov-only controls |2 | PARTIAL: engine-level RED and analytic proof verified; correspondence amendment pending |
+| Legacy usable geometry, wide search and successful behavior retained |3 | REVIEW BLOCKED: precise repair contract needs the proposed correspondence amendment |
 | Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: frozen previews, contact guard and measured export integrated; final gates and image-supported foldback work remain |
-| A actual existing objective traced, usable geometry, exact optimizer retained |5 | ACTIVE: frozen-state experiments; default unchanged |
+| A actual existing objective traced, usable geometry, exact optimizer retained |5 | REVIEW BLOCKED: current correspondence fails the independent image contract; amendment pending |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
 | Independent audit, CI, private visual acceptance, bounded performance |6 | NOT STARTED |
 | B performance redesign/new hybrid/stable release scope |None | OUT OF SCOPE |
@@ -559,3 +559,77 @@ Next external computation: push only the reviewed release branch (no tag/release
 no private artifacts) to trigger existing public validation and both JOSM19555
 GUI engines. Do not claim the cancelled tablet baseline as full Java evidence.
 Keep the active numerical reference question and original Task2/3/5 work open.
+
+Connection-safe checkpoint: reviewed code/docs pushed as
+`12e4522789315e173f13ebcc4602ea21fc87dd5f` to the existing
+`codex/v022-legacy-b-release` branch, fast-forward from50e1e35. No tag, release,
+private imagery or prototype branches were pushed. Public CI run41466305261:
+https://github.com/holubp/josm-wayheatmaptracer/actions/runs/41466305261
+was IN_PROGRESS when last checked. Background gh watcher uses60s intervals and
+logs to Termux tmp `drasov-ci-41466305261.log`; its success has NOT been assumed.
+Use explicit `-R holubp/josm-wayheatmaptracer` for gh commands because ownership
+protection prevents gh's automatic repository discovery in this worktree. Do not
+change global git safe-directory configuration to work around that.
+
+Next safe actions: inspect CI outcome/receipts for this exact commit; fix any
+in-scope regression. Keep numerical prototypes isolated/default0. User reference
+feedback is still pending at localhost8770/comparison.html (server session96562).
+Do not restart coefficient trials, infer that the witness is the desired path,
+mark Tasks2/3/5 complete, or publish an RC from this foundation batch. Primary
+117baaf tree and the three pre-existing untracked handoff files are preserved.
+
+Continuation progress: test-only231fed3 adds independently painted strong/weak
+thin parallel-ring and curved-ridge collinear-insertion controls for both Legacy
+and A. Fixed amplitudes.95/.35 and the one-native-pixel oracle were selected
+before observing outputs; no earlier failed fixture or relaxed threshold. Explicit
+Java17 focused run passes8PhysicalPathContinuity+22RidgeTracker tests. This is
+preservation characterization, not a RED or a tracing repair. The test-only commit
+is local and is not part of the already running CI12e4522 snapshot; production
+code remains identical to that reviewed CI snapshot.
+
+Reference feedback UI now supports clicking an approximate intended path and
+saving bounded capture-bound JSON directly under ignored
+`20261102-a-feasibility/feedback/`. Scripts are ignored diagnostic helpers
+`.superpowers/sdd/drasov-quality/reference-{annotation.js,server.py}`. The server
+is localhost8770 (session77468); invalid identity/coordinates/schema are rejected,
+existing annotations are never overwritten, and no synthetic test payload was
+saved as user feedback. PNG placement was corrected to start atSVG−0.5/−0.5 so
+integer-centered frozen-grid overlays and drawn points align with PNG centers.
+No pixel values/filtering changed. JS syntax, HTTP resources and negative POST
+checks passed; browser interaction itself has not been field-confirmed.
+
+Do not turn the still-pending private annotation into a blanket blocker on other
+work. Sol/high is checking actual engine output on the independently painted
+straight ridge with folded source normals, using the existing R4fixture and
+explicit Java17. This is the missing Task2 engine-level representability
+discriminator, not another coefficient trial or production guide change. It can
+establish a concrete design-amendment gate without guessing private ground truth.
+
+The engine-level discriminator now establishes that gate. Isolated test-only
+RED commit eb151e340960d92d6ecdf229bc8eb14786a9cb73 on
+`codex/drasov-chart-engine-red` has2intended failures and8positive preservation
+passes, zero errors/skips. Both actual engines fit the independently painted
+straight ridge within1nativepixel yet retrace it: Legacy7.472m/A6.600m backward
+image travel. The continuous normal-row equations force at least approximately
+5.4m of retracing regardless of coefficient or finite state density. Sol/high
+independently checked the derivation, output CSVs and all receipt checksums.
+Do not merge these RED tests or claim a repair. Evidence and reproducible command:
+ignored `20261102-chart-engine-counterexample/` (13-entry SHA manifest).
+
+This is a genuine constraint conflict, not missing private-blue annotation or
+a reason to continue coefficient trials. Proposed specific amendment:
+`docs/superpowers/specs/2026-11-02-drasov-optional-emission-amendment.md`.
+Bounded optional sampling-row emission is a reviewed candidate, not an approved
+or demonstrated fix. Its concrete source-chainage witness fits16profiles/20m;
+production recurrence, connector support and cost/provenance must still be
+specified under the amendment. User approval is required by Task2's explicit
+architecture gate before production implementation. Keep the original full
+goal active and all other unfinished requirements intact.
+
+Independent review of the proposed amendment found no blocking inconsistency,
+with two incorporated clarifications: 16profiles/20m are adopted numeric bounds
+for a NEW transition type, not permission inherited from gap handling; full
+observed/gap/censored evidence and all one-row/one-vertex consumers need explicit
+versioned mapping updates. The proposal authorizes precise specification and a
+bounded experiment only after user approval, not a promise that resource
+feasibility or Drasov quality is solved. No production change is authorized yet.
