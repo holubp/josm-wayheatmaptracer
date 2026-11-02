@@ -66,7 +66,7 @@ public record EmissionMapping(
                 }
             } else if (owner instanceof Consumed consumed) {
                 int arc = consumed.arcIndex();
-                if (arc < 0 || arc + 1 >= vertexOwners.size()
+                if (arc < 0 || arc >= vertexOwners.size() - 1
                         || !(vertexOwners.get(arc) instanceof ObservationVertex left)
                         || !(vertexOwners.get(arc + 1) instanceof ObservationVertex right)
                         || left.observationIndex() >= row || row >= right.observationIndex()

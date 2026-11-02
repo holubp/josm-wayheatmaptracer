@@ -84,6 +84,14 @@ class EmissionMappingTest {
     }
 
     @Test
+    void rejectsMaximumIntegerConsumedArcAsAnInvalidMapping() {
+        assertThrows(IllegalArgumentException.class, () -> EmissionMapping.create(3,
+            List.of(new EmissionMapping.ObservationVertex(0), new EmissionMapping.ObservationVertex(2)),
+            List.of(new EmissionMapping.Emitted(0), new EmissionMapping.Consumed(Integer.MAX_VALUE),
+                new EmissionMapping.Emitted(1)), Set.of()));
+    }
+
+    @Test
     void firstAndLastSourceRowsCannotBeConsumed() {
         assertThrows(IllegalArgumentException.class, () -> EmissionMapping.create(4,
             List.of(new EmissionMapping.ObservationVertex(1), new EmissionMapping.ObservationVertex(3)),
