@@ -1,10 +1,11 @@
 # Drasov geometry repair for Legacy and Corridor A
 
-Status: DRAFT FOR USER APPROVAL. Design only; no implementation or release authority
+Status: USER APPROVED2026-11-02 ("Go ahead" in response to execution-plan preparation).
+Design only; no implementation or release authority
 is added by this document. Baseline: RC14 source6f98691, release worktree50e1e35.
 Independent Sol6.1/medium builder check2026-11-02: no material planning gaps;
 causal fixtures, reference annotation and architecture-amendment gates retained.
-User design approval remains pending; implementation has not started.
+User design approval received; execution planning authorized, implementation not started.
 
 ## Intent and scope
 
