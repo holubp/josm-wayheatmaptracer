@@ -112,8 +112,10 @@ The v0.22 offline calibration helper fits a fixed regularized logistic model onl
 ## Build
 
 Requirements:
+
 - Java 17+
 - Gradle wrapper included (`sh gradlew`)
+- Python 3.11+ available as `python3` for the debug export/analyzer integration test
 
 Build:
 

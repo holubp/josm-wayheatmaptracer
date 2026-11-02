@@ -542,3 +542,20 @@ actual Java-export→Python-reader acceptance tests are being completed in the
 existing diagnostics worktree, with no further production changes authorized
 unless a test proves a defect. Remaining full Java/public host checks will run
 through GitHub CI after that coherent tests-only integration.
+
+Tests-only acceptance integration ef01444 now checks independently expected raw,
+final and deliberately different actual-applied numeric geometry (including a
+180degree reversal), immutable original export, and a real Java-generated ZIP
+read through the Python analyzer CLI. Projection mutation is restored in finally.
+Worker Java17 focused run: 51 tests, zero failures/errors/skips; Python analyzer
+suite: 21 tests plus 9 subtests pass. These complement, rather than replace,
+root's144safety/action/command tests and206-test full Python run. README declares
+the Python test dependency explicitly. Independent final affected audit finds
+no unresolved blocking issue in the implemented foundation/Task4 batch and
+approves proceeding to CI only. This is NOT completion of the numerical fitting
+goal, private visual acceptance, full Task4 scope, or release qualification.
+
+Next external computation: push only the reviewed release branch (no tag/release,
+no private artifacts) to trigger existing public validation and both JOSM19555
+GUI engines. Do not claim the cancelled tablet baseline as full Java evidence.
+Keep the active numerical reference question and original Task2/3/5 work open.
