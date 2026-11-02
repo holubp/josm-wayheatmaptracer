@@ -16,7 +16,7 @@ public final class LegacyFinalPreviewSafety {
     private LegacyFinalPreviewSafety() { }
 
     /**
-     * Measures nonadjacent final-preview contacts once, for cached candidate assessment.
+     * Measures final-preview contacts, including adjacent overlaps, once for cached assessment.
      *
      * @param source immutable pre-command selected source polyline
      * @param preview stored final geometry after reconstruction and permitted simplification
@@ -37,12 +37,12 @@ public final class LegacyFinalPreviewSafety {
         }
         Set<String> warnings = new LinkedHashSet<>();
         for (int first = 0; first < proposed.size(); first++) {
-            for (int second = first + 2; second < proposed.size(); second++) {
+            for (int second = first + 1; second < proposed.size(); second++) {
                 Kind kind = intersection(proposed.get(first), proposed.get(second));
                 if (!reportable(kind, first, second, proposed.size(), closureOwned)) { continue; }
                 int ownerFirst = Math.min(ownership[first], ownership[second]);
                 int ownerSecond = Math.max(ownership[first], ownership[second]);
-                if (ownerFirst >= 0 && ownerSecond >= ownerFirst + 2
+                if (ownerFirst >= 0 && ownerSecond >= ownerFirst + 1
                     && reportable(kind, ownerFirst, ownerSecond, original.size(), originalClosed)
                     && intersection(original.get(ownerFirst), original.get(ownerSecond)) == kind) {
                     continue;
@@ -116,7 +116,7 @@ public final class LegacyFinalPreviewSafety {
 
     private static boolean hasContact(List<Segment> geometry, boolean closureOwned) {
         for (int first = 0; first < geometry.size(); first++) {
-            for (int second = first + 2; second < geometry.size(); second++) {
+            for (int second = first + 1; second < geometry.size(); second++) {
                 Kind kind = intersection(geometry.get(first), geometry.get(second));
                 if (reportable(kind, first, second, geometry.size(), closureOwned)) { return true; }
             }
@@ -125,8 +125,10 @@ public final class LegacyFinalPreviewSafety {
     }
 
     private static boolean reportable(Kind kind, int first, int second, int size, boolean closureOwned) {
-        // Only the common closure endpoint is exempt, never an overlapping closing edge.
-        return kind != Kind.NONE && !(kind == Kind.TOUCH && closureOwned && first == 0 && second == size - 1);
+        // Consecutive edges may share one endpoint, but a positive-length retrace is a contact.
+        // The same endpoint-only exception applies to an owned closing seam.
+        return kind != Kind.NONE && !(kind == Kind.TOUCH
+            && (second == first + 1 || closureOwned && first == 0 && second == size - 1));
     }
 
     private static Kind intersection(Segment first, Segment second) {

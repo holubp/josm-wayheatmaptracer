@@ -69,6 +69,18 @@ class LegacyFinalPreviewSafetyTest {
     }
 
     @Test
+    void newAdjacentRetraceIsBlockedWithoutForbiddingSharpBends() {
+        assertTrue(LegacyFinalPreviewSafety.warnings(points(0,0, 1,1, 2,0),
+            points(0,0, 4,0, 2,0)).stream().anyMatch(warning -> warning.contains("overlap")));
+    }
+
+    @Test
+    void exactlyInheritedAdjacentOverlapKeepsItsOccurrenceCertificate() {
+        var source = points(0,0, 4,0, 2,0, 4,4);
+        assertTrue(LegacyFinalPreviewSafety.warnings(source, source).isEmpty());
+    }
+
+    @Test
     void ordinaryInheritedClosedSeamIsAllowed() {
         var square = points(0,0, 4,0, 4,4, 0,4, 0,0);
         assertTrue(LegacyFinalPreviewSafety.warnings(square, square).isEmpty());

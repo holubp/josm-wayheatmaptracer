@@ -584,6 +584,54 @@ class AlignmentServiceTest {
     }
 
     @Test
+    void fixedEndpointsCanMakeASafeRawRidgeUnsafeAndAssessmentUsesTheFinalPreview() {
+        List<Node> nodes = List.of(nodeAt(0, 0), nodeAt(0.5, 1), nodeAt(1.5, 1), nodeAt(2, 0));
+        Way way = new Way();
+        way.setNodes(nodes);
+        SelectionContext selected = new SelectionContext(way, 0, 3, nodes, Set.of(nodes.get(0), nodes.get(3)));
+        List<EastNorth> source = nodes.stream().map(Node::getEastNorth).toList();
+        List<EastNorth> rawLine = List.of(source.get(0), new EastNorth(6, source.get(0).north()));
+        assertTrue(LegacyFinalPreviewSafety.warnings(source, rawLine).isEmpty(),
+            "The raw ridge is one straight segment with no contact");
+        CenterlineCandidate raw = candidate("legacy/restored-endpoints", signalEvidence())
+            .withEastNorthPoints(rawLine);
+        CenterlineCandidate frozen = new AlignmentService().attachFinalPreviewGeometry(List.of(raw),
+            selected, source, config(AlignmentMode.MOVE_EXISTING_NODES),
+            GeometryCleanupConfig.disabled(), null).get(0);
+
+        assertEquals(source.get(0), frozen.finalPreviewPoints().get(0));
+        assertEquals(source.get(3), frozen.finalPreviewPoints().get(3));
+        assertTrue(frozen.finalPreviewPoints().get(2).east() > source.get(3).east() + 1,
+            "Restoring the endpoint creates a retracing final segment");
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            AlignmentService.assessCandidate(frozen).disposition());
+        assertEquals(source, nodes.stream().map(Node::getEastNorth).toList(),
+            "Assessment must preserve protected and movable dataset coordinates");
+    }
+
+    @Test
+    void movePreviewCannotRetraceAnAdjacentEdgeBeyondItsFixedEndpoint() {
+        List<Node> nodes = List.of(nodeAt(0, 0), nodeAt(1, 1), nodeAt(2, 0));
+        Way way = new Way();
+        way.setNodes(nodes);
+        SelectionContext selected = new SelectionContext(way, 0, 2, nodes, Set.of(nodes.get(0), nodes.get(2)));
+        List<EastNorth> source = nodes.stream().map(Node::getEastNorth).toList();
+        CenterlineCandidate raw = candidate("legacy/adjacent-retrace", signalEvidence())
+            .withEastNorthPoints(List.of(new EastNorth(0, source.get(0).north()),
+                new EastNorth(4, source.get(0).north()), new EastNorth(2, source.get(0).north())));
+        CenterlineCandidate frozen = new AlignmentService().attachFinalPreviewGeometry(List.of(raw),
+            selected, source, config(AlignmentMode.MOVE_EXISTING_NODES),
+            GeometryCleanupConfig.disabled(), null).get(0);
+
+        assertEquals(3, frozen.finalPreviewPoints().size());
+        assertEquals(3.0, frozen.finalPreviewPoints().get(1).east(), 1e-6,
+            "The real Move reconstruction places the interior point beyond the fixed endpoint");
+        assertEquals(source.get(2), frozen.finalPreviewPoints().get(2));
+        assertEquals(CandidateAssessment.Disposition.HARD_BLOCKED,
+            AlignmentService.assessCandidate(frozen).disposition());
+    }
+
+    @Test
     void reviewPreviewUsesExactStoredFinalGeometryWithoutMakingCandidateAutomaticallyApplicable() {
         CorridorCoverage incompleteCoverage = new CorridorCoverage(true, false, 3, 10, 0.3,
             2, 4, 5.0, 12.0, 0, 0.0, 0, true, "unsupported-trailing-corridor");

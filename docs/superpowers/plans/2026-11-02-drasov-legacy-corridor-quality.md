@@ -128,7 +128,7 @@ Every `GTEST` below means this exact shell command from the isolated worktree:
 | Capture attribution, actual raw/final/applied distinction and accepted blue reference |1 | EVIDENCE VERIFIED; user blue reference PENDING |
 | Causal proof and deterministic non-Drasov-only controls |2 | ACTIVE |
 | Legacy usable geometry, wide search and successful behavior retained |3 | NOT STARTED |
-| Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: measurement primitive tested; caller/export integration pending |
+| Exact final safety, availability, old diagnostic/identity compatibility |4 | PARTIAL: frozen previews, contact guard and measured export integrated; final gates and image-supported foldback work remain |
 | A actual existing objective traced, usable geometry, exact optimizer retained |5 | ACTIVE: frozen-state experiments; default unchanged |
 | Both geometry modes, consumers, Hybrid, protected topology and transactions |6 | NOT STARTED |
 | Independent audit, CI, private visual acceptance, bounded performance |6 | NOT STARTED |
@@ -492,3 +492,53 @@ mechanism if the image cannot discriminate. Nonlocal topology history requires
 an explicit prefix-equivalence counterexample and architecture amendment, not
 an inference from failed coefficient trials. Legacy's mechanism is still separate
 and unresolved. No sampler guide, state expansion or hidden refinement approved.
+
+Integrated Task4 code snapshot e868079:
+- f90def7 freezes existing Legacy final geometry in both modes.
+- 2874d28 adds cached typed final-contact warnings and source/exact-preview
+  review/Apply rechecks, preserving Legacy empty assignments and A's own policy.
+  Worker evidence: 136 broader focused tests, then 66 final affected tests pass.
+- 87c5dbe/e868079 add optional checksummed geometry-quality schema1, frozen EPSG
+  conversion plus strict local metric certification, raw/final/applied stages,
+  explicit unavailable blanks, selected-preview mismatch handling and reader
+  schema/header/duplicate/numeric validation. Right-angle and high-latitude
+  controls independently reject projected units passed off as metres. Bundle
+  artifact and selected-mismatch behavioral REDs are retained. Root analyzer
+  suite: 21 tests and 9 subtests pass.
+Code writers are frozen. Root full Java and full Python suites are running;
+independent fresh Sol/high audit covers the whole implemented delta411a3c9..e868079,
+not just the latest commit. Review must not approve unimplemented numerical
+Tasks2/3/5 or claim full Task4 closure while image-supported foldback behavior
+and final evidence/CI gates remain open. README now documents the additive
+artifact and conservative inheritance limit. No RC publication or remote push.
+
+Independent audit found one P1 in the safety slice: adjacent edges were skipped
+even when they retraced over positive length. Root added a helper regression and
+an actual Move reconstruction/assessment regression; both failed as intended
+(3 selected tests, 2 assertion failures). A third acceptance test passed already:
+a safe straight raw ridge becomes overlapping when fixed endpoints are restored,
+and assessment inspects that stored final geometry without moving dataset nodes.
+The scoped correction examines adjacent pairs, exempting only their common
+endpoint, and updates original-contact certification consistently. Sharp
+nonoverlapping turns remain permitted. Focused GREEN and affected re-review are
+in progress; no new numerical fitting correction is implied.
+
+Full Python verification at e868079 passes 206 tests plus 9 subtests. The local
+full Java baseline was deliberately cancelled after12m12s with SIGTERM/exit143
+to unblock the reviewed correction and move full computation to the approved
+GitHub CI workflow. It is NOT a passing or failing-code full-suite result.
+Log: Termux `drasov-integrated-full-test.log`; new true RED/GREEN logs:
+`drasov-adjacent-review-{red,green}.log`, saved RED XML under ignored
+`20261102-adjacent-review-red/`. CI has not yet been dispatched.
+
+P1 correction GREEN: 144 tests (45AlignmentService,20LegacyFinalPreviewSafety,
+67AlignWayAction,12ReplaceWaySegmentCommand), zero failures/errors/skips; XML
+preserved in `20261102-adjacent-review-green/`. Independent affected re-review
+finds no blocking issue: adjacent overlap is checked in both preview and source
+classification, ordinary contacts and genuine sharp nonoverlapping bends remain
+allowed, inheritance ownership stays strict. The new protected-endpoint test also
+closes that particular acceptance gap. Exact distinct numeric export stages and
+actual Java-export→Python-reader acceptance tests are being completed in the
+existing diagnostics worktree, with no further production changes authorized
+unless a test proves a defect. Remaining full Java/public host checks will run
+through GitHub CI after that coherent tests-only integration.
