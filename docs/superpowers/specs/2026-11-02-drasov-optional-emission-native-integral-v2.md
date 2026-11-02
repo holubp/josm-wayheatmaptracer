@@ -583,4 +583,3 @@ are built. Its passing R4 result is not complete application/Hybrid integration.
 The accepted-blue/private visual reference, public CI and original full-plan gates
 remain required for completion/adoption. No production default change or release
 is authorized by this packet or its synthetic screen.
-
