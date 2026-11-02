@@ -17,6 +17,7 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.IntensitySamplingMode;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricPoint;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProjectedLateralTransform;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.util.PluginLog;
 
@@ -433,6 +434,55 @@ public final class RenderedHeatmapSampler {
      * Samples a pre-admitted detached scalar field without image, map-view, or projection callbacks.
      * Search and step values are expressed in the retained output raster's pixel units.
      */
+    /** Private-constructor proof of the actual detached L0 producer. */
+    public static final class RetainedScalarProfiles {
+        private final MultiScaleProfileSet profiles;
+        private final ScalarIntensityField levelZero;
+        private final List<DetachedProfileSamplingLocation> locations;
+        private final EvidenceSnapshot source;
+        private final String fieldName;
+        private final EmissionWorkBudget budget;
+
+        private RetainedScalarProfiles(MultiScaleProfileSet profiles, ScalarIntensityField levelZero,
+                List<DetachedProfileSamplingLocation> locations, EvidenceSnapshot source, String fieldName,
+                EmissionWorkBudget budget) {
+            this.profiles = profiles;
+            this.levelZero = levelZero;
+            this.locations = locations;
+            this.source = source;
+            this.fieldName = fieldName;
+            this.budget = budget;
+        }
+
+        public MultiScaleProfileSet profiles() { return profiles; }
+        public ScalarIntensityField levelZero() { return levelZero; }
+        public List<DetachedProfileSamplingLocation> profileLocations() { return locations; }
+        public boolean boundTo(EvidenceSnapshot evidence, String selectedField,
+                EmissionWorkBudget sharedBudget) {
+            return source == evidence && fieldName.equals(selectedField) && budget == sharedBudget;
+        }
+    }
+
+    RetainedScalarProfiles sampleDetachedRetainingL0(EvidenceSnapshot evidence, String fieldName,
+            List<DetachedProfileSamplingLocation> anchors, double halfWidth, double lateralStep,
+            double sourcePitch,
+            EmissionWorkBudget budget) {
+        CancellationProbe cancellation = () -> {
+            budget.charge(EmissionWorkBudget.Operation.PREPARATION, 1);
+            return false;
+        };
+        cancellation.checkpoint();
+        List<DetachedProfileSamplingLocation> locations = List.copyOf(anchors);
+        ScalarIntensityField levelZero = ScalarIntensityField.fromEvidence(
+            evidence.fields().get(fieldName), cancellation::checkpoint,
+            () -> budget.charge(EmissionWorkBudget.Operation.NODE_READ, 1),
+            () -> budget.charge(EmissionWorkBudget.Operation.CELL_QUERY, 1));
+        MultiScaleProfileSet profiles = sampleMultiScaleProfilesOnDetachedField(levelZero, locations,
+            halfWidth, lateralStep, sourcePitch, evidence, cancellation);
+        cancellation.checkpoint();
+        return new RetainedScalarProfiles(profiles, levelZero, locations, evidence, fieldName, budget);
+    }
+
     MultiScaleProfileSet sampleMultiScaleProfilesOnDetachedField(
         ScalarIntensityField levelZero,
         List<? extends ProfileSamplingLocation> anchors,

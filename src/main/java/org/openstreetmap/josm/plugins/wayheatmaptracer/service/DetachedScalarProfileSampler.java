@@ -4,12 +4,87 @@ import java.util.List;
 import java.util.Objects;
 
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.EvidenceSnapshot;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.TraceRequest;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.CorridorTraceInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ProfileChainage;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.RasterMetricTransform;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.model.ScalarEvidenceField;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.EmissionWorkBudget;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.OptionalEmissionContextFactory;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.emission.SampledEmissionInput;
+import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.AttemptMemoryLedger;
 import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.CancellationProbe;
 
 /** Bounded detached scalar-to-profile input prerequisite for corridor-aware Engine A. */
 public final class DetachedScalarProfileSampler {
+    /** Explicit experimental retained input; native sample methods do not opt in. */
+    public SampledEmissionInput sampleForEmission(TraceRequest request, EvidenceSnapshot evidence,
+            String fieldName, EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        try (var binding = OptionalEmissionContextFactory.bindDetached(
+                request, evidence, fieldName, budget, owner)) {
+            requireEmissionComponentBudget(binding.materializationBytes());
+            CorridorTraceInput input = request.corridorInput().orElseThrow();
+            var retained = retained(evidence, fieldName, input, request.permissions().ordinaryRadiusMeters(),
+                request.profileChainage().sourceOriginGroundMeters(), budget);
+            return OptionalEmissionContextFactory.fromDetached(binding, retained);
+        }
+    }
+
+    /** Explicit declaration of synthetic metric truth, never production attestation. */
+    public SampledEmissionInput sampleDeclaredSyntheticForEmission(EvidenceSnapshot evidence, String fieldName,
+            CorridorTraceInput input, ProfileChainage chainage, double halfWidth,
+            EmissionWorkBudget budget, AttemptMemoryLedger.Owner owner) {
+        try (var binding = OptionalEmissionContextFactory.bindDeclaredSyntheticMetricGrid(
+                evidence, fieldName, input, chainage, halfWidth, budget, owner)) {
+            requireEmissionComponentBudget(binding.materializationBytes());
+            var retained = retained(evidence, fieldName, input, halfWidth,
+                chainage.sourceOriginGroundMeters(), budget);
+            return OptionalEmissionContextFactory.fromDeclaredSyntheticMetricGrid(binding, retained);
+        }
+    }
+
+    private void requireEmissionComponentBudget(long bytes) {
+        if (bytes > maximumEstimatedBytes) {
+            throw new IllegalArgumentException("Detached scalar profile materialization exceeds its component budget");
+        }
+    }
+
+    private static RenderedHeatmapSampler.RetainedScalarProfiles retained(EvidenceSnapshot evidence,
+            String fieldName, CorridorTraceInput input, double halfWidth, double sourceOrigin,
+            EmissionWorkBudget budget) {
+        budget.charge(EmissionWorkBudget.Operation.ALLOCATION, 1);
+        double pitch = evidence.resolution().outputRasterPitchMeters();
+        return new RenderedHeatmapSampler().sampleDetachedRetainingL0(evidence, fieldName,
+            input.profileLocations(), halfWidth / pitch, input.lateralStepMeters() / pitch,
+            maximumSourcePitch(evidence, input.profileLocations(), sourceOrigin) / pitch, budget);
+    }
+
+    /** Computes the existing native component bound without materializing a scalar field or profiles. */
+    public static long estimatedEmissionMaterializationBytes(EvidenceSnapshot evidence, String fieldName,
+            CorridorTraceInput input, ProfileChainage chainage, double halfWidth,
+            CancellationProbe cancellation) {
+        if (input == null || chainage == null) {
+            throw new IllegalArgumentException("Detached emission sampling input is incomplete");
+        }
+        validateInputs(evidence, fieldName, input.profileLocations(), halfWidth,
+            input.lateralStepMeters(), cancellation, chainage.sourceOriginGroundMeters());
+        cancellation.checkpoint();
+        double outputPitch = evidence.resolution().outputRasterPitchMeters();
+        double sourcePitch = maximumSourcePitch(evidence, input.profileLocations(),
+            chainage.sourceOriginGroundMeters()) / outputPitch;
+        if (!Double.isFinite(sourcePitch) || sourcePitch <= 0
+                || sourcePitch > Integer.MAX_VALUE / 4.0) {
+            throw new IllegalArgumentException("Source pitch cannot be represented on the output raster");
+        }
+        ScalarEvidenceField field = evidence.fields().get(fieldName);
+        long estimate = estimatedMaterializationBytes(field.width(), field.height(),
+            Math.max(4, (int)Math.ceil(4 * sourcePitch)), input.profileLocations().size(),
+            halfWidth / outputPitch, input.lateralStepMeters() / outputPitch);
+        if (estimate > MAX_ESTIMATED_BYTES) {
+            throw new IllegalArgumentException("Detached scalar profile materialization exceeds its component budget");
+        }
+        return estimate;
+    }
     static final long MAX_ESTIMATED_BYTES = 128L * 1024L * 1024L;
     private static final double FRAME_TOLERANCE = 1.0e-9;
     private static final long BYTES_PER_PROFILE_SAMPLE = 256L;

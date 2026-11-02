@@ -63,7 +63,13 @@ public final class ScalarIntensityField {
 
     /** Copies an already scalar modern field while retaining its explicit complete-cell mask. */
     static ScalarIntensityField fromEvidence(ScalarEvidenceField source, Runnable rowCheckpoint) {
-        if (source == null || rowCheckpoint == null) {
+        return fromEvidence(source, rowCheckpoint, () -> { }, () -> { });
+    }
+
+    /** Identical native copy order with caller-owned admission immediately before each source query. */
+    static ScalarIntensityField fromEvidence(ScalarEvidenceField source, Runnable rowCheckpoint,
+            Runnable beforeNodeRead, Runnable beforeCellQuery) {
+        if (source == null || rowCheckpoint == null || beforeNodeRead == null || beforeCellQuery == null) {
             throw new IllegalArgumentException("Modern scalar evidence and cancellation checkpoint are required");
         }
         rowCheckpoint.run();
@@ -74,6 +80,7 @@ public final class ScalarIntensityField {
         for (int y = 0; y < height; y++) {
             rowCheckpoint.run();
             for (int x = 0; x < width; x++) {
+                beforeNodeRead.run();
                 OptionalDouble sample = source.sample(x, y);
                 int index = y * width + x;
                 if (sample.isPresent()) {
@@ -86,6 +93,7 @@ public final class ScalarIntensityField {
         for (int y = 0; y < height - 1; y++) {
             rowCheckpoint.run();
             for (int x = 0; x < width - 1; x++) {
+                beforeCellQuery.run();
                 interpolationValid[y * (width - 1) + x] = source.supportsInterpolationCell(x, y);
             }
         }
