@@ -543,6 +543,63 @@ public final class CorridorCenterlineOptimizer {
         return reduced.stream().distinct().toList();
     }
 
+    /** Package-private experimental exposure of the exact native optimizer state rows. */
+    NativeStateDomain nativeStateDomain(
+        CorridorTrack track,
+        List<CorridorProfile> profiles,
+        double sourcePixelSizePx,
+        JunctionContext junctionContext,
+        Map<String, BandScaleEvidence> scaleEvidence,
+        LongitudinalCorridorTube tube,
+        EndpointApproachModel endpointApproaches
+    ) {
+        if (profiles.isEmpty() || track.points().isEmpty()) {
+            return new NativeStateDomain(List.of());
+        }
+        if (tube.slices().size() != profiles.size()) {
+            throw new IllegalArgumentException("Corridor tube must be profile aligned");
+        }
+        double sourcePixel = validSourcePixel(sourcePixelSizePx);
+        List<NativeStateRow> rows = new ArrayList<>(profiles.size());
+        for (int i = 0; i < profiles.size(); i++) {
+            CorridorTrackPoint trackPoint = track.points().get(i);
+            CorridorBand band = trackPoint == null ? null : trackPoint.band();
+            List<Double> offsets = allowedOffsets(track, profiles, i, sourcePixel, junctionContext,
+                scaleEvidence, tube.at(i), endpointApproaches);
+            List<NativeState> states = new ArrayList<>(offsets.size());
+            for (int stateId = 0; stateId < offsets.size(); stateId++) {
+                states.add(new NativeState(stateId, offsets.get(stateId)));
+            }
+            rows.add(new NativeStateRow(i, states,
+                i == 0 ? 0.0 : continuityWeight(track, i),
+                i < 2 ? 0.0 : accelerationWeight(track, i, tube),
+                band, trackPoint, junctionContext.at(i)));
+        }
+        return new NativeStateDomain(rows);
+    }
+
+    record NativeStateDomain(List<NativeStateRow> rows) {
+        NativeStateDomain {
+            rows = List.copyOf(rows);
+        }
+    }
+
+    record NativeStateRow(
+        int rowIndex,
+        List<NativeState> states,
+        double continuityWeight,
+        double accelerationWeight,
+        CorridorBand bandOwner,
+        CorridorTrackPoint trackPointOwner,
+        EndpointConstraint endpointConstraint
+    ) {
+        NativeStateRow {
+            states = List.copyOf(states);
+        }
+    }
+
+    record NativeState(int stateId, double offsetPx) { }
+
     private List<Double> deduplicateMandatory(Set<Double> mandatory, double tolerance) {
         List<Double> result = new ArrayList<>();
         for (double value : mandatory) {
