@@ -232,12 +232,12 @@ public final class LocalScalarProfileExtractor {
                 throw new IllegalArgumentException("Accepted threshold extraction is incomplete");
             }
             acceptedReceipts = List.copyOf(acceptedReceipts);
-            IdentityHashMap<Mode, Boolean> modes = new IdentityHashMap<>();
+            IdentityHashMap<Mode, Boolean> modes = new IdentityHashMap<>(result.baseline().modes().size());
             for (Mode mode : result.baseline().modes()) modes.put(mode, Boolean.TRUE);
-            IdentityHashMap<RawPeak, Boolean> peaks = new IdentityHashMap<>();
+            IdentityHashMap<RawPeak, Boolean> peaks = new IdentityHashMap<>(result.rawPeaks().size());
             for (RawPeak peak : result.rawPeaks()) peaks.put(peak, Boolean.TRUE);
-            IdentityHashMap<Mode, Boolean> seenModes = new IdentityHashMap<>();
-            IdentityHashMap<RawPeak, Boolean> seenPeaks = new IdentityHashMap<>();
+            IdentityHashMap<Mode, Boolean> seenModes = new IdentityHashMap<>(acceptedReceipts.size());
+            IdentityHashMap<RawPeak, Boolean> seenPeaks = new IdentityHashMap<>(acceptedReceipts.size());
             for (AcceptedModeThresholdReceipt receipt : acceptedReceipts) {
                 if (receipt == null || !modes.containsKey(receipt.mode())
                         || !peaks.containsKey(receipt.originPeak())
@@ -385,18 +385,17 @@ public final class LocalScalarProfileExtractor {
 
         AcceptedThresholdExtraction freeze(DetailedResult result) {
             long validationWork = Math.addExact(result.baseline().modes().size(),
-                    Math.addExact(result.rawPeaks().size(), receipts.size()));
+                    Math.addExact(result.rawPeaks().size(), Math.multiplyExact(2L, receipts.size())));
             work.bulk(validationWork);
-            long identityMapBytes = Math.multiplyExact(4L,
-                    AttemptMemoryLedger.objectBytes(40)
-                        + AttemptMemoryLedger.referenceArrayBytes(Math.multiplyExact(4L,
-                            Math.max(1L, Math.max(result.baseline().modes().size(), result.rawPeaks().size())))));
+            long identityMapBytes = acceptedThresholdIdentityBytes(result.baseline().modes().size(),
+                    result.rawPeaks().size(), receipts.size());
             AttemptMemoryLedger.Owner validationOwner = resultOwner == null ? null
                     : resultOwner.child("accepted-threshold-validation");
             try {
-                allocated(validationOwner, identityMapBytes, Object::new);
-                return allocated(resultOwner, AttemptMemoryLedger.objectBytes(32) + listBytes(receipts.size()),
-                        () -> new AcceptedThresholdExtraction(result, receipts));
+                return reserved(validationOwner, identityMapBytes,
+                        () -> allocated(resultOwner,
+                                AttemptMemoryLedger.objectBytes(32) + listBytes(receipts.size()),
+                                () -> new AcceptedThresholdExtraction(result, receipts)));
             } finally {
                 if (validationOwner != null) validationOwner.close();
             }
@@ -435,16 +434,23 @@ public final class LocalScalarProfileExtractor {
                 || cancellation == null || charge == null) {
             throw new IllegalArgumentException("Accepted threshold extraction inputs are incomplete");
         }
-        AcceptedThresholdCollector accepted = new AcceptedThresholdCollector(owner,
-                samples == null ? 0 : samples.size());
+        cancellation.checkpoint();
+        charge.accept(Math.addExact((long) samples.size(), 1L));
+        cancellation.checkpoint();
+        AttemptMemoryLedger.Owner collectorOwner = owner == null ? null
+                : owner.child("accepted-threshold-collector");
+        AcceptedThresholdCollector accepted = null;
         try {
+            accepted = allocated(collectorOwner, AttemptMemoryLedger.objectBytes(40),
+                    () -> new AcceptedThresholdCollector(owner, samples.size()));
             DetailedResult result = extractDetailedScoped(samples, sourcePitchMeters, parameters,
                     accepted.resultOwner, cancellation, charge, null, accepted);
             AcceptedThresholdExtraction extraction = accepted.freeze(result);
             accepted.transferTo(owner);
             return extraction;
         } finally {
-            accepted.close();
+            if (accepted != null) accepted.close();
+            if (collectorOwner != null) collectorOwner.close();
         }
     }
 
@@ -1055,6 +1061,29 @@ public final class LocalScalarProfileExtractor {
         return Double.isFinite(value) && value >= 0.0 && value <= 1.0;
     }
 
+    static long acceptedThresholdIdentityBytes(int modeCount, int peakCount, int receiptCount) {
+        if (modeCount < 0 || peakCount < 0 || receiptCount < 0) {
+            throw new IllegalArgumentException("Accepted threshold identity counts must be non-negative");
+        }
+        return Math.addExact(Math.addExact(identityMapBytes(modeCount), identityMapBytes(peakCount)),
+                Math.multiplyExact(2L, identityMapBytes(receiptCount)));
+    }
+
+    private static long identityMapBytes(int expectedMaxSize) {
+        int capacity;
+        if (expectedMaxSize < 0) {
+            throw new IllegalArgumentException("Identity map size must be non-negative");
+        } else if (expectedMaxSize <= 2) {
+            capacity = 4;
+        } else if (expectedMaxSize > 178_956_970) {
+            capacity = 536_870_912;
+        } else {
+            capacity = Integer.highestOneBit(Math.multiplyExact(expectedMaxSize, 3));
+        }
+        return AttemptMemoryLedger.objectBytes(40)
+                + AttemptMemoryLedger.referenceArrayBytes(Math.multiplyExact(2L, capacity));
+    }
+
     private record WorkProbe(CancellationProbe cancellation, LongConsumer charge) {
         void checkpoint() {
             cancellation.checkpoint();
@@ -1096,6 +1125,22 @@ public final class LocalScalarProfileExtractor {
         } catch (RuntimeException | Error exception) {
             reservation.close();
             throw exception;
+        }
+    }
+
+    private static <T> T reserved(AttemptMemoryLedger.Owner owner, long bytes,
+            Supplier<T> allocation) {
+        if (owner == null) return allocation.get();
+        AttemptMemoryLedger.Reservation reservation;
+        try {
+            reservation = owner.reserve(bytes);
+        } catch (AttemptMemoryLedger.ResourceLimitException exception) {
+            throw new ResourceLimitException(exception);
+        }
+        try {
+            return allocation.get();
+        } finally {
+            reservation.close();
         }
     }
 

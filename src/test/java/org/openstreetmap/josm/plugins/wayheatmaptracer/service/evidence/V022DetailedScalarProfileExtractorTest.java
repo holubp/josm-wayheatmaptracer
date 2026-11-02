@@ -21,6 +21,20 @@ import org.openstreetmap.josm.plugins.wayheatmaptracer.service.tracing.probabili
 /** Detailed diagnostics retain conditional RMS-only shapes without changing baseline extraction. */
 class V022DetailedScalarProfileExtractorTest {
     @Test
+    void smallAcceptedReceiptReservesTheJdk17SizedIdentityTablesBeforeValidation() {
+        long oneMap = AttemptMemoryLedger.objectBytes(40)
+                + AttemptMemoryLedger.referenceArrayBytes(8);
+        assertEquals(4L * oneMap,
+                LocalScalarProfileExtractor.acceptedThresholdIdentityBytes(1, 1, 1));
+        long threeEntries = AttemptMemoryLedger.objectBytes(40)
+                + AttemptMemoryLedger.referenceArrayBytes(16);
+        long sixEntries = AttemptMemoryLedger.objectBytes(40)
+                + AttemptMemoryLedger.referenceArrayBytes(32);
+        assertEquals(3L * threeEntries + sixEntries,
+                LocalScalarProfileExtractor.acceptedThresholdIdentityBytes(3, 6, 3));
+    }
+
+    @Test
     void acceptedThresholdReceiptCapturesActualNonzeroBackgroundShoulderAndRawWinner() {
         List<LocalScalarProfileExtractor.Sample> input = acceptedThresholdProfile();
         var extractor = new LocalScalarProfileExtractor();
@@ -83,7 +97,7 @@ class V022DetailedScalarProfileExtractorTest {
                 optInOwner, CancellationProbe.NONE, optInWork::addAndGet);
         assertEquals(legacy, optIn.result());
         assertEquals(1, optIn.acceptedReceipts().size());
-        assertTrue(optInWork.get() > legacyWork.get());
+        assertEquals(input.size() + 7L, optInWork.get() - legacyWork.get());
         assertTrue(optInLedger.peakBytes() > legacyPeakBytes);
         assertTrue(optInLedger.currentBytes() > 0L);
         optInOwner.close();
@@ -105,6 +119,19 @@ class V022DetailedScalarProfileExtractorTest {
                 () -> checkpoints.incrementAndGet() > 10, ignored -> { }));
         assertEquals(0L, cancelledLedger.currentBytes());
         cancelledOwner.close();
+    }
+
+    @Test
+    void acceptedCollectorPayloadIsReservedBeforeItsReceiptListAllocation() {
+        var shellLedger = new AttemptMemoryLedger(AttemptMemoryLedger.objectBytes(40));
+        var shellOwner = shellLedger.rootOwner();
+        assertThrows(LocalScalarProfileExtractor.ResourceLimitException.class, () ->
+                new LocalScalarProfileExtractor().extractDetailedWithAcceptedThresholds(
+                        acceptedThresholdProfile(), 0.125, EvidenceModelParameters.Localization.defaults(),
+                        shellOwner, CancellationProbe.NONE, ignored -> { }));
+        assertEquals(AttemptMemoryLedger.objectBytes(40), shellLedger.peakBytes());
+        assertEquals(0L, shellLedger.currentBytes());
+        shellOwner.close();
     }
 
     @Test
