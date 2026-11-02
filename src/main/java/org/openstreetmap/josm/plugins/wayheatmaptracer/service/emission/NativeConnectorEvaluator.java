@@ -296,8 +296,8 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
             work(EmissionWorkBudget.Operation.PREPARATION,1);
             double u=i==intervals?halfWidth:-halfWidth+2*halfWidth*i/intervals;
             var actual=new MetricPoint(center.xMeters()+u*normal.xMeters(),center.yMeters()+u*normal.yMeters());
-            boolean authorized=context.decisionRegion().contains(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
-                && context.evidenceRegion().contains(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
+            boolean authorized=context.decisionRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n))
+                && context.evidenceRegion().containsConservatively(actual,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n));
             double value=authorized?strictValue(context.rasterTransform().metricToPixelCenter(actual)):Double.NaN;
             samples.add(new Sample(u,value,Double.isFinite(value)));
         }
@@ -433,7 +433,7 @@ public final class NativeConnectorEvaluator implements AutoCloseable {
     private static RasterPoint interpolate(RasterPoint a,RasterPoint b,double t){return new RasterPoint(a.x()+(b.x()-a.x())*t,a.y()+(b.y()-a.y())*t);}
     private boolean authority(org.openstreetmap.josm.plugins.wayheatmaptracer.model.MetricRegion region,
             MetricPoint a,MetricPoint b,AttemptMemoryLedger.Owner evaluation) {
-        return region.containsSegmentWithBoundedEvents(a,b,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n),evaluation);
+        return region.containsSegmentWithConservativeEvents(a,b,CancellationProbe.NONE,n->work(EmissionWorkBudget.Operation.REGION_QUERY,n),evaluation);
     }
 
     private double[] probeParameters(RasterPoint a,RasterPoint b,double length,double pitch,AttemptMemoryLedger.Owner evaluation) {
