@@ -633,3 +633,25 @@ observed/gap/censored evidence and all one-row/one-vertex consumers need explici
 versioned mapping updates. The proposal authorizes precise specification and a
 bounded experiment only after user approval, not a promise that resource
 feasibility or Drasov quality is solved. No production change is authorized yet.
+
+CI qualification completed for12e4522789315e173f13ebcc4602ea21fc87dd5f:
+run41466305261 PASS. Downloaded receipts under ignored
+`build/private-drasov-quality/ci-41466305261/` show2416Java tests across223JUnit
+XML suites, zero failures/errors/skips; Java build, Python tests, sampling-scale,
+diff-check and artifact-integrity stages all passed with zero reused stages.
+Both GUI summaries PASS for PROBABILISTIC and LEGACY_THEN_B on pinned official
+JOSM19555 (SHA d2e2310e24fdf8f4b2d18094997446e443d5894e86f6eeac27a4241bad40338e).
+They attest ordinary action, visible preview, geometry oracle, cancellation,
+no late publication, unchanged dataset/Undo and silent settings save. Private
+fixture scope is explicitly NOT_EXECUTED; this is foundation/public qualification,
+not Drasov fitting or full-goal completion. Later local231fed3 changes tests only;
+the optional-emission proposal/CI checkpoint changes docs only. They are not part
+of that exact CI commit and have not been pushed to trigger redundant full runs.
+
+Current mandatory implementation gate: user decision on the reviewed optional-
+emission amendment. This is the first goal turn reaching that concrete approval
+gate; do not mark the goal blocked yet. The earlier private-reference question
+must not be substituted for the now independently proved architecture issue.
+No production guide/correspondence change, intentionally RED-test merge, cap
+increase or RC publication may proceed before this approval. The goal remains
+active; no unfinished original-plan requirement is waived.
